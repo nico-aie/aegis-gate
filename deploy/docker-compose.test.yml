@@ -1,0 +1,41 @@
+# Aegis-Gate — Test Stack
+#
+# Extends the dev stack with:
+#   - attacker: a container with curl, nuclei, sqlmap, wrk, k6
+#                for running the red-team and load suites
+#   - nuclei-templates: shared volume with OWASP templates
+#
+# Bring up with BOTH compose files:
+#   docker compose \
+#     -f deploy/docker-compose.dev.yml \
+#     -f deploy/docker-compose.test.yml \
+#     up -d
+
+services:
+  attacker:
+    image: alpine:3.20
+    container_name: aegis-attacker
+    working_dir: /work
+    command: ["sleep", "infinity"]
+    volumes:
+      - ../tests:/work:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  k6:
+    image: grafana/k6:0.51.0
+    container_name: aegis-k6
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - ../tests/load:/scripts:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  nuclei:
+    image: projectdiscovery/nuclei:v3.2.9
+    container_name: aegis-nuclei
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - ../tests/security:/work:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

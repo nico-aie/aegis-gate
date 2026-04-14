@@ -1,0 +1,58 @@
+# Aegis-Gate — Development Stack
+#
+# Minimum services needed for the W1–W3 milestones:
+#   - Redis (optional state backend; WAF falls back to in-memory)
+#   - Prometheus (scrapes the WAF /metrics endpoint)
+#   - Jaeger (OTLP collector + UI for distributed tracing)
+#   - httpbin (mock upstream the WAF proxies to in smoke tests)
+#
+# The WAF itself is NOT run inside this compose file during early
+# development — run it from `cargo run -p aegis-bin` on the host so
+# iteration is fast. Once we reach W5, a `waf` service will be added.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: aegis-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: aegis-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2h
+      - --web.enable-lifecycle
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: aegis-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+
+  httpbin:
+    image: mccutchen/go-httpbin:v2.15.0
+    container_name: aegis-httpbin
+    ports:
+      - "8081:8080"
+
+networks:
+  default:
+    name: aegis-dev

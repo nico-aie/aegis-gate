@@ -31,7 +31,14 @@ aegis-gate/
 ├── docs/                  # Per-feature specifications (~55 files)
 │   ├── README.md          # Feature index + ownership map
 │   ├── cli.md             # Authoritative `waf` CLI reference
+│   ├── dependencies.md    # External services: required/optional matrix
 │   └── ...                # ddos-protection, detection-sqli, rate-limiting, ...
+├── deploy/                # Docker-Compose files for dev and test stacks
+│   ├── docker-compose.dev.yml
+│   └── docker-compose.test.yml
+├── tests/                 # Out-of-process load and security tests
+│   ├── load/              # k6 scripts (baseline, mixed-tiers, ddos-burst)
+│   └── security/          # attack corpora + nuclei/ZAP runners
 └── crates/                # Rust workspace (created during M1 week 1)
     ├── aegis-core/        # Shared types and traits
     ├── aegis-proxy/       # M1 — data plane (TLS, routing, upstreams, state)
