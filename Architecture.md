@@ -104,6 +104,18 @@ compromise of one plane does not trivially reach the other.
 
 ## 2. Module Layout
 
+> **SUPERSEDED.** The single-crate layout below is a conceptual map
+> only. The authoritative workspace structure is the 5-crate split
+> defined in [`plans/shared-contract.md` §1](plans/shared-contract.md):
+> `aegis-core`, `aegis-proxy` (M1), `aegis-security` (M2),
+> `aegis-control` (M3), `aegis-bin`. The module names below map onto
+> those crates as: `tls/proto/route/upstream/state/sd/secrets/shed/dr`
+> → `aegis-proxy`; `security/* + auth/transform/threat_intel`
+> → `aegis-security`; `observability/audit/siem/admin/gitops/compliance/tenancy`
+> → `aegis-control`; `pipeline + config schema + shared traits`
+> → `aegis-core`. Use this section for *what lives where*, not for
+> Cargo manifests.
+
 ```
 crates/waf/
 ├── src/
@@ -499,10 +511,23 @@ pub enum AuthConfig {
 
 ## 12. State Backend
 
+The authoritative trait definition lives in
+[`plans/shared-contract.md` §3.2](plans/shared-contract.md). The
+sketch below is illustrative; **do not implement against this snippet**
+— follow the contract.
+
+> **Lease ownership note.** `acquire_lease` is **not** on
+> `StateBackend`. Distributed leases live on
+> `ClusterMembership::acquire_lease` (contract §3.8); the underlying
+> impl may delegate to Redis/Raft, but data-plane code calls the
+> cluster trait, never the state backend.
+
 ```rust
+// ILLUSTRATIVE — see plans/shared-contract.md §3.2 for canonical signatures
 #[async_trait]
 pub trait StateBackend: Send + Sync {
-    async fn incr_window(&self, key: &str, window: Duration) -> Result<u64>;
+    async fn incr_window(&self, key: &str, window: Duration, limit: u64)
+        -> Result<SlidingWindowResult>;
     async fn token_bucket(&self, key: &str, rate: u32, burst: u32) -> Result<bool>;
     async fn get_risk(&self, key: &RiskKey) -> Result<u32>;
     async fn add_risk(&self, key: &RiskKey, delta: i32, max: u32) -> Result<u32>;
@@ -510,8 +535,7 @@ pub trait StateBackend: Send + Sync {
     async fn is_auto_blocked(&self, ip: IpAddr) -> Result<bool>;
     async fn put_nonce(&self, nonce: &str, ttl: Duration) -> Result<bool>;
     async fn consume_nonce(&self, nonce: &str) -> Result<bool>;
-    async fn acquire_lease(&self, key: &str, ttl: Duration) -> Result<Lease>;
-    // ... challenge tokens, fingerprint store, session metadata
+    // generic K/V: get/set/del — see contract
 }
 ```
 

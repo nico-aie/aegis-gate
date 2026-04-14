@@ -109,6 +109,24 @@ pub struct RequestCtx {
     pub client: ClientInfo,
     pub tenant_id: Option<String>,
     pub trace_id: Option<String>,  // W3C traceparent
+    /// Free-form bag populated by the pipeline. Keys used by the
+    /// rule engine expression language:
+    ///   "jwt.sub", "jwt.role", "jwt.claims.<name>"  (M2 T5.6)
+    ///   "risk.score"       u32 0..=100              (M2 T3.4)
+    ///   "risk.human_conf"  u32 0..=100              (M2 T3.5)
+    ///   "bot.label"        "good"|"bad"|"unknown"   (M2 T4.3)
+    ///   "device.fp"        String (blake3 digest)   (M2 T3.1)
+    /// Expression references write `user.role` ⇒ `jwt.role`.
+    pub fields: std::collections::BTreeMap<String, FieldValue>,
+}
+
+#[derive(Clone, Debug)]
+pub enum FieldValue {
+    Str(String),
+    Int(i64),
+    U32(u32),
+    Bool(bool),
+    List(Vec<FieldValue>),
 }
 
 pub struct ClientInfo {
@@ -174,20 +192,21 @@ pub enum AuditClass { Detection, Admin, Access, System }
 ```rust
 #[derive(Clone, serde::Deserialize)]
 pub struct WafConfig {
-    pub listeners: Listeners,           // M1
-    pub routes: Vec<RouteConfig>,        // M1
+    pub listeners: Listeners,            // M1, §2.6.1
+    pub routes: Vec<RouteConfig>,         // M1, §2.6.2
     pub upstreams: std::collections::HashMap<String, PoolConfig>, // M1
-    pub tls: Option<TlsConfig>,          // M1
-    pub rules: RulesConfig,              // M2
-    pub rate_limit: RateLimitConfig,     // M2
-    pub risk: RiskConfig,                // M2
-    pub detectors: DetectorsConfig,      // M2
-    pub dlp: DlpConfig,                  // M2
-    pub observability: ObservabilityConfig, // M3
-    pub audit: AuditConfig,              // M3
-    pub admin: AdminConfig,              // M3
-    pub tenants: Vec<TenantConfig>,      // M3
-    pub compliance: Option<ComplianceProfile>, // M3
+    pub tls: Option<TlsConfig>,           // M1
+    pub state: StateConfig,               // M1, §2.6.3
+    pub rules: RulesConfig,               // M2, §2.6.4
+    pub rate_limit: RateLimitConfig,      // M2, §2.6.5
+    pub risk: RiskConfig,                 // M2, §2.6.6
+    pub detectors: DetectorsConfig,       // M2, §2.6.7
+    pub dlp: DlpConfig,                   // M2, §2.6.8
+    pub observability: ObservabilityConfig, // M3, §2.6.9
+    pub audit: AuditConfig,               // M3, §2.6.10
+    pub admin: AdminConfig,               // M3, §2.6.11
+    pub tenants: Vec<TenantConfig>,       // M3, §2.6.12
+    pub compliance: Option<ComplianceProfile>, // M3, §2.6.13
 }
 ```
 Each sub-config struct lives in its owning crate but is re-exported
@@ -196,6 +215,215 @@ through `aegis-core::config` via a feature-flag–free public type, so
 provides the inner struct. **Rule:** if a struct has logic, it lives
 in the owning crate; if it's pure data that everyone reads, it lives
 in `aegis-core`.
+
+The shapes below are the **authoritative serde schema** for week-1
+parsing (M1 T1.2). Adding fields requires a contract PR. All numeric
+fields are `u32` unless noted; durations are humantime strings (`"30s"`).
+
+#### 2.6.1 `StateConfig` (M1)
+```rust
+pub struct StateConfig {
+    pub backend: StateBackendKind,   // in_memory | redis | raft
+    pub redis: Option<RedisConfig>,
+    pub raft:  Option<RaftConfig>,
+}
+pub enum StateBackendKind { InMemory, Redis, Raft }
+pub struct RedisConfig {
+    pub urls: Vec<String>, pub cluster: bool,
+    pub pool_size: u32, pub timeout: Duration,
+    pub tls: bool, pub password_ref: Option<String>,
+}
+pub struct RaftConfig {
+    pub data_dir: std::path::PathBuf,
+    pub peers: Vec<String>, pub heartbeat_ms: u32,
+}
+```
+
+#### 2.6.4 `RulesConfig` (M2)
+```rust
+pub struct RulesConfig {
+    pub paths: Vec<std::path::PathBuf>,  // YAML files / dirs
+    pub default_action: Action,
+    pub max_rule_count: u32,             // safety cap, default 10_000
+    pub strict_compile: bool,            // fail load on warnings
+}
+```
+Per-rule YAML schema (one rule):
+```yaml
+id: "sqli-strict-1"        # unique
+priority: 100              # higher = earlier
+scope: { tier: critical, route: "api.*" }   # all keys optional
+when: "method == 'POST' && path matches '^/api/' && body contains_any sqli_signatures"
+then: { action: block, status: 403, reason: "sqli" }
+tags: ["owasp:a03"]
+```
+Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `contains`,
+`contains_any`, `matches` (regex), `cidr_in`, `&&`, `||`, `!`.
+Identifiers: `method`, `path`, `host`, `header.<name>`,
+`query.<name>`, `body`, `client.ip`, `client.asn`, `user.role`,
+`risk.score`, `bot.label`, `device.fp`.
+
+#### 2.6.5 `RateLimitConfig` (M2)
+```rust
+pub struct RateLimitConfig {
+    pub buckets: Vec<RateLimitRule>,
+}
+pub struct RateLimitRule {
+    pub id: String,
+    pub scope: RlScope,                  // global | tenant | route
+    pub key:   RlKey,                    // ip | session | header(name) | jwt_sub
+    pub algo:  RlAlgo,                   // sliding_window | token_bucket
+    pub limit: u64, pub window: Duration,
+    pub burst: Option<u32>,              // token_bucket only
+    pub on_exceed: Action,               // default RateLimited
+}
+```
+
+#### 2.6.6 `RiskConfig` (M2)
+```rust
+pub struct RiskConfig {
+    pub weights: RiskWeights,
+    pub decay_half_life: Duration,       // default "5m"
+    pub thresholds: RiskThresholds,
+    pub challenge_ladder: Vec<ChallengeStep>,
+}
+pub struct RiskWeights {
+    pub bad_asn: u32, pub bad_ja4: u32,
+    pub failed_auth: u32, pub detector_hit: u32,
+    pub bot_unknown: u32, pub repeat_offender: u32,
+}
+pub struct RiskThresholds {
+    pub challenge_at: u32,    // default 40
+    pub block_at: u32,        // default 80
+    pub max: u32,             // default 100
+}
+pub struct ChallengeStep { pub at_score: u32, pub level: ChallengeLevel }
+```
+
+#### 2.6.7 `DetectorsConfig` (M2)
+```rust
+pub struct DetectorsConfig {
+    pub sqli:             DetectorToggle,
+    pub xss:              DetectorToggle,
+    pub path_traversal:   DetectorToggle,
+    pub ssrf:             DetectorToggle,
+    pub header_injection: DetectorToggle,
+    pub body_abuse:       DetectorToggle,
+    pub recon:            DetectorToggle,
+    pub brute_force:      DetectorToggle,
+    pub limits: DetectorLimits,          // see §3.1
+}
+pub struct DetectorToggle {
+    pub enabled: bool,
+    pub action: Action,                  // default Block { status: 403 }
+    pub fp_corpus: Option<std::path::PathBuf>, // benign FP regression set
+}
+```
+
+#### 2.6.8 `DlpConfig` (M2)
+```rust
+pub struct DlpConfig {
+    pub patterns: Vec<DlpPattern>,
+    pub fpe: Option<FpeConfig>,
+    pub max_scan_bytes: usize,           // default 2 MiB, see §3.1
+}
+pub struct DlpPattern {
+    pub id: String, pub regex: String,
+    pub direction: DlpDir,               // inbound | outbound | both
+    pub action: DlpAction,               // redact | tokenize | block | log
+}
+pub struct FpeConfig { pub key_ref: String, pub version: u32 }
+```
+
+#### 2.6.9 `ObservabilityConfig` (M3)
+```rust
+pub struct ObservabilityConfig {
+    pub prometheus: PromConfig,
+    pub otel: Option<OtelConfig>,
+    pub access_log: AccessLogConfig,
+}
+pub struct PromConfig {
+    pub bind: std::net::SocketAddr, pub path: String, // "/metrics"
+}
+pub struct OtelConfig {
+    pub endpoint: String, pub headers: std::collections::BTreeMap<String, String>,
+    pub sample_ratio: f32,
+}
+pub struct AccessLogConfig {
+    pub format: AccessLogFormat,         // combined | json | template(String)
+    pub path: AccessLogSink,             // stdout | file(PathBuf)
+}
+```
+
+#### 2.6.10 `AuditConfig` (M3)
+```rust
+pub struct AuditConfig {
+    pub sinks: Vec<AuditSinkConfig>,     // jsonl, syslog, splunk, kafka, ...
+    pub chain: AuditChainConfig,
+    pub retention: Duration,
+    pub pseudonymize_ip: bool,
+}
+pub struct AuditChainConfig {
+    pub enabled: bool,
+    pub witness: Option<WitnessConfig>,  // periodic merkle root export
+}
+pub struct WitnessConfig {
+    pub interval: Duration,
+    pub destination: std::path::PathBuf,
+    pub signer_ref: Option<String>,      // ${secret:...}
+}
+```
+
+#### 2.6.11 `AdminConfig` (M3)
+```rust
+pub struct AdminConfig {
+    pub bind: std::net::SocketAddr,
+    pub tls: Option<TlsConfig>,          // mTLS for admin
+    pub oidc: Option<OidcConfig>,
+    pub api_tokens: Vec<ApiTokenConfig>,
+    pub rbac: RbacConfig,
+    pub ip_allowlist: Vec<ipnet::IpNet>,
+    pub require_approval: bool,          // 4-eyes for mutating ops
+}
+pub struct OidcConfig {
+    pub issuer: String, pub client_id: String,
+    pub client_secret_ref: String, pub redirect_uri: String,
+}
+pub struct ApiTokenConfig {
+    pub id: String, pub hash_ref: String, pub roles: Vec<String>,
+}
+pub struct RbacConfig {
+    pub roles: std::collections::BTreeMap<String, Vec<String>>, // role -> perms
+}
+```
+
+#### 2.6.12 `TenantConfig` (M3)
+```rust
+pub struct TenantConfig {
+    pub id: String, pub name: String,
+    pub allowed_hosts: Vec<String>,
+    pub quotas: TenantQuotas,
+    pub residency: Option<String>,        // "eu", "us", ...
+    pub compliance: Option<ComplianceProfile>,
+    pub rule_namespace: Option<String>,
+    pub audit_sinks: Vec<String>,         // ids referencing AuditConfig.sinks
+}
+pub struct TenantQuotas {
+    pub max_inflight: u32, pub rps: u32, pub burst: u32,
+}
+```
+
+#### 2.6.13 `ComplianceProfile` (M3)
+```rust
+pub struct ComplianceProfile {
+    pub modes: Vec<ComplianceMode>,       // fips | pci | soc2 | gdpr | hipaa
+    pub min_tls_version: TlsVersion,      // "1.2" | "1.3"
+    pub disallow_algorithms: Vec<String>,
+    pub log_retention: Duration,
+    pub pii_pseudonymize: bool,
+}
+pub enum ComplianceMode { Fips, Pci, Soc2, Gdpr, Hipaa }
+```
 
 ---
 
@@ -206,51 +434,156 @@ in `aegis-core`.
 `aegis-core/src/pipeline.rs`:
 
 ```rust
+/// Read-only view of the request passed to every detector.
+/// M1 constructs this once per request; detectors borrow it.
+/// The body is exposed as a framed, peekable handle so streaming
+/// detectors never buffer more than `DetectorLimits::max_body_peek`.
+pub struct RequestView<'a> {
+    pub method: &'a http::Method,
+    pub uri: &'a http::Uri,
+    pub version: http::Version,
+    pub headers: &'a http::HeaderMap,
+    pub peer: std::net::SocketAddr,
+    pub tls: Option<&'a TlsFingerprint>,
+    /// Lazily-read body frames. Calling `peek` returns up to
+    /// `max_body_peek` bytes without consuming them from the
+    /// upstream stream. Detectors must not call `take`.
+    pub body: &'a BodyPeek,
+}
+
+pub struct BodyPeek { /* opaque, M1-owned */ }
+
+impl BodyPeek {
+    pub async fn peek(&self, max: usize) -> Result<&[u8]>;
+    pub fn content_length(&self) -> Option<u64>;
+    pub fn is_chunked(&self) -> bool;
+}
+
 #[async_trait::async_trait]
 pub trait SecurityPipeline: Send + Sync + 'static {
     /// Inspect inbound request before upstream selection.
     /// Return `Allow` to continue, anything else short-circuits.
+    /// Detectors may write arbitrary key/value pairs into
+    /// `RequestCtx::fields` (e.g. JWT claims, risk score).
     async fn inbound(
         &self,
-        req: &mut http::Request<hyper::body::Incoming>,
-        rctx: &RequestCtx,
+        view: RequestView<'_>,
+        rctx: &mut RequestCtx,
         route: &RouteCtx,
     ) -> Decision;
 
-    /// Inspect outbound response body frames (streaming).
-    async fn outbound(
+    /// Inspect outbound response frames one at a time.
+    /// M1 calls `on_response_start` once with headers, then
+    /// `on_body_frame` for each body chunk as it is streamed to
+    /// the client. The pipeline MUST NOT buffer more than
+    /// `DetectorLimits::max_body_scan` bytes — it returns
+    /// `OutboundAction::PassThrough` once the budget is exceeded.
+    /// This preserves the "1 GB body, constant memory" invariant.
+    async fn on_response_start(
         &self,
-        resp: &mut http::Response<hyper::body::Incoming>,
+        head: &http::response::Parts,
         rctx: &RequestCtx,
         route: &RouteCtx,
-    );
+    ) -> OutboundAction;
+
+    async fn on_body_frame(
+        &self,
+        frame: &[u8],
+        rctx: &RequestCtx,
+        route: &RouteCtx,
+    ) -> OutboundAction;
+}
+
+#[derive(Clone, Debug)]
+pub enum OutboundAction {
+    /// Forward the frame unmodified.
+    PassThrough,
+    /// Replace the frame bytes (DLP redaction, body scrub).
+    Rewrite(bytes::Bytes),
+    /// Abort the response — M1 truncates the stream and emits
+    /// a trailer with `x-aegis-blocked: <reason>`.
+    Abort { reason: String },
+}
+
+pub struct DetectorLimits {
+    pub max_body_peek: usize,  // inbound scan budget (default 1 MiB)
+    pub max_body_scan: usize,  // outbound scan budget (default 2 MiB)
 }
 ```
 
 M1 calls these at the fixed points in its proxy loop. M2 provides
-the implementation. For week 1, M1 ships a `NoopPipeline` so the
-proxy can run standalone.
+the implementation. For week 1, M1 ships a `NoopPipeline` (in
+`aegis-security` as a test helper, re-exported from `aegis-core`)
+so the proxy can run standalone.
 
 ### 3.2 StateBackend (M1 provides, M2 consumes)
 
 `aegis-core/src/state.rs`:
 
 ```rust
+use std::time::Duration;
+use std::net::IpAddr;
+
 #[async_trait::async_trait]
 pub trait StateBackend: Send + Sync + 'static {
-    async fn incr(&self, key: &str, ttl_s: u32) -> Result<u64>;
+    // ---- generic byte K/V (used by M1 cache, snapshots, M3 GitOps state)
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
-    async fn set(&self, key: &str, val: &[u8], ttl_s: u32) -> Result<()>;
+    async fn set(&self, key: &str, val: &[u8], ttl: Duration) -> Result<()>;
     async fn del(&self, key: &str) -> Result<()>;
-    async fn sliding_window(&self, key: &str, window_s: u32, limit: u64)
-        -> Result<SlidingWindowResult>;
+
+    // ---- rate limiting primitives (M2 T2.1, T2.2)
+    /// Atomic sliding-window counter. Returns the post-increment count
+    /// and whether the request is within `limit`.
+    async fn incr_window(
+        &self,
+        key: &str,
+        window: Duration,
+        limit: u64,
+    ) -> Result<SlidingWindowResult>;
+
+    /// Token-bucket admission. Returns true if a token was consumed.
+    async fn token_bucket(
+        &self,
+        key: &str,
+        rate_per_s: u32,
+        burst: u32,
+    ) -> Result<bool>;
+
+    // ---- risk engine (M2 T3.4)
+    async fn get_risk(&self, key: &RiskKey) -> Result<u32>;
+    /// Atomically add `delta` (signed), clamped to `[0, max]`.
+    /// Returns the new value.
+    async fn add_risk(&self, key: &RiskKey, delta: i32, max: u32) -> Result<u32>;
+
+    // ---- DDoS auto-block list (M2 T2.3)
+    async fn auto_block(&self, ip: IpAddr, ttl: Duration) -> Result<()>;
+    async fn is_auto_blocked(&self, ip: IpAddr) -> Result<bool>;
+
+    // ---- challenge nonces (M2 T3.6)
+    async fn put_nonce(&self, nonce: &str, ttl: Duration) -> Result<bool>;
+    /// Returns true if the nonce existed and was atomically removed.
+    async fn consume_nonce(&self, nonce: &str) -> Result<bool>;
 }
 
-pub struct SlidingWindowResult { pub count: u64, pub allowed: bool }
+pub struct SlidingWindowResult {
+    pub count: u64,
+    pub allowed: bool,
+    pub retry_after: Option<Duration>,
+}
 ```
 
-M1 ships `InMemoryBackend` (week 1) and `RedisBackend` (week 5).
-M2 depends only on the trait.
+**Key namespace.** All keys are prefixed by tenant when applicable:
+`t:{tenant_id}:{subsystem}:{key}` — e.g. `t:acme:rl:sw:1.2.3.4`.
+Untenanted keys use `g:{subsystem}:{key}`. The prefix is applied
+inside each `StateBackend` impl, callers pass the unprefixed key.
+
+**Lease ownership.** Distributed leases (leader-only tasks) live on
+`ClusterMembership::acquire_lease` (§3.8), not on `StateBackend`.
+
+M1 ships `InMemoryBackend` (week 1, `dashmap` + `moka`) and
+`RedisBackend` (week 5, `deadpool-redis` with Lua sliding window).
+A `RaftBackend` is feature-gated for air-gapped deployments. M2
+depends only on the trait — not on any concrete impl.
 
 ### 3.3 AuditSink (M2/M1 emit, M3 consumes)
 
@@ -297,10 +630,23 @@ pub trait SecretProvider: Send + Sync + 'static {
 pub struct Secret(pub zeroize::Zeroizing<Vec<u8>>);
 ```
 
-Reference syntax: `${secret:<provider>:<path>[#field]}`. Providers shipped
-by M1: `env`, `file`. M3 adds `vault`, `aws-sm`, `gcp-sm`, `azure-kv`
-behind feature flags. Secrets are resolved at config load and streamed on
-rotation; consumers re-derive keys on the `ConfigReloaded` broadcast.
+**Reference grammar (ABNF).** Authoritative — every parser must
+accept exactly this shape:
+```
+secret-ref = "${secret:" provider ":" path [ "#" field ] "}"
+provider   = 1*( ALPHA / DIGIT / "-" / "_" )
+path       = 1*( %x21-22 / %x24-7B / %x7D ) ; any printable except ':' '#' '}'
+field      = 1*( ALPHA / DIGIT / "-" / "_" / "." )
+```
+Examples: `${secret:env:DB_PASSWORD}`,
+`${secret:vault:kv/data/waf#api_key}`,
+`${secret:file:/etc/waf/jwt.pem}`.
+
+Providers shipped by M1: `env`, `file`. **M3 owns the cloud providers**
+`vault`, `aws-sm`, `gcp-sm`, `azure-kv` (behind feature flags
+`vault`, `aws-sm`, `gcp-sm`, `azure-kv`) — see M3 plan §T5.6a–d.
+Secrets are resolved at config load and streamed on rotation;
+consumers re-derive keys on the `ConfigReloaded` broadcast.
 
 ### 3.6 ServiceDiscovery (M1 provides)
 
@@ -555,7 +901,8 @@ owned below is a plan bug — file an issue against `shared-contract.md`.
 | 19 | HA & clustering (state, gossip, leases) | M1 | T5.1–5.2, T5.7 |
 | 20 | Compliance profiles (FIPS/PCI/SOC2/GDPR/HIPAA) | M3 | T5.1 |
 | 21 | RBAC + SSO + admin mTLS + approval | M3 | T4.1–4.4, T5.4 |
-| 22 | Secrets management | M1 | T5.4 (+M3 providers) |
+| 22 | Secrets management (env/file) | M1 | T5.4 |
+| 22 | Secrets management (vault/aws-sm/gcp-sm/azure-kv) | M3 | T5.6a–d |
 | 23 | Multi-tenancy + tenant governor | M3 | T4.5–4.6 |
 | 24 | Threat intelligence | M2 | T4.4 |
 | 25 | DLP + FPE | M2 | T5.2–5.3 |
