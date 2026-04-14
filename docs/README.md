@@ -1,16 +1,16 @@
-# WAF v2 — Feature Docs
+# Aegis-Gate — Feature Docs
 
-This folder is the per-feature documentation for the **v2** design of
-the WAF (k8s-ingress + nginx inspired, enterprise-ready). It replaces
-the original `docs/` folder, which documents the v1 design.
+Per-feature documentation for the WAF / Security Gateway. The
+authoritative specs live at the repository root:
 
-The v2 requirements and architecture specs are at the repository root:
+- [`../Requirement.md`](../Requirement.md) — requirements (the "what")
+- [`../Architecture.md`](../Architecture.md) — architecture (the "how")
+- [`../plans/shared-contract.md`](../plans/shared-contract.md) — shared
+  types and cross-crate traits used by the three member plans.
 
-- [`../waf_mini_hackathon_2026_v2.md`](../waf_mini_hackathon_2026_v2.md) — requirements
-- [`../waf_mini_hackathon_architecture_2026_v2.md`](../waf_mini_hackathon_architecture_2026_v2.md) — architecture
-
-Each doc in this folder starts with a `v1 → v2` delta callout where
-applicable.
+Each doc in this folder is scoped to a single subsystem and is
+implementation-agnostic; the owning member plan (M1/M2/M3) points back to
+it for background.
 
 ---
 
@@ -102,16 +102,27 @@ applicable.
 
 ## Reading order for a new engineer
 
-1. `../waf_mini_hackathon_2026_v2.md` — the "what"
-2. `../waf_mini_hackathon_architecture_2026_v2.md` — the "how"
-3. `reverse-proxy.md` → `routing-ingress.md` → `upstream-pools.md` —
+1. `../Requirement.md` — the "what"
+2. `../Architecture.md` — the "how"
+3. `../plans/shared-contract.md` — the cross-crate interfaces
+4. `reverse-proxy.md` → `routing-ingress.md` → `upstream-pools.md` —
    request flow
-4. `tiered-protection.md` → `rule-engine.md` → any detector — the
+5. `tiered-protection.md` → `rule-engine.md` → any detector — the
    security pipeline
-5. `risk-scoring.md` → `challenge-engine.md` — decisioning
-6. `config-hot-reload.md` → `gitops-change-management.md` — how
+6. `risk-scoring.md` → `challenge-engine.md` — decisioning
+7. `config-hot-reload.md` → `gitops-change-management.md` — how
    changes land
-7. `dashboard.md` → `rbac-sso.md` → `audit-logging.md` — operator
+8. `dashboard.md` → `rbac-sso.md` → `audit-logging.md` — operator
    surfaces
-8. `ha-clustering.md` → `multi-tenancy.md` → `compliance.md` — the
+9. `ha-clustering.md` → `multi-tenancy.md` → `compliance.md` — the
    enterprise story
+
+## Ownership map
+
+| Area | Owner | Plan |
+|---|---|---|
+| reverse-proxy, routing, upstreams, protocols, TLS, traffic-mgmt, quotas, transformations, session-affinity, hot-reload, service-discovery, zero-downtime, adaptive-shedding, secrets-management | **M1** | `../plans/member-1-proxy-core.md` |
+| rule-engine, rate-limiting, ddos, all detectors, device-fingerprinting, risk-scoring, challenge-engine, bot-management, behavioral-analysis, transaction-velocity, threat-intelligence, ip-reputation, geoip, response-filtering, dlp, content-scanning, api-security, external-auth | **M2** | `../plans/member-2-security-pipeline.md` |
+| dashboard, rbac-sso, observability, audit-logging, siem, multi-tenancy, compliance, data-residency, gitops, dr-backup, slo-sli, ha-clustering | **M3** | `../plans/member-3-control-plane.md` |
+| smart-caching | M1 (cache) + M2 (security-aware bypass) | both |
+| tiered-protection, graceful-degradation, per-route-quotas | M1 (enforce) + M2 (policy) | both |

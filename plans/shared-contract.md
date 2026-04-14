@@ -282,6 +282,151 @@ M3 creates the registry in `aegis-control::metrics::init()` and
 passes it into M1/M2 during boot so they can register their own
 families.
 
+### 3.5 SecretProvider (M1 provides, M2+M3 consume)
+
+`aegis-core/src/secrets.rs`:
+
+```rust
+#[async_trait::async_trait]
+pub trait SecretProvider: Send + Sync + 'static {
+    async fn resolve(&self, reference: &str) -> Result<Secret>;
+    fn watch(&self, reference: &str)
+        -> futures::stream::BoxStream<'static, Secret>;
+}
+
+pub struct Secret(pub zeroize::Zeroizing<Vec<u8>>);
+```
+
+Reference syntax: `${secret:<provider>:<path>[#field]}`. Providers shipped
+by M1: `env`, `file`. M3 adds `vault`, `aws-sm`, `gcp-sm`, `azure-kv`
+behind feature flags. Secrets are resolved at config load and streamed on
+rotation; consumers re-derive keys on the `ConfigReloaded` broadcast.
+
+### 3.6 ServiceDiscovery (M1 provides)
+
+`aegis-core/src/sd.rs`:
+
+```rust
+#[async_trait::async_trait]
+pub trait ServiceDiscovery: Send + Sync + 'static {
+    /// Subscribe to a named pool's membership changes.
+    async fn subscribe(&self, pool: &str)
+        -> Result<tokio::sync::watch::Receiver<Vec<MemberAddr>>>;
+}
+
+pub struct MemberAddr {
+    pub addr: std::net::SocketAddr,
+    pub zone: Option<String>,
+    pub weight: u32,
+}
+```
+
+Impls in M1: `file`, `dns_srv`, `consul`, `etcd`, `k8s` (feature-gated).
+The pool manager adds new members in `probing` state until the active
+health checker confirms them; removed members enter the drain path.
+
+### 3.7 CacheProvider (M1 provides, policy from config)
+
+`aegis-core/src/cache.rs`:
+
+```rust
+#[async_trait::async_trait]
+pub trait CacheProvider: Send + Sync + 'static {
+    async fn get(&self, key: &CacheKey) -> Option<CachedResponse>;
+    async fn put(&self, key: CacheKey, resp: CachedResponse, ttl: std::time::Duration);
+    async fn invalidate(&self, key: &CacheKey);
+}
+```
+
+Tier-aware smart cache: MEDIUM tier is aggressive, HIGH is conservative,
+CRITICAL never cached. Used by M1 `proxy.rs` immediately before upstream
+selection. Keys include `(method, host, path, vary_headers, tenant_id)`.
+
+### 3.8 ClusterMembership (M3 provides view, M1 provides gossip)
+
+`aegis-core/src/cluster.rs`:
+
+```rust
+pub struct NodeInfo {
+    pub id: String,          // stable node id
+    pub zone: Option<String>,
+    pub version: String,     // binary version
+    pub load: u32,           // 0..=100
+    pub started_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[async_trait::async_trait]
+pub trait ClusterMembership: Send + Sync + 'static {
+    fn self_node(&self) -> &NodeInfo;
+    async fn peers(&self) -> Vec<NodeInfo>;
+    async fn acquire_lease(&self, key: &str, ttl: std::time::Duration)
+        -> Result<Option<Lease>>;
+}
+
+pub struct Lease { pub key: String, pub expires_at: std::time::Instant }
+```
+
+M1 implements with `foca` (gossip) or a Redis-backed registry behind the
+same trait. Leader-only tasks (threat-intel fetch, ACME issue, GitOps
+pull, audit witness export) use `acquire_lease`. M3 surfaces `peers()` on
+the dashboard and `/api/cluster`.
+
+### 3.9 TenantPressure (M3 writes, M1 reads)
+
+`aegis-core/src/tenancy.rs`:
+
+```rust
+#[derive(Clone, Default)]
+pub struct TenantPressure {
+    inner: Arc<dashmap::DashMap<String, PressureState>>,
+}
+
+pub struct PressureState {
+    pub inflight: AtomicU32,
+    pub rps_ewma: AtomicU32,
+    pub over_quota: AtomicBool,  // set by M3 governor
+}
+```
+
+M3 flips `over_quota` when a tenant exceeds its quota; M1's adaptive
+shedder reads it and rejects that tenant with 503 before touching the
+pipeline. Shared Arc, no channel needed.
+
+### 3.10 ReadinessSignal (M1 ↔ M3)
+
+`aegis-core/src/health.rs`:
+
+```rust
+#[derive(Clone)]
+pub struct ReadinessSignal {
+    pub config_loaded: Arc<AtomicBool>,
+    pub state_backend_up: Arc<AtomicBool>,
+    pub certs_loaded: Arc<AtomicBool>,
+    pub pool_has_healthy: Arc<AtomicBool>,
+    pub draining: Arc<AtomicBool>,
+}
+```
+
+Created in `aegis-bin::main`, passed to both M1 and M3. M3's
+`/healthz/ready` ANDs these. M1 flips `draining` on SIGTERM so M3 starts
+returning 503 immediately.
+
+### 3.11 ConfigBroadcast
+
+`aegis-core/src/config.rs`:
+
+```rust
+#[derive(Clone, Debug)]
+pub enum ConfigEvent { Reloaded { version: u64 }, Failed { error: String } }
+
+pub type ConfigBroadcast = tokio::sync::broadcast::Sender<ConfigEvent>;
+```
+
+Any subsystem caching compiled state (rule tree, cert store, DLP
+patterns, threat-intel store, OpenAPI index) subscribes and rebuilds on
+`Reloaded`. The data-plane hot path does not see the rebuild — ArcSwap
+already holds the new compiled value by the time the event fires.
+
 ---
 
 ## 4. Boot Sequence (owned by `aegis-bin`)
@@ -291,25 +436,43 @@ families.
 #[tokio::main]
 async fn main() -> aegis_core::Result<()> {
     let cfg_path = parse_args();
+    let secrets = aegis_proxy::secrets::build_providers();
     let cfg = Arc::new(ArcSwap::from_pointee(
-        aegis_core::config::load(&cfg_path)?
+        aegis_core::config::load(&cfg_path, &secrets).await?
     ));
 
-    let metrics = aegis_control::metrics::init();
-    let audit_bus = aegis_core::AuditBus::new(4096);
-    let state: Arc<dyn StateBackend> = aegis_proxy::state::in_memory();
+    // Shared plumbing
+    let metrics      = aegis_control::metrics::init();
+    let audit_bus    = aegis_core::AuditBus::new(4096);
+    let cfg_bcast    = tokio::sync::broadcast::channel(64).0;
+    let readiness    = aegis_core::ReadinessSignal::default();
+    let tenant_press = aegis_core::TenantPressure::default();
+    let state: Arc<dyn StateBackend> =
+        aegis_proxy::state::build(&cfg.load().state).await?;
+    let cluster: Arc<dyn ClusterMembership> =
+        aegis_proxy::cluster::build(&cfg.load(), state.clone()).await?;
+    let cache: Arc<dyn CacheProvider> = aegis_proxy::cache::build(&cfg.load());
+    let sd: Arc<dyn ServiceDiscovery> = aegis_proxy::sd::build(&cfg.load());
 
     // M2 builds the pipeline impl
-    let pipeline = aegis_security::build(cfg.clone(), state.clone(),
-                                         audit_bus.clone(), metrics.clone())?;
+    let pipeline = aegis_security::build(
+        cfg.clone(), state.clone(), cache.clone(),
+        audit_bus.clone(), metrics.clone(), cfg_bcast.clone(),
+    ).await?;
 
     // M3 control plane starts first so /healthz/startup is observable
-    aegis_control::start(cfg.clone(), audit_bus.clone(),
-                         metrics.clone()).await?;
+    aegis_control::start(
+        cfg.clone(), audit_bus.clone(), metrics.clone(),
+        readiness.clone(), tenant_press.clone(),
+        cluster.clone(), cfg_bcast.clone(),
+    ).await?;
 
     // M1 data plane owns the hot path
-    aegis_proxy::run(cfg.clone(), pipeline, state,
-                     audit_bus.clone(), metrics).await
+    aegis_proxy::run(
+        cfg.clone(), pipeline, state, sd, cache, cluster,
+        audit_bus.clone(), metrics,
+        readiness, tenant_press, cfg_bcast,
+    ).await
 }
 ```
 
@@ -352,5 +515,61 @@ pub type Result<T> = std::result::Result<T, WafError>;
 - **Commit prefix:** `m1:`, `m2:`, `m3:`, or `core:` for shared.
 - **PR review:** changes to `aegis-core` require approval from the
   other two members.
-- **Feature flags:** `tls`, `redis`, `otel`, `acme`, `http3`, `fips`.
+- **Feature flags:** `tls`, `redis`, `otel`, `acme`, `http3`, `fips`,
+  `consul`, `etcd`, `k8s`, `kafka`, `hsm`, `opa`, `bot_ml`.
 - **MSRV:** Rust 1.82.
+
+---
+
+## 8. Requirement → Plan Coverage Matrix
+
+One row per `Requirement.md` section. This is the authoritative
+"does the implementation cover everything" checklist. Anything not
+owned below is a plan bug — file an issue against `shared-contract.md`.
+
+| Req § | Topic | Owner | Tasks |
+|---|---|---|---|
+| 3 | Core (binary, dual listener, hot reload) | M1 | T1.1–1.4 |
+| 4 | Routing & multi-host | M1 | T2.1–2.3 |
+| 5 | Upstream pools + LB + health + CB | M1 | T2.4–2.7 |
+| 6 | Traffic mgmt (canary, steering, retry, shadow) | M1 | T4.3–4.5 |
+| 7 | TLS, ACME, OCSP, mTLS upstream, FIPS, HSM | M1 | T3.1, 3.5–3.7 |
+| 8 | Protocols (h1, h2, WS, gRPC, h3) | M1 | T3.2–3.4, 3.8 |
+| 9 | Tiered protection policy | M2 | T1.5 (classifier) |
+| 10.1 | Rule engine | M2 | T1.1–1.4 |
+| 10.2 | Rate limiting | M2 | T2.1–2.2 |
+| 10.3 | DDoS | M2 | T2.3 |
+| 10.4 | Attack detectors (OWASP) | M2 | T2.4 |
+| 10.5 | Risk + challenge + CAPTCHA | M2 | T3.4–3.7 |
+| 10.6 | Device fingerprinting | M2 | T3.1–3.3 |
+| 10.7 | IP reputation + ASN + XFF | M2 | T4.1–4.2 |
+| 10.8 | Response filtering | M2 | T5.1 |
+| 11 | External auth (FA/JWT/OIDC/Basic/CIDR/OPA) | M2 | T5.5–5.6, 5.12–5.14 |
+| 12 | Transforms + CORS + rewrite | M1 | T4.2 |
+| 13 | Per-route quotas + buffering | M1 | T4.1 |
+| 14 | Session affinity | M1 | T4.6 |
+| 15 | Observability (Prom/OTel/access logs/health) | M3 | T1.1–1.3, T2.1–2.4 |
+| 16 | Audit logging + hash chain + SIEM sinks | M3 | T3.1–3.5 |
+| 17 | Zero-downtime (drain, hot binary reload) | M1 | T4.7–4.8 |
+| 18 | Service discovery | M1 | T5.6 |
+| 19 | HA & clustering (state, gossip, leases) | M1 | T5.1–5.2, T5.7 |
+| 20 | Compliance profiles (FIPS/PCI/SOC2/GDPR/HIPAA) | M3 | T5.1 |
+| 21 | RBAC + SSO + admin mTLS + approval | M3 | T4.1–4.4, T5.4 |
+| 22 | Secrets management | M1 | T5.4 (+M3 providers) |
+| 23 | Multi-tenancy + tenant governor | M3 | T4.5–4.6 |
+| 24 | Threat intelligence | M2 | T4.4 |
+| 25 | DLP + FPE | M2 | T5.2–5.3 |
+| 26 | API security (OpenAPI/GraphQL/HMAC/keys) | M2 | T5.4, 5.9–5.11 |
+| 27 | Bot management | M2 | T4.3 |
+| 28 | Content & upload (ICAP + bombs + magic) | M2 | T5.7–5.8 |
+| 29 | Adaptive load shedding + tenant pressure | M1+M3 | M1 T5.3 + M3 T4.6 |
+| 30 | DR & backup (config + state snapshot) | M1+M3 | M1 T5.5 + M3 T3.6 |
+| 31 | Data residency + retention + GDPR erase | M3 | T5.2 |
+| 32 | Change mgmt / GitOps + signed commits | M3 | T5.3–5.4 |
+| 33 | SLO / SLI / multi-burn alerts | M3 | T5.5 |
+| 34 | Deliverables checklist | — | see each DoD |
+
+Behavioral + transaction velocity (Req §10 risk signals) are covered by
+M2 T3.8–3.9. Smart caching is M1 T4.9. Cluster membership view is M3
+T1.4b (Cluster page). If a row has no tasks, it's a gap — fix the plan,
+don't silently skip it.

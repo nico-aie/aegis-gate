@@ -51,8 +51,22 @@ crates/aegis-proxy/
     │   └── redis.rs        # feature = "redis"
     ├── shed.rs             # Gradient2 adaptive concurrency
     ├── supervisor.rs       # worker tasks, SIGTERM drain, hot reload
-    ├── secrets.rs          # ${secret:provider:path} resolver
-    ├── dr.rs               # snapshot/restore CLI
+    ├── hotbin.rs           # SIGUSR2 FD passing exec
+    ├── secrets.rs          # ${secret:provider:path} resolver + providers
+    ├── cache/              # tier-aware smart cache (CacheProvider impl)
+    │   ├── mod.rs
+    │   └── key.rs
+    ├── sd/                 # service discovery (ServiceDiscovery impl)
+    │   ├── mod.rs
+    │   ├── file.rs
+    │   ├── dns.rs
+    │   ├── consul.rs       # feature = "consul"
+    │   ├── etcd.rs         # feature = "etcd"
+    │   └── k8s.rs          # feature = "k8s"
+    ├── cluster.rs          # ClusterMembership (foca / redis-registry)
+    ├── acme.rs             # ACME HTTP-01 + TLS-ALPN-01 (feature = "acme")
+    ├── ocsp.rs             # stapling background refresh
+    ├── dr.rs               # snapshot/restore CLI + state snapshot hook
     └── proxy.rs            # handle_request: the main loop
 ```
 
@@ -164,6 +178,25 @@ Feed an AI assistant one task at a time.
 - Stream frames + trailers; never buffer full body.
 - Test: `tonic` hello-world backend, assert trailer `grpc-status: 0` passes through.
 
+**T3.5** — mTLS to upstream
+- File: `aegis-proxy/src/upstream/mod.rs`
+- Per-pool `tls: { ca_bundle, client_cert_ref, client_key_ref, server_name }`. Build a `rustls::ClientConfig` with client auth; the pool's `hyper` client uses it. Refresh on secret rotation.
+- Test: backend requiring client cert — request succeeds only when pool has matching cert.
+
+**T3.6** — ACME issuance (HTTP-01 + TLS-ALPN-01) — feature `acme`
+- File: `aegis-proxy/src/acme.rs`
+- Use `instant-acme` for order/authz. HTTP-01: expose `/.well-known/acme-challenge/*` via a synthetic route injected into the route table. TLS-ALPN-01: resolver serves the `acme-tls/1` cert when the ClientHello ALPN matches. Leader-only task (`ClusterMembership::acquire_lease("acme")`). New cert goes through the same hot-reload path as file certs.
+- Test: against `pebble` test CA, issue and serve a cert, renewal path runs before expiry.
+
+**T3.7** — OCSP stapling
+- File: `aegis-proxy/src/ocsp.rs`
+- Background task fetches OCSP response per cert, caches to disk, populates `CertifiedKey::ocsp`. Refresh before `nextUpdate`.
+- Test: mock responder, assert stapled bytes on TLS handshake.
+
+**T3.8** — HTTP/3 (bonus, feature `http3`)
+- File: `aegis-proxy/src/proto/h3.rs` using `quinn` + `h3`. Shares the route table and pipeline contract.
+- Test: `curl --http3` end-to-end.
+
 ---
 
 ### Week 4 — Traffic Mgmt, Quotas, Sessions, Drain
@@ -203,8 +236,18 @@ Feed an AI assistant one task at a time.
 
 **T4.7** — Worker supervisor + graceful drain
 - File: `aegis-proxy/src/supervisor.rs`
-- `workers.count` tasks bind with `SO_REUSEPORT`. `InFlightTracker = Arc<AtomicUsize>`. On SIGTERM: stop accepting, flip `/healthz/ready` (hook into M3 signal), wait up to `drain_timeout_s`, exit.
+- `workers.count` tasks bind with `SO_REUSEPORT`. `InFlightTracker = Arc<AtomicUsize>`. On SIGTERM: set `ReadinessSignal.draining = true`, stop accepting, wait up to `drain_timeout_s`, exit.
 - Test: `wrk` load + SIGTERM; dropped in-flight count must be 0.
+
+**T4.8** — Hot binary reload (SIGUSR2, FD passing)
+- File: `aegis-proxy/src/hotbin.rs`
+- On `SIGUSR2`: `fork+exec` the new binary with the listening socket FDs passed via `CommandExt::fd_mappings` (or systemd socket activation). Old process enters drain path. Rollback on readiness probe failure.
+- Test: under `wrk` load, send SIGUSR2; connections never drop; new binary serves traffic.
+
+**T4.9** — Tier-aware smart cache (`CacheProvider` impl)
+- File: `aegis-proxy/src/cache/mod.rs`
+- `moka`-backed async cache keyed by `(method, host, path, tenant_id, vary_headers_hash)`. MEDIUM aggressive (minutes), HIGH conservative (seconds, with `Cache-Control` respect), CRITICAL never. Consulted just before upstream selection; updated from upstream response based on `Cache-Control` headers and route policy.
+- Test: repeated GETs on a MEDIUM route hit cache; CRITICAL route never caches; `Cache-Control: no-store` respected.
 
 ---
 
@@ -235,8 +278,18 @@ Feed an AI assistant one task at a time.
 
 **T5.5** — DR snapshot/restore CLI
 - File: `aegis-proxy/src/dr.rs`
-- `./waf snapshot --out /tmp/cfg.tar.zst` writes effective config + version stamp; `./waf restore <file>` runs dry-run validator before activating.
-- Test: round-trip — snapshot, mutate live, restore, assert identical.
+- `./waf snapshot --out /tmp/cfg.tar.zst` writes effective config + rules + tenant defs + version stamp, signed with cluster key; `./waf restore <file>` runs dry-run validator before activating. Periodic backup task with pluggable target (`file`, `s3`, `gcs`, `sftp`) — leader-only.
+- Test: round-trip — snapshot, mutate live, restore, assert identical. S3 target mocked.
+
+**T5.6** — Service discovery (`ServiceDiscovery` impl)
+- File: `aegis-proxy/src/sd/mod.rs`
+- Backends: `file` watcher (JSON/YAML list), `dns_srv` via `hickory-resolver`, `consul` long-poll, `etcd` prefix watch, `k8s` endpoints informer (feature-gated). Emits on `watch::Sender<Vec<MemberAddr>>` consumed by the pool manager. Safety limits: `min_members`, `max_churn_per_interval`. New members enter `probing` until active health passes.
+- Test: file SD fixture — add/remove a member, pool rotation updates within 1s, churn cap enforced.
+
+**T5.7** — Cluster membership (`ClusterMembership` impl)
+- File: `aegis-proxy/src/cluster.rs`
+- Default: `foca` SWIM gossip for peer discovery + soft load hints. Alternate: Redis-backed registry (`nodes:*` keys with TTL heartbeat). `acquire_lease(key, ttl)` used by ACME, GitOps, witness export, threat-intel fetch so only one node runs them.
+- Test: 3-node in-process cluster; assert `peers()` stabilizes; assert only one node holds a given lease at a time.
 
 ---
 

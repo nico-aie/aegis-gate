@@ -57,18 +57,30 @@ crates/aegis-security/
     │   ├── asn.rs           # MaxMind ASN classification
     │   └── xff.rs           # XFF chain walker
     ├── bots.rs              # classifier tiers + good-bot reverse-DNS
+    ├── behavior.rs          # session-shape anomaly analyzer
+    ├── velocity.rs          # transaction velocity counters
     ├── threat_intel.rs      # feed ingestion (JSON/CSV/STIX-TAXII)
     ├── response_filter.rs   # stack trace scrub, IP mask, header harden
     ├── dlp/
     │   ├── mod.rs           # pattern library + actions
     │   └── fpe.rs           # AES-FF1
-    ├── api_security.rs      # OpenAPI enforce/monitor/learn
+    ├── api_security/
+    │   ├── mod.rs           # OpenAPI enforce/monitor/learn
+    │   ├── graphql.rs       # depth, node count, complexity, persisted
+    │   ├── hmac_sign.rs     # SigV4-style request-signature verify
+    │   └── api_keys.rs      # per-consumer keys, scopes, rate limits
     ├── auth/
     │   ├── mod.rs
     │   ├── forward.rs       # ForwardAuth subrequest
     │   ├── jwt.rs           # JWKS cache
-    │   └── oidc.rs          # browser session (PASETO)
-    └── icap.rs              # antivirus REQMOD/RESPMOD
+    │   ├── oidc.rs          # browser session (PASETO)
+    │   ├── basic.rs         # htpasswd via SecretProvider
+    │   ├── cidr.rs          # per-route IP allow/deny
+    │   └── opa.rs           # OPA/Rego callout (bonus, feature = "opa")
+    ├── content/
+    │   ├── mod.rs           # magic-byte detect + allowlist
+    │   ├── archive.rs       # zip/tar bomb depth+ratio walker
+    │   └── icap.rs          # antivirus REQMOD/RESPMOD
 ```
 
 ---
@@ -220,6 +232,16 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 - Implementations: Turnstile, hCaptcha, reCAPTCHA v3 (HTTP POST to each).
 - Test: wiremock for each provider.
 
+**T3.8** — Behavioral analyzer
+- File: `src/behavior.rs`
+- Session shape features: request rate shape, path-diversity, error ratio, inter-arrival jitter, cookie consistency. Tracked per `RiskKey` in the state backend with decay. Anomaly output is a `Signal` fed into the risk engine.
+- Test: replay legitimate browsing vs. scripted fuzzing; anomaly score separates them.
+
+**T3.9** — Transaction velocity
+- File: `src/velocity.rs`
+- Counters for "same user, same action" velocity scoped per tenant/route (e.g. N deposits / 5 min, N password-resets / hour). Config-defined action templates bound to routes. Velocity breach raises risk and optionally blocks.
+- Test: simulate 10 deposits/minute from one user, assert block + audit event naming the action.
+
 ---
 
 ### Week 4 — IP Reputation, Bots, Threat Intel
@@ -293,9 +315,44 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 - Test: valid/expired/wrong-iss/wrong-aud.
 
 **T5.7** — ICAP antivirus
-- File: `src/icap.rs`
+- File: `src/content/icap.rs`
 - REQMOD (inbound) + RESPMOD (outbound) per RFC 3507. Clean-hash cache. Scan timeout applies route failure mode (fail-close for Critical).
 - Test: against `clamav` in docker — EICAR test string blocked.
+
+**T5.8** — Magic-byte + archive-bomb
+- Files: `src/content/mod.rs`, `src/content/archive.rs`
+- Detect file type via `infer` (not `Content-Type`). Per-route allowlist rejects disallowed types with 415. Archive walker enforces depth + ratio limits and aborts on breach.
+- Test: upload a zip bomb — blocked; upload a `.exe` to an image-only route — 415.
+
+**T5.9** — GraphQL guard
+- File: `src/api_security/graphql.rs`
+- `async-graphql-parser` computes depth, node count, complexity cost. Reject beyond limits; toggle introspection; persisted-query allowlist.
+- Test: accept a normal query; reject a 10-deep nested query; reject an unknown persisted-id.
+
+**T5.10** — HMAC request signing
+- File: `src/api_security/hmac_sign.rs`
+- Verify a SigV4-style or custom HMAC over `(method, path, canonical headers, body hash)` using a per-consumer secret resolved via `SecretProvider`. Clock-skew tolerance configurable; replay nonce via `StateBackend`.
+- Test: valid signature passes; tampered body rejected; replay rejected.
+
+**T5.11** — API-key management
+- File: `src/api_security/api_keys.rs`
+- Per-consumer keys with scopes, rate limits, and tenant binding. Stored as `argon2id` hashes. Extracted from `Authorization: Bearer` or a configured header.
+- Test: revoked key rejected; scope mismatch returns 403.
+
+**T5.12** — Basic Auth (data plane)
+- File: `src/auth/basic.rs`
+- Verify against an `htpasswd`-style file loaded via `SecretProvider`. Only enabled when the route opts in.
+- Test: correct/incorrect password cases.
+
+**T5.13** — OIDC RP (data plane) — browser sessions
+- File: `src/auth/oidc.rs`
+- Auth-code flow for browser traffic; session cookie encoded as PASETO v4.local (signing key from `SecretProvider`). Claims attached to `RequestCtx` so rules can reference them.
+- Test: mock IdP auth-code flow end-to-end.
+
+**T5.14** — OPA callout (bonus, feature `opa`)
+- File: `src/auth/opa.rs`
+- POST decision request to a configured OPA endpoint; result mapped to `Decision`. Cached per `(policy, input_hash)` via `moka`.
+- Test: mock OPA allow/deny.
 
 ---
 
@@ -304,16 +361,20 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 In `src/pipeline.rs`, for each request:
 
 ```
-1. trusted-proxy / XFF resolve  (W4)
-2. ip blacklist + threat feed   (W4)
-3. rate limit + DDoS burst      (W2)
-4. tier classify + failure mode (W1)
-5. route-level auth (JWT/FA)    (W5)
-6. detectors → signals          (W2)
-7. rule engine (priority)       (W1)
-8. risk engine + challenge      (W3)
-9. DLP inbound + OpenAPI        (W5)
-10. return Decision
+ 1. trusted-proxy / XFF resolve       (W4)
+ 2. ip blacklist + threat feed        (W4)
+ 3. rate limit + DDoS burst           (W2)
+ 4. tier classify + failure mode      (W1)
+ 5. route-level auth                  (W5: JWT/FA/Basic/OIDC/CIDR/OPA)
+ 6. API guard (OpenAPI/GraphQL/HMAC/API-key)  (W5)
+ 7. detectors → signals               (W2)
+ 8. content type + archive checks     (W5)
+ 9. rule engine (priority)            (W1)
+10. bot classify + behavior + velocity (W3/W4)
+11. risk engine + challenge           (W3)
+12. DLP inbound                        (W5)
+13. ICAP REQMOD (if upload route)      (W5)
+14. return Decision
 ```
 
 For responses:

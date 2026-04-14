@@ -1,1186 +1,1070 @@
-# WAF Mini Hackathon 2026 – Architecture & Implementation Guide
+# WAF / Security Gateway — Architecture
 
-## 2.1 Overall Architecture (Rust Single Binary)
+This document describes the implementation architecture of the WAF defined
+in `Requirement.md`. It is a **from-scratch** design: there is no legacy
+pipeline to preserve, no migration layer, and no "v1/v2" split. Every
+subsystem below is built directly against the requirements.
+
+Language: **Rust**, single static binary (`./waf run`). Runtime: **tokio**.
+HTTP: **hyper 1.x**. TLS: **rustls** (optionally `aws-lc-rs` FIPS).
+
+---
+
+## 1. Binary Topology
 
 ```
-Rust
-┌─────────────────────────────┐
-│        Config Loader        │  (hot-reload YAML/TOML)
-├─────────────────────────────┤
-│        Rule Engine          │  (priority-based matching)
-├─────────────────────────────┤
-│     Risk & Challenge Engine │  (per {IP+FP+Session})
-├─────────────────────────────┤
-│   Request/Response Pipeline │  (inbound → tier policy → outbound)
-├─────────────────────────────┤
-│   Caching Layer             │  (tier-aware)
-├─────────────────────────────┤
-│   Rate Limiter + DDoS       │  (sliding window + token bucket)
-├─────────────────────────────┤
-│   Device Fingerprint +      │
-│   Behavioral Analyzer       │
-├─────────────────────────────┤
-│   Proxy Core (Hyper + Tokio)│  ← Single binary entry point
-└─────────────────────────────┘
-          ↓
-     Backend (transparent)
+                         ┌────────────────────────────────────────┐
+  Internet ── TCP ──►    │  Worker Supervisor                     │
+                         │  (SO_REUSEPORT, N workers, graceful    │
+                         │   drain, hot binary reload via FD pass)│
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  TLS / SNI / ACME / OCSP               │
+                         │  rustls ResolvesServerCert + hot swap  │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  Protocol Layer                        │
+                         │  h1 / h2 (auto) · WS upgrade · gRPC    │
+                         │  h3/QUIC (feature-gated)               │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  Admission Controller                  │
+                         │  adaptive concurrency + priority queue │
+                         │  (CRITICAL never shed)                 │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  Route Table                           │
+                         │  host(exact/wildcard/regex) →          │
+                         │  path(trie + regex) → Route            │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  Tenant Governor                       │
+                         │  per-tenant quotas + load shedding     │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  Security Pipeline (tiered)            │
+                         │  ─ IP reputation / threat intel        │
+                         │  ─ Device fingerprint (JA3/JA4/h2)     │
+                         │  ─ Rule engine (priority)              │
+                         │  ─ Rate limiter (cluster-backed)       │
+                         │  ─ DDoS mode                           │
+                         │  ─ Attack detectors (OWASP)            │
+                         │  ─ API guard (OpenAPI/GraphQL)         │
+                         │  ─ Bot classifier                      │
+                         │  ─ DLP inbound                         │
+                         │  ─ Content scan (ICAP)                 │
+                         │  ─ Risk engine → Challenge ladder      │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  External Auth                         │
+                         │  ForwardAuth · JWT · OIDC · Basic · IP │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  Transforms · CORS · Rewrite · Quotas  │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  Upstream Pool Manager                 │
+                         │  LB · health · circuit · retry ·       │
+                         │  shadow · sticky · mTLS upstream       │
+                         └──────────────────┬─────────────────────┘
+                                            │
+                         ┌──────────────────▼─────────────────────┐
+                         │  Response Filter                       │
+                         │  header hardening · stack scrub ·      │
+                         │  DLP outbound · ICAP RESPMOD           │
+                         └──────────────────┬─────────────────────┘
+                                            ▼
+                                     Backend pools
+
+Side channels:
+  ├─ Control Plane listener (mTLS + OIDC): dashboard, admin API, /metrics, /healthz
+  ├─ State Backend client (Redis / Raft / in-mem)
+  ├─ Event Bus → SIEM sinks (JSON/Syslog/CEF/LEEF/OCSF/Kafka/HEC)
+  ├─ Audit chain writer → witness exporter
+  ├─ Secret providers (env/file/Vault/AWS/GCP/Azure/HSM)
+  ├─ Config source (local file + GitOps puller)
+  └─ Tracing exporter (OTLP, feature-gated)
 ```
 
-Entry point: `cargo build --release → ./waf run`
+**Invariant.** The data plane (public listeners) and the control plane
+(admin listeners) bind distinct addresses and share nothing on the hot path
+other than the `ArcSwap<WafConfig>` and the state-backend handle. A
+compromise of one plane does not trivially reach the other.
 
 ---
 
-## 2.2 Recommended Rust Crates (2026-ready)
+## 2. Module Layout
 
-### HTTP Proxy Layer
-- hyper
-- http
-- tokio
-- tower
-
-### TLS Termination
-- rustls
-- tokio-rustls
-- rustls-platform-verifier
-
-### Async Runtime
-- tokio (full)
-- mimalloc / jemallocator
-
-### Config (Hot Reload)
-- figment
-- notify
-- serde_yaml / toml
-
-### Rule Engine
-- serde
-- custom AST or rhai (optional scripting)
-
-### Rate Limiting
-- governor OR custom sliding window
-- dashmap
-
-### Caching
-- moka (async)
-- quick-cache
-
-### Device Fingerprinting
-- custom JA3/JA4 parser
-- HTTP header analysis
-
-### ASN / IP Reputation
-- maxminddb
-- ipnet
-
-### Dashboard / Metrics
-- axum
-- tracing
-- opentelemetry (optional)
-
-### Logging
-- tracing
-- tracing-subscriber (JSON logs)
-
-### Performance
-- mimalloc
-- parking_lot
-- crossbeam
-
----
-
-## 2.3 Implementation Guidelines
-
-### Phase 1 – Foundation
-
-- Build reverse proxy using hyper + tower
-- Enable full request/response streaming
-- Add route tier classification
-- Add config hot reload (notify)
-
----
-
-### Phase 2 – Core Security Pipeline
-
-```rust
-async fn handle_request(req: Request<Body>) -> Response<Body> {
-    let tier = classify_tier(req.uri());
-    let mut risk = RiskEngine::new(ip, device_fp, session);
-
-    // 1. Global checks (blacklist, proxy detection)
-    // 2. Tier-specific policy
-    // 3. Rule engine (priority order)
-    // 4. Rate limiting + behavioral analysis
-    // 5. Challenge decision
-    // 6. Forward to backend
-    // 7. Response filtering
-}
+```
+crates/waf/
+├── src/
+│   ├── main.rs                 // CLI: run / validate / audit / config
+│   ├── bin/waf.rs
+│   ├── supervisor/             // workers, signals, drain, FD passing
+│   ├── config/
+│   │   ├── schema.rs           // serde types
+│   │   ├── loader.rs           // file + Git + secret resolution
+│   │   ├── validator.rs        // dry-run compile + lint
+│   │   └── watcher.rs          // notify + debounce + ArcSwap
+│   ├── tls/                    // rustls resolver, ACME, OCSP, FIPS gate
+│   ├── proto/                  // h1/h2/ws/grpc/h3 adapters
+│   ├── route/                  // host matcher + path trie/regex
+│   ├── upstream/               // pool, lb, health, circuit, retry, shadow
+│   ├── pipeline/               // orchestration, tier policy, fail modes
+│   ├── security/
+│   │   ├── rules/              // AST, compiler, evaluator
+│   │   ├── ratelimit/          // sliding window + token bucket
+│   │   ├── ddos/               // per-IP burst + global spike
+│   │   ├── detect/             // sqli, xss, traversal, ssrf, hdr inj, ...
+│   │   ├── fingerprint/        // JA3, JA4, h2, UA entropy
+│   │   ├── reputation/         // blacklists, ASN, XFF walk
+│   │   ├── risk/               // scoring + decay + decisions
+│   │   ├── challenge/          // JS/PoW/CAPTCHA, HMAC tokens, nonce
+│   │   ├── bot/                // classifier + verified-bot rDNS
+│   │   ├── apiguard/           // OpenAPI + GraphQL + HMAC signing
+│   │   ├── dlp/                // inbound+outbound, patterns, FPE
+│   │   └── scan/               // ICAP REQMOD/RESPMOD
+│   ├── auth/                   // ForwardAuth, JWT, OIDC, Basic, CIDR
+│   ├── transform/              // req/resp headers, rewrite, CORS
+│   ├── tenancy/                // tenant model + governor + quotas
+│   ├── state/                  // StateBackend trait + impls
+│   ├── observability/
+│   │   ├── metrics.rs          // prometheus registry
+│   │   ├── tracing.rs          // W3C Trace Context + OTLP
+│   │   ├── access_log.rs       // combined/json/template
+│   │   └── health.rs           // /healthz/*
+│   ├── audit/                  // hash chain + sinks + witness
+│   ├── siem/                   // sink kinds + formatters + spool
+│   ├── threat_intel/           // feeds (text/STIX/TAXII/MISP) + store
+│   ├── secrets/                // providers + zeroize + rotation
+│   ├── admin/                  // Axum router, RBAC, OIDC, API tokens
+│   ├── gitops/                 // pull, verify signatures, stage, PR
+│   ├── compliance/             // FIPS/PCI/SOC2/GDPR/HIPAA gates
+│   ├── dr/                     // config export/import, snapshots
+│   ├── sd/                     // service discovery (file/DNS/Consul/etcd/K8s)
+│   ├── shed/                   // admission controller (Gradient2)
+│   └── util/
+└── Cargo.toml
 ```
 
 ---
 
-### Phase 3 – Mandatory Features
+## 3. Configuration Model
 
-1. Rule Engine + Risk Scoring (core brain)
-2. Rate Limiting + DDoS protection
-3. Device Fingerprinting + Behavior analysis
-4. Attack detection (SQLi, XSS, Path Traversal, SSRF)
-5. Response filtering (PII + sensitive data)
-6. Dashboard (Axum + SSE live feed)
+Source of truth: a declarative config tree loaded from a **local file** or
+a **Git repository** (GitOps mode), resolved through secret providers, then
+compiled into an immutable `WafConfig` held in `ArcSwap<WafConfig>`.
 
----
+Top-level keys:
 
-### Phase 4 – Performance & Reliability
-
-- Zero-copy optimization (Bytes, Arc)
-- Connection pooling
-- Circuit breaker (tower + custom logic)
-- Fail-open / fail-close per tier (YAML configurable)
-
----
-
-### Phase 5 – Bonus Features
-
-- TLS termination (rustls)
-- GeoIP filtering (MaxMind)
-- Multi-region config sync (etcd / file versioning)
-
----
-
-## 2.4 Testing & Validation Strategy
-
-- Red team attack simulation (SQLi/XSS/SSRF/bruteforce)
-- Load testing (wrk / hey ≥ 5000 RPS)
-- Chaos testing (backend failure, DDoS simulation)
-- Dashboard verification (real-time logs + alerts)
-
----
-
-## 2.5 Deliverables Checklist
-
-- `./waf run` starts immediately
-- Hot reload config (YAML/TOML)
-- All tier policies enforced
-- OWASP Top 5 mitigated
-- Dashboard available at `/dashboard`
-- Single static binary output
-
----
-
-## 2.6 Revised Binary Layout
-
-v1 is a single-upstream proxy wrapped in a security pipeline. v2 inserts a
-**route table + upstream pool manager** in front of the pipeline and adds
-**TLS**, **observability**, and a **worker supervisor** on the sides.
-
-```
-                ┌──────────────────────────────────────────────┐
-  TCP listen ─► │  Worker Supervisor (SO_REUSEPORT, N workers) │
-                └────────────────────┬─────────────────────────┘
-                                     │
-                        ┌────────────▼────────────┐
-                        │  TLS / SNI / ACME       │  (rustls ResolvesServerCert)
-                        └────────────┬────────────┘
-                                     │
-                        ┌────────────▼────────────┐
-                        │  Protocol Adapters      │  (h1 / h2 / ws / grpc)
-                        └────────────┬────────────┘
-                                     │
-                        ┌────────────▼────────────┐
-                        │  Route Table            │  (host + path → Route)
-                        └────────────┬────────────┘
-                                     │
-                        ┌────────────▼────────────┐
-                        │  v1 Security Pipeline   │  (rules, detectors, risk,
-                        │  (unchanged)            │   rate limit, challenge)
-                        └────────────┬────────────┘
-                                     │
-                        ┌────────────▼────────────┐
-                        │  Transformations / CORS │
-                        │  ForwardAuth / JWT      │
-                        └────────────┬────────────┘
-                                     │
-                        ┌────────────▼────────────┐
-                        │  Upstream Pool Manager  │  (LB + health + CB)
-                        └────────────┬────────────┘
-                                     │
-                                     ▼
-                               Backend pools
-
-         Side channels:
-          ├── Prometheus /metrics exporter
-          ├── OpenTelemetry OTLP exporter (optional)
-          ├── Access-log writer
-          └── Dashboard (v1, extended with routes + pools views)
+```yaml
+listeners: { data: [...], admin: {...} }
+tls:       { certificates: [...], acme: {...}, fips: false }
+tenants:   [ {id, name, quotas, residency, compliance, ...} ]
+routes:    [ {host, path, match_type, methods, upstream, tier_override,
+              transforms, auth, quotas, tenant_id, policies} ]
+upstreams: { pool_name: { lb, members, health, circuit_breaker, tls,
+                          retry, shadow, keepalive } }
+rules:     [ {id, priority, scope, when, then} ]
+ratelimits:[ {scope, algo, key, limit, window} ]
+risk:      { weights, decay, thresholds, challenge_ladder }
+detectors: { sqli, xss, traversal, ssrf, header_injection, ... }
+bot:       { classifier, verified_bots, captcha: {provider, site_key, secret_ref} }
+dlp:       { patterns, actions, fpe: {key_ref, version} }
+apiguard:  { openapi_specs, graphql: {...} }
+threat_intel: { feeds: [...] }
+reputation: { blacklist, whitelist, trusted_proxies, asn_deltas }
+state:     { backend: redis|raft|in_memory, ... }
+audit:     { sinks, chain: {witness}, retention }
+secrets:   { providers: {...} }
+admin:     { oidc, rbac, api_tokens, ip_allowlist, approvals }
+workers:   { count, drain_timeout_s }
+observability: { prometheus, otel, access_log }
+compliance: { modes: [fips, pci, soc2, gdpr, hipaa] }
+gitops:    { repo, branch, allowed_signers, interval }
 ```
 
-Key invariant: the v1 security pipeline is **unchanged** and runs after the
-route has been resolved but before the upstream is selected. Per-route tier
-overrides are applied by the route table and then fed into the existing
-`classify_tier` fallback.
+All values support `${secret:<provider>:<path>#<field>}` references,
+resolved at load time through the secret subsystem.
+
+### Hot reload pipeline
+
+```
+  file/git event ─► loader ─► resolve secrets ─► compile → validate → lint
+                                                         │
+                                                       fail ──► keep old config,
+                                                         │      dashboard banner,
+                                                         │      audit event
+                                                         ▼
+                                              ArcSwap<WafConfig> swap
+                                                         │
+                                              broadcast(ConfigReloaded)
+                                                         │
+                       subsystems re-derive indexes (route trie, rule tree,
+                       DLP patterns, cert store, …); data plane unaffected
+```
+
+Any subsystem that caches compiled state subscribes to `ConfigReloaded` and
+rebuilds its indices without touching the hot path.
 
 ---
 
-## 2.7 Route Table & Host Matching
+## 4. Request Lifecycle
 
-*Implements §1.7.*
+One pass through the data plane for a single HTTP request:
+
+```
+ accept ─► TLS handshake (JA3/JA4 captured)
+        ─► h1/h2 decode (h2 fingerprint captured)
+        ─► Admission controller (priority by tier, may 503)
+        ─► Build RequestContext { client_ip (XFF-walked), device_fp,
+                                   session_id, tenant_id, trace_ctx, tier? }
+        ─► Route lookup (host → path → Route); tier_override applied
+        ─► Tenant governor (per-tenant quotas)
+        ─► Security pipeline (see §5), tier-policy-driven fail mode
+        ─► External auth (ForwardAuth / JWT / OIDC / Basic / IP)
+        ─► Transforms (headers, rewrite, CORS preflight shortcut)
+        ─► Upstream selection (LB + sticky + retry + shadow mirror)
+        ─► Stream response frames + trailers
+        ─► Response filter (headers, stack scrub, DLP, ICAP RESPMOD)
+        ─► Emit access log + audit event + metrics + span end
+```
+
+Every stage is fallible; the **failure mode** of a stage is tier-resolved:
+
+- CRITICAL routes: any failure → 503, audit, alert.
+- Other tiers: failures are logged, the stage is skipped, request continues.
+- Per-route `failure_mode` override allowed for non-CRITICAL routes.
+
+The pipeline is expressed as a typed state machine (`PipelineState`) that
+threads the `RequestContext` and a growing `Decisions` struct through each
+stage. The orchestrator enforces the fail-mode contract centrally so
+individual stages need not know their tier.
+
+---
+
+## 5. Security Pipeline
+
+Stages run in this order. Earlier stages can short-circuit later ones.
+
+1. **IP reputation + threat intel.** XFF is walked only when the TCP peer
+   is in `trusted_proxies`. ASN classification applies a reputation delta.
+   Threat-intel store (CIDR set + Aho-Corasick for domains / URLs + hash
+   set for file hashes) contributes matches with `FeedId` provenance.
+
+2. **Device fingerprint.** JA4 primary, JA3 legacy, HTTP/2 SETTINGS +
+   pseudo-header order, UA-entropy + header-order for plaintext. Composite
+   id = `blake3(salt || ja4 || h2 || ua_bits)`. Stored in the state
+   backend with per-deployment salt.
+
+3. **Rule engine.** Priority-ordered, scope-filtered (global → tier →
+   route → tenant → session). Rules compile into an `ArcSwap<Vec<CompiledRule>>`
+   with an AST evaluator. Match types: exact, regex, wildcard, CIDR,
+   AND/OR/NOT. Actions: `Allow`, `Block`, `Challenge(level)`, `RateLimit`,
+   `RaiseRisk(delta)`, `Transform`, `LogOnly`. First terminal action wins.
+
+4. **Rate limiter.** Sliding window and token bucket. Scope ∈ {IP, session,
+   device, tenant, route, global}. Backed by `StateBackend::incr_window`;
+   Redis path uses a Lua script for atomic window increment + TTL.
+   **Local fallback** on backend outage reconciles with
+   `max(local, remote)` on recovery.
+
+5. **DDoS mode.** Per-IP burst detector (short sliding window → auto-block
+   with TTL → cluster-wide set). Global detector compares cluster RPS
+   against its rolling average; exceeding `spike_multiplier` enters DDoS
+   mode (tighter thresholds, mandatory challenges on new sessions).
+
+6. **Attack detectors.** SQLi, XSS, path traversal, SSRF, HTTP header
+   injection, body abuse (size + nesting), brute force, reconnaissance.
+   Each detector is a pure function over `RequestContext`; results feed
+   both the rule engine and the risk engine.
+
+7. **API guard.** If the route has an OpenAPI spec, validate path +
+   method + headers + query + body with `jsonschema`. Modes: `enforce`
+   (block on violation), `monitor` (log), `learn` (record into a
+   synthesized spec). GraphQL guard applies depth + node + complexity
+   limits and (optionally) persisted-query allowlist.
+
+8. **Bot classifier.** Combines JA4/h2 fingerprint, header order, UA
+   entropy, rDNS verification (for `Verified` good-bot class), threat-intel
+   labels, and failed-challenge history into a `BotClass ∈ {Human, Verified,
+   Likely, KnownBad, Unknown}`. Maps to an action via route config.
+
+9. **DLP inbound.** Pattern library + custom regex scan request bodies
+   for secrets, PII, credentials. Streaming chunked scan so large uploads
+   are not buffered. Actions: redact / mask / hash / FPE / block.
+
+10. **Content scan.** For upload routes, stream the body into an ICAP
+    client (REQMOD). Verdict mapped to pipeline decision. Clean-hash cache
+    short-circuits repeated identical uploads.
+
+11. **Risk engine + challenge.** `RiskKey = (ip, device_fp, session,
+    tenant_id)`. Contributions from detectors, reputation, bot class,
+    behavior, transaction velocity, threat intel. Score decays over time.
+    Decision:
+    - `< 30` allow · `30–70` challenge · `> 70` block.
+    - Challenge escalation `None → JS → PoW → CAPTCHA → Block`, driven by
+      `(risk, human_confidence, bot_class, tier)`.
+    - Tokens: HMAC-signed (`challenge_secret` from secret provider),
+      single-use via nonce stored in the state backend, non-downgradable.
+    - CAPTCHA providers behind a `CaptchaProvider` trait: Turnstile,
+      hCaptcha, reCAPTCHA v3.
+
+12. **Response filter** (runs after the upstream responds). Security header
+    injection, stack-trace scrub, internal IP mask, information-leak header
+    strip, DLP outbound, ICAP RESPMOD. Streaming chunk processor so large
+    responses never balloon memory.
+
+---
+
+## 6. Route Table
 
 ```rust
 pub struct RouteTable {
-    hosts: Vec<HostEntry>,      // sorted: exact > wildcard > default
+    exact_hosts: HashMap<String, HostNode>,
+    wildcard_hosts: Vec<(WildcardMatcher, HostNode)>, // "*.example.com"
+    regex_hosts: Vec<(Regex, HostNode)>,              // opt-in
+    default: HostNode,                                 // mandatory catch-all
 }
 
-pub struct HostEntry {
-    matcher: HostMatcher,        // Exact | Wildcard("*.example.com") | Default
-    path_index: PathTrie<Route>, // longest-prefix lookup
+pub struct HostNode {
+    path_trie: PathTrie<Route>,      // longest-prefix wins
+    regex_paths: Vec<(Regex, Route>, // evaluated in declaration order
+    glob_paths: Vec<(Glob,  Route)>, // ditto
 }
 
 pub struct Route {
     id: String,
     methods: Option<Vec<Method>>,
-    path_matcher: PathMatcher,   // Exact | Prefix | Regex | Glob
+    path_matcher: PathMatcher,
     tier_override: Option<Tier>,
-    upstream_ref: String,        // name of a Pool
-    transforms: Transforms,      // add/set/remove headers, rewrites
-    quotas: RouteQuotas,
+    upstream_ref: UpstreamRef,        // pool or weighted split
+    transforms: Transforms,
     auth: Option<AuthConfig>,
-    policies: RoutePolicies,     // per-route rate limit, challenge, cache
+    quotas: RouteQuotas,
+    tenant_id: Option<TenantId>,
+    policies: RoutePolicies,          // rate, challenge, cache
+    failure_mode: Option<FailureMode>,
 }
 ```
 
-**Matching algorithm:**
-
-1. Resolve Host by exact → wildcard → default.
-2. Within the host, walk the path trie for longest-prefix match; regex and
-   glob entries are evaluated in declaration order after the trie miss.
-3. If method filter fails, continue to next candidate.
-4. On miss, fall through to the v1 catch-all tier.
-
-The route table lives inside `ArcSwap<WafConfig>` so it reloads atomically
-with the rest of the config.
+Lookup: host → trie prefix → regex/glob fallback → method filter → match.
+Ties broken by declaration order. Loader refuses configs that fail to cover
+every request (the default catch-all is synthesized if absent).
 
 ---
 
-## 2.8 Upstream Pool Manager
-
-*Implements §1.8.*
+## 7. Upstream Pool Manager
 
 ```rust
 pub struct Pool {
     name: String,
-    members: Vec<Member>,
-    lb: LbStrategy,              // RoundRobin | LeastConn | ConsistentHash(Key)
-    health: HealthState,
-    circuit: CircuitState,
-    keepalive: hyper_util::client::legacy::Client<_, _>,
+    members: ArcSwap<Vec<Arc<Member>>>,
+    lb: LbStrategy,        // RR | WRR | LeastConn | ConsistentHash | P2C
+    health: HealthConfig,
+    circuit_breaker: CbConfig,
+    retry: RetryPolicy,    // attempts, per_try_timeout, statuses, budget
+    shadow: Option<ShadowConfig>,
+    client: hyper_util::client::legacy::Client<Connector, BoxBody>,
+    mtls: Option<ClientTlsConfig>,
 }
 
 pub struct Member {
     addr: SocketAddr,
-    weight: u32,
     zone: Option<String>,
+    weight: u32,
     healthy: AtomicBool,
     inflight: AtomicU32,
-    ewma_latency_ms: AtomicU32,
+    ewma_rtt: AtomicU64,
     consecutive_failures: AtomicU32,
+    cb_state: Atomic<CbState>,       // Closed | Open(since) | HalfOpen
+    slow_start_until: AtomicU64,
 }
 ```
 
-- **Round-robin**: atomic counter modulo live-member count.
-- **Least-connections**: scan members, pick lowest `inflight`.
-- **Consistent-hash**: `hashring` crate keyed by client IP / cookie / header,
-  with virtual nodes for balanced distribution.
-- **Active health checker**: one `tokio::spawn` per pool, periodic probe with
-  configurable method/path/expected-status.
-- **Passive ejection**: pipeline increments `consecutive_failures` on 5xx /
-  connect error; threshold trips the circuit breaker.
-- **Circuit breaker** states:
-  - `Closed` (normal)
-  - `Open` (reject immediately, return 503 to pipeline)
-  - `HalfOpen` (allow a probe request; success → Closed, failure → Open)
+- **Active health check** per pool: periodic probe task.
+- **Passive ejection** on N consecutive 5xx / connect errors.
+- **Circuit breaker** per member with error-rate threshold + open duration.
+- **Retry** budget is cluster-wide via a token bucket on the state backend
+  so retry storms cannot cascade.
+- **Shadow mirroring** spawns a fire-and-forget request to a second pool;
+  its response is dropped and never charged to user latency.
+- **Sticky session**: HMAC-signed cookie naming the chosen member.
+  Consistent-hash is the fallback key space when the cookie is absent.
+- **Graceful drain**: removed members finish in-flight before being dropped.
+- **Outlier detection** (bonus): ejects members whose p99 diverges beyond
+  threshold.
 
-Each pool owns its own `hyper` client so keepalive connections are scoped
-per pool (avoids head-of-line blocking across unrelated backends).
+Each pool owns its own `hyper` client so keepalive pools are scoped —
+unrelated backends cannot cause head-of-line blocking.
 
 ---
 
-## 2.9 TLS / SNI / ACME Subsystem
-
-*Implements §1.10.*
+## 8. TLS Subsystem
 
 ```rust
 pub struct CertStore {
     by_host: HashMap<String, Arc<CertifiedKey>>,
+    wildcard: Vec<(WildcardMatcher, Arc<CertifiedKey>)>,
     default: Option<Arc<CertifiedKey>>,
 }
-
-pub struct DynamicResolver {
-    store: Arc<ArcSwap<CertStore>>,
-}
-
-impl rustls::server::ResolvesServerCert for DynamicResolver { … }
+pub struct DynamicResolver { store: Arc<ArcSwap<CertStore>> }
+impl rustls::server::ResolvesServerCert for DynamicResolver { ... }
 ```
 
-- File watcher (`notify`) reloads PEM cert + key pairs on disk changes;
-  swap is atomic via `ArcSwap<CertStore>`.
-- Optional **ACME** client (`instant-acme` or `rustls-acme`) for Let's
-  Encrypt. HTTP-01 challenge responses are served via a dedicated route
-  under `/.well-known/acme-challenge/` injected into the route table.
-  TLS-ALPN-01 is handled at the rustls layer.
-- **OCSP stapling**: background task fetches OCSP responses per cert and
+- Certs loaded from disk (PEM), hot-reloaded via `notify`; swap is atomic.
+- **ACME** via `instant-acme` for HTTP-01 (a dedicated route under
+  `/.well-known/acme-challenge/` is injected) and TLS-ALPN-01 (handled at
+  the rustls layer).
+- **OCSP stapling**: background task fetches responses per cert and
   populates `CertifiedKey::ocsp`.
-- **mTLS to upstream** is a per-pool option: the pool's `hyper` client is
-  built with a `rustls::ClientConfig` carrying a client cert + CA roots.
+- **mTLS upstream** per pool: pool client built with a `rustls::ClientConfig`
+  carrying client cert + CA bundle.
+- **FIPS mode**: `rustls` + `aws-lc-rs` FIPS provider; cipher / HMAC /
+  signing allowlist enforced at load time. Non-FIPS primitives refused.
+- **HSM / PKCS#11** (bonus): private keys live behind a `cryptoki`
+  provider; signing happens in the HSM.
+- **SNI cross-check**: the resolved host must match the request's `Host`
+  header when TLS is terminated.
 
 ---
 
-## 2.10 Protocol Adapters
+## 9. Protocol Adapters
 
-*Implements §1.11.*
-
-- **HTTP/1.1 and HTTP/2**: served by `hyper::server::conn::auto::Builder`
-  (auto-detect based on ALPN).
-- **WebSocket**: when the inbound request carries `Upgrade: websocket`, the
-  security pipeline runs as normal against the handshake; after the pipeline
-  approves, the handler uses `hyper::upgrade::on(req)` to obtain the raw
-  stream and splices it to an upstream-side upgraded connection with
-  `tokio::io::copy_bidirectional`.
-- **gRPC**: no special handling beyond HTTP/2 — the pipeline must preserve
-  trailers. The response forwarding code is updated to stream frames + trailers
-  instead of collecting the whole body.
-- **HTTP/3 (bonus)**: `quinn` + `h3` feature-gated behind `--features http3`.
+- **HTTP/1.1** and **HTTP/2** served by `hyper::server::conn::auto::Builder`
+  (ALPN auto-detect). Header / body / URI limits are enforced at the
+  adapter. HPACK dynamic table capped; **rapid-reset (CVE-2023-44487)**
+  mitigator counts `RST_STREAM` rate per connection and drops offenders.
+- **WebSocket**: the security pipeline inspects the upgrade request; on
+  approval the handler uses `hyper::upgrade::on` and splices client ↔
+  upstream via `tokio::io::copy_bidirectional` with idle + lifetime timeouts.
+- **gRPC**: HTTP/2 with trailers preserved end-to-end. The forwarder
+  streams frames + trailers rather than collecting bodies. Per-method
+  routing uses the `:path` pseudo-header.
+- **HTTP/3** (bonus): `quinn` + `h3`, feature-gated behind `--features http3`.
+- **gRPC-Web** (bonus): bridging to plain gRPC.
 
 ---
 
-## 2.11 Auth Subsystem
-
-*Implements §1.12.*
+## 10. Auth Subsystem
 
 ```rust
 pub enum AuthConfig {
-    ForwardAuth {
-        address: String,
-        copy_request_headers: Vec<String>,
-        copy_response_headers: Vec<String>,
-        timeout: Duration,
-    },
-    Jwt {
-        jwks_url: String,
-        issuer: String,
-        audience: Vec<String>,
-        required_claims: Vec<String>,
-    },
-    Basic { htpasswd_path: String },
+    ForwardAuth { address, copy_req_headers, copy_resp_headers, timeout },
+    Jwt         { jwks_url, issuer, audience, required_claims },
+    Oidc        { issuer, client_id, client_secret_ref, scopes, session_cookie },
+    Basic       { htpasswd_ref },
     CidrAllow(Vec<IpNet>),
 }
 ```
 
-- **ForwardAuth** uses a dedicated `hyper` client; the subrequest path is
-  `GET <address><original path>` by default, configurable. Selected response
-  headers (e.g. `X-Auth-User`, `X-Auth-Groups`) are copied into the
-  upstream-bound request and into `RequestContext` for the rule engine.
-- **JWT** uses `jsonwebtoken` with a JWKS cache keyed by `kid`. The JWKS
-  fetcher is a `moka::future::Cache` with TTL + stale-while-revalidate.
-- Validated claims are attached to `RequestContext` so rules can reference
-  `user.role`, `user.id`, etc.
+- **ForwardAuth**: subrequest through a dedicated `hyper` client; whitelisted
+  response headers copied onto the forwarded request and into
+  `RequestContext` for rule evaluation. Failure mode honors route tier.
+- **JWT**: `jsonwebtoken` with a `moka`-backed JWKS cache keyed by `kid`,
+  stale-while-revalidate. Validated claims projected into rules as
+  `user.role`, `user.id`, etc., and optionally as headers.
+- **OIDC** relying party for browser traffic: session cookie encoded as
+  **PASETO v4.local** with the signing key from the secret provider.
+- **Basic** against an htpasswd file loaded via secret provider.
+- **OPA / Rego callout** (bonus).
 
 ---
 
-## 2.12 Observability Exporter
+## 11. Transforms, CORS, Quotas
 
-*Implements §1.16.*
-
-- `prometheus` crate registry shared across the binary; the existing
-  dashboard Axum router mounts `/metrics` alongside `/api/*`.
-- Histograms: upstream latency, pipeline latency, detector latency, TLS
-  handshake time. Counters: requests by `(tier, decision)`, detector hits,
-  circuit-breaker trips, pool health transitions.
-- **Trace propagation**: a small middleware reads incoming `traceparent`, or
-  generates a fresh one, and writes it into `RequestContext`; the header is
-  forwarded upstream and included in access logs.
-- **OpenTelemetry OTLP** (feature-gated): `opentelemetry-otlp` + batch
-  exporter. Traces capture the pipeline stages as child spans.
-- **Access log writer**: a background `tokio` task drains a bounded channel
-  of `AccessLogRecord`s, formatting via one of:
-  - `combined` (nginx-default)
-  - `json` (one-line JSON per request)
-  - Custom template string with `%{var}` placeholders
-  Output target: stdout or a rotating file (`tracing-appender`).
+- **Headers**: add / set / remove on request and response, with variable
+  expansion (`$host`, `$client_ip`, `$request_id`, `$jwt.sub`,
+  `$cookie.<name>`, `$header.<name>`).
+- **Rewrite**: regex rewrite, prefix strip, prefix add, redirect (301/302/
+  307/308) with target templating.
+- **CORS**: preflight answered directly by the WAF unless the route opts
+  out. Origin allowlist supports wildcard subdomains.
+- **Quotas**: `client_max_body_size`, header total size, URI length, read /
+  write / upstream / absolute timeouts. **Buffering vs streaming** per
+  route — streaming disables body-dependent detectors (used for large
+  uploads). Distinct HTTP status per quota (`413`, `431`, `408`, `504`,
+  `503`) and an audit event naming the specific quota.
 
 ---
 
-## 2.13 Worker Supervisor & Graceful Reload
-
-*Implements §1.17.*
-
-- Main process sets up the tokio runtime, loads config, then creates N
-  worker tasks that each `bind()` the listener with `SO_REUSEPORT` so the
-  kernel distributes accepts across workers.
-- `InFlightTracker` is an `Arc<AtomicUsize>` incremented on `handle_request`
-  entry and decremented in a guard's `Drop`.
-- **Drain sequence** on `SIGTERM`:
-  1. Close the listener (no more accepts).
-  2. Start a drain deadline timer (e.g. 30s).
-  3. Wait for `InFlightTracker` to hit zero or the deadline to expire.
-  4. Exit with code 0.
-- **Hot binary reload (bonus)** on `SIGUSR2`: the running process spawns the
-  new binary with the listener FD inherited via `CommandExt::fd_mappings`
-  (or via `systemd` socket activation). The new process begins accepting
-  on the same port thanks to `SO_REUSEPORT`; the old process drains as
-  above and exits.
-- **Dry-run validator**: the config watcher first parses the candidate
-  config into a fully-resolved `WafConfig` (including compiling regexes and
-  building the route table). Only if construction succeeds is the
-  `ArcSwap` updated. Failures are logged and reported to the dashboard.
-
----
-
-## 2.14 Config Schema Additions
-
-New top-level keys added to `src/config/schema.rs`. All are optional with
-sensible defaults, so existing v1 configs remain valid.
-
-```yaml
-routes:
-  - host: "api.example.com"
-    path: "/v1/"
-    match_type: prefix
-    upstream: api_v1_pool
-    tier_override: high
-    transforms:
-      request_headers:
-        set:
-          X-Real-IP: "${client_ip}"
-        remove: [Cookie]
-    auth:
-      type: jwt
-      jwks_url: "https://issuer.example.com/.well-known/jwks.json"
-      audience: ["api.example.com"]
-    quotas:
-      client_max_body_size: 1048576
-      read_timeout_ms: 15000
-
-upstreams:
-  api_v1_pool:
-    lb: least_conn
-    members:
-      - addr: "10.0.0.1:8080"
-        weight: 1
-      - addr: "10.0.0.2:8080"
-        weight: 1
-    health_check:
-      path: "/healthz"
-      interval_s: 5
-      timeout_ms: 2000
-      unhealthy_after: 3
-    circuit_breaker:
-      error_threshold_pct: 50
-      min_requests: 20
-      open_duration_s: 30
-
-tls:
-  listen: "0.0.0.0:443"
-  certificates:
-    - host: "api.example.com"
-      cert_file: "/etc/waf/certs/api.pem"
-      key_file:  "/etc/waf/certs/api.key"
-  acme:
-    enabled: false
-    email: "ops@example.com"
-    hosts: ["api.example.com"]
-
-observability:
-  prometheus_path: "/metrics"
-  access_log:
-    format: json
-    target: stdout
-  otel:
-    enabled: false
-    endpoint: "http://otel-collector:4317"
-
-workers:
-  count: 4
-  drain_timeout_s: 30
-```
-
-All of these flow through the existing `ArcSwap<WafConfig>` reload path —
-nothing about hot reload changes.
-
----
-
-## 2.15 New Crate Dependencies
-
-Added to `Cargo.toml` for v2:
-
-```toml
-# Routing + LB
-hashring = "0.3"
-
-# TLS / ACME
-rustls-pemfile = "2"        # (already in v1)
-instant-acme = "0.7"        # optional, feature = "acme"
-rcgen = "0.13"              # test cert generation
-
-# HTTP/2 + WebSocket
-hyper = { version = "1", features = [..., "http2"] }
-tokio-tungstenite = "0.24"  # for WS framing (bonus: direct WS server)
-
-# Auth
-jsonwebtoken = "9"
-
-# Observability
-prometheus = "0.13"
-opentelemetry = { version = "0.27", optional = true }
-opentelemetry-otlp = { version = "0.27", optional = true }
-tracing-opentelemetry = { version = "0.28", optional = true }
-tracing-appender = "0.2"
-
-# DNS service discovery (bonus)
-hickory-resolver = "0.24"
-
-# Signals
-nix = { version = "0.29", features = ["signal"] }
-```
-
-Feature flags in `Cargo.toml`:
-
-```toml
-[features]
-default = ["tls"]
-tls  = []
-acme = ["dep:instant-acme"]
-otel = ["dep:opentelemetry", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
-http3 = []   # bonus
-```
-
----
-
-## 2.16 Revised Implementation Phases (v2)
-
-These phases run **after** the v1 implementation (Phases 1 – 12) is complete.
-
-| Phase | Subsystem | Dependencies |
-|-------|-----------|--------------|
-| A | Route table + host/path matching | v1 complete |
-| B | Upstream pool manager + LB + health checks | A |
-| C | Per-route transformations + CORS + quotas | A |
-| D | TLS termination with SNI + file-reload certs | B |
-| E | HTTP/2 + WebSocket passthrough | D |
-| F | External auth (ForwardAuth + JWT) | A |
-| G | Observability (Prometheus + access logs) | A |
-| H | Worker supervisor + graceful drain | All above |
-| I | ACME + OCSP (bonus) | D |
-| J | gRPC passthrough + trailers (bonus) | E |
-| K | OpenTelemetry + traceparent propagation (bonus) | G |
-| L | Service discovery (bonus) | B |
-| M | Hot binary reload via SO_REUSEPORT + FD passing (bonus) | H |
-
----
-
-## 2.17 Migration Notes
-
-v2 must stay backwards compatible with v1 configs. Migration rules:
-
-- If a config has no `upstreams` / `routes` blocks, the v1 `upstream.address`
-  is auto-wrapped into a synthetic single-member pool named `default`, and
-  a single catch-all route `{host: _, path: /, upstream: default}` is
-  inserted at table build time.
-- v1 tier classification remains the fallback when no route matches.
-- v1 security pipeline stages are unchanged and run between the route
-  match and the upstream selection.
-- v1 dashboard pages continue to work; new pages (`/dashboard/routes`,
-  `/dashboard/upstreams`) are added alongside them.
-- v1 `config/waf.yaml` continues to parse. New fields are additive.
-
----
-
-## 2.18 Testing & Validation Strategy (v2 additions)
-
-On top of the v1 test strategy (§2.4):
-
-- **Host-routing conformance**: table-driven tests covering exact, wildcard,
-  and default host matching with overlapping paths.
-- **Health-check flap**: unit test that brings a member down and back up and
-  verifies LB rotation + circuit-breaker state transitions.
-- **TLS/SNI handshake matrix**: openssl s_client against multiple SNI names
-  with different cert profiles.
-- **WebSocket echo**: end-to-end test with `tokio-tungstenite` client through
-  the WAF to an echo backend.
-- **HTTP/2 + gRPC**: `tonic` echo service behind the WAF, verify trailers
-  are preserved.
-- **ForwardAuth**: spin up a mock auth service that returns 200 / 401
-  based on a header; verify the WAF enforces the decision and copies
-  response headers.
-- **JWT**: validate a signed token against a local JWKS and verify claims
-  are surfaced to the rule engine.
-- **Graceful drain**: `wrk` under load while `SIGTERM` is sent; count
-  dropped in-flight requests — must be zero.
-- **Prometheus scrape**: start the WAF, send traffic, scrape `/metrics`,
-  assert expected metric families and labels exist.
-- **Dry-run validator**: feed an intentionally broken rule file; assert
-  the running config is untouched and the dashboard shows the error.
-
----
-
----
-
-# Enterprise Readiness Addendum (§2.20 – §2.35)
-
-The following sections design the subsystems required by the enterprise
-addendum of the requirements doc (§1.20 – §1.35). They slot into the v2
-binary alongside the edge-proxy subsystems described above.
-
----
-
-## 2.20 Control Plane vs Data Plane Separation
-
-*Implements §1.23 Admin Access Control and underpins §1.20 HA.*
-
-The binary logically splits into two planes that bind different listeners:
-
-```
-┌──────────────────────────┐     ┌──────────────────────────┐
-│   Data Plane (public)    │     │   Control Plane (admin)  │
-│   :80, :443              │     │   :9443 (mTLS)           │
-│                          │     │                          │
-│   TLS → Routing →        │     │   Dashboard (Axum)       │
-│   Pipeline → Upstream    │     │   Admin API (REST+gRPC)  │
-│                          │     │   /metrics /healthz      │
-└──────────┬───────────────┘     └─────────┬────────────────┘
-           │                               │
-           └─────────┬─────────────────────┘
-                     ▼
-         ┌──────────────────────────┐
-         │   Shared State Backend   │
-         │  (Redis / Raft / memory) │
-         └──────────────────────────┘
-```
-
-- Data-plane hot path never queries the admin listener.
-- Control-plane mutations publish notifications over an internal channel
-  that the data plane consumes (`tokio::sync::broadcast`) so `ArcSwap`
-  updates propagate without polling.
-- Per-listener feature flags allow running control plane on a
-  bastion-only interface.
-
----
-
-## 2.21 Clustered / Distributed State
-
-*Implements §1.20 HA & Clustering.*
-
-State access is abstracted behind a trait so the rest of the code is
-backend-agnostic:
+## 12. State Backend
 
 ```rust
 #[async_trait]
 pub trait StateBackend: Send + Sync {
-    async fn incr_window(&self, key: &str, window: Duration) -> u32;
-    async fn get_risk(&self, key: &RiskKey) -> u32;
-    async fn add_risk(&self, key: &RiskKey, delta: u32, max: u32) -> u32;
-    async fn auto_block(&self, ip: IpAddr, ttl: Duration);
-    async fn is_auto_blocked(&self, ip: IpAddr) -> bool;
-    async fn revoke_token(&self, jti: &str, ttl: Duration);
-    async fn is_revoked(&self, jti: &str) -> bool;
+    async fn incr_window(&self, key: &str, window: Duration) -> Result<u64>;
+    async fn token_bucket(&self, key: &str, rate: u32, burst: u32) -> Result<bool>;
+    async fn get_risk(&self, key: &RiskKey) -> Result<u32>;
+    async fn add_risk(&self, key: &RiskKey, delta: i32, max: u32) -> Result<u32>;
+    async fn auto_block(&self, ip: IpAddr, ttl: Duration) -> Result<()>;
+    async fn is_auto_blocked(&self, ip: IpAddr) -> Result<bool>;
+    async fn put_nonce(&self, nonce: &str, ttl: Duration) -> Result<bool>;
+    async fn consume_nonce(&self, nonce: &str) -> Result<bool>;
+    async fn acquire_lease(&self, key: &str, ttl: Duration) -> Result<Lease>;
+    // ... challenge tokens, fingerprint store, session metadata
 }
 ```
 
 Implementations:
 
-- `InMemoryBackend` — v1/v2 behavior (DashMap).
-- `RedisBackend` — Redis Cluster with Lua scripts for atomic sliding
-  windows and INCRBY + EXPIRE fused. Connection pool via `deadpool-redis`.
-- `RaftBackend` (bonus) — embedded Raft (`openraft`) for air-gapped
-  deployments, strong consistency for critical counters.
+- **InMemory** — `dashmap` + `moka`, single-node dev.
+- **Redis / Redis Cluster** — `deadpool-redis`; atomic sliding windows via
+  Lua; keys tenant-prefixed; pipeline fused `INCRBY` + `EXPIRE`.
+- **Raft** — embedded `openraft` for air-gapped deployments with strong
+  consistency on critical counters.
+- **Gossip advisory soft state** — `foca` SWIM for membership + soft
+  hints, separate from the authoritative backend.
 
-**Cluster membership** uses `foca` (Rust SWIM implementation) or a
-shared config registry. Each node publishes `(id, zone, load, version)`;
-the dashboard and admin API surface the view.
-
-**Split-brain safety**: sliding-window counters use `max(local, remote)`
-semantics on reconciliation so a partition can only be more restrictive,
-never less.
+Cluster membership is surfaced on the dashboard: `(node_id, zone, version,
+load, uptime)`. Leader-only tasks (threat-intel fetch, ACME issuance,
+GitOps pull, audit witness export) acquire a lease key in the backend.
 
 ---
 
-## 2.22 Compliance Architecture
+## 13. Multi-Tenancy
 
-*Implements §1.21 Compliance.*
+`Tenant` is a first-class config entity with: id, name, owner, allowed
+hosts, quotas, tier overrides, rule namespace, audit sinks, data residency,
+compliance profile, secret mount.
 
-- **FIPS mode** is a runtime flag wired through a Rust feature gate on
-  `rustls` (`rustls` + `aws-lc-rs` with FIPS provider). A config-load
-  hook walks all configured ciphers, HMAC algorithms, and signing keys
-  and refuses any that are not in the FIPS allowlist.
-- **Tamper-evident audit log** — each admin-change and security event
-  carries `prev_hash = SHA-256(prev_record || fields)`. A nightly job
-  exports the Merkle root to an external witness (file, S3 Object Lock,
-  or blockchain anchor) for post-incident verification.
-- **PCI mode** binds listeners with TLS 1.2+ only, enables Luhn-based PAN
-  redaction in the DLP engine, and sets the default log retention to 90
-  days.
-- **GDPR data-residency tags** are on every log sink; the exporter
-  refuses cross-region delivery when tags don't match.
-- **Right-to-erasure**: an admin endpoint walks the state backend and
-  local spool files purging by identifier, with an attested report.
+- **Isolation boundaries**: routing (allowed hosts), state keyspace
+  (`tenant:{id}:…`), audit + metrics labels, rules (namespaced), secrets
+  (tenant-scoped providers).
+- **Tenant Governor** sits in front of the pipeline, tracks in-flight +
+  RPS per tenant, and 503-sheds offenders so one noisy tenant cannot starve
+  others.
+- **Security floors** defined by cluster admins set minimum CRITICAL
+  controls, TLS versions, retention, and required detectors that tenants
+  cannot weaken.
+- **Per-tenant dashboards**: admin API handlers project results through the
+  caller's tenant set; viewer tokens default to a single tenant.
 
 ---
 
-## 2.23 Secrets Management Subsystem
-
-*Implements §1.22.*
+## 14. Secrets Management
 
 ```rust
 #[async_trait]
 pub trait SecretProvider: Send + Sync {
     async fn resolve(&self, reference: &str) -> Result<Secret>;
-    async fn watch(&self, reference: &str) -> BoxStream<'static, Secret>;
+    fn watch(&self, reference: &str) -> BoxStream<'static, Secret>;
 }
-
 pub struct Secret(Zeroizing<Vec<u8>>);
 ```
 
-- `${secret:vault:kv/data/waf#tls_key}` style references are parsed at
-  config load; unresolved references block load.
-- Providers shipped: `env`, `file`, `vault` (`vaultrs`), `aws-sm`,
-  `gcp-sm`, `azure-kv`.
-- Watcher streams feed the existing `ArcSwap<WafConfig>` pipeline so
-  rotation is transparent to the data plane.
-- `Zeroize` + `Zeroizing<T>` hold all secret bytes; the compiler plugin
-  `secrecy` is used at struct level for compile-time enforcement.
-- **HSM** support via `cryptoki` (PKCS#11) behind a feature flag.
+- References like `${secret:vault:kv/data/waf#tls_key}` are parsed at
+  config load; unresolved references block the swap.
+- Providers: env, file (with mode enforcement), HashiCorp Vault
+  (`vaultrs`, KV v2 + dynamic creds), AWS Secrets Manager, GCP Secret
+  Manager, Azure Key Vault, PKCS#11 HSM.
+- **Rotation without restart**: watcher streams feed the reload pipeline;
+  TLS / HMAC / upstream mTLS reload atomically.
+- **Memory hygiene**: `Zeroize` + `Zeroizing<T>` for all secret bytes.
+- **Never in logs**: `/api/config` returns the reference string, never the
+  resolved value.
 
 ---
 
-## 2.24 RBAC & SSO Subsystem
+## 15. Admin Plane
 
-*Implements §1.23.*
-
-- The admin router (Axum) wraps every mutating handler in a
-  `require_role!(Operator)` macro; reads use `require_role!(Viewer)`.
-- **OIDC** via `openidconnect` crate; tokens are verified against the
-  IdP's JWKS (cached via `moka`). User → role mapping is driven by
-  claims (`groups`, `roles`) with a config-defined matrix.
-- **Local users** stored in `htpasswd`-style file behind `argon2`
-  hashing; only available when `admin.local_users.enabled = true`.
-- **API tokens**: `PASETO v4.local` tokens issued via the admin API,
-  scoped (`tenant_id`, `permissions`, `expires_at`), revocable.
-- **Change audit**: every mutating handler emits an `AdminChangeEvent`
-  to the hash-chained audit log (§2.22).
-- **MFA** is delegated to the IdP (the WAF verifies `amr` / `acr`
-  claims).
-
----
-
-## 2.25 Multi-Tenancy Data Model
-
-*Implements §1.24.*
-
-- `Tenant` is a new top-level config struct. Routes, upstreams, rules,
-  quotas, and policies are all `Option<TenantId>`-tagged.
-- State-backend keys are prefixed with `tenant:{id}:…` so Redis / Raft
-  partitioning is automatic.
-- **Per-tenant quotas** are enforced by a `TenantGovernor` sitting in
-  front of the pipeline: it tracks current in-flight + rate per tenant
-  and load-sheds offenders with 503 (§2.32) without touching other
-  tenants.
-- **Dashboard scoping**: every admin API handler projects results
-  through the caller's tenant set. Viewer tokens are single-tenant by
-  default.
+- **Listener**: separate address, mTLS **and** OIDC required; per-endpoint
+  role check via `require_role!(Role)` on every handler.
+- **Axum router**: `/dashboard`, `/api/*`, `/metrics`, `/healthz/*`.
+- **Roles**: `viewer`, `operator`, `admin`, `auditor`, `break_glass`.
+- **OIDC SSO** via `openidconnect` (Okta / Azure AD / Google / Keycloak).
+  `groups` / `roles` claims map to local roles via a configured matrix.
+  MFA is delegated to the IdP and verified via `amr` / `acr`.
+- **API tokens**: PASETO v4.local, scoped, IP-allowlisted, TTL'd; hashes
+  stored via `argon2`.
+- **Change approval**: mutations to CRITICAL-scope config require a second
+  admin approver before activation.
+- **Admin IP allowlist** in addition to auth.
+- **Admin change audit log**: hash-chained separately from the detection
+  log; records actor, target, diff, reason, approver.
+- **Break-glass edits** in GitOps mode are applied locally and
+  automatically round-tripped as a PR to the source repo; a banner warns
+  until the PR is merged.
 
 ---
 
-## 2.26 SIEM & Log Forwarding Subsystem
+## 16. Observability
 
-*Implements §1.25.*
-
-```rust
-pub enum SinkKind {
-    Stdout,
-    File(RotatingFileSink),
-    SyslogTcpTls { endpoint: Url, format: EventFormat },
-    Kafka { brokers: Vec<String>, topic: String },
-    Http { endpoint: Url, format: EventFormat },
-}
-
-pub enum EventFormat { Combined, Json, Cef, Leef, Ocsf }
-```
-
-- A single `EventBus` (`tokio::sync::broadcast`) decouples emitters
-  from sinks. Sinks each run a dedicated task with a bounded channel.
-- **Backpressure**: on bounded-channel full, the sink spools to disk
-  (`sled` ring or a bounded file); on overflow it drops
-  lowest-severity first and increments a drop counter.
-- **Formatters** are trait objects; CEF/LEEF use fixed field maps with
-  escape rules. OCSF reuses the internal event schema with a JSON
-  projection.
-- **Kafka** via `rdkafka` with SASL/TLS; partitions keyed by
-  `(tenant_id, client_ip)` for ordering guarantees.
+- **Metrics** (`prometheus` crate): counters and histograms for requests
+  (tenant / route / tier / decision / status), detector hits, rule hits,
+  risk-score buckets, upstream latency + circuit state, challenge
+  issue/pass/fail, state-backend op latency, audit throughput + drops,
+  config reload outcomes, retry / shadow counts, TLS handshake time, SLO
+  burn rate. `/metrics` lives on the control-plane listener only.
+- **Tracing**: W3C Trace Context; generate a root span if absent.
+  Server span `waf.request` with child spans for rule engine, each
+  detector, upstream, and challenge. **OTLP** exporter over gRPC or HTTP,
+  feature-gated.
+- **Access logs**: nginx `combined`, JSON (ECS), or user template with
+  `$var` placeholders. Targets: stdout, rotating file (`tracing-appender`),
+  or an audit sink. A bounded channel + dedicated writer task decouples
+  request latency from log I/O.
+- **Health**: `/healthz/live`, `/healthz/ready` (state backend reachable,
+  certs loaded, ≥ 1 healthy upstream member per pool), `/healthz/startup`.
 
 ---
 
-## 2.27 Threat Intelligence Subsystem
+## 17. Audit Logging
 
-*Implements §1.26.*
+- **Stable JSON schema** with `schema_version`.
+- **Tamper-evident hash chain**: `hash = SHA-256(prev_hash || canonical_json)`
+  over detection and admin classes. A leader task periodically signs the
+  Merkle root and exports it to an external **witness** (S3 Object Lock,
+  append-only log service, or blockchain anchor). `waf audit verify`
+  walks the chain and reports breaks.
+- **Admin change log** has its own hash chain (actor, target, diff, reason,
+  approver).
+- **Sinks**: JSONL, Syslog RFC 5424, CEF, LEEF, OCSF, Splunk HEC, Elastic
+  ECS, Kafka (`rdkafka` with SASL/TLS). Each sink is a tokio task with a
+  bounded channel, on-disk spool, and priority drop policy (lowest severity
+  first; admin + critical never dropped without paging).
+- **Retention** per event class with compliance floors (e.g. PCI ≥ 90d).
+
+---
+
+## 18. Threat Intelligence
 
 ```rust
 pub struct ThreatIntelStore {
-    ips: IpRangeSet,              // aggregated CIDR set
+    ips: IpRangeSet,
     domains: aho_corasick::AhoCorasick,
     urls: aho_corasick::AhoCorasick,
+    ja_fps: HashSet<String>,
+    asns: HashMap<u32, AsnClass>,
     hashes: HashSet<[u8; 32]>,
     provenance: DashMap<Indicator, FeedId>,
 }
 ```
 
-- Feed fetchers run as periodic tokio tasks with `reqwest` + `ETag`
-  handling. **STIX/TAXII** via a dedicated client (custom or `stix`
-  crate when available).
-- Incremental updates: feeds publish additions and removals; the store
-  is rebuilt incrementally and swapped via `ArcSwap`.
-- The IP-reputation check in the v1 pipeline is rewired to consult the
-  `ThreatIntelStore` in addition to the static config lists.
-- **Provenance**: when an indicator fires a block, the `FeedId` is
-  included in the audit event so analysts can trace back.
+- Feeds fetched on interval (`reqwest` + ETag). Formats: plain text, CSV,
+  JSON, **STIX 2.1** over **TAXII 2.1**, MISP.
+- Incremental add/remove → rebuild → `ArcSwap` swap.
+- Per-feed confidence + severity; confidence → action mapping
+  (`block` / `raise_risk` / `watch`) is configurable.
+- **Local override list** wins over imported feeds.
+- Every decision carries `feed_id + confidence` so analysts can trace
+  `block → rule → indicator → feed → source`.
 
 ---
 
-## 2.28 Advanced Bot Management
-
-*Implements §1.27.*
-
-- **Classification pipeline**: UA → ASN + rDNS verification → TLS JA3/JA4
-  lookup in a known-bot database → behavioral signals. The classifier
-  emits a `BotClass` (`Verified`, `Unknown`, `Likely`, `Known`) that
-  feeds the risk engine.
-- **CAPTCHA provider** is a trait:
-  ```rust
-  #[async_trait]
-  pub trait CaptchaProvider {
-      async fn verify(&self, response: &str, client_ip: IpAddr) -> Result<bool>;
-      fn widget_html(&self, site_key: &str) -> String;
-  }
-  ```
-  Implementations: Turnstile, hCaptcha, reCAPTCHA v3.
-- **Escalation state machine** lives inside the challenge engine:
-  `None → JS → PoW → CAPTCHA → Block`, indexed on the challenge nonce
-  so replay of an old level on the new page fails.
-- **Human-confidence score** persists in the state backend keyed by
-  device fingerprint and decays like risk score.
-
----
-
-## 2.29 API Security Guard (OpenAPI + GraphQL)
-
-*Implements §1.28.*
-
-- **OpenAPI loader** compiles a loaded OpenAPI 3.x document into a
-  `RouteSchemaIndex` keyed by `(method, path)`. Path templates are
-  converted to a radix tree for O(log n) lookup.
-- **Validator** (`jsonschema-rs`) checks body + query + headers against
-  the operation schema. A violation raises a `DetectionResult` with
-  `attack_type = "schema_violation"` so it flows through the existing
-  risk engine and actions.
-- **GraphQL guard**: a lightweight parser (`async-graphql-parser`)
-  computes depth + field count before forwarding. Introspection
-  queries are rejected when disabled.
-- **HMAC signing**: per-route config specifies algorithm, header, and
-  secret reference; mismatched signatures are blocked.
-
----
-
-## 2.30 DLP Engine
-
-*Implements §1.29.*
+## 19. DLP Engine
 
 ```rust
 pub struct DlpEngine {
+    anchors: aho_corasick::AhoCorasick,     // cheap prefilter
     patterns: Vec<CompiledPattern>,
-    ac: aho_corasick::AhoCorasick,  // anchors for literal-heavy patterns
 }
-
 pub struct CompiledPattern {
     name: String,
     category: DlpCategory,
     regex: Regex,
-    validator: Option<fn(&str) -> bool>,  // e.g. Luhn for PAN
-    action: DlpAction,                     // Mask | Block | Alert
+    validator: Option<fn(&str) -> bool>,    // Luhn, mod-97, ...
+    action: DlpAction,                      // Redact | Mask | Hash | Fpe | Block
     masker: MaskStrategy,
 }
 ```
 
-- Runs inbound (request bodies) and outbound (response bodies). Bodies
-  are processed in chunks to avoid buffering large payloads.
-- **PAN detection** uses aho-corasick prefilter then a per-candidate
-  Luhn check. **API keys** use provider-specific prefixes
-  (`AKIA`, `ghp_`, `sk-`).
-- **Masking strategies**: full, last-N, hash, or FPE (format-preserving
-  encryption) via `orion`.
-- Pattern library is hot-reloadable via the existing watcher.
+- Pattern library covers PAN (Luhn), SSN, IBAN, phone, email, DOB, cloud
+  keys (AWS / GCP / Azure / Stripe / GitHub / Slack / Twilio), PEM headers,
+  JWTs, HIPAA identifiers (opt-in). Custom regex patterns with a named
+  `value` capture.
+- Runs both inbound and outbound, streaming in chunks so large bodies are
+  not buffered.
+- **FPE** (format-preserving encryption, AES-FF1) via an internal
+  implementation or `orion`; keys are versioned so old tokens stay
+  decryptable until retired.
+- **Audit redaction**: every audit event passes through DLP before
+  emission so secrets never leak into logs.
+- Per-tenant, per-route policies; shared pipeline with response filtering.
 
 ---
 
-## 2.31 Content Scanning (ICAP Client)
+## 20. API Security Guard
 
-*Implements §1.30.*
-
-- `IcapClient` implements RFC 3507 `REQMOD` / `RESPMOD`. Connections
-  are pooled per target.
-- Upload routes buffer the body up to a configured cap, then stream it
-  into the ICAP client. The verdict (`allow`, `modify`, `block`) maps
-  to pipeline decisions.
-- **Magic-byte detection** via `infer` crate.
-- **Archive bomb** protection: depth counter in the `zip`/`tar` walker
-  aborts on ratio breach.
-
----
-
-## 2.32 Adaptive Load Shedding
-
-*Implements §1.31.*
-
-- A per-listener `AdmissionController` tracks concurrent in-flight and
-  a rolling p99 latency EWMA.
-- Algorithm: **Gradient2** (Netflix concurrency-limits) — expands the
-  limit while latency is stable, contracts on latency rise.
-- A global `PriorityScheduler` orders the admission queue by tier so
-  CRITICAL is always admitted ahead of CATCH-ALL.
-- **Self-health** samples: process CPU from `/proc/self/stat`, RSS from
-  `/proc/self/status`, tokio metrics. Crossing thresholds triggers
-  aggressive shedding (reject CATCH-ALL entirely) until pressure
-  subsides.
+- **OpenAPI 3** documents compile into a `RouteSchemaIndex` keyed by
+  `(method, path)`; path templates become a radix tree for O(log n) lookup.
+  Body + query + headers validated with `jsonschema`. Modes: `enforce`,
+  `monitor`, `learn`.
+- Validation errors carry a JSON-pointer for precise audit; client-facing
+  error detail is minimized to prevent enumeration.
+- **GraphQL**: `async-graphql-parser` computes depth, node count,
+  complexity; introspection togglable; persisted-query allowlist
+  supported. Mass-assignment protection rejects unknown fields on strict
+  schemas.
+- **Request signing**: HMAC verification (SigV4-style or custom) per route.
+- **API-key management**: per-consumer keys with rate limits and scopes.
+- **Learn mode** records observed traffic into a synthesized spec for
+  operator review and promotion.
 
 ---
 
-## 2.33 DR / Backup Subsystem
+## 21. Advanced Bot Management
 
-*Implements §1.32.*
-
-- `waf config export --out snapshot.tar.zst` serializes the effective
-  `WafConfig` + rules + tenant definitions into a deterministic archive
-  signed with the cluster key.
-- `waf config import snapshot.tar.zst --dry-run` runs the existing
-  dry-run validator; `--apply` activates.
-- Periodic backup is a tokio task with a pluggable target (`s3`, `gcs`,
-  `file`, `sftp`). Retention policy is age + count.
-- **State snapshot** (bonus) serializes the state backend via its
-  native export (Redis `BGSAVE`, Raft snapshot).
-
----
-
-## 2.34 Change Management / GitOps
-
-*Implements §1.34.*
-
-- A `GitSyncer` task clones or pulls a configured repo on interval,
-  validates the effective config, and stages it for activation.
-- **Signed commits**: commits are verified with a configured set of
-  allowed GPG / SSH keys before they are considered.
-- **Dashboard edits in Git-sync mode** produce a PR to the target repo
-  via the Git host's API (GitHub / GitLab) rather than mutating
-  locally. In "break-glass" mode, mutations apply locally and are
-  tracked for later reconciliation.
-- CLI: `waf config diff` shows pending changes against the live
-  configuration; `waf config apply` triggers the dry-run + swap.
+- **Good-bot verification** via forward-confirmed reverse DNS for Googlebot,
+  Bingbot, LinkedInBot, etc., with cached rDNS results.
+- **Signals**: JA3/JA4, h2 fingerprint, header order, UA entropy, rDNS,
+  threat-intel labels, failed-challenge history, ASN + IP reputation,
+  behavioral patterns.
+- **Classifier**: shipped rule-based classifier plus optional model-backed
+  classifier (feature-gated).
+- **Behavioral biometrics / device attestation** (bonus): mouse / keystroke
+  rhythm, iOS App Attest, Android Play Integrity.
+- Output `BotClass` feeds the risk engine and is mappable to actions via
+  route config.
 
 ---
 
-## 2.35 SLO / Health Endpoints
+## 22. Content & Upload Security (ICAP)
 
-*Implements §1.35.*
-
-- `/healthz/live` — always OK while the process is running.
-- `/healthz/ready` — OK when: config loaded, state backend reachable,
-  at least one upstream pool has a healthy member for each critical
-  route, listeners bound.
-- `/healthz/startup` — OK after the first successful config load and
-  ACME / cert resolution.
-- **SLI recorder** wraps the pipeline with histograms for availability
-  and latency; `slo_burn_rate` is exported as a metric so Alertmanager
-  rules can reference it.
-- **Alert sinks**: Alertmanager-compatible webhook receiver and
-  direct PagerDuty / Slack sinks.
+- `IcapClient` implements RFC 3507 `REQMOD` and `RESPMOD` with a connection
+  pool per target. Upload routes stream body frames into the ICAP client
+  and use the verdict as a pipeline decision.
+- **Magic-byte** type detection (`infer`), not `Content-Type`.
+- **Allowlist** of file types per route.
+- **Archive-bomb** protection: depth + ratio limits in the `zip` / `tar`
+  walker.
+- **Clean-hash cache** skips re-scanning known-good payloads.
+- Scan timeout applies the route's failure mode (fail-closed for CRITICAL
+  by default).
+- **Sandbox detonation** and **EXIF / steganography scrubbing** (bonus).
 
 ---
 
-## 2.36 Revised Stack Diagram (v2 + Enterprise)
+## 23. Adaptive Load Shedding
 
-```
-                  ┌────────────────────────────────────────────┐
-   SIGTERM/USR2 ─►│  Worker Supervisor (SO_REUSEPORT, N workers)│
-                  └──────────────────┬──────────────────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  Admission / Load Shed │ ◄── self-health
-                         └───────────┬────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  TLS / SNI / ACME      │
-                         │  (FIPS-mode gated)     │
-                         └───────────┬────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  Protocol Adapters     │  (h1/h2/ws/grpc)
-                         └───────────┬────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  Tenant Governor       │ ◄── per-tenant quotas
-                         └───────────┬────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  Route Table           │
-                         └───────────┬────────────┘
-                                     │
-                         ┌───────────▼─────────────┐
-                         │  Threat Intel + IP rep  │
-                         │  Bot Classifier         │
-                         └───────────┬─────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  v1 Security Pipeline  │
-                         │  (rules/detect/risk)   │ ◄── State Backend
-                         └───────────┬────────────┘      (Redis / Raft)
-                                     │
-                         ┌───────────▼────────────┐
-                         │  OpenAPI/GraphQL Guard │
-                         │  HMAC / JWT / ForwardAuth│
-                         └───────────┬────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  DLP + ICAP scan       │
-                         └───────────┬────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  Transforms / CORS     │
-                         └───────────┬────────────┘
-                                     │
-                         ┌───────────▼────────────┐
-                         │  Upstream Pool Manager │
-                         └───────────┬────────────┘
-                                     │
-                                     ▼
-                               Backend pools
-
-   Control plane (separate listener, mTLS + OIDC + RBAC):
-     ├── Dashboard (multi-tenant)
-     ├── Admin API (REST + gRPC, audit-logged)
-     ├── /metrics  /healthz/{live,ready,startup}
-     └── GitSync / Secret provider watchers
-
-   Side exporters:
-     ├── SIEM sinks (syslog/CEF/LEEF/Kafka/OCSF)
-     ├── OTel traces + metrics
-     ├── Access log writer
-     └── Hash-chained audit log + witness anchor
-```
+- Per-listener `AdmissionController` with adaptive concurrency —
+  **Gradient2** (`L(t+1) = L(t) * (RTT_min / RTT_now)`). No static ceiling.
+- **Priority queue**: CATCH-ALL dropped first, then MEDIUM, then HIGH;
+  CRITICAL is never shed by admission (only by actual security decisions).
+- **CPU-aware backstop** from `/proc/stat` or cgroups `cpu.stat`.
+- **Per-tenant `concurrency_soft` / `concurrency_hard`** so a burst from
+  one tenant cannot starve another.
+- Coordinates with DDoS mode: thresholds tighten further when global DDoS
+  mode is active.
+- Load-shed response: immediate `503` with `Retry-After` + request id, no
+  pipeline cost, no upstream contact.
 
 ---
 
-## 2.37 Additional Crate Dependencies (Enterprise)
+## 24. Compliance Profiles
+
+Modes **stack**; the strictest wins; conflicting config is refused at load
+time.
+
+- **FIPS 140-2/3**: only `aws-lc-rs` FIPS primitives; TLS / HMAC / PRNG on
+  FIPS allowlist.
+- **PCI-DSS v4.0**: PAN masking in logs + responses; TLS 1.2+ only on
+  PCI-scope listeners; ≥ 90-day audit retention; no CVV / CVC stored.
+- **SOC 2**: hash-chained audit log, admin change trail, access review
+  exports, SLI/SLO monitoring.
+- **GDPR**: PII redaction before logs leave the node, residency pinning,
+  right-to-erasure endpoint, retention ceilings.
+- **HIPAA**: PHI-safe log mode suppressing bodies + flagged headers on PHI
+  routes; BAA dedication flags.
+
+A **compliance-mode profile** flips all of the above into the strictest
+setting with a single config switch.
+
+---
+
+## 25. Zero-Downtime Operations
+
+- **Graceful drain** on `SIGTERM`: stop accepting new connections, finish
+  in-flight within a bounded TTL, then exit. `/healthz/ready` goes
+  not-ready immediately so L4 LBs bleed traffic away.
+- **Worker model** via `SO_REUSEPORT`: N workers share the listener with
+  kernel-level load balancing. `InFlightTracker = Arc<AtomicUsize>` guards
+  the drain.
+- **Hot binary reload** on `SIGUSR2`: new process inherits the listening FD
+  via `SCM_RIGHTS` (or systemd socket activation); old process drains; new
+  process accepts; rollback on readiness-probe failure.
+- **Dry-run validator** on every config change: full compile + lint +
+  compliance check before the `ArcSwap` swap. Malformed updates refused;
+  running config preserved.
+- **TLS cert hot reload** via `ArcSwap<CertStore>`: in-flight handshakes
+  finish on the old cert; new ones pick up the new cert.
+
+---
+
+## 26. Service Discovery (optional)
+
+Pool membership may populate dynamically from external sources:
+
+- File watcher (JSON / YAML list)
+- DNS SRV (`hickory-resolver`)
+- Consul (`/v1/health/service` long poll)
+- etcd v3 (prefix watch)
+- Kubernetes Endpoints API (informer, feature-gated)
+
+Safety limits: minimum-member floor, maximum churn-per-interval cap. Added
+members enter `probing` before joining the LB ring; removed members drain.
+
+---
+
+## 27. Disaster Recovery & Backup
+
+- `waf config export --out snapshot.tar.zst` serializes effective config +
+  rules + tenants into a deterministic archive, signed with the cluster
+  key.
+- `waf config import snapshot.tar.zst --dry-run` runs the dry-run validator;
+  `--apply` activates after the swap.
+- **State snapshots**: Redis RDB + AOF / Raft log + snapshot, replicated
+  across AZs and archived hourly (S3 Object Lock).
+- **Audit backup**: at-least-once delivery to SIEM + S3 Object Lock +
+  witness anchor.
+- **RPO** ≤ 5 minutes for security state; 0 for config (Git).
+- **RTO** ≤ 30 min region failover; ≤ 4 h cold-start rebuild.
+- **Quarterly restore drills** with audit evidence.
+
+---
+
+## 28. Change Management / GitOps
+
+- Declarative config is the single source of truth in a Git repo.
+- **Signed commits only**: GPG / SSH signatures verified against
+  `allowed_signers` at every pull.
+- **CI lint** pipeline runs the same validator as the runtime.
+- **Approval floors**: merges to `rules/core/` or `tenants/` require ≥ 2
+  approvers, one `admin`.
+- **GitSyncer** (leader-only task) polls / receives a webhook; new commits
+  run the dry-run validator before the swap.
+- **Break-glass** dashboard edits apply locally **and** round-trip as a PR
+  against the source repo. A banner warns until the PR is merged; the next
+  Git pull will revert an unmerged emergency change.
+- `waf config diff` shows pending changes; `waf config apply` triggers the
+  dry-run + swap.
+
+---
+
+## 29. SLO / SLI & Alerting
+
+- **SLIs**: availability (non-5xx / total), **WAF-overhead** latency
+  (p50/p95/p99, not end-to-end), upstream availability, admin API
+  availability, audit delivery rate, config freshness, cert freshness.
+- **SLOs**: data-plane availability 99.99% / 30d, p99 overhead ≤ 5 ms in
+  99% of 1-min windows, audit delivery 99.999%, cert freshness ≥ 7 days
+  remaining.
+- **Multi-window, multi-burn-rate** alerts (fast 1h/2%, slow 6h/5%,
+  trickle 3d/10%).
+- **Alert routing**: Alertmanager-compatible plus direct webhook (Slack,
+  PagerDuty, ServiceNow, Jira).
+- **Runbooks** referenced on every alert with symptom, mitigation,
+  root-cause probes, and escalation path.
+
+---
+
+## 30. Crate Dependencies (indicative)
 
 ```toml
-# Clustering / state
-deadpool-redis = "0.18"
-foca = "0.17"              # SWIM membership
-openraft = "0.9"           # bonus
+# Runtime & HTTP
+tokio          = { version = "1",  features = ["full"] }
+hyper          = { version = "1",  features = ["http1", "http2", "server", "client"] }
+hyper-util     = "0.1"
+tower          = "0.5"
+http           = "1"
+bytes          = "1"
+mimalloc       = "0.1"
 
-# Compliance / crypto
-aws-lc-rs = "1"            # FIPS-capable rustls provider
-zeroize = "1"
-secrecy = "0.8"
-cryptoki = "0.7"           # PKCS#11 / HSM (bonus)
+# TLS / ACME / crypto
+rustls         = "0.23"
+tokio-rustls   = "0.26"
+rustls-pemfile = "2"
+aws-lc-rs      = { version = "1", features = ["fips"], optional = true }
+instant-acme   = { version = "0.7", optional = true }
+rcgen          = "0.13"
+blake3         = "1"
+sha2           = "0.10"
+hmac           = "0.12"
+zeroize        = { version = "1", features = ["zeroize_derive"] }
+secrecy        = "0.10"
+
+# Routing / matching
+regex          = "1"
+globset        = "0.4"
+ipnet          = "2"
+hashring       = "0.3"
+aho-corasick   = "1"
+
+# Config / serde
+serde          = { version = "1", features = ["derive"] }
+serde_yaml     = "0.9"
+toml           = "0.8"
+figment        = "0.10"
+notify         = "6"
+arc-swap       = "1"
+
+# Concurrency
+dashmap        = "6"
+parking_lot    = "0.12"
+moka           = { version = "0.12", features = ["future"] }
+crossbeam      = "0.8"
+
+# Auth
+jsonwebtoken   = "9"
+openidconnect  = "3"
+argon2         = "0.5"
+rusty_paseto   = "0.7"
+
+# State backends
+deadpool-redis = "0.18"
+redis          = "0.27"
+openraft       = { version = "0.9", optional = true }
+foca           = { version = "0.17", optional = true }
+
+# Observability
+prometheus     = "0.13"
+tracing        = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }
+tracing-appender = "0.2"
+opentelemetry  = { version = "0.27", optional = true }
+opentelemetry-otlp = { version = "0.27", optional = true }
+
+# Threat intel / content / SIEM
+reqwest        = { version = "0.12", features = ["rustls-tls", "stream"] }
+rdkafka        = { version = "0.36", optional = true }
+infer          = "0.16"
 
 # Secrets
-vaultrs = "0.7"
-aws-sdk-secretsmanager = "1"
-aws-sdk-ssm = "1"
+vaultrs        = "0.7"
 
-# Auth / RBAC
-openidconnect = "4"
-argon2 = "0.5"
-rusty_paseto = "0.7"
-jsonwebtoken = "9"         # shared w/ §2.11
+# Service discovery
+hickory-resolver = "0.24"
 
-# SIEM / logging
-rdkafka = "0.37"
-syslog = "7"
-# (CEF/LEEF/OCSF formatters are written inline)
-
-# Threat intel
-reqwest = { version = "0.12", features = ["json", "gzip", "stream"] }
-
-# API security
-jsonschema = "0.28"
-openapiv3 = "2"
-async-graphql-parser = "7"
-
-# DLP
-regex = "1"                # shared
-infer = "0.16"             # magic-byte
-
-# Scanning
-# (custom ICAP client; no ready crate)
-
-# Load shedding
-# (custom; can borrow concurrency-limits patterns)
-
-# Git sync
-gix = "0.66"               # pure-Rust git
-
-# Health / alerting
-prometheus = "0.13"        # shared w/ §2.15
+# Signals / OS
+nix            = { version = "0.29", features = ["signal", "fs"] }
 ```
 
-All new dependencies are behind feature flags so the minimal build does
-not pay for unused subsystems.
+Feature flags (`Cargo.toml`):
+
+```toml
+[features]
+default   = ["tls", "redis"]
+tls       = []
+fips      = ["dep:aws-lc-rs"]
+acme      = ["dep:instant-acme"]
+redis     = []
+raft      = ["dep:openraft"]
+gossip    = ["dep:foca"]
+otel      = ["dep:opentelemetry", "dep:opentelemetry-otlp"]
+kafka     = ["dep:rdkafka"]
+http3     = []     # quinn + h3
+hsm       = []     # cryptoki / PKCS#11
+bot_ml    = []     # model-backed bot classifier
+```
 
 ---
 
-## 2.38 Enterprise Testing Strategy
+## 31. Implementation Phases
 
-In addition to the v1 + v2 test strategies (§2.4, §2.18):
+Implementation is sequenced so that each phase produces a runnable binary
+with a meaningful subset of the requirements.
 
-- **Cluster consistency**: two-node test with Redis, generate load,
-  verify rate-limit counters converge and no more than 2× burst slips.
-- **FIPS boot**: start the WAF with `compliance.fips: true`; assert
-  refusal to load non-FIPS cipher suite.
-- **Audit log tamper detection**: mutate a line in the audit log file;
-  verifier CLI reports break at expected offset.
-- **Secret rotation**: rotate a Vault entry while traffic is flowing;
-  assert TLS handshake continues using the new cert within N seconds
-  with zero dropped connections.
-- **RBAC enforcement**: as `viewer`, attempt every mutating endpoint;
-  expect 403.
-- **Multi-tenant isolation**: tenant A's viewer token attempts to read
-  tenant B's audit log → 404.
-- **SIEM round-trip**: fire a synthetic attack, assert CEF record
-  arrives at the test SIEM with correct fields.
-- **STIX/TAXII**: import a fixture feed, send a request from a listed
-  IP, assert block with correct feed provenance.
-- **CAPTCHA escalation**: scripted client passes JS but fails CAPTCHA;
-  assert final decision is block.
-- **OpenAPI enforcement**: send a request violating the schema (extra
-  field, wrong type); assert block.
-- **DLP masking**: synthetic credit-card number in response body is
-  masked before reaching the client.
-- **ICAP AV**: upload EICAR test file; assert block.
-- **Load shedding**: overload a CATCH-ALL path while keeping a CRITICAL
-  path healthy; assert CRITICAL availability ≥ SLO.
-- **DR round-trip**: snapshot → wipe state → restore → pipeline works.
-- **GitOps**: commit a rule change; assert it becomes active within
-  poll interval without manual intervention.
-- **Healthz semantics**: kill state backend; `/healthz/live` still OK,
-  `/healthz/ready` goes NOT-OK.
+| Phase | Milestone | Key subsystems |
+|---|---|---|
+| **0** | Skeleton | CLI, config schema + loader + ArcSwap, validator, logging, `/healthz/live` |
+| **1** | Proxy core | h1/h2 adapters, route table, upstream pool (RR + health + CB), transforms, quotas |
+| **2** | Security baseline | rule engine, rate limiter (in-mem), IP reputation, attack detectors, risk + challenge (JS/PoW), response filter |
+| **3** | TLS | rustls resolver, SNI, hot cert reload, TLS 1.3 defaults |
+| **4** | Observability | Prometheus, access logs, W3C trace propagation, `/healthz/ready` + `/healthz/startup` |
+| **5** | Admin plane | Axum dashboard + admin API, mTLS + OIDC + RBAC, change approval, admin audit chain |
+| **6** | Clustered state | Redis backend, cluster-wide counters / auto-block / nonces, local fallback + reconcile |
+| **7** | Tenancy | tenant config, key prefixing, tenant governor, security floors, per-tenant dashboards |
+| **8** | Audit + SIEM | hash-chained audit, JSONL/Syslog/CEF/LEEF/OCSF/HEC/Kafka sinks, witness exporter |
+| **9** | Secrets | provider trait + env/file/Vault/AWS/GCP/Azure, rotation, zeroize |
+| **10** | Threat intel | feed fetchers (text/CSV/JSON/STIX/TAXII), store, provenance in audit |
+| **11** | API guard | OpenAPI enforcement, GraphQL guard, HMAC request signing |
+| **12** | DLP | patterns, Luhn/mod-97 validators, mask/hash/FPE, audit redaction |
+| **13** | Bot management | JA4/h2 fingerprints, rDNS verification, CAPTCHA providers, escalation ladder |
+| **14** | Content scan | ICAP REQMOD/RESPMOD, magic-byte, archive-bomb |
+| **15** | Adaptive shed | Gradient2, priority queue, per-tenant soft/hard |
+| **16** | Compliance profiles | FIPS gate, PCI, SOC 2, GDPR, HIPAA, stacking logic |
+| **17** | HA + clustering | gossip membership, leader lease, rolling restart story |
+| **18** | GitOps | signed-commit verification, GitSyncer, dashboard→PR round-trip |
+| **19** | DR / backup | config export/import, state snapshots, restore validation |
+| **20** | Zero-downtime | `SO_REUSEPORT` worker supervisor, graceful drain, hot binary reload (FD passing) |
+| **21** | SLO / alerting | SLI recorders, burn-rate metrics, Alertmanager-compatible webhook |
+| **22** | Bonus | ACME + OCSP stapling, HTTP/3, HSM, service discovery, OTLP exporter, gRPC-Web, behavioral bot ML |
 
 ---
 
-## 2.19 v2 Deliverables Checklist
+## 32. Testing & Validation
 
-- [ ] Single binary with all features compiled in
-- [ ] YAML config exercising `routes`, `upstreams`, `tls`, `observability`
-- [ ] Two-pool canary demo with weighted split
-- [ ] Active + passive health checks verified in integration test
-- [ ] HTTPS listener with SNI serving two different hostnames
-- [ ] WebSocket echo through the WAF
-- [ ] ForwardAuth + JWT routes in the demo config
-- [ ] `/metrics` scraped by a local Prometheus
-- [ ] `SIGTERM` graceful drain verified under load
-- [ ] Dry-run validator rejects malformed config on hot reload
+- **Unit**: every detector, every LB strategy, rule AST evaluator, hash
+  chain writer/verifier, DLP pattern matrix, FPE round-trips, CB state
+  machine.
+- **Integration**:
+  - Host routing conformance (exact / wildcard / regex / default).
+  - Health-check flap + CB transitions under induced failures.
+  - TLS/SNI handshake matrix with `openssl s_client`.
+  - WebSocket echo through the WAF.
+  - gRPC echo (`tonic`) with trailers preserved.
+  - ForwardAuth with a mock service.
+  - JWT + JWKS cache behavior.
+  - Redis-backed rate limit across two nodes.
+  - Hash-chain tamper detection by `waf audit verify`.
+  - Secrets rotation via Vault without restart.
+  - Two-tenant isolation (tenant A cannot see tenant B data).
+  - OIDC-gated admin API; viewer cannot mutate.
+- **End-to-end red team**: SQLi / XSS / path traversal / SSRF / brute
+  force / recon scanner must all be blocked.
+- **Load**: `wrk` / `hey` ≥ 5 000 RPS with p99 overhead ≤ 5 ms. Latency
+  measured as WAF overhead only.
+- **Chaos**: backend failures, Redis partition, TLS cert rotation under
+  load, DDoS simulation.
+- **Drain**: `wrk` under load + `SIGTERM` → zero dropped in-flight
+  requests.
+- **Dry-run**: malformed rule file refused; running config untouched;
+  dashboard shows the error.
+- **Compliance**: FIPS profile boots; PCI profile refuses TLS 1.1; GDPR
+  residency exporter refuses cross-region delivery.
+- **SLO**: burn-rate alert fires via Alertmanager on a synthetic regression.
+
+---
+
+## 33. Deliverables (maps to Requirement §34)
+
+- `./waf run` single static binary.
+- Hot reload of config, rules, secrets, and certificates.
+- Multi-host routing with SNI-checked host matching.
+- ≥ 2 upstream pools demonstrating LB + health checks.
+- Canary split between pools with sticky assignment.
+- TLS termination with hot-reloaded certificates.
+- HTTP/2, WebSocket upgrade, gRPC passthrough verified.
+- ForwardAuth + JWT integration tests passing.
+- Prometheus `/metrics` scraped successfully.
+- `traceparent` propagation verified.
+- Graceful drain under load with zero drops.
+- Hot binary reload keeps connections alive.
+- Dry-run validator blocks a malformed rule.
+- Two-node cluster sharing rate-limit + risk state via Redis.
+- FIPS-mode config profile boots.
+- Audit-log hash chain verified tamper-evident.
+- Secrets resolved from Vault; rotation without restart.
+- Admin listener gated by OIDC + RBAC.
+- Two tenants isolated end-to-end.
+- Syslog / CEF / OCSF forwarder delivering to a test SIEM.
+- STIX / TAXII feed imported with feed provenance in blocks.
+- Turnstile CAPTCHA fallback in the challenge ladder.
+- OpenAPI schema enforcement blocking malformed requests.
+- DLP masking a synthetic credit card in a response.
+- ICAP antivirus integration on an upload route.
+- Load shedding engaged under overload; CRITICAL traffic unaffected.
+- Config snapshot → restore round-trip.
+- `/healthz/*` correct at each lifecycle phase.
+- SLO burn alert via Alertmanager on synthetic regression.
+- Red-team attack simulation fully blocked.
+- ≥ 5 000 RPS sustained with p99 overhead ≤ 5 ms.

@@ -27,7 +27,13 @@ crates/aegis-control/
     ├── access_log.rs         # combined / json / template writer
     ├── dashboard/
     │   ├── mod.rs
-    │   ├── routes.rs         # /dashboard/* pages
+    │   ├── overview.rs       # cluster + tenant + SLO overview page
+    │   ├── routes_page.rs    # /dashboard/routes
+    │   ├── pools_page.rs     # /dashboard/upstreams
+    │   ├── rules_page.rs     # /dashboard/rules (editor + dry-run)
+    │   ├── tenants_page.rs   # /dashboard/tenants
+    │   ├── audit_page.rs     # /dashboard/audit search + verify
+    │   ├── cluster_page.rs   # /dashboard/cluster (ClusterMembership.peers)
     │   └── sse.rs            # live event feed (subscribes to AuditBus)
     ├── api/
     │   ├── mod.rs            # REST admin API
@@ -102,6 +108,18 @@ crates/aegis-control/
 - Static HTML/JS shell (vendored, no build step). SSE endpoint subscribes to `AuditBus`, streams events filtered by user role + tenant.
 - Test: subscribe, emit event via bus, assert delivered.
 
+**T1.4b** — Dashboard pages (shipped incrementally)
+- Files under `src/dashboard/*_page.rs`.
+- Pages:
+  - **Overview**: request rate, block rate, SLO burn, cluster peers.
+  - **Routes**: list routes, show host/path/tier/upstream/policy, link to traffic.
+  - **Upstreams**: pool members, health, CB state, inflight, p99.
+  - **Rules**: browse + filter by id/scope/priority; inline editor with dry-run validate before save.
+  - **Tenants**: list + per-tenant drill-down (scoped by caller's tenant claim).
+  - **Audit**: search by time/class/tenant/rule; one-click `verify` runs hash-chain verifier.
+  - **Cluster**: `ClusterMembership.peers()` view with load + version.
+- Test: snapshot HTML render for each page; RBAC filter applied (viewer of tenant A sees no tenant B data).
+
 **T1.5** — `GET /api/config` (secrets masked)
 - File: `src/api/config.rs`
 - Return effective `WafConfig` as JSON; `${secret:*}` references never resolved in response.
@@ -161,7 +179,12 @@ crates/aegis-control/
 
 **T3.5** — Witness export
 - File: `src/audit/witness.rs`
-- Periodic task signs chain head and exports to S3 Object Lock / append-only log. Feature-gated.
+- Periodic task signs chain head and exports to S3 Object Lock / append-only log. Leader-only via `ClusterMembership::acquire_lease("witness")`. Feature-gated.
+
+**T3.6** — State backend snapshot exporter
+- File: `src/audit/state_snapshot.rs`
+- Hourly leader-only task triggers a state-backend snapshot (Redis `BGSAVE` hook or Raft snapshot) and ships it to the configured archive target (file / S3 / GCS). Surfaces RPO in `waf_state_snapshot_lag_seconds` metric.
+- Test: mocked backend — snapshot task writes an archive and the metric reflects freshness.
 
 ---
 
@@ -246,9 +269,9 @@ crates/aegis-control/
 
 ## 3. Interfaces Consumed
 
-- From M1: config reload events (via `AuditBus` + a `ReadinessSignal` channel), cert freshness signal, pool health state (read via a `SharedStatus` handle).
+- From M1: `ReadinessSignal`, `ClusterMembership` impl, cert freshness signal, pool health state, `ConfigBroadcast` subscription, `CacheProvider` stats.
 - From M2: `AuditEvent` stream on the bus, metric families in the shared registry.
-- Provides to M1+M2: `MetricsRegistry` at boot, `TenantPressure` for the shedder.
+- Provides to M1+M2: `MetricsRegistry` at boot, `TenantPressure` for the shedder, `ConfigBroadcast` sender.
 
 ## 4. Metrics You Own
 
