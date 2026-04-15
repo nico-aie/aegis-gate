@@ -1,4 +1,15 @@
-# Multi-Tenancy (v2, enterprise)
+# Multi-Tenancy (DEFERRED — future work)
+
+> **DEFERRED.** Multi-tenancy is out of scope for v1. v1 runs as a
+> single-tenant WAF: one config, one dashboard, one audit stream,
+> one set of metrics. This document is retained as design reference
+> for when multi-tenancy is picked up. Do not implement against this
+> spec. There is no `TenantConfig`, `TenantGovernor`, or
+> `TenantPressure` in the v1 contract.
+
+---
+
+## Original design (pre-v1 scope cut)
 
 > **Enterprise addendum.** A single WAF cluster serves multiple tenants
 > with isolated config, state, metrics, audit, and dashboards — no

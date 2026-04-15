@@ -3,9 +3,16 @@
 **Read [`shared-contract.md`](./shared-contract.md) first.**
 
 **Mission:** operators can *see, audit, and govern* the WAF. You own the
-admin listener, dashboard, RBAC/SSO, Prometheus/OTEL, audit hash-chain,
-SIEM forwarding, multi-tenancy surfaces, compliance profiles, GitOps
-loader, and SLO alerts.
+admin listener, dashboard, local dashboard authentication (argon2id +
+HMAC session + CSRF + IP allowlist + optional TOTP/mTLS), Prometheus/OTEL,
+audit hash-chain, SIEM forwarding, compliance profiles, GitOps loader,
+and SLO alerts.
+
+> **Scope notes (v1).** OIDC/SSO, RBAC roles, and multi-tenancy are
+> deferred — see `docs/deferred/rbac-sso.md` and
+> `docs/deferred/multi-tenancy.md`. v1 ships one admin principal with
+> full privileges; dashboard auth is specified in
+> `docs/dashboard-auth.md`.
 
 **Crate:** `crates/aegis-control/`
 

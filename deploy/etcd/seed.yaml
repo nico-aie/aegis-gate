@@ -1,0 +1,100 @@
+# Aegis-Gate — minimal dev seed config
+#
+# Loaded into etcd at key /aegis/config/waf by bootstrap.sh.
+# This is the bare minimum to make `./waf run` boot and serve
+# a single plaintext listener proxying to the httpbin mock.
+#
+# Real schemas live in plans/shared-contract.md §2.6.
+
+listeners:
+  data:
+    - bind: 0.0.0.0:8080
+      protocol: http
+  admin:
+    bind: 127.0.0.1:9443
+
+routes:
+  - host: "*"
+    path: "/*"
+    match_type: prefix
+    methods: [GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS]
+    upstream: default
+    tier_override: medium
+
+upstreams:
+  default:
+    lb: round_robin
+    members:
+      - addr: host.docker.internal:8081
+        weight: 1
+    health:
+      path: /status/200
+      interval: 5s
+
+state:
+  backend: in_memory            # dev; switch to redis for W5
+
+rules:
+  paths: []
+  default_action: { action: allow }
+  max_rule_count: 10000
+  strict_compile: false
+
+rate_limit:
+  buckets: []
+
+risk:
+  weights:
+    bad_asn: 10
+    bad_ja4: 10
+    failed_auth: 15
+    detector_hit: 20
+    bot_unknown: 5
+    repeat_offender: 15
+  decay_half_life: 5m
+  thresholds: { challenge_at: 40, block_at: 80, max: 100 }
+  challenge_ladder: []
+
+detectors:
+  sqli:             { enabled: true,  action: { action: block, status: 403 } }
+  xss:              { enabled: true,  action: { action: block, status: 403 } }
+  path_traversal:   { enabled: true,  action: { action: block, status: 403 } }
+  ssrf:             { enabled: true,  action: { action: block, status: 403 } }
+  header_injection: { enabled: true,  action: { action: block, status: 403 } }
+  body_abuse:       { enabled: true,  action: { action: block, status: 413 } }
+  recon:            { enabled: false, action: { action: allow } }
+  brute_force:      { enabled: false, action: { action: allow } }
+  limits: { max_body_peek: 1048576, max_body_scan: 2097152 }
+
+dlp:
+  patterns: []
+  max_scan_bytes: 2097152
+
+observability:
+  prometheus:
+    bind: 0.0.0.0:9100
+    path: /metrics
+  access_log:
+    format: json
+    path: stdout
+
+audit:
+  sinks: []
+  chain: { enabled: false }
+  retention: 720h
+  pseudonymize_ip: false
+
+admin:
+  bind: 127.0.0.1:9443
+  dashboard_auth:
+    # DEV ONLY: placeholder argon2id hash of the literal "dev-only-do-not-use"
+    # Real deployments MUST override this via waf admin set-password.
+    password_hash_ref: "${secret:env:AEGIS_ADMIN_PW_HASH}"
+    session_ttl_idle: 30m
+    session_ttl_absolute: 8h
+    csrf_secret_ref: "${secret:env:AEGIS_CSRF_SECRET}"
+    ip_allowlist: ["127.0.0.1/32", "::1/128"]
+    totp_enabled: false
+    login_rate_limit:
+      limit: 5
+      window: 1m

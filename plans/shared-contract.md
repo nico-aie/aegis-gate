@@ -107,6 +107,7 @@ pub struct RequestCtx {
     pub request_id: String,        // ulid
     pub received_at: std::time::Instant,
     pub client: ClientInfo,
+    // tenant_id reserved for future multi-tenancy (deferred) — always None in v1
     pub tenant_id: Option<String>,
     pub trace_id: Option<String>,  // W3C traceparent
     /// Free-form bag populated by the pipeline. Keys used by the
@@ -146,6 +147,7 @@ pub struct RouteCtx {
     pub tier: Tier,
     pub failure_mode: FailureMode,
     pub upstream: String,          // pool name
+    // tenant_id reserved for future multi-tenancy (deferred) — always None in v1
     pub tenant_id: Option<String>,
 }
 ```
@@ -158,6 +160,7 @@ pub struct RiskKey {
     pub ip: std::net::IpAddr,
     pub device_fp: Option<String>,
     pub session: Option<String>,
+    // tenant_id reserved for future multi-tenancy (deferred) — always None in v1
     pub tenant_id: Option<String>,
 }
 ```
@@ -171,6 +174,7 @@ pub struct AuditEvent {
     pub ts: chrono::DateTime<chrono::Utc>,
     pub request_id: String,
     pub class: AuditClass,
+    // tenant_id reserved for future multi-tenancy (deferred) — always None in v1
     pub tenant_id: Option<String>,
     pub tier: Option<Tier>,
     pub action: String,
@@ -205,7 +209,7 @@ pub struct WafConfig {
     pub observability: ObservabilityConfig, // M3, §2.6.9
     pub audit: AuditConfig,               // M3, §2.6.10
     pub admin: AdminConfig,               // M3, §2.6.11
-    pub tenants: Vec<TenantConfig>,       // M3, §2.6.12
+    // §2.6.12 multi-tenancy is DEFERRED (see deferred/multi-tenancy.md)
     pub compliance: Option<ComplianceProfile>, // M3, §2.6.13
 }
 ```
@@ -270,7 +274,7 @@ pub struct RateLimitConfig {
 }
 pub struct RateLimitRule {
     pub id: String,
-    pub scope: RlScope,                  // global | tenant | route
+    pub scope: RlScope,                  // global | route
     pub key:   RlKey,                    // ip | session | header(name) | jwt_sub
     pub algo:  RlAlgo,                   // sliding_window | token_bucket
     pub limit: u64, pub window: Duration,
@@ -377,41 +381,55 @@ pub struct WitnessConfig {
 #### 2.6.11 `AdminConfig` (M3)
 ```rust
 pub struct AdminConfig {
-    pub bind: std::net::SocketAddr,
-    pub tls: Option<TlsConfig>,          // mTLS for admin
-    pub oidc: Option<OidcConfig>,
-    pub api_tokens: Vec<ApiTokenConfig>,
-    pub rbac: RbacConfig,
-    pub ip_allowlist: Vec<ipnet::IpNet>,
-    pub require_approval: bool,          // 4-eyes for mutating ops
+    pub bind: std::net::SocketAddr,      // default 127.0.0.1:9443
+    pub tls: Option<TlsConfig>,          // server TLS for admin listener
+    pub dashboard_auth: DashboardAuthConfig,
 }
-pub struct OidcConfig {
-    pub issuer: String, pub client_id: String,
-    pub client_secret_ref: String, pub redirect_uri: String,
+
+pub struct DashboardAuthConfig {
+    /// argon2id PHC hash of the admin password, in the form
+    /// `$argon2id$v=19$m=65536,t=2,p=1$<salt>$<hash>`. Resolved via
+    /// `${secret:etcd:/aegis/secrets/admin_password}`.
+    pub password_hash_ref: String,
+    /// 32-byte HMAC key for session + CSRF tokens.
+    pub csrf_secret_ref: String,
+    pub session_ttl_idle: Duration,       // default 30m
+    pub session_ttl_absolute: Duration,   // default 8h
+    pub ip_allowlist: Vec<ipnet::IpNet>,  // default [127.0.0.1/32, ::1/128]
+    pub totp_enabled: bool,               // default false
+    pub login_rate_limit: LoginRateLimitConfig,
+    pub lockout: LockoutConfig,
+    pub mtls: MtlsAdminConfig,
 }
-pub struct ApiTokenConfig {
-    pub id: String, pub hash_ref: String, pub roles: Vec<String>,
+
+pub struct LoginRateLimitConfig {
+    pub per_ip:   RateCap,                // default { limit: 5,  window: 1m }
+    pub per_user: RateCap,                // default { limit: 10, window: 15m }
 }
-pub struct RbacConfig {
-    pub roles: std::collections::BTreeMap<String, Vec<String>>, // role -> perms
+pub struct RateCap { pub limit: u32, pub window: Duration }
+
+pub struct LockoutConfig {
+    pub threshold: u32,                   // default 10
+    pub window: Duration,                 // default 15m
+    pub duration: Duration,               // default 15m
+}
+
+pub struct MtlsAdminConfig {
+    pub enabled: bool,                    // default false
+    pub ca_ref: Option<String>,           // PEM bundle via secret provider
+    pub required_san: Option<String>,     // e.g. "CN=aegis-admin"
 }
 ```
 
-#### 2.6.12 `TenantConfig` (M3)
-```rust
-pub struct TenantConfig {
-    pub id: String, pub name: String,
-    pub allowed_hosts: Vec<String>,
-    pub quotas: TenantQuotas,
-    pub residency: Option<String>,        // "eu", "us", ...
-    pub compliance: Option<ComplianceProfile>,
-    pub rule_namespace: Option<String>,
-    pub audit_sinks: Vec<String>,         // ids referencing AuditConfig.sinks
-}
-pub struct TenantQuotas {
-    pub max_inflight: u32, pub rps: u32, pub burst: u32,
-}
-```
+**No OIDC, RBAC, API-token, or 4-eyes approval in v1.** See
+`docs/deferred/rbac-sso.md` for the deferred enterprise design.
+
+#### 2.6.12 Multi-tenancy — **DEFERRED**
+
+`TenantConfig`, `TenantQuotas`, `TenantPressure`, and the tenant
+governor are out of scope for v1. The v1 WAF is single-tenant:
+one config, one dashboard, one audit stream. See
+`docs/deferred/multi-tenancy.md` for the original design.
 
 #### 2.6.13 `ComplianceProfile` (M3)
 ```rust
@@ -572,10 +590,10 @@ pub struct SlidingWindowResult {
 }
 ```
 
-**Key namespace.** All keys are prefixed by tenant when applicable:
-`t:{tenant_id}:{subsystem}:{key}` — e.g. `t:acme:rl:sw:1.2.3.4`.
-Untenanted keys use `g:{subsystem}:{key}`. The prefix is applied
-inside each `StateBackend` impl, callers pass the unprefixed key.
+**Key namespace.** All keys use the `g:{subsystem}:{key}` prefix
+(e.g. `g:rl:sw:1.2.3.4`). The prefix is applied inside each
+`StateBackend` impl; callers pass the unprefixed key. A `t:{id}:`
+prefix is reserved for future multi-tenancy.
 
 **Lease ownership.** Distributed leases (leader-only tasks) live on
 `ClusterMembership::acquire_lease` (§3.8), not on `StateBackend`.
@@ -717,26 +735,13 @@ same trait. Leader-only tasks (threat-intel fetch, ACME issue, GitOps
 pull, audit witness export) use `acquire_lease`. M3 surfaces `peers()` on
 the dashboard and `/api/cluster`.
 
-### 3.9 TenantPressure (M3 writes, M1 reads)
+### 3.9 TenantPressure — **DEFERRED**
 
-`aegis-core/src/tenancy.rs`:
-
-```rust
-#[derive(Clone, Default)]
-pub struct TenantPressure {
-    inner: Arc<dashmap::DashMap<String, PressureState>>,
-}
-
-pub struct PressureState {
-    pub inflight: AtomicU32,
-    pub rps_ewma: AtomicU32,
-    pub over_quota: AtomicBool,  // set by M3 governor
-}
-```
-
-M3 flips `over_quota` when a tenant exceeds its quota; M1's adaptive
-shedder reads it and rejects that tenant with 503 before touching the
-pipeline. Shared Arc, no channel needed.
+Multi-tenancy is out of scope for v1 (see
+`docs/deferred/multi-tenancy.md`). The adaptive shedder (M1 T5.3)
+operates on **global** and **per-route** signals only; there is no
+`TenantPressure` shared state. When multi-tenancy is picked up, a
+tenant-pressure trait will land here without touching §3.1–§3.8.
 
 ### 3.10 ReadinessSignal (M1 ↔ M3)
 
@@ -792,7 +797,6 @@ async fn main() -> aegis_core::Result<()> {
     let audit_bus    = aegis_core::AuditBus::new(4096);
     let cfg_bcast    = tokio::sync::broadcast::channel(64).0;
     let readiness    = aegis_core::ReadinessSignal::default();
-    let tenant_press = aegis_core::TenantPressure::default();
     let state: Arc<dyn StateBackend> =
         aegis_proxy::state::build(&cfg.load().state).await?;
     let cluster: Arc<dyn ClusterMembership> =
@@ -809,7 +813,7 @@ async fn main() -> aegis_core::Result<()> {
     // M3 control plane starts first so /healthz/startup is observable
     aegis_control::start(
         cfg.clone(), audit_bus.clone(), metrics.clone(),
-        readiness.clone(), tenant_press.clone(),
+        readiness.clone(),
         cluster.clone(), cfg_bcast.clone(),
     ).await?;
 
@@ -817,7 +821,7 @@ async fn main() -> aegis_core::Result<()> {
     aegis_proxy::run(
         cfg.clone(), pipeline, state, sd, cache, cluster,
         audit_bus.clone(), metrics,
-        readiness, tenant_press, cfg_bcast,
+        readiness, cfg_bcast,
     ).await
 }
 ```
@@ -848,7 +852,7 @@ pub type Result<T> = std::result::Result<T, WafError>;
 | End W1 | `./waf run` boots, `NoopPipeline` returns Allow, `/healthz/live` green | M1+M3 |
 | End W2 | One SQLi rule blocks; block appears on dashboard SSE | M1+M2+M3 |
 | End W3 | TLS listener + JWT auth + Prometheus scrape green | all |
-| End W4 | OIDC admin login + multi-tenant isolation test green | all |
+| End W4 | Dashboard auth green: login + session + CSRF + lockout + IP allowlist | all |
 | End W5 | 2-node Redis cluster, red-team suite green, 5k RPS load test | all |
 
 ---
@@ -900,16 +904,17 @@ owned below is a plan bug — file an issue against `shared-contract.md`.
 | 18 | Service discovery | M1 | T5.6 |
 | 19 | HA & clustering (state, gossip, leases) | M1 | T5.1–5.2, T5.7 |
 | 20 | Compliance profiles (FIPS/PCI/SOC2/GDPR/HIPAA) | M3 | T5.1 |
-| 21 | RBAC + SSO + admin mTLS + approval | M3 | T4.1–4.4, T5.4 |
-| 22 | Secrets management (env/file) | M1 | T5.4 |
-| 22 | Secrets management (vault/aws-sm/gcp-sm/azure-kv) | M3 | T5.6a–d |
-| 23 | Multi-tenancy + tenant governor | M3 | T4.5–4.6 |
+| 21 | Dashboard auth (argon2 + session + CSRF + rate-limit + allowlist + optional TOTP + optional mTLS) | M3 | T4.1–4.4 |
+| 21 | SSO / OIDC / RBAC / API tokens / 4-eyes approval | — | **DEFERRED** (see `docs/deferred/rbac-sso.md`) |
+| 22 | Secrets management (env/file/etcd) | M1 | T5.4 |
+| 22 | Secrets management (vault/aws-sm/gcp-sm/azure-kv) | — | **DEFERRED** |
+| 23 | Multi-tenancy + tenant governor | — | **DEFERRED** (see `docs/deferred/multi-tenancy.md`) |
 | 24 | Threat intelligence | M2 | T4.4 |
 | 25 | DLP + FPE | M2 | T5.2–5.3 |
 | 26 | API security (OpenAPI/GraphQL/HMAC/keys) | M2 | T5.4, 5.9–5.11 |
 | 27 | Bot management | M2 | T4.3 |
 | 28 | Content & upload (ICAP + bombs + magic) | M2 | T5.7–5.8 |
-| 29 | Adaptive load shedding + tenant pressure | M1+M3 | M1 T5.3 + M3 T4.6 |
+| 29 | Adaptive load shedding (global + per-route) | M1 | T5.3 |
 | 30 | DR & backup (config + state snapshot) | M1+M3 | M1 T5.5 + M3 T3.6 |
 | 31 | Data residency + retention + GDPR erase | M3 | T5.2 |
 | 32 | Change mgmt / GitOps + signed commits | M3 | T5.3–5.4 |

@@ -58,8 +58,9 @@ it for background.
 
 | Doc | Summary |
 |---|---|
-| [external-auth.md](./external-auth.md) | ForwardAuth, JWT, OIDC RP, Basic, IP ACL (data plane) |
-| [rbac-sso.md](./rbac-sso.md) | Dashboard + admin API auth (control plane) |
+| [external-auth.md](./external-auth.md) | ForwardAuth, JWT, Basic, IP ACL (origin-facing, data plane) |
+| [dashboard-auth.md](./dashboard-auth.md) | Dashboard + admin API auth: argon2id + HMAC session + CSRF + IP allowlist + optional TOTP/mTLS |
+| [deferred/rbac-sso.md](./deferred/rbac-sso.md) | **Deferred.** OIDC/SSO/RBAC design retained as future reference |
 
 ## Egress / data protection
 
@@ -87,8 +88,8 @@ it for background.
 
 | Doc | Summary |
 |---|---|
-| [ha-clustering.md](./ha-clustering.md) | Redis / Raft / gossip, split-brain safety |
-| [multi-tenancy.md](./multi-tenancy.md) | Per-tenant isolation + quotas + residency |
+| [ha-clustering.md](./ha-clustering.md) | etcd (config) + optional Redis (counters), split-brain safety |
+| [deferred/multi-tenancy.md](./deferred/multi-tenancy.md) | **Deferred.** Per-tenant isolation + quotas + residency (future) |
 | [compliance.md](./compliance.md) | FIPS, PCI, HIPAA, SOC 2, GDPR modes |
 | [audit-logging.md](./audit-logging.md) | Hash-chained audit + change log |
 | [siem-log-forwarding.md](./siem-log-forwarding.md) | Syslog / CEF / LEEF / OCSF / Kafka |
@@ -112,10 +113,10 @@ it for background.
 6. `risk-scoring.md` → `challenge-engine.md` — decisioning
 7. `config-hot-reload.md` → `gitops-change-management.md` — how
    changes land
-8. `dashboard.md` → `rbac-sso.md` → `audit-logging.md` — operator
+8. `dashboard.md` → `dashboard-auth.md` → `audit-logging.md` — operator
    surfaces
-9. `ha-clustering.md` → `multi-tenancy.md` → `compliance.md` — the
-   enterprise story
+9. `ha-clustering.md` → `compliance.md` — the enterprise story
+   (multi-tenancy is deferred; see `deferred/`)
 
 ## Ownership map
 
@@ -123,6 +124,6 @@ it for background.
 |---|---|---|
 | reverse-proxy, routing, upstreams, protocols, TLS, traffic-mgmt, quotas, transformations, session-affinity, hot-reload, service-discovery, zero-downtime, adaptive-shedding, secrets-management | **M1** | `../plans/member-1-proxy-core.md` |
 | rule-engine, rate-limiting, ddos, all detectors, device-fingerprinting, risk-scoring, challenge-engine, bot-management, behavioral-analysis, transaction-velocity, threat-intelligence, ip-reputation, geoip, response-filtering, dlp, content-scanning, api-security, external-auth | **M2** | `../plans/member-2-security-pipeline.md` |
-| dashboard, rbac-sso, observability, audit-logging, siem, multi-tenancy, compliance, data-residency, gitops, dr-backup, slo-sli, ha-clustering | **M3** | `../plans/member-3-control-plane.md` |
+| dashboard, dashboard-auth, observability, audit-logging, siem, compliance, data-residency, gitops, dr-backup, slo-sli, ha-clustering | **M3** | `../plans/member-3-control-plane.md` |
 | smart-caching | M1 (cache) + M2 (security-aware bypass) | both |
 | tiered-protection, graceful-degradation, per-route-quotas | M1 (enforce) + M2 (policy) | both |

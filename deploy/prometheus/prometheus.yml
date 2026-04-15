@@ -1,8 +1,11 @@
 global:
   scrape_interval: 5s
   evaluation_interval: 5s
+  external_labels:
+    env: dev
 
 scrape_configs:
+  # ---- DATA PLANE ----
   - job_name: aegis-waf
     metrics_path: /metrics
     static_configs:
@@ -10,8 +13,28 @@ scrape_configs:
           - host.docker.internal:9100
         labels:
           service: aegis-gate
-          env: dev
+          plane: data
+
+  # ---- CONTROL PLANE ----
+  - job_name: aegis-etcd
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - etcd:2379
+        labels:
+          service: etcd
+          plane: control
 
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
+        labels:
+          plane: control
+
+  # ---- OPTIONAL: Redis exporter (enable when M2 wires it in) ----
+  # - job_name: aegis-redis
+  #   static_configs:
+  #     - targets: ["redis-exporter:9121"]
+  #       labels:
+  #         service: redis
+  #         plane: data

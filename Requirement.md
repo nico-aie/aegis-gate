@@ -490,29 +490,39 @@ strictest setting with a single config switch.
 
 ---
 
-## 21. Administrative Access Control (RBAC + SSO)
+## 21. Administrative Access Control (Dashboard Auth)
 
-The dashboard and admin API are privileged surfaces gated by
-enterprise identity controls.
+The dashboard and admin API are privileged surfaces. v1 ships with
+**local authentication** — no IdP, no directory service, no
+external dependencies. See [`docs/dashboard-auth.md`](docs/dashboard-auth.md)
+for the full spec.
 
 - **Separation** of data-plane and admin-plane listeners on distinct
-  addresses; admin-plane behind **mTLS + OIDC**.
-- **Roles:** `viewer`, `operator`, `admin`, `auditor`,
-  `break_glass`. Per-endpoint role requirements enforced server-side
-  via `require_role!`.
-- **OIDC SSO** (Okta, Azure AD, Google Workspace, Keycloak) with
-  group-claim → role mapping. Local users only as a break-glass
-  fallback.
-- **MFA** enforced for `operator`+ when the IdP supports it.
-- **API tokens** for automation with scoped permissions, IP allowlist,
-  and TTL; stored as `argon2` hashes.
-- **Admin IP allowlist** enforced in addition to auth.
-- **Session timeout** + absolute session lifetime.
-- **Change approval:** mutations to CRITICAL-scope config require a
-  second admin to approve before activation.
-- **Admin change audit log** records actor, target, diff, reason, and
-  approver, hash-chained separately from the detection log.
-- **SCIM** provisioning and **WebAuthn** enforcement (bonus).
+  addresses. Admin listener binds to **loopback by default**.
+- **Password**: single admin principal; password hashed with
+  **argon2id** (`m=64 MiB, t=2, p=1`), PHC string stored in etcd at
+  `/aegis/secrets/admin_password`. Never on disk, never in logs.
+- **Session**: HMAC-signed cookie (`HttpOnly`, `Secure`,
+  `SameSite=Strict`), idle TTL 30 min, absolute TTL 8 h, server-side
+  revocation via etcd-backed session record.
+- **CSRF**: double-submit token on every mutating request.
+- **Login rate-limit**: per-IP 5/min and per-user 10/15min, with
+  exponential backoff and account lockout after threshold.
+- **IP allowlist** enforced at accept time, before the HTTP layer runs.
+  Default: `127.0.0.1/32` + `::1/128`.
+- **Optional TOTP** (RFC 6238) gated by `totp_enabled`.
+- **Optional admin mTLS** as an alternate auth path for CI/automation;
+  validated against an operator-supplied CA bundle.
+- **Constant-time** password verification; unknown-user path runs a
+  dummy argon2 verify to avoid user-enumeration timing oracles.
+- **Audit**: every login, logout, failure, lockout, password change,
+  and session revocation produces an `AuditClass::Admin` event on the
+  admin hash chain (separate from detection events).
+
+> **Deferred to future work** (see
+> [`docs/deferred/rbac-sso.md`](docs/deferred/rbac-sso.md)): OIDC/SSO,
+> SAML, LDAP, role-based access control, per-user accounts, API
+> tokens, 4-eyes change approval, SCIM, WebAuthn.
 
 ---
 
@@ -524,9 +534,10 @@ credentials) **must not** live in plaintext YAML.
 
 - **Reference syntax** in config: `${secret:<provider>:<path>[#field]}`
   placeholders resolved at load time.
-- **Providers:** environment variables, file (with mode enforcement),
-  HashiCorp Vault (KV v2 + dynamic creds), AWS Secrets Manager, GCP
-  Secret Manager, Azure Key Vault, PKCS#11 HSM.
+- **Providers (v1):** environment variables, file (with mode
+  enforcement), and **etcd** (ACL-gated keys under `/aegis/secrets/`).
+  Cloud providers (Vault, AWS SM, GCP SM, Azure KV, PKCS#11 HSM) are
+  **deferred**.
 - **Rotation without restart** — the config watcher re-resolves
   secrets on provider change notifications; affected subsystems
   (TLS, HMAC, upstream mTLS) reload atomically.
@@ -537,29 +548,16 @@ credentials) **must not** live in plaintext YAML.
 
 ---
 
-## 23. Multi-Tenancy
+## 23. Multi-Tenancy — **DEFERRED**
 
-A single WAF fleet may serve many independent customers or business
-units.
+Multi-tenancy is out of scope for v1. The v1 WAF runs as a
+**single-tenant** system: one config, one dashboard, one audit
+stream, one set of metrics, one compliance profile, one rule
+namespace. All references to `tenant_id` in the request context
+are reserved for future use and always `None` in v1.
 
-- **Tenant** is a first-class config entity: id, name, owner, quotas,
-  allowed hosts, tier overrides, rule namespace, audit sinks, data
-  residency.
-- **Isolation boundaries:** routing (allowed-hosts match), state
-  keyspace (every key prefixed by `tenant_id`), audit + metrics
-  (labeled and projected through the token claim), rules
-  (namespaced), secrets (tenant-scoped provider mounts).
-- **Per-tenant quotas:** requests/sec, concurrent connections, log
-  volume, risk-store entries, rule count, route count, body size.
-  Exceeding quota load-sheds that tenant only.
-- **Per-tenant dashboards** with data isolation — a tenant's `viewer`
-  cannot see another tenant's traffic.
-- **Per-tenant compliance profile** — one tenant can run in FIPS mode
-  while another does not.
-- **Security floors:** cluster admins set minimum CRITICAL controls,
-  TLS version, retention, and required detectors that a tenant cannot
-  weaken.
-- **Noisy-neighbor protection** via the adaptive load shedder (§28).
+See [`docs/deferred/multi-tenancy.md`](docs/deferred/multi-tenancy.md)
+for the original design and the future re-introduction plan.
 
 ---
 
@@ -773,9 +771,9 @@ collapse.
 - [ ] Two-node cluster sharing rate-limit + risk state via Redis
 - [ ] FIPS-mode config profile boots successfully
 - [ ] Audit-log hash chain verified tamper-evident
-- [ ] Secrets resolved from Vault; rotation works without restart
-- [ ] Admin listener gated by OIDC + RBAC; `viewer` cannot mutate
-- [ ] Two tenants isolated: tenant A cannot see tenant B's data
+- [ ] Secrets resolved from etcd / env / file; rotation works without restart
+- [ ] Admin listener gated by dashboard auth (argon2 + session + CSRF)
+- [ ] Login rate-limit + lockout enforced; failed attempts audited
 - [ ] Syslog / CEF / OCSF forwarder delivering to a test SIEM
 - [ ] STIX / TAXII feed imported; blocks show feed provenance
 - [ ] Turnstile CAPTCHA fallback working in challenge escalation

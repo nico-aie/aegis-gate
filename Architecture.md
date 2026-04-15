@@ -43,11 +43,6 @@ HTTP: **hyper 1.x**. TLS: **rustls** (optionally `aws-lc-rs` FIPS).
                          └──────────────────┬─────────────────────┘
                                             │
                          ┌──────────────────▼─────────────────────┐
-                         │  Tenant Governor                       │
-                         │  per-tenant quotas + load shedding     │
-                         └──────────────────┬─────────────────────┘
-                                            │
-                         ┌──────────────────▼─────────────────────┐
                          │  Security Pipeline (tiered)            │
                          │  ─ IP reputation / threat intel        │
                          │  ─ Device fingerprint (JA3/JA4/h2)     │
@@ -63,8 +58,8 @@ HTTP: **hyper 1.x**. TLS: **rustls** (optionally `aws-lc-rs` FIPS).
                          └──────────────────┬─────────────────────┘
                                             │
                          ┌──────────────────▼─────────────────────┐
-                         │  External Auth                         │
-                         │  ForwardAuth · JWT · OIDC · Basic · IP │
+                         │  External Auth (origin-facing)         │
+                         │  ForwardAuth · JWT · Basic · IP        │
                          └──────────────────┬─────────────────────┘
                                             │
                          ┌──────────────────▼─────────────────────┐
@@ -86,8 +81,8 @@ HTTP: **hyper 1.x**. TLS: **rustls** (optionally `aws-lc-rs` FIPS).
                                      Backend pools
 
 Side channels:
-  ├─ Control Plane listener (mTLS + OIDC): dashboard, admin API, /metrics, /healthz
-  ├─ State Backend client (Redis / Raft / in-mem)
+  ├─ Admin listener (loopback + argon2id password + HMAC session): dashboard, admin API, /metrics, /healthz
+  ├─ State Backend client (in-mem + optional Redis)
   ├─ Event Bus → SIEM sinks (JSON/Syslog/CEF/LEEF/OCSF/Kafka/HEC)
   ├─ Audit chain writer → witness exporter
   ├─ Secret providers (env/file/Vault/AWS/GCP/Azure/HSM)
@@ -145,9 +140,8 @@ crates/waf/
 │   │   ├── apiguard/           // OpenAPI + GraphQL + HMAC signing
 │   │   ├── dlp/                // inbound+outbound, patterns, FPE
 │   │   └── scan/               // ICAP REQMOD/RESPMOD
-│   ├── auth/                   // ForwardAuth, JWT, OIDC, Basic, CIDR
+│   ├── auth/                   // ForwardAuth, JWT, Basic, CIDR (origin-facing)
 │   ├── transform/              // req/resp headers, rewrite, CORS
-│   ├── tenancy/                // tenant model + governor + quotas
 │   ├── state/                  // StateBackend trait + impls
 │   ├── observability/
 │   │   ├── metrics.rs          // prometheus registry
@@ -158,7 +152,7 @@ crates/waf/
 │   ├── siem/                   // sink kinds + formatters + spool
 │   ├── threat_intel/           // feeds (text/STIX/TAXII/MISP) + store
 │   ├── secrets/                // providers + zeroize + rotation
-│   ├── admin/                  // Axum router, RBAC, OIDC, API tokens
+│   ├── admin/                  // Axum router, argon2 password, HMAC session, CSRF
 │   ├── gitops/                 // pull, verify signatures, stage, PR
 │   ├── compliance/             // FIPS/PCI/SOC2/GDPR/HIPAA gates
 │   ├── dr/                     // config export/import, snapshots
@@ -181,9 +175,8 @@ Top-level keys:
 ```yaml
 listeners: { data: [...], admin: {...} }
 tls:       { certificates: [...], acme: {...}, fips: false }
-tenants:   [ {id, name, quotas, residency, compliance, ...} ]
 routes:    [ {host, path, match_type, methods, upstream, tier_override,
-              transforms, auth, quotas, tenant_id, policies} ]
+              transforms, auth, quotas, policies} ]
 upstreams: { pool_name: { lb, members, health, circuit_breaker, tls,
                           retry, shadow, keepalive } }
 rules:     [ {id, priority, scope, when, then} ]
@@ -198,7 +191,7 @@ reputation: { blacklist, whitelist, trusted_proxies, asn_deltas }
 state:     { backend: redis|raft|in_memory, ... }
 audit:     { sinks, chain: {witness}, retention }
 secrets:   { providers: {...} }
-admin:     { oidc, rbac, api_tokens, ip_allowlist, approvals }
+admin:     { dashboard_auth: {password_hash_ref, session, csrf, totp?, mtls?}, ip_allowlist }
 workers:   { count, drain_timeout_s }
 observability: { prometheus, otel, access_log }
 compliance: { modes: [fips, pci, soc2, gdpr, hipaa] }
@@ -239,11 +232,10 @@ One pass through the data plane for a single HTTP request:
         ─► h1/h2 decode (h2 fingerprint captured)
         ─► Admission controller (priority by tier, may 503)
         ─► Build RequestContext { client_ip (XFF-walked), device_fp,
-                                   session_id, tenant_id, trace_ctx, tier? }
+                                   session_id, trace_ctx, tier? }
         ─► Route lookup (host → path → Route); tier_override applied
-        ─► Tenant governor (per-tenant quotas)
         ─► Security pipeline (see §5), tier-policy-driven fail mode
-        ─► External auth (ForwardAuth / JWT / OIDC / Basic / IP)
+        ─► External auth (ForwardAuth / JWT / Basic / IP)
         ─► Transforms (headers, rewrite, CORS preflight shortcut)
         ─► Upstream selection (LB + sticky + retry + shadow mirror)
         ─► Stream response frames + trailers
@@ -279,13 +271,13 @@ Stages run in this order. Earlier stages can short-circuit later ones.
    backend with per-deployment salt.
 
 3. **Rule engine.** Priority-ordered, scope-filtered (global → tier →
-   route → tenant → session). Rules compile into an `ArcSwap<Vec<CompiledRule>>`
+   route → session). Rules compile into an `ArcSwap<Vec<CompiledRule>>`
    with an AST evaluator. Match types: exact, regex, wildcard, CIDR,
    AND/OR/NOT. Actions: `Allow`, `Block`, `Challenge(level)`, `RateLimit`,
    `RaiseRisk(delta)`, `Transform`, `LogOnly`. First terminal action wins.
 
 4. **Rate limiter.** Sliding window and token bucket. Scope ∈ {IP, session,
-   device, tenant, route, global}. Backed by `StateBackend::incr_window`;
+   device, route, global}. Backed by `StateBackend::incr_window`;
    Redis path uses a Lua script for atomic window increment + TTL.
    **Local fallback** on backend outage reconciles with
    `max(local, remote)` on recovery.
@@ -319,8 +311,8 @@ Stages run in this order. Earlier stages can short-circuit later ones.
     client (REQMOD). Verdict mapped to pipeline decision. Clean-hash cache
     short-circuits repeated identical uploads.
 
-11. **Risk engine + challenge.** `RiskKey = (ip, device_fp, session,
-    tenant_id)`. Contributions from detectors, reputation, bot class,
+11. **Risk engine + challenge.** `RiskKey = (ip, device_fp, session)`.
+    Contributions from detectors, reputation, bot class,
     behavior, transaction velocity, threat intel. Score decays over time.
     Decision:
     - `< 30` allow · `30–70` challenge · `> 70` block.
@@ -363,7 +355,6 @@ pub struct Route {
     transforms: Transforms,
     auth: Option<AuthConfig>,
     quotas: RouteQuotas,
-    tenant_id: Option<TenantId>,
     policies: RoutePolicies,          // rate, challenge, cache
     failure_mode: Option<FailureMode>,
 }
@@ -467,13 +458,16 @@ impl rustls::server::ResolvesServerCert for DynamicResolver { ... }
 
 ---
 
-## 10. Auth Subsystem
+## 10. Auth Subsystem (origin-facing)
+
+This subsystem authenticates **end-user traffic** routed through the WAF
+to upstream origins. It is distinct from dashboard/admin authentication
+(see §15 and [`docs/dashboard-auth.md`](docs/dashboard-auth.md)).
 
 ```rust
 pub enum AuthConfig {
     ForwardAuth { address, copy_req_headers, copy_resp_headers, timeout },
     Jwt         { jwks_url, issuer, audience, required_claims },
-    Oidc        { issuer, client_id, client_secret_ref, scopes, session_cookie },
     Basic       { htpasswd_ref },
     CidrAllow(Vec<IpNet>),
 }
@@ -485,10 +479,12 @@ pub enum AuthConfig {
 - **JWT**: `jsonwebtoken` with a `moka`-backed JWKS cache keyed by `kid`,
   stale-while-revalidate. Validated claims projected into rules as
   `user.role`, `user.id`, etc., and optionally as headers.
-- **OIDC** relying party for browser traffic: session cookie encoded as
-  **PASETO v4.local** with the signing key from the secret provider.
 - **Basic** against an htpasswd file loaded via secret provider.
-- **OPA / Rego callout** (bonus).
+- **CIDR allowlist** for simple IP-gated upstreams.
+
+> **Deferred (origin-facing OIDC).** A browser-facing OIDC relying party
+> with PASETO session cookies is out of scope for v1. See
+> [`docs/deferred/rbac-sso.md`](docs/deferred/rbac-sso.md).
 
 ---
 
@@ -541,13 +537,10 @@ pub trait StateBackend: Send + Sync {
 
 Implementations:
 
-- **InMemory** — `dashmap` + `moka`, single-node dev.
-- **Redis / Redis Cluster** — `deadpool-redis`; atomic sliding windows via
-  Lua; keys tenant-prefixed; pipeline fused `INCRBY` + `EXPIRE`.
-- **Raft** — embedded `openraft` for air-gapped deployments with strong
-  consistency on critical counters.
-- **Gossip advisory soft state** — `foca` SWIM for membership + soft
-  hints, separate from the authoritative backend.
+- **InMemory** — `dashmap` + `moka`, primary backend for v1.
+- **Redis / Redis Cluster** (optional) — `deadpool-redis`; atomic sliding
+  windows via Lua; pipeline fused `INCRBY` + `EXPIRE`. Used only as a
+  counter-sharing layer across replicas; **never** a config source.
 
 Cluster membership is surfaced on the dashboard: `(node_id, zone, version,
 load, uptime)`. Leader-only tasks (threat-intel fetch, ACME issuance,
@@ -555,23 +548,13 @@ GitOps pull, audit witness export) acquire a lease key in the backend.
 
 ---
 
-## 13. Multi-Tenancy
+## 13. Multi-Tenancy — **DEFERRED**
 
-`Tenant` is a first-class config entity with: id, name, owner, allowed
-hosts, quotas, tier overrides, rule namespace, audit sinks, data residency,
-compliance profile, secret mount.
-
-- **Isolation boundaries**: routing (allowed hosts), state keyspace
-  (`tenant:{id}:…`), audit + metrics labels, rules (namespaced), secrets
-  (tenant-scoped providers).
-- **Tenant Governor** sits in front of the pipeline, tracks in-flight +
-  RPS per tenant, and 503-sheds offenders so one noisy tenant cannot starve
-  others.
-- **Security floors** defined by cluster admins set minimum CRITICAL
-  controls, TLS versions, retention, and required detectors that tenants
-  cannot weaken.
-- **Per-tenant dashboards**: admin API handlers project results through the
-  caller's tenant set; viewer tokens default to a single tenant.
+Out of scope for v1. The v1 WAF runs single-tenant: one config,
+one dashboard, one audit stream, one compliance profile. `tenant_id`
+on `RequestCtx` / `RouteCtx` is reserved (always `None`) and the
+tenant governor is not implemented. See
+[`docs/deferred/multi-tenancy.md`](docs/deferred/multi-tenancy.md).
 
 ---
 
@@ -601,30 +584,41 @@ pub struct Secret(Zeroizing<Vec<u8>>);
 
 ## 15. Admin Plane
 
-- **Listener**: separate address, mTLS **and** OIDC required; per-endpoint
-  role check via `require_role!(Role)` on every handler.
-- **Axum router**: `/dashboard`, `/api/*`, `/metrics`, `/healthz/*`.
-- **Roles**: `viewer`, `operator`, `admin`, `auditor`, `break_glass`.
-- **OIDC SSO** via `openidconnect` (Okta / Azure AD / Google / Keycloak).
-  `groups` / `roles` claims map to local roles via a configured matrix.
-  MFA is delegated to the IdP and verified via `amr` / `acr`.
-- **API tokens**: PASETO v4.local, scoped, IP-allowlisted, TTL'd; hashes
-  stored via `argon2`.
-- **Change approval**: mutations to CRITICAL-scope config require a second
-  admin approver before activation.
-- **Admin IP allowlist** in addition to auth.
-- **Admin change audit log**: hash-chained separately from the detection
-  log; records actor, target, diff, reason, approver.
-- **Break-glass edits** in GitOps mode are applied locally and
-  automatically round-tripped as a PR to the source repo; a banner warns
-  until the PR is merged.
+Single admin principal, local authentication. No IdP in v1. Full
+spec in [`docs/dashboard-auth.md`](docs/dashboard-auth.md).
+
+- **Listener**: separate address, loopback by default, IP allowlist
+  enforced at accept time.
+- **Axum router**: `/dashboard`, `/api/*`, `/metrics`, `/healthz/*`,
+  `/admin/login`, `/admin/logout`.
+- **Password**: `argon2id` PHC hash stored in etcd at
+  `/aegis/secrets/admin_password`, resolved via the `etcd` secret
+  provider.
+- **Session**: HMAC-signed cookie (`HttpOnly` + `Secure` +
+  `SameSite=Strict`), idle TTL 30 min, absolute TTL 8 h, bound to
+  client IP + UA hash, server-side revocation via etcd watch on
+  `/aegis/sessions/`.
+- **CSRF**: double-submit token on every mutating request.
+- **Login rate-limit** + lockout: per-IP 5/min, per-user 10/15min,
+  exponential backoff, lockout on threshold.
+- **Optional TOTP** (RFC 6238) when `totp_enabled = true`.
+- **Optional admin mTLS** as an alternate auth path for CI /
+  automation, validated against an operator-supplied CA.
+- **Admin change audit log**: every login, logout, failure, lockout,
+  password change, and session revocation emits an
+  `AuditClass::Admin` event on the admin hash chain, separate from
+  the detection chain.
+
+> **Deferred**: OIDC/SSO, RBAC roles, per-user accounts, API
+> tokens, 4-eyes approval, SCIM, WebAuthn. See
+> [`docs/deferred/rbac-sso.md`](docs/deferred/rbac-sso.md).
 
 ---
 
 ## 16. Observability
 
 - **Metrics** (`prometheus` crate): counters and histograms for requests
-  (tenant / route / tier / decision / status), detector hits, rule hits,
+  (route / tier / decision / status), detector hits, rule hits,
   risk-score buckets, upstream latency + circuit state, challenge
   issue/pass/fail, state-backend op latency, audit throughput + drops,
   config reload outcomes, retry / shadow counts, TLS handshake time, SLO
@@ -713,7 +707,7 @@ pub struct CompiledPattern {
   decryptable until retired.
 - **Audit redaction**: every audit event passes through DLP before
   emission so secrets never leak into logs.
-- Per-tenant, per-route policies; shared pipeline with response filtering.
+- Per-route policies; shared pipeline with response filtering.
 
 ---
 
@@ -775,8 +769,8 @@ pub struct CompiledPattern {
 - **Priority queue**: CATCH-ALL dropped first, then MEDIUM, then HIGH;
   CRITICAL is never shed by admission (only by actual security decisions).
 - **CPU-aware backstop** from `/proc/stat` or cgroups `cpu.stat`.
-- **Per-tenant `concurrency_soft` / `concurrency_hard`** so a burst from
-  one tenant cannot starve another.
+- **Per-route `concurrency_soft` / `concurrency_hard`** so a burst on
+  one route cannot starve others.
 - Coordinates with DDoS mode: thresholds tighten further when global DDoS
   mode is active.
 - Load-shed response: immediate `503` with `Retry-After` + request id, no
@@ -842,8 +836,7 @@ members enter `probing` before joining the LB ring; removed members drain.
 ## 27. Disaster Recovery & Backup
 
 - `waf config export --out snapshot.tar.zst` serializes effective config +
-  rules + tenants into a deterministic archive, signed with the cluster
-  key.
+  rules into a deterministic archive, signed with the cluster key.
 - `waf config import snapshot.tar.zst --dry-run` runs the dry-run validator;
   `--apply` activates after the swap.
 - **State snapshots**: Redis RDB + AOF / Raft log + snapshot, replicated
@@ -862,8 +855,8 @@ members enter `probing` before joining the LB ring; removed members drain.
 - **Signed commits only**: GPG / SSH signatures verified against
   `allowed_signers` at every pull.
 - **CI lint** pipeline runs the same validator as the runtime.
-- **Approval floors**: merges to `rules/core/` or `tenants/` require ≥ 2
-  approvers, one `admin`.
+- **Approval floors**: merges to `rules/core/` require ≥ 2 approvers,
+  one `admin`.
 - **GitSyncer** (leader-only task) polls / receives a webhook; new commits
   run the dry-run validator before the swap.
 - **Break-glass** dashboard edits apply locally **and** round-trip as a PR
@@ -1004,9 +997,9 @@ with a meaningful subset of the requirements.
 | **2** | Security baseline | rule engine, rate limiter (in-mem), IP reputation, attack detectors, risk + challenge (JS/PoW), response filter |
 | **3** | TLS | rustls resolver, SNI, hot cert reload, TLS 1.3 defaults |
 | **4** | Observability | Prometheus, access logs, W3C trace propagation, `/healthz/ready` + `/healthz/startup` |
-| **5** | Admin plane | Axum dashboard + admin API, mTLS + OIDC + RBAC, change approval, admin audit chain |
+| **5** | Admin plane | Axum dashboard + admin API, argon2id password + HMAC session + CSRF + login rate-limit + IP allowlist, change approval, admin audit chain |
 | **6** | Clustered state | Redis backend, cluster-wide counters / auto-block / nonces, local fallback + reconcile |
-| **7** | Tenancy | tenant config, key prefixing, tenant governor, security floors, per-tenant dashboards |
+| **7** | *(deferred — multi-tenancy)* | See `docs/deferred/multi-tenancy.md` |
 | **8** | Audit + SIEM | hash-chained audit, JSONL/Syslog/CEF/LEEF/OCSF/HEC/Kafka sinks, witness exporter |
 | **9** | Secrets | provider trait + env/file/Vault/AWS/GCP/Azure, rotation, zeroize |
 | **10** | Threat intel | feed fetchers (text/CSV/JSON/STIX/TAXII), store, provenance in audit |
@@ -1014,7 +1007,7 @@ with a meaningful subset of the requirements.
 | **12** | DLP | patterns, Luhn/mod-97 validators, mask/hash/FPE, audit redaction |
 | **13** | Bot management | JA4/h2 fingerprints, rDNS verification, CAPTCHA providers, escalation ladder |
 | **14** | Content scan | ICAP REQMOD/RESPMOD, magic-byte, archive-bomb |
-| **15** | Adaptive shed | Gradient2, priority queue, per-tenant soft/hard |
+| **15** | Adaptive shed | Gradient2, priority queue, per-route soft/hard |
 | **16** | Compliance profiles | FIPS gate, PCI, SOC 2, GDPR, HIPAA, stacking logic |
 | **17** | HA + clustering | gossip membership, leader lease, rolling restart story |
 | **18** | GitOps | signed-commit verification, GitSyncer, dashboard→PR round-trip |
@@ -1041,8 +1034,8 @@ with a meaningful subset of the requirements.
   - Redis-backed rate limit across two nodes.
   - Hash-chain tamper detection by `waf audit verify`.
   - Secrets rotation via Vault without restart.
-  - Two-tenant isolation (tenant A cannot see tenant B data).
-  - OIDC-gated admin API; viewer cannot mutate.
+  - Admin login flow: argon2 verify, HMAC session issue, CSRF enforced,
+    lockout after N failures, IP-allowlist rejection audited.
 - **End-to-end red team**: SQLi / XSS / path traversal / SSRF / brute
   force / recon scanner must all be blocked.
 - **Load**: `wrk` / `hey` ≥ 5 000 RPS with p99 overhead ≤ 5 ms. Latency
@@ -1078,8 +1071,8 @@ with a meaningful subset of the requirements.
 - FIPS-mode config profile boots.
 - Audit-log hash chain verified tamper-evident.
 - Secrets resolved from Vault; rotation without restart.
-- Admin listener gated by OIDC + RBAC.
-- Two tenants isolated end-to-end.
+- Admin listener gated by argon2id password + HMAC session + CSRF +
+  IP allowlist; login audited on success and failure.
 - Syslog / CEF / OCSF forwarder delivering to a test SIEM.
 - STIX / TAXII feed imported with feed provenance in blocks.
 - Turnstile CAPTCHA fallback in the challenge ladder.

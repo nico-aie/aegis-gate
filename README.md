@@ -31,9 +31,9 @@ aegis-gate/
 ├── docs/                  # Per-feature specifications (~55 files)
 │   ├── README.md          # Feature index + ownership map
 │   ├── cli.md             # Authoritative `waf` CLI reference
-│   ├── dependencies.md    # External services: required/optional matrix
 │   └── ...                # ddos-protection, detection-sqli, rate-limiting, ...
 ├── deploy/                # Docker-Compose files for dev and test stacks
+│   ├── dependencies.md    # External services: required/optional matrix
 │   ├── docker-compose.dev.yml
 │   └── docker-compose.test.yml
 ├── tests/                 # Out-of-process load and security tests

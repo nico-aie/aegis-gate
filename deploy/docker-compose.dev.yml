@@ -1,24 +1,52 @@
 # Aegis-Gate — Development Stack
 #
-# Minimum services needed for the W1–W3 milestones:
-#   - Redis (optional state backend; WAF falls back to in-memory)
-#   - Prometheus (scrapes the WAF /metrics endpoint)
-#   - Jaeger (OTLP collector + UI for distributed tracing)
-#   - httpbin (mock upstream the WAF proxies to in smoke tests)
+# Two planes, one compose file:
+#
+#   CONTROL PLANE (required)
+#     - etcd         source of truth for config + secrets + leases
+#     - prometheus   scrapes both planes, alerts on staleness
+#     - jaeger       OTLP collector for distributed tracing
+#
+#   DATA PLANE (optional add-ons)
+#     - redis        shared rate-limit counters + response cache
+#                    (WAF falls back to in-memory if absent)
+#     - httpbin      mock upstream for smoke tests
 #
 # The WAF itself is NOT run inside this compose file during early
 # development — run it from `cargo run -p aegis-bin` on the host so
-# iteration is fast. Once we reach W5, a `waf` service will be added.
+# iteration is fast. Once we reach W5, a `waf` service will be added
+# with `depends_on: { etcd: service_healthy }`.
+#
+# SECURITY NOTE. This file is DEV ONLY. etcd runs with
+# `ALLOW_NONE_AUTHENTICATION=yes` — do not reuse these settings in
+# production. The production stack (deploy/prod/, W5+) enables etcd
+# client-cert auth, RBAC, and TLS.
 
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: aegis-redis
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+  # ---------- CONTROL PLANE ----------
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.13
+    container_name: aegis-etcd
+    command:
+      - /usr/local/bin/etcd
+      - --name=aegis-etcd-0
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=aegis-etcd-0=http://etcd:2380
+      - --initial-cluster-state=new
+      - --log-level=warn
+    environment:
+      ALLOW_NONE_AUTHENTICATION: "yes"   # DEV ONLY
     ports:
-      - "6379:6379"
+      - "2379:2379"
+    volumes:
+      - etcd-data:/etcd-data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -36,6 +64,9 @@ services:
       - --web.enable-lifecycle
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      etcd:
+        condition: service_healthy
 
   jaeger:
     image: jaegertracing/all-in-one:1.57
@@ -47,11 +78,31 @@ services:
       - "4317:4317"     # OTLP gRPC
       - "4318:4318"     # OTLP HTTP
 
+  # ---------- DATA PLANE (optional) ----------
+
+  # Optional counter store. Used by M2 for shared rate-limit
+  # counters and by M1 for the smart-cache tier. The WAF MUST
+  # function without Redis (falls back to InMemoryCounterStore).
+  redis:
+    image: redis:7-alpine
+    container_name: aegis-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   httpbin:
     image: mccutchen/go-httpbin:v2.15.0
     container_name: aegis-httpbin
     ports:
       - "8081:8080"
+
+volumes:
+  etcd-data:
 
 networks:
   default:

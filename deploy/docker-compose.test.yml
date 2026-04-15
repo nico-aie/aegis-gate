@@ -1,9 +1,14 @@
 # Aegis-Gate — Test Stack
 #
 # Extends the dev stack with:
-#   - attacker: a container with curl, nuclei, sqlmap, wrk, k6
-#                for running the red-team and load suites
-#   - nuclei-templates: shared volume with OWASP templates
+#   - attacker:  container with curl + bash for manual poking and
+#                corpus replay. Also has read access to tests/ and
+#                the etcd bootstrap script (so red-team tests can
+#                inject malicious configs directly into etcd).
+#   - k6:        load testing (baseline, mixed-tiers, ddos-burst)
+#   - nuclei:    template-driven vulnerability scanning
+#   - etcdctl:   interactive etcd debug shell (same image as etcd,
+#                kept sleeping so you can `docker exec` into it)
 #
 # Bring up with BOTH compose files:
 #   docker compose \
@@ -19,6 +24,7 @@ services:
     command: ["sleep", "infinity"]
     volumes:
       - ../tests:/work:ro
+      - ./etcd:/etcd-scripts:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -39,3 +45,13 @@ services:
       - ../tests/security:/work:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # Interactive etcdctl shell for debugging the control plane.
+  # Usage: docker exec -it aegis-etcdctl etcdctl get /aegis/config/waf
+  etcdctl:
+    image: quay.io/coreos/etcd:v3.5.13
+    container_name: aegis-etcdctl
+    entrypoint: ["sleep", "infinity"]
+    environment:
+      ETCDCTL_API: "3"
+      ETCDCTL_ENDPOINTS: "http://etcd:2379"
