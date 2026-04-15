@@ -246,7 +246,7 @@ Feed an AI assistant one task at a time.
 
 **T4.9** — Tier-aware smart cache (`CacheProvider` impl)
 - File: `aegis-proxy/src/cache/mod.rs`
-- `moka`-backed async cache keyed by `(method, host, path, tenant_id, vary_headers_hash)`. MEDIUM aggressive (minutes), HIGH conservative (seconds, with `Cache-Control` respect), CRITICAL never. Consulted just before upstream selection; updated from upstream response based on `Cache-Control` headers and route policy.
+- `moka`-backed async cache keyed by `(method, host, path, vary_headers_hash)`. MEDIUM aggressive (minutes), HIGH conservative (seconds, with `Cache-Control` respect), CRITICAL never. Consulted just before upstream selection; updated from upstream response based on `Cache-Control` headers and route policy.
 - Test: repeated GETs on a MEDIUM route hit cache; CRITICAL route never caches; `Cache-Control: no-store` respected.
 
 ---
@@ -278,7 +278,7 @@ Feed an AI assistant one task at a time.
 
 **T5.5** — DR snapshot/restore CLI
 - File: `aegis-proxy/src/dr.rs`
-- `./waf snapshot --out /tmp/cfg.tar.zst` writes effective config + rules + tenant defs + version stamp, signed with cluster key; `./waf restore <file>` runs dry-run validator before activating. Periodic backup task with pluggable target (`file`, `s3`, `gcs`, `sftp`) — leader-only.
+- `./waf snapshot --out /tmp/cfg.tar.zst` writes effective config + rules + version stamp, signed with cluster key; `./waf restore <file>` runs dry-run validator before activating. Periodic backup task with pluggable target (`file`, `s3`, `gcs`, `sftp`) — leader-only.
 - Test: round-trip — snapshot, mutate live, restore, assert identical. S3 target mocked.
 
 **T5.6** — Service discovery (`ServiceDiscovery` impl)
@@ -303,7 +303,7 @@ Feed an AI assistant one task at a time.
 ## 4. Metrics You Own (Prometheus families)
 
 ```
-waf_requests_total{tier,route,tenant,decision,status}
+waf_requests_total{tier,route,decision,status}
 waf_upstream_latency_seconds{pool,member}    (histogram)
 waf_upstream_inflight{pool,member}           (gauge)
 waf_circuit_state{pool,member}                (gauge 0/1/2)

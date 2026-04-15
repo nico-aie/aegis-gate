@@ -1,8 +1,27 @@
 # Dashboard & Admin API Authentication
 
 Local authentication for the Aegis-Gate dashboard and admin API.
-Replaces the deferred
-[OIDC/SSO/RBAC design](./deferred/rbac-sso.md).
+
+## v1 Scope
+
+**In scope (this document):**
+
+- Strong dashboard protection — admin listener is isolated, restricted,
+  and rate-limited by default.
+- Secure local auth — argon2id password hash + HMAC session token +
+  CSRF double-submit + optional TOTP / admin mTLS.
+- Restrict all access — IP allowlist enforced at TCP accept, loopback
+  bind by default, every request authenticated, every event audited.
+
+**Out of scope — deferred to future work:**
+
+- SSO / OIDC / SAML / LDAP federation → [`deferred/rbac-sso.md`](./deferred/rbac-sso.md)
+- RBAC and multi-user accounts → [`deferred/rbac-sso.md`](./deferred/rbac-sso.md)
+- Multi-tenancy and per-tenant dashboards → [`deferred/multi-tenancy.md`](./deferred/multi-tenancy.md)
+
+v1 has **one admin principal**. Every successful login is that
+principal. Role separation and identity federation arrive with the
+deferred designs above.
 
 ## Goals
 
@@ -17,14 +36,6 @@ Replaces the deferred
 - **Honest**: everything is logged. Every login, logout, failure,
   lockout, password change, and token issuance produces an audit
   event on the admin chain.
-
-## Non-Goals
-
-- OIDC / SAML / LDAP integration (deferred — see
-  [`deferred/rbac-sso.md`](./deferred/rbac-sso.md)).
-- Per-user accounts, groups, or roles. v1 has **one admin
-  principal**. Role separation is deferred.
-- Multi-tenant per-tenant dashboards. v1 is single-tenant.
 
 ## Threat Model
 
@@ -291,23 +302,26 @@ admin:
 - Rate-limit check: one `CounterStore::incr_window` per login
   attempt. ~100 µs in-memory, ~500 µs against Redis.
 
-## Upgrade Path to OIDC/RBAC
+## Forward Compatibility
 
-The `DashboardAuthConfig` type and the session-layer traits are
-designed so a future OIDC implementation (see deferred doc) can
-slot in beside the local-auth path without breaking consumers:
+`DashboardAuthConfig` and the session-layer traits are shaped so
+the deferred SSO / RBAC work can slot in without breaking the v1
+local-auth path:
 
-- The middleware checks `oidc` first if enabled, then falls back
-  to the local-auth path. Both mint the same `SessionRecord`.
-- Roles arrive later — v1 treats every successful login as the
-  sole `admin` principal.
+- A future federated-auth middleware will sit **beside** the local
+  path and mint the same `SessionRecord`. The local path stays.
+- `SessionRecord` reserves room for a `roles: Vec<Role>` field;
+  v1 always sets it to `[admin]`.
+
+See [`deferred/rbac-sso.md`](./deferred/rbac-sso.md) for the
+future design. It is not on any v1 milestone.
 
 ## Implementation Pointers
 
-- `crates/aegis-control/src/admin/auth/password.rs` — argon2 verify + hash
-- `crates/aegis-control/src/admin/auth/session.rs` — HMAC cookie + record
-- `crates/aegis-control/src/admin/auth/csrf.rs` — double-submit token
-- `crates/aegis-control/src/admin/auth/rate_limit.rs` — per-IP/per-user
-- `crates/aegis-control/src/admin/auth/totp.rs` — RFC 6238
-- `crates/aegis-control/src/admin/auth/mtls.rs` — rustls client cert
-- `crates/aegis-control/src/admin/middleware.rs` — axum tower layer
+- `crates/aegis-control/src/admin_auth/password.rs` — argon2 verify + hash
+- `crates/aegis-control/src/admin_auth/session.rs` — HMAC cookie + record
+- `crates/aegis-control/src/admin_auth/csrf.rs` — double-submit token
+- `crates/aegis-control/src/admin_auth/rate_limit.rs` — per-IP/per-user
+- `crates/aegis-control/src/admin_auth/totp.rs` — RFC 6238
+- `crates/aegis-control/src/admin_auth/mtls.rs` — rustls client cert
+- `crates/aegis-control/src/admin_auth/mod.rs` — axum tower layer

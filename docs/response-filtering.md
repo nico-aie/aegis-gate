@@ -103,7 +103,7 @@ Custom HTML for block / challenge / 503, including:
 - Optional challenge-retry link
 - No backend info, no stack, no version strings
 
-Per-status / per-tier / per-tenant templates.
+Per-status / per-tier / per-route templates.
 
 ## Configuration
 

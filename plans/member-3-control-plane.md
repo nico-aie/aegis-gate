@@ -34,11 +34,10 @@ crates/aegis-control/
     ├── access_log.rs         # combined / json / template writer
     ├── dashboard/
     │   ├── mod.rs
-    │   ├── overview.rs       # cluster + tenant + SLO overview page
+    │   ├── overview.rs       # cluster + SLO overview page
     │   ├── routes_page.rs    # /dashboard/routes
     │   ├── pools_page.rs     # /dashboard/upstreams
     │   ├── rules_page.rs     # /dashboard/rules (editor + dry-run)
-    │   ├── tenants_page.rs   # /dashboard/tenants
     │   ├── audit_page.rs     # /dashboard/audit search + verify
     │   ├── cluster_page.rs   # /dashboard/cluster (ClusterMembership.peers)
     │   └── sse.rs            # live event feed (subscribes to AuditBus)
@@ -47,15 +46,15 @@ crates/aegis-control/
     │   ├── config.rs         # GET/PUT /api/config (secrets masked)
     │   ├── rules.rs          # CRUD rules
     │   ├── routes_api.rs     # CRUD routes + upstreams
-    │   ├── tenants.rs        # CRUD tenants
-    │   ├── tokens.rs         # API token management
     │   └── audit.rs          # GET /api/audit, /api/audit/verify
-    ├── auth/
-    │   ├── mod.rs            # role check middleware
-    │   ├── oidc.rs           # OIDC relying party
-    │   ├── rbac.rs           # require_role! macro
-    │   ├── tokens.rs         # argon2 API tokens
-    │   └── mtls.rs           # admin mTLS acceptor
+    ├── admin_auth/
+    │   ├── mod.rs            # axum tower middleware (session + CSRF + IP allowlist)
+    │   ├── password.rs       # argon2id verify + hash (PHC)
+    │   ├── session.rs        # HMAC cookie + SessionRecord store (etcd-backed)
+    │   ├── csrf.rs           # double-submit token
+    │   ├── rate_limit.rs     # per-IP + per-user login limits + lockout
+    │   ├── totp.rs           # optional RFC 6238
+    │   └── mtls.rs           # optional admin mTLS acceptor
     ├── audit/
     │   ├── mod.rs            # chain writer
     │   ├── chain.rs          # SHA-256 hash chain
@@ -70,7 +69,6 @@ crates/aegis-control/
     │       ├── splunk_hec.rs
     │       ├── ecs.rs        # Elastic ECS
     │       └── kafka.rs
-    ├── tenant.rs             # isolation boundary helpers
     ├── compliance/
     │   ├── mod.rs            # profile stacking
     │   ├── fips.rs
@@ -112,7 +110,7 @@ crates/aegis-control/
 
 **T1.4** — Dashboard shell + SSE
 - Files: `src/dashboard/mod.rs`, `src/dashboard/sse.rs`
-- Static HTML/JS shell (vendored, no build step). SSE endpoint subscribes to `AuditBus`, streams events filtered by user role + tenant.
+- Static HTML/JS shell (vendored, no build step). SSE endpoint subscribes to `AuditBus` and streams events to any authenticated admin session.
 - Test: subscribe, emit event via bus, assert delivered.
 
 **T1.4b** — Dashboard pages (shipped incrementally)
@@ -122,10 +120,9 @@ crates/aegis-control/
   - **Routes**: list routes, show host/path/tier/upstream/policy, link to traffic.
   - **Upstreams**: pool members, health, CB state, inflight, p99.
   - **Rules**: browse + filter by id/scope/priority; inline editor with dry-run validate before save.
-  - **Tenants**: list + per-tenant drill-down (scoped by caller's tenant claim).
-  - **Audit**: search by time/class/tenant/rule; one-click `verify` runs hash-chain verifier.
+  - **Audit**: search by time/class/rule; one-click `verify` runs hash-chain verifier. Admin audit tab surfaces login/logout/lockout events from the separate admin chain.
   - **Cluster**: `ClusterMembership.peers()` view with load + version.
-- Test: snapshot HTML render for each page; RBAC filter applied (viewer of tenant A sees no tenant B data).
+- Test: snapshot HTML render for each page; unauthenticated request → 302 to `/admin/login`.
 
 **T1.5** — `GET /api/config` (secrets masked)
 - File: `src/api/config.rs`
@@ -195,40 +192,51 @@ crates/aegis-control/
 
 ---
 
-### Week 4 — RBAC, OIDC, Multi-Tenancy
+### Week 4 — Dashboard Authentication
 
-**T4.1** — Roles + `require_role!`
-- File: `src/auth/rbac.rs`
-- `enum Role { Viewer, Operator, Admin, Auditor, BreakGlass }`
-- `macro_rules! require_role { ($req:expr, $min:expr) => { ... } }` — extracts role from request extensions, returns 403 if insufficient.
-- Test: viewer hits `PUT /api/rules` → 403; admin → 200.
+Spec: [`docs/dashboard-auth.md`](../docs/dashboard-auth.md). Contract
+types: `DashboardAuthConfig`, `LoginRateLimitConfig`, `LockoutConfig`,
+`MtlsAdminConfig` in `plans/shared-contract.md` §2.6.11.
 
-**T4.2** — OIDC relying party
-- File: `src/auth/oidc.rs`
-- Providers: Okta, Azure AD, Google Workspace, Keycloak. Group claim → role mapping from config.
-- Session cookie is PASETO v4 local; absolute lifetime + idle TTL.
-- Test: mock IdP (wiremock), simulate auth code flow, assert session cookie + role.
+**T4.1** — Password verify + PHC storage
+- File: `src/admin_auth/password.rs`
+- `pub async fn verify(hash_ref: &str, candidate: &str) -> Result<bool>` — resolves `password_hash_ref` via secret provider; `argon2id` verify with constant-time compare. Unknown-user path hashes against a fixed dummy PHC string to equalize timing.
+- `pub fn hash(password: &str, params: Argon2Params) -> Result<String>` for `waf admin set-password`.
+- Test: correct password → true; wrong → false; unknown-user path runs full work (measure timing within noise band).
 
-**T4.3** — API tokens
-- File: `src/auth/tokens.rs`
-- Stored as `argon2id` hashes; scoped permissions, IP allowlist, TTL. Admin IP allowlist enforced in addition to auth.
-- Test: rotate token, old token rejected.
+**T4.2** — HMAC session cookie + SessionRecord store
+- File: `src/admin_auth/session.rs`
+- Cookie: `aegis_session = base64url(HMAC_SHA256(csrf_secret, session_id || issued_at || client_ip || ua_hash))`. Flags: `HttpOnly; Secure; SameSite=Strict; Path=/`.
+- `SessionRecord { id, issued_at, last_seen, client_ip, ua_hash, totp_verified, revoked }` stored under `/aegis/sessions/<id>` in etcd. Idle TTL 30m (sliding), absolute 8h (hard).
+- Revocation: `POST /admin/logout` sets `revoked = true`; etcd watch on `/aegis/sessions/` propagates to every replica.
+- Binding: request whose `client_ip || ua_hash` does not match → 401 + audit.
+- Test: issue session, mutate cookie byte → 401; revoke via other replica → next request 401.
 
-**T4.4** — Admin mTLS listener
-- File: `src/auth/mtls.rs`
-- Rustls with client cert required; chain verified against configured CA bundle. Admin plane refuses non-mTLS connections.
-- Test: openssl client with valid cert → 200; without → handshake refused.
+**T4.3** — CSRF double-submit token
+- File: `src/admin_auth/csrf.rs`
+- On login, set `aegis_csrf = random 128-bit` (not HttpOnly). Every mutating method (`POST|PUT|PATCH|DELETE`) must present `X-CSRF-Token` header matching the cookie. Safe methods exempt.
+- Test: `POST /api/rules` without header → 403; with matching header → 200.
 
-**T4.5** — Multi-tenancy boundaries
-- File: `src/tenant.rs`
-- Tenant as first-class config entity (id, name, quotas, allowed hosts, tier overrides, rule namespace, audit sinks, residency).
-- State keyspace: every key passes through `tenant_key(tenant_id, key) -> String`.
-- Dashboard + metrics projected through token's tenant claim.
-- Test: 2-tenant fixture — tenant A viewer cannot see tenant B traffic in dashboard or `/api/audit`.
+**T4.4** — Login rate limit + lockout
+- File: `src/admin_auth/rate_limit.rs`
+- Per-IP 5/min (sliding window via `CounterStore::incr_window`); per-user 10/15min. Exponential backoff on attempts 6/7/8 (1s/2s/4s). Lockout for 15 min after threshold; attempts during lockout still fail and audit as `LoginDuringLockout`.
+- Test: 11 wrong passwords → lockout; valid password during lockout → still 401; after TTL expires → success.
 
-**T4.6** — Per-tenant quotas
-- Enforce: RPS, concurrent conns, log volume, risk-store entries, rule count, route count, body size. Exceeding quota load-sheds that tenant only (coordinate with M1's shedder via a shared `TenantPressure` struct).
-- Test: saturate tenant A, assert tenant B unaffected.
+**T4.5** — IP allowlist (accept-time)
+- File: `src/admin_auth/mod.rs`
+- Reject any TCP peer whose address is not in `dashboard_auth.ip_allowlist` (default `127.0.0.1/32`, `::1/128`) **before** the HTTP layer runs. Audit rejection as `LoginFailure { reason: ip_denied }`.
+- Test: bind on wildcard, connect from disallowed CIDR → connection refused + audit event.
+
+**T4.6** — Optional TOTP (RFC 6238)
+- File: `src/admin_auth/totp.rs`
+- 6-digit, 30s step, SHA-1 HMAC. Shared secret at `/aegis/secrets/admin_totp`. Enrollment CLI (`waf admin enroll-totp`) emits provisioning URI + 10 recovery codes (argon2 hashes stored).
+- Session is not fully authenticated until `totp_verified = true`.
+- Test: correct TOTP → verified; skewed by ±1 step → accepted; ±2 → rejected.
+
+**T4.7** — Optional admin mTLS
+- File: `src/admin_auth/mtls.rs`
+- Rustls client-auth with CA from `mtls.ca_ref`; required SAN from config. Valid cert bypasses password flow; session issued with `auth_method="mtls"`. Still subject to IP allowlist. Still audited.
+- Test: openssl client with valid cert → 200; wrong SAN → 401 + `MtlsAuthRejected` event.
 
 ---
 
@@ -248,7 +256,7 @@ crates/aegis-control/
 
 **T5.2** — Data residency + retention + right-to-erasure
 - File: `src/residency.rs`
-- Region pin per tenant; audit sinks / state writes / metric exports respect pin. `strict` refuses non-compliant sinks; `preferred` warns.
+- Cluster-wide region pin; audit sinks / state writes / metric exports respect pin. `strict` refuses non-compliant sinks; `preferred` warns.
 - Retention per event class. Pseudonymization job after N days (salted hash of IP/UA/JWT sub).
 - Right-to-erasure: `POST /api/gdpr/erase` purges operational state; audit entries pseudonymized in place so hash chain stays valid. Dual-control required.
 - Data export: `GET /api/gdpr/export?subject=...` streams JSONL.
@@ -260,9 +268,11 @@ crates/aegis-control/
 - Break-glass: direct API edits allowed but auto-round-tripped as a branch + PR against the repo. Dashboard banner until merged.
 - Test: push signed commit → applied; push unsigned → rejected; API edit → PR created (mock Git).
 
-**T5.4** — Change approval workflow
-- For mutations to `scope = Critical` config (rules touching Critical tier, tenants, compliance profile): require second admin approval before activation. Store pending changes in state backend with TTL.
-- Test: admin A proposes → status pending; admin B approves → applied; TTL expires → dropped.
+**T5.4** — *(deferred)* Change approval workflow
+- Four-eyes approval for Critical-scope mutations is deferred with the
+  RBAC work. v1 has a single admin principal; critical changes are
+  audited but not gated by a second approver. See
+  `docs/deferred/rbac-sso.md`.
 
 **T5.5** — SLO / SLI + alerts
 - File: `src/slo.rs`
@@ -276,9 +286,9 @@ crates/aegis-control/
 
 ## 3. Interfaces Consumed
 
-- From M1: `ReadinessSignal`, `ClusterMembership` impl, cert freshness signal, pool health state, `ConfigBroadcast` subscription, `CacheProvider` stats.
+- From M1: `ReadinessSignal`, `ClusterMembership` impl, cert freshness signal, pool health state, `ConfigBroadcast` subscription, `CacheProvider` stats, `CounterStore` handle (for login rate-limit / lockout).
 - From M2: `AuditEvent` stream on the bus, metric families in the shared registry.
-- Provides to M1+M2: `MetricsRegistry` at boot, `TenantPressure` for the shedder, `ConfigBroadcast` sender.
+- Provides to M1+M2: `MetricsRegistry` at boot, `ConfigBroadcast` sender.
 
 ## 4. Metrics You Own
 
@@ -286,12 +296,13 @@ crates/aegis-control/
 waf_audit_events_total{class,sink,outcome}
 waf_audit_spool_bytes{sink}
 waf_audit_dropped_total{sink,severity}
-waf_admin_requests_total{endpoint,role,status}
-waf_admin_auth_failures_total{mechanism}
+waf_admin_requests_total{endpoint,status}
+waf_admin_login_total{outcome}              # success|bad_password|unknown_user|rate_limited|locked|ip_denied|bad_totp
+waf_admin_sessions_active                   (gauge)
+waf_admin_lockouts_total
 waf_config_reload_outcomes_total{source,outcome}
 waf_slo_budget_remaining{sli}
-waf_cert_expires_in_seconds{host}          (gauge)
-waf_tenant_quota_usage_ratio{tenant,quota} (gauge)
+waf_cert_expires_in_seconds{host}           (gauge)
 ```
 
 ## 5. API Surface (REST, all JSON)
@@ -299,19 +310,18 @@ waf_tenant_quota_usage_ratio{tenant,quota} (gauge)
 ```
 GET    /healthz/{live,ready,startup}
 GET    /metrics
+POST   /admin/login                    (rate-limited; sets session + CSRF cookies)
+POST   /admin/logout                   (revokes current session)
 GET    /api/config
-PUT    /api/config                     (admin, dry-run validated)
+PUT    /api/config                     (session + CSRF; dry-run validated)
 GET    /api/rules
-POST   /api/rules                      (operator+)
-DELETE /api/rules/:id                  (admin)
+POST   /api/rules                      (session + CSRF)
+DELETE /api/rules/:id                  (session + CSRF)
 GET    /api/routes, /api/upstreams
-GET    /api/tenants
-POST   /api/tenants                    (admin)
-GET    /api/audit?since=&class=&tenant=
+GET    /api/audit?since=&class=
 GET    /api/audit/verify
-POST   /api/gdpr/erase                 (admin, dual-control)
+POST   /api/gdpr/erase                 (session + CSRF)
 GET    /api/gdpr/export?subject=
-POST   /api/tokens                     (admin)
 GET    /dashboard/*
 GET    /dashboard/sse
 ```
@@ -319,8 +329,8 @@ GET    /dashboard/sse
 ## 6. Definition of Done (M3 exit criteria)
 
 - [ ] `Requirement.md` §34 items: 9, 10, 14, 15, 17, 18, 19, 25, 28.
-- [ ] OIDC login works against a mock IdP; viewer cannot mutate.
-- [ ] 2-tenant isolation test: A cannot see B's traffic / audit / metrics.
+- [ ] Dashboard auth green: login (argon2id), HMAC session, CSRF enforced on mutations, per-IP + per-user rate limit + lockout, IP allowlist enforced at accept time; every event audited on the admin chain.
+- [ ] Optional TOTP + optional admin mTLS paths pass integration tests behind feature flags.
 - [ ] Hash chain verifies clean; tampered log is detected by CLI.
 - [ ] SIEM forwarder delivers to at least 3 sinks in an integration test.
 - [ ] SLO burn alert fires via Alertmanager webhook on synthetic regression.

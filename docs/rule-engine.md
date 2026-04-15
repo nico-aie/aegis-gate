@@ -1,9 +1,11 @@
 # Rule Engine (v2)
 
-> **v1 → v2:** The rule engine still evaluates a priority-ordered AST, but now
-> sits alongside **schema-based** positive-security guards (OpenAPI + GraphQL,
-> see [`api-security.md`](./api-security.md)) and can reference enterprise
-> facts (tenant, JWT claims, threat-intel feed id, bot class).
+> **v1 scope.** The rule engine evaluates a priority-ordered AST and
+> sits alongside **schema-based** positive-security guards (OpenAPI +
+> GraphQL — see [`api-security.md`](./api-security.md)). It references
+> JWT claims, threat-intel feed id, and bot class. Tenant-scoped rules
+> are deferred with multi-tenancy — see
+> [`deferred/multi-tenancy.md`](./deferred/multi-tenancy.md).
 
 ## Purpose
 
@@ -17,7 +19,8 @@ or accumulates risk for downstream stages.
 ```
 Rule := { id, priority, enabled, scope, conditions, actions }
 
-Scope := Global | Tier(name) | Route(path) | Tenant(id)
+Scope := Global | Tier(name) | Route(path)
+         # Tenant(id) reserved for the deferred multi-tenancy work
 
 Condition := Ip(IpMatcher)
            | Path(StringMatcher)
@@ -25,11 +28,10 @@ Condition := Ip(IpMatcher)
            | Cookie(name, StringMatcher)
            | Method([...])
            | RiskAbove(u32)
-           | BotClass(class)                  # v2
-           | JwtClaim(name, StringMatcher)    # v2
-           | ThreatFeed(feed_id)              # v2
-           | TenantId(id)                     # v2
-           | SchemaViolation                  # v2
+           | BotClass(class)
+           | JwtClaim(name, StringMatcher)
+           | ThreatFeed(feed_id)
+           | SchemaViolation
            | And([...]) | Or([...]) | Not(Condition)
 
 Action := Allow
@@ -68,7 +70,6 @@ hot path never parses.
 - `Global` — always
 - `Tier(name)` — matches when `ctx.tier == name` (after any route-level override)
 - `Route(path)` — matches when `ctx.route.id == path` or path prefix
-- `Tenant(id)` — matches when `ctx.tenant == id` (v2, see [`multi-tenancy.md`](./multi-tenancy.md))
 
 ## Configuration
 
@@ -96,15 +97,12 @@ rules:
     actions:
       - { type: challenge }
 
-  - id: tenant_a_admin_only
+  - id: admin_api_jwt_only
     priority: 5
-    scope: { type: tenant, id: acme }
+    scope: { type: route, path: "/admin" }
     conditions:
-      type: and
-      items:
-        - { type: path, matcher: { type: prefix, value: "/admin" } }
-        - type: not
-          item: { type: jwt_claim, name: "role", matcher: { type: exact, value: "admin" } }
+      type: not
+      item: { type: jwt_claim, name: "role", matcher: { type: exact, value: "admin" } }
     actions:
       - { type: block, status: 403, body: "admin only" }
 ```
@@ -122,7 +120,7 @@ so rules can decide the terminal action (block vs log-only vs challenge).
 - `src/rules/matcher.rs` — `StringMatcher`, `IpMatcher`
 - `src/rules/engine.rs` — `RuleEngine::evaluate`
 - `src/rules/loader.rs` — YAML → AST with validation
-- `src/rules/context.rs` — extended context accessors (tenant, claims, bot class, feed id)
+- `src/rules/context.rs` — extended context accessors (claims, bot class, feed id)
 
 ## Performance notes
 

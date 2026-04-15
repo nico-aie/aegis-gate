@@ -73,10 +73,13 @@ print the current value.
 
 - **Dev**: `ALLOW_NONE_AUTHENTICATION=yes`. No TLS. Localhost only.
   Do not expose port 2379 to the internet.
-- **Production** (W5+): etcd client-cert auth, per-role RBAC
-  (`aegis-reader`, `aegis-writer`, `aegis-admin`), TLS for all
-  peer + client traffic. Client certs distributed via the existing
-  secrets workflow.
+- **Production** (W5+): etcd client-cert auth with per-role users
+  (`aegis-reader`, `aegis-writer`, `aegis-admin`) backed by etcd's
+  built-in role system, TLS for all peer + client traffic. Client
+  certs distributed via the existing secrets workflow. (Note: this
+  is etcd-native access control on the control-plane store — it is
+  *not* the deferred application-level RBAC for dashboard users,
+  which stays out of scope for v1.)
 
 ## Migrating Config Between Environments
 

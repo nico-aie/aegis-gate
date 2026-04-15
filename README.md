@@ -43,7 +43,7 @@ aegis-gate/
     ├── aegis-core/        # Shared types and traits
     ├── aegis-proxy/       # M1 — data plane (TLS, routing, upstreams, state)
     ├── aegis-security/    # M2 — security pipeline (rules, detectors, risk)
-    ├── aegis-control/     # M3 — control plane (dashboard, audit, RBAC)
+    ├── aegis-control/     # M3 — control plane (dashboard, local auth, audit)
     └── aegis-bin/         # `waf` binary, wires the three crates
 ```
 
@@ -85,7 +85,7 @@ Three engineers own one crate each, coordinating through
 |--------|------------------|-------|
 | M1     | `aegis-proxy`    | TLS, protocols, routing, upstream pools, state backend, service discovery, secrets, hot reload |
 | M2     | `aegis-security` | Rule engine, rate limiting, DDoS, OWASP detectors, risk scoring, challenge ladder, DLP, API security |
-| M3     | `aegis-control`  | Observability, audit chain, SIEM sinks, dashboard, RBAC/SSO, multi-tenancy, GitOps, compliance |
+| M3     | `aegis-control`  | Observability, audit chain, SIEM sinks, dashboard, local dashboard auth (argon2id + HMAC session + CSRF), GitOps, compliance. (OIDC/SSO, RBAC roles, and multi-tenancy are deferred — see `docs/deferred/`.) |
 
 Cross-cutting work (`aegis-core`, `aegis-bin`) requires PR review
 from all three members.

@@ -31,7 +31,7 @@ in the implementation plan.
 | ACME server (e.g. Let's Encrypt) | optional | `acme`  | M1 TLS cert issuance           | manual cert files in config       | W4           |
 | OCSP responder             | optional  | always       | M1 TLS stapling                | stapling disabled                 | W4           |
 | HSM / PKCS#11              | optional  | `hsm`        | M1 TLS private keys            | software keys                     | W6+          |
-| OIDC IdP (e.g. Keycloak)   | optional  | always       | M3 admin login                 | API tokens + Basic auth           | W4           |
+| OIDC IdP                   | **deferred** | —         | —                              | local argon2id password + HMAC session (see `docs/dashboard-auth.md`) | — |
 | OPA                        | optional  | `opa`        | M2 policy decisions            | built-in rule engine only         | W5           |
 
 ## Dev Defaults (what `deploy/docker-compose.dev.yml` runs)

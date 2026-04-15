@@ -73,7 +73,6 @@ crates/aegis-security/
     │   ├── mod.rs
     │   ├── forward.rs       # ForwardAuth subrequest
     │   ├── jwt.rs           # JWKS cache
-    │   ├── oidc.rs          # browser session (PASETO)
     │   ├── basic.rs         # htpasswd via SecretProvider
     │   ├── cidr.rs          # per-route IP allow/deny
     │   └── opa.rs           # OPA/Rego callout (bonus, feature = "opa")
@@ -162,7 +161,7 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 **T2.1** — Sliding window rate limit
 - File: `src/rate_limit/sliding.rs`
 - `pub async fn check(state: &dyn StateBackend, key: &str, limit: u64, window_s: u32) -> Result<RateDecision>`
-- Key format: `rl:{scope}:{tenant}:{id}:{bucket}`.
+- Key format: `rl:{scope}:{id}:{bucket}` (the `t:{tenant}:` prefix is reserved for the deferred multi-tenancy work).
 - Uses `StateBackend::sliding_window` (Lua on Redis, DashMap on in-memory).
 - Test: property test — across 1k concurrent callers, count never exceeds limit.
 
@@ -175,8 +174,7 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 - File: `src/ddos.rs`
 - Per-IP sliding window → auto-block key `block:{ip}` with TTL.
 - Cluster spike: compare rolling cluster RPS (cluster counter) vs `rolling_avg * spike_multiplier`. When DDoS mode active, tighten challenge thresholds.
-- Per-tenant scope: flood against tenant A does not affect tenant B.
-- Test: simulate 1k req/s from one IP, assert block within 2s, assert tenant isolation.
+- Test: simulate 1k req/s from one IP, assert block within 2s.
 
 **T2.4** — OWASP detectors (one file each)
 - Trait: `pub trait Detector: Send + Sync { fn id(&self) -> &'static str; fn inspect(&self, req: &RequestView) -> Vec<Signal>; }`
@@ -239,7 +237,7 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 
 **T3.9** — Transaction velocity
 - File: `src/velocity.rs`
-- Counters for "same user, same action" velocity scoped per tenant/route (e.g. N deposits / 5 min, N password-resets / hour). Config-defined action templates bound to routes. Velocity breach raises risk and optionally blocks.
+- Counters for "same user, same action" velocity scoped per route (e.g. N deposits / 5 min, N password-resets / hour). Config-defined action templates bound to routes. Velocity breach raises risk and optionally blocks.
 - Test: simulate 10 deposits/minute from one user, assert block + audit event naming the action.
 
 ---
@@ -248,7 +246,7 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 
 **T4.1** — CIDR lists + XFF walker
 - Files: `src/ip_rep/mod.rs`, `src/ip_rep/xff.rs`
-- Per-tenant blacklist/whitelist/trusted-proxies as `ipnet::IpNet` tries.
+- Blacklist/whitelist/trusted-proxies as `ipnet::IpNet` tries.
 - XFF: walk right-to-left while peer ∈ trusted, pick first non-trusted as client; ignore XFF entirely if TCP peer not trusted.
 - Test: spoofed XFF through untrusted peer is ignored.
 
@@ -336,7 +334,7 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 
 **T5.11** — API-key management
 - File: `src/api_security/api_keys.rs`
-- Per-consumer keys with scopes, rate limits, and tenant binding. Stored as `argon2id` hashes. Extracted from `Authorization: Bearer` or a configured header.
+- Per-consumer keys with scopes and rate limits. Stored as `argon2id` hashes. Extracted from `Authorization: Bearer` or a configured header.
 - Test: revoked key rejected; scope mismatch returns 403.
 
 **T5.12** — Basic Auth (data plane)
@@ -344,10 +342,10 @@ rules only. A rule blocking `/evil` returns 403 via dashboard SSE.
 - Verify against an `htpasswd`-style file loaded via `SecretProvider`. Only enabled when the route opts in.
 - Test: correct/incorrect password cases.
 
-**T5.13** — OIDC RP (data plane) — browser sessions
-- File: `src/auth/oidc.rs`
-- Auth-code flow for browser traffic; session cookie encoded as PASETO v4.local (signing key from `SecretProvider`). Claims attached to `RequestCtx` so rules can reference them.
-- Test: mock IdP auth-code flow end-to-end.
+**T5.13** — *(deferred)* OIDC RP (data plane, browser sessions)
+- Deferred to the OIDC/SSO milestone. See
+  `docs/deferred/rbac-sso.md`. v1 routes authenticate browser traffic
+  via JWT, ForwardAuth, Basic, or CIDR only.
 
 **T5.14** — OPA callout (bonus, feature `opa`)
 - File: `src/auth/opa.rs`
@@ -365,7 +363,7 @@ In `src/pipeline.rs`, for each request:
  2. ip blacklist + threat feed        (W4)
  3. rate limit + DDoS burst           (W2)
  4. tier classify + failure mode      (W1)
- 5. route-level auth                  (W5: JWT/FA/Basic/OIDC/CIDR/OPA)
+ 5. route-level auth                  (W5: JWT/FA/Basic/CIDR/OPA)
  6. API guard (OpenAPI/GraphQL/HMAC/API-key)  (W5)
  7. detectors → signals               (W2)
  8. content type + archive checks     (W5)
@@ -394,8 +392,8 @@ Every short-circuit emits exactly one `AuditClass::Detection` event.
 ```
 waf_rule_hits_total{rule_id,action}
 waf_detector_hits_total{detector,tag}
-waf_rate_limit_denied_total{scope,tenant}
-waf_ddos_blocked_total{tenant}
+waf_rate_limit_denied_total{scope}
+waf_ddos_blocked_total
 waf_risk_score_bucket{bucket}          (histogram)
 waf_challenge_total{level,outcome}
 waf_threat_feed_hits_total{feed_id}
@@ -409,7 +407,7 @@ waf_auth_failures_total{mechanism}
 Every blocking / challenging / rate-limiting decision emits exactly one
 `AuditClass::Detection` event with:
 ```
-action, reason, rule_id, risk_score, tier, tenant_id,
+action, reason, rule_id, risk_score, tier,
 fields: { detector, tag, field, feed_id?, confidence? }
 ```
 

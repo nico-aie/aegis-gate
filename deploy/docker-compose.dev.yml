@@ -20,7 +20,7 @@
 # SECURITY NOTE. This file is DEV ONLY. etcd runs with
 # `ALLOW_NONE_AUTHENTICATION=yes` — do not reuse these settings in
 # production. The production stack (deploy/prod/, W5+) enables etcd
-# client-cert auth, RBAC, and TLS.
+# client-cert auth, etcd-native role-based access, and TLS.
 
 services:
   # ---------- CONTROL PLANE ----------
