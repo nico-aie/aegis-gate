@@ -1,5 +1,21 @@
 # Aegis-Gate
 
+> **For AI Assistants — read this section first, then continue with the rest of the file.**
+>
+> **Quick-start (4 files to read before writing any code):**
+> 1. This file (`README.md`) — project overview, crate responsibilities, layout.
+> 2. `Implement-Progress.md` — which task is next and what was last completed.
+> 3. `plans/plan.md` — shared types (§2), cross-crate traits (§3), boot sequence (§4), conventions (§5).
+> 4. The crate sub-plan for your task:
+>    - `plans/proxy.md` for proxy tasks (M1-*)
+>    - `plans/security.md` for security tasks (M2-*)
+>    - `plans/control.md` for control tasks (M3-*)
+>
+> **After finishing a task:** overwrite `Implement-Progress.md` with the template in `plans/plan.md §0.3`.
+> **Verification:** `cargo test -p <crate> && cargo clippy -p <crate> -- -D warnings`
+
+---
+
 A production-grade Web Application Firewall and security gateway
 written in Rust. Aegis-Gate sits in front of arbitrary HTTP/HTTPS
 backends as a full reverse proxy, inspecting every request and
@@ -13,9 +29,9 @@ Kona, and Cloudflare Enterprise.
 
 ## Status
 
-Pre-implementation. The specification, architecture, and per-member
-implementation plans are complete and reviewed. Code lands under
-`crates/` once the workspace is bootstrapped (M1 week 1).
+Pre-implementation. The specification, architecture, and implementation
+plan are complete and reviewed. Code lands under `crates/` once the
+workspace is bootstrapped (Week 1).
 
 ## Repository Layout
 
@@ -23,11 +39,12 @@ implementation plans are complete and reviewed. Code lands under
 aegis-gate/
 ├── Requirement.md         # Functional + non-functional requirements
 ├── Architecture.md        # System architecture and design decisions
-├── plans/                 # Per-member implementation plans
-│   ├── shared-contract.md # SINGLE SOURCE OF TRUTH for cross-crate types
-│   ├── member-1-proxy-core.md
-│   ├── member-2-security-pipeline.md
-│   └── member-3-control-plane.md
+├── Implement-Progress.md  # Current implementation progress (updated after each task)
+├── plans/
+│   ├── plan.md            # Foundation: AI guide, shared types, traits, boot, coverage matrix
+│   ├── proxy.md           # aegis-proxy tasks W1–W5 (M1-*)
+│   ├── security.md        # aegis-security tasks W1–W5 (M2-*)
+│   └── control.md         # aegis-control tasks W1–W5 (M3-*)
 ├── docs/                  # Per-feature specifications (~55 files)
 │   ├── README.md          # Feature index + ownership map
 │   ├── cli.md             # Authoritative `waf` CLI reference
@@ -70,37 +87,30 @@ If you are new to the project, read in this order:
 
 1. [`Requirement.md`](Requirement.md) — what we are building and why.
 2. [`Architecture.md`](Architecture.md) — how it fits together.
-3. [`plans/shared-contract.md`](plans/shared-contract.md) — the
-   types and traits every crate depends on. **Always read this
-   before touching another plan or crate.**
-4. The member plan you are implementing (`plans/member-N-*.md`).
-5. The relevant feature specs in [`docs/`](docs/README.md).
+3. [`Implement-Progress.md`](Implement-Progress.md) — current progress and next task.
+4. [`plans/plan.md`](plans/plan.md) — shared types, traits, boot sequence. **Read §0 (AI Guide) first.**
+5. The crate sub-plan for your area: [`plans/proxy.md`](plans/proxy.md), [`plans/security.md`](plans/security.md), or [`plans/control.md`](plans/control.md).
+6. The relevant feature specs in [`docs/`](docs/README.md).
 
-## Team Split
+## Crate Responsibilities
 
-Three engineers own one crate each, coordinating through
-`shared-contract.md`:
-
-| Member | Crate            | Scope |
-|--------|------------------|-------|
-| M1     | `aegis-proxy`    | TLS, protocols, routing, upstream pools, state backend, service discovery, secrets, hot reload |
-| M2     | `aegis-security` | Rule engine, rate limiting, DDoS, OWASP detectors, risk scoring, challenge ladder, DLP, API security |
-| M3     | `aegis-control`  | Observability, audit chain, SIEM sinks, dashboard, local dashboard auth (argon2id + HMAC session + CSRF), GitOps, compliance. (OIDC/SSO, RBAC roles, and multi-tenancy are deferred — see `docs/deferred/`.) |
-
-Cross-cutting work (`aegis-core`, `aegis-bin`) requires PR review
-from all three members.
+| Crate            | Scope |
+|------------------|-------|
+| `aegis-proxy`    | TLS, protocols, routing, upstream pools, state backend, service discovery, secrets, hot reload |
+| `aegis-security` | Rule engine, rate limiting, DDoS, OWASP detectors, risk scoring, challenge ladder, DLP, API security |
+| `aegis-control`  | Observability, audit chain, SIEM sinks, dashboard, local dashboard auth (argon2id + HMAC session + CSRF), GitOps, compliance |
+| `aegis-core`     | Shared types and traits — requires PR sign-off before changes |
+| `aegis-bin`      | `./waf` binary — wires all crates together |
 
 ## Documentation Conventions
 
-- **`shared-contract.md` is law.** Any change to inter-crate types
-  or traits must land there first, in a PR reviewed by all three
-  members.
+- **`plans/plan.md §2–§3` is law for inter-crate types and traits.**
+  Any change must be made there first and reviewed before implementation.
 - **`docs/cli.md` is law for `waf` subcommands.** New commands must
   be added there in the same PR that implements them.
 - Per-feature specs in `docs/` are owned by the crate that
   implements them; the ownership map lives in `docs/README.md`.
-- Architecture-level decisions live in `Architecture.md`. Where it
-  conflicts with `shared-contract.md`, the contract wins.
+- Architecture-level decisions live in `Architecture.md`.
 
 ## License
 
