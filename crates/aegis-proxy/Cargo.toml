@@ -1,0 +1,14 @@
+[package]
+name = "aegis-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+async-trait.workspace = true
+dashmap.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

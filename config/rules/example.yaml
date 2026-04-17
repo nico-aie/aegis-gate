@@ -1,0 +1,32 @@
+# Example rule file — loaded by the rule engine from the paths
+# specified in waf.yaml > rules > paths.
+#
+# Rules are evaluated in priority order (higher = earlier).
+# The first terminal action (allow/block) wins.
+
+- id: "sqli-strict-1"
+  priority: 100
+  scope:
+    tier: critical
+  when: "method == 'POST' && path matches '^/api/' && body contains_any sqli_signatures"
+  then:
+    action: block
+    status: 403
+    reason: "sqli detected"
+  tags: ["owasp:a03"]
+
+- id: "block-known-bad-ua"
+  priority: 90
+  when: "header.user-agent contains 'sqlmap'"
+  then:
+    action: block
+    status: 403
+    reason: "known attack tool"
+  tags: ["bot:bad"]
+
+- id: "allow-health-checks"
+  priority: 200
+  when: "path == '/healthz' && client.ip cidr_in '10.0.0.0/8'"
+  then:
+    action: allow
+  tags: ["internal"]

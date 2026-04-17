@@ -1,0 +1,16 @@
+[package]
+name = "aegis-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "waf"
+path = "src/main.rs"
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+aegis-proxy = { path = "../aegis-proxy" }
+aegis-security = { path = "../aegis-security" }
+aegis-control = { path = "../aegis-control" }
+tokio.workspace = true

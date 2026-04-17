@@ -1,0 +1,196 @@
+# Aegis-Gate WAF — Example Configuration
+# See plans/shared-contract.md for the authoritative schema.
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8443"
+      tls: true
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+routes:
+  - id: login
+    host: "api.example.com"
+    path: "/login"
+    match_type: exact
+    methods: [POST]
+    upstream: auth-pool
+    tier_override: critical
+
+  - id: api
+    host: "api.example.com"
+    path: "/api/"
+    match_type: prefix
+    upstream: backend-pool
+    tier_override: high
+
+  - id: static
+    path: "/static/"
+    match_type: prefix
+    upstream: static-pool
+    tier_override: medium
+
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: backend-pool
+
+# ---------------------------------------------------------------------------
+# Upstream pools
+# ---------------------------------------------------------------------------
+upstreams:
+  auth-pool:
+    members:
+      - addr: "127.0.0.1:3001"
+        weight: 1
+    lb: round_robin
+    health:
+      path: "/healthz"
+      interval: "10s"
+      timeout: "3s"
+    circuit_breaker:
+      error_rate_threshold: 0.5
+      open_duration: "30s"
+
+  backend-pool:
+    members:
+      - addr: "127.0.0.1:3002"
+        weight: 3
+      - addr: "127.0.0.1:3003"
+        weight: 1
+    lb: weighted_round_robin
+
+  static-pool:
+    members:
+      - addr: "127.0.0.1:3004"
+    lb: round_robin
+
+# ---------------------------------------------------------------------------
+# State backend
+# ---------------------------------------------------------------------------
+state:
+  backend: in_memory
+
+# ---------------------------------------------------------------------------
+# Rules
+# ---------------------------------------------------------------------------
+rules:
+  paths:
+    - "config/rules/"
+  max_rule_count: 10000
+  strict_compile: false
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 100
+      window: "1m"
+
+    - id: login-ip
+      scope: route
+      key: ip
+      algo: sliding_window
+      limit: 5
+      window: "1m"
+
+# ---------------------------------------------------------------------------
+# Risk scoring
+# ---------------------------------------------------------------------------
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 40
+    block_at: 80
+    max: 100
+
+# ---------------------------------------------------------------------------
+# Detectors
+# ---------------------------------------------------------------------------
+detectors:
+  sqli:
+    enabled: true
+  xss:
+    enabled: true
+  path_traversal:
+    enabled: true
+  ssrf:
+    enabled: true
+  header_injection:
+    enabled: true
+  body_abuse:
+    enabled: true
+  recon:
+    enabled: true
+  brute_force:
+    enabled: true
+
+# ---------------------------------------------------------------------------
+# DLP
+# ---------------------------------------------------------------------------
+dlp:
+  patterns: []
+  max_scan_bytes: 2097152
+
+# ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+observability:
+  prometheus:
+    path: "/metrics"
+  access_log:
+    format: json
+    sink: stdout
+
+# ---------------------------------------------------------------------------
+# Audit
+# ---------------------------------------------------------------------------
+audit:
+  sinks: []
+  chain:
+    enabled: true
+  retention: "90d"
+  pseudonymize_ip: false
+
+# ---------------------------------------------------------------------------
+# Admin
+# ---------------------------------------------------------------------------
+admin:
+  bind: "127.0.0.1:9443"
+  dashboard_auth:
+    password_hash_ref: "${secret:env:AEGIS_ADMIN_PASSWORD_HASH}"
+    csrf_secret_ref: "${secret:env:AEGIS_CSRF_SECRET}"
+    session_ttl_idle: "30m"
+    session_ttl_absolute: "8h"
+    ip_allowlist:
+      - "127.0.0.1/32"
+      - "::1/128"
+    totp_enabled: false
+    login_rate_limit:
+      per_ip:
+        limit: 5
+        window: "1m"
+      per_user:
+        limit: 10
+        window: "15m"
+    lockout:
+      threshold: 10
+      window: "15m"
+      duration: "15m"

@@ -1,0 +1,14 @@
+[package]
+name = "aegis-security"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+async-trait.workspace = true
+http.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
