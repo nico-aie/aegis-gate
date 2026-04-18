@@ -1,0 +1,60 @@
+# =========================
+# Rust / Cargo
+# =========================
+target/
+**/target/
+Cargo.lock
+
+# Generated files
+**/*.rs.bk
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.iml
+*.code-workspace
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+*.out
+
+# =========================
+# Environment / secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Rust tooling caches
+# =========================
+/debug/
+release/
+
+# =========================
+# Rust Analyzer cache
+# =========================
+.rust-analyzer/
+
+# =========================
+# WASM (nếu có)
+# =========================
+*.wasm
+
+# =========================
+# Benchmark / test artifacts
+# =========================
+/benches/output/
