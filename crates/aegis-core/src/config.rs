@@ -20,10 +20,43 @@ pub enum ConfigEvent {
 pub type ConfigBroadcast = tokio::sync::broadcast::Sender<ConfigEvent>;
 
 // ---------------------------------------------------------------------------
+// Config loader
+// ---------------------------------------------------------------------------
+
+/// Load configuration from a YAML file with environment variable overlay.
+///
+/// Layers (lowest → highest priority):
+/// 1. YAML file at `path`
+/// 2. Environment variables prefixed with `WAF_` (nested via `__`, e.g. `WAF_STATE__BACKEND`)
+///
+/// After extraction the config is validated via [`WafConfig::validate`].
+pub fn load_config(path: &std::path::Path) -> crate::Result<WafConfig> {
+    use figment::providers::{Env, Format, Yaml};
+    use figment::Figment;
+
+    let cfg: WafConfig = Figment::new()
+        .merge(Yaml::file(path))
+        .merge(Env::prefixed("WAF_").split("__"))
+        .extract()
+        .map_err(|e| crate::error::WafError::Config(format!("{e}")))?;
+
+    cfg.validate()?;
+    Ok(cfg)
+}
+
+/// Load configuration from a YAML string (useful for tests and embedded configs).
+pub fn load_config_str(yaml: &str) -> crate::Result<WafConfig> {
+    let cfg: WafConfig = serde_yaml::from_str(yaml)
+        .map_err(|e| crate::error::WafError::Config(format!("invalid config: {e}")))?;
+    cfg.validate()?;
+    Ok(cfg)
+}
+
+// ---------------------------------------------------------------------------
 // Top-level WafConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct WafConfig {
     pub listeners: Listeners,
     pub routes: Vec<RouteConfig>,
@@ -51,17 +84,57 @@ pub struct WafConfig {
     pub compliance: Option<ComplianceProfile>,
 }
 
+impl WafConfig {
+    /// Validate semantic invariants that serde alone cannot enforce.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.listeners.data.is_empty() {
+            return Err(crate::error::WafError::Config(
+                "listeners.data must contain at least one entry".into(),
+            ));
+        }
+        if self.routes.is_empty() {
+            return Err(crate::error::WafError::Config(
+                "routes must contain at least one route".into(),
+            ));
+        }
+        if self.upstreams.is_empty() {
+            return Err(crate::error::WafError::Config(
+                "upstreams must contain at least one pool".into(),
+            ));
+        }
+        // Every route must reference a declared upstream.
+        for route in &self.routes {
+            if !self.upstreams.contains_key(&route.upstream) {
+                return Err(crate::error::WafError::Config(format!(
+                    "route '{}' references unknown upstream '{}'",
+                    route.id, route.upstream,
+                )));
+            }
+        }
+        // Every pool must have at least one member.
+        for (name, pool) in &self.upstreams {
+            if pool.members.is_empty() {
+                return Err(crate::error::WafError::Config(format!(
+                    "upstream '{}' must have at least one member",
+                    name,
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Listeners
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Listeners {
     pub data: Vec<ListenerConfig>,
     pub admin: ListenerConfig,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ListenerConfig {
     pub bind: SocketAddr,
     #[serde(default)]
@@ -72,7 +145,7 @@ pub struct ListenerConfig {
 // Route
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RouteConfig {
     pub id: String,
     #[serde(default)]
@@ -113,7 +186,7 @@ pub enum FailureModeConfig {
 // Upstream Pool
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct PoolConfig {
     pub members: Vec<MemberConfig>,
     #[serde(default = "default_lb")]
@@ -138,7 +211,7 @@ pub enum LbStrategy {
     P2c,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct MemberConfig {
     pub addr: SocketAddr,
     #[serde(default = "default_weight")]
@@ -151,7 +224,7 @@ fn default_weight() -> u32 {
     1
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct HealthCheckConfig {
     pub path: String,
     #[serde(default = "default_health_interval", with = "humantime_serde")]
@@ -167,7 +240,7 @@ fn default_health_timeout() -> Duration {
     Duration::from_secs(3)
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct CircuitBreakerConfig {
     #[serde(default = "default_cb_threshold")]
     pub error_rate_threshold: f64,
@@ -186,7 +259,7 @@ fn default_cb_window() -> Duration {
 // TLS
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct TlsConfig {
     #[serde(default)]
     pub certificates: Vec<CertConfig>,
@@ -194,7 +267,7 @@ pub struct TlsConfig {
     pub min_version: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct CertConfig {
     pub cert_path: PathBuf,
     pub key_ref: String,
@@ -206,7 +279,7 @@ pub struct CertConfig {
 // State
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct StateConfig {
     #[serde(default = "default_state_backend")]
     pub backend: StateBackendKind,
@@ -226,7 +299,7 @@ pub enum StateBackendKind {
     Raft,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RedisConfig {
     pub urls: Vec<String>,
     #[serde(default)]
@@ -248,7 +321,7 @@ fn default_redis_timeout() -> Duration {
 // Rules
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize, Default)]
 pub struct RulesConfig {
     #[serde(default)]
     pub paths: Vec<PathBuf>,
@@ -266,13 +339,13 @@ fn default_max_rule_count() -> u32 {
 // Rate limit
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize, Default)]
 pub struct RateLimitConfig {
     #[serde(default)]
     pub buckets: Vec<RateLimitRule>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RateLimitRule {
     pub id: String,
     pub scope: RlScope,
@@ -312,7 +385,7 @@ pub enum RlAlgo {
 // Risk
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RiskConfig {
     #[serde(default)]
     pub weights: RiskWeights,
@@ -336,7 +409,7 @@ impl Default for RiskConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RiskWeights {
     #[serde(default = "default_risk_weight")]
     pub bad_asn: u32,
@@ -369,7 +442,7 @@ impl Default for RiskWeights {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RiskThresholds {
     #[serde(default = "default_challenge_at")]
     pub challenge_at: u32,
@@ -403,7 +476,7 @@ impl Default for RiskThresholds {
 // Detectors
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DetectorsConfig {
     #[serde(default = "default_detector_toggle")]
     pub sqli: DetectorToggle,
@@ -444,7 +517,7 @@ impl Default for DetectorsConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DetectorToggle {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -458,7 +531,7 @@ fn default_true() -> bool {
 // DLP
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize, Default)]
 pub struct DlpConfig {
     #[serde(default)]
     pub patterns: Vec<DlpPattern>,
@@ -472,7 +545,7 @@ fn default_max_scan_bytes() -> usize {
     2_097_152
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DlpPattern {
     pub id: String,
     pub regex: String,
@@ -497,7 +570,7 @@ pub enum DlpAction {
     Log,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct FpeConfig {
     pub key_ref: String,
     pub version: u32,
@@ -507,7 +580,7 @@ pub struct FpeConfig {
 // Observability
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct ObservabilityConfig {
     #[serde(default)]
     pub prometheus: PromConfig,
@@ -517,17 +590,7 @@ pub struct ObservabilityConfig {
     pub access_log: AccessLogConfig,
 }
 
-impl Default for ObservabilityConfig {
-    fn default() -> Self {
-        Self {
-            prometheus: PromConfig::default(),
-            otel: None,
-            access_log: AccessLogConfig::default(),
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct PromConfig {
     #[serde(default = "default_prom_path")]
     pub path: String,
@@ -545,7 +608,7 @@ impl Default for PromConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct OtelConfig {
     pub endpoint: String,
     #[serde(default)]
@@ -558,7 +621,7 @@ fn default_sample_ratio() -> f32 {
     1.0
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AccessLogConfig {
     #[serde(default = "default_access_log_format")]
     pub format: AccessLogFormat,
@@ -601,7 +664,7 @@ pub enum AccessLogSink {
 // Audit
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AuditConfig {
     #[serde(default)]
     pub sinks: Vec<AuditSinkConfig>,
@@ -637,7 +700,7 @@ pub enum AuditSinkConfig {
     Kafka { brokers: Vec<String>, topic: String },
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AuditChainConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -654,7 +717,7 @@ impl Default for AuditChainConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct WitnessConfig {
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
@@ -667,7 +730,7 @@ pub struct WitnessConfig {
 // Admin
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AdminConfig {
     #[serde(default = "default_admin_bind")]
     pub bind: SocketAddr,
@@ -691,7 +754,7 @@ impl Default for AdminConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DashboardAuthConfig {
     #[serde(default)]
     pub password_hash_ref: String,
@@ -739,7 +802,7 @@ impl Default for DashboardAuthConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct LoginRateLimitConfig {
     #[serde(default)]
     pub per_ip: RateCap,
@@ -762,7 +825,7 @@ impl Default for LoginRateLimitConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct RateCap {
     #[serde(default = "default_rate_cap_limit")]
     pub limit: u32,
@@ -786,7 +849,7 @@ impl Default for RateCap {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct LockoutConfig {
     #[serde(default = "default_lockout_threshold")]
     pub threshold: u32,
@@ -820,7 +883,7 @@ impl Default for LockoutConfig {
 // Compliance
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ComplianceProfile {
     #[serde(default)]
     pub modes: Vec<ComplianceMode>,
@@ -1049,5 +1112,190 @@ path: /var/log/waf/audit.jsonl
         let cfg = AccessLogConfig::default();
         assert_eq!(cfg.format, AccessLogFormat::Json);
         assert_eq!(cfg.sink, AccessLogSink::Stdout);
+    }
+
+    // -----------------------------------------------------------------------
+    // load_config (figment) tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_config_round_trip_waf_yaml() {
+        let path = std::path::Path::new("../../config/waf.yaml");
+        if path.exists() {
+            let cfg = super::load_config(path).unwrap();
+            assert!(!cfg.routes.is_empty());
+            assert!(cfg.upstreams.contains_key("backend-pool"));
+            assert!(!cfg.listeners.data.is_empty());
+            cfg.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn load_config_missing_file_returns_error() {
+        let result = super::load_config(std::path::Path::new("/nonexistent/waf.yaml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_config_invalid_yaml_returns_error() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("aegis_test_bad_config.yaml");
+        std::fs::write(&path, "not: [valid: yaml: config").unwrap();
+        let result = super::load_config(&path);
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // -----------------------------------------------------------------------
+    // load_config_str tests
+    // -----------------------------------------------------------------------
+
+    fn minimal_yaml() -> &'static str {
+        r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#
+    }
+
+    #[test]
+    fn load_config_str_valid() {
+        let cfg = super::load_config_str(minimal_yaml()).unwrap();
+        assert_eq!(cfg.routes.len(), 1);
+        assert_eq!(cfg.routes[0].id, "catch-all");
+        assert!(cfg.upstreams.contains_key("default"));
+    }
+
+    // -----------------------------------------------------------------------
+    // validate() tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_empty_listeners() {
+        let yaml = r#"
+listeners:
+  data: []
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let result = super::load_config_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("listeners.data must contain at least one entry"));
+    }
+
+    #[test]
+    fn validate_rejects_empty_routes() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes: []
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let result = super::load_config_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("routes must contain at least one route"));
+    }
+
+    #[test]
+    fn validate_rejects_empty_upstreams() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams: {}
+state:
+  backend: in_memory
+"#;
+        let result = super::load_config_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("upstreams must contain at least one pool"));
+    }
+
+    #[test]
+    fn validate_rejects_unknown_upstream_ref() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: nonexistent
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let result = super::load_config_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown upstream 'nonexistent'"));
+    }
+
+    #[test]
+    fn validate_rejects_empty_pool_members() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members: []
+state:
+  backend: in_memory
+"#;
+        let result = super::load_config_str(yaml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must have at least one member"));
     }
 }

@@ -6,9 +6,23 @@ rust-version.workspace = true
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
+arc-swap.workspace = true
 async-trait.workspace = true
+bytes.workspace = true
+chrono.workspace = true
 dashmap.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+notify.workspace = true
+regex.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+aegis-security = { path = "../aegis-security" }
+serde_yaml.workspace = true
+tempfile = "3"
 tokio = { workspace = true, features = ["full", "test-util"] }
