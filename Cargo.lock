@@ -85,9 +85,17 @@ name = "aegis-security"
 version = "0.1.0"
 dependencies = [
  "aegis-core",
+ "arc-swap",
  "async-trait",
+ "chrono",
  "http",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

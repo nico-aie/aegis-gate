@@ -5,20 +5,23 @@
 //       IP reputation, bot management, DLP, API guard, content scan.
 
 pub mod noop;
+pub mod pipeline;
+pub mod rules;
 
 pub use noop::NoopPipeline;
+pub use pipeline::{classify_tier, Pipeline};
+pub use rules::RuleSet;
 
-// Future modules (stubs):
-// pub mod rules;
-// pub mod ratelimit;
+// Future modules:
+// pub mod rate_limit;
 // pub mod ddos;
-// pub mod detect;
+// pub mod detectors;
 // pub mod risk;
 // pub mod challenge;
 // pub mod fingerprint;
-// pub mod reputation;
-// pub mod bot;
+// pub mod ip_rep;
+// pub mod bots;
 // pub mod dlp;
-// pub mod apiguard;
-// pub mod scan;
+// pub mod api_security;
+// pub mod content;
 // pub mod auth;

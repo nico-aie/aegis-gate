@@ -1,15 +1,15 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: M1-T5.7 — Cluster membership
-- Crate: aegis-proxy
-- Files changed: state/in_memory.rs, state/redis.rs, shed.rs, secrets.rs, dr.rs, sd/mod.rs, cluster.rs
+- Task: M2-T1.5 — Tier classifier
+- Crate: aegis-security
+- Files changed: rules/ast.rs, rules/parser.rs, rules/linter.rs, rules/eval.rs, rules/mod.rs, pipeline.rs, lib.rs
 - Status: DONE
 - Date: 2026-04-24
 
 ## Next Task
-- All proxy.md weeks (W1–W5) complete.
-- Proceed with aegis-security or integration fixtures as needed.
+- Task: W2 — Rate Limit, DDoS, OWASP Detectors (M2-T2.x)
+- Plan: plans/security.md (W2)
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -49,3 +49,8 @@
 | M1-T5.5 DR snapshot/restore | aegis-proxy | 2026-04-24 |
 | M1-T5.6 Service discovery | aegis-proxy | 2026-04-24 |
 | M1-T5.7 Cluster membership | aegis-proxy | 2026-04-24 |
+| M2-T1.1 Rule AST + parser | aegis-security | 2026-04-24 |
+| M2-T1.2 Linter | aegis-security | 2026-04-24 |
+| M2-T1.3 Evaluator | aegis-security | 2026-04-24 |
+| M2-T1.4 RuleSet hot reload | aegis-security | 2026-04-24 |
+| M2-T1.5 Tier classifier | aegis-security | 2026-04-24 |
