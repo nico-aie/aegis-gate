@@ -10,6 +10,26 @@
 ## Next Task
 - Task: W2 — Rate Limit, DDoS, OWASP Detectors (M2-T2.x)
 - Plan: plans/security.md (W2)
+- Status: IN PROGRESS — code written, needs clippy pass + unused import cleanup
+- Files created (not yet committed):
+  - `crates/aegis-security/src/rate_limit/mod.rs` — re-exports
+  - `crates/aegis-security/src/rate_limit/sliding.rs` — M2-T2.1 sliding window rate limit
+  - `crates/aegis-security/src/rate_limit/bucket.rs` — M2-T2.2 token bucket
+  - `crates/aegis-security/src/ddos.rs` — M2-T2.3 DDoS per-IP burst + cluster spike
+  - `crates/aegis-security/src/detectors/mod.rs` — detector trait, url_decode helper, run_all
+  - `crates/aegis-security/src/detectors/sqli.rs` — SQLi (30 patterns, 30+30 tests)
+  - `crates/aegis-security/src/detectors/xss.rs` — XSS (30 patterns, 29+30 tests)
+  - `crates/aegis-security/src/detectors/path_traversal.rs` — path traversal (16 patterns, 30+30 tests)
+  - `crates/aegis-security/src/detectors/ssrf.rs` — SSRF (16 patterns, 30+30 tests)
+  - `crates/aegis-security/src/detectors/header_injection.rs` — header injection (12 patterns, 11+11 tests)
+  - `crates/aegis-security/src/detectors/body_abuse.rs` — body oversize + deep JSON nesting
+  - `crates/aegis-security/src/detectors/recon.rs` — recon path + scanner UA detection
+  - `crates/aegis-security/src/lib.rs` — updated to register ddos, detectors, rate_limit modules
+- Tests: 417 pass, 0 fail
+- Remaining before commit:
+  1. Run `cargo clippy -p aegis-security -- -D warnings` and fix any warnings (likely unused import in rules/mod.rs)
+  2. Update progress file to mark W2 DONE
+  3. Commit
 
 ## Completed Tasks Log
 | Task | Crate | Date |

@@ -4,8 +4,11 @@
 //       risk scoring, challenge ladder, device fingerprinting,
 //       IP reputation, bot management, DLP, API guard, content scan.
 
+pub mod ddos;
+pub mod detectors;
 pub mod noop;
 pub mod pipeline;
+pub mod rate_limit;
 pub mod rules;
 
 pub use noop::NoopPipeline;
@@ -13,9 +16,6 @@ pub use pipeline::{classify_tier, Pipeline};
 pub use rules::RuleSet;
 
 // Future modules:
-// pub mod rate_limit;
-// pub mod ddos;
-// pub mod detectors;
 // pub mod risk;
 // pub mod challenge;
 // pub mod fingerprint;
