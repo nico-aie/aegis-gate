@@ -32,6 +32,27 @@ impl InMemoryBackend {
         }
     }
 
+    /// Spawn a background task that periodically sweeps expired entries.
+    pub fn spawn_reaper(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
+        let kv = self.kv.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            loop {
+                tick.tick().await;
+                kv.retain(|_, entry| !entry.is_expired());
+            }
+        })
+    }
+
+    /// Number of entries currently stored (including possibly expired).
+    pub fn len(&self) -> usize {
+        self.kv.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.kv.is_empty()
+    }
+
     fn risk_key_str(key: &RiskKey) -> String {
         format!(
             "g:risk:{}:{}:{}",
@@ -370,5 +391,60 @@ mod tests {
     async fn nonce_consume_nonexistent() {
         let b = backend();
         assert!(!b.consume_nonce("doesnotexist").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn concurrent_sliding_window_never_exceeds_limit() {
+        let b = Arc::new(backend());
+        let limit = 100u64;
+        let writers = 20;
+        let requests_per_writer = 10;
+
+        let mut handles = Vec::new();
+        for _ in 0..writers {
+            let b2 = b.clone();
+            handles.push(tokio::spawn(async move {
+                for _ in 0..requests_per_writer {
+                    let r = b2
+                        .incr_window("concurrent-key", Duration::from_secs(60), limit)
+                        .await
+                        .unwrap();
+                    // Count should always be positive.
+                    assert!(r.count > 0);
+                    // If allowed, count must be within limit.
+                    if r.allowed {
+                        assert!(r.count <= limit);
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Final count should equal total requests.
+        let final_result = b
+            .incr_window("concurrent-key", Duration::from_secs(60), limit)
+            .await
+            .unwrap();
+        let total = (writers * requests_per_writer + 1) as u64;
+        assert_eq!(final_result.count, total);
+    }
+
+    #[tokio::test]
+    async fn reaper_cleans_expired_entries() {
+        let b = backend();
+        b.set("short-lived", b"val", Duration::from_millis(50))
+            .await
+            .unwrap();
+        assert!(!b.is_empty());
+
+        // Wait for TTL + a little extra.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Manually trigger reap logic (same as reaper does).
+        b.kv.retain(|_, entry| !entry.is_expired());
+        assert!(b.is_empty());
     }
 }

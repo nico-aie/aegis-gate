@@ -69,6 +69,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",

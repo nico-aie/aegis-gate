@@ -21,6 +21,8 @@ use aegis_core::{AuditBus, ReadinessSignal};
 
 pub mod acme;
 pub mod cache;
+pub mod cluster;
+pub mod dr;
 pub mod hotbin;
 pub mod listener;
 pub mod ocsp;
@@ -28,17 +30,15 @@ pub mod proto;
 pub mod proxy;
 pub mod quota;
 pub mod route;
+pub mod sd;
+pub mod secrets;
 pub mod session;
+pub mod shed;
 pub mod state;
 pub mod supervisor;
 pub mod traffic;
 pub mod transform;
 pub mod upstream;
-// Future modules:
-// pub mod sd;
-// pub mod cluster;
-// pub mod secrets;
-// pub mod shed;
 
 /// Boot the data-plane proxy.
 ///

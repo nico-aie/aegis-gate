@@ -1,15 +1,15 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: M1-T4.9 — Tier-aware smart cache
+- Task: M1-T5.7 — Cluster membership
 - Crate: aegis-proxy
-- Files changed: quota.rs, transform/{mod,vars,cors}.rs, traffic.rs, session.rs, supervisor.rs, hotbin.rs, cache/mod.rs
+- Files changed: state/in_memory.rs, state/redis.rs, shed.rs, secrets.rs, dr.rs, sd/mod.rs, cluster.rs
 - Status: DONE
 - Date: 2026-04-24
 
 ## Next Task
-- Task: W5 — Clustering, Shedding, Secrets, DR (M1-T5.x)
-- Plan: plans/proxy.md (W5)
+- All proxy.md weeks (W1–W5) complete.
+- Proceed with aegis-security or integration fixtures as needed.
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -42,3 +42,10 @@
 | M1-T4.7 Worker supervisor + graceful drain | aegis-proxy | 2026-04-24 |
 | M1-T4.8 Hot binary reload (SIGUSR2) | aegis-proxy | 2026-04-24 |
 | M1-T4.9 Tier-aware smart cache | aegis-proxy | 2026-04-24 |
+| M1-T5.1 InMemoryBackend polish | aegis-proxy | 2026-04-24 |
+| M1-T5.2 RedisBackend (feature redis) | aegis-proxy | 2026-04-24 |
+| M1-T5.3 Adaptive load shedder (Gradient2) | aegis-proxy | 2026-04-24 |
+| M1-T5.4 Secrets resolver | aegis-proxy | 2026-04-24 |
+| M1-T5.5 DR snapshot/restore | aegis-proxy | 2026-04-24 |
+| M1-T5.6 Service discovery | aegis-proxy | 2026-04-24 |
+| M1-T5.7 Cluster membership | aegis-proxy | 2026-04-24 |
