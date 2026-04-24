@@ -24,7 +24,7 @@ futures = "0.3"
 http = "1"
 bytes = "1"
 hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "http1", "http2", "server-auto"] }
 http-body-util = "0.1"
 
 # Serialization
@@ -38,6 +38,13 @@ sha2 = "0.10"
 hmac = "0.12"
 argon2 = "0.5"
 zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# TLS
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+rcgen = "0.13"
 
 # Config
 figment = { version = "0.10", features = ["yaml", "env"] }
@@ -69,8 +76,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # Auth
 jsonwebtoken = "9"
 
+# Streams
+tokio-stream = "0.1"
+
 # Testing
 tokio-test = "0.4"
+tokio-tungstenite = "0.24"
 
 # Duration parsing
 humantime = "2"

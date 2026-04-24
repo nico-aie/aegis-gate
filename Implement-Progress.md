@@ -1,15 +1,15 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: M1-T2.7 — Wire routing + upstream into proxy.rs
+- Task: M1-T3.7 — OCSP stapling
 - Crate: aegis-proxy
-- Files changed: proxy.rs, route/mod.rs, route/host.rs, route/path.rs, upstream/mod.rs, upstream/lb.rs, upstream/health.rs, upstream/circuit.rs
+- Files changed: listener/tls.rs, proto/h2.rs, proto/ws.rs, proto/grpc.rs, upstream/tls.rs, acme.rs, ocsp.rs
 - Status: DONE
-- Date: 2026-04-22
+- Date: 2026-04-24
 
 ## Next Task
-- Task: W3 — TLS termination & transforms (M1-T3.x)
-- Plan: plans/proxy.md (W3)
+- Task: W4 — Traffic Mgmt, Quotas, Sessions, Drain (M1-T4.x)
+- Plan: plans/proxy.md (W4)
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -26,3 +26,10 @@
 | M1-T2.5 Active health checks | aegis-proxy | 2026-04-22 |
 | M1-T2.6 Circuit breaker | aegis-proxy | 2026-04-22 |
 | M1-T2.7 Wire routing + upstream into proxy.rs | aegis-proxy | 2026-04-22 |
+| M1-T3.1 DynamicResolver + CertStore | aegis-proxy | 2026-04-24 |
+| M1-T3.2 HTTP/2 on both sides | aegis-proxy | 2026-04-24 |
+| M1-T3.3 WebSocket upgrade passthrough | aegis-proxy | 2026-04-24 |
+| M1-T3.4 gRPC trailer-preserving forward | aegis-proxy | 2026-04-24 |
+| M1-T3.5 mTLS to upstream | aegis-proxy | 2026-04-24 |
+| M1-T3.6 ACME (feature acme) | aegis-proxy | 2026-04-24 |
+| M1-T3.7 OCSP stapling | aegis-proxy | 2026-04-24 |

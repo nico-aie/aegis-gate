@@ -1,6 +1,7 @@
 pub mod lb;
 pub mod health;
 pub mod circuit;
+pub mod tls;
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

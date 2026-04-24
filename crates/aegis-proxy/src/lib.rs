@@ -19,22 +19,22 @@ use aegis_core::pipeline::SecurityPipeline;
 use aegis_core::state::StateBackend;
 use aegis_core::{AuditBus, ReadinessSignal};
 
+pub mod acme;
 pub mod listener;
+pub mod ocsp;
+pub mod proto;
 pub mod proxy;
 pub mod route;
 pub mod state;
 pub mod supervisor;
 pub mod upstream;
-
 // Future modules (stubs):
-// pub mod tls;
 // pub mod transform;
 // pub mod sd;
 // pub mod cache;
 // pub mod cluster;
 // pub mod secrets;
 // pub mod shed;
-// pub mod proto;
 
 /// Boot the data-plane proxy.
 ///
