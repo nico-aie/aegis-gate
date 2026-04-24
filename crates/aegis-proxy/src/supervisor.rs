@@ -1,5 +1,7 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -7,6 +9,98 @@ use tokio::sync::mpsc;
 
 use aegis_core::audit::{AuditBus, AuditClass, AuditEvent};
 use aegis_core::config::{load_config, WafConfig};
+
+// ─────────────────── In-Flight Tracker ─────────────────────────
+
+/// Tracks the number of in-flight requests for graceful drain.
+#[derive(Debug)]
+pub struct InFlightTracker {
+    count: AtomicUsize,
+    draining: AtomicBool,
+}
+
+impl InFlightTracker {
+    pub fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            draining: AtomicBool::new(false),
+        }
+    }
+
+    /// Increment the in-flight count. Returns `false` if draining (reject new work).
+    pub fn acquire(&self) -> bool {
+        if self.draining.load(Ordering::Acquire) {
+            return false;
+        }
+        self.count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Decrement the in-flight count.
+    pub fn release(&self) {
+        self.count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Current in-flight count.
+    pub fn in_flight(&self) -> usize {
+        self.count.load(Ordering::Relaxed)
+    }
+
+    /// Enter drain mode — stop accepting new requests.
+    pub fn start_drain(&self) {
+        self.draining.store(true, Ordering::Release);
+    }
+
+    /// Whether we are draining.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
+}
+
+impl Default for InFlightTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Handle for coordinating graceful drain.
+pub struct DrainHandle {
+    tracker: Arc<InFlightTracker>,
+    drain_timeout: Duration,
+}
+
+impl DrainHandle {
+    pub fn new(tracker: Arc<InFlightTracker>, drain_timeout: Duration) -> Self {
+        Self {
+            tracker,
+            drain_timeout,
+        }
+    }
+
+    /// Initiate graceful drain: stop accepting, wait for in-flight to reach 0,
+    /// or timeout. Returns the number of requests that were still in-flight
+    /// when the timeout expired (0 = clean drain).
+    pub async fn drain(&self) -> usize {
+        self.tracker.start_drain();
+        tracing::info!("drain started, waiting up to {:?}", self.drain_timeout);
+
+        let deadline = tokio::time::Instant::now() + self.drain_timeout;
+        let mut interval = tokio::time::interval(Duration::from_millis(50));
+
+        loop {
+            interval.tick().await;
+            let remaining = self.tracker.in_flight();
+            if remaining == 0 {
+                tracing::info!("drain complete, 0 in-flight");
+                return 0;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!("drain timeout, {remaining} requests still in-flight");
+                return remaining;
+            }
+        }
+    }
+}
 
 /// Spawn a background task that watches `path` for changes and hot-reloads the
 /// configuration into `cfg` via atomic swap.
@@ -225,5 +319,66 @@ state:
         assert!(found_failure, "expected config_reload_failed audit event");
 
         handle.abort();
+    }
+
+    // ─── In-flight tracker tests ───
+
+    #[test]
+    fn tracker_acquire_release() {
+        let t = InFlightTracker::new();
+        assert!(t.acquire());
+        assert!(t.acquire());
+        assert_eq!(t.in_flight(), 2);
+        t.release();
+        assert_eq!(t.in_flight(), 1);
+        t.release();
+        assert_eq!(t.in_flight(), 0);
+    }
+
+    #[test]
+    fn tracker_rejects_during_drain() {
+        let t = InFlightTracker::new();
+        assert!(t.acquire());
+        t.start_drain();
+        assert!(t.is_draining());
+        assert!(!t.acquire()); // rejected
+        assert_eq!(t.in_flight(), 1); // existing request still counted
+    }
+
+    #[tokio::test]
+    async fn drain_completes_when_empty() {
+        let tracker = Arc::new(InFlightTracker::new());
+        let handle = DrainHandle::new(tracker.clone(), Duration::from_secs(5));
+        let remaining = handle.drain().await;
+        assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn drain_waits_for_inflight() {
+        let tracker = Arc::new(InFlightTracker::new());
+        tracker.acquire();
+        tracker.acquire();
+
+        let t2 = tracker.clone();
+        // Simulate requests finishing after 100ms.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            t2.release();
+            t2.release();
+        });
+
+        let handle = DrainHandle::new(tracker, Duration::from_secs(5));
+        let remaining = handle.drain().await;
+        assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn drain_times_out() {
+        let tracker = Arc::new(InFlightTracker::new());
+        tracker.acquire(); // Never released.
+
+        let handle = DrainHandle::new(tracker, Duration::from_millis(200));
+        let remaining = handle.drain().await;
+        assert_eq!(remaining, 1);
     }
 }

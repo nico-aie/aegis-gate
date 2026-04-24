@@ -20,18 +20,22 @@ use aegis_core::state::StateBackend;
 use aegis_core::{AuditBus, ReadinessSignal};
 
 pub mod acme;
+pub mod cache;
+pub mod hotbin;
 pub mod listener;
 pub mod ocsp;
 pub mod proto;
 pub mod proxy;
+pub mod quota;
 pub mod route;
+pub mod session;
 pub mod state;
 pub mod supervisor;
+pub mod traffic;
+pub mod transform;
 pub mod upstream;
-// Future modules (stubs):
-// pub mod transform;
+// Future modules:
 // pub mod sd;
-// pub mod cache;
 // pub mod cluster;
 // pub mod secrets;
 // pub mod shed;

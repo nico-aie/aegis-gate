@@ -104,8 +104,10 @@ mod tests {
     use http_body_util::Full;
     use hyper::service::service_fn;
     use hyper::Response;
+    use hyper_util::rt::TokioIo;
     use std::convert::Infallible;
     use std::io::BufReader;
+    use std::sync::Arc;
 
     fn generate_cert() -> (String, String) {
         let params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();

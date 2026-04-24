@@ -1,15 +1,15 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: M1-T3.7 — OCSP stapling
+- Task: M1-T4.9 — Tier-aware smart cache
 - Crate: aegis-proxy
-- Files changed: listener/tls.rs, proto/h2.rs, proto/ws.rs, proto/grpc.rs, upstream/tls.rs, acme.rs, ocsp.rs
+- Files changed: quota.rs, transform/{mod,vars,cors}.rs, traffic.rs, session.rs, supervisor.rs, hotbin.rs, cache/mod.rs
 - Status: DONE
 - Date: 2026-04-24
 
 ## Next Task
-- Task: W4 — Traffic Mgmt, Quotas, Sessions, Drain (M1-T4.x)
-- Plan: plans/proxy.md (W4)
+- Task: W5 — Clustering, Shedding, Secrets, DR (M1-T5.x)
+- Plan: plans/proxy.md (W5)
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -33,3 +33,12 @@
 | M1-T3.5 mTLS to upstream | aegis-proxy | 2026-04-24 |
 | M1-T3.6 ACME (feature acme) | aegis-proxy | 2026-04-24 |
 | M1-T3.7 OCSP stapling | aegis-proxy | 2026-04-24 |
+| M1-T4.1 Per-route quotas | aegis-proxy, aegis-core | 2026-04-24 |
+| M1-T4.2 Transformations + CORS | aegis-proxy | 2026-04-24 |
+| M1-T4.3 Canary split + header/cookie steering | aegis-proxy | 2026-04-24 |
+| M1-T4.4 Retries with budget | aegis-proxy | 2026-04-24 |
+| M1-T4.5 Shadow mirroring | aegis-proxy | 2026-04-24 |
+| M1-T4.6 Session affinity | aegis-proxy | 2026-04-24 |
+| M1-T4.7 Worker supervisor + graceful drain | aegis-proxy | 2026-04-24 |
+| M1-T4.8 Hot binary reload (SIGUSR2) | aegis-proxy | 2026-04-24 |
+| M1-T4.9 Tier-aware smart cache | aegis-proxy | 2026-04-24 |

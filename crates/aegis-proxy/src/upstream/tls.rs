@@ -80,6 +80,7 @@ fn load_key(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

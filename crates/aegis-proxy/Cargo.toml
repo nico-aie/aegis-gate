@@ -8,6 +8,7 @@ rust-version.workspace = true
 aegis-core = { path = "../aegis-core" }
 arc-swap.workspace = true
 async-trait.workspace = true
+blake3.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
@@ -15,6 +16,7 @@ http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+moka.workspace = true
 notify.workspace = true
 regex.workspace = true
 rustls.workspace = true

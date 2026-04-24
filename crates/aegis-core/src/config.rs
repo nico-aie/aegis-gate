@@ -160,6 +160,63 @@ pub struct RouteConfig {
     pub tier_override: Option<Tier>,
     #[serde(default)]
     pub failure_mode: Option<FailureModeConfig>,
+    #[serde(default)]
+    pub quota: Option<QuotaConfig>,
+}
+
+/// Per-route request/response quotas.
+#[derive(Clone, Debug, Deserialize)]
+pub struct QuotaConfig {
+    /// Maximum request body size in bytes (→ 413).
+    #[serde(default = "default_max_body_size")]
+    pub client_max_body_size: u64,
+    /// Maximum total header size in bytes (→ 431).
+    #[serde(default = "default_max_header_size")]
+    pub max_header_size: usize,
+    /// Maximum URI length in bytes (→ 414).
+    #[serde(default = "default_max_uri_length")]
+    pub max_uri_length: usize,
+    /// Read timeout for the request (→ 408).
+    #[serde(default = "default_read_timeout", with = "humantime_serde")]
+    pub read_timeout: Duration,
+    /// Write / upstream timeout (→ 504).
+    #[serde(default = "default_write_timeout", with = "humantime_serde")]
+    pub write_timeout: Duration,
+    /// Total request deadline (→ 504).
+    #[serde(default = "default_total_deadline", with = "humantime_serde")]
+    pub total_deadline: Duration,
+}
+
+impl Default for QuotaConfig {
+    fn default() -> Self {
+        Self {
+            client_max_body_size: default_max_body_size(),
+            max_header_size: default_max_header_size(),
+            max_uri_length: default_max_uri_length(),
+            read_timeout: default_read_timeout(),
+            write_timeout: default_write_timeout(),
+            total_deadline: default_total_deadline(),
+        }
+    }
+}
+
+fn default_max_body_size() -> u64 {
+    10 * 1024 * 1024 // 10 MB
+}
+fn default_max_header_size() -> usize {
+    64 * 1024 // 64 KB
+}
+fn default_max_uri_length() -> usize {
+    8192
+}
+fn default_read_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+fn default_write_timeout() -> Duration {
+    Duration::from_secs(60)
+}
+fn default_total_deadline() -> Duration {
+    Duration::from_secs(120)
 }
 
 fn default_match_type() -> MatchType {
