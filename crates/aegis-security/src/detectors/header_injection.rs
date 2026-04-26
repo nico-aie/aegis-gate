@@ -134,6 +134,7 @@ mod tests {
         };
     }
 
+    // Positive cases (≥30).
     positive!(crlf_encoded, "/?q=%0d%0aSet-Cookie:+evil=1");
     positive!(crlf_upper, "/?q=%0D%0ALocation:+http://evil.com");
     positive!(cr_only, "/?q=%0dInjected");
@@ -145,7 +146,27 @@ mod tests {
     positive!(http_response, "/?q=HTTP/1.1+200+OK");
     positive!(xff_inject, "/?q=X-Forwarded-For:+1.2.3.4");
     positive!(escaped_crlf, "/?q=\\r\\nEvil:+header");
+    positive!(crlf_set_cookie_path, "/?redirect=%0d%0aSet-Cookie:+a=b");
+    positive!(crlf_in_name_param, "/?name=%0d%0aHTTP/1.1+200");
+    positive!(lf_location, "/?url=%0aLocation:+https://bad.com");
+    positive!(cr_set_cookie, "/?data=%0dSet-Cookie:+x=y");
+    positive!(double_crlf, "/?q=%0d%0a%0d%0aBody");
+    positive!(http_10_response, "/?q=HTTP/1.0+302+Found");
+    positive!(http_20_response, "/?q=HTTP/2.0+200+OK");
+    positive!(location_with_crlf, "/?q=%0D%0ALocation:+http://x.com/y");
+    positive!(content_type_html, "/?q=Content-Type:+text/html;charset=utf-8");
+    positive!(xff_spoof, "/?q=X-Forwarded-For:+127.0.0.1");
+    positive!(set_cookie_domain, "/?q=Set-Cookie:+s=v;+domain=.evil.com");
+    positive!(transfer_enc_gzip, "/?q=Transfer-Encoding:+gzip");
+    positive!(crlf_encoded_mixed, "/?q=%0D%0aEvil:+val");
+    positive!(location_ftp, "/?q=Location:+https://ftp.evil.com");
+    positive!(crlf_double_header, "/?q=%0d%0aX-Evil:+1%0d%0aX-More:+2");
+    positive!(content_type_xml, "/?q=Content-Type:+application/xml");
+    positive!(xff_ipv6, "/?q=X-Forwarded-For:+::1");
+    positive!(set_cookie_httponly, "/?q=Set-Cookie:+a=b;+HttpOnly");
+    positive!(location_encoded, "/?q=Location:+https://evil.com%2Fpath");
 
+    // Negative cases (≥30).
     negative!(clean_root, "/");
     negative!(clean_api, "/api/users?page=1");
     negative!(clean_search, "/search?q=hello+world");
@@ -157,4 +178,24 @@ mod tests {
     negative!(clean_bool, "/api?flag=true");
     negative!(clean_uuid, "/api/550e8400-e29b");
     negative!(clean_numeric, "/items/42");
+    negative!(clean_email, "/api?email=user%40example.com");
+    negative!(clean_date, "/api?date=2024-01-01");
+    negative!(clean_url_param, "/api?url=example.com%2Fpath");
+    negative!(clean_long_query, "/api?q=abcdefghijklmnopqrstuvwxyz");
+    negative!(clean_multi_param, "/api?a=1&b=2&c=3&d=4");
+    negative!(clean_utf8, "/api?name=%C3%A9mile");
+    negative!(clean_encoded_amp, "/api?q=a%26b");
+    negative!(clean_encoded_eq, "/api?q=a%3Db");
+    negative!(clean_hash, "/page?section=top");
+    negative!(clean_sort, "/api?sort=name&order=asc");
+    negative!(clean_filter, "/api?filter=active&limit=50");
+    negative!(clean_pagination, "/api?page=3&per_page=25");
+    negative!(clean_locale, "/api?lang=en-US");
+    negative!(clean_version, "/api/v2/users");
+    negative!(clean_nested, "/api/users/123/posts/456");
+    negative!(clean_extension, "/assets/style.css");
+    negative!(clean_image, "/img/logo.png");
+    negative!(clean_callback, "/api?callback=handleResponse");
+    negative!(clean_token, "/api?token=abc123def456");
+    negative!(clean_timestamp, "/api?ts=1706000000");
 }

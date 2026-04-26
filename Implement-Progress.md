@@ -1,35 +1,15 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: M2-T1.5 — Tier classifier
+- Task: aegis-security Definition of Done (M2 complete)
 - Crate: aegis-security
-- Files changed: rules/ast.rs, rules/parser.rs, rules/linter.rs, rules/eval.rs, rules/mod.rs, pipeline.rs, lib.rs
-- Status: DONE
-- Date: 2026-04-24
+- Files changed: detectors/{header_injection,body_abuse}.rs (expanded fixtures), tests/{red_team,benign_corpus}.rs
+- Status: DONE — 813 tests green, 0 clippy warnings, 0% FP rate, all detectors ≥60 fixtures
+- Date: 2026-04-26
 
 ## Next Task
-- Task: W2 — Rate Limit, DDoS, OWASP Detectors (M2-T2.x)
-- Plan: plans/security.md (W2)
-- Status: IN PROGRESS — code written, needs clippy pass + unused import cleanup
-- Files created (not yet committed):
-  - `crates/aegis-security/src/rate_limit/mod.rs` — re-exports
-  - `crates/aegis-security/src/rate_limit/sliding.rs` — M2-T2.1 sliding window rate limit
-  - `crates/aegis-security/src/rate_limit/bucket.rs` — M2-T2.2 token bucket
-  - `crates/aegis-security/src/ddos.rs` — M2-T2.3 DDoS per-IP burst + cluster spike
-  - `crates/aegis-security/src/detectors/mod.rs` — detector trait, url_decode helper, run_all
-  - `crates/aegis-security/src/detectors/sqli.rs` — SQLi (30 patterns, 30+30 tests)
-  - `crates/aegis-security/src/detectors/xss.rs` — XSS (30 patterns, 29+30 tests)
-  - `crates/aegis-security/src/detectors/path_traversal.rs` — path traversal (16 patterns, 30+30 tests)
-  - `crates/aegis-security/src/detectors/ssrf.rs` — SSRF (16 patterns, 30+30 tests)
-  - `crates/aegis-security/src/detectors/header_injection.rs` — header injection (12 patterns, 11+11 tests)
-  - `crates/aegis-security/src/detectors/body_abuse.rs` — body oversize + deep JSON nesting
-  - `crates/aegis-security/src/detectors/recon.rs` — recon path + scanner UA detection
-  - `crates/aegis-security/src/lib.rs` — updated to register ddos, detectors, rate_limit modules
-- Tests: 417 pass, 0 fail
-- Remaining before commit:
-  1. Run `cargo clippy -p aegis-security -- -D warnings` and fix any warnings (likely unused import in rules/mod.rs)
-  2. Update progress file to mark W2 DONE
-  3. Commit
+- Task: M3 (aegis-control) or next milestone per plans/
+- Plan: plans/control.md
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -74,3 +54,34 @@
 | M2-T1.3 Evaluator | aegis-security | 2026-04-24 |
 | M2-T1.4 RuleSet hot reload | aegis-security | 2026-04-24 |
 | M2-T1.5 Tier classifier | aegis-security | 2026-04-24 |
+| M2-T2.1 Sliding window rate limit | aegis-security | 2026-04-26 |
+| M2-T2.2 Token bucket | aegis-security | 2026-04-26 |
+| M2-T2.3 DDoS per-IP burst + cluster spike | aegis-security | 2026-04-26 |
+| M2-T2.4 OWASP detectors (SQLi, XSS, PathTraversal, SSRF, HeaderInjection, BodyAbuse, Recon) | aegis-security | 2026-04-26 |
+| M2-T3.1 JA4/JA3 parser | aegis-security | 2026-04-26 |
+| M2-T3.2 HTTP/2 fingerprint | aegis-security | 2026-04-26 |
+| M2-T3.3 Composite device id | aegis-security | 2026-04-26 |
+| M2-T3.4 RiskEngine (scoring + decay) | aegis-security | 2026-04-26 |
+| M2-T3.5 Challenge ladder | aegis-security | 2026-04-26 |
+| M2-T3.6 Challenge tokens (HMAC + nonce) | aegis-security | 2026-04-26 |
+| M2-T3.7 CAPTCHA providers (Turnstile, hCaptcha, reCAPTCHA) | aegis-security | 2026-04-26 |
+| M2-T3.8 Behavioral analyzer | aegis-security | 2026-04-26 |
+| M2-T3.9 Transaction velocity | aegis-security | 2026-04-26 |
+| M2-T4.1 CIDR lists + XFF walker | aegis-security | 2026-04-26 |
+| M2-T4.2 MaxMind ASN classifier | aegis-security | 2026-04-26 |
+| M2-T4.3 Bot classifier | aegis-security | 2026-04-26 |
+| M2-T4.4 Threat intel feeds | aegis-security | 2026-04-26 |
+| M2-T5.1 Streaming response filter | aegis-security | 2026-04-26 |
+| M2-T5.2 DLP patterns + actions | aegis-security | 2026-04-26 |
+| M2-T5.3 FPE (AES-FF1) | aegis-security | 2026-04-26 |
+| M2-T5.4 OpenAPI schema enforcement | aegis-security | 2026-04-26 |
+| M2-T5.5 ForwardAuth | aegis-security | 2026-04-26 |
+| M2-T5.6 JWT validation | aegis-security | 2026-04-26 |
+| M2-T5.7 ICAP antivirus | aegis-security | 2026-04-26 |
+| M2-T5.8 Magic-byte + archive-bomb | aegis-security | 2026-04-26 |
+| M2-T5.9 GraphQL guard | aegis-security | 2026-04-26 |
+| M2-T5.10 HMAC request signing | aegis-security | 2026-04-26 |
+| M2-T5.11 API-key management | aegis-security | 2026-04-26 |
+| M2-T5.12 Basic Auth | aegis-security | 2026-04-26 |
+| M2-T5.14 OPA callout | aegis-security | 2026-04-26 |
+| M2-DoD Red-team suite + benign corpus + fixture expansion | aegis-security | 2026-04-26 |

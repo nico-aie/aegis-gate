@@ -209,4 +209,107 @@ mod tests {
         // Braces inside strings should be ignored.
         assert_eq!(json_nesting_depth(r#"{"a": "{{{}"}"#), 1);
     }
+
+    // ---- Positive: oversize body (≥15 cases) ----
+    macro_rules! oversize {
+        ($name:ident, $size:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector { max_body_bytes: 100, max_nesting_depth: 20 };
+                let (m, u, h, b) = make_view_with_body(b"x", Some($size));
+                let req = view(&m, &u, &h, &b);
+                assert!(d.inspect(&req).iter().any(|s| s.tag == "body_oversize"));
+            }
+        };
+    }
+    oversize!(oversize_200, 200);
+    oversize!(oversize_1k, 1024);
+    oversize!(oversize_5k, 5000);
+    oversize!(oversize_10k, 10_000);
+    oversize!(oversize_50k, 50_000);
+    oversize!(oversize_100k, 100_000);
+    oversize!(oversize_1m, 1_000_000);
+    oversize!(oversize_5m, 5_000_000);
+    oversize!(oversize_10m, 10_000_000);
+    oversize!(oversize_50m, 50_000_000);
+    oversize!(oversize_100m, 100_000_000);
+    oversize!(oversize_500m, 500_000_000);
+    oversize!(oversize_1g, 1_000_000_000);
+    oversize!(oversize_101, 101);
+    oversize!(oversize_999, 999);
+
+    // ---- Positive: deep nesting (≥15 cases) ----
+    macro_rules! deep {
+        ($name:ident, $depth:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector { max_body_bytes: 10_000_000, max_nesting_depth: 5 };
+                let open: String = "{\"a\":".repeat($depth);
+                let close: String = "}".repeat($depth);
+                let body = format!("{open}1{close}");
+                let (m, u, h, b) = make_view_with_body(body.as_bytes(), Some(body.len() as u64));
+                let req = view(&m, &u, &h, &b);
+                assert!(d.inspect(&req).iter().any(|s| s.tag == "body_deep_nesting"));
+            }
+        };
+    }
+    deep!(deep_6, 6);
+    deep!(deep_7, 7);
+    deep!(deep_8, 8);
+    deep!(deep_10, 10);
+    deep!(deep_12, 12);
+    deep!(deep_15, 15);
+    deep!(deep_20, 20);
+    deep!(deep_25, 25);
+    deep!(deep_30, 30);
+    deep!(deep_50, 50);
+    deep!(deep_100, 100);
+    deep!(deep_200, 200);
+    deep!(deep_9, 9);
+    deep!(deep_11, 11);
+    deep!(deep_13, 13);
+
+    // ---- Negative: normal bodies (≥30 cases) ----
+    macro_rules! normal_body {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let body = $body.as_bytes();
+                let (m, u, h, b) = make_view_with_body(body, Some(body.len() as u64));
+                let req = view(&m, &u, &h, &b);
+                assert!(d.inspect(&req).is_empty());
+            }
+        };
+    }
+    normal_body!(normal_simple_obj, r#"{"key":"value"}"#);
+    normal_body!(normal_array, r#"[1,2,3,4,5]"#);
+    normal_body!(normal_nested_2, r#"{"a":{"b":1}}"#);
+    normal_body!(normal_nested_3, r#"{"a":{"b":{"c":1}}}"#);
+    normal_body!(normal_array_of_obj, r#"[{"a":1},{"b":2}]"#);
+    normal_body!(normal_string_val, r#"{"name":"John Doe"}"#);
+    normal_body!(normal_bool_val, r#"{"active":true}"#);
+    normal_body!(normal_null_val, r#"{"data":null}"#);
+    normal_body!(normal_number_val, r#"{"count":42}"#);
+    normal_body!(normal_float_val, r#"{"price":9.99}"#);
+    normal_body!(normal_empty_obj, r#"{}"#);
+    normal_body!(normal_empty_arr, r#"[]"#);
+    normal_body!(normal_text, "Hello, this is plain text");
+    normal_body!(normal_xml, "<root><item>value</item></root>");
+    normal_body!(normal_form, "name=John&email=john%40example.com");
+    normal_body!(normal_csv, "name,age\nAlice,30\nBob,25");
+    normal_body!(normal_html, "<html><body><p>Hello</p></body></html>");
+    normal_body!(normal_multiline, "line1\nline2\nline3");
+    normal_body!(normal_unicode, r#"{"msg":"héllo wörld"}"#);
+    normal_body!(normal_escaped_quotes, r#"{"val":"he said \"hi\""}"#);
+    normal_body!(normal_large_array, r#"[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]"#);
+    normal_body!(normal_mixed_types, r#"{"s":"a","n":1,"b":true,"x":null}"#);
+    normal_body!(normal_nested_arr, r#"{"data":[[1,2],[3,4]]}"#);
+    normal_body!(normal_long_str, r#"{"text":"abcdefghijklmnopqrstuvwxyz0123456789"}"#);
+    normal_body!(normal_api_resp, r#"{"status":"ok","code":200}"#);
+    normal_body!(normal_list_resp, r#"{"items":[{"id":1},{"id":2}],"total":2}"#);
+    normal_body!(normal_empty_string, r#"{"val":""}"#);
+    normal_body!(normal_whitespace_json, "  { \"a\" : 1 } ");
+    normal_body!(normal_binary_like, "some random bytes 0xFF 0x00");
+    normal_body!(normal_single_val, "42");
 }
