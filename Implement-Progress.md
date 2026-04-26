@@ -1,15 +1,15 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: aegis-security Definition of Done (M2 complete)
-- Crate: aegis-security
-- Files changed: detectors/{header_injection,body_abuse}.rs (expanded fixtures), tests/{red_team,benign_corpus}.rs
-- Status: DONE — 813 tests green, 0 clippy warnings, 0% FP rate, all detectors ≥60 fixtures
+- Task: M3-W4 — Dashboard Authentication
+- Crate: aegis-control
+- Files changed: admin_auth/{mod,password,session,csrf,rate_limit,totp,mtls}.rs, lib.rs
+- Status: DONE — 253 tests green, 0 clippy warnings
 - Date: 2026-04-26
 
 ## Next Task
-- Task: M3 (aegis-control) or next milestone per plans/
-- Plan: plans/control.md
+- Task: M3-W5 — Compliance, GitOps, SLO
+- Plan: plans/control.md (W5)
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -85,3 +85,24 @@
 | M2-T5.12 Basic Auth | aegis-security | 2026-04-26 |
 | M2-T5.14 OPA callout | aegis-security | 2026-04-26 |
 | M2-DoD Red-team suite + benign corpus + fixture expansion | aegis-security | 2026-04-26 |
+| M3-T1.1 MetricsRegistry init | aegis-control | 2026-04-26 |
+| M3-T1.2 Prometheus exporter | aegis-control | 2026-04-26 |
+| M3-T1.3 Health endpoints (live/ready/startup) | aegis-control | 2026-04-26 |
+| M3-T1.4 Dashboard shell + SSE | aegis-control | 2026-04-26 |
+| M3-T1.4b Dashboard overview page | aegis-control | 2026-04-26 |
+| M3-T1.5 GET /api/config | aegis-control | 2026-04-26 |
+| M3-T2.2 Tracing init + W3C Trace Context | aegis-control | 2026-04-26 |
+| M3-T2.4 Access log writer (combined/JSON/template) | aegis-control | 2026-04-26 |
+| M3-T3.1 Audit chain writer (SHA-256 hash chain) | aegis-control | 2026-04-26 |
+| M3-T3.2 Audit verify (chain walk + recompute) | aegis-control | 2026-04-26 |
+| M3-T3.3 Audit sinks (JSONL, syslog, CEF, LEEF, OCSF, Splunk HEC, ECS, Kafka) | aegis-control | 2026-04-26 |
+| M3-T3.4 Admin change log | aegis-control | 2026-04-26 |
+| M3-T3.5 Witness export (blake3 signing) | aegis-control | 2026-04-26 |
+| M3-T3.6 State snapshot tracker | aegis-control | 2026-04-26 |
+| M3-T4.1 Password verify + PHC (argon2id) | aegis-control | 2026-04-26 |
+| M3-T4.2 HMAC session cookie + SessionRecord | aegis-control | 2026-04-26 |
+| M3-T4.3 CSRF double-submit | aegis-control | 2026-04-26 |
+| M3-T4.4 Login rate limit + lockout | aegis-control | 2026-04-26 |
+| M3-T4.5 IP allowlist (in mtls module) | aegis-control | 2026-04-26 |
+| M3-T4.6 TOTP (RFC 6238) + recovery codes | aegis-control | 2026-04-26 |
+| M3-T4.7 Admin mTLS | aegis-control | 2026-04-26 |

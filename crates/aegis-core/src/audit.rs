@@ -1,6 +1,6 @@
 use crate::tier::Tier;
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AuditEvent {
     pub schema_version: u32,
     pub ts: chrono::DateTime<chrono::Utc>,
@@ -17,7 +17,7 @@ pub struct AuditEvent {
     pub fields: serde_json::Value,
 }
 
-#[derive(Copy, Clone, Debug, serde::Serialize)]
+#[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditClass {
     Detection,
