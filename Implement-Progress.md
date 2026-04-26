@@ -1,15 +1,37 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: M3-W4 — Dashboard Authentication
+- Task: M3-T5.1 Compliance profiles + M3-T5.2 Residency / retention / right-to-erasure
 - Crate: aegis-control
-- Files changed: admin_auth/{mod,password,session,csrf,rate_limit,totp,mtls}.rs, lib.rs
-- Status: DONE — 253 tests green, 0 clippy warnings
+- Files changed:
+  - `src/lib.rs` (re-export `compliance`, `residency`)
+  - `src/compliance/{mod,fips,pci,soc2,gdpr,hipaa}.rs` (new)
+  - `src/residency.rs` (new)
+- Status: DONE — 302 tests green (253 prior + 33 compliance + 16 residency), 0 clippy warnings
 - Date: 2026-04-26
 
 ## Next Task
-- Task: M3-W5 — Compliance, GitOps, SLO
+- Task: M3-T5.3 GitOps loader
 - Plan: plans/control.md (W5)
+- Notes:
+  - File to create: `crates/aegis-control/src/gitops.rs`
+  - Required behaviour (from `plans/control.md` W5):
+    - Poll or webhook from a configured Git repository.
+    - Verify commit signatures (GPG/SSH) against `allowed_signers`.
+    - Dry-run validate the new config before applying.
+    - Swap atomically via `aegis_core::config::ConfigBroadcast`.
+    - Break-glass: a direct API edit creates a branch + PR automatically; dashboard shows a banner until merged.
+  - Tests: signed commit applied; unsigned commit rejected with audit event; API edit creates branch + PR (mock Git client trait).
+  - Re-enable the module by adding `pub mod gitops;` to `crates/aegis-control/src/lib.rs`.
+- Then: M3-T5.5 SLO / SLI + multi-burn alerts (`src/slo.rs`).
+  - SLIs: data-plane availability, WAF overhead p50/p95/p99, upstream availability, audit delivery rate, cert freshness.
+  - Multi-window multi-burn-rate alerts (1h/2%, 6h/5%, 3d/10%); Alertmanager webhook + Slack/PagerDuty/ServiceNow/Jira.
+  - Re-enable with `pub mod slo;` in `lib.rs`.
+- W5 exit gate: compliance profile suite green; `waf audit verify` passes after GDPR erase (already covered by `residency::erase_subject` tests); SLO fast-burn alert fires and clears.
+
+## Verification
+- `cargo test -p aegis-control` → 302 passed.
+- `cargo clippy -p aegis-control --lib -- -D warnings` → clean.
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -106,3 +128,5 @@
 | M3-T4.5 IP allowlist (in mtls module) | aegis-control | 2026-04-26 |
 | M3-T4.6 TOTP (RFC 6238) + recovery codes | aegis-control | 2026-04-26 |
 | M3-T4.7 Admin mTLS | aegis-control | 2026-04-26 |
+| M3-T5.1 Compliance profiles (FIPS, PCI, SOC2, GDPR, HIPAA) + conflict detection | aegis-control | 2026-04-26 |
+| M3-T5.2 Residency / retention sweep / right-to-erasure | aegis-control | 2026-04-26 |

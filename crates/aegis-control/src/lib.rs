@@ -13,7 +13,5 @@ pub mod metrics;
 pub mod tracing_init;
 
 pub mod admin_auth;
-// pub mod compliance;
-// pub mod gitops;
-// pub mod slo;
-// pub mod residency;
+pub mod compliance;
+pub mod residency;
