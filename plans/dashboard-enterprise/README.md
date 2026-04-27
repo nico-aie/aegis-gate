@@ -3,8 +3,10 @@
 > **Read first:**
 > 1. [`../../README.md`](../../README.md)
 > 2. [`../../Implement-Progress.md`](../../Implement-Progress.md)
-> 3. [`../plan.md`](../plan.md) — shared types §2, traits §3, conventions §5
+> 3. [`../plan.md`](../plan.md) — assistant guide (session startup,
+>    progress protocol, execution rules)
 > 4. [`../control.md`](../control.md) — current control-plane plan
+>    (this track only touches `aegis-control`)
 > 5. [`../../docs/dashboard-enterprise/README.md`](../../docs/dashboard-enterprise/README.md)
 >    — design spec for this work
 >

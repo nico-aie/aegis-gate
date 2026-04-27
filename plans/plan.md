@@ -6,11 +6,14 @@ Before implementing anything, load context in this exact order:
 
 1. README.md — architecture + crate responsibilities  
 2. Implement-Progress.md — last state + next task  
-3. plans/plan.md — shared types (§2) + traits (§3)  
+3. plans/plan.md — this assistant guide (rules + protocol)  
 4. Relevant sub-plan:
-   - plans/proxy.md
-   - plans/security.md
-   - plans/control.md
+   - plans/proxy.md — `aegis-proxy` track (M1/M2/… task IDs)
+   - plans/security.md — `aegis-security` track
+   - plans/control.md — `aegis-control` track
+   - plans/dashboard-enterprise/README.md — enterprise dashboard
+     track (D-M1/D-M2/… task IDs); design spec lives at
+     `docs/dashboard-enterprise/`
 
 Do not start coding without reading these.
 
@@ -23,14 +26,19 @@ Use this template every time you start or resume work:
 Context files to read first (in order):
 1. README.md
 2. Implement-Progress.md
-3. plans/plan.md (shared types §2, traits §3)
+3. plans/plan.md (this assistant guide)
 4. plans/<proxy|security|control>.md
+   — or, for dashboard work, plans/dashboard-enterprise/README.md
+     plus the relevant milestone-N file
+   — for dashboard work also read docs/dashboard-enterprise/README.md
+     (design spec) before touching code
 
 Task:
 <copy NEXT TASK from Implement-Progress.md>
 
 Target crate:
 <aegis-proxy | aegis-security | aegis-control | aegis-core | aegis-bin>
+(dashboard-enterprise track is aegis-control only)
 
 Requirements:
 - Follow exact types and traits from aegis-core
@@ -77,8 +85,10 @@ Template:
 - Date: <YYYY-MM-DD>
 
 ## Next Task
-- Task: <next task>
+- Task: <next task>  (use M{n}-T{x}.{y} for proxy/security/control,
+                     D-M{n}-T{x}.{y} for dashboard-enterprise)
 - Plan: plans/<proxy|security|control>.md
+        or plans/dashboard-enterprise/milestone-{n}-*.md
 - Notes: <optional>
 
 ## Completed Tasks Log
@@ -109,6 +119,18 @@ When implementing, always think:
 - Core = contract (source of truth)  
 
 If something feels unclear → it likely belongs in aegis-core.
+
+### Tracks currently in flight
+
+| Track | Plan root | Task ID prefix | Crates touched |
+|-------|-----------|----------------|----------------|
+| Proxy core | `plans/proxy.md` | `M{n}-T{x}.{y}` | aegis-proxy (+ aegis-core) |
+| Security pipeline | `plans/security.md` | `M{n}-T{x}.{y}` | aegis-security |
+| Control plane | `plans/control.md` | `M{n}-T{x}.{y}` | aegis-control |
+| Enterprise dashboard | `plans/dashboard-enterprise/` | `D-M{n}-T{x}.{y}` | aegis-control only |
+
+The `D-` prefix on dashboard task IDs keeps them disjoint from the
+original M1/M2/M3 IDs already in the Completed Tasks Log.
 
 ---
 
