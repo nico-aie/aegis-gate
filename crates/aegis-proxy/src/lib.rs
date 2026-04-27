@@ -273,6 +273,40 @@ fn admin_router(
                 "private, max-age=10",
             )
         }
+        "/api/audit/since" => {
+            let cursor = parse_query_u64(query, "cursor", 0);
+            let limit = parse_query_u32(query, "limit", 200);
+            json_body_response(
+                200,
+                services.audit.render_since(cursor, limit),
+                "private, no-store",
+            )
+        }
+        "/api/attacks/by-detector" => {
+            let window = parse_query_u32(query, "window", 900);
+            json_body_response(
+                200,
+                services.attacks.render_by_detector(window),
+                "private, max-age=10",
+            )
+        }
+        "/api/threat-intel/hits" => {
+            let window = parse_query_u32(query, "window", 3600);
+            let limit = parse_query_u32(query, "limit", 20);
+            json_body_response(
+                200,
+                services.attacks.render_threat_intel(window, limit),
+                "private, max-age=10",
+            )
+        }
+        "/api/bots/mix" => {
+            let window = parse_query_u32(query, "window", 3600);
+            json_body_response(
+                200,
+                services.attacks.render_bot_mix(window),
+                "private, max-age=10",
+            )
+        }
 
         // 404 for everything else.
         _ => {
@@ -293,6 +327,21 @@ fn parse_query_u32(query: &str, key: &str, default: u32) -> u32 {
             if let Some(value) = rest.strip_prefix('=') {
                 let trimmed = value.trim_end_matches('s');
                 if let Ok(n) = trimmed.parse::<u32>() {
+                    return n;
+                }
+            }
+        }
+    }
+    default
+}
+
+/// Same shape as `parse_query_u32` but for u64 — used by audit cursor
+/// values that may exceed `u32::MAX` in long-running deployments.
+fn parse_query_u64(query: &str, key: &str, default: u64) -> u64 {
+    for pair in query.split('&') {
+        if let Some(rest) = pair.strip_prefix(key) {
+            if let Some(value) = rest.strip_prefix('=') {
+                if let Ok(n) = value.parse::<u64>() {
                     return n;
                 }
             }

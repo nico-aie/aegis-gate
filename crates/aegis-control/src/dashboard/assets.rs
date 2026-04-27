@@ -832,6 +832,236 @@ mod tests {
         assert!(lookup("pages/../../Cargo.toml").is_none());
     }
 
+    // ---------- D-M2-T2.9: real components ------------------------------
+
+    fn component_js(name: &str) -> &'static str {
+        let path = format!("components/{name}.js");
+        let bytes = lookup(&path).unwrap_or_else(|| panic!("{path} must resolve")).bytes;
+        std::str::from_utf8(bytes).expect("utf-8")
+    }
+
+    #[test]
+    fn line_chart_is_real_svg_implementation() {
+        let js = component_js("line-chart");
+        assert!(
+            js.len() > 2000,
+            "line-chart.js too small to be the real implementation ({} bytes)",
+            js.len()
+        );
+        assert!(
+            js.contains("createElementNS") && js.contains("svg"),
+            "line-chart should render via SVG"
+        );
+        assert!(
+            js.contains("export default") && js.contains("mount"),
+            "line-chart must export default with mount()"
+        );
+        assert!(js.contains("destroy"), "line-chart must export destroy()");
+    }
+
+    #[test]
+    fn donut_is_real_svg_implementation() {
+        let js = component_js("donut");
+        assert!(
+            js.len() > 2000,
+            "donut.js too small to be real ({} bytes)",
+            js.len()
+        );
+        assert!(
+            js.contains("createElementNS") && js.contains("path"),
+            "donut should draw arc paths"
+        );
+        assert!(
+            js.contains("aegis:slice-click"),
+            "donut should dispatch aegis:slice-click events"
+        );
+    }
+
+    #[test]
+    fn table_is_real_implementation() {
+        let js = component_js("table");
+        assert!(js.len() > 2000, "table.js too small ({} bytes)", js.len());
+        assert!(
+            js.contains("aegis:row-click") && js.contains("aegis:sort"),
+            "table should dispatch aegis:row-click and aegis:sort events"
+        );
+        assert!(
+            js.contains("aria-sort"),
+            "table headers should expose aria-sort"
+        );
+    }
+
+    #[test]
+    fn stat_card_is_real_implementation() {
+        let js = component_js("stat-card");
+        assert!(js.len() > 800, "stat-card.js too small ({} bytes)", js.len());
+        assert!(
+            js.contains("aegis-stat__value"),
+            "stat-card should render the documented value class"
+        );
+        assert!(js.contains("update"), "stat-card should expose update()");
+    }
+
+    #[test]
+    fn sparkline_is_real_implementation() {
+        let js = component_js("sparkline");
+        assert!(js.len() > 600, "sparkline.js too small ({} bytes)", js.len());
+        assert!(js.contains("svg"), "sparkline should be SVG-based");
+        assert!(
+            js.contains("aegis-sparkline"),
+            "sparkline should set the documented class"
+        );
+    }
+
+    // ---------- D-M3-T3.3: attacks page ---------------------------------
+
+    #[test]
+    fn attacks_page_polls_four_endpoints() {
+        let js = component_js_path_str("pages/attacks.js");
+        assert!(
+            js.len() > 2000,
+            "attacks.js too small to be real ({} bytes)",
+            js.len()
+        );
+        for path in [
+            "/api/attacks/by-detector",
+            "/api/attacks/top",
+            "/api/threat-intel/hits",
+            "/api/bots/mix",
+        ] {
+            assert!(
+                js.contains(path),
+                "attacks.js must poll {path}"
+            );
+        }
+        for component in [
+            "/dashboard/assets/components/donut.js",
+            "/dashboard/assets/components/table.js",
+        ] {
+            assert!(
+                js.contains(component),
+                "attacks.js must lazy-import {component}"
+            );
+        }
+    }
+
+    // ---------- D-M3-T3.1: drawer + live page ---------------------------
+
+    #[test]
+    fn drawer_is_real_implementation() {
+        let js = component_js("drawer");
+        assert!(
+            js.len() > 1500,
+            "drawer.js too small to be real ({} bytes)",
+            js.len()
+        );
+        assert!(
+            js.contains(r#"role", "dialog""#) || js.contains(r#"setAttribute("role", "dialog")"#),
+            "drawer should mark itself with role=dialog"
+        );
+        assert!(
+            js.contains("aria-modal"),
+            "drawer should be aria-modal=true"
+        );
+        assert!(
+            js.contains("Escape"),
+            "drawer should close on Escape"
+        );
+    }
+
+    #[test]
+    fn live_page_uses_eventsource_with_filter() {
+        let js = component_js_path_str("pages/live.js");
+        assert!(
+            js.len() > 2000,
+            "live.js too small to be real ({} bytes)",
+            js.len()
+        );
+        assert!(js.contains("EventSource"), "live page must consume SSE");
+        assert!(
+            js.contains("/dashboard/sse"),
+            "live page must connect to /dashboard/sse"
+        );
+        assert!(
+            js.contains("class=") && js.contains("action=") && js.contains("route="),
+            "live page must compose class/action/route filter query"
+        );
+        assert!(
+            js.contains("requestAnimationFrame"),
+            "live page must batch row appends to RAF"
+        );
+        assert!(
+            js.contains("/dashboard/assets/components/drawer.js"),
+            "live page must lazy-import the drawer for row detail"
+        );
+    }
+
+    #[test]
+    fn overview_page_uses_chart_components() {
+        // The Overview page lazy-imports the line-chart, donut, and
+        // table components instead of rendering plain HTML stubs.
+        let js = component_js_path_str("pages/overview.js");
+        assert!(js.contains("/dashboard/assets/components/line-chart.js"));
+        assert!(js.contains("/dashboard/assets/components/donut.js"));
+        assert!(js.contains("/dashboard/assets/components/table.js"));
+    }
+
+    fn component_js_path_str(path: &str) -> &'static str {
+        let bytes = lookup(path).unwrap_or_else(|| panic!("{path} must resolve")).bytes;
+        std::str::from_utf8(bytes).expect("utf-8")
+    }
+
+    // ---------- D-M2-T2.8: SSE status pill ------------------------------
+
+    #[test]
+    fn app_js_opens_eventsource_for_dashboard_sse() {
+        let bytes = lookup("app.js").expect("app.js must resolve").bytes;
+        let js = std::str::from_utf8(bytes).expect("utf-8");
+        assert!(
+            js.contains("EventSource"),
+            "app.js must use EventSource for the status pill"
+        );
+        assert!(
+            js.contains("/dashboard/sse"),
+            "app.js must connect to /dashboard/sse"
+        );
+    }
+
+    #[test]
+    fn app_js_updates_connection_state_data_attribute() {
+        // The status-bar dot uses data-state to colour itself
+        // (`connected`/`disconnected`/`degraded` per aegis.css).
+        // app.js must reach in and update that attribute.
+        let bytes = lookup("app.js").expect("app.js must resolve").bytes;
+        let js = std::str::from_utf8(bytes).expect("utf-8");
+        assert!(
+            js.contains("dataset.state") || js.contains(r#""data-state""#),
+            "app.js must update the connection-dot data-state"
+        );
+        // Three states must be writable.
+        for state in ["connected", "reconnecting", "disconnected"] {
+            assert!(
+                js.contains(&format!("\"{state}\"")) || js.contains(&format!("'{state}'")),
+                "app.js must drive the {state} state"
+            );
+        }
+    }
+
+    #[test]
+    fn en_json_has_three_connection_state_keys() {
+        let v = en_json_value();
+        for key in [
+            "status.connected",
+            "status.reconnecting",
+            "status.disconnected",
+        ] {
+            assert!(
+                v.get(key).and_then(|x| x.as_str()).is_some(),
+                "en.json missing {key}"
+            );
+        }
+    }
+
     #[test]
     fn index_html_loads_theme_js_before_stylesheet() {
         // Order matters: theme.js must run before the stylesheet

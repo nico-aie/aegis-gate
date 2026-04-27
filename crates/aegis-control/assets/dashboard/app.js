@@ -40,6 +40,12 @@ let current = null;
 // Translation table. Populated by loadI18n() before first render.
 let TRANSLATIONS = {};
 
+// Module-level EventSource for the status-bar pill (D-M2-T2.8).
+// Opened once on init() and reused across navigations — the SPA
+// doesn't tear down between routes, so a single SSE connection
+// covers the whole session.
+let sseSource = null;
+
 /** Translate a key. Returns the key unchanged if missing — visible
  *  fallback so the gap is obvious in the UI. */
 export function t(key) {
@@ -72,6 +78,56 @@ export function applyI18n(root) {
     const value = t(key);
     el.textContent = value;
   }
+}
+
+/** Update the status-bar connection pill. State is one of
+ *  "connected" | "reconnecting" | "disconnected". */
+export function setConnectionState(state) {
+  const pill = document.querySelector('.aegis-statusbar [data-slot="connection"]');
+  if (!pill) return;
+  const dot = pill.querySelector(".aegis-status-dot");
+  if (dot) dot.dataset.state = state;
+  const label = pill.querySelector("[data-i18n]");
+  if (!label) return;
+  // Three explicit branches so each i18n key is a literal string
+  // the asset-test extractor can find (it scans for the assignment
+  // pattern; example string omitted to avoid a false-positive match).
+  if (state === "connected") {
+    label.dataset.i18n = "status.connected";
+    label.textContent = t("status.connected");
+  } else if (state === "reconnecting") {
+    label.dataset.i18n = "status.reconnecting";
+    label.textContent = t("status.reconnecting");
+  } else {
+    label.dataset.i18n = "status.disconnected";
+    label.textContent = t("status.disconnected");
+  }
+}
+
+/** Open the dashboard SSE stream and reflect its state in the
+ *  status-bar pill. The browser handles backoff/retry transparently;
+ *  we only translate readyState into a UI label. */
+function startSse() {
+  if (typeof EventSource === "undefined") {
+    setConnectionState("disconnected");
+    return;
+  }
+  setConnectionState("reconnecting");
+  try {
+    sseSource = new EventSource("/dashboard/sse");
+  } catch (err) {
+    console.error("SSE construction failed", err);
+    setConnectionState("disconnected");
+    return;
+  }
+  sseSource.addEventListener("open", () => setConnectionState("connected"));
+  sseSource.addEventListener("error", () => {
+    if (sseSource && sseSource.readyState === EventSource.CLOSED) {
+      setConnectionState("disconnected");
+    } else {
+      setConnectionState("reconnecting");
+    }
+  });
 }
 
 /** Parse a URL pathname to a route key, `null` for "not found". */
@@ -182,6 +238,9 @@ async function init() {
   // Wire interactions.
   document.addEventListener("click", onClick);
   window.addEventListener("popstate", () => navigate(window.location.href, false));
+
+  // Status-bar SSE pill — runs alongside the route mount.
+  startSse();
 
   try {
     await navigate(window.location.href, false);

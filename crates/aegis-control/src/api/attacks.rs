@@ -72,9 +72,55 @@ pub struct TopResponse {
     pub attackers: Vec<Attacker>,
 }
 
+/// One row of `/api/attacks/by-detector`.
+#[derive(Clone, Debug, Serialize)]
+pub struct DetectorCount {
+    pub name: String,
+    pub count: u64,
+}
+
+/// JSON shape returned by `GET /api/attacks/by-detector`.
+#[derive(Clone, Debug, Serialize)]
+pub struct ByDetectorResponse {
+    pub window_seconds: u32,
+    pub detectors: Vec<DetectorCount>,
+}
+
+/// One row of `/api/threat-intel/hits`.
+#[derive(Clone, Debug, Serialize)]
+pub struct ThreatIntelHit {
+    pub feed: String,
+    pub indicator: String,
+    pub hits: u64,
+    pub last_seen: chrono::DateTime<chrono::Utc>,
+}
+
+/// JSON shape returned by `GET /api/threat-intel/hits`.
+#[derive(Clone, Debug, Serialize)]
+pub struct ThreatIntelResponse {
+    pub window_seconds: u32,
+    pub limit: u32,
+    pub hits: Vec<ThreatIntelHit>,
+}
+
+/// One bucket of `/api/bots/mix`.
+#[derive(Clone, Debug, Serialize)]
+pub struct BotCategoryCount {
+    pub name: String,
+    pub count: u64,
+    pub pct: f64,
+}
+
+/// JSON shape returned by `GET /api/bots/mix`.
+#[derive(Clone, Debug, Serialize)]
+pub struct BotMixResponse {
+    pub window_seconds: u32,
+    pub categories: Vec<BotCategoryCount>,
+}
+
 /// Single retained event. Carries everything any current endpoint
 /// might want — detector name (distribution), identifier + risk +
-/// ts (top attackers).
+/// ts (top attackers), threat-intel hit (T3.5), bot category (T3.6).
 #[derive(Clone, Debug)]
 struct AttackEntry {
     when: Instant,
@@ -82,6 +128,12 @@ struct AttackEntry {
     detector: String,
     identifier: String,
     risk: u32,
+    /// Feed name from `event.fields.threat_intel.feed` if present.
+    threat_intel_feed: Option<String>,
+    /// Indicator value from `event.fields.threat_intel.indicator`.
+    threat_intel_indicator: Option<String>,
+    /// Bot classifier verdict from `event.fields.bot_category`.
+    bot_category: Option<String>,
 }
 
 #[derive(Default)]
@@ -110,12 +162,17 @@ impl AttacksAggregator {
         if !matches!(ev.class, AuditClass::Detection) {
             return;
         }
+        let (threat_intel_feed, threat_intel_indicator) = threat_intel_from_fields(&ev.fields);
+        let bot_category = bot_category_from_fields(&ev.fields);
         let entry = AttackEntry {
             when: Instant::now(),
             ts: ev.ts,
             detector: detector_name(ev),
             identifier: attacker_identifier(ev),
             risk: ev.risk_score.unwrap_or(0),
+            threat_intel_feed,
+            threat_intel_indicator,
+            bot_category,
         };
 
         let mut state = self.inner.lock().expect("attacks mutex poisoned");
@@ -237,6 +294,141 @@ impl AttacksAggregator {
             attackers,
         }
     }
+
+    /// Detector breakdown for `/api/attacks/by-detector` (D-M3-T3.4).
+    /// Slimmer projection of `distribution()` — no percentages, sorted
+    /// by count desc.
+    pub fn by_detector(&self, window_seconds: u32) -> ByDetectorResponse {
+        let dist = self.distribution(window_seconds);
+        let detectors = dist
+            .categories
+            .into_iter()
+            .map(|c| DetectorCount {
+                name: c.name,
+                count: c.count,
+            })
+            .collect();
+        ByDetectorResponse {
+            window_seconds: dist.window_seconds,
+            detectors,
+        }
+    }
+
+    /// Threat-intel hits for `/api/threat-intel/hits` (D-M3-T3.5).
+    /// Groups recorded events by `(feed, indicator)`. Events without
+    /// a threat-intel feed are skipped.
+    pub fn threat_intel_hits(
+        &self,
+        window_seconds: u32,
+        limit: u32,
+    ) -> ThreatIntelResponse {
+        let retention_secs = RETENTION.as_secs() as u32;
+        let window = window_seconds.clamp(1, retention_secs);
+        let limit = limit.clamp(1, 100);
+        let window_dur = Duration::from_secs(u64::from(window));
+
+        struct Acc {
+            hits: u64,
+            last_seen: chrono::DateTime<chrono::Utc>,
+        }
+
+        let state = self.inner.lock().expect("attacks mutex poisoned");
+        let now = Instant::now();
+        let mut acc: HashMap<(String, String), Acc> = HashMap::new();
+        for entry in state.events.iter().rev() {
+            if now.duration_since(entry.when) > window_dur {
+                break;
+            }
+            let Some(feed) = entry.threat_intel_feed.as_ref() else {
+                continue;
+            };
+            let indicator = entry
+                .threat_intel_indicator
+                .clone()
+                .unwrap_or_else(|| entry.identifier.clone());
+            let key = (feed.clone(), indicator);
+            let slot = acc.entry(key).or_insert(Acc {
+                hits: 0,
+                last_seen: entry.ts,
+            });
+            slot.hits = slot.hits.saturating_add(1);
+            if entry.ts > slot.last_seen {
+                slot.last_seen = entry.ts;
+            }
+        }
+
+        let mut hits: Vec<ThreatIntelHit> = acc
+            .into_iter()
+            .map(|((feed, indicator), a)| ThreatIntelHit {
+                feed,
+                indicator,
+                hits: a.hits,
+                last_seen: a.last_seen,
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b.hits
+                .cmp(&a.hits)
+                .then_with(|| a.feed.cmp(&b.feed))
+                .then_with(|| a.indicator.cmp(&b.indicator))
+        });
+        hits.truncate(limit as usize);
+
+        ThreatIntelResponse {
+            window_seconds: window,
+            limit,
+            hits,
+        }
+    }
+
+    /// Bot classification mix for `/api/bots/mix` (D-M3-T3.6).
+    /// Buckets recorded events by `event.fields.bot_category`. Events
+    /// without a category contribute to the `"unknown"` bucket so the
+    /// percentages always sum to 100.
+    pub fn bot_mix(&self, window_seconds: u32) -> BotMixResponse {
+        let retention_secs = RETENTION.as_secs() as u32;
+        let window = window_seconds.clamp(1, retention_secs);
+        let window_dur = Duration::from_secs(u64::from(window));
+
+        let state = self.inner.lock().expect("attacks mutex poisoned");
+        let now = Instant::now();
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        let mut total = 0u64;
+        for entry in state.events.iter().rev() {
+            if now.duration_since(entry.when) > window_dur {
+                break;
+            }
+            let key = entry
+                .bot_category
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            *counts.entry(key).or_insert(0) += 1;
+            total = total.saturating_add(1);
+        }
+
+        let mut categories: Vec<BotCategoryCount> = counts
+            .into_iter()
+            .map(|(name, count)| {
+                let pct = if total > 0 {
+                    let raw = (count as f64) * 100.0 / (total as f64);
+                    (raw * 10.0).round() / 10.0
+                } else {
+                    0.0
+                };
+                BotCategoryCount { name, count, pct }
+            })
+            .collect();
+        categories.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+
+        BotMixResponse {
+            window_seconds: window,
+            categories,
+        }
+    }
 }
 
 /// Resolve the attacker identifier for an audit event. Prefers a
@@ -255,6 +447,26 @@ fn attacker_identifier(ev: &AuditEvent) -> String {
         return ip.to_string();
     }
     "unknown".to_string()
+}
+
+fn threat_intel_from_fields(fields: &serde_json::Value) -> (Option<String>, Option<String>) {
+    // Two accepted shapes (security pipeline emits both forms):
+    //   { "threat_intel": { "feed": "abuse-ch", "indicator": "1.2.3.4" } }
+    //   { "feed_id": "abuse-ch", "indicator": "1.2.3.4" }
+    if let Some(ti) = fields.get("threat_intel") {
+        let feed = ti.get("feed").and_then(|v| v.as_str()).map(str::to_string);
+        let ind = ti.get("indicator").and_then(|v| v.as_str()).map(str::to_string);
+        if feed.is_some() || ind.is_some() {
+            return (feed, ind);
+        }
+    }
+    let feed = fields.get("feed_id").and_then(|v| v.as_str()).map(str::to_string);
+    let ind = fields.get("indicator").and_then(|v| v.as_str()).map(str::to_string);
+    (feed, ind)
+}
+
+fn bot_category_from_fields(fields: &serde_json::Value) -> Option<String> {
+    fields.get("bot_category").and_then(|v| v.as_str()).map(str::to_string)
 }
 
 fn fingerprint_from_fields(fields: &serde_json::Value) -> Option<String> {
@@ -316,11 +528,15 @@ fn detector_name(ev: &AuditEvent) -> String {
 
 /// HTTP-side wrapper. Caches the rendered JSON body for `cache_ttl`
 /// (default 1 s — Tracking page polls quickly; Cache-Control headers
-/// can extend client-side caching independently).
+/// can extend client-side caching independently). One cache slot per
+/// endpoint shape so distinct queries don't fight for the same entry.
 pub struct AttacksHandler {
     agg: Arc<AttacksAggregator>,
     distribution_cache: Mutex<Option<(Instant, u32, DistributionResponse)>>,
     top_cache: Mutex<Option<(Instant, u32, u32, TopResponse)>>,
+    by_detector_cache: Mutex<Option<(Instant, u32, ByDetectorResponse)>>,
+    threat_intel_cache: Mutex<Option<(Instant, u32, u32, ThreatIntelResponse)>>,
+    bot_mix_cache: Mutex<Option<(Instant, u32, BotMixResponse)>>,
     cache_ttl: Duration,
 }
 
@@ -334,6 +550,9 @@ impl AttacksHandler {
             agg,
             distribution_cache: Mutex::new(None),
             top_cache: Mutex::new(None),
+            by_detector_cache: Mutex::new(None),
+            threat_intel_cache: Mutex::new(None),
+            bot_mix_cache: Mutex::new(None),
             cache_ttl,
         }
     }
@@ -389,6 +608,82 @@ impl AttacksHandler {
         let body = serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
         let mut cache = self.top_cache.lock().expect("attacks cache poisoned");
         *cache = Some((now, window_seconds, limit, response));
+        body
+    }
+
+    /// Render `GET /api/attacks/by-detector?window=<seconds>`.
+    pub fn render_by_detector(&self, window_seconds: u32) -> String {
+        let now = Instant::now();
+        {
+            let cache = self
+                .by_detector_cache
+                .lock()
+                .expect("attacks cache poisoned");
+            if let Some((stamped_at, w, resp)) = cache.as_ref() {
+                if *w == window_seconds
+                    && now.duration_since(*stamped_at) < self.cache_ttl
+                {
+                    return serde_json::to_string(resp)
+                        .unwrap_or_else(|_| String::from("{}"));
+                }
+            }
+        }
+        let response = self.agg.by_detector(window_seconds);
+        let body = serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
+        let mut cache = self
+            .by_detector_cache
+            .lock()
+            .expect("attacks cache poisoned");
+        *cache = Some((now, window_seconds, response));
+        body
+    }
+
+    /// Render `GET /api/threat-intel/hits?window=<seconds>&limit=<n>`.
+    pub fn render_threat_intel(&self, window_seconds: u32, limit: u32) -> String {
+        let now = Instant::now();
+        {
+            let cache = self
+                .threat_intel_cache
+                .lock()
+                .expect("attacks cache poisoned");
+            if let Some((stamped_at, w, l, resp)) = cache.as_ref() {
+                if *w == window_seconds
+                    && *l == limit
+                    && now.duration_since(*stamped_at) < self.cache_ttl
+                {
+                    return serde_json::to_string(resp)
+                        .unwrap_or_else(|_| String::from("{}"));
+                }
+            }
+        }
+        let response = self.agg.threat_intel_hits(window_seconds, limit);
+        let body = serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
+        let mut cache = self
+            .threat_intel_cache
+            .lock()
+            .expect("attacks cache poisoned");
+        *cache = Some((now, window_seconds, limit, response));
+        body
+    }
+
+    /// Render `GET /api/bots/mix?window=<seconds>`.
+    pub fn render_bot_mix(&self, window_seconds: u32) -> String {
+        let now = Instant::now();
+        {
+            let cache = self.bot_mix_cache.lock().expect("attacks cache poisoned");
+            if let Some((stamped_at, w, resp)) = cache.as_ref() {
+                if *w == window_seconds
+                    && now.duration_since(*stamped_at) < self.cache_ttl
+                {
+                    return serde_json::to_string(resp)
+                        .unwrap_or_else(|_| String::from("{}"));
+                }
+            }
+        }
+        let response = self.agg.bot_mix(window_seconds);
+        let body = serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
+        let mut cache = self.bot_mix_cache.lock().expect("attacks cache poisoned");
+        *cache = Some((now, window_seconds, response));
         body
     }
 }
@@ -813,5 +1108,212 @@ mod tests {
         let v_top: serde_json::Value = serde_json::from_str(&top).unwrap();
         assert!(v_dist.get("categories").is_some());
         assert!(v_top.get("attackers").is_some());
+    }
+
+    // ---------- D-M3-T3.4..T3.6: by-detector / threat-intel / bot-mix ---
+
+    fn det_event_with_fields(
+        detector: &str,
+        ip: &str,
+        fields: serde_json::Value,
+    ) -> AuditEvent {
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "test".into(),
+            class: AuditClass::Detection,
+            tenant_id: None,
+            tier: None,
+            action: "block".into(),
+            reason: "test".into(),
+            client_ip: ip.into(),
+            route_id: None,
+            rule_id: None,
+            risk_score: Some(80),
+            fields: {
+                let mut o = serde_json::Map::new();
+                o.insert("detector".into(), serde_json::Value::String(detector.into()));
+                if let serde_json::Value::Object(extras) = fields {
+                    for (k, v) in extras {
+                        o.insert(k, v);
+                    }
+                }
+                serde_json::Value::Object(o)
+            },
+        }
+    }
+
+    #[test]
+    fn by_detector_returns_slim_breakdown() {
+        let agg = AttacksAggregator::new();
+        for _ in 0..5 {
+            agg.record(&det_event_full("8.8.8.8", Some("sqli"), None, 80));
+        }
+        for _ in 0..2 {
+            agg.record(&det_event_full("8.8.8.8", Some("xss"), None, 80));
+        }
+        let r = agg.by_detector(900);
+        assert_eq!(r.window_seconds, 900);
+        assert_eq!(r.detectors.len(), 2);
+        assert_eq!(r.detectors[0].name, "sqli");
+        assert_eq!(r.detectors[0].count, 5);
+        assert_eq!(r.detectors[1].name, "xss");
+        assert_eq!(r.detectors[1].count, 2);
+    }
+
+    #[test]
+    fn by_detector_empty_aggregator() {
+        let agg = AttacksAggregator::new();
+        let r = agg.by_detector(900);
+        assert!(r.detectors.is_empty());
+    }
+
+    #[test]
+    fn threat_intel_extraction_handles_both_field_shapes() {
+        // Nested under threat_intel.{feed,indicator}.
+        let nested = serde_json::json!({
+            "threat_intel": { "feed": "abuse-ch", "indicator": "1.2.3.4" }
+        });
+        let (f, i) = threat_intel_from_fields(&nested);
+        assert_eq!(f.as_deref(), Some("abuse-ch"));
+        assert_eq!(i.as_deref(), Some("1.2.3.4"));
+
+        // Flat feed_id / indicator.
+        let flat = serde_json::json!({ "feed_id": "spamhaus", "indicator": "evil.com" });
+        let (f, i) = threat_intel_from_fields(&flat);
+        assert_eq!(f.as_deref(), Some("spamhaus"));
+        assert_eq!(i.as_deref(), Some("evil.com"));
+
+        // Neither shape present.
+        let none = serde_json::json!({"detector": "sqli"});
+        let (f, i) = threat_intel_from_fields(&none);
+        assert!(f.is_none());
+        assert!(i.is_none());
+    }
+
+    #[test]
+    fn threat_intel_hits_groups_by_feed_and_indicator() {
+        let agg = AttacksAggregator::new();
+        for _ in 0..3 {
+            agg.record(&det_event_with_fields(
+                "ip",
+                "1.1.1.1",
+                serde_json::json!({"threat_intel": {"feed": "abuse-ch", "indicator": "1.1.1.1"}}),
+            ));
+        }
+        agg.record(&det_event_with_fields(
+            "ip",
+            "2.2.2.2",
+            serde_json::json!({"threat_intel": {"feed": "abuse-ch", "indicator": "2.2.2.2"}}),
+        ));
+        // Event without threat-intel shouldn't appear.
+        agg.record(&det_event_full("3.3.3.3", Some("sqli"), None, 80));
+
+        let r = agg.threat_intel_hits(900, 10);
+        assert_eq!(r.hits.len(), 2);
+        assert_eq!(r.hits[0].feed, "abuse-ch");
+        assert_eq!(r.hits[0].indicator, "1.1.1.1");
+        assert_eq!(r.hits[0].hits, 3);
+        assert_eq!(r.hits[1].hits, 1);
+    }
+
+    #[test]
+    fn threat_intel_hits_respects_limit() {
+        let agg = AttacksAggregator::new();
+        for i in 0..10 {
+            agg.record(&det_event_with_fields(
+                "ip",
+                &format!("9.0.0.{i}"),
+                serde_json::json!({"threat_intel": {"feed": "f", "indicator": format!("9.0.0.{i}")}}),
+            ));
+        }
+        let r = agg.threat_intel_hits(900, 3);
+        assert_eq!(r.hits.len(), 3);
+    }
+
+    #[test]
+    fn bot_mix_buckets_by_category_with_unknown_fallback() {
+        let agg = AttacksAggregator::new();
+        for _ in 0..4 {
+            agg.record(&det_event_with_fields(
+                "ip",
+                "1.1.1.1",
+                serde_json::json!({"bot_category": "verified"}),
+            ));
+        }
+        for _ in 0..3 {
+            agg.record(&det_event_with_fields(
+                "ip",
+                "2.2.2.2",
+                serde_json::json!({"bot_category": "malicious"}),
+            ));
+        }
+        // 3 events without bot_category → bucket as "unknown".
+        for _ in 0..3 {
+            agg.record(&det_event_full("3.3.3.3", Some("sqli"), None, 80));
+        }
+        let r = agg.bot_mix(900);
+        assert_eq!(r.window_seconds, 900);
+        let total: u64 = r.categories.iter().map(|c| c.count).sum();
+        assert_eq!(total, 10);
+        // Sorted by count desc.
+        assert_eq!(r.categories[0].name, "verified");
+        assert_eq!(r.categories[0].count, 4);
+        // Percentages sum to ~100.
+        let pct_sum: f64 = r.categories.iter().map(|c| c.pct).sum();
+        assert!((pct_sum - 100.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn handler_renders_three_new_endpoints() {
+        let agg = Arc::new(AttacksAggregator::new());
+        agg.record(&det_event_with_fields(
+            "ip",
+            "1.1.1.1",
+            serde_json::json!({
+                "threat_intel": {"feed": "abuse-ch", "indicator": "1.1.1.1"},
+                "bot_category": "malicious",
+            }),
+        ));
+        let h = AttacksHandler::new(Arc::clone(&agg));
+
+        let by_det: serde_json::Value =
+            serde_json::from_str(&h.render_by_detector(900)).unwrap();
+        assert!(by_det["detectors"].is_array());
+
+        let ti: serde_json::Value =
+            serde_json::from_str(&h.render_threat_intel(900, 10)).unwrap();
+        assert!(ti["hits"].is_array());
+
+        let bot: serde_json::Value =
+            serde_json::from_str(&h.render_bot_mix(900)).unwrap();
+        assert!(bot["categories"].is_array());
+    }
+
+    #[test]
+    fn five_attacks_caches_are_independent() {
+        // Distribution / top / by-detector / threat-intel / bot-mix
+        // each have a separate cache slot.
+        let agg = Arc::new(AttacksAggregator::new());
+        agg.record(&det_event_with_fields(
+            "ip",
+            "1.1.1.1",
+            serde_json::json!({
+                "threat_intel": {"feed": "f", "indicator": "1.1.1.1"},
+                "bot_category": "malicious",
+            }),
+        ));
+        let h = AttacksHandler::new(Arc::clone(&agg));
+        let dist = h.render(900);
+        let top = h.render_top(900, 5);
+        let by_det = h.render_by_detector(900);
+        let ti = h.render_threat_intel(900, 10);
+        let bot = h.render_bot_mix(900);
+        // No shape collisions — each has its expected top-level array.
+        assert!(serde_json::from_str::<serde_json::Value>(&dist).unwrap()["categories"].is_array());
+        assert!(serde_json::from_str::<serde_json::Value>(&top).unwrap()["attackers"].is_array());
+        assert!(serde_json::from_str::<serde_json::Value>(&by_det).unwrap()["detectors"].is_array());
+        assert!(serde_json::from_str::<serde_json::Value>(&ti).unwrap()["hits"].is_array());
+        assert!(serde_json::from_str::<serde_json::Value>(&bot).unwrap()["categories"].is_array());
     }
 }

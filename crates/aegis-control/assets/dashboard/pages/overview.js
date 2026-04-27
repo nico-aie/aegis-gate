@@ -1,11 +1,9 @@
-// Overview page (D-M2-T2.7).
+// Overview page (D-M2-T2.7 + D-M2-T2.9).
 //
-// Mounts four KPI tiles, a traffic line-chart slot, an
-// attack-distribution donut slot, and a top-attackers table slot.
-// Real chart rendering lands in D-M2-T2.9 (stat-card + line-chart +
-// donut + table component implementations); for now the page
-// renders the data into simple text + a small list/table so the
-// page works end-to-end without Chart.js.
+// Mounts four KPI tiles, a traffic line-chart, an attack-distribution
+// donut, and a top-attackers table. The components live in
+// `/dashboard/assets/components/*` and are dynamically imported on
+// first use so the page module stays small.
 //
 // Polling cadence aligned with `docs/dashboard-enterprise/pages/overview.md`:
 // - /api/stats every 1s
@@ -28,6 +26,14 @@ let timers = [];
 let abortControllers = [];
 let visibilityHandler = null;
 let mountEl = null;
+
+// Component handles + module references (lazy-loaded on first refresh).
+let lineChartMod = null;
+let lineChartState = null;
+let donutMod = null;
+let donutState = null;
+let tableMod = null;
+let tableState = null;
 
 async function fetchJson(url) {
   const ctrl = new AbortController();
@@ -87,15 +93,30 @@ async function refreshStats() {
 
 async function refreshTimeseries() {
   const ts = await fetchJson(ENDPOINTS.timeseries.path);
-  if (!ts) return;
-  // Component swap target — D-M2-T2.9 renders the line chart here.
-  if (!mountEl) return;
+  if (!ts || !mountEl) return;
   const slot = mountEl.querySelector('[data-slot="traffic-chart"]');
   if (!slot) return;
-  const points = ts.points || [];
-  const total = points.reduce((acc, p) => acc + (p.total || 0), 0);
-  const blocked = points.reduce((acc, p) => acc + (p.blocked || 0), 0);
-  slot.textContent = `${total} requests · ${blocked} blocked (last ${ts.window_seconds}s, ${points.length} buckets)`;
+  const points = (ts.points || []).map((p) => ({
+    ts: p.ts,
+    value: p.total || 0,
+  }));
+  const blocked = (ts.points || []).map((p) => ({
+    ts: p.ts,
+    value: p.blocked || 0,
+  }));
+  const props = {
+    ariaLabel: "Traffic over the last 15 minutes",
+    series: [
+      { name: "total",   color: "var(--color-info)", points },
+      { name: "blocked", color: "var(--color-err)",  points: blocked },
+    ],
+  };
+  if (!lineChartMod) lineChartMod = (await import("/dashboard/assets/components/line-chart.js")).default;
+  if (!lineChartState) {
+    lineChartState = lineChartMod.mount(slot, props);
+  } else {
+    lineChartMod.update(lineChartState, props);
+  }
 }
 
 async function refreshDistribution() {
@@ -103,20 +124,21 @@ async function refreshDistribution() {
   if (!dist || !mountEl) return;
   const slot = mountEl.querySelector('[data-slot="attack-distribution"]');
   if (!slot) return;
-  const cats = dist.categories || [];
-  if (cats.length === 0) {
-    slot.textContent = "No attacks in window — quiet is good.";
-    return;
+  const slices = (dist.categories || []).map((c) => ({
+    name: c.name,
+    value: c.count || 0,
+  }));
+  const props = {
+    ariaLabel: "Attack distribution by category",
+    emptyMessage: "No attacks in window — quiet is good.",
+    slices,
+  };
+  if (!donutMod) donutMod = (await import("/dashboard/assets/components/donut.js")).default;
+  if (!donutState) {
+    donutState = donutMod.mount(slot, props);
+  } else {
+    donutMod.update(donutState, props);
   }
-  slot.replaceChildren();
-  const ul = document.createElement("ul");
-  ul.className = "aegis-distribution-list";
-  for (const c of cats) {
-    const li = document.createElement("li");
-    li.textContent = `${c.name}: ${c.count} (${formatPct(c.pct)})`;
-    ul.appendChild(li);
-  }
-  slot.appendChild(ul);
 }
 
 async function refreshTop() {
@@ -124,30 +146,30 @@ async function refreshTop() {
   if (!top || !mountEl) return;
   const slot = mountEl.querySelector('[data-slot="top-attackers"]');
   if (!slot) return;
-  const attackers = top.attackers || [];
-  if (attackers.length === 0) {
-    slot.textContent = "No active attackers in window.";
-    return;
+  const rows = (top.attackers || []).map((a) => ({
+    identifier: a.identifier,
+    hits: a.hits,
+    categories: (a.categories || []).join(", "),
+    risk: a.risk,
+  }));
+  const props = {
+    ariaLabel: "Top attackers by hits",
+    emptyMessage: "No active attackers in window.",
+    columns: [
+      { key: "identifier", label: "Source" },
+      { key: "hits",       label: "Hits" },
+      { key: "categories", label: "Categories", sortable: false },
+      { key: "risk",       label: "Risk" },
+    ],
+    rows,
+    sortBy: { key: "hits", dir: "desc" },
+  };
+  if (!tableMod) tableMod = (await import("/dashboard/assets/components/table.js")).default;
+  if (!tableState) {
+    tableState = tableMod.mount(slot, props);
+  } else {
+    tableMod.update(tableState, props);
   }
-  slot.replaceChildren();
-  const table = document.createElement("table");
-  table.className = "aegis-table";
-  const tbody = document.createElement("tbody");
-  for (const a of attackers) {
-    const tr = document.createElement("tr");
-    const id = document.createElement("td");
-    id.textContent = a.identifier;
-    const hits = document.createElement("td");
-    hits.textContent = String(a.hits);
-    const cats = document.createElement("td");
-    cats.textContent = (a.categories || []).join(", ");
-    const risk = document.createElement("td");
-    risk.textContent = String(a.risk);
-    tr.append(id, hits, cats, risk);
-    tbody.appendChild(tr);
-  }
-  table.appendChild(tbody);
-  slot.appendChild(table);
 }
 
 function startPolling(name, fn) {
@@ -237,6 +259,12 @@ export default {
       document.removeEventListener("visibilitychange", visibilityHandler);
       visibilityHandler = null;
     }
+    if (lineChartMod && lineChartState) lineChartMod.destroy(lineChartState);
+    if (donutMod && donutState) donutMod.destroy(donutState);
+    if (tableMod && tableState) tableMod.destroy(tableState);
+    lineChartState = null;
+    donutState = null;
+    tableState = null;
     mountEl = null;
   },
 };

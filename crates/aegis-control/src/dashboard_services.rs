@@ -19,6 +19,7 @@ use aegis_core::AuditBus;
 
 use crate::api::{
     attacks::{AttacksAggregator, AttacksHandler},
+    audit::{AuditHandler, AuditRing},
     stats::{StatsAggregator, StatsHandler, UpstreamSummary},
     upstreams::{compute_summary, PoolHealthEntry, PoolHealthSnapshot, UpstreamHandler},
 };
@@ -41,6 +42,8 @@ pub struct DashboardServices {
     pub attacks: Arc<AttacksHandler>,
     pub attacks_agg: Arc<AttacksAggregator>,
     pub upstreams: Arc<UpstreamHandler>,
+    pub audit_ring: Arc<AuditRing>,
+    pub audit: Arc<AuditHandler>,
     pub environment: Option<String>,
 }
 
@@ -56,6 +59,7 @@ impl DashboardServices {
     ) -> (Self, tokio::task::JoinHandle<()>) {
         let stats_agg = Arc::new(StatsAggregator::new());
         let attacks_agg = Arc::new(AttacksAggregator::new());
+        let audit_ring = Arc::new(AuditRing::new());
 
         // Stats handler reduces the full pool snapshot to the
         // embedded `UpstreamSummary` (no per-pool list — that's
@@ -81,6 +85,8 @@ impl DashboardServices {
 
         let attacks = Arc::new(AttacksHandler::new(Arc::clone(&attacks_agg)));
 
+        let audit_handler = Arc::new(AuditHandler::new(Arc::clone(&audit_ring)));
+
         // Subscribe SYNCHRONOUSLY before spawning so events emitted
         // between `spawn` returning and the task being scheduled
         // aren't dropped (broadcast::Receiver only sees post-subscribe
@@ -88,9 +94,10 @@ impl DashboardServices {
         let mut rx = bus.subscribe();
         let stats_clone = Arc::clone(&stats_agg);
         let attacks_clone = Arc::clone(&attacks_agg);
+        let audit_clone = Arc::clone(&audit_ring);
         let drain = tokio::spawn(async move {
             while let Ok(ev) = rx.recv().await {
-                Self::dispatch_event(&stats_clone, &attacks_clone, &ev);
+                Self::dispatch_event(&stats_clone, &attacks_clone, &audit_clone, &ev);
             }
         });
 
@@ -101,6 +108,8 @@ impl DashboardServices {
                 attacks,
                 attacks_agg,
                 upstreams,
+                audit_ring,
+                audit: audit_handler,
                 environment,
             },
             drain,
@@ -113,10 +122,12 @@ impl DashboardServices {
     pub fn dispatch_event(
         stats: &StatsAggregator,
         attacks: &AttacksAggregator,
+        audit: &AuditRing,
         ev: &AuditEvent,
     ) {
         stats.record(ev);
         attacks.record(ev);
+        audit.record(ev.clone());
     }
 }
 
@@ -214,11 +225,33 @@ mod tests {
         DashboardServices::dispatch_event(
             &services.stats_agg,
             &services.attacks_agg,
+            &services.audit_ring,
             &det_event("sqli", "8.8.8.8"),
         );
         let dist = services.attacks_agg.distribution(900);
         assert_eq!(dist.categories.len(), 1);
         assert_eq!(dist.categories[0].name, "sqli");
+        // Audit ring also captured the event.
+        assert_eq!(services.audit_ring.high_water(), 1);
+    }
+
+    #[tokio::test]
+    async fn audit_ring_captures_drained_events() {
+        let bus = AuditBus::new(64);
+        let (services, _drain) =
+            DashboardServices::spawn(bus.clone(), empty_pool_provider(), None);
+        bus.emit(det_event("sqli", "8.8.8.8"));
+        bus.emit(det_event("xss", "1.1.1.1"));
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            if services.audit_ring.high_water() >= 2 {
+                break;
+            }
+        }
+        assert_eq!(services.audit_ring.high_water(), 2);
+        let body = services.audit.render_since(0, 100);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["events"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

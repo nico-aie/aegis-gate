@@ -25,6 +25,8 @@
   "nav.settings": "Settings",
   "nav.tracking": "Tracking",
 
+  "status.connected": "Connected",
+  "status.reconnecting": "Reconnecting…",
   "status.disconnected": "Disconnected",
   "status.cluster": "Cluster",
   "status.lastSync": "Last sync",
