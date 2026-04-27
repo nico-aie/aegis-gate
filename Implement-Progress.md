@@ -17,13 +17,28 @@
 - Date: 2026-04-27
 
 ## Next Task
-- All implementation milestones (M1, M2, M3) are complete.
-- Remaining work:
-  - [ ] Full upstream proxying (currently stub "OK" for clean requests — needs real TCP connect + proxy to upstream members)
-  - [ ] Full SSE streaming on /dashboard/sse (currently returns one event then closes — needs streaming body with AuditBus subscription)
-  - [ ] Production Dockerfile + Helm chart
-  - [ ] End-to-end integration tests (k6 load + nuclei security)
-  - [ ] CI/CD pipeline (GitHub Actions)
+- Track: **Enterprise Dashboard (D)** — multi-page operator console replacing
+  the v1 single-file shell. Design spec in `docs/dashboard-enterprise/`,
+  task plan in `plans/dashboard-enterprise/`. Single crate touched:
+  `aegis-control`. No new top-level deps. Auth contract unchanged
+  (single admin, no SSO/RBAC/multi-tenant — see `docs/deferred/`).
+- **Next task: D-M1-T1.1 Asset embedder**
+  (`crates/aegis-control/src/dashboard/assets.rs`).
+  See [`plans/dashboard-enterprise/milestone-1-shell.md`](plans/dashboard-enterprise/milestone-1-shell.md).
+- Milestone order:
+  - [ ] D-M1 SPA shell + asset embedder + router (placeholders)
+  - [ ] D-M2 Overview page wired to `/api/stats*` and `/api/attacks*`
+  - [ ] D-M3 Live Feed, Attack Events, Audit Log, Analytics
+  - [ ] D-M4 Rule Manager, Tier Config, Blacklist, Whitelist, Settings
+  - [ ] D-M5 Tracking (SLO, upstreams, cluster, certs, GitOps, alerts)
+  - [ ] D-M6 A11y, security headers, perf budget, legacy shell removal
+
+### Deferred (post-dashboard track)
+- [ ] Full upstream proxying (currently stub "OK" for clean requests — needs real TCP connect + proxy to upstream members)
+- [ ] Full SSE streaming on `/dashboard/sse` (currently returns one event then closes — needs streaming body with AuditBus subscription)
+- [ ] Production Dockerfile + Helm chart
+- [ ] End-to-end integration tests (k6 load + nuclei security)
+- [ ] CI/CD pipeline (GitHub Actions)
 
 ## Verification
 - `cargo build --workspace --release` → clean.
