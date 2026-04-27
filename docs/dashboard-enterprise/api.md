@@ -196,6 +196,59 @@ page to keep the per-tab fan-out cheap. It returns the union of
 slo, upstreams summary, cluster peers, certs summary, gitops
 status, and alerts in one response (~5KB JSON typical).
 
+### Benchmark mode
+
+> Full design — [`../benchmark-mode.md`](../benchmark-mode.md).
+
+```
+GET  /api/benchmark/status
+POST /api/benchmark/enable    { "mode": "headers"|"verbose", "ttl_seconds": 3600 }
+POST /api/benchmark/disable
+GET  /api/benchmark/snapshot?window=60s
+```
+
+`/api/benchmark/status` response:
+
+```jsonc
+{
+  "configured_mode": "disabled",
+  "active_mode":     "headers",
+  "ttl_remaining_s": 423,
+  "enabled_at":      "2026-04-27T17:30:00Z",
+  "enabled_by":      "admin",
+  "source_allowlist": ["127.0.0.1/32"],
+  "expose_rule_ids":  false
+}
+```
+
+`/api/benchmark/snapshot` aggregates the last `window` (max 600s) of
+benchmark-gated requests into the shape the Tracking + Analytics
+panels render:
+
+```jsonc
+{
+  "window_seconds": 60,
+  "samples": 12053,
+  "overhead_us": { "p50": 412, "p95": 1180, "p99": 2240, "max": 4980 },
+  "by_detector": [
+    { "name": "rate", "samples": 12053, "p50": 5,  "p95": 12,  "p99": 28 },
+    { "name": "sqli", "samples": 12053, "p50": 80, "p95": 220, "p99": 410 }
+  ],
+  "by_tier": [
+    { "tier": "critical", "samples":  402, "p99_us": 3200 },
+    { "tier": "high",     "samples": 4810, "p99_us": 2240 }
+  ],
+  "decisions": { "allow": 11890, "block": 152, "challenge": 11 }
+}
+```
+
+Mutating endpoints (`enable`, `disable`) require the same admin
+session + CSRF as every other mutating route, and emit
+`bench_enable` / `bench_disable` audit entries. Auto-disable on TTL
+expiry emits `bench_auto_disable`. `/api/about` is extended to
+include `benchmark.configured_mode` so the dashboard can decide
+whether to render the Benchmark panel at all.
+
 ### Analytics
 
 ```
@@ -215,8 +268,15 @@ fixed allow-list:
 | `errors_by_route` | `sum by (route) (rate(waf_decisions_total{action="block"}[$step]))` |
 | `slo_budget_remaining` | `waf_slo_budget_remaining` |
 | `cert_days_to_expiry` | `min(waf_cert_expires_in_seconds) / 86400` |
+| `bench_overhead_p50` | `histogram_quantile(0.50, sum(rate(waf_bench_overhead_seconds_bucket[$step])) by (le))` |
+| `bench_overhead_p95` | `histogram_quantile(0.95, sum(rate(waf_bench_overhead_seconds_bucket[$step])) by (le))` |
+| `bench_overhead_p99` | `histogram_quantile(0.99, sum(rate(waf_bench_overhead_seconds_bucket[$step])) by (le))` |
+| `bench_detector_p99` | `histogram_quantile(0.99, sum by (detector,le) (rate(waf_bench_detector_cost_seconds_bucket[$step])))` |
+| `bench_mode` | `waf_bench_mode` |
 
-Any other `expr` returns 400.
+Any other `expr` returns 400. The `bench_*` queries return zero
+samples when `benchmark.mode == disabled`, by design — see
+[`../benchmark-mode.md`](../benchmark-mode.md).
 
 ## Response conventions
 

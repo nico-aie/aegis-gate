@@ -104,11 +104,23 @@ async fn admin_accept_loop(
     tcp: tokio::net::TcpListener,
     cfg: Arc<WafConfig>,
     readiness: ReadinessSignal,
-    _bus: AuditBus,
+    bus: AuditBus,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
     let metrics = aegis_control::metrics::MetricsRegistry::init();
+
+    // Build the dashboard service bundle once at boot. The drain
+    // task runs for the lifetime of the admin listener — see
+    // `aegis-control::dashboard_services` (D-M2-T2.7).
+    let pool_provider =
+        aegis_control::dashboard_services::pool_snapshot_provider(&cfg);
+    let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn(
+        bus,
+        pool_provider,
+        cfg.admin.environment.clone(),
+    );
+    let services = Arc::new(services);
 
     loop {
         let (stream, peer) = match tcp.accept().await {
@@ -123,6 +135,7 @@ async fn admin_accept_loop(
         let readiness = readiness.clone();
         let startup = startup.clone();
         let metrics = metrics.clone();
+        let services = services.clone();
 
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
@@ -131,8 +144,11 @@ async fn admin_accept_loop(
                 let readiness = readiness.clone();
                 let startup = startup.clone();
                 let metrics = metrics.clone();
+                let services = services.clone();
                 async move {
-                    Ok::<_, Infallible>(admin_router(req, &cfg, &readiness, &startup, &metrics))
+                    Ok::<_, Infallible>(admin_router(
+                        req, &cfg, &readiness, &startup, &metrics, &services,
+                    ))
                 }
             });
 
@@ -149,19 +165,26 @@ fn admin_router(
     readiness: &ReadinessSignal,
     startup: &aegis_control::health::StartupProbe,
     metrics: &aegis_control::metrics::MetricsRegistry,
+    services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
     let path = req.uri().path();
+    let query = req.uri().query().unwrap_or("");
+
+    let use_legacy = cfg.admin.dashboard.legacy_shell;
+
+    // Root → dashboard for convenience (existing behaviour).
+    if path == "/" {
+        return dashboard_shell_response(use_legacy);
+    }
+
+    // Dashboard surface (SPA shell + embedded assets) is owned by
+    // aegis-control::dashboard::dispatch. SSE returns None and falls
+    // through to the streaming handler below.
+    if let Some(resp) = aegis_control::dashboard::dispatch::dispatch(path) {
+        return dashboard_response(resp, use_legacy);
+    }
 
     match path {
-        // Dashboard.
-        "/" | "/dashboard" | "/dashboard/" => {
-            Response::builder()
-                .status(200)
-                .header("content-type", "text/html; charset=utf-8")
-                .body(Full::new(Bytes::from(aegis_control::dashboard::DASHBOARD_HTML)))
-                .unwrap()
-        }
-
         // SSE stub — returns a connected status message.
         // Full SSE streaming requires a streaming body (future work).
         "/dashboard/sse" => {
@@ -211,11 +234,71 @@ fn admin_router(
             }))
         }
 
+        // Dashboard data endpoints (D-M2). All read-only, JSON,
+        // sourced from `aegis-control::dashboard_services`.
+        "/api/about" => {
+            json_body_response(
+                200,
+                aegis_control::api::about::render(services.environment.clone()),
+                "private, max-age=10",
+            )
+        }
+        "/api/stats" => {
+            json_body_response(200, services.stats.render(), "private, max-age=1")
+        }
+        "/api/stats/timeseries" => {
+            let window = parse_query_u32(query, "window", 900);
+            let step = parse_query_u32(query, "step", 5);
+            let resp = services.stats_agg.timeseries(window, step);
+            let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "private, max-age=1")
+        }
+        "/api/upstreams/summary" => {
+            json_body_response(200, services.upstreams.render(), "private, max-age=2")
+        }
+        "/api/attacks/distribution" => {
+            let window = parse_query_u32(query, "window", 900);
+            json_body_response(
+                200,
+                services.attacks.render(window),
+                "private, max-age=10",
+            )
+        }
+        "/api/attacks/top" => {
+            let window = parse_query_u32(query, "window", 900);
+            let limit = parse_query_u32(query, "limit", 5);
+            json_body_response(
+                200,
+                services.attacks.render_top(window, limit),
+                "private, max-age=10",
+            )
+        }
+
         // 404 for everything else.
         _ => {
             json_response(404, &serde_json::json!({"error": "not found", "path": path}))
         }
     }
+}
+
+/// Parse a `?key=value` integer from a raw query string. Used by
+/// the dashboard API endpoints to honour their `?window=` /
+/// `?step=` / `?limit=` parameters. Falls back to `default` on
+/// missing key, parse failure, or trailing `s` suffix
+/// (the api spec writes `15m` / `5s` in examples but accepts
+/// integer seconds in the URL).
+fn parse_query_u32(query: &str, key: &str, default: u32) -> u32 {
+    for pair in query.split('&') {
+        if let Some(rest) = pair.strip_prefix(key) {
+            if let Some(value) = rest.strip_prefix('=') {
+                let trimmed = value.trim_end_matches('s');
+                if let Ok(n) = trimmed.parse::<u32>() {
+                    return n;
+                }
+            }
+        }
+    }
+    default
 }
 
 fn json_response(status: u16, value: &serde_json::Value) -> Response<Full<Bytes>> {
@@ -225,6 +308,81 @@ fn json_response(status: u16, value: &serde_json::Value) -> Response<Full<Bytes>
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body)))
         .unwrap()
+}
+
+/// JSON response from a pre-rendered body. Adds `Cache-Control` per
+/// the per-endpoint TTLs documented in
+/// `docs/dashboard-enterprise/api.md` §"Caching".
+fn json_body_response(status: u16, body: String, cache_control: &str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json; charset=utf-8")
+        .header("cache-control", cache_control)
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
+}
+
+/// Apply the documented dashboard security headers to a response
+/// builder. Single application point for the
+/// `aegis_control::dashboard::security::SECURITY_HEADERS` table — see
+/// `docs/dashboard-enterprise/security.md` §"Headers (full set …)".
+fn apply_dashboard_security_headers(
+    mut builder: hyper::http::response::Builder,
+) -> hyper::http::response::Builder {
+    for (name, value) in aegis_control::dashboard::security::SECURITY_HEADERS {
+        builder = builder.header(*name, *value);
+    }
+    builder
+}
+
+/// Convert an [`aegis_control::dashboard::dispatch::DashboardResponse`]
+/// into a hyper response. Centralises the dashboard transport rules
+/// so security headers, ETags, and cache-control all sit in one place.
+///
+/// `use_legacy` selects between the v1 single-file shell and the
+/// enterprise SPA for the [`DashboardResponse::Shell`] variant only;
+/// asset routes are independent of the toggle.
+fn dashboard_response(
+    r: aegis_control::dashboard::dispatch::DashboardResponse,
+    use_legacy: bool,
+) -> Response<Full<Bytes>> {
+    use aegis_control::dashboard::dispatch::DashboardResponse;
+    match r {
+        DashboardResponse::Shell => dashboard_shell_response(use_legacy),
+        DashboardResponse::Asset(asset) => apply_dashboard_security_headers(
+            Response::builder()
+                .status(200)
+                .header("content-type", asset.content_type)
+                .header("etag", format!("\"{}\"", asset.etag))
+                .header("cache-control", "public, max-age=3600, must-revalidate"),
+        )
+        .body(Full::new(Bytes::from_static(asset.bytes)))
+        .unwrap(),
+        DashboardResponse::AssetNotFound => apply_dashboard_security_headers(
+            Response::builder()
+                .status(404)
+                .header("content-type", "application/json"),
+        )
+        .body(Full::new(Bytes::from_static(
+            br#"{"error":"asset not found"}"#,
+        )))
+        .unwrap(),
+    }
+}
+
+/// Serve the SPA shell (`index.html`) by default, or the legacy v1
+/// shell when `use_legacy` is `true` (admin opt-in via
+/// `cfg.admin.dashboard.legacy_shell`).
+fn dashboard_shell_response(use_legacy: bool) -> Response<Full<Bytes>> {
+    let shell = aegis_control::dashboard::dispatch::shell_for(use_legacy);
+    apply_dashboard_security_headers(
+        Response::builder()
+            .status(200)
+            .header("content-type", shell.content_type)
+            .header("cache-control", "no-store"),
+    )
+    .body(Full::new(Bytes::from_static(shell.bytes)))
+    .unwrap()
 }
 
 async fn accept_loop(
@@ -394,5 +552,100 @@ state:
 
         // Verify that a WafConfig with port 0 parses (for the skeleton)
         let _ = cfg;
+    }
+
+    // ---------- D-M1-T1.5 dashboard security headers ---------------------
+
+    use aegis_control::dashboard::dispatch::{dispatch, DashboardResponse};
+    use aegis_control::dashboard::security::SECURITY_HEADERS;
+
+    /// Every header in SECURITY_HEADERS must appear on the response,
+    /// with the canonical value.
+    fn assert_security_headers(headers: &hyper::HeaderMap) {
+        for (name, value) in SECURITY_HEADERS {
+            let got = headers.get(*name).unwrap_or_else(|| {
+                panic!("missing security header {name}");
+            });
+            assert_eq!(
+                got.to_str().unwrap_or(""),
+                *value,
+                "wrong value for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_shell_response_carries_security_headers() {
+        let resp = dashboard_shell_response(false);
+        assert_eq!(resp.status(), 200);
+        assert_security_headers(resp.headers());
+    }
+
+    #[test]
+    fn dashboard_asset_response_carries_security_headers() {
+        let r = dispatch("/dashboard/assets/app.js")
+            .expect("known asset must resolve");
+        let resp = match r {
+            DashboardResponse::Asset(_) => dashboard_response(r, false),
+            _ => panic!("expected Asset"),
+        };
+        assert_eq!(resp.status(), 200);
+        assert_security_headers(resp.headers());
+    }
+
+    #[test]
+    fn dashboard_asset_not_found_carries_security_headers() {
+        // 404s also need the headers — a missing asset must not become
+        // a CSP-bypass vector.
+        let r = dispatch("/dashboard/assets/missing.js")
+            .expect("must dispatch");
+        let resp = dashboard_response(r, false);
+        assert_eq!(resp.status(), 404);
+        assert_security_headers(resp.headers());
+    }
+
+    // ---------- D-M1-T1.6 legacy shell flag ------------------------------
+
+    async fn body_string(resp: Response<Full<Bytes>>) -> String {
+        use http_body_util::BodyExt;
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dashboard_shell_response_default_serves_spa_shell() {
+        // legacy flag off (default) -> new SPA shell, identified by
+        // the #aegis-app sentinel.
+        let resp = dashboard_shell_response(false);
+        assert_eq!(resp.status(), 200);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(r#"id="aegis-app""#),
+            "default shell must be the new SPA"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_shell_response_legacy_serves_v1() {
+        // legacy flag on -> v1 single-file dashboard.
+        let resp = dashboard_shell_response(true);
+        assert_eq!(resp.status(), 200);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("EventSource"),
+            "legacy shell must contain V1 EventSource bootstrap"
+        );
+        assert!(
+            !body.contains(r#"id="aegis-app""#),
+            "legacy shell must not carry the SPA mount point"
+        );
+    }
+
+    #[test]
+    fn dashboard_shell_response_legacy_keeps_security_headers() {
+        // The legacy shell still goes through the security-header
+        // middleware — the toggle must not become a header bypass.
+        let resp = dashboard_shell_response(true);
+        assert_security_headers(resp.headers());
     }
 }

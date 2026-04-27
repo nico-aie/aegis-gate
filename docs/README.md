@@ -95,6 +95,7 @@ it for background.
 | [siem-log-forwarding.md](./siem-log-forwarding.md) | Syslog / CEF / LEEF / OCSF / Kafka |
 | [threat-intelligence.md](./threat-intelligence.md) | STIX / TAXII / commercial feeds |
 | [observability-prometheus-otel.md](./observability-prometheus-otel.md) | Metrics, tracing, access logs |
+| [benchmark-mode.md](./benchmark-mode.md) | Gated, opt-in mode that exposes per-request WAF diagnostics on `X-Aegis-*` response headers + dashboard panels + Prometheus series |
 | [slo-sli-alerting.md](./slo-sli-alerting.md) | SLOs, burn-rate alerts, runbooks |
 | [data-residency-retention.md](./data-residency-retention.md) | Region pin + retention + GDPR erasure |
 | [dr-backup.md](./dr-backup.md) | RPO/RTO, snapshots, restore drills |

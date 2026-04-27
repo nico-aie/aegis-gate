@@ -753,7 +753,50 @@ collapse.
 
 ---
 
-## 34. Deliverables Checklist
+## 34. Benchmark Mode
+
+A gated, opt-in operating mode that exposes per-request WAF
+diagnostics so operators can verify the §3 performance targets
+without instrumenting the surrounding stack. **Disabled by default
+in every environment.**
+
+- **Three modes:** `disabled`, `headers`, `verbose`. Mode is global;
+  per-route benchmarking is deferred.
+- **Two-factor activation gate.** A request receives diagnostic
+  headers only when its source IP is in
+  `benchmark.source_allowlist` **and** it carries a presigned HMAC
+  token in `benchmark.required_header.name` (signature ≤ 60 s old).
+- **Time-bounded.** Every enable carries a TTL (default `1h`,
+  capped by `benchmark.max_ttl`, default `24h`). Auto-disable runs
+  on a tokio task and emits a `bench_auto_disable` audit entry.
+- **Always-on `X-Aegis-Request-Id`.** This standardises the
+  existing internal `request_id` so support can correlate without
+  reading the audit chain. It carries no extra information.
+- **Benchmark-only headers** (`X-Aegis-Tier`, `X-Aegis-Decision`,
+  `X-Aegis-Overhead-Us`, `X-Aegis-Upstream-Us`, `X-Aegis-Detectors`,
+  `X-Aegis-Pipeline`, `X-Aegis-Rules`, `X-Aegis-Build`) are emitted
+  only on benchmark-gated responses. Rule IDs are suppressed unless
+  `benchmark.expose_rule_ids: true` (verbose mode only).
+- **Zero hot-path cost when disabled.** A single bool branch at
+  request entry decides whether to allocate a `BenchmarkContext`.
+- **Audit + observable.** State changes hit the audit chain. New
+  Prometheus series (`waf_bench_overhead_seconds_bucket{tier,
+  decision}`, `waf_bench_detector_cost_seconds_bucket{detector}`,
+  `waf_bench_mode`) populate only while bench mode is on.
+- **Dashboard surfaces.** A Benchmark panel on the Tracking page
+  (state, TTL, enable/disable, live histogram) and a Benchmarks
+  subpage under Analytics (p50/p95/p99 by tier, per-detector
+  heatmap, top-N expensive rules, overhead vs RPS).
+- **CLI.** `waf bench {enable,disable,status}` with the same
+  audit-logged toggle path as the dashboard.
+
+Full design — [`docs/benchmark-mode.md`](docs/benchmark-mode.md).
+Plan — [`plans/benchmark-mode.md`](plans/benchmark-mode.md) (task
+ID prefix `B-`).
+
+---
+
+## 35. Deliverables Checklist
 
 - [ ] `./waf run` starts from a single static binary
 - [ ] Hot reload of config, rules, secrets, and certificates
@@ -786,3 +829,6 @@ collapse.
 - [ ] SLO burn alert fires via Alertmanager on synthetic regression
 - [ ] Red-team attack simulation (SQLi / XSS / SSRF / brute force) blocked
 - [ ] Load test sustains ≥ 5 000 RPS with p99 overhead ≤ 5 ms
+- [ ] Benchmark mode emits `X-Aegis-*` headers only when source IP +
+      token gate both pass; auto-disables on TTL expiry; criterion
+      bench shows ≤ 1 % delta with `mode: disabled` vs baseline

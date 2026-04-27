@@ -403,6 +403,48 @@ waf admin enroll-totp --issuer "Aegis" --account "admin"
 
 ---
 
+### 13. Benchmark mode (optional)
+
+Off by default. When enabled, exposes per-request WAF diagnostics
+on `X-Aegis-*` response headers and adds two dashboard panels for
+measuring overhead under load. **Production-tolerable for short
+runs; never leave on indefinitely.** Full design at
+[`../docs/benchmark-mode.md`](../docs/benchmark-mode.md).
+
+```yaml
+benchmark:
+  mode: disabled                   # disabled | headers | verbose
+  source_allowlist:
+    - "127.0.0.1/32"
+    - "10.0.0.0/8"
+  required_header:
+    name: "X-Aegis-Bench-Token"
+    secret_ref: "${secret:env:AEGIS_BENCH_TOKEN}"
+    signing_window: "60s"
+  ttl: "1h"                        # auto-disable after this duration
+  max_ttl: "24h"                   # config validator rejects ttl > max_ttl
+  expose_rule_ids: false           # opt-in; verbose mode only
+  detectors_header: true           # emit X-Aegis-Detectors
+  pipeline_header: true            # emit X-Aegis-Pipeline
+```
+
+**Activation gate.** A request gets `X-Aegis-*` benchmark headers
+iff (a) `mode != disabled`, (b) the source IP is in
+`source_allowlist`, and (c) the request carries a valid
+HMAC-signed token in the configured header (≤60 s old). Failing
+any of the three keeps the response clean.
+
+**Toggling at runtime.** The dashboard's Tracking page exposes
+enable / disable buttons; the CLI offers `waf bench enable
+[--ttl 1h] [--mode headers|verbose]`, `waf bench disable`,
+`waf bench status`. Every transition is audit-logged.
+
+**Always-on `X-Aegis-Request-Id`.** This header rides on every
+WAF response regardless of the `benchmark` block. It mirrors the
+internal `request_id` for support correlation.
+
+---
+
 ## Common Configuration Patterns
 
 ### Development (minimal)

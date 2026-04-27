@@ -795,6 +795,13 @@ pub struct AdminConfig {
     pub tls: Option<TlsConfig>,
     #[serde(default)]
     pub dashboard_auth: DashboardAuthConfig,
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
+    /// Deployment environment label rendered on the dashboard topbar
+    /// (e.g. `prod`, `staging`, `dev`). Optional — when absent the
+    /// topbar shows an em-dash placeholder.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 fn default_admin_bind() -> SocketAddr {
@@ -807,8 +814,23 @@ impl Default for AdminConfig {
             bind: default_admin_bind(),
             tls: None,
             dashboard_auth: DashboardAuthConfig::default(),
+            dashboard: DashboardConfig::default(),
+            environment: None,
         }
     }
+}
+
+/// Dashboard-shell configuration (D-M1-T1.6).
+///
+/// The default lands the new enterprise SPA. Operators can opt in to
+/// the legacy single-file shell for one release while the SPA bakes
+/// — see `docs/dashboard-enterprise/README.md`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct DashboardConfig {
+    /// Serve the v1 single-file shell (`DASHBOARD_HTML_V1`) instead
+    /// of the new enterprise SPA. Default: `false` (SPA).
+    #[serde(default)]
+    pub legacy_shell: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1099,6 +1121,46 @@ redis:
         assert_eq!(cfg.dashboard_auth.session_ttl_absolute, Duration::from_secs(28800));
         assert_eq!(cfg.dashboard_auth.ip_allowlist.len(), 2);
         assert!(!cfg.dashboard_auth.totp_enabled);
+        // D-M1-T1.6: legacy_shell is opt-in, default false.
+        assert!(!cfg.dashboard.legacy_shell);
+    }
+
+    #[test]
+    fn admin_config_accepts_dashboard_block() {
+        // serde(default) keeps existing waf.yaml files working when
+        // the new key is absent; explicit values override.
+        let yaml = r#"
+bind: "127.0.0.1:9443"
+dashboard:
+  legacy_shell: true
+"#;
+        let cfg: AdminConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.dashboard.legacy_shell);
+    }
+
+    #[test]
+    fn admin_config_works_without_dashboard_block() {
+        // Backward compatibility: existing configs that don't mention
+        // `dashboard:` must still parse and pick up the default.
+        let yaml = r#"bind: "127.0.0.1:9443""#;
+        let cfg: AdminConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!cfg.dashboard.legacy_shell);
+    }
+
+    #[test]
+    fn admin_config_environment_defaults_to_none() {
+        let cfg = AdminConfig::default();
+        assert!(cfg.environment.is_none());
+    }
+
+    #[test]
+    fn admin_config_accepts_environment() {
+        let yaml = r#"
+bind: "127.0.0.1:9443"
+environment: "prod"
+"#;
+        let cfg: AdminConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.environment.as_deref(), Some("prod"));
     }
 
     #[test]

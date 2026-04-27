@@ -867,6 +867,58 @@ members enter `probing` before joining the LB ring; removed members drain.
 
 ---
 
+## 28.5 Benchmark Mode
+
+> Full design — [`docs/benchmark-mode.md`](docs/benchmark-mode.md).
+> Plan — [`plans/benchmark-mode.md`](plans/benchmark-mode.md).
+
+A request-scoped `BenchmarkContext` is allocated **only** when a
+request passes the two-factor benchmark gate (source-IP allowlist +
+HMAC-signed `X-Aegis-Bench-Token` ≤ 60 s old). The gate check is
+the first thing the request lifecycle does after route resolution
+and before the security pipeline begins.
+
+```rust
+struct BenchmarkContext {
+    request_started:   Instant,
+    waf_started:       Instant,
+    waf_finished:      Option<Instant>,
+    upstream_started:  Option<Instant>,
+    upstream_finished: Option<Instant>,
+    stages:    SmallVec<[StageSample;    16]>,
+    detectors: SmallVec<[DetectorSample; 16]>,
+    rules_fired: SmallVec<[RuleId;        8]>,
+    tier:     Tier,
+    decision: Decision,
+}
+```
+
+The pipeline stages (§5) carry an `Option<&BenchmarkContext>`. Each
+detector wraps its work with `bench.detector(name, started)`; cost
+when `None` reduces to one bool branch.
+
+Runtime state lives behind an `ArcSwap<BenchmarkState>` in
+`aegis-proxy`. Enable / disable / auto-disable transitions go
+through `aegis-control`'s admin API (audit-logged) and a tokio
+timer drains `active_mode` back to `disabled` at `enabled_at + ttl`.
+
+Header injection happens in the response filter (§5.12) so
+benchmark headers ride the same sanitisation path as security
+headers. Always-on `X-Aegis-Request-Id` is added unconditionally;
+`X-Aegis-*` benchmark headers are added only on gated requests.
+
+Prometheus integration adds three series, populated only when
+`mode != disabled` and only on gated requests:
+`waf_bench_overhead_seconds_bucket{tier,decision}`,
+`waf_bench_detector_cost_seconds_bucket{detector}`,
+`waf_bench_mode` (gauge `0/1/2`).
+
+A criterion bench enforced in CI verifies that compiling the
+feature in but leaving `mode: disabled` adds ≤ 1 % to the baseline
+hot-path cost.
+
+---
+
 ## 29. SLO / SLI & Alerting
 
 - **SLIs**: availability (non-5xx / total), **WAF-overhead** latency

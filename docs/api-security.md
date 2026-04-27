@@ -101,6 +101,12 @@ enumeration attacks don't reveal schema details:
 - 400 with `{"error":"bad_request","request_id":"..."}` (default)
 - 422 with per-field details (dev mode only)
 
+The `request_id` value matches the always-on `X-Aegis-Request-Id`
+response header (see
+[`observability-prometheus-otel.md`](observability-prometheus-otel.md))
+so support can correlate a client error to the audit chain without
+reading the body.
+
 ## Configuration
 
 ```yaml

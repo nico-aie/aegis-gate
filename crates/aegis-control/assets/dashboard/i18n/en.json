@@ -1,0 +1,36 @@
+{
+  "_meta": {
+    "language": "en",
+    "name": "English",
+    "version": 1
+  },
+
+  "topbar.search": "Search",
+  "topbar.theme": "Theme",
+  "topbar.signout": "Sign out",
+
+  "sidebar.operator": "Operator",
+  "sidebar.config": "Configuration",
+  "sidebar.tracking": "Tracking",
+
+  "nav.overview": "Overview",
+  "nav.live": "Live Feed",
+  "nav.attacks": "Attack Events",
+  "nav.analytics": "Analytics",
+  "nav.audit": "Audit Log",
+  "nav.rules": "Rule Manager",
+  "nav.tiers": "Tier Config",
+  "nav.blacklist": "Blacklist",
+  "nav.whitelist": "Whitelist",
+  "nav.settings": "Settings",
+  "nav.tracking": "Tracking",
+
+  "status.disconnected": "Disconnected",
+  "status.cluster": "Cluster",
+  "status.lastSync": "Last sync",
+  "status.auditChain": "Audit chain",
+
+  "noscript.message": "This dashboard requires JavaScript to render.",
+
+  "error.notFound": "Page not found."
+}

@@ -8,6 +8,7 @@ pub mod access_log;
 pub mod api;
 pub mod audit;
 pub mod dashboard;
+pub mod dashboard_services;
 pub mod health;
 pub mod metrics;
 pub mod tracing_init;

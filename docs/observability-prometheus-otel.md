@@ -52,6 +52,16 @@ Exposed on the control-plane listener at `/metrics` (see
 - `waf_shadow_requests_total{route}`
 - `waf_retries_total{pool,result}`
 
+### Benchmark mode
+- `waf_bench_overhead_seconds_bucket{tier,decision}` (histogram, WAF-only portion of latency)
+- `waf_bench_detector_cost_seconds_bucket{detector}` (histogram, per-detector cost)
+- `waf_bench_mode` (gauge: `0` disabled, `1` headers, `2` verbose)
+
+These series are populated **only** when `benchmark.mode != disabled`
+and only for benchmark-gated requests, so production scrapes carry
+zero extra cardinality when the feature is off. Full design —
+[`benchmark-mode.md`](benchmark-mode.md).
+
 ## Traces (OpenTelemetry)
 
 - Every request gets a server span `waf.request`
@@ -88,6 +98,20 @@ access_log:
 
 Variables use `$var` syntax shared with
 [`transformations-cors.md`](./transformations-cors.md).
+
+## Response correlation header
+
+Every WAF response carries an `X-Aegis-Request-Id` header whose
+value mirrors the `request_id` field in the access log, audit
+chain, and error envelope. This is always-on (independent of
+benchmark mode) so support tickets can correlate without reading
+the audit chain. The id is 16 hex characters of cryptographically
+random data, not sequential.
+
+When [benchmark mode](benchmark-mode.md) is enabled and a request
+passes its activation gate, additional `X-Aegis-*` headers carry
+per-request diagnostics (tier, decision, WAF overhead, per-detector
+cost, fired rule ids when permitted).
 
 ## Health endpoints
 

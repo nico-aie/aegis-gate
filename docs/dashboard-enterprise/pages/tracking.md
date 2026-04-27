@@ -20,6 +20,7 @@
 | Cert freshness | `GET /api/certs` |
 | GitOps sync | `GET /api/gitops/status` |
 | Active alerts | `GET /api/alerts` |
+| Benchmark mode | `GET /api/benchmark/status` + `GET /api/benchmark/snapshot?window=60s` |
 
 Most of these endpoints already exist in `aegis-control` (audit,
 SLO module, GitOps loader). The few new ones (`/api/upstreams`,
@@ -50,6 +51,11 @@ projections of existing in-memory state — see
 ├──────────────────────────────────────────────────────────────┤
 │ ┌─GitOps sync ──────────────────────────────────────────────┐ │
 │ │ repo · branch · last sync · drift · break-glass status    │ │
+│ └────────────────────────────────────────────────────────────┘ │
+├──────────────────────────────────────────────────────────────┤
+│ ┌─Benchmark mode (hidden when configured_mode = null) ──────┐ │
+│ │ state pill · TTL countdown · enable/disable buttons       │ │
+│ │ 60s overhead histogram (p50/p95/p99 bars)                 │ │
 │ └────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -104,6 +110,34 @@ projections of existing in-memory state — see
   config differs from repo head), break-glass banner if
   break-glass override is active.
 - Action: "Force resync" (admin-only, audit-logged).
+
+## Benchmark mode
+
+> Full design — [`../../benchmark-mode.md`](../../benchmark-mode.md).
+
+Conditionally rendered: hidden when `/api/about` reports
+`benchmark.configured_mode == null`. When `configured_mode` is set,
+the panel always shows even if `active_mode == disabled`, so
+operators can flip it on without going to a different page.
+
+- **State pill**: `disabled` / `headers` / `verbose` colour-coded
+  (gray / amber / red — amber and red intentionally stand out so
+  the operator does not forget benchmark mode is on).
+- **TTL countdown**: live `mm:ss` until auto-disable. Hidden when
+  `active_mode == disabled`.
+- **Source allowlist summary**: e.g. `3 CIDRs`; click → drawer
+  listing them. Read-only at runtime; managed via config.
+- **Enable / Disable buttons**: enable opens a small modal asking
+  for mode (`headers` default) and TTL (default 1h, max
+  `max_ttl`); both endpoints are admin + CSRF + audit-logged
+  (`bench_enable` / `bench_disable`).
+- **Live histogram**: only when `active_mode != disabled`. Shows
+  `overhead_us` p50 / p95 / p99 bars from
+  `/api/benchmark/snapshot?window=60s`. Polls every 5s alongside
+  the rest of the page.
+- **Empty state**: when never enabled, shows the gate config
+  summary plus a "Run a benchmark" button that opens the enable
+  modal.
 
 ## Refresh
 

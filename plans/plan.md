@@ -21,20 +21,26 @@ Do not start coding without reading these.
 
 ## 0.2 Universal Implementation Prompt (Copy-Paste)
 
-Use this template every time you start or resume work:
+Use this template every time you start or resume work. Copy the
+fenced block below verbatim — the code fence preserves the
+`<placeholder>` markers so they survive markdown rendering.
 
+```text
 Context files to read first (in order):
 1. README.md
 2. Implement-Progress.md
 3. plans/plan.md (this assistant guide)
-4. plans/<proxy|security|control>.md
-   — or, for dashboard work, plans/dashboard-enterprise/README.md
-     plus the relevant milestone-N file
-   — for dashboard work also read docs/dashboard-enterprise/README.md
-     (design spec) before touching code
+4. Track-specific plan:
+   - Proxy:    plans/proxy.md
+   - Security: plans/security.md
+   - Control:  plans/control.md
+   - Dashboard:
+       plans/dashboard-enterprise/README.md
+       + plans/dashboard-enterprise/milestone-<N>-*.md
+       + docs/dashboard-enterprise/README.md   (design spec)
 
 Task:
-<copy NEXT TASK from Implement-Progress.md>
+<copy NEXT TASK from Implement-Progress.md, e.g. "D-M1-T1.1 Asset embedder">
 
 Target crate:
 <aegis-proxy | aegis-security | aegis-control | aegis-core | aegis-bin>
@@ -44,7 +50,7 @@ Requirements:
 - Follow exact types and traits from aegis-core
 - Do not invent new interfaces unless necessary
 - Use only dependencies already in Cargo.toml
-- If a new dependency is needed → list it, do not add it
+- If a new dependency is needed -> list it, do not add it
 
 Implementation rules:
 - Modify only the target crate (except aegis-core if required)
@@ -54,14 +60,15 @@ Implementation rules:
 
 Testing:
 - Add unit + integration tests where applicable
-- Ensure:
-  cargo test -p <crate>
-  cargo clippy -p <crate> -- -D warnings
+- Ensure (replace CRATE with the target crate name):
+    cargo test -p CRATE
+    cargo clippy -p CRATE -- -D warnings
 
 Completion:
 - All tests pass
 - No clippy warnings
 - Update Implement-Progress.md (overwrite fully)
+```
 
 ---
 
@@ -73,8 +80,9 @@ After completing a task:
 - Never append
 - Never leave partial updates
 
-Template:
+Template (copy the fenced block — code fence preserves placeholders):
 
+```markdown
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
@@ -85,8 +93,9 @@ Template:
 - Date: <YYYY-MM-DD>
 
 ## Next Task
-- Task: <next task>  (use M{n}-T{x}.{y} for proxy/security/control,
-                     D-M{n}-T{x}.{y} for dashboard-enterprise)
+- Task: <next task>
+  (use M{n}-T{x}.{y} for proxy/security/control,
+   D-M{n}-T{x}.{y} for dashboard-enterprise)
 - Plan: plans/<proxy|security|control>.md
         or plans/dashboard-enterprise/milestone-{n}-*.md
 - Notes: <optional>
@@ -95,6 +104,7 @@ Template:
 | Task | Crate | Date |
 |------|-------|------|
 | ... |
+```
 
 ---
 
@@ -128,9 +138,13 @@ If something feels unclear → it likely belongs in aegis-core.
 | Security pipeline | `plans/security.md` | `M{n}-T{x}.{y}` | aegis-security |
 | Control plane | `plans/control.md` | `M{n}-T{x}.{y}` | aegis-control |
 | Enterprise dashboard | `plans/dashboard-enterprise/` | `D-M{n}-T{x}.{y}` | aegis-control only |
+| Benchmark mode | `plans/benchmark-mode.md` | `B-T{n}.{y}` | aegis-core, aegis-proxy, aegis-security, aegis-control, aegis-bin |
 
-The `D-` prefix on dashboard task IDs keeps them disjoint from the
-original M1/M2/M3 IDs already in the Completed Tasks Log.
+The `D-` and `B-` prefixes keep dashboard and benchmark task IDs
+disjoint from the original M1/M2/M3 IDs already in the Completed
+Tasks Log. The dashboard and benchmark tracks are parallel — B-T1..B-T3
+can land before D-M1 finishes; B-T4.5 / B-T4.6 (dashboard panels)
+are the only B- tasks gated on dashboard milestones.
 
 ---
 

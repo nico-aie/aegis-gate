@@ -194,3 +194,25 @@ admin:
       threshold: 10
       window: "15m"
       duration: "15m"
+
+# ---------------------------------------------------------------------------
+# Benchmark mode (off by default — see docs/benchmark-mode.md)
+# ---------------------------------------------------------------------------
+# Exposes per-request WAF diagnostics on X-Aegis-* response headers and
+# dashboard panels. Two-factor gate: source IP allowlist AND a presigned
+# token header. Always-on X-Aegis-Request-Id is independent of this block.
+#
+# benchmark:
+#   mode: disabled                   # disabled | headers | verbose
+#   source_allowlist:
+#     - "127.0.0.1/32"
+#     - "10.0.0.0/8"
+#   required_header:
+#     name: "X-Aegis-Bench-Token"
+#     secret_ref: "${secret:env:AEGIS_BENCH_TOKEN}"
+#     signing_window: "60s"
+#   ttl: "1h"                        # auto-disable countdown
+#   max_ttl: "24h"                   # cap on per-call ttl
+#   expose_rule_ids: false           # verbose mode only when true
+#   detectors_header: true
+#   pipeline_header: true

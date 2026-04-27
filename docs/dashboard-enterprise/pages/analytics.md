@@ -34,6 +34,8 @@ fixed set of queries.
 | Error rate by route | `sum by (route) (rate(waf_decisions_total{action="block"}[$step]))` |
 | SLO budget remaining | `waf_slo_budget_remaining{sli=~"$sli"}` |
 | Cert days to expiry | `min(waf_cert_expires_in_seconds) / 86400` |
+| WAF overhead p50/p95/p99 (bench) | `histogram_quantile(0.99, sum(rate(waf_bench_overhead_seconds_bucket[$step])) by (le))` |
+| Detector cost p99 (bench) | `histogram_quantile(0.99, sum by (detector,le) (rate(waf_bench_detector_cost_seconds_bucket[$step])))` |
 
 ## Layout
 
@@ -58,6 +60,34 @@ fixed set of queries.
 - A "Drill into Grafana" link opens (in a new tab) the configured
   `admin.grafana_url` if set — the dashboard embraces being a
   glance, not a replacement.
+
+## Benchmarks subpage
+
+> Full design — [`../../benchmark-mode.md`](../../benchmark-mode.md).
+> Toggle bench mode from the Tracking page.
+
+A subpage under Analytics (selectable from a small tab strip at the
+top of the page; no extra sidebar slot) that surfaces the
+benchmark-only series. Visible whenever
+`/api/about` reports `benchmark.configured_mode != null`; renders
+an "off — enable on Tracking" banner when `active_mode == disabled`.
+
+Widgets:
+
+- **Overhead p50 / p95 / p99 by tier** — multi-series line chart
+  from `bench_overhead_p50/p95/p99` filtered per tier.
+- **Per-detector cost heatmap** — rows = detector names, columns =
+  1-min buckets, cell colour = p99 cost. Sourced from
+  `bench_detector_p99` series.
+- **Top-N expensive rules** — bar chart, only when
+  `expose_rule_ids: true`. Sourced from a non-PromQL aggregate
+  computed by `aegis-control` over the in-process samples (no
+  high-cardinality Prometheus labels for rule ids).
+- **Overhead vs RPS** — dual-axis line chart (left = overhead p99
+  in µs, right = requests/sec). Helps spot cost growth as load
+  rises.
+
+Time-range selector and caching follow the parent Analytics page.
 
 ## Caching
 

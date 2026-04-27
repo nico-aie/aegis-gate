@@ -89,6 +89,8 @@ state that does not fit cleanly into the operator or config buckets)
 - [`../audit-logging.md`](../audit-logging.md) — audit chain & sinks
 - [`../rule-engine.md`](../rule-engine.md) — rule schema
 - [`../observability-prometheus-otel.md`](../observability-prometheus-otel.md) — metrics surface
+- [`../benchmark-mode.md`](../benchmark-mode.md) — benchmark mode
+  spec (gates, headers, panels under Tracking + Analytics)
 
 ## Open questions to resolve before M1
 
