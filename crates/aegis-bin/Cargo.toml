@@ -16,3 +16,4 @@ aegis-control = { path = "../aegis-control" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+blake3.workspace = true

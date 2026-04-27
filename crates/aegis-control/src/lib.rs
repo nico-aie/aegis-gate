@@ -14,4 +14,6 @@ pub mod tracing_init;
 
 pub mod admin_auth;
 pub mod compliance;
+pub mod gitops;
 pub mod residency;
+pub mod slo;

@@ -1,37 +1,29 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: M3-T5.1 Compliance profiles + M3-T5.2 Residency / retention / right-to-erasure
-- Crate: aegis-control
+- Task: Cross-crate wiring + documentation
+- Crate: aegis-bin (wiring), project-wide (docs)
 - Files changed:
-  - `src/lib.rs` (re-export `compliance`, `residency`)
-  - `src/compliance/{mod,fips,pci,soc2,gdpr,hipaa}.rs` (new)
-  - `src/residency.rs` (new)
-- Status: DONE — 302 tests green (253 prior + 33 compliance + 16 residency), 0 clippy warnings
-- Date: 2026-04-26
+  - `crates/aegis-bin/src/main.rs` (rewritten — audit verify, admin set-password, admin enroll-totp, validate + compliance)
+  - `crates/aegis-bin/Cargo.toml` (added blake3)
+  - `README.md` (full rewrite — status, architecture, features, security, testing)
+  - `deploy/GUIDE.md` (new — dev/staging/production deployment guide)
+  - `docs/USAGE.md` (new — full operations & usage guide)
+- Status: DONE — all milestones complete, all docs written
+- Date: 2026-04-27
 
 ## Next Task
-- Task: M3-T5.3 GitOps loader
-- Plan: plans/control.md (W5)
-- Notes:
-  - File to create: `crates/aegis-control/src/gitops.rs`
-  - Required behaviour (from `plans/control.md` W5):
-    - Poll or webhook from a configured Git repository.
-    - Verify commit signatures (GPG/SSH) against `allowed_signers`.
-    - Dry-run validate the new config before applying.
-    - Swap atomically via `aegis_core::config::ConfigBroadcast`.
-    - Break-glass: a direct API edit creates a branch + PR automatically; dashboard shows a banner until merged.
-  - Tests: signed commit applied; unsigned commit rejected with audit event; API edit creates branch + PR (mock Git client trait).
-  - Re-enable the module by adding `pub mod gitops;` to `crates/aegis-control/src/lib.rs`.
-- Then: M3-T5.5 SLO / SLI + multi-burn alerts (`src/slo.rs`).
-  - SLIs: data-plane availability, WAF overhead p50/p95/p99, upstream availability, audit delivery rate, cert freshness.
-  - Multi-window multi-burn-rate alerts (1h/2%, 6h/5%, 3d/10%); Alertmanager webhook + Slack/PagerDuty/ServiceNow/Jira.
-  - Re-enable with `pub mod slo;` in `lib.rs`.
-- W5 exit gate: compliance profile suite green; `waf audit verify` passes after GDPR erase (already covered by `residency::erase_subject` tests); SLO fast-burn alert fires and clears.
+- All implementation milestones (M1, M2, M3) are complete.
+- Remaining work is operational:
+  - Production Dockerfile + Helm chart
+  - End-to-end integration tests (k6 load + nuclei security)
+  - CI/CD pipeline (GitHub Actions)
 
 ## Verification
-- `cargo test -p aegis-control` → 302 passed.
-- `cargo clippy -p aegis-control --lib -- -D warnings` → clean.
+- `cargo build -p aegis-bin` → clean.
+- `cargo clippy -p aegis-bin -- -D warnings` → clean.
+- `cargo test -p aegis-control` → 368 passed.
+- `cargo clippy -p aegis-control -- -D warnings` → clean.
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -130,3 +122,10 @@
 | M3-T4.7 Admin mTLS | aegis-control | 2026-04-26 |
 | M3-T5.1 Compliance profiles (FIPS, PCI, SOC2, GDPR, HIPAA) + conflict detection | aegis-control | 2026-04-26 |
 | M3-T5.2 Residency / retention sweep / right-to-erasure | aegis-control | 2026-04-26 |
+| M3-T5.3 GitOps loader (poll, sig verify, dry-run, break-glass) | aegis-control | 2026-04-27 |
+| M3-T5.5 SLO / SLI + multi-burn alerts (5 SLIs, 3 windows, 5 receivers) | aegis-control | 2026-04-27 |
+| M3-DoD Integration tests (login flow, audit verify, SIEM ≥3 sinks, FIPS, SLO) | aegis-control | 2026-04-27 |
+| Cross-crate wiring (audit verify, admin set-password, admin enroll-totp, validate + compliance) | aegis-bin | 2026-04-27 |
+| README.md full rewrite (status, architecture, features, security, CLI) | project-wide | 2026-04-27 |
+| deploy/GUIDE.md deployment guide (dev, staging, production) | project-wide | 2026-04-27 |
+| docs/USAGE.md operations & usage guide | project-wide | 2026-04-27 |

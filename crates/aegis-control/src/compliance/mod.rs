@@ -112,7 +112,7 @@ fn detect_conflicts(profiles: &[ComplianceMode], cfg: &WafConfig) -> Result<()> 
 
 /// Compare two dotted version strings (e.g. `"1.2"` vs `"1.3"`).
 /// Returns true if `actual >= required`.
-pub(crate) fn version_at_least(actual: &str, required: &str) -> bool {
+pub fn version_at_least(actual: &str, required: &str) -> bool {
     let parse = |s: &str| -> Vec<u32> {
         s.split('.').filter_map(|p| p.parse::<u32>().ok()).collect()
     };
