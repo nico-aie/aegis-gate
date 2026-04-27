@@ -32,7 +32,7 @@ Client → [Data Plane] → [Security Pipeline] → Upstream
 
 - **Data Plane** (`aegis-proxy`): TLS termination, routing, upstream pools, load balancing, caching, retries
 - **Security Pipeline** (`aegis-security`): rule engine, OWASP detectors, risk scoring, DLP, API security
-- **Control Plane** (`aegis-control`): admin dashboard, authentication, audit chain, SIEM sinks, compliance, GitOps, SLO alerts
+- **Control Plane** (`aegis-control`): 11-page enterprise SPA dashboard, 27 read-only `/api/*` endpoints, authentication, audit chain, SIEM sinks, compliance, GitOps, SLO alerts
 
 All three are compiled into a single `waf` binary via `aegis-bin`.
 
@@ -164,9 +164,18 @@ listeners:
 ### Access
 
 The admin dashboard is served on the admin listener (default `:9443`).
+The root path redirects to the SPA shell, which then routes
+client-side to `/dashboard/overview`.
 
 ```
-https://localhost:9443/
+https://localhost:9443/                    →  serves the SPA shell
+https://localhost:9443/dashboard/          →  redirects to /dashboard/overview
+https://localhost:9443/dashboard/<page>    →  deep-link to any of 11 pages
+https://localhost:9443/dashboard/sse       →  Server-Sent Events stream
+https://localhost:9443/dashboard/assets/*  →  embedded JS / CSS / icons
+https://localhost:9443/api/*               →  27 read-only JSON endpoints
+https://localhost:9443/healthz/{live,ready,startup}
+https://localhost:9443/metrics             →  Prometheus exposition
 ```
 
 ### Authentication Flow
@@ -192,11 +201,61 @@ waf admin enroll-totp --issuer "Aegis" --account "admin@corp.com"
 
 ### Dashboard Features
 
-- **Overview**: live request rate, error rate, active connections (SSE real-time)
-- **Config viewer**: current running config (read-only)
-- **Health status**: live/ready/startup probes
-- **Audit log**: recent audit events (SSE stream)
-- **Metrics**: embedded Prometheus metrics link
+The dashboard is a multi-page operator console (D-M1..D-M6 — see
+[`docs/dashboard-enterprise/`](dashboard-enterprise/) for the full
+design spec) served as a vanilla-JS SPA on the admin listener.
+
+**Sidebar pages (11)**:
+
+| Section | Page | Purpose |
+|---------|------|---------|
+| Operator | Overview | 4 KPI tiles + 15 m traffic chart + attack-distribution donut + top-attackers table |
+| Operator | Live Feed | SSE-driven row stream + class/action filter chips + row-detail drawer |
+| Operator | Attack Events | Detector breakdown donut, top attackers, threat-intel hits, bot mix |
+| Operator | Analytics | 6 allow-listed PromQL chart cards with 1h / 6h / 24h / 7d / 30d range selector |
+| Operator | Audit Log | Cursor-paginated table, witness lag pill, chain status pill, NDJSON export |
+| Configuration | Rule Manager | Rule list + drawer (mutation gated on M3 audit-mutation pipeline) |
+| Configuration | Tier Config | Four canonical tiers (`critical`/`high`/`medium`/`low`) with pipelines + thresholds |
+| Configuration | Blacklist / Whitelist | IP / CIDR / ASN entry list + bulk import (read-only v1) |
+| Configuration | Settings | Account info, integrations, danger-zone (break-glass status) |
+| Tracking | Tracking | SLO burn, upstreams, cluster peers, certs, GitOps sync, alerts |
+
+**API surface** (27 read-only endpoints, all under `/api/*` —
+detailed shapes in
+[`docs/dashboard-enterprise/api.md`](dashboard-enterprise/api.md)):
+
+```
+/api/about               /api/stats              /api/stats/timeseries
+/api/upstreams           /api/upstreams/summary  /api/attacks/distribution
+/api/attacks/top         /api/attacks/by-detector /api/threat-intel/hits
+/api/bots/mix            /api/audit/since        /api/audit/witness
+/api/filters             /api/analytics/query    /api/rules
+/api/rules/top           /api/tiers              /api/blacklist
+/api/whitelist           /api/admin/sessions     /api/admin/break-glass
+/api/integrations        /api/slo                /api/cluster
+/api/certs               /api/gitops/status      /api/alerts
+/api/tracking/snapshot
+```
+
+**Real-time surfaces**:
+- `/dashboard/sse` — Server-Sent Events stream consumed by Live
+  Feed (with optional `?class=&action=&route=` server-side filter)
+  and the status-bar connection pill (Connected / Reconnecting /
+  Disconnected).
+- Per-page polling cadence aligned with the per-endpoint
+  `Cache-Control: max-age=…` (1 s for stats, 10 s for analytics,
+  etc.). All pages pause polling on `document.visibilityState !==
+  "visible"`.
+
+**Theme + i18n**: Light / dark / system theme toggle persisted in
+`localStorage`; theme bootstrap runs synchronously in `<head>` to
+avoid flash-of-wrong-theme. All UI strings live in
+`/dashboard/assets/i18n/en.json` (no hardcoded English in HTML/JS).
+
+**Read-only in v1**: mutating endpoints (rule save, tier put,
+blacklist/whitelist add, password change, etc.) are gated on the
+M3 audit-mutation pipeline being wired so writes go through CSRF
++ audit chain. The page UI surfaces this with a status banner.
 
 ### Session Management
 
