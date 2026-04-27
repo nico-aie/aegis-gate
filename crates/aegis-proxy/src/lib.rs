@@ -307,6 +307,22 @@ fn admin_router(
                 "private, max-age=10",
             )
         }
+        "/api/audit/witness" => {
+            json_body_response(200, services.witness.render(), "private, max-age=2")
+        }
+        "/api/filters" => {
+            json_body_response(200, services.filters.render(), "private, max-age=30")
+        }
+        "/api/analytics/query" => {
+            let expr = parse_query_str(query, "expr").unwrap_or("");
+            let start = parse_query_u64(query, "start", 0);
+            let end = parse_query_u64(query, "end", 0);
+            let step = parse_query_u32(query, "step", 60);
+            let r = aegis_control::api::analytics::render_query(
+                expr, start, end, step, None,
+            );
+            json_body_response(r.status, r.body, "private, max-age=30")
+        }
 
         // 404 for everything else.
         _ => {
@@ -333,6 +349,19 @@ fn parse_query_u32(query: &str, key: &str, default: u32) -> u32 {
         }
     }
     default
+}
+
+/// Same shape as `parse_query_u32` but returns the raw string slice.
+/// Useful for keys whose values aren't numeric (e.g. `?expr=`).
+fn parse_query_str<'q>(query: &'q str, key: &str) -> Option<&'q str> {
+    for pair in query.split('&') {
+        if let Some(rest) = pair.strip_prefix(key) {
+            if let Some(value) = rest.strip_prefix('=') {
+                return Some(value);
+            }
+        }
+    }
+    None
 }
 
 /// Same shape as `parse_query_u32` but for u64 — used by audit cursor

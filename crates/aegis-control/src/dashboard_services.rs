@@ -19,7 +19,8 @@ use aegis_core::AuditBus;
 
 use crate::api::{
     attacks::{AttacksAggregator, AttacksHandler},
-    audit::{AuditHandler, AuditRing},
+    audit::{AuditHandler, AuditRing, WitnessHandler, WitnessState},
+    filters::{FilterCatalogue, FiltersHandler},
     stats::{StatsAggregator, StatsHandler, UpstreamSummary},
     upstreams::{compute_summary, PoolHealthEntry, PoolHealthSnapshot, UpstreamHandler},
 };
@@ -44,6 +45,10 @@ pub struct DashboardServices {
     pub upstreams: Arc<UpstreamHandler>,
     pub audit_ring: Arc<AuditRing>,
     pub audit: Arc<AuditHandler>,
+    pub witness_state: Arc<WitnessState>,
+    pub witness: Arc<WitnessHandler>,
+    pub filter_catalogue: Arc<FilterCatalogue>,
+    pub filters: Arc<FiltersHandler>,
     pub environment: Option<String>,
 }
 
@@ -60,6 +65,8 @@ impl DashboardServices {
         let stats_agg = Arc::new(StatsAggregator::new());
         let attacks_agg = Arc::new(AttacksAggregator::new());
         let audit_ring = Arc::new(AuditRing::new());
+        let witness_state = Arc::new(WitnessState::new());
+        let filter_catalogue = Arc::new(FilterCatalogue::new());
 
         // Stats handler reduces the full pool snapshot to the
         // embedded `UpstreamSummary` (no per-pool list — that's
@@ -86,6 +93,8 @@ impl DashboardServices {
         let attacks = Arc::new(AttacksHandler::new(Arc::clone(&attacks_agg)));
 
         let audit_handler = Arc::new(AuditHandler::new(Arc::clone(&audit_ring)));
+        let witness_handler = Arc::new(WitnessHandler::new(Arc::clone(&witness_state)));
+        let filters_handler = Arc::new(FiltersHandler::new(Arc::clone(&filter_catalogue)));
 
         // Subscribe SYNCHRONOUSLY before spawning so events emitted
         // between `spawn` returning and the task being scheduled
@@ -95,9 +104,16 @@ impl DashboardServices {
         let stats_clone = Arc::clone(&stats_agg);
         let attacks_clone = Arc::clone(&attacks_agg);
         let audit_clone = Arc::clone(&audit_ring);
+        let filter_clone = Arc::clone(&filter_catalogue);
         let drain = tokio::spawn(async move {
             while let Ok(ev) = rx.recv().await {
-                Self::dispatch_event(&stats_clone, &attacks_clone, &audit_clone, &ev);
+                Self::dispatch_event(
+                    &stats_clone,
+                    &attacks_clone,
+                    &audit_clone,
+                    &filter_clone,
+                    &ev,
+                );
             }
         });
 
@@ -110,6 +126,10 @@ impl DashboardServices {
                 upstreams,
                 audit_ring,
                 audit: audit_handler,
+                witness_state,
+                witness: witness_handler,
+                filter_catalogue,
+                filters: filters_handler,
                 environment,
             },
             drain,
@@ -123,11 +143,13 @@ impl DashboardServices {
         stats: &StatsAggregator,
         attacks: &AttacksAggregator,
         audit: &AuditRing,
+        filters: &FilterCatalogue,
         ev: &AuditEvent,
     ) {
         stats.record(ev);
         attacks.record(ev);
         audit.record(ev.clone());
+        filters.record(ev);
     }
 }
 
@@ -226,6 +248,7 @@ mod tests {
             &services.stats_agg,
             &services.attacks_agg,
             &services.audit_ring,
+            &services.filter_catalogue,
             &det_event("sqli", "8.8.8.8"),
         );
         let dist = services.attacks_agg.distribution(900);
@@ -233,6 +256,10 @@ mod tests {
         assert_eq!(dist.categories[0].name, "sqli");
         // Audit ring also captured the event.
         assert_eq!(services.audit_ring.high_water(), 1);
+        // Filter catalogue saw the actor + class.
+        let cat = services.filter_catalogue.snapshot();
+        assert!(cat.classes.contains(&"detection".to_string()));
+        assert!(cat.actors.contains(&"8.8.8.8".to_string()));
     }
 
     #[tokio::test]

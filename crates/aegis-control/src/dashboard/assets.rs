@@ -913,6 +913,65 @@ mod tests {
         );
     }
 
+    // ---------- D-M3-T3.10: analytics page ------------------------------
+
+    #[test]
+    fn analytics_page_calls_analytics_endpoint() {
+        let js = component_js_path_str("pages/analytics.js");
+        assert!(
+            js.len() > 2000,
+            "analytics.js too small ({} bytes)",
+            js.len()
+        );
+        assert!(js.contains("/api/analytics/query"));
+        // Allow-list keys the page actually polls.
+        for key in [
+            "requests_rate",
+            "block_ratio",
+            "latency_p99",
+            "errors_by_route",
+            "slo_budget_remaining",
+            "cert_days_to_expiry",
+        ] {
+            assert!(
+                js.contains(key),
+                "analytics.js must include allow-list key {key}"
+            );
+        }
+        // Time-range selector + 503 fallback handling are documented
+        // requirements.
+        assert!(js.contains("range"), "analytics.js must offer a range selector");
+        assert!(
+            js.contains("no_history_backend") || js.contains("backend-banner"),
+            "analytics.js must surface the no_history_backend case"
+        );
+    }
+
+    // ---------- D-M3-T3.7: audit page -----------------------------------
+
+    #[test]
+    fn audit_page_has_pills_and_endpoints() {
+        let js = component_js_path_str("pages/audit.js");
+        assert!(js.len() > 2000, "audit.js too small ({} bytes)", js.len());
+        for path in [
+            "/api/audit/since",
+            "/api/audit/witness",
+            "/api/filters",
+        ] {
+            assert!(js.contains(path), "audit.js must poll {path}");
+        }
+        for slot in ["witness-pill", "chain-pill"] {
+            assert!(
+                js.contains(slot),
+                "audit.js must render {slot} status pill"
+            );
+        }
+        assert!(
+            js.contains("application/x-ndjson") || js.contains("ndjson"),
+            "audit.js must export NDJSON"
+        );
+    }
+
     // ---------- D-M3-T3.3: attacks page ---------------------------------
 
     #[test]

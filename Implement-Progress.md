@@ -1,6 +1,134 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
+- Task: **D-M3-T3.10..T3.11 Analytics page + PromQL allow-list proxy** + **D-M3 milestone close-out**
+- Crates: aegis-control (analytics module + page),
+  aegis-proxy (dispatch arm + new query helper)
+- Files changed:
+  - `crates/aegis-control/src/api/analytics.rs` — new module:
+    `ALLOW_LIST` const slice with 13 documented `expr` keys →
+    canonical PromQL (8 base + 5 benchmark-mode rows from
+    `docs/benchmark-mode.md`). `lookup_promql(expr)` for
+    validation. `AnalyticsResponse { expr, promql, result_type,
+    value | points }` matches Prometheus's `/api/v1/query`
+    taxonomy ("scalar" for instantaneous, "matrix" for range)
+    so the front-end stays compatible if we eventually proxy to
+    a real Prometheus. `AnalyticsRendering { status, body }`
+    bundles the HTTP status with the JSON so the proxy can
+    return 200/400/503 directly. `render_query(expr, start,
+    end, step, prometheus_url)` returns:
+      * 400 `unknown_expr` for unknown keys
+      * 503 `no_history_backend` for range queries with no
+        `prometheus_url`
+      * 200 scalar 0.0 for instantaneous (registry stub returns
+        zero until series are wired)
+      * 200 empty matrix when `prometheus_url` is set but the
+        upstream call isn't yet implemented (forward-compat bridge).
+    +8 unit tests including the milestone's "each allow-listed
+    key returns parseable response" + "unknown key returns 400"
+    + step-placeholder preservation + flattened result shape.
+  - `crates/aegis-control/src/api/mod.rs` — `+pub mod analytics;`.
+  - `crates/aegis-control/assets/dashboard/pages/analytics.js`
+    — placeholder → real (~190 lines). 6 chart cards (requests
+    rate, block ratio, latency p99, errors by route, SLO budget,
+    cert days). Time-range selector (1h / 6h / 24h / 7d / 30d).
+    Each card calls `/api/analytics/query`; scalar results render
+    as a big number, matrix results render via the line-chart
+    component (lazy-imported). 503 responses surface as a banner:
+    "No history backend configured — set admin.prometheus_url".
+    Range change tears down existing chart states so the next
+    refresh re-mounts cleanly.
+  - `crates/aegis-proxy/src/lib.rs` — `+/api/analytics/query`
+    dispatch arm. New helper `parse_query_str(query, key)` for
+    non-numeric query parameters. The dispatch arm uses
+    `AnalyticsRendering.status` directly so 400/503 propagate.
+  - `crates/aegis-control/src/dashboard/assets.rs` — +1 asset
+    structure test (`analytics_page_calls_analytics_endpoint`).
+- Tests added: 8 analytics unit + 1 asset structure = 9.
+- Status: DONE — 1,712 workspace tests pass (was 1,703, +9 new).
+- Date: 2026-04-27
+
+### D-M3 milestone exit gate
+
+All 11 tasks landed.
+- [x] Live Feed page (T3.1) — SSE-driven row stream + class/action
+      filter chips + row-detail drawer.
+- [x] `/api/audit/since` (T3.2) — reconnect-replay with cursor +
+      gap detection.
+- [x] Attack Events page (T3.3) + 3 endpoints (T3.4–T3.6) —
+      detector breakdown / threat-intel hits / bot mix.
+- [x] Audit Log page (T3.7) + witness lag (T3.8) + filter
+      catalogue (T3.9).
+- [x] Analytics page (T3.10) + allow-listed PromQL proxy (T3.11).
+- [ ] *(deferred)* Audit chain "tampered" smoke test — needs the
+      existing `/api/audit/verify` endpoint, which is M3
+      audit-chain territory; the wiring works but isn't tested
+      end-to-end yet.
+- [ ] *(deferred)* Range queries against a real Prometheus —
+      `admin.prometheus_url` config field not added yet (mirror
+      the `legacy_shell` pattern when needed). Every range query
+      returns 503 cleanly until then; the page renders the
+      banner.
+
+### Previous (D-M3-T3.7..T3.9) — for context
+- Task: **D-M3-T3.7..T3.9 Audit Log page + witness lag + filter catalogue**
+- Crates: aegis-control (data layers + handlers + page module),
+  aegis-proxy (2 new dispatch arms)
+- Files changed:
+  - `crates/aegis-control/src/api/audit.rs` — `+WitnessState`
+    (in-memory `Arc<Mutex<Option<WitnessRecord>>>`, `update()` /
+    `snapshot()` API; `snapshot()` computes `lag_seconds` against
+    `Utc::now()` at call time so the value never freezes mid-cache).
+    `+WitnessLagResponse { last_signature_ts, lag_seconds,
+    chain_head_hash, node_id, entry_count }` — all `Option<…>` so
+    a fresh boot with no signature yet renders as JSON nulls,
+    distinct from `lag_seconds: 0`. `+WitnessHandler::render()`
+    no-cache (snapshot is O(1) and lag must stay live). +5 unit
+    tests including the milestone's "with a known last-witness
+    time, assert lag math" (asserts ~60s lag for a 60-s-ago
+    record, ±2s tolerance).
+  - `crates/aegis-control/src/api/filters.rs` — new module:
+    `FilterCatalogue { classes, actors, actions, routes }` —
+    each is a `HashMap<String, Instant>` so distinct values
+    take one slot regardless of repeat. `record(&AuditEvent)`
+    inserts the new value; pruning runs every record (drop
+    entries past 24 h) and a hard cap at `MAX_PER_CATEGORY =
+    10 000` drops the oldest if exceeded — bounds memory under
+    high-cardinality attack traffic. `snapshot()` returns
+    alphabetically-sorted lists for UI stability. Actor field
+    sourced from `client_ip` (skipped when empty so system events
+    don't pollute the actor list). +7 unit tests.
+  - `crates/aegis-control/src/api/mod.rs` — `+pub mod filters;`.
+  - `crates/aegis-control/src/dashboard_services.rs` —
+    `+witness_state: Arc<WitnessState>`, `+witness:
+    Arc<WitnessHandler>`, `+filter_catalogue: Arc<FilterCatalogue>`,
+    `+filters: Arc<FiltersHandler>`. Drain task now feeds five
+    sinks (stats + attacks + audit ring + filter catalogue;
+    witness state stays passive until a cluster-runtime task
+    calls `update()`). `dispatch_event` signature extended.
+  - `crates/aegis-proxy/src/lib.rs` — `+/api/audit/witness` arm
+    (`Cache-Control: private, max-age=2`) and `+/api/filters`
+    arm (`Cache-Control: private, max-age=30` — chip dropdowns
+    don't need fresh data every second).
+  - `crates/aegis-control/assets/dashboard/pages/audit.js` —
+    placeholder → real (~285 lines). Header carries chain-status
+    and witness-lag pills (read from `/api/audit/verify` +
+    `/api/audit/witness`); filter strip with class + action chips
+    that filter rows in-page (server-side filter queries are a
+    Live-Feed concern — Audit Log re-uses the same SSE-less
+    `/api/audit/since` cursor stream); paged table backed by the
+    table component, row-click opens drawer with full event JSON;
+    Export NDJSON button generates a downloadable Blob from the
+    visible filtered rows. Polls every 5s for newer events
+    (`?cursor=high_water`), witness lag, chain status, filter
+    summary. Visibility-aware pause.
+  - `crates/aegis-control/src/dashboard/assets.rs` — +1 asset
+    structure test (`audit_page_has_pills_and_endpoints`).
+- Tests added: 5 witness + 7 filters + 1 page = 13.
+- Status: DONE — 1,703 workspace tests pass (was 1,690, +13 new).
+- Date: 2026-04-27
+
+### Previous (D-M3-T3.3..T3.6) — for context
 - Task: **D-M3-T3.3..T3.6 Attack Events page + 3 supporting endpoints**
 - Crates: aegis-control (data layer + handler + page module),
   aegis-proxy (3 new dispatch arms)
@@ -338,8 +466,30 @@ rephrased the comment to omit the example string.
 - Date: 2026-04-27
 
 ## Next Task
-- Track: **Enterprise Dashboard (D)** — D-M3 in flight.
-- **Next task: D-M3-T3.7..T3.9 Audit Log page + supporting endpoints**.
+- Track: **Enterprise Dashboard (D)** — D-M3 closed; D-M4 begins.
+- **Next task: D-M4-T4.1 Rule Manager page**.
+  D-M4 covers configuration management — five pages: Rule
+  Manager, Tier Config, Blacklist, Whitelist, Settings. Each
+  has its own CRUD endpoints (some already exist in M3 audit /
+  config work; the new endpoints add validation, dry-run,
+  per-rule stats). T4.1 is the Rule Manager page itself —
+  rule CRUD + diff editor + dry-run.
+  See [`plans/dashboard-enterprise/milestone-4-config-management.md`](plans/dashboard-enterprise/milestone-4-config-management.md).
+- (was) Next: D-M3-T3.10..T3.11 Analytics page + PromQL proxy
+  - T3.10 — `assets/dashboard/pages/analytics.js`: six chart
+    cards per `pages/analytics.md` with a time-range selector;
+    on change, all cards refetch.
+  - T3.11 — `src/api/analytics.rs`: `/api/analytics/query`
+    accepts `?expr=<allow-list-key>&start=&end=&step=`. The
+    `expr` is **not** raw PromQL — it's a key from the fixed
+    allow-list in `docs/dashboard-enterprise/api.md` §analytics-
+    allowlist. Resolves to PromQL, queries the local Prometheus
+    registry's text encoder for instantaneous queries, returns
+    503 with `{"error":{"code":"no_history_backend"}}` for
+    range queries when no external Prometheus URL is configured.
+  Closes D-M3.
+  See [`plans/dashboard-enterprise/milestone-3-operator-views.md`](plans/dashboard-enterprise/milestone-3-operator-views.md).
+- (was) Next: D-M3-T3.7..T3.9 Audit Log page + supporting endpoints
   Three combined parts:
     - T3.7 — `assets/dashboard/pages/audit.js` page module:
       filter strip (reuses Live Feed chips), paged table
@@ -379,18 +529,18 @@ rephrased the comment to omit the example string.
   into a bounded `VecDeque` keyed by sequence). Test: write 50
   events, fetch since cursor 30, assert 20 returned in order.
   See [`plans/dashboard-enterprise/milestone-3-operator-views.md`](plans/dashboard-enterprise/milestone-3-operator-views.md).
-- D-M3 progress:
+- D-M3 progress (all done):
   - [x] D-M3-T3.1 Live Feed page
   - [x] D-M3-T3.2 Live Feed reconnect / replay
   - [x] D-M3-T3.3 Attack Events page
   - [x] D-M3-T3.4 Detector breakdown endpoint
   - [x] D-M3-T3.5 Threat-intel hits endpoint
   - [x] D-M3-T3.6 Bot mix endpoint
-  - [ ] D-M3-T3.7 Audit Log page
-  - [ ] D-M3-T3.8 Witness lag endpoint
-  - [ ] D-M3-T3.9 Filter catalogue endpoint
-  - [ ] D-M3-T3.10 Analytics page
-  - [ ] D-M3-T3.11 Analytics PromQL proxy
+  - [x] D-M3-T3.7 Audit Log page
+  - [x] D-M3-T3.8 Witness lag endpoint
+  - [x] D-M3-T3.9 Filter catalogue endpoint
+  - [x] D-M3-T3.10 Analytics page
+  - [x] D-M3-T3.11 Analytics PromQL proxy
 - Remaining milestones: D-M4..D-M6 — see plan README.
 
 ### Previous Next Task block (T3.1 → T3.2 transition) — for context
@@ -450,9 +600,9 @@ rephrased the comment to omit the example string.
 
 ## Verification
 - `cargo test -p aegis-core` → 82 passed.
-- `cargo test -p aegis-control` → 571 passed (544 lib + 15 dod + 6 router_smoke + 6 api_smoke).
+- `cargo test -p aegis-control` → 593 passed (566 lib + 15 dod + 6 router_smoke + 6 api_smoke).
 - `cargo test -p aegis-proxy` → 224 passed.
-- `cargo test --workspace` → 1,690 passed (82 core + 544+15+6+6 control + 224 proxy + 780+1+32 security).
+- `cargo test --workspace` → 1,712 passed (82 core + 566+15+6+6 control + 224 proxy + 780+1+32 security).
 - `cargo clippy --workspace -- -D warnings` → clean.
 
 ## Completed Tasks Log
@@ -585,3 +735,6 @@ rephrased the comment to omit the example string.
 | D-M3-T3.1 Live Feed page (SSE EventFilter + drawer + live page module) | aegis-control | 2026-04-27 |
 | D-M3-T3.2 `/api/audit/since` (AuditRing + handler + drain wire-up) | aegis-control, aegis-proxy | 2026-04-27 |
 | D-M3-T3.3..T3.6 Attack Events page + by-detector + threat-intel + bot-mix endpoints | aegis-control, aegis-proxy | 2026-04-27 |
+| D-M3-T3.7..T3.9 Audit Log page + witness lag + filter catalogue | aegis-control, aegis-proxy | 2026-04-27 |
+| D-M3-T3.10..T3.11 Analytics page + PromQL allow-list proxy | aegis-control, aegis-proxy | 2026-04-27 |
+| **D-M3 milestone complete** (4 operator pages + 11 endpoints) | aegis-control, aegis-proxy | 2026-04-27 |

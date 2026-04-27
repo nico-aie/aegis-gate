@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 use aegis_core::audit::AuditEvent;
 use serde::Serialize;
 
+use crate::audit::witness::WitnessRecord;
+
 /// Default ring capacity — sized to cover a few minutes of activity
 /// at 5 000 RPS with detection rate ~0.1 % (i.e. 30 k events / 10 min).
 /// 10 000 is a conservative cap; can be overridden via `with_capacity`.
@@ -219,6 +221,84 @@ fn clamp_limit(limit: u32) -> u32 {
         DEFAULT_LIMIT
     } else {
         limit.min(MAX_LIMIT)
+    }
+}
+
+/// JSON shape returned by `GET /api/audit/witness` (D-M3-T3.8).
+/// `lag_seconds` is `None` when no witness has been recorded yet
+/// (fresh boot), distinct from `0` (just signed).
+#[derive(Clone, Debug, Serialize)]
+pub struct WitnessLagResponse {
+    pub last_signature_ts: Option<chrono::DateTime<chrono::Utc>>,
+    pub lag_seconds: Option<i64>,
+    pub chain_head_hash: Option<String>,
+    pub node_id: Option<String>,
+    pub entry_count: Option<u64>,
+}
+
+/// In-process state holding the last-seen witness record for the
+/// chain. The cluster runtime that periodically signs the chain head
+/// would call `update()`; the dashboard reads via `snapshot()`.
+/// Until the runtime lands, the value stays `None` and the dashboard
+/// pill shows "no witness yet" (which is correct).
+#[derive(Clone, Default)]
+pub struct WitnessState {
+    inner: Arc<Mutex<Option<WitnessRecord>>>,
+}
+
+impl WitnessState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the stored witness with the latest signed record.
+    pub fn update(&self, record: WitnessRecord) {
+        let mut state = self.inner.lock().expect("witness state poisoned");
+        *state = Some(record);
+    }
+
+    /// Read the current state. `lag_seconds` is computed against
+    /// `chrono::Utc::now()` at call time — the value drifts by a
+    /// second between snapshots, which is fine for a UI pill.
+    pub fn snapshot(&self) -> WitnessLagResponse {
+        let state = self.inner.lock().expect("witness state poisoned");
+        match state.as_ref() {
+            Some(rec) => {
+                let lag = (chrono::Utc::now() - rec.ts).num_seconds();
+                WitnessLagResponse {
+                    last_signature_ts: Some(rec.ts),
+                    lag_seconds: Some(lag),
+                    chain_head_hash: Some(rec.chain_head_hash.clone()),
+                    node_id: Some(rec.node_id.clone()),
+                    entry_count: Some(rec.entry_count),
+                }
+            }
+            None => WitnessLagResponse {
+                last_signature_ts: None,
+                lag_seconds: None,
+                chain_head_hash: None,
+                node_id: None,
+                entry_count: None,
+            },
+        }
+    }
+}
+
+/// HTTP wrapper for `/api/audit/witness`. No cache — the snapshot is
+/// already O(1) and lag is recomputed on every read so we don't
+/// freeze stale lag values mid-cache-window.
+pub struct WitnessHandler {
+    state: Arc<WitnessState>,
+}
+
+impl WitnessHandler {
+    pub fn new(state: Arc<WitnessState>) -> Self {
+        Self { state }
+    }
+
+    pub fn render(&self) -> String {
+        serde_json::to_string(&self.state.snapshot())
+            .unwrap_or_else(|_| String::from("{}"))
     }
 }
 
@@ -438,5 +518,88 @@ mod tests {
         let body = h.render_since(0, 0);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["events"].as_array().unwrap().len(), 10);
+    }
+
+    // ---------- D-M3-T3.8: witness state + lag --------------------------
+
+    fn witness_record(ts: chrono::DateTime<chrono::Utc>) -> WitnessRecord {
+        WitnessRecord {
+            ts,
+            chain_head_hash: "deadbeef".into(),
+            signature: "f00ba1".into(),
+            node_id: "node-1".into(),
+            entry_count: 42,
+        }
+    }
+
+    #[test]
+    fn witness_state_default_returns_none_fields() {
+        let s = WitnessState::new();
+        let snap = s.snapshot();
+        assert!(snap.last_signature_ts.is_none());
+        assert!(snap.lag_seconds.is_none());
+        assert!(snap.chain_head_hash.is_none());
+    }
+
+    #[test]
+    fn witness_state_lag_math_matches_documented_time_skew() {
+        // Per the milestone: "with a known last-witness time, assert
+        // lag math." A record signed 60s ago should report lag ≈ 60.
+        let s = WitnessState::new();
+        let signed_at = chrono::Utc::now() - chrono::Duration::seconds(60);
+        s.update(witness_record(signed_at));
+        let snap = s.snapshot();
+        let lag = snap.lag_seconds.expect("lag set after update");
+        // Allow ±2s slack for test scheduling.
+        assert!(
+            (58..=62).contains(&lag),
+            "expected ~60s lag, got {lag}",
+        );
+        assert_eq!(snap.chain_head_hash.as_deref(), Some("deadbeef"));
+        assert_eq!(snap.node_id.as_deref(), Some("node-1"));
+        assert_eq!(snap.entry_count, Some(42));
+    }
+
+    #[test]
+    fn witness_state_negative_lag_for_future_record() {
+        // Defensive: clock skew between writer and reader could give
+        // a future ts. Lag goes negative — don't panic / clamp; let
+        // the UI pill render the raw value.
+        let s = WitnessState::new();
+        let future = chrono::Utc::now() + chrono::Duration::seconds(30);
+        s.update(witness_record(future));
+        let lag = s.snapshot().lag_seconds.unwrap();
+        assert!(lag < 0, "expected negative lag, got {lag}");
+    }
+
+    #[test]
+    fn witness_handler_renders_documented_shape() {
+        let s = Arc::new(WitnessState::new());
+        s.update(witness_record(chrono::Utc::now()));
+        let h = WitnessHandler::new(Arc::clone(&s));
+        let body = h.render();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        for key in [
+            "last_signature_ts",
+            "lag_seconds",
+            "chain_head_hash",
+            "node_id",
+            "entry_count",
+        ] {
+            assert!(
+                v.get(key).is_some(),
+                "/api/audit/witness response missing {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn witness_handler_renders_null_fields_when_empty() {
+        let s = Arc::new(WitnessState::new());
+        let h = WitnessHandler::new(Arc::clone(&s));
+        let v: serde_json::Value =
+            serde_json::from_str(&h.render()).unwrap();
+        assert!(v["last_signature_ts"].is_null());
+        assert!(v["lag_seconds"].is_null());
     }
 }
