@@ -6,6 +6,8 @@ rust-version.workspace = true
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
+aegis-control = { path = "../aegis-control" }
+aegis-security = { path = "../aegis-security" }
 arc-swap.workspace = true
 async-trait.workspace = true
 blake3.workspace = true

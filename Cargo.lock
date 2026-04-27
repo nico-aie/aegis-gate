@@ -62,6 +62,7 @@ dependencies = [
 name = "aegis-proxy"
 version = "0.1.0"
 dependencies = [
+ "aegis-control",
  "aegis-core",
  "aegis-security",
  "arc-swap",

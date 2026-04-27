@@ -18,17 +18,17 @@ ETCD_ENDPOINTS="${ETCD_ENDPOINTS:-http://localhost:2379}"
 KEY="${AEGIS_CONFIG_KEY:-/aegis/config/waf}"
 SEED_FILE="${SEED_FILE:-$(dirname "$0")/seed.yaml}"
 
-etcdctl() {
+_etcdctl() {
   if command -v etcdctl >/dev/null 2>&1; then
-    command etcdctl --endpoints="$ETCD_ENDPOINTS" "$@"
+    etcdctl --endpoints="$ETCD_ENDPOINTS" "$@"
   else
-    docker exec aegis-etcd etcdctl "$@"
+    docker exec aegis-etcd etcdctl --endpoints="$ETCD_ENDPOINTS" "$@"
   fi
 }
 
 case "${1:-}" in
   --show)
-    etcdctl get "$KEY" --print-value-only
+    _etcdctl get "$KEY" --print-value-only
     exit 0
     ;;
   --force)
@@ -48,11 +48,11 @@ if [[ ! -f "$SEED_FILE" ]]; then
   exit 1
 fi
 
-EXISTING=$(etcdctl get "$KEY" --print-value-only || true)
+EXISTING=$(_etcdctl get "$KEY" --print-value-only || true)
 if [[ -n "$EXISTING" && "$FORCE" != "1" ]]; then
   echo "key $KEY already set (use --force to overwrite)"
   exit 0
 fi
 
-etcdctl put "$KEY" -- "$(cat "$SEED_FILE")"
+_etcdctl put "$KEY" -- "$(cat "$SEED_FILE")"
 echo "seeded $KEY from $SEED_FILE"

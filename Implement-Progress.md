@@ -1,29 +1,34 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: Cross-crate wiring + documentation
-- Crate: aegis-bin (wiring), project-wide (docs)
+- Task: Cross-crate wiring (data-plane detectors + admin dashboard + CLI + docs)
+- Crates: aegis-proxy, aegis-bin, project-wide docs
 - Files changed:
-  - `crates/aegis-bin/src/main.rs` (rewritten — audit verify, admin set-password, admin enroll-totp, validate + compliance)
-  - `crates/aegis-bin/Cargo.toml` (added blake3)
-  - `README.md` (full rewrite — status, architecture, features, security, testing)
-  - `deploy/GUIDE.md` (new — dev/staging/production deployment guide)
-  - `docs/USAGE.md` (new — full operations & usage guide)
-- Status: DONE — all milestones complete, all docs written
+  - `crates/aegis-proxy/src/lib.rs` — wired security detectors into data-plane accept loop (blocks on detection, emits audit events); added admin listener with dashboard, SSE stub, health probes, metrics, config API
+  - `crates/aegis-proxy/Cargo.toml` — added aegis-control + aegis-security as deps
+  - `crates/aegis-bin/src/main.rs` — rewritten: audit verify, admin set-password, admin enroll-totp, validate + compliance
+  - `crates/aegis-bin/Cargo.toml` — added blake3
+  - `deploy/etcd/bootstrap.sh` — fixed self-shadowing etcdctl function
+  - `README.md` — full rewrite (status, architecture, features, CLI, testing)
+  - `deploy/GUIDE.md` — new: dev/staging/production deployment guide
+  - `docs/USAGE.md` — new: full operations & usage guide (11 sections)
+  - `config/README.md` — new: config guide explaining all 12 sections of waf.yaml
+- Status: DONE — 1,477 tests pass, build clean
 - Date: 2026-04-27
 
 ## Next Task
 - All implementation milestones (M1, M2, M3) are complete.
-- Remaining work is operational:
-  - Production Dockerfile + Helm chart
-  - End-to-end integration tests (k6 load + nuclei security)
-  - CI/CD pipeline (GitHub Actions)
+- Remaining work:
+  - [ ] Full upstream proxying (currently stub "OK" for clean requests — needs real TCP connect + proxy to upstream members)
+  - [ ] Full SSE streaming on /dashboard/sse (currently returns one event then closes — needs streaming body with AuditBus subscription)
+  - [ ] Production Dockerfile + Helm chart
+  - [ ] End-to-end integration tests (k6 load + nuclei security)
+  - [ ] CI/CD pipeline (GitHub Actions)
 
 ## Verification
-- `cargo build -p aegis-bin` → clean.
-- `cargo clippy -p aegis-bin -- -D warnings` → clean.
-- `cargo test -p aegis-control` → 368 passed.
-- `cargo clippy -p aegis-control -- -D warnings` → clean.
+- `cargo build --workspace --release` → clean.
+- `cargo test --workspace` → 1,477 passed (78 core + 353+15 control + 218 proxy + 780+1+32 security).
+- `cargo clippy --workspace -- -D warnings` → clean.
 
 ## Completed Tasks Log
 | Task | Crate | Date |
@@ -129,3 +134,7 @@
 | README.md full rewrite (status, architecture, features, security, CLI) | project-wide | 2026-04-27 |
 | deploy/GUIDE.md deployment guide (dev, staging, production) | project-wide | 2026-04-27 |
 | docs/USAGE.md operations & usage guide | project-wide | 2026-04-27 |
+| Data-plane detector wiring (7 OWASP detectors run on every request, block+audit on detection) | aegis-proxy | 2026-04-27 |
+| Admin listener wiring (dashboard, SSE stub, health, metrics, config API on :9443) | aegis-proxy | 2026-04-27 |
+| deploy/etcd/bootstrap.sh fix (self-shadowing function) | deploy | 2026-04-27 |
+| config/README.md configuration guide (12 sections) | project-wide | 2026-04-27 |
