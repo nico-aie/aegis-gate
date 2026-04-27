@@ -1,8 +1,14 @@
 pub mod about;
+pub mod admin;
 pub mod analytics;
 pub mod attacks;
 pub mod audit;
+pub mod blacklist;
 pub mod config;
 pub mod filters;
+pub mod rules;
 pub mod stats;
+pub mod tiers;
+pub mod tracking;
 pub mod upstreams;
+pub mod whitelist;

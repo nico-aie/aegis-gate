@@ -18,7 +18,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Default response cache TTL. The Tracking page polls
 /// `/api/tracking/snapshot` at 5 s but pages can override; 2 s
@@ -29,7 +29,7 @@ const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(2);
 /// Snapshot of one upstream pool. Cheap value type so the `aegis-proxy`
 /// side can build it from `Pool::members.iter().map(|m| m.is_healthy())`
 /// without exposing its internal types upward.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PoolHealthEntry {
     pub name: String,
     pub healthy: u32,
@@ -38,7 +38,7 @@ pub struct PoolHealthEntry {
 
 /// Input to [`compute_summary`]. A list of `PoolHealthEntry`. The
 /// proxy re-builds this on every read from the cluster state.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PoolHealthSnapshot {
     pub pools: Vec<PoolHealthEntry>,
 }
@@ -149,6 +149,14 @@ impl UpstreamHandler {
         let mut cache = self.cache.lock().expect("upstreams cache poisoned");
         *cache = Some((now, response));
         body
+    }
+
+    /// Typed snapshot for callers that need the response directly
+    /// (e.g., `tracking::TrackingHandler::render_snapshot` composes
+    /// the upstream summary into the aggregate without round-tripping
+    /// through JSON).
+    pub fn snapshot(&self) -> UpstreamSummaryResponse {
+        compute_summary(&(self.provider)())
     }
 }
 

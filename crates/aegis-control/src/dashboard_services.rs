@@ -18,10 +18,15 @@ use aegis_core::audit::AuditEvent;
 use aegis_core::AuditBus;
 
 use crate::api::{
+    admin::{BreakGlass, SessionStore},
     attacks::{AttacksAggregator, AttacksHandler},
     audit::{AuditHandler, AuditRing, WitnessHandler, WitnessState},
+    blacklist::AccessListStore,
     filters::{FilterCatalogue, FiltersHandler},
+    rules::{RuleStats, RuleStore},
     stats::{StatsAggregator, StatsHandler, UpstreamSummary},
+    tiers::TierStore,
+    tracking::TrackingHandler,
     upstreams::{compute_summary, PoolHealthEntry, PoolHealthSnapshot, UpstreamHandler},
 };
 
@@ -49,6 +54,14 @@ pub struct DashboardServices {
     pub witness: Arc<WitnessHandler>,
     pub filter_catalogue: Arc<FilterCatalogue>,
     pub filters: Arc<FiltersHandler>,
+    pub rules: Arc<RuleStore>,
+    pub rule_stats: Arc<RuleStats>,
+    pub tiers: Arc<TierStore>,
+    pub blacklist: Arc<AccessListStore>,
+    pub whitelist: Arc<AccessListStore>,
+    pub sessions: Arc<SessionStore>,
+    pub break_glass: Arc<BreakGlass>,
+    pub tracking: Arc<TrackingHandler>,
     pub environment: Option<String>,
 }
 
@@ -67,6 +80,13 @@ impl DashboardServices {
         let audit_ring = Arc::new(AuditRing::new());
         let witness_state = Arc::new(WitnessState::new());
         let filter_catalogue = Arc::new(FilterCatalogue::new());
+        let rules = Arc::new(RuleStore::new());
+        let rule_stats = Arc::new(RuleStats::new());
+        let tiers = Arc::new(TierStore::new());
+        let blacklist = Arc::new(AccessListStore::new());
+        let whitelist = Arc::new(AccessListStore::new());
+        let sessions = Arc::new(SessionStore::new());
+        let break_glass = Arc::new(BreakGlass::new());
 
         // Stats handler reduces the full pool snapshot to the
         // embedded `UpstreamSummary` (no per-pool list — that's
@@ -89,6 +109,7 @@ impl DashboardServices {
         let upstreams = Arc::new(UpstreamHandler::new(move || {
             upstreams_pool_provider()
         }));
+        let tracking = Arc::new(TrackingHandler::new(Arc::clone(&upstreams)));
 
         let attacks = Arc::new(AttacksHandler::new(Arc::clone(&attacks_agg)));
 
@@ -105,6 +126,7 @@ impl DashboardServices {
         let attacks_clone = Arc::clone(&attacks_agg);
         let audit_clone = Arc::clone(&audit_ring);
         let filter_clone = Arc::clone(&filter_catalogue);
+        let rule_stats_clone = Arc::clone(&rule_stats);
         let drain = tokio::spawn(async move {
             while let Ok(ev) = rx.recv().await {
                 Self::dispatch_event(
@@ -112,6 +134,7 @@ impl DashboardServices {
                     &attacks_clone,
                     &audit_clone,
                     &filter_clone,
+                    &rule_stats_clone,
                     &ev,
                 );
             }
@@ -130,6 +153,14 @@ impl DashboardServices {
                 witness: witness_handler,
                 filter_catalogue,
                 filters: filters_handler,
+                rules,
+                rule_stats,
+                tiers,
+                blacklist,
+                whitelist,
+                sessions,
+                break_glass,
+                tracking,
                 environment,
             },
             drain,
@@ -144,12 +175,14 @@ impl DashboardServices {
         attacks: &AttacksAggregator,
         audit: &AuditRing,
         filters: &FilterCatalogue,
+        rule_stats: &RuleStats,
         ev: &AuditEvent,
     ) {
         stats.record(ev);
         attacks.record(ev);
         audit.record(ev.clone());
         filters.record(ev);
+        rule_stats.record(ev);
     }
 }
 
@@ -249,6 +282,7 @@ mod tests {
             &services.attacks_agg,
             &services.audit_ring,
             &services.filter_catalogue,
+            &services.rule_stats,
             &det_event("sqli", "8.8.8.8"),
         );
         let dist = services.attacks_agg.distribution(900);

@@ -43,16 +43,16 @@ pub fn spa_shell() -> EmbeddedAsset {
     lookup("index.html").expect("index.html must be in the embedded asset table")
 }
 
-/// Choose the dashboard shell based on the
-/// `admin.dashboard.legacy_shell` config flag (D-M1-T1.6). When the
-/// flag is `true` the v1 single-file dashboard is served instead of
-/// the enterprise SPA shell. Default (`false`) returns the SPA.
-pub fn shell_for(use_legacy: bool) -> EmbeddedAsset {
-    if use_legacy {
-        super::legacy::legacy_shell()
-    } else {
-        spa_shell()
-    }
+/// Return the dashboard shell. Kept as a function (rather than
+/// inlining `spa_shell()` everywhere) so future shell-variant work
+/// has a single hook to extend.
+///
+/// `_use_legacy` is preserved as a no-op argument for one release
+/// to avoid churning every caller; it is ignored. The legacy shell
+/// and `admin.dashboard.legacy_shell` config flag were removed
+/// in D-M6-T6.9.
+pub fn shell_for(_use_legacy: bool) -> EmbeddedAsset {
+    spa_shell()
 }
 
 /// Resolve a request path to a [`DashboardResponse`].
@@ -188,22 +188,21 @@ mod tests {
     }
 
     #[test]
-    fn shell_for_true_returns_legacy_v1() {
-        // D-M1-T1.6: legacy flag on -> v1 single-file dashboard.
+    fn shell_for_true_now_returns_spa_after_legacy_removal() {
+        // D-M6-T6.9 removed the legacy shell. `shell_for(true)` is
+        // a no-op for back-compat — it still returns the SPA.
         let shell = shell_for(true);
         let html = std::str::from_utf8(shell.bytes).unwrap();
-        assert!(html.contains("EventSource"));
-        // Sentinel that's only in V1, not the SPA shell.
-        assert!(!html.contains(r#"id="aegis-app""#));
+        assert!(html.contains(r#"id="aegis-app""#));
     }
 
     #[test]
-    fn shell_for_branches_carry_distinct_etags() {
-        // The two shells should never collide; if they did, browsers
-        // would 304 across the toggle and stick on the wrong shell.
+    fn shell_for_branches_now_match() {
+        // After D-M6-T6.9 there is one canonical shell — both
+        // branches return identical bytes / ETag.
         let a = shell_for(true);
         let b = shell_for(false);
-        assert_ne!(a.etag, b.etag);
+        assert_eq!(a.etag, b.etag);
     }
 
     // ---------- app.js structural tests (D-M1-T1.3 router) ----------

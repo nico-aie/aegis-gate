@@ -1,11 +1,8 @@
 pub mod assets;
 pub mod dispatch;
-pub mod legacy;
 pub mod security;
 pub mod sse;
 pub mod overview;
-
-pub use legacy::DASHBOARD_HTML_V1;
 
 /// Check if a session is authenticated (stub for now).
 pub fn is_authenticated(_session_cookie: Option<&str>) -> bool {
@@ -27,8 +24,8 @@ fn urlencoded(s: &str) -> String {
 mod tests {
     use super::*;
 
-    // The DASHBOARD_HTML / DASHBOARD_HTML_V1 invariants live alongside
-    // the constant in `legacy.rs` after the D-M1-T1.6 carve-out.
+    // The legacy DASHBOARD_HTML constant + module were removed in
+    // D-M6-T6.9. The new SPA shell is the only dashboard surface.
 
     #[test]
     fn login_redirect_includes_next() {

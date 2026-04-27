@@ -1,5 +1,15 @@
 # Dashboard
 
+> **Status.** The dashboard now ships as the multi-page enterprise
+> SPA documented in [`dashboard-enterprise/`](./dashboard-enterprise/)
+> — see that subdirectory for the design spec, page-by-page behaviour,
+> API surface, and accessibility / security notes. The contract
+> below (control-plane listener, single-tenant auth, deferred RBAC /
+> multi-tenancy) is unchanged. The legacy single-file shell was
+> removed in D-M6-T6.9; operators previously running with the
+> `admin.dashboard.legacy_shell: true` flag should drop the field
+> from `waf.yaml`.
+
 > **v1 scope.** The dashboard is served by the **control-plane listener**
 > (separate from data-plane traffic). Authentication is local
 > (argon2id password + HMAC session + CSRF + IP allowlist, optional

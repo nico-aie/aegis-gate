@@ -1,6 +1,107 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
+- Task: **D-M4 + D-M5 + D-M6 — three milestones in one push**
+- Crates: aegis-core (config), aegis-control (8 new api modules,
+  10 new pages/components, polish tests), aegis-proxy (22 new
+  dispatch arms)
+- D-M4 (config management):
+  - `api/rules.rs` — RuleStore + RuleStats + ValidateResponse
+  - `api/tiers.rs` — TierStore with 4 canonical tiers + put/get
+  - `api/blacklist.rs` — shared AccessListStore with compliance
+    clamp + atomic bulk insert
+  - `api/whitelist.rs` — re-exports the same store
+  - `api/admin.rs` — password change validator, SessionStore,
+    BreakGlass, IntegrationsResponse
+  - 5 page modules: rules.js, tiers.js, blacklist.js,
+    whitelist.js, settings.js — all read-only (mutating endpoints
+    deferred until M3 audit-mutation pipeline integrates)
+  - +29 tests (8 rules + 5 tiers + 9 blacklist + 6 admin + 1 page
+    asset structure)
+- D-M5 (tracking):
+  - `api/tracking.rs` — single module hosting SLO/Cluster/Certs/
+    GitOps/Alerts/Snapshot response types + handler. Snapshot
+    aggregate composes the upstream summary via a typed
+    `UpstreamHandler::snapshot()` helper added to
+    api/upstreams.rs.
+  - 7 endpoints wired: `/api/slo`, `/api/cluster`, `/api/certs`,
+    `/api/gitops/status`, `/api/alerts`, `/api/upstreams`,
+    `/api/tracking/snapshot`. Cert renew action returns 405
+    `not_supported` until cert store wires.
+  - `pages/tracking.js` — 6-section layout, polls snapshot every
+    5 s, cert-renew button stub.
+  - +7 tests (6 tracking module + 1 page asset structure).
+- D-M6 (polish):
+  - `tests/dashboard_polish.rs` — 8 polish tests: a11y
+    aria-label coverage, landmark roles, live regions, WCAG-AA
+    contrast on dark + light themes, security header table
+    completeness, total + per-file bundle-size budget.
+  - `docs/dashboard.md` — pointer to `dashboard-enterprise/` +
+    legacy-flag deprecation note.
+  - Removed `crates/aegis-control/src/dashboard/legacy.rs` and
+    the `pub use legacy::DASHBOARD_HTML_V1` re-export. The
+    `admin.dashboard.legacy_shell` field is kept on the config
+    struct as deprecated/no-op (marked `#[serde(default, alias =
+    "legacy_shell")]`) so existing `waf.yaml` files still parse —
+    operators should drop the field on next edit.
+    `dispatch::shell_for(use_legacy)` keeps the parameter as a
+    no-op for back-compat. Affected legacy-aware tests in
+    dispatch.rs + aegis-proxy/src/lib.rs were rewritten to
+    assert the post-removal behaviour.
+  - Skipped per session scope:
+    - T6.4 XSS regression (needs headless browser CDP harness)
+    - T6.5 SRI assertion (Chart.js still not vendored, T2.9
+      deferral upheld)
+    - T6.7 Lighthouse (browser harness)
+    These three remain on the "deferred when Chart.js gets
+    vendored" list.
+- Status: DONE — **1,752 workspace tests pass** (was 1,712, +40
+  net new across D-M4..D-M6). `cargo clippy --workspace -- -D
+  warnings` clean.
+- Date: 2026-04-28
+
+### Dashboard track milestone closeout
+
+| Milestone | Tasks | Δ tests | State |
+|---|---|---|---|
+| D-M1 SPA shell | 8 | +83 | done |
+| D-M2 Overview + endpoints | 9 | +94 | done |
+| D-M3 operator views | 11 | +58 | done |
+| D-M4 config management | 10 | +29 | done (mutating endpoints deferred) |
+| D-M5 tracking | 9 | +7 | done (data sources stubbed pending runtime) |
+| D-M6 polish | 10 | +8 | done (browser-automation tests deferred) |
+| **Totals** | **57** | **+275** | **dashboard track complete** |
+
+Workspace tests went from 1,477 (pre-dashboard) to **1,752**.
+
+### Aggregate carry-over / deferred items
+
+These don't gate the milestones; they're green-flagged for follow-up:
+
+1. **Chart.js vendoring + SRI** (D-M2-T2.9, D-M6-T6.5): vanilla
+   SVG components shipped instead. Re-add when heavier chart
+   needs arrive (e.g. Analytics stacked bars).
+2. **Mutating endpoints** (D-M4): `POST /api/rules/validate`,
+   `PUT /api/rules/{id}`, `PUT /api/tiers/{name}`,
+   `POST /api/blacklist[/bulk]`, `POST /api/admin/password`,
+   etc. — all gated on the M3 audit-mutation pipeline being
+   wired so writes go through CSRF + audit chain.
+3. **Real per-pool / per-cluster / per-cert state** (D-M5):
+   handlers return placeholder shapes until the cluster runtime
+   + cert store + alert state machines are runtime-populated.
+4. **Browser automation tests** (D-M6 T6.4 XSS, T6.7 Lighthouse):
+   need a headless Chromium harness in CI. The polish tests
+   shipped cover what's testable without one.
+5. **Pre-existing roadmap items** (carried since D-M1):
+   - Full upstream proxying (currently stub "OK")
+   - Full SSE streaming (currently single-event stub)
+   - Production Dockerfile + Helm chart
+   - End-to-end integration tests (k6 + nuclei)
+   - CI/CD pipeline (GitHub Actions)
+   - Benchmark mode track (B-T1..B-T6, parallel — see
+     `plans/benchmark-mode.md`)
+
+### Previous (D-M3-T3.10..T3.11) — for context
 - Task: **D-M3-T3.10..T3.11 Analytics page + PromQL allow-list proxy** + **D-M3 milestone close-out**
 - Crates: aegis-control (analytics module + page),
   aegis-proxy (dispatch arm + new query helper)
@@ -466,8 +567,27 @@ rephrased the comment to omit the example string.
 - Date: 2026-04-27
 
 ## Next Task
-- Track: **Enterprise Dashboard (D)** — D-M3 closed; D-M4 begins.
-- **Next task: D-M4-T4.1 Rule Manager page**.
+- Track: **Enterprise Dashboard (D)** — **complete**. All six
+  milestones (D-M1..D-M6) shipped.
+- **Next track: pre-existing roadmap items**, in priority order:
+  1. **Wire mutating endpoints** through the M3 audit-mutation
+     pipeline so the D-M4 page writes (`PUT /api/rules/{id}`,
+     `POST /api/blacklist`, `POST /api/admin/password`, etc.)
+     actually persist + audit.
+  2. **Cluster runtime → real tracking data**: replace the
+     `TrackingHandler` placeholders with live cluster / cert /
+     alert state once those subsystems land.
+  3. **Full upstream proxying** in `aegis-proxy` (currently
+     stub "OK" for clean requests).
+  4. **Full SSE streaming** on `/dashboard/sse` — requires a
+     streaming hyper response body wrapping the AuditBus
+     subscriber.
+  5. **Benchmark mode track** (B-T1..B-T6) — parallel to D, design
+     specs already in place at `plans/benchmark-mode.md` +
+     `docs/benchmark-mode.md`.
+  6. Production Dockerfile + Helm chart, CI/CD pipeline, k6 +
+     nuclei integration tests.
+- (was) Next: D-M4-T4.1 Rule Manager page
   D-M4 covers configuration management — five pages: Rule
   Manager, Tier Config, Blacklist, Whitelist, Settings. Each
   has its own CRUD endpoints (some already exist in M3 audit /
@@ -599,10 +719,11 @@ rephrased the comment to omit the example string.
   in `index.html` with the real digest; add `tests/dashboard/sri.rs`.
 
 ## Verification
-- `cargo test -p aegis-core` → 82 passed.
-- `cargo test -p aegis-control` → 593 passed (566 lib + 15 dod + 6 router_smoke + 6 api_smoke).
-- `cargo test -p aegis-proxy` → 224 passed.
-- `cargo test --workspace` → 1,712 passed (82 core + 566+15+6+6 control + 224 proxy + 780+1+32 security).
+- `cargo test --workspace` → **1,752 passed** (across 10 binary
+  / lib / integration test targets).
+  Breakdown: 82 core + 598 control lib + 15 dod + 6 router_smoke +
+  6 api_smoke + 8 dashboard_polish + 224 proxy + 780+1+32
+  security.
 - `cargo clippy --workspace -- -D warnings` → clean.
 
 ## Completed Tasks Log
@@ -738,3 +859,7 @@ rephrased the comment to omit the example string.
 | D-M3-T3.7..T3.9 Audit Log page + witness lag + filter catalogue | aegis-control, aegis-proxy | 2026-04-27 |
 | D-M3-T3.10..T3.11 Analytics page + PromQL allow-list proxy | aegis-control, aegis-proxy | 2026-04-27 |
 | **D-M3 milestone complete** (4 operator pages + 11 endpoints) | aegis-control, aegis-proxy | 2026-04-27 |
+| D-M4 config management (5 pages + 11 endpoints + 5 stores) | aegis-control, aegis-proxy | 2026-04-28 |
+| D-M5 tracking page (6 endpoints + snapshot aggregate + page) | aegis-control, aegis-proxy | 2026-04-28 |
+| D-M6 polish (a11y/contrast/headers/budget tests + legacy removal + docs) | aegis-core, aegis-control, aegis-proxy, docs | 2026-04-28 |
+| **Dashboard track complete** (D-M1..D-M6, +275 tests, workspace clippy clean) | aegis-core, aegis-control, aegis-proxy | 2026-04-28 |

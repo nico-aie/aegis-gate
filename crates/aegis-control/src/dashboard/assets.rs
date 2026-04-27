@@ -913,6 +913,47 @@ mod tests {
         );
     }
 
+    // ---------- D-M5 tracking page --------------------------------------
+
+    #[test]
+    fn tracking_page_polls_snapshot() {
+        let js = component_js_path_str("pages/tracking.js");
+        assert!(js.len() > 1500, "tracking.js too small ({} bytes)", js.len());
+        assert!(js.contains("/api/tracking/snapshot"));
+        for slot in [
+            "slo-rows",
+            "alerts-summary",
+            "upstream-summary",
+            "cluster-summary",
+            "certs-summary",
+            "gitops-summary",
+        ] {
+            assert!(js.contains(slot), "tracking.js missing slot {slot}");
+        }
+        assert!(js.contains("renew-cert"), "tracking.js must have a cert renew control");
+    }
+
+    // ---------- D-M4 pages ----------------------------------------------
+
+    #[test]
+    fn dm4_pages_call_their_endpoints() {
+        for (page, endpoint) in [
+            ("pages/rules.js",      "/api/rules"),
+            ("pages/tiers.js",      "/api/tiers"),
+            ("pages/blacklist.js",  "/api/blacklist"),
+            ("pages/whitelist.js",  "/api/whitelist"),
+            ("pages/settings.js",   "/api/admin/sessions"),
+        ] {
+            let js = component_js_path_str(page);
+            assert!(
+                js.len() > 600,
+                "{page} too small to be real ({} bytes)",
+                js.len()
+            );
+            assert!(js.contains(endpoint), "{page} must call {endpoint}");
+        }
+    }
+
     // ---------- D-M3-T3.10: analytics page ------------------------------
 
     #[test]

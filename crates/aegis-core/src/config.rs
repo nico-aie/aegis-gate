@@ -822,14 +822,16 @@ impl Default for AdminConfig {
 
 /// Dashboard-shell configuration (D-M1-T1.6).
 ///
-/// The default lands the new enterprise SPA. Operators can opt in to
-/// the legacy single-file shell for one release while the SPA bakes
-/// — see `docs/dashboard-enterprise/README.md`.
+/// Dashboard-level admin config. The legacy-shell flag was removed
+/// in D-M6-T6.9; the struct is retained so existing `dashboard:`
+/// blocks in `waf.yaml` still parse cleanly (back-compat). The
+/// `legacy_shell` field is now `#[serde(default)]` and unused —
+/// operators previously running with `legacy_shell: true` should
+/// drop the field on their next config edit.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct DashboardConfig {
-    /// Serve the v1 single-file shell (`DASHBOARD_HTML_V1`) instead
-    /// of the new enterprise SPA. Default: `false` (SPA).
-    #[serde(default)]
+    /// Deprecated as of D-M6-T6.9. Ignored.
+    #[serde(default, alias = "legacy_shell")]
     pub legacy_shell: bool,
 }
 

@@ -324,6 +324,62 @@ fn admin_router(
             json_body_response(r.status, r.body, "private, max-age=30")
         }
 
+        // D-M4 read endpoints. Mutating endpoints (POST / PUT /
+        // DELETE) are deferred until the M3 audit-mutation
+        // pipeline is integrated; the in-process stores still
+        // round-trip through these reads for the dashboard pages
+        // to render the empty initial state.
+        "/api/rules" => {
+            let body = serde_json::json!({"rules": services.rules.list()});
+            json_body_response(200, body.to_string(), "private, max-age=2")
+        }
+        "/api/rules/top" => {
+            let window = parse_query_u32(query, "window", 3600);
+            let limit = parse_query_u32(query, "limit", 10);
+            let body = serde_json::to_string(&services.rule_stats.top(window, limit))
+                .unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "private, max-age=10")
+        }
+        "/api/tiers" => {
+            let body = serde_json::json!({"tiers": services.tiers.list()});
+            json_body_response(200, body.to_string(), "private, max-age=5")
+        }
+        "/api/blacklist" => {
+            let body = serde_json::json!({"entries": services.blacklist.list()});
+            json_body_response(200, body.to_string(), "private, max-age=2")
+        }
+        "/api/whitelist" => {
+            let body = serde_json::json!({"entries": services.whitelist.list()});
+            json_body_response(200, body.to_string(), "private, max-age=2")
+        }
+        "/api/admin/sessions" => {
+            let body = serde_json::json!({"sessions": services.sessions.list()});
+            json_body_response(200, body.to_string(), "private, no-store")
+        }
+        "/api/admin/break-glass" => {
+            let body = serde_json::to_string(&services.break_glass.snapshot())
+                .unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "private, no-store")
+        }
+        "/api/integrations" => {
+            let resp = aegis_control::api::admin::IntegrationsResponse::from_config(cfg);
+            let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "private, max-age=30")
+        }
+
+        // D-M5: tracking
+        "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
+        "/api/cluster" => json_body_response(200, services.tracking.render_cluster(), "private, max-age=2"),
+        "/api/certs" => json_body_response(200, services.tracking.render_certs(), "private, max-age=10"),
+        "/api/gitops/status" => json_body_response(200, services.tracking.render_gitops(), "private, max-age=5"),
+        "/api/alerts" => json_body_response(200, services.tracking.render_alerts(), "private, max-age=2"),
+        "/api/upstreams" => json_body_response(200, services.upstreams.render(), "private, max-age=2"),
+        "/api/tracking/snapshot" => json_body_response(
+            200,
+            services.tracking.render_snapshot(),
+            "private, max-age=2",
+        ),
+
         // 404 for everything else.
         _ => {
             json_response(404, &serde_json::json!({"error": "not found", "path": path}))
@@ -704,18 +760,15 @@ state:
     }
 
     #[tokio::test]
-    async fn dashboard_shell_response_legacy_serves_v1() {
-        // legacy flag on -> v1 single-file dashboard.
+    async fn dashboard_shell_response_legacy_now_returns_spa() {
+        // D-M6-T6.9 removed the legacy shell. The legacy flag is a
+        // no-op for back-compat — every shell response is now the SPA.
         let resp = dashboard_shell_response(true);
         assert_eq!(resp.status(), 200);
         let body = body_string(resp).await;
         assert!(
-            body.contains("EventSource"),
-            "legacy shell must contain V1 EventSource bootstrap"
-        );
-        assert!(
-            !body.contains(r#"id="aegis-app""#),
-            "legacy shell must not carry the SPA mount point"
+            body.contains(r#"id="aegis-app""#),
+            "legacy flag must now return the SPA shell"
         );
     }
 

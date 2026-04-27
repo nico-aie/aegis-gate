@@ -1,5 +1,11 @@
-// D-M1 page placeholder. Real implementation lands in milestones D-M2..D-M5.
-export default {
-  mount(el) { el.innerHTML = "<p>Coming soon — blacklist</p>"; },
-  destroy() {},
-};
+// Blacklist page (D-M4-T4.6). Read-only list of denied IPs/CIDRs/ASNs.
+let mountEl=null,abortControllers=[],tableMod=null,tableState=null,drawerMod=null,drawer=null,pollTimer=null;
+const ENDPOINT="/api/blacklist";
+const TITLE="Blacklist";
+async function fetchJson(url){const c=new AbortController();abortControllers.push(c);try{const r=await fetch(url,{cache:"no-store",signal:c.signal});if(!r.ok)return null;return await r.json();}catch(e){if(e.name!=="AbortError")console.error("fetch failed",url,e);return null;}}
+async function refresh(){const d=await fetchJson(ENDPOINT);if(!d||!mountEl)return;const slot=mountEl.querySelector('[data-slot="entries"]');if(!tableMod){tableMod=(await import("/dashboard/assets/components/table.js")).default;}
+const rows=(d.entries||[]).map(e=>({id:e.id,kind:e.kind,value:e.value,note:e.note||"—",expires:(e.expires_at||"never").replace("T"," ").replace("Z",""),raw:e}));
+const props={ariaLabel:TITLE,emptyMessage:"No entries.",columns:[{key:"id",label:"ID"},{key:"kind",label:"Kind"},{key:"value",label:"Value"},{key:"note",label:"Note",sortable:false},{key:"expires",label:"Expires"}],rows,sortBy:{key:"id",dir:"asc"}};
+if(!tableState){tableState=tableMod.mount(slot,props);slot.addEventListener("aegis:row-click",async ev=>{if(!drawerMod){drawerMod=(await import("/dashboard/assets/components/drawer.js")).default;}if(drawer)drawer.close();drawer=drawerMod.open({title:`Entry ${ev.detail.id}`,body:ev.detail.raw,onClose:()=>{drawer=null;}});});}else{tableMod.update(tableState,props);}}
+function renderShell(){mountEl.replaceChildren();const w=document.createElement("div");w.className="aegis-blacklist";w.innerHTML=`<header class="aegis-overview-header"><h1 tabindex="-1">${TITLE}</h1></header><p class="aegis-banner" role="status">Read-only until M3 audit-mutation pipeline lands.</p><section class="aegis-card"><div class="aegis-card-body" data-slot="entries">Loading…</div></section>`;mountEl.appendChild(w);}
+export default{mount(el){mountEl=el;renderShell();refresh();pollTimer=setInterval(()=>{if(document.visibilityState==="visible")refresh();},10000);},destroy(){if(pollTimer)clearInterval(pollTimer);pollTimer=null;for(const c of abortControllers)c.abort();abortControllers=[];if(drawer){drawer.close();drawer=null;}if(tableMod&&tableState){tableMod.destroy(tableState);tableState=null;}mountEl=null;}};
