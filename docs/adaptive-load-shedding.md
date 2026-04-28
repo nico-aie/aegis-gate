@@ -97,12 +97,48 @@ load_shedding:
     concurrency_hard: 1000
 ```
 
+## P7 — `LoadMode` discrete-state companion
+
+Adaptive shedding makes per-request *concurrency* decisions; P7
+adds a coarser, longer-lived *operational mode* signal. Both
+mechanisms run alongside each other.
+
+```yaml
+load_mode:
+  elevated_rps:    2000      # auto Normal → Elevated boundary
+  critical_rps:    8000      # auto Elevated → Critical boundary
+  sample_interval: 1s        # >= 100ms
+  hysteresis:      0.10      # 10 %; stops borderline oscillation
+```
+
+State transitions are computed by `next_mode(prev, rps, cfg)` —
+a pure function with hysteresis floors at
+`elevated_rps × (1 - hysteresis)` and
+`critical_rps × (1 - hysteresis)`. A workload at exactly the
+elevated boundary doesn't oscillate every second.
+
+The hot path bumps the request counter once per request (one
+`Relaxed` `fetch_add`) and reads the live mode via
+`LoadGauge::current()` (one `ArcSwap` load).
+
+| Mode | Behaviour change |
+|---|---|
+| Normal | Full audit detail, full SSE broadcast capacity |
+| Elevated | (reserved — P7 surface; future degradations land here) |
+| Critical | Audit `fields` payload drops to `null`; chain writes shrink ~50 % at 5 000 RPS |
+
+`PUT /api/loadmode { "override": "critical"|"unset" }` lets an
+operator pin a mode through the `AuditedMutate` pipeline.
+
 ## Implementation
 
 - `src/shed/gradient2.rs` — adaptive limit
 - `src/shed/priority.rs` — tier + tenant priority queue
 - `src/shed/cpu_backstop.rs` — cgroups / /proc reader
 - `src/shed/mod.rs` — orchestrator + metrics
+- `aegis-core::load_mode` — **P7** `LoadMode` enum +
+  `LoadGauge` (Arc<ArcSwap<…>>) + `next_mode` pure transition
+- `aegis-control::api::load_mode` — `/api/loadmode` HTTP surface
 
 ## Performance notes
 

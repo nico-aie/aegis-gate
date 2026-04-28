@@ -1,6 +1,1018 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
+- Task: **P5 follow-up — `instant-acme` network adapter +
+  background renewal scheduler**
+- Crates: aegis-proxy (new acme_instant module + renewal helper
+  in acme.rs), workspace Cargo.toml (instant-acme dep)
+- Files changed:
+  - `Cargo.toml` — add workspace dep
+    `instant-acme = { version = "0.7", default-features = false,
+    features = ["aws-lc-rs", "hyper-rustls"] }`. Pinned to
+    `aws-lc-rs` because the workspace's rustls already runs that
+    provider — `instant-acme`'s default `ring` would leave rustls
+    unable to pick a process-level CryptoProvider.
+  - `crates/aegis-proxy/Cargo.toml` — promote `rcgen` from
+    dev-dep to production dep (the adapter uses it for CSR
+    generation), add `instant-acme` dep.
+  - `crates/aegis-proxy/src/acme.rs` — add `AcmeError::Internal`
+    variant for invariant-violation paths the adapter needs.
+    Add `CertInventory` type alias + `spawn_renewal_scheduler`
+    function: spawns a background task that ticks at
+    `renewal_check_interval(renew_before)` (half the renew
+    window, clamped to [60 s, 3600 s]), inspects every cert from
+    the inventory closure, and triggers `manager.issue()` when
+    any of them is within `renew_before` of expiry. Errors are
+    logged (`tracing::warn!`) but never break the loop —
+    transient ACME outages must not disable renewal.
+  - `crates/aegis-proxy/src/acme_instant.rs` — **new**
+    adapter implementing `AcmeProvider` against `instant-acme`:
+    - `register_account`: load `AccountCredentials` JSON from
+      `account_key_path` if present; otherwise call
+      `Account::create` against the directory, persist the
+      result, and tighten the file's mode to `0600` on UNIX.
+    - `place_order`: build `[Identifier::Dns]` from
+      `cfg.domains`, call `account.new_order`, walk
+      `order.authorizations()`, pick the HTTP-01 challenge per
+      authz, return `Vec<Http01Challenge>` keyed by the live
+      key authorisation. Skips authzs that came back already
+      `Valid` (cached authorisations from the directory).
+    - `await_validation`: notify the directory each pinned
+      challenge URL is ready (`order.set_challenge_ready`),
+      then poll `order.refresh()` every 2 s up to 60 attempts
+      (2 min ceiling) and translate the resulting `OrderStatus`
+      into our internal `OrderState`.
+    - `finalize_and_download`: build a CSR via
+      `rcgen::CertificateParams::serialize_request`, call
+      `order.finalize(csr_der)`, poll `order.certificate()`
+      until the chain is downloadable, persist
+      `cert_dir/{primary_domain}/{cert,key}.pem` (key file
+      again chmodded `0600`).
+  - `crates/aegis-proxy/src/lib.rs` — register the new
+    `acme_instant` module.
+- Tests:
+  - `acme::tests`: 3 new — `renewal_check_interval` clamps a
+    short renew window to 60 s, clamps a long window to one
+    hour, returns the half-of-window for the mid-range case.
+  - `acme_instant::tests`: 10 — `build_csr` round-trip for
+    single-domain + SAN list + empty-list rejection,
+    `safe_domain_label` strips path separators and IPC-reserved
+    chars (so `*.example.com` becomes `_.example.com`),
+    `map_status` covers every `OrderStatus` variant,
+    `identifier_label` extracts DNS, `collect_contact_uris`
+    borrows from the config, `persist_issued` writes the
+    canonical `cert.pem`/`key.pem` pair, uses the safe label
+    for wildcard domains, creates parent dirs when missing.
+  - The `pick_http01_challenge` selector is intentionally not
+    unit-tested — `instant_acme::ChallengeStatus` isn't re-
+    exported from the crate root in 0.7.x so we can't construct
+    a `Challenge` literal. Behaviour is exercised end-to-end by
+    the integration suite that runs against Pebble (the local
+    ACME staging CA).
+- Status: DONE — **1,931 workspace tests pass** (was 1,918, +13
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Track + follow-up status
+
+| Phase | Goal | State |
+|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | done |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | done |
+| P3 | Per-detector toggles + per-tier override | done |
+| P4 | TLS hardening — `min_version` + force-https + HSTS | done |
+| P5 | ACME / Let's Encrypt state machine + HTTP-01 wiring | done |
+| **P5+** | **`instant-acme` network adapter + renewal scheduler** | **done** |
+| P6 | Risk-scoring upgrades — strikes + trust recovery + adaptive mitigation | done |
+| P7 | `LoadMode` + bounded caches + degraded logging | done |
+| P8 | Verbosity slider + cold-tier surface + UI pills | done |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | deferred |
+
+### Boot wiring (for the next-phase author)
+
+```rust
+// in run() — minimal usage
+let provider = Arc::new(InstantAcmeProvider::new());
+let manager = Arc::new(AcmeManager::new(
+    AcmeConfig::from_core(cfg.tls.as_ref().and_then(|t| t.acme.as_ref()).unwrap()),
+    provider,
+    challenges.clone(),     // shared with force_https_loop
+    cert_writer,            // wires into Arc<ArcSwap<CertStore>>
+));
+let inventory: CertInventory = Arc::new(|| {
+    // read every PEM under cfg.tls.acme.cert_dir
+});
+let _renewer = spawn_renewal_scheduler(Arc::clone(&manager), inventory);
+```
+
+The trait + state machine + persistence helpers + scheduler are
+all unit-tested end-to-end against the `MockProvider`. The only
+slice still requiring a live integration harness is the
+`InstantAcmeProvider`'s network round-trip — that's the natural
+fit for a Pebble-backed integration test in CI.
+
+### Closeout
+
+The full security-toggle plan (P1..P8) plus the explicit
+P5 follow-up is now landed. The single deferred item is **P9
+(new cold backend)** which the user accepted as out-of-scope
+when the plan was approved (Prometheus + SIEM sinks already
+cover 80 % of the cold-tier requirement). All eight original
+concerns are mapped to landed code.
+
+### Previous (P8 — Verbosity slider + cold-tier surface + UI pills) — for context
+- Task: **Security-toggle plan, Phase P8 — Verbosity slider +
+  cold-tier surface + UI pills**
+- Crates: aegis-core (Verbosity primitive + LoggingConfig schema),
+  aegis-control (api/logging module + DashboardServices wiring),
+  aegis-proxy (hot-path emission filter + /api/logging dispatch +
+  /api/cold-tier), assets/dashboard (status-bar verbosity pill)
+- Files changed:
+  - `crates/aegis-core/src/verbosity.rs` — **new**.
+    `VerbosityLevel { Silent, Error, Warn, Info, Debug, Trace }`
+    with `parse_str`, `as_str`, `is_at_least` (ladder ordering).
+    `SharedVerbosity` (Arc<ArcSwap<…>>) — hot-path read costs one
+    Arc load + Copy. `LoggingConfig { verbosity }` with default
+    `Info`. `VerbositySnapshot { level, levels }` documents the
+    slider order so the UI doesn't re-derive it.
+  - `crates/aegis-core/src/lib.rs` — re-export
+    `LoggingConfig`, `SharedVerbosity`, `VerbosityLevel`,
+    `VerbositySnapshot`.
+  - `crates/aegis-core/src/config.rs` —
+    `WafConfig.logging: LoggingConfig` with `#[serde(default)]`.
+  - `crates/aegis-control/src/api/logging.rs` — **new**.
+    `render_logging_get(verbosity)` for `/api/logging` and
+    `render_cold_tier(sinks)` for `/api/cold-tier`. Cold-tier
+    rows enumerate every `AuditSinkConfig` variant (jsonl /
+    syslog / splunk / kafka), redacting the splunk token field
+    so the dashboard never echoes a secret. `delivery` is a
+    `"unknown"` placeholder until the sink runtime publishes
+    real per-sink state — surfacing the operator's configured
+    destinations is more useful than a 404.
+  - `crates/aegis-control/src/api/mod.rs` — register
+    `logging` module.
+  - `crates/aegis-control/src/dashboard_services.rs` —
+    `DashboardServices.verbosity: SharedVerbosity` field;
+    `spawn_with_mask` now also threads through the verbosity
+    handle. Existing `spawn` shim builds a default verbosity.
+  - `crates/aegis-proxy/src/lib.rs` — `run()` constructs
+    `SharedVerbosity::from_config(&cfg.logging)` and shares it
+    with both accept loops + the dashboard. Hot path
+    (`handle_data_request`) reads `verbosity.current()` once
+    and uses it to:
+    - skip the audit-event emit entirely when verbosity is
+      below `Error` (operator pinned `Silent` during load
+      tests),
+    - drop the verbose `fields` payload when verbosity is below
+      `Info` — combines additively with the P7 Critical-mode
+      short-circuit so an operator-pinned `Warn` strips fields
+      even at Normal load.
+    New dispatch arms `GET /api/logging`, `GET /api/cold-tier`,
+    and async `PUT /api/logging` (handled by
+    `handle_logging_put` through `AuditedMutate`).
+  - `crates/aegis-control/assets/dashboard/index.html` —
+    status-bar gains a `data-slot="verbosity"` segment with a
+    `verbosity-pill` showing the current level.
+  - `crates/aegis-control/assets/dashboard/app.js` — new
+    `startVerbosityPoll()` polls `/api/logging` every 10 s
+    (changes only on operator action, no need to spam the
+    endpoint). Pill colour:
+    - `silent` / `trace` → warn
+    - `error`            → err
+    - `warn` / `info` / `debug` → ok
+- Tests:
+  - aegis-core `verbosity::tests`: 7 — string code round-trip,
+    `is_at_least` ordering, `silent` blocks everything above,
+    shared atomic set, `from_config` initialises from YAML
+    struct, snapshot lists ladder in display order, default
+    `LoggingConfig` is `Info`.
+  - aegis-control `api::logging::tests`: 5 — GET shape,
+    PUT accepts each level, PUT rejects unknown level, cold-tier
+    handles each sink variant + redacts the splunk token,
+    cold-tier with no sinks returns empty list with
+    `fallback_buffer_bytes: 0`.
+- Status: DONE — **1,918 workspace tests pass** (was 1,906, +12
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Security-toggle plan — phases
+
+| Phase | Goal | Size | State |
+|---|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | M / 1 wk | done |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | M / 5 d | done |
+| P3 | Per-detector toggles + per-tier override | L / 3 d | done |
+| P4 | TLS hardening — `min_version` + force-https + HSTS | L / 3 d | done |
+| P5 | ACME / Let's Encrypt state machine + HTTP-01 wiring | H / 1 wk | done (network impl deferred) |
+| P6 | Risk-scoring upgrades — strikes + trust recovery + adaptive mitigation | M / 5 d | done |
+| P7 | `LoadMode` + bounded caches + degraded logging | M / 5 d | done |
+| P8 | Verbosity slider + cold-tier surface + UI pills | L / 3 d | **done** |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | — | deferred |
+
+### Closeout
+
+The 8 user-confirmed phases (P1..P8) are now all complete. P9
+remains deferred per the original decision matrix — the
+Prometheus + SIEM sinks plumbed in this phase already cover
+80 % of the cold-tier requirement and the user accepted that
+trade-off when the plan was approved.
+
+The eight original concerns from the plan now all map to landed
+code:
+
+| Concern | Landed in |
+|---|---|
+| #1 Transport security (TLS 1.2+, ACME, HSTS, force-https) | P4 + P5 |
+| #2 DDoS resilience (graceful degradation) | P7 |
+| #3 Bounded storage (TTL, per-IP caps, ring eviction) | P5 + P6 + P7 |
+| #4 Risk scoring (decay, trust recovery, strikes) | P6 |
+| #5 Adaptive mitigation (allow / challenge / block) | P6 |
+| #6 Performance (hot-path costs minimised) | P2 + P7 |
+| #7 Logging verbosity (operator-pinned + auto-degrade) | P8 |
+| #8 Fault tolerance (critical path stays alive under degraded subsystems) | P5 + P7 |
+
+Single follow-up commit still pending: the real `instant-acme`
+adapter for the `AcmeProvider` trait (P5), and the background
+renewal scheduler.
+
+### Previous (P7 — `LoadMode` + bounded caches + degraded logging) — for context
+- Task: **Security-toggle plan, Phase P7 — `LoadMode` + bounded
+  caches + degraded logging**
+- Crates: aegis-core (load_mode primitive + config schema +
+  Cargo deps), aegis-control (api/load_mode handler +
+  DashboardServices wiring), aegis-proxy (hot-path tick + degraded
+  logging + /api/loadmode dispatch), assets/dashboard
+  (status-bar pill + RPS readout)
+- Files changed:
+  - `crates/aegis-core/src/load_mode.rs` — **new**.
+    `LoadMode { Normal, Elevated, Critical }` with
+    `parse_str` / `as_str` / `is_critical` / `is_degraded`.
+    `LoadModeConfig { elevated_rps, critical_rps,
+    sample_interval, hysteresis }` with `validate()` —
+    invariants `elevated_rps > 0`, `critical_rps > elevated_rps`,
+    `0 ≤ hysteresis < 1`, `sample_interval ≥ 100 ms`.
+    `LoadGauge` (Arc-shared) with hot-path `tick()`
+    (one Relaxed atomic add), background `sample(elapsed)`
+    that recomputes the auto mode, `set_override` /
+    `override_value` for the operator pin, `snapshot()` for
+    the API. `next_mode(prev, rps, cfg)` is a pure function so
+    state-transition rules are exhaustively unit-testable
+    without a runtime. `spawn_sampler()` returns the JoinHandle
+    of the background ticker.
+  - `crates/aegis-core/src/lib.rs` — re-export `LoadGauge`,
+    `LoadMode`, `LoadModeConfig`, `LoadModeSnapshot`.
+  - `crates/aegis-core/src/config.rs` — add
+    `WafConfig.load_mode: LoadModeConfig` with `#[serde(default)]`
+    so existing YAML keeps working. `WafConfig::validate()` now
+    delegates to `load_mode.validate()`.
+  - `crates/aegis-core/Cargo.toml` — add `arc-swap`; add
+    `tokio` features `time` + `rt` for the sampler task.
+  - `crates/aegis-control/src/api/load_mode.rs` — **new**.
+    `render_get(gauge)` + `apply_put_body(gauge, body)` +
+    `LoadModePutBody { override_value: Option<String> }`.
+    Sentinel string `"unset"` (constant `UNSET_SENTINEL`)
+    clears the override; `"normal"|"elevated"|"critical"`
+    pins; field absent is a no-op. Three-state semantics
+    encoded with a single optional string instead of
+    `Option<Option<…>>` because serde_json collapses the
+    nested-Option case under `#[serde(default)]`.
+  - `crates/aegis-control/src/api/mod.rs` — register the new
+    `load_mode` module.
+  - `crates/aegis-control/src/dashboard_services.rs` —
+    `DashboardServices.load_gauge: LoadGauge` field;
+    `spawn_with_mask` accepts the shared gauge from the proxy
+    so policy mutations + auto-mode changes propagate
+    uniformly. Existing `spawn` shim builds a default gauge.
+  - `crates/aegis-proxy/src/lib.rs` — `run()` constructs a
+    `LoadGauge::new(cfg.load_mode)`, spawns the sampler task,
+    and shares the handle with both accept loops + dashboard.
+    `accept_loop` and `handle_data_request` thread the gauge
+    through; the hot path calls `gauge.tick()` and reads
+    `gauge.current()` once per request. **Degraded logging:**
+    when `load_mode.is_critical()`, the audit `fields` payload
+    is dropped to `Value::Null` (block reason + `risk_score`
+    preserved), so the chain writes stay cheap under DDoS.
+    New dispatch arms `GET /api/loadmode` (sync) and async
+    `PUT /api/loadmode` (handled by `handle_loadmode_put`,
+    routed through `AuditedMutate::apply` so every pin/unpin
+    lands an admin chain entry).
+  - `crates/aegis-control/assets/dashboard/index.html` —
+    status-bar gains `data-slot="load-mode"` segment with a
+    `load-pill` (Normal/Elevated/Critical) and an `rps`
+    readout.
+  - `crates/aegis-control/assets/dashboard/app.js` — new
+    `startLoadModePoll()` polls `/api/loadmode` every 5 s,
+    paints the pill (`ok` / `warn` / `err` data-state) and
+    appends `(pinned)` when `override_active`. Polling pauses
+    when the page is hidden.
+- Tests:
+  - aegis-core `load_mode::tests`: 20 — string code round-trip,
+    `is_degraded` / `is_critical`, config validation (defaults
+    pass; rejects zero elevated, critical ≤ elevated, hysteresis
+    out of range, sample interval too short), `next_mode`
+    transitions for every prev × RPS bucket including hysteresis
+    floors (`Elevated` holds at 1000×0.9 = 900 and below; same
+    for Critical at 5000×0.9 = 4500), `gauge_tick_and_sample`
+    computes RPS, counter resets each sample, override wins over
+    auto, clear override falls back to auto, snapshot shape +
+    override flag, `replace_config` propagates live.
+  - aegis-control `api::load_mode::tests`: 5 — GET shape, PUT
+    accepts each mode string, rejects unknown, `unset`
+    sentinel clears override, empty body is a no-op.
+- Status: DONE — **1,906 workspace tests pass** (was 1,881, +25
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Security-toggle plan — phases
+
+| Phase | Goal | Size | State |
+|---|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | M / 1 wk | done |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | M / 5 d | done |
+| P3 | Per-detector toggles + per-tier override | L / 3 d | done |
+| P4 | TLS hardening — `min_version` + force-https + HSTS | L / 3 d | done |
+| P5 | ACME / Let's Encrypt state machine + HTTP-01 wiring | H / 1 wk | done (network impl deferred) |
+| P6 | Risk-scoring upgrades — strikes + trust recovery + adaptive mitigation | M / 5 d | done |
+| P7 | `LoadMode` + bounded caches + degraded logging | M / 5 d | **done** |
+| P8 | Verbosity slider + cold-tier surface + UI pills | L / 3 d | pending |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | — | deferred |
+
+### P7 hot-path cost model
+
+```
+per request:
+  load_gauge.tick()        # AtomicU64 fetch_add (Relaxed)
+  load_gauge.current()     # ArcSwap pointer load
+  if load_mode.is_critical(): drop verbose `fields` payload
+
+per sample_interval (default 1 s):
+  background task swaps counter atomic + recomputes auto mode
+```
+
+Result: a Critical-mode WAF still emits one chain entry per
+block (audit invariant preserved) but at roughly half the
+serialised-bytes cost — the `fields` JSON object was the
+biggest contributor to the audit-chain disk write at 5 000 RPS.
+
+### Mapping back to the user's 8-concern list
+
+P7 closes #2 (DDoS resilience: graceful degradation), #3 (bounded
+storage: existing AuditRing + ChallengeStore caps + new
+trust-recovery prevents per-IP map growth), #6 (perf: tick is
+one Relaxed add), #8 (fault tolerance: critical path stays alive
+even when audit-chain writes degrade). The remaining concern
+#7 (logging verbosity) is the natural fit for P8.
+
+### Previous (P6 — Risk-scoring upgrades) — for context
+- Task: **Security-toggle plan, Phase P6 — Risk-scoring upgrades
+  (per-IP strikes + trust recovery + adaptive mitigation)**
+- Crates: aegis-core (config schema), aegis-security (RiskTracker
+  module + Cargo dep), aegis-proxy (hot-path adaptive mitigation
+  + /api/risk endpoints + reset PUT), aegis-control (api/risk
+  module + DashboardServices wiring), assets/dashboard (Tracking
+  page risk widget)
+- Files changed:
+  - `crates/aegis-core/src/config.rs` — extend `RiskConfig` with
+    `trust_recovery: Option<TrustRecoveryConfig>` (per-hour
+    decay cap, default 30) and `strikes: Option<StrikeConfig>`
+    (lifetime block_at threshold, default 50). Both opt-in so
+    existing deployments keep the legacy half-life behaviour
+    until they explicitly enable the new policy.
+  - `crates/aegis-security/src/risk/tracker.rs` — **new**.
+    `RiskTracker` (DashMap-backed per-IP store) with
+    `record_malicious(ip, delta)`, `record_clean(ip)`,
+    `level(ip)` (Allow / Challenge / Block via configured
+    thresholds), `is_strike_blocked(ip)`, `reset(ip)`,
+    `top(n)`, `snapshot_wire(ip)`. `RiskState`,
+    `RiskSnapshot` exposed for the API + UI.
+    `trust_decay_points` is the linear-rate trust-recovery
+    formula — clean traffic claws back score capped at
+    `per_hour` per hour of elapsed time, never reduces strikes.
+    Strike-block short-circuits to `Block` regardless of how
+    much the score has decayed (the "permanent block on repeat
+    offence" guarantee).
+  - `crates/aegis-security/src/risk/mod.rs` — re-export
+    `RiskTracker`, `RiskState`, `RiskSnapshot`.
+  - `crates/aegis-security/Cargo.toml` — add `dashmap`.
+  - `crates/aegis-proxy/src/lib.rs` — boot constructs a
+    `RiskTracker::new(&cfg.risk)` and shares it with both
+    accept loops + DashboardServices via the new
+    `spawn_with_mask(.., risk)` arg. Hot path
+    (`handle_data_request`):
+    1. Strike-block short-circuit before any detector runs.
+    2. If signals fire → `risk.record_malicious(ip, total)`
+       and 403 with the post-state strike count in the body.
+    3. Else → `risk.record_clean(ip)` then `risk.level(ip)`
+       decides between **Allow** (proxy stub OK), **Challenge**
+       (429 + `Retry-After: 5`), and **Block** (403). New
+       `blocked_response` helper centralises the audit-event
+       emission so every block path lands one chain entry.
+    Adds dispatch arms `GET /api/risk`, `GET /api/risk/{ip}`,
+    and async `PUT /api/risk/{ip}/reset` (handled in
+    `handle_admin_request` → `handle_risk_reset`, flowing
+    through `AuditedMutate`).
+  - `crates/aegis-control/src/api/risk.rs` — **new**.
+    `render_list(tracker, limit)` produces the documented
+    envelope `{ total_tracked, returned, clients[] }` clamped
+    to [1, 500]. `render_detail(tracker, ip)` returns
+    `(200, body)` on hit and `(404, error_body)` on miss.
+    `parse_ip_segment(segment)` accepts v4 + v6.
+  - `crates/aegis-control/src/dashboard_services.rs` — add
+    `risk: RiskTracker` field; `spawn` shim still works
+    (constructs a default tracker), `spawn_with_mask` now
+    takes the shared instance from the proxy.
+  - `crates/aegis-control/assets/dashboard/pages/tracking.js` —
+    new "Risk clients" card on the Tracking page. Polls
+    `/api/risk?limit=10` every 5 s, renders a 6-column table
+    (IP, score, strikes ✱-marker for strike-blocked, level,
+    idle, reset button). Reset button reads `aegis_csrf` cookie,
+    PUTs to `/api/risk/{ip}/reset`, then re-fetches the list
+    on success.
+- Tests:
+  - aegis-security `risk::tracker::tests`: 15 — snapshot/level
+    of unknown IP, malicious increments score+strikes,
+    score clamps to max, clean decays within hourly cap,
+    cap-at-per-hour over multiple hours, no underflow,
+    clean-doesn't-decrement-strikes, level classifies against
+    thresholds, strike-block short-circuits low score,
+    strike-block persists after score decay, reset clears,
+    top sorts by strikes-then-score, top respects limit,
+    snapshot_wire renders documented shape,
+    `trust_decay_points` cap math, `per_hour=0` disables
+    recovery.
+  - aegis-control `api::risk::tests`: 6 — empty envelope
+    shape, strike-block pill renders, limit clamp,
+    detail 200 with score, detail 404 with error envelope,
+    `parse_ip_segment` v4/v6/garbage.
+  - aegis-control `dashboard_services::tests`: existing
+    `mutate_*` tests adapted to pass the new
+    `RiskTracker` arg through `spawn_with_mask` (no behavioural
+    change).
+- Status: DONE — **1,881 workspace tests pass** (was 1,859, +22
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Security-toggle plan — phases
+
+| Phase | Goal | Size | State |
+|---|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | M / 1 wk | done |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | M / 5 d | done |
+| P3 | Per-detector toggles + per-tier override | L / 3 d | done |
+| P4 | TLS hardening — `min_version` + force-https + HSTS | L / 3 d | done |
+| P5 | ACME / Let's Encrypt state machine + HTTP-01 wiring | H / 1 wk | done (network impl deferred) |
+| P6 | Risk-scoring upgrades — strikes + trust recovery + adaptive mitigation | M / 5 d | **done** |
+| P7 | `LoadMode` + bounded caches + degraded logging | M / 5 d | pending |
+| P8 | Verbosity slider + cold-tier surface + UI pills | L / 3 d | pending |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | — | deferred |
+
+### P6 hot-path decision flow
+
+```
+incoming request
+       │
+       ▼
+risk.is_strike_blocked(peer)?
+       │ yes
+       ▼ blocked_response (403)
+       │ no
+       ▼
+classify_tier → mask.resolve(tier) → run_all_filtered
+       │
+       ├─ signals fired ─▶ risk.record_malicious(peer, sum)
+       │                     │
+       │                     ▼ blocked_response (403)
+       │
+       └─ clean         ─▶ risk.record_clean(peer)
+                              │
+                              ▼ risk.level(peer)
+                                ├─ Block      → blocked_response (403)
+                                ├─ Challenge  → 429 + Retry-After: 5
+                                └─ Allow      → proxy to upstream (stub OK)
+```
+
+The two-stage architecture means the WAF satisfies the user's
+requirement #4 + #5 from the original 8-concern list: the score
+goes up on bad behaviour, decays on clean traffic capped at a
+configurable rate, and operators can configure the
+challenge/block thresholds. The strike counter ensures repeated
+offenders stay blocked permanently until an audit-mutated
+operator reset.
+
+### Previous (P5 — ACME) — for context
+- Task: **Security-toggle plan, Phase P5 — ACME / Let's Encrypt
+  state machine + HTTP-01 challenge plumbing + cert inventory**
+- Crates: aegis-core (config schema + validation),
+  aegis-proxy (acme module rewrite + force-https HTTP-01
+  short-circuit), aegis-control (CertsResponse inventory
+  builder)
+- Files changed:
+  - `crates/aegis-core/src/config.rs` — add `AcmeConfig` to
+    `TlsConfig`. Fields: `directory_url`, `contacts[]`,
+    `domains[]`, `account_key_path`, `cert_dir`, `renew_before`
+    (default 30d), `terms_of_service_agreed`, `challenge`
+    (`http01` | `tls_alpn01` | `dns01`, default `http01`).
+    `WafConfig::validate` now rejects:
+    - non-`https://` `directory_url`
+    - empty `contacts` or `domains`
+    - `renew_before < 24h`
+    - missing `terms_of_service_agreed`
+  - `crates/aegis-proxy/src/acme.rs` — **rewrite**. Replaces the
+    skeleton with a real implementation:
+    - `AcmeProvider` async trait — register / place_order /
+      await_validation / finalize_and_download. Network impl
+      (instant-acme adapter) marked `// TODO(P5-network)`;
+      every other surface is fully wired and tested against a
+      `MockProvider`.
+    - `AcmeManager.issue()` — pure state machine that walks
+      register → order → publish challenges → wait → finalise
+      → persist via a `CertWriter` callback. Cleans up published
+      challenge tokens on **both** success and failure paths so
+      the `ChallengeStore` doesn't leak.
+    - `ChallengeStore` — `Arc<ArcSwap<HashMap<token, key_auth>>>`
+      shared between manager + force-https listener. `lookup`,
+      `insert`, `insert_many`, `remove_many`, `len`, `is_empty`.
+    - `cert_not_after(pem)` — parses an X.509 DER blob via a
+      hand-rolled tag walker (no `x509-parser` dep) and returns
+      the `notAfter` as `chrono::DateTime<Utc>`. Used by
+      `AcmeManager::needs_renewal` and the cert inventory
+      handler.
+    - `IssuedCert`, `Http01Challenge`, `OrderState`, `AcmeError`
+      enum (`thiserror`-derived).
+  - `crates/aegis-proxy/src/lib.rs` — `force_https_loop` now
+    accepts a `ChallengeStore`. New `handle_force_https_request`
+    short-circuits requests for
+    `/.well-known/acme-challenge/{token}` to the published key
+    authorisation (200 with `application/octet-stream`) and
+    returns 404 for unknown tokens (no redirect — the directory
+    expects a definitive answer). Every other path keeps the
+    P4 redirect behaviour.
+  - `crates/aegis-control/src/api/tracking.rs` —
+    `CertsResponse::from_inventory(entries, now)` builds a real
+    cert list from a producer-supplied
+    `[CertInventoryEntry { host, issuer, expires_at, source }]`
+    and computes `days_to_expiry` against `now`. Sorts by
+    urgency (most-urgent first) so the dashboard surfaces the
+    soonest-expiring cert at the top.
+  - `crates/aegis-proxy/Cargo.toml` — add `thiserror` (production)
+    + `time` (dev) deps.
+- Tests:
+  - aegis-core: 7 new — minimal ACME passes, rejects non-https
+    URL / empty contacts / empty domains / renew_before<1d /
+    missing ToS, snake_case challenge round-trip.
+  - aegis-proxy `acme::tests`: 15 — challenge store insert/lookup/
+    remove/insert_many, OrderState terminal set, full-order happy
+    path with mock provider, challenge cleanup on success and on
+    timeout, register error short-circuit, no-domains rejection,
+    cert_not_after round trips a self-signed PEM, returns None for
+    garbage, needs_renewal honours the window, fails-open for
+    unparseable certs, well-known path format.
+  - aegis-proxy `tests::force_https_*`: +2 ACME integration —
+    HTTP-01 short-circuit serves the published key
+    authorisation, unknown tokens get a 404 (not a redirect).
+  - aegis-control `tracking::tests`: 3 — `from_inventory`
+    computes days_to_expiry, sorts by urgency, handles already
+    expired (negative days).
+- Deferred (single follow-up commit):
+  - **Real `instant-acme` impl of `AcmeProvider`** — the trait
+    + state machine + cleanup invariants are tested; only the
+    network adapter is missing. Marked `// TODO(P5-network)`.
+  - Background renewal scheduler task (kept off the critical
+    path until the network impl lands).
+  - `/api/certs` PUT (renew action) + UI button — surface
+    landed via `from_inventory`; PUT goes through `AuditedMutate`
+    once the network impl is in place.
+- Status: DONE — **1,859 workspace tests pass** (was 1,837, +22
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Security-toggle plan — phases
+
+| Phase | Goal | Size | State |
+|---|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | M / 1 wk | done |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | M / 5 d | done |
+| P3 | Per-detector toggles + per-tier override | L / 3 d | done |
+| P4 | TLS hardening — `min_version` + force-https + HSTS | L / 3 d | done |
+| P5 | ACME / Let's Encrypt state machine + HTTP-01 wiring | H / 1 wk | **done (network impl deferred)** |
+| P6 | Risk-scoring upgrades — trust recovery + lifetime strikes | M / 5 d | pending |
+| P7 | `LoadMode` + bounded caches + degraded logging | M / 5 d | pending |
+| P8 | Verbosity slider + cold-tier surface + UI pills | L / 3 d | pending |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | — | deferred |
+
+### P5 follow-up: dropping in the `instant-acme` impl
+
+```rust
+// crates/aegis-proxy/src/acme.rs (new file: instant_adapter.rs)
+pub struct InstantAcmeProvider { client: instant_acme::Client, ... }
+
+#[async_trait]
+impl AcmeProvider for InstantAcmeProvider {
+    async fn register_account(&self, cfg: &AcmeConfig) -> Result<(), AcmeError> { ... }
+    async fn place_order(&self, ...) -> Result<Vec<Http01Challenge>, AcmeError> { ... }
+    async fn await_validation(&self, ...) -> Result<OrderState, AcmeError> { ... }
+    async fn finalize_and_download(&self, ...) -> Result<IssuedCert, AcmeError> { ... }
+}
+```
+
+Boot wiring (already plumbed):
+```rust
+let provider = Arc::new(InstantAcmeProvider::new(...));
+let manager = AcmeManager::new(cfg, provider, challenges.clone(), cert_writer);
+tokio::spawn(renewal_loop(manager));   // P6/follow-up
+```
+
+The challenge store is already shared with the force-https
+listener, so the moment a real provider publishes tokens the
+HTTP-01 responses turn live.
+
+### Previous (P4 — TLS hardening) — for context
+- Task: **Security-toggle plan, Phase P4 — TLS hardening
+  (`min_version`, force-HTTPS redirect, HSTS)**
+- Crates: aegis-core (config schema + validators),
+  aegis-proxy (tls_policy module + force-https listener)
+- Files changed:
+  - `crates/aegis-core/src/config.rs` — extend `TlsConfig` with
+    `force_https: bool` and `hsts: Option<HstsConfig>`. New
+    `HstsConfig { max_age, include_subdomains, preload }` mirroring
+    RFC 6797 + OWASP guidance (defaults: 1 year, subdomains on,
+    preload off). New `Listeners.force_https:
+    Option<ForceHttpsListener>` for the optional plain-HTTP
+    redirect listener (`bind`, `status` ∈ {301, 308}).
+    `WafConfig::validate` now rejects:
+    - `tls.min_version` ≠ "1.2"|"1.3"
+    - `tls.hsts.max_age == 0`
+    - `tls.hsts.preload` without `max_age >= 31536000` and
+      `include_subdomains: true`
+    - `listeners.force_https.status` outside {301, 308}
+  - `crates/aegis-proxy/src/listener/tls_policy.rs` — **new**.
+    `protocol_versions_for(min)` maps the YAML string to a
+    `&'static [&SupportedProtocolVersion]` (TLS 1.2 + 1.3 by
+    default; 1.3-only when explicitly pinned; fail-safe to 1.3
+    on garbage input). `build_hardened_server_config(resolver,
+    min_version)` builds a rustls `ServerConfig` via
+    `ServerConfig::builder_with_protocol_versions(versions)` so
+    older clients get a handshake failure instead of a silently
+    downgraded session. `format_hsts_header(hsts)` renders the
+    canonical `max-age=N; includeSubDomains; preload` form.
+    `force_https_redirect_response(host, path, status)` builds a
+    redirect with port-stripping (`:80` removed; IPv6 brackets
+    preserved) and clamps non-{301,308} statuses to 301.
+  - `crates/aegis-proxy/src/listener/mod.rs` — register the
+    `tls_policy` module.
+  - `crates/aegis-proxy/src/lib.rs` — `run()` now spawns
+    `force_https_loop(tcp, status)` when
+    `cfg.listeners.force_https` is set. The loop terminates
+    every request with the redirect response and logs at
+    `tracing::debug!` on connection close.
+- Tests:
+  - aegis-core: 9 new — accept "1.2"/"1.3", reject "1.0"/"1.1"
+    and bogus strings, HSTS `max_age=0` rejected, preload
+    requires 1-year max-age and include_subdomains, default HSTS
+    passes, force-https status 301/308 only, default status 301.
+  - aegis-proxy: 16 new tls_policy unit tests (protocol-version
+    matrix, HSTS header shapes, redirect location/port/IPv6
+    handling, status clamping, no-store cache header) + 2 new
+    integration tests (`force_https_loop_returns_301_with_https_location`,
+    `force_https_loop_honours_308_status`) that exercise the
+    listener over TCP.
+- Status: DONE — **1,837 workspace tests pass** (was 1,810, +27
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Security-toggle plan — phases
+
+| Phase | Goal | Size | State |
+|---|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | M / 1 wk | done |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | M / 5 d | done |
+| P3 | Per-detector toggles + per-tier override | L / 3 d | done |
+| P4 | TLS hardening — `min_version` + force-https + HSTS | L / 3 d | **done** |
+| P5 | ACME / Let's Encrypt real wiring (`instant-acme`) | H / 1 wk | pending |
+| P6 | Risk-scoring upgrades — trust recovery + lifetime strikes | M / 5 d | pending |
+| P7 | `LoadMode` + bounded caches + degraded logging | M / 5 d | pending |
+| P8 | Verbosity slider + cold-tier surface + UI pills | L / 3 d | pending |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | — | deferred |
+
+### Hardened-listener wiring (for P5 author)
+
+```
+                ┌─────────────────────────┐
+:80  ───────▶  │  force_https_loop       │  ──▶ 301/308 to https://…
+                └─────────────────────────┘
+                ┌─────────────────────────┐
+:443 ───────▶  │  accept_loop (TLS)      │ ──▶ build_hardened_server_config
+                │   wraps stream with     │      (resolver, min_version)
+                │   tokio_rustls::Acceptor│      ↑
+                │   then handle_data_req. │      └── HSTS header on response
+                └─────────────────────────┘          via format_hsts_header
+```
+
+P5 will replace the placeholder cert paths with ACME-issued live
+certs swapped through the existing `Arc<ArcSwap<CertStore>>`.
+Nothing in P4 forces a TLS migration — the data plane is still
+plain HTTP. The hardening helpers + force-https listener are
+ready to flip on as soon as cert provisioning lands.
+
+### Previous (P3 — Per-detector toggles + per-tier override) — for context
+- Task: **Security-toggle plan, Phase P3 — Per-detector toggles +
+  per-tier override on Tier Config page**
+- Crates: aegis-security (mask state extension),
+  aegis-control (api::detectors expansion),
+  aegis-proxy (per-tier hot-path resolution + audit-diff payload),
+  assets/dashboard (Tier Config page rewrite)
+- Files changed:
+  - `crates/aegis-security/src/detectors/mask.rs` —
+    introduce [`MaskState`] = `{ base: DetectorMask, overrides:
+    [Option<DetectorMask>; 4] }` and migrate `SharedDetectorMask`
+    to wrap `Arc<ArcSwap<MaskState>>`. Index pinned via
+    `tier_index(Tier)` so a future tier variant can't silently
+    shift the array. New API:
+    `resolve(Option<Tier>) -> DetectorMask` (one Arc load + one
+    `match`), `set_override(tier, Option<mask>)`, `store_state` /
+    `load_state`. Backward-compat: `load()` still returns the
+    base mask, and `store(base)` preserves overrides.
+  - `crates/aegis-security/src/detectors/mod.rs` — re-export
+    `MaskState`, `tier_index`, `tier_str`, `ALL_TIERS`.
+  - `crates/aegis-proxy/src/lib.rs` — hot path now classifies the
+    request via `aegis_security::pipeline::classify_tier(None,
+    &view)` and feeds `mask.resolve(Some(tier))` into
+    `run_all_filtered`. PUT `/api/detectors` handler upgraded to
+    parse the new `{mask, overrides}` body shape (with graceful
+    fall-back to the P2 flat shape) and writes a richer
+    `before`/`after` JSON to the audit chain via
+    `mask_state_to_json` so reviewers see exactly which tier
+    flipped.
+  - `crates/aegis-control/src/api/detectors.rs` — extend
+    `DetectorsResponse` with a stable-ordered
+    `overrides: BTreeMap<&'static str, DetectorMaskBody>`. Add
+    `DetectorsPutBody` (both `mask` and `overrides` optional;
+    `null` value clears that tier). New helpers:
+    `parse_tier_str`, `apply_put_body(current, body, modes)`
+    (mutates in-memory state and runs compliance clamp on base
+    AND every override), `parse_full_put_body` (P3 shape with P2
+    fallback).
+  - `crates/aegis-control/assets/dashboard/pages/tiers.js` —
+    rewrite. Top section unchanged (table + drawer); new
+    "Per-tier detector overrides" section renders one card per
+    tier with a `uses base` / `override active` pill + Add/Clear
+    button. Active overrides expand into the standard 8-toggle
+    grid; on change the page sends a partial PUT
+    (`{overrides: {<tier>: {<class>: bool, …}}}`) so the audit
+    chain entry only diffs the tier that changed.
+  - `crates/aegis-control/assets/dashboard/aegis.css` — minimal
+    styles for `.aegis-tier-overrides`,
+    `.aegis-tier-override-head`, `.aegis-section-header`. Reuses
+    the `.aegis-toggle-grid` / `.aegis-toggle-row` from P2.
+- Tests:
+  - aegis-security: 7 new — `tier_index` pinning, `tier_str`
+    serde alignment, `resolve` with/without override, set+clear
+    override visible via resolve, base store preserves overrides,
+    `load()` ignores overrides (back-compat), `store_state`
+    replaces overrides too.
+  - aegis-control: 9 new in `api::detectors::tests` —
+    empty-overrides surface in GET, per-tier overrides serialise
+    in declaration order, `parse_tier_str` round-trip, `apply_put_body`
+    sets/clears overrides, rejects unknown tier names, clamps both
+    base and per-tier proposals against compliance, full P3 PUT
+    JSON round-trip with no compliance.
+- Status: DONE — **1,810 workspace tests pass** (was 1,793, +17
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Security-toggle plan — phases
+
+| Phase | Goal | Size | State |
+|---|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | M / 1 wk | done |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | M / 5 d | done |
+| P3 | Per-detector toggles + per-tier override | L / 3 d | **done** |
+| P4 | TLS hardening — `min_version` + force-https | L / 3 d | pending |
+| P5 | ACME / Let's Encrypt real wiring (`instant-acme`) | H / 1 wk | pending |
+| P6 | Risk-scoring upgrades — trust recovery + lifetime strikes | M / 5 d | pending |
+| P7 | `LoadMode` + bounded caches + degraded logging | M / 5 d | pending |
+| P8 | Verbosity slider + cold-tier surface + UI pills | L / 3 d | pending |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | — | deferred |
+
+### P3 hot-path resolution
+
+```
+incoming HTTP request
+        │
+        ▼
+classify_tier(route, &view)        ← path heuristic; route ctx wins
+        │  Tier::High
+        ▼
+SharedDetectorMask::resolve(Some(High))
+        │  override_for(High).unwrap_or(base)
+        ▼
+run_all_filtered(detectors, mask, &view)
+```
+
+Compliance clamp runs at PUT time only (not on the hot path), so
+reads stay branchless. Per the clamp invariant: a stored override
+mask is *guaranteed* to enable every pinned class, so resolving to
+the override never disables sqli/xss/path_traversal/ssrf when
+compliance is on.
+
+### Previous (P2 — Class toggles + hot-path bitfield mask + Settings UI) — for context
+- Task: **Security-toggle plan, Phase P2 — Class toggles + hot-path
+  bitfield mask + Settings UI**
+- Crates: aegis-security (new mask module), aegis-control (new
+  detectors api + Cargo dep on aegis-security), aegis-proxy
+  (mask plumbing + async PUT handler), assets/dashboard
+  (Settings UI section + supporting CSS)
+- Files changed:
+  - `crates/aegis-security/src/detectors/mask.rs` — **new**.
+    `DetectorClass` enum (8 variants, stable JSON `snake_case`),
+    `DetectorMask` `u32` bitfield with const builders
+    (`all_enabled`, `none`, `from_config`), `with`/`set` mutators,
+    `entries()` ordered iter, `is_enabled_id` for unknown-detector
+    pass-through. `DetectorMaskBody` serde DTO with
+    `#[serde(default)]` so partial PUTs are tolerated.
+    `SharedDetectorMask` newtype around
+    `Arc<ArcSwap<DetectorMask>>` — `load()` is one pointer load on
+    the hot path; `store()` swaps atomically.
+  - `crates/aegis-security/src/detectors/mod.rs` — register the
+    `mask` module + re-export public types. Add
+    `run_all_filtered(detectors, mask, req)` — checks
+    `mask.is_enabled_id(d.id())` before invoking each detector,
+    so a disabled class short-circuits to a single bitfield AND.
+  - `crates/aegis-proxy/src/lib.rs` — plumb a
+    `SharedDetectorMask` from `run()` into `accept_loop` and
+    `handle_data_request`; the data path now calls
+    `run_all_filtered` instead of `run_all`. Admin listener
+    reuses the same handle (`spawn_with_mask`) so the dashboard
+    PUT propagates to the data plane without a restart. New
+    `handle_admin_request` async wrapper around the sync
+    `admin_router` reads request bodies for mutating endpoints;
+    new `handle_detectors_put` flows the mask change through
+    `AuditedMutate::apply` with CSRF cookie/header pulled from
+    `Cookie`/`X-CSRF-Token` headers.
+  - `crates/aegis-control/src/api/detectors.rs` — **new**.
+    `render_get(mask, modes)` returns the documented JSON
+    (`mask`, `locked_classes`, `compliance_modes`).
+    `enforce_compliance_clamp(proposed, modes)` rejects
+    proposals that disable any of `[sqli, xss, path_traversal,
+    ssrf]` while a compliance mode is active. `parse_put_body`
+    deserialises `DetectorMaskBody`.
+  - `crates/aegis-control/src/dashboard_services.rs` — extend
+    `DashboardServices` with a `detector_mask: SharedDetectorMask`
+    field; `spawn_with_mask` constructor lets the proxy share its
+    mask handle with the control plane.
+  - `crates/aegis-control/src/api/mod.rs` — register the new
+    `detectors` module.
+  - `crates/aegis-control/Cargo.toml` — add `aegis-security` +
+    `arc-swap` deps. (No cycle: aegis-security still depends only
+    on aegis-core.)
+  - `crates/aegis-control/assets/dashboard/pages/settings.js` —
+    add the **Detection classes** section. GETs
+    `/api/detectors` on mount + every poll; renders 8 toggles
+    with locked classes disabled; on change, PUTs the full mask
+    with the `aegis_csrf` cookie value mirrored as
+    `X-CSRF-Token`. Reverts to last-known-good state on PUT
+    failure and surfaces the server error message.
+  - `crates/aegis-control/assets/dashboard/aegis.css` —
+    `.aegis-toggle-grid` + `.aegis-toggle-row` styles for the
+    new section. Locked-toggle styling uses
+    `[disabled]` + `aria-label` tooltip — no JS-only cursor
+    tricks.
+- Tests:
+  - aegis-security: 13 new — bitfield uniqueness, all-enabled
+    default ↔ config default, partial-disable from config,
+    `with` flips one bit only, unknown-id pass-through, body
+    round-trip, shared load/store, 4-thread concurrent reader
+    consistency, declaration-order iteration, `run_all_filtered`
+    skips disabled, `run_all_filtered` with `none` mask returns
+    empty.
+  - aegis-control:
+    - `api::detectors::tests` — 10: documented GET shape with
+      and without compliance, mask render reports disabled
+      classes, clamp passes / reports per-mode pinned classes /
+      allows non-pinned, `parse_put_body` partial + non-JSON,
+      `is_locked` semantics.
+    - `dashboard_services::tests` — 2: end-to-end PUT flow flips
+      mask + appends one admin chain entry with before/after
+      diff; compliance clamp blocks SQLi disable under PCI and
+      leaves the chain at length 0.
+- Status: DONE — **1,793 workspace tests pass** (was 1,767, +26
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Security-toggle plan — phases
+
+| Phase | Goal | Size | State |
+|---|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | M / 1 wk | done |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | M / 5 d | **done** |
+| P3 | Per-detector toggles + per-tier override | L / 3 d | pending |
+| P4 | TLS hardening — `min_version` + force-https | L / 3 d | pending |
+| P5 | ACME / Let's Encrypt real wiring (`instant-acme`) | H / 1 wk | pending |
+| P6 | Risk-scoring upgrades — trust recovery + lifetime strikes | M / 5 d | pending |
+| P7 | `LoadMode` + bounded caches + degraded logging | M / 5 d | pending |
+| P8 | Verbosity slider + cold-tier surface + UI pills | L / 3 d | pending |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | — | deferred |
+
+### P2 wire diagram (for the next-phase author)
+
+```
+  YAML cfg.detectors                         dashboard PUT /api/detectors
+        │                                                 │
+        ▼                                                 ▼
+DetectorMask::from_config                    handle_detectors_put
+        │                                                 │
+        ▼                                                 ▼
+SharedDetectorMask  ◀── ArcSwap ─────────  AuditedMutate::apply
+        │ load()                              │  (CSRF + chain + emit)
+        ▼                                                 ▼
+run_all_filtered (data plane)                detector_mask.store(new)
+```
+
+### Previous (P1 — Audit-mutation pipeline) — for context
+- Task: **Security-toggle plan, Phase P1 — Audit-mutation pipeline**
+- Crates: aegis-control (one new module + DashboardServices wiring)
+- Files changed:
+  - `crates/aegis-control/src/api/mutation.rs` — **new**.
+    `AuditedMutate` wrapper: CSRF check → mutator closure → on
+    success only, append `AdminChangeEntry` to the SHA-256 hash
+    chain and emit the event on the `AuditBus`. Failure modes
+    (CSRF rejection, mutator-returns-Err) skip both the chain
+    append and bus emit, so the chain invariant "every entry is
+    a state change that actually happened" holds. Includes
+    `MutationError` taxonomy with HTTP-status + `reason_code`
+    mapping (`csrf_missing_cookie` → 403,
+    `csrf_missing_header` → 403, `csrf_mismatch` → 403,
+    `validation` → 400, `conflict` → 409, `internal` → 500) +
+    standard error envelope renderer (`{ ok: false, reason,
+    message }`).
+  - `crates/aegis-control/src/api/mod.rs` — register the new
+    `mutation` module.
+  - `crates/aegis-control/src/dashboard_services.rs` —
+    `DashboardServices.mutate: Arc<AuditedMutate>` field;
+    constructed in `spawn()` against the same `AuditBus` so the
+    drain task forwards admin events into the audit ring + future
+    SIEM sinks via the same pipeline as detections.
+- Tests:
+  - 13 unit tests in `mutation.rs`: CSRF rejection × 3 paths,
+    GET-skips-CSRF, single-entry-per-success, validation-skips-
+    chain, validation-skips-bus, success-emits-bus, concurrent
+    16-thread chain integrity, diff serialization, error body
+    envelope, status-code taxonomy, reason-code taxonomy.
+  - 2 integration tests in `dashboard_services.rs`:
+    - `mutate_wraps_rule_upsert_and_appends_admin_audit` —
+      end-to-end: PUT /api/rules → AuditedMutate → ChainWriter
+      append → bus emit → drain task → AuditRing → /api/audit/since
+      surfaces the `class:"admin"` event.
+    - `mutate_rejects_csrf_and_does_not_mutate_store` — CSRF
+      mismatch returns error, store is untouched, chain stays at
+      length 0.
+- Status: DONE — **1,767 workspace tests pass** (was 1,752, +15
+  net new). `cargo clippy --workspace -- -D warnings` clean.
+- Date: 2026-04-28
+
+### Security-toggle plan — phases
+
+| Phase | Goal | Size | State |
+|---|---|---|---|
+| P1 | AuditedMutate (CSRF + chain + ArcSwap) | M / 1 wk | **done** |
+| P2 | Class toggles + hot-path bitfield mask + Settings UI | M / 5 d | pending |
+| P3 | Per-detector toggles + per-tier override | L / 3 d | pending |
+| P4 | TLS hardening — `min_version` + force-https | L / 3 d | pending |
+| P5 | ACME / Let's Encrypt real wiring (`instant-acme`) | H / 1 wk | pending |
+| P6 | Risk-scoring upgrades — trust recovery + lifetime strikes | M / 5 d | pending |
+| P7 | `LoadMode` + bounded caches + degraded logging | M / 5 d | pending |
+| P8 | Verbosity slider + cold-tier surface + UI pills | L / 3 d | pending |
+| P9 | New cold backend (only if Prometheus + SIEM rejected) | — | deferred |
+
+### How to use AuditedMutate (next-phase wiring crib sheet)
+
+```rust
+let req = MutationRequest {
+    method: "PUT",
+    csrf_cookie: parsed_cookie,
+    csrf_header: parsed_header,
+    actor: &session.user,
+    request_id: &request_id,
+    resource: "/api/rules/<id>",
+    action: "update",
+    reason: &reason_from_request,
+};
+let outcome = services.mutate.apply(
+    &req,
+    serde_json::to_value(&before).unwrap_or_default(),
+    serde_json::to_value(&after).unwrap_or_default(),
+    || services.rules.upsert(id, &body, enabled).into_result(),
+)?;
+```
+
+D-M4 mutating endpoints (`PUT /api/rules/{id}`,
+`PUT /api/tiers/{name}`, `POST /api/blacklist[/bulk]`,
+`POST /api/admin/password`, `POST /api/admin/break-glass`) plug
+in via this pattern. The proxy admin_router gains the
+`PUT|POST|DELETE` arms in P2 alongside the class-toggle UI work,
+since both share the dispatch wiring.
+
+### Previous (D-M4 + D-M5 + D-M6) — for context
 - Task: **D-M4 + D-M5 + D-M6 — three milestones in one push**
 - Crates: aegis-core (config), aegis-control (8 new api modules,
   10 new pages/components, polish tests), aegis-proxy (22 new

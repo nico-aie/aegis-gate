@@ -3,6 +3,9 @@ use aegis_core::state::StateBackend;
 
 use crate::detectors::Signal;
 
+pub mod tracker;
+pub use tracker::{RiskSnapshot, RiskState, RiskTracker};
+
 /// Risk engine: accumulate signals into a per-key risk score with decay.
 pub struct RiskEngine {
     /// Score half-life in seconds. Default: 300 (5 min).

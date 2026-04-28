@@ -314,10 +314,123 @@ Each request accumulates a risk score from multiple signals:
 - TLS fingerprint mismatch
 
 The **challenge ladder** escalates based on score:
-1. **Allow** (score < 30)
-2. **JS Challenge** (30-60)
-3. **CAPTCHA** (60-80)
-4. **Block** (80+)
+1. **Allow** (score < 40, default)
+2. **Challenge** (40 ≤ score < 80, 429 + `Retry-After`)
+3. **Block** (score ≥ 80)
+
+Thresholds are tunable via `risk.thresholds.{challenge_at, block_at}`.
+
+#### P6 — strikes + trust recovery
+
+Beyond the legacy half-life decay, the WAF maintains a per-IP
+strike counter that **never decays**:
+
+```yaml
+risk:
+  trust_recovery:
+    per_hour: 30        # max points the score can claw back per hour of clean traffic
+  strikes:
+    block_at: 50        # permanent block after this many malicious events
+```
+
+Each malicious detection bumps the strike counter; once
+`block_at` is reached, the IP is blocked at the data plane
+*regardless of how much its score has decayed* — until an
+operator runs `PUT /api/risk/{ip}/reset` (audit-mutated).
+
+```sh
+# Inspect risky clients
+curl -s -b cookies.txt https://127.0.0.1:9443/api/risk?limit=20 | jq
+
+# Reset one client (assumes you've logged in and have aegis_csrf in cookies.txt)
+CSRF=$(grep aegis_csrf cookies.txt | awk '{print $7}')
+curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
+  https://127.0.0.1:9443/api/risk/203.0.113.7/reset | jq
+```
+
+---
+
+### Security Toggles (P1–P8)
+
+The WAF ships an audit-mutated control plane for runtime
+configuration of every security knob. Every PUT below requires
+an authenticated session + matching `aegis_csrf` cookie/header
+pair, and every applied change lands an admin chain entry.
+
+#### Detection-class toggles
+
+```sh
+# Inspect the live mask + per-tier overrides + compliance lock-list
+curl -s -b cookies.txt https://127.0.0.1:9443/api/detectors | jq
+
+# Disable the recon detector globally
+curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
+  -H "content-type: application/json" \
+  -d '{"mask":{"sqli":true,"xss":true,"path_traversal":true,
+                "ssrf":true,"header_injection":true,
+                "body_abuse":true,"recon":false,"brute_force":true}}' \
+  https://127.0.0.1:9443/api/detectors | jq
+
+# Override just the High tier (keep base mask intact)
+curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
+  -H "content-type: application/json" \
+  -d '{"overrides":{"high":{"sqli":true,"xss":true,"path_traversal":true,
+                            "ssrf":true,"header_injection":true,
+                            "body_abuse":true,"recon":true,"brute_force":false}}}' \
+  https://127.0.0.1:9443/api/detectors | jq
+```
+
+The compliance clamp prevents operators from disabling SQLi,
+XSS, path-traversal, or SSRF when `compliance.modes` is non-
+empty (PCI / HIPAA / SOC 2 / GDPR / FIPS).
+
+#### Load-mode override
+
+```sh
+curl -s -b cookies.txt https://127.0.0.1:9443/api/loadmode | jq
+
+# Pin to elevated for a maintenance window
+curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
+  -H "content-type: application/json" \
+  -d '{"override":"elevated"}' \
+  https://127.0.0.1:9443/api/loadmode | jq
+
+# Clear the pin (back to auto-detection)
+curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
+  -H "content-type: application/json" \
+  -d '{"override":"unset"}' \
+  https://127.0.0.1:9443/api/loadmode | jq
+```
+
+#### Audit verbosity
+
+```sh
+curl -s -b cookies.txt https://127.0.0.1:9443/api/logging | jq
+
+# Drop verbose `fields` payloads in audit events
+curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
+  -H "content-type: application/json" \
+  -d '{"level":"warn"}' https://127.0.0.1:9443/api/logging
+
+# Full silence (only block-action 403s, no chain writes)
+curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
+  -H "content-type: application/json" \
+  -d '{"level":"silent"}' https://127.0.0.1:9443/api/logging
+```
+
+#### Cold-tier sink inventory
+
+```sh
+curl -s -b cookies.txt https://127.0.0.1:9443/api/cold-tier | jq
+```
+
+Returns the list of configured `audit.sinks` (jsonl / syslog /
+splunk / kafka) with destination + delivery state. Splunk HEC
+tokens are redacted before the response is built.
+
+See `docs/dashboard-enterprise/api.md` for the full request /
+response shapes and `docs/audit-logging.md` for the
+`AuditedMutate` invariants.
 
 ### DLP (Data Loss Prevention)
 

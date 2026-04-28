@@ -72,13 +72,70 @@ function renderShell(){
         <h2>GitOps <span class="aegis-pill" data-slot="gitops-pill" data-state="ok">—</span></h2>
         <p data-slot="gitops-summary">Loading…</p>
       </article>
+      <article class="aegis-card aegis-card-wide" aria-label="High-risk clients">
+        <h2>Risk clients <span class="aegis-pill" data-slot="risk-pill" data-state="ok">0 tracked</span></h2>
+        <p data-slot="risk-status" role="status">Loading…</p>
+        <table class="aegis-table" data-slot="risk-table"><thead><tr><th>IP</th><th>Score</th><th>Strikes</th><th>Level</th><th>Idle</th><th></th></tr></thead><tbody></tbody></table>
+      </article>
     </section>
   `;
   mountEl.appendChild(w);
 }
-export default{mount(el){mountEl=el;renderShell();setupRenewButton();refresh();
-  pollTimer=setInterval(()=>{if(document.visibilityState==="visible")refresh();},5000);
-  visibilityHandler=()=>{if(document.visibilityState==="visible")refresh();};
+
+async function refreshRisk(){
+  if(!mountEl)return;
+  const data=await fetchJson("/api/risk?limit=10");
+  if(!data)return;
+  const pill=mountEl.querySelector('[data-slot="risk-pill"]');
+  if(pill){pill.textContent=`${data.total_tracked} tracked`;pill.dataset.state=data.total_tracked>0?"warn":"ok";}
+  const tbody=mountEl.querySelector('[data-slot="risk-table"] tbody');
+  if(!tbody)return;
+  tbody.replaceChildren();
+  if((data.clients||[]).length===0){
+    const tr=document.createElement("tr");
+    const td=document.createElement("td");td.colSpan=6;td.textContent="No high-risk clients.";
+    tr.appendChild(td);tbody.appendChild(tr);
+    const status=mountEl.querySelector('[data-slot="risk-status"]');
+    if(status)status.textContent="Adaptive mitigation idle.";
+    return;
+  }
+  for(const c of data.clients){
+    const tr=document.createElement("tr");
+    const cells=[c.ip,String(c.score),`${c.strikes}${c.strike_blocked?" *":""}`,c.level,`${c.idle_seconds}s`];
+    for(const v of cells){const td=document.createElement("td");td.textContent=v;tr.appendChild(td);}
+    const action=document.createElement("td");
+    const btn=document.createElement("button");btn.type="button";btn.className="aegis-button-secondary";btn.textContent="Reset";
+    btn.addEventListener("click",()=>resetRisk(c.ip));
+    action.appendChild(btn);tr.appendChild(action);
+    tbody.appendChild(tr);
+  }
+  const status=mountEl.querySelector('[data-slot="risk-status"]');
+  if(status)status.textContent=`Showing ${data.returned} of ${data.total_tracked}.`;
+}
+
+function readCookie(name){const parts=document.cookie.split(/;\s*/);for(const p of parts){if(p.startsWith(name+"="))return p.slice(name.length+1);}return null;}
+
+async function resetRisk(ip){
+  const status=mountEl.querySelector('[data-slot="risk-status"]');
+  const csrf=readCookie("aegis_csrf")||"";
+  const url=`/api/risk/${encodeURIComponent(ip)}/reset`;
+  const ctrl=new AbortController();abortControllers.push(ctrl);
+  try{
+    const res=await fetch(url,{method:"PUT",headers:{"x-csrf-token":csrf,"content-type":"application/json"},credentials:"same-origin",signal:ctrl.signal,body:"{}"});
+    if(res.ok){
+      if(status)status.textContent=`Reset ${ip}.`;
+      refreshRisk();
+    }else{
+      const body=await res.json().catch(()=>null);
+      const msg=(body&&body.message)||`reset failed (${res.status})`;
+      if(status)status.textContent=`Error resetting ${ip}: ${msg}`;
+    }
+  }catch(e){if(e.name!=="AbortError")console.error("risk reset",e);}
+}
+async function refreshAll(){await refresh();await refreshRisk();}
+export default{mount(el){mountEl=el;renderShell();setupRenewButton();refreshAll();
+  pollTimer=setInterval(()=>{if(document.visibilityState==="visible")refreshAll();},5000);
+  visibilityHandler=()=>{if(document.visibilityState==="visible")refreshAll();};
   document.addEventListener("visibilitychange",visibilityHandler);
 },destroy(){if(pollTimer)clearInterval(pollTimer);pollTimer=null;
   for(const c of abortControllers)c.abort();abortControllers=[];

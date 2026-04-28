@@ -82,6 +82,10 @@ pub struct WafConfig {
     pub admin: AdminConfig,
     #[serde(default)]
     pub compliance: Option<ComplianceProfile>,
+    #[serde(default)]
+    pub load_mode: crate::load_mode::LoadModeConfig,
+    #[serde(default)]
+    pub logging: crate::verbosity::LoggingConfig,
 }
 
 impl WafConfig {
@@ -120,8 +124,80 @@ impl WafConfig {
                 )));
             }
         }
+        // P4 TLS hardening: validate min_version + redirect status.
+        if let Some(tls) = self.tls.as_ref() {
+            validate_tls_hardening(tls)?;
+        }
+        if let Some(redirect) = self.listeners.force_https.as_ref() {
+            if redirect.status != 301 && redirect.status != 308 {
+                return Err(crate::error::WafError::Config(format!(
+                    "listeners.force_https.status must be 301 or 308, got {}",
+                    redirect.status,
+                )));
+            }
+        }
+        // P7: load_mode thresholds + hysteresis must be coherent.
+        self.load_mode.validate()?;
         Ok(())
     }
+}
+
+fn validate_tls_hardening(tls: &TlsConfig) -> crate::Result<()> {
+    if let Some(v) = tls.min_version.as_ref() {
+        if v != "1.2" && v != "1.3" {
+            return Err(crate::error::WafError::Config(format!(
+                "tls.min_version must be \"1.2\" or \"1.3\", got {v:?}"
+            )));
+        }
+    }
+    if let Some(acme) = tls.acme.as_ref() {
+        if !acme.directory_url.starts_with("https://") {
+            return Err(crate::error::WafError::Config(
+                "tls.acme.directory_url must use https://".into(),
+            ));
+        }
+        if acme.contacts.is_empty() {
+            return Err(crate::error::WafError::Config(
+                "tls.acme.contacts must contain at least one email".into(),
+            ));
+        }
+        if acme.domains.is_empty() {
+            return Err(crate::error::WafError::Config(
+                "tls.acme.domains must contain at least one host".into(),
+            ));
+        }
+        if acme.renew_before < Duration::from_secs(24 * 3600) {
+            return Err(crate::error::WafError::Config(
+                "tls.acme.renew_before must be >= 1 day".into(),
+            ));
+        }
+        if !acme.terms_of_service_agreed {
+            return Err(crate::error::WafError::Config(
+                "tls.acme.terms_of_service_agreed must be true to register an account".into(),
+            ));
+        }
+    }
+    if let Some(hsts) = tls.hsts.as_ref() {
+        if hsts.max_age == 0 {
+            return Err(crate::error::WafError::Config(
+                "tls.hsts.max_age must be > 0 (RFC 6797 §6.1.1)".into(),
+            ));
+        }
+        // Preload list submission requirements (hstspreload.org).
+        if hsts.preload {
+            if hsts.max_age < 31_536_000 {
+                return Err(crate::error::WafError::Config(
+                    "tls.hsts.preload requires max_age >= 31536000 (1 year)".into(),
+                ));
+            }
+            if !hsts.include_subdomains {
+                return Err(crate::error::WafError::Config(
+                    "tls.hsts.preload requires include_subdomains: true".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +208,27 @@ impl WafConfig {
 pub struct Listeners {
     pub data: Vec<ListenerConfig>,
     pub admin: ListenerConfig,
+    /// Optional plain-HTTP listener whose only job is to
+    /// 301-redirect every request to the HTTPS equivalent. Pair
+    /// with `tls.force_https = true` (see [`TlsConfig`]).
+    #[serde(default)]
+    pub force_https: Option<ForceHttpsListener>,
+}
+
+/// Listener that returns 301 to `https://{host}{path}` for every
+/// request. Bind to `:80` in production deployments where you
+/// already terminate TLS in the WAF on `:443`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ForceHttpsListener {
+    pub bind: SocketAddr,
+    /// Status code to return. Defaults to `301 Moved Permanently`.
+    /// Use `308` if downstream caches need preserved methods.
+    #[serde(default = "default_redirect_status")]
+    pub status: u16,
+}
+
+fn default_redirect_status() -> u16 {
+    301
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -320,8 +417,116 @@ fn default_cb_window() -> Duration {
 pub struct TlsConfig {
     #[serde(default)]
     pub certificates: Vec<CertConfig>,
+    /// Minimum TLS protocol version. Accepted: `"1.2"` or `"1.3"`.
+    /// `None` falls back to the rustls default (1.2 + 1.3 both
+    /// allowed). Validated at config load — typos like `"1.1"` or
+    /// `"v1.2"` fail fast.
     #[serde(default)]
     pub min_version: Option<String>,
+    /// When `true`, the proxy can be paired with a plain-HTTP
+    /// listener that 301-redirects every request to its HTTPS
+    /// equivalent. The redirect listener itself is added to
+    /// [`Listeners`] separately (see [`Listeners::force_https`]).
+    #[serde(default)]
+    pub force_https: bool,
+    /// HSTS policy emitted on TLS-served responses. `None` =
+    /// don't send the header.
+    #[serde(default)]
+    pub hsts: Option<HstsConfig>,
+    /// ACME / Let's Encrypt automatic cert issuance. `None`
+    /// disables the manager — operators stay on the static
+    /// `certificates: [...]` flow.
+    #[serde(default)]
+    pub acme: Option<AcmeConfig>,
+}
+
+/// ACME / Let's Encrypt configuration (P5 of the security-toggle
+/// plan). Issuance and renewal flow through `aegis_proxy::acme`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AcmeConfig {
+    /// Directory URL. Defaults to Let's Encrypt production. Use
+    /// `https://acme-staging-v02.api.letsencrypt.org/directory`
+    /// during integration testing.
+    #[serde(default = "default_acme_directory")]
+    pub directory_url: String,
+    /// Contact emails for the ACME account. At least one entry.
+    pub contacts: Vec<String>,
+    /// Domains to issue certs for.
+    pub domains: Vec<String>,
+    /// Path where the ACME account private key is persisted.
+    pub account_key_path: PathBuf,
+    /// Directory where issued certs are persisted (one file per
+    /// domain or SAN bundle).
+    pub cert_dir: PathBuf,
+    /// How early before expiry to trigger renewal. Defaults to
+    /// 30 days (per Let's Encrypt guidance).
+    #[serde(default = "default_renew_before", with = "humantime_serde")]
+    pub renew_before: Duration,
+    /// Acknowledge the directory's Terms of Service. Required
+    /// for first-time account registration.
+    #[serde(default)]
+    pub terms_of_service_agreed: bool,
+    /// Challenge mechanism. Defaults to `http_01` (the proxy
+    /// already runs a plain-HTTP listener for force-https).
+    #[serde(default)]
+    pub challenge: AcmeChallenge,
+}
+
+fn default_acme_directory() -> String {
+    "https://acme-v02.api.letsencrypt.org/directory".into()
+}
+
+fn default_renew_before() -> Duration {
+    Duration::from_secs(30 * 24 * 3600)
+}
+
+/// Which ACME challenge mechanism the manager uses.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AcmeChallenge {
+    /// HTTP-01 — server proves control by responding on `:80`
+    /// at `/.well-known/acme-challenge/{token}`. Pairs with
+    /// the existing force-https listener.
+    #[default]
+    Http01,
+    /// TLS-ALPN-01 — same proof but over TLS on `:443` using
+    /// the `acme-tls/1` ALPN. Use when port 80 is unavailable.
+    TlsAlpn01,
+    /// DNS-01 — server publishes a TXT record. Required for
+    /// wildcard certificates.
+    Dns01,
+}
+
+/// `Strict-Transport-Security` policy. Browsers honour this only
+/// when received over HTTPS, so the proxy emits it on TLS responses
+/// and skips it on plain HTTP.
+#[derive(Clone, Debug, Deserialize)]
+pub struct HstsConfig {
+    /// Lifetime in seconds. RFC 6797 §6.1.1 requires a positive
+    /// value; defaults to 1 year per the OWASP HSTS guidance.
+    #[serde(default = "default_hsts_max_age")]
+    pub max_age: u64,
+    #[serde(default = "default_true")]
+    pub include_subdomains: bool,
+    /// Set to `true` to opt into the browser HSTS preload list.
+    /// Submitting requires `max_age >= 31_536_000` and
+    /// `include_subdomains: true` per hstspreload.org.
+    #[serde(default)]
+    pub preload: bool,
+}
+
+fn default_hsts_max_age() -> u64 {
+    31_536_000
+}
+
+impl Default for HstsConfig {
+    fn default() -> Self {
+        Self {
+            max_age: default_hsts_max_age(),
+            include_subdomains: true,
+            preload: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -450,6 +655,16 @@ pub struct RiskConfig {
     pub decay_half_life: Duration,
     #[serde(default)]
     pub thresholds: RiskThresholds,
+    /// P6: trust recovery policy. Per-hour decay cap when a client
+    /// behaves cleanly. `None` keeps the legacy "decay only via
+    /// half-life" behaviour.
+    #[serde(default)]
+    pub trust_recovery: Option<TrustRecoveryConfig>,
+    /// P6: strike accounting. Tracks lifetime malicious-event count
+    /// per client; once `block_at` strikes are reached, the client
+    /// is permanently blocked even if their score has decayed.
+    #[serde(default)]
+    pub strikes: Option<StrikeConfig>,
 }
 
 fn default_risk_decay() -> Duration {
@@ -462,6 +677,57 @@ impl Default for RiskConfig {
             weights: RiskWeights::default(),
             decay_half_life: default_risk_decay(),
             thresholds: RiskThresholds::default(),
+            trust_recovery: None,
+            strikes: None,
+        }
+    }
+}
+
+/// Trust-recovery policy. Per the user-confirmed default, score
+/// decay is capped at `-30 per hour` so a client can claw back
+/// reputation but a single benign request can't reset a high
+/// score instantly.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TrustRecoveryConfig {
+    /// Maximum points the score can decay by in one hour of clean
+    /// requests. Negative is an error (validated at config load).
+    #[serde(default = "default_trust_per_hour")]
+    pub per_hour: u32,
+}
+
+fn default_trust_per_hour() -> u32 {
+    30
+}
+
+impl Default for TrustRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            per_hour: default_trust_per_hour(),
+        }
+    }
+}
+
+/// Strike accounting. Each malicious detection bumps a lifetime
+/// counter (never decays); once `block_at` is reached, the IP is
+/// blocked at the data plane until an operator runs
+/// `PUT /api/risk/{ip}/reset`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct StrikeConfig {
+    /// Number of strikes that triggers a permanent block. Per the
+    /// user-confirmed default, strikes never decay — the operator
+    /// must reset them via the audit-mutation pipeline.
+    #[serde(default = "default_strike_block_at")]
+    pub block_at: u32,
+}
+
+fn default_strike_block_at() -> u32 {
+    50
+}
+
+impl Default for StrikeConfig {
+    fn default() -> Self {
+        Self {
+            block_at: default_strike_block_at(),
         }
     }
 }
@@ -1418,5 +1684,267 @@ state:
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must have at least one member"));
+    }
+
+    // ---------- P4 TLS hardening + force-https + HSTS validation -------
+
+    fn good_cfg_with_tls(tls_yaml: &str) -> String {
+        format!(
+            r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:443" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: default }}
+upstreams:
+  default: {{ members: [{{ addr: "127.0.0.1:8080" }}] }}
+state: {{ backend: in_memory }}
+tls:
+{tls_yaml}
+"#
+        )
+    }
+
+    #[test]
+    fn tls_min_version_accepts_supported_versions() {
+        for v in ["1.2", "1.3"] {
+            let yaml = good_cfg_with_tls(&format!("  min_version: \"{v}\"\n"));
+            let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+            cfg.validate().unwrap_or_else(|e| panic!("expected ok for {v}: {e}"));
+        }
+    }
+
+    #[test]
+    fn tls_min_version_rejects_legacy_versions() {
+        for v in ["1.0", "1.1", "ssl3", ""] {
+            let yaml = good_cfg_with_tls(&format!("  min_version: \"{v}\"\n"));
+            let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("tls.min_version"),
+                "expected validation error for {v}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn tls_hsts_max_age_zero_rejected() {
+        let yaml = good_cfg_with_tls("  hsts: { max_age: 0 }\n");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_age must be > 0"));
+    }
+
+    #[test]
+    fn tls_hsts_preload_requires_one_year_max_age() {
+        let yaml = good_cfg_with_tls(
+            "  hsts: { max_age: 86400, include_subdomains: true, preload: true }\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("preload requires max_age >= 31536000"));
+    }
+
+    #[test]
+    fn tls_hsts_preload_requires_include_subdomains() {
+        let yaml = good_cfg_with_tls(
+            "  hsts: { max_age: 31536000, include_subdomains: false, preload: true }\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("preload requires include_subdomains"));
+    }
+
+    #[test]
+    fn tls_hsts_default_passes_validation() {
+        let yaml = good_cfg_with_tls("  hsts: {}\n");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let hsts = cfg.tls.unwrap().hsts.unwrap();
+        assert_eq!(hsts.max_age, 31_536_000);
+        assert!(hsts.include_subdomains);
+        assert!(!hsts.preload);
+    }
+
+    #[test]
+    fn force_https_listener_status_must_be_redirect_code() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+  force_https: { bind: "0.0.0.0:80", status: 200 }
+routes: [{ id: catch-all, path: "/", upstream: default }]
+upstreams: { default: { members: [{ addr: "127.0.0.1:8080" }] } }
+state: { backend: in_memory }
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("must be 301 or 308"));
+    }
+
+    #[test]
+    fn force_https_listener_accepts_301_and_308() {
+        for code in [301u16, 308u16] {
+            let yaml = format!(
+                r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:443" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+  force_https: {{ bind: "0.0.0.0:80", status: {code} }}
+routes: [{{ id: catch-all, path: "/", upstream: default }}]
+upstreams: {{ default: {{ members: [{{ addr: "127.0.0.1:8080" }}] }} }}
+state: {{ backend: in_memory }}
+"#
+            );
+            let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+            cfg.validate().unwrap_or_else(|e| panic!("status {code} should be ok: {e}"));
+        }
+    }
+
+    // ---------- P5 ACME validation -------------------------------------
+
+    fn acme_yaml_block(extra: &str) -> String {
+        format!(
+            r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:443" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+routes: [{{ id: catch-all, path: "/", upstream: default }}]
+upstreams: {{ default: {{ members: [{{ addr: "127.0.0.1:8080" }}] }} }}
+state: {{ backend: in_memory }}
+tls:
+  acme:
+    contacts: ["ops@example.com"]
+    domains: ["example.com"]
+    account_key_path: "/var/lib/aegis/acme.key"
+    cert_dir: "/var/lib/aegis/certs"
+    terms_of_service_agreed: true
+{extra}
+"#
+        )
+    }
+
+    #[test]
+    fn acme_minimal_passes_validation() {
+        let yaml = acme_yaml_block("");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let acme = cfg.tls.unwrap().acme.unwrap();
+        assert!(acme.directory_url.starts_with("https://"));
+        assert_eq!(acme.challenge, AcmeChallenge::Http01);
+        assert_eq!(acme.renew_before.as_secs(), 30 * 24 * 3600);
+    }
+
+    #[test]
+    fn acme_rejects_non_https_directory_url() {
+        let yaml = acme_yaml_block(
+            "    directory_url: \"http://acme-v02.api.letsencrypt.org/directory\"\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("directory_url must use https"));
+    }
+
+    #[test]
+    fn acme_rejects_empty_contacts() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes: [{ id: catch-all, path: "/", upstream: default }]
+upstreams: { default: { members: [{ addr: "127.0.0.1:8080" }] } }
+state: { backend: in_memory }
+tls:
+  acme:
+    contacts: []
+    domains: ["example.com"]
+    account_key_path: "/var/lib/aegis/acme.key"
+    cert_dir: "/var/lib/aegis/certs"
+    terms_of_service_agreed: true
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("contacts must contain at least one"));
+    }
+
+    #[test]
+    fn acme_rejects_empty_domains() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes: [{ id: catch-all, path: "/", upstream: default }]
+upstreams: { default: { members: [{ addr: "127.0.0.1:8080" }] } }
+state: { backend: in_memory }
+tls:
+  acme:
+    contacts: ["ops@example.com"]
+    domains: []
+    account_key_path: "/var/lib/aegis/acme.key"
+    cert_dir: "/var/lib/aegis/certs"
+    terms_of_service_agreed: true
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("domains must contain at least one"));
+    }
+
+    #[test]
+    fn acme_rejects_renew_before_under_one_day() {
+        let yaml = acme_yaml_block("    renew_before: 1h\n");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("renew_before must be >= 1 day"));
+    }
+
+    #[test]
+    fn acme_rejects_missing_tos_agreement() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes: [{ id: catch-all, path: "/", upstream: default }]
+upstreams: { default: { members: [{ addr: "127.0.0.1:8080" }] } }
+state: { backend: in_memory }
+tls:
+  acme:
+    contacts: ["ops@example.com"]
+    domains: ["example.com"]
+    account_key_path: "/var/lib/aegis/acme.key"
+    cert_dir: "/var/lib/aegis/certs"
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("terms_of_service_agreed must be true"));
+    }
+
+    #[test]
+    fn acme_challenge_modes_round_trip() {
+        for (yaml_val, expected) in [
+            ("http01", AcmeChallenge::Http01),
+            ("tls_alpn01", AcmeChallenge::TlsAlpn01),
+            ("dns01", AcmeChallenge::Dns01),
+        ] {
+            let yaml = acme_yaml_block(&format!("    challenge: {yaml_val}\n"));
+            let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+            cfg.validate().unwrap();
+            assert_eq!(cfg.tls.unwrap().acme.unwrap().challenge, expected);
+        }
+    }
+
+    #[test]
+    fn force_https_listener_default_status_is_301() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+  force_https: { bind: "0.0.0.0:80" }
+routes: [{ id: catch-all, path: "/", upstream: default }]
+upstreams: { default: { members: [{ addr: "127.0.0.1:8080" }] } }
+state: { backend: in_memory }
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.listeners.force_https.unwrap().status, 301);
     }
 }

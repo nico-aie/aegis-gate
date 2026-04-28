@@ -242,11 +242,62 @@ async function init() {
   // Status-bar SSE pill — runs alongside the route mount.
   startSse();
 
+  // P7: status-bar load-mode pill. Polls /api/loadmode every 5 s
+  // and recolors based on the effective mode. The proxy hot path
+  // is the producer; the dashboard is the read-only consumer.
+  startLoadModePoll();
+
+  // P8: status-bar verbosity pill. Reflects the operator-pinned
+  // logging level. Polled less aggressively than the load pill
+  // because it changes only on explicit operator action.
+  startVerbosityPoll();
+
   try {
     await navigate(window.location.href, false);
   } catch (err) {
     console.error("initial mount failed", err);
   }
+}
+
+function startLoadModePoll() {
+  const pill = document.querySelector('.aegis-statusbar [data-slot="load-pill"]');
+  const rps = document.querySelector('.aegis-statusbar [data-slot="load-rps"]');
+  if (!pill || !rps) return;
+  async function tick() {
+    try {
+      const res = await fetch("/api/loadmode", { cache: "no-store" });
+      if (!res.ok) return;
+      const body = await res.json();
+      const eff = body.effective_mode || "normal";
+      pill.textContent = eff + (body.override_active ? " (pinned)" : "");
+      pill.dataset.state = eff === "critical" ? "err" : eff === "elevated" ? "warn" : "ok";
+      rps.textContent = (body.rps_last_sample || 0) + " rps";
+    } catch (e) { /* polling is best-effort */ }
+  }
+  tick();
+  setInterval(() => { if (document.visibilityState === "visible") tick(); }, 5000);
+}
+
+function startVerbosityPoll() {
+  const pill = document.querySelector('.aegis-statusbar [data-slot="verbosity-pill"]');
+  if (!pill) return;
+  async function tick() {
+    try {
+      const res = await fetch("/api/logging", { cache: "no-store" });
+      if (!res.ok) return;
+      const body = await res.json();
+      const lv = body.level || "info";
+      pill.textContent = lv;
+      // Silent + Error are operator-pinned degradations, surface
+      // them as warn / err so the bar pops; Trace is unusual
+      // enough to also tag warn (debug-mode in production).
+      if (lv === "silent" || lv === "trace") pill.dataset.state = "warn";
+      else if (lv === "error") pill.dataset.state = "err";
+      else pill.dataset.state = "ok";
+    } catch (e) { /* polling is best-effort */ }
+  }
+  tick();
+  setInterval(() => { if (document.visibilityState === "visible") tick(); }, 10000);
 }
 
 if (document.readyState === "loading") {

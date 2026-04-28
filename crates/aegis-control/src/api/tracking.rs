@@ -103,6 +103,44 @@ impl CertsResponse {
     pub fn placeholder() -> Self {
         Self { certs: Vec::new() }
     }
+
+    /// Build the response from a cert inventory closure. Each
+    /// entry carries the parsed `notAfter` and a freshly computed
+    /// `days_to_expiry` against `now`. Sorts by `days_to_expiry`
+    /// ascending so the dashboard surfaces the most-urgent cert
+    /// first.
+    pub fn from_inventory(
+        entries: impl IntoIterator<Item = CertInventoryEntry>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        let mut certs: Vec<CertEntry> = entries
+            .into_iter()
+            .map(|e| {
+                let days_to_expiry = (e.expires_at - now).num_days();
+                CertEntry {
+                    host: e.host,
+                    issuer: e.issuer,
+                    expires_at: e.expires_at,
+                    days_to_expiry,
+                    source: e.source,
+                }
+            })
+            .collect();
+        certs.sort_by(|a, b| a.days_to_expiry.cmp(&b.days_to_expiry));
+        Self { certs }
+    }
+}
+
+/// One row of cert inventory before `days_to_expiry` is computed.
+/// Producers (file scanner, ACME manager, mTLS bundle) emit this
+/// shape; [`CertsResponse::from_inventory`] computes the diff
+/// against `now` once.
+#[derive(Clone, Debug)]
+pub struct CertInventoryEntry {
+    pub host: String,
+    pub issuer: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub source: String,
 }
 
 // ---------- GitOps -----------------------------------------------------
@@ -329,5 +367,72 @@ mod tests {
         assert_eq!(status, 405);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["error"]["code"].as_str(), Some("not_supported"));
+    }
+
+    // ---------- P5 cert inventory --------------------------------------
+
+    #[test]
+    fn certs_from_inventory_computes_days_to_expiry() {
+        let now = chrono::Utc::now();
+        let r = CertsResponse::from_inventory(
+            vec![CertInventoryEntry {
+                host: "shop.example.com".into(),
+                issuer: "Let's Encrypt".into(),
+                expires_at: now + chrono::Duration::days(40),
+                source: "acme".into(),
+            }],
+            now,
+        );
+        assert_eq!(r.certs.len(), 1);
+        assert_eq!(r.certs[0].days_to_expiry, 40);
+        assert_eq!(r.certs[0].source, "acme");
+    }
+
+    #[test]
+    fn certs_from_inventory_sorts_by_urgency() {
+        let now = chrono::Utc::now();
+        let r = CertsResponse::from_inventory(
+            vec![
+                CertInventoryEntry {
+                    host: "later.example.com".into(),
+                    issuer: "L".into(),
+                    expires_at: now + chrono::Duration::days(90),
+                    source: "static".into(),
+                },
+                CertInventoryEntry {
+                    host: "soon.example.com".into(),
+                    issuer: "L".into(),
+                    expires_at: now + chrono::Duration::days(5),
+                    source: "acme".into(),
+                },
+                CertInventoryEntry {
+                    host: "later2.example.com".into(),
+                    issuer: "L".into(),
+                    expires_at: now + chrono::Duration::days(45),
+                    source: "acme".into(),
+                },
+            ],
+            now,
+        );
+        let hosts: Vec<&str> = r.certs.iter().map(|e| e.host.as_str()).collect();
+        assert_eq!(
+            hosts,
+            vec!["soon.example.com", "later2.example.com", "later.example.com"]
+        );
+    }
+
+    #[test]
+    fn certs_from_inventory_handles_already_expired() {
+        let now = chrono::Utc::now();
+        let r = CertsResponse::from_inventory(
+            vec![CertInventoryEntry {
+                host: "old.example.com".into(),
+                issuer: "L".into(),
+                expires_at: now - chrono::Duration::days(2),
+                source: "static".into(),
+            }],
+            now,
+        );
+        assert_eq!(r.certs[0].days_to_expiry, -2);
     }
 }

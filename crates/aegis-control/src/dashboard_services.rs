@@ -15,7 +15,9 @@
 use std::sync::Arc;
 
 use aegis_core::audit::AuditEvent;
-use aegis_core::AuditBus;
+use aegis_core::{AuditBus, LoadGauge, LoadModeConfig, SharedVerbosity};
+use aegis_security::detectors::SharedDetectorMask;
+use aegis_security::risk::RiskTracker;
 
 use crate::api::{
     admin::{BreakGlass, SessionStore},
@@ -23,6 +25,7 @@ use crate::api::{
     audit::{AuditHandler, AuditRing, WitnessHandler, WitnessState},
     blacklist::AccessListStore,
     filters::{FilterCatalogue, FiltersHandler},
+    mutation::AuditedMutate,
     rules::{RuleStats, RuleStore},
     stats::{StatsAggregator, StatsHandler, UpstreamSummary},
     tiers::TierStore,
@@ -62,6 +65,11 @@ pub struct DashboardServices {
     pub sessions: Arc<SessionStore>,
     pub break_glass: Arc<BreakGlass>,
     pub tracking: Arc<TrackingHandler>,
+    pub mutate: Arc<AuditedMutate>,
+    pub detector_mask: SharedDetectorMask,
+    pub risk: RiskTracker,
+    pub load_gauge: LoadGauge,
+    pub verbosity: SharedVerbosity,
     pub environment: Option<String>,
 }
 
@@ -75,6 +83,30 @@ impl DashboardServices {
         pool_snapshot: PoolSnapshotProvider,
         environment: Option<String>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
+        Self::spawn_with_mask(
+            bus,
+            pool_snapshot,
+            environment,
+            SharedDetectorMask::default(),
+            RiskTracker::new(&aegis_core::config::RiskConfig::default()),
+            LoadGauge::new(LoadModeConfig::default()),
+            SharedVerbosity::default(),
+        )
+    }
+
+    /// Same as [`spawn`] but lets the caller share an existing
+    /// [`SharedDetectorMask`], [`RiskTracker`], [`LoadGauge`], and
+    /// [`SharedVerbosity`] with the data plane so every operator
+    /// knob propagates uniformly across the proxy and dashboard.
+    pub fn spawn_with_mask(
+        bus: AuditBus,
+        pool_snapshot: PoolSnapshotProvider,
+        environment: Option<String>,
+        detector_mask: SharedDetectorMask,
+        risk: RiskTracker,
+        load_gauge: LoadGauge,
+        verbosity: SharedVerbosity,
+    ) -> (Self, tokio::task::JoinHandle<()>) {
         let stats_agg = Arc::new(StatsAggregator::new());
         let attacks_agg = Arc::new(AttacksAggregator::new());
         let audit_ring = Arc::new(AuditRing::new());
@@ -87,6 +119,7 @@ impl DashboardServices {
         let whitelist = Arc::new(AccessListStore::new());
         let sessions = Arc::new(SessionStore::new());
         let break_glass = Arc::new(BreakGlass::new());
+        let mutate = Arc::new(AuditedMutate::new(bus.clone()));
 
         // Stats handler reduces the full pool snapshot to the
         // embedded `UpstreamSummary` (no per-pool list — that's
@@ -161,6 +194,11 @@ impl DashboardServices {
                 sessions,
                 break_glass,
                 tracking,
+                mutate,
+                detector_mask,
+                risk,
+                load_gauge,
+                verbosity,
                 environment,
             },
             drain,
@@ -338,6 +376,220 @@ mod tests {
         assert_eq!(v["state"].as_str(), Some("Degraded"));
         assert_eq!(v["pools"].as_array().unwrap().len(), 1);
         assert_eq!(v["pools"][0]["name"].as_str(), Some("api-pool"));
+    }
+
+    #[tokio::test]
+    async fn mutate_wraps_rule_upsert_and_appends_admin_audit() {
+        // P1 wiring smoke: a successful rule upsert flows through
+        // AuditedMutate, which appends one chain entry, emits one
+        // bus event, which the drain task records into AuditRing.
+        let bus = AuditBus::new(64);
+        let (services, _drain) =
+            DashboardServices::spawn(bus.clone(), empty_pool_provider(), None);
+
+        let req = crate::api::mutation::MutationRequest {
+            method: "PUT",
+            csrf_cookie: Some("tok"),
+            csrf_header: Some("tok"),
+            actor: "admin",
+            request_id: "req-rule-1",
+            resource: "/api/rules/sqli-1",
+            action: "create",
+            reason: "wire-up smoke",
+        };
+        let rules = Arc::clone(&services.rules);
+        let outcome = services
+            .mutate
+            .apply(
+                &req,
+                serde_json::Value::Null,
+                serde_json::json!({"id": "sqli-1", "enabled": true}),
+                || {
+                    let v = rules.upsert("sqli-1", "rule sqli-1 { allow }", true);
+                    if v.ok {
+                        Ok::<(), String>(())
+                    } else {
+                        Err(format!("validator failed: {:?}", v.errors))
+                    }
+                },
+            )
+            .expect("mutation should succeed");
+        assert_eq!(outcome.value, ());
+        assert_eq!(services.mutate.chain_len(), 1);
+
+        // Wait for the drain task to feed the audit ring.
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            if services.audit_ring.high_water() >= 1 {
+                break;
+            }
+        }
+        assert_eq!(services.audit_ring.high_water(), 1);
+        let body = services.audit.render_since(0, 100);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let events = v["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["class"], "admin");
+        assert_eq!(events[0]["action"], "create");
+        assert_eq!(events[0]["request_id"], "req-rule-1");
+    }
+
+    #[tokio::test]
+    async fn mutate_rejects_csrf_and_does_not_mutate_store() {
+        let bus = AuditBus::new(8);
+        let (services, _drain) =
+            DashboardServices::spawn(bus, empty_pool_provider(), None);
+
+        let req = crate::api::mutation::MutationRequest {
+            method: "PUT",
+            csrf_cookie: Some("aaa"),
+            csrf_header: Some("bbb"),
+            actor: "attacker",
+            request_id: "req-bad",
+            resource: "/api/rules/x",
+            action: "create",
+            reason: "csrf attempt",
+        };
+        let rules = Arc::clone(&services.rules);
+        let result: Result<_, _> = services.mutate.apply(
+            &req,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            || {
+                rules.upsert("x", "rule x { allow }", true);
+                Ok::<(), String>(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(services.mutate.chain_len(), 0);
+        assert!(services.rules.get("x").is_none(), "store mutated despite CSRF rejection");
+    }
+
+    #[tokio::test]
+    async fn detector_mask_flips_via_mutate_pipeline() {
+        // P2 wiring smoke: a successful PUT /api/detectors flows
+        // through AuditedMutate, swaps the SharedDetectorMask, and
+        // appends one admin chain entry whose diff records the
+        // before/after toggle.
+        let bus = AuditBus::new(64);
+        let initial_mask = aegis_security::detectors::SharedDetectorMask::default();
+        let (services, _drain) = DashboardServices::spawn_with_mask(
+            bus.clone(),
+            empty_pool_provider(),
+            None,
+            initial_mask.clone(),
+            RiskTracker::new(&aegis_core::config::RiskConfig::default()),
+            LoadGauge::new(LoadModeConfig::default()),
+            SharedVerbosity::default(),
+        );
+
+        // Sanity: starts all-on.
+        assert!(initial_mask
+            .load()
+            .is_enabled(aegis_security::detectors::DetectorClass::Recon));
+
+        let proposed = initial_mask
+            .load()
+            .with(aegis_security::detectors::DetectorClass::Recon, false);
+
+        let req = crate::api::mutation::MutationRequest {
+            method: "PUT",
+            csrf_cookie: Some("tok"),
+            csrf_header: Some("tok"),
+            actor: "admin",
+            request_id: "req-detectors-1",
+            resource: "/api/detectors",
+            action: "update",
+            reason: "disable recon",
+        };
+        let mask_handle = initial_mask.clone();
+        let outcome = services
+            .mutate
+            .apply(
+                &req,
+                serde_json::to_value(aegis_security::detectors::DetectorMaskBody::from(
+                    initial_mask.load(),
+                ))
+                .unwrap(),
+                serde_json::to_value(aegis_security::detectors::DetectorMaskBody::from(
+                    proposed,
+                ))
+                .unwrap(),
+                || {
+                    if let Err(violations) =
+                        crate::api::detectors::enforce_compliance_clamp(proposed, &[])
+                    {
+                        return Err(format!("locked: {}", violations.join(",")));
+                    }
+                    mask_handle.store(proposed);
+                    Ok::<(), String>(())
+                },
+            )
+            .expect("mutation should succeed");
+
+        // Mask flipped.
+        assert!(!initial_mask
+            .load()
+            .is_enabled(aegis_security::detectors::DetectorClass::Recon));
+        // Single chain entry recorded with before/after diff.
+        assert_eq!(services.mutate.chain_len(), 1);
+        let fields = outcome.chain_entry.event.fields.as_object().unwrap();
+        assert_eq!(fields["resource"], "/api/detectors");
+        assert!(fields["diff"]["before"]["recon"].as_bool().unwrap());
+        assert!(!fields["diff"]["after"]["recon"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn detector_mask_compliance_clamp_blocks_disable() {
+        let bus = AuditBus::new(8);
+        let initial_mask = aegis_security::detectors::SharedDetectorMask::default();
+        let (services, _drain) = DashboardServices::spawn_with_mask(
+            bus,
+            empty_pool_provider(),
+            None,
+            initial_mask.clone(),
+            RiskTracker::new(&aegis_core::config::RiskConfig::default()),
+            LoadGauge::new(LoadModeConfig::default()),
+            SharedVerbosity::default(),
+        );
+
+        let proposed = aegis_security::detectors::DetectorMask::all_enabled()
+            .with(aegis_security::detectors::DetectorClass::Sqli, false);
+
+        let req = crate::api::mutation::MutationRequest {
+            method: "PUT",
+            csrf_cookie: Some("tok"),
+            csrf_header: Some("tok"),
+            actor: "admin",
+            request_id: "req-detectors-2",
+            resource: "/api/detectors",
+            action: "update",
+            reason: "try to drop sqli",
+        };
+        let modes = vec![aegis_core::config::ComplianceMode::Pci];
+        let mask_handle = initial_mask.clone();
+        let result: Result<_, _> = services.mutate.apply(
+            &req,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            || {
+                if let Err(violations) =
+                    crate::api::detectors::enforce_compliance_clamp(proposed, &modes)
+                {
+                    return Err(format!("compliance: {}", violations.join(",")));
+                }
+                mask_handle.store(proposed);
+                Ok::<(), String>(())
+            },
+        );
+
+        assert!(result.is_err());
+        // Mask unchanged — sqli still on.
+        assert!(initial_mask
+            .load()
+            .is_enabled(aegis_security::detectors::DetectorClass::Sqli));
+        // No chain entry on validation failure.
+        assert_eq!(services.mutate.chain_len(), 0);
     }
 
     #[test]

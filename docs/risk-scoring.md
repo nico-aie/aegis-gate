@@ -102,23 +102,59 @@ period (cookie-bound), but the persisted score is unchanged.
 
 ```yaml
 risk:
-  thresholds: { allow: 30, challenge: 70 }
-  decay_per_minute: 5
-  max_score: 100
-  canary_routes: ["/admin/backup", "/.git/config"]
-  per_tier:
-    critical: { thresholds: { allow: 10, challenge: 30 } }
+  thresholds:
+    challenge_at: 40         # Allow → Challenge boundary
+    block_at:     80         # Challenge → Block boundary
+    max:          100
+  decay_half_life: 5m        # legacy half-life decay (P6 trust
+                             # recovery applies in addition)
+  trust_recovery:            # P6: clean-traffic claw-back
+    per_hour: 30             # cap on score reduction per hour
+  strikes:                   # P6: lifetime malicious-event count
+    block_at: 50             # permanent block at this many strikes
 ```
+
+## P6 — strikes + trust recovery + adaptive mitigation
+
+The legacy half-life decay is supplemented by two new policies:
+
+- **Trust recovery** — a clean request claws back score capped at
+  `trust_recovery.per_hour` per hour of elapsed clean traffic. One
+  benign request can never reset a flagged client.
+- **Strikes** — every malicious detection bumps a lifetime counter
+  that *never decays*. Once `strikes.block_at` is reached, the IP
+  is permanently blocked at the data plane until an operator runs
+  `PUT /api/risk/{ip}/reset` (the request flows through the
+  `AuditedMutate` pipeline so every reset lands an admin chain
+  entry).
+- **Adaptive mitigation** — the hot path classifier returns
+  `Allow / Challenge / Block` based on `RiskThresholds`. Strike-
+  blocked IPs short-circuit to `Block` regardless of how much the
+  score has decayed.
+
+### `/api/risk*` endpoints
+
+```
+GET /api/risk?limit=N        — top-N risk clients (sorted by strikes desc, score desc)
+GET /api/risk/{ip}           — full snapshot for one client
+PUT /api/risk/{ip}/reset     — operator override, audit-mutated
+```
+
+See [`dashboard-enterprise/api.md`](./dashboard-enterprise/api.md)
+for response shapes.
 
 ## Implementation
 
-- `src/risk/score.rs` — `RiskScore` with decay
-- `src/risk/store.rs` — `RiskStore` + `RiskKey`
-- `src/risk/engine.rs` — `RiskEngine::decide`, canary check
-- `src/risk/backend_redis.rs` — Redis-backed impl (v2)
+- `aegis-security::risk::RiskEngine` — legacy half-life accumulator
+- `aegis-security::risk::tracker::RiskTracker` — **P6** in-memory
+  per-IP store with strikes + trust recovery; DashMap-backed; cheap
+  to clone (Arc-shared). Hot path = one map lookup + bitfield AND.
+- `aegis-control::api::risk` — `/api/risk*` HTTP surface
+- `aegis-proxy::handle_risk_reset` — audit-mutated reset path
 
 ## Performance notes
 
 - Composite key hashed once per request
 - Decay amortized via lazy read (no global sweep loop)
 - Single atomic add on the write path (`INCRBY` in Redis, fetch_add in memory)
+- P6 strike check is one DashMap read + `u32` compare on the hot path

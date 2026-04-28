@@ -47,6 +47,26 @@ Metrics: `waf_audit_events_total{sink,class}`,
 `waf_audit_drops_total{sink,reason}`,
 `waf_audit_spool_bytes{sink}`.
 
+### `GET /api/cold-tier` (P8)
+
+The dashboard surfaces the configured sink list at
+`/api/cold-tier`. Each row carries `id`, `kind`, `destination`,
+and a `delivery` placeholder (`unknown` until the sink runtime
+publishes per-sink lag — landing alongside the metrics emit).
+Splunk HEC tokens are redacted before the response is built so
+the dashboard never echoes a secret.
+
+```
+{
+  "sinks": [
+    {"id":"jsonl",  "kind":"file",   "destination":"/var/log/aegis/audit.jsonl", "delivery":"unknown"},
+    {"id":"splunk", "kind":"https",  "destination":"https://splunk:8088",         "delivery":"unknown"},
+    {"id":"kafka",  "kind":"stream", "destination":"k1:9092 / waf-events",        "delivery":"unknown"}
+  ],
+  "fallback_buffer_bytes": 0
+}
+```
+
 ## Delivery semantics
 
 - At-least-once by default (spool + retry)

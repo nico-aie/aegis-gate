@@ -1,10 +1,16 @@
-pub mod sqli;
-pub mod xss;
-pub mod path_traversal;
-pub mod ssrf;
-pub mod header_injection;
 pub mod body_abuse;
+pub mod header_injection;
+pub mod mask;
+pub mod path_traversal;
 pub mod recon;
+pub mod sqli;
+pub mod ssrf;
+pub mod xss;
+
+pub use mask::{
+    tier_index, tier_str, DetectorClass, DetectorMask, DetectorMaskBody, MaskState,
+    SharedDetectorMask, ALL_TIERS,
+};
 
 use aegis_core::pipeline::RequestView;
 
@@ -50,10 +56,29 @@ pub trait Detector: Send + Sync {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal>;
 }
 
-/// Collect signals from all detectors.
+/// Collect signals from all detectors. Bypasses the mask — use
+/// [`run_all_filtered`] in production paths so disabled classes
+/// short-circuit before the detector runs.
 pub fn run_all(detectors: &[Box<dyn Detector>], req: &RequestView<'_>) -> Vec<Signal> {
     let mut signals = Vec::new();
     for d in detectors {
+        signals.extend(d.inspect(req));
+    }
+    signals
+}
+
+/// Collect signals from every detector whose class is enabled in
+/// `mask`. Hot path: the `is_enabled_id` check is one bitfield AND.
+pub fn run_all_filtered(
+    detectors: &[Box<dyn Detector>],
+    mask: DetectorMask,
+    req: &RequestView<'_>,
+) -> Vec<Signal> {
+    let mut signals = Vec::new();
+    for d in detectors {
+        if !mask.is_enabled_id(d.id()) {
+            continue;
+        }
         signals.extend(d.inspect(req));
     }
     signals
@@ -116,5 +141,57 @@ mod tests {
         let req = view(&m, &u, &h, &b);
         let signals = run_all(&detectors, &req);
         assert!(signals.is_empty());
+    }
+
+    #[test]
+    fn filtered_skips_disabled_class() {
+        // Build a request that would normally trip the SQLi detector.
+        let detectors = default_detectors();
+        let (m, u, h, b) = (
+            http::Method::GET,
+            "/api?id=1+UNION+SELECT+password+FROM+users".parse::<http::Uri>().unwrap(),
+            http::HeaderMap::new(),
+            BodyPeek::empty(),
+        );
+        let req = view(&m, &u, &h, &b);
+
+        // With SQLi enabled — at least one signal.
+        let mask = DetectorMask::all_enabled();
+        let signals = run_all_filtered(&detectors, mask, &req);
+        assert!(
+            signals.iter().any(|s| s.tag.contains("sqli")),
+            "expected sqli signal, got {:?}",
+            signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+        );
+
+        // With SQLi disabled — no sqli signal even though the
+        // request would otherwise trip the detector.
+        let masked = mask.with(DetectorClass::Sqli, false);
+        let signals = run_all_filtered(&detectors, masked, &req);
+        assert!(
+            !signals.iter().any(|s| s.tag.contains("sqli")),
+            "sqli signal leaked despite disabled class: {:?}",
+            signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn filtered_with_all_disabled_returns_empty() {
+        let detectors = default_detectors();
+        let (m, u, h, b) = (
+            http::Method::GET,
+            "/api?id=1+UNION+SELECT+password+FROM+users"
+                .parse::<http::Uri>()
+                .unwrap(),
+            http::HeaderMap::new(),
+            BodyPeek::empty(),
+        );
+        let req = view(&m, &u, &h, &b);
+        let signals = run_all_filtered(&detectors, DetectorMask::none(), &req);
+        assert!(
+            signals.is_empty(),
+            "no detector should fire with all classes off, got {:?}",
+            signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+        );
     }
 }

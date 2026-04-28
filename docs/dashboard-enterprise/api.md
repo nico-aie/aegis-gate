@@ -278,6 +278,136 @@ Any other `expr` returns 400. The `bench_*` queries return zero
 samples when `benchmark.mode == disabled`, by design — see
 [`../benchmark-mode.md`](../benchmark-mode.md).
 
+### Security toggles (P1–P8 of the security-toggle plan)
+
+Every mutating endpoint here is gated by the [`AuditedMutate`
+pipeline][p1] — CSRF cookie/header pair must match, the change
+is appended to the SHA-256 hash chain, and the post-state
+diff is emitted on the audit bus before the response returns.
+Validation failures (e.g. compliance clamp) leave the chain
+untouched so the invariant **"every chain entry is a state
+change that actually happened"** holds.
+
+[p1]: ../../Implement-Progress.md
+
+#### `GET /api/detectors` &nbsp;·&nbsp; `PUT /api/detectors`
+
+Detection-class master switch + per-tier overrides.
+
+```
+GET /api/detectors
+{
+  "mask": {"sqli": true, "xss": true, ...},
+  "overrides": {                       // optional per-tier overrides
+    "high":   { "sqli": true, "recon": false, ... }
+  },
+  "locked_classes": ["sqli", "xss", "path_traversal", "ssrf"],
+  "compliance_modes": ["pci"]
+}
+
+PUT /api/detectors          (CSRF + AuditedMutate)
+Body: same `{ mask?, overrides? }` shape; both fields optional.
+       `overrides[tier] = null` clears that tier's override.
+       Falls back to the flat `{ sqli, xss, … }` body for
+       backward-compat with P2 callers.
+```
+
+The hot path consults
+`SharedDetectorMask::resolve(Some(tier))` once per request — one
+Arc load + one match. Compliance clamp validates both base and
+every override against `cfg.compliance.modes`.
+
+#### `GET /api/risk` &nbsp;·&nbsp; `GET /api/risk/{ip}` &nbsp;·&nbsp; `PUT /api/risk/{ip}/reset`
+
+Per-IP risk score + lifetime strikes.
+
+```
+GET /api/risk?limit=50
+{
+  "total_tracked": 12,
+  "returned": 12,
+  "clients": [
+    {"ip":"10.0.0.5","score":92,"strikes":7,"idle_seconds":3,
+     "level":"block","strike_blocked":true},
+    ...
+  ]
+}
+
+GET /api/risk/{ip}
+  → 200 { "client": <RiskSnapshot> } | 404 { "error": "not_found" }
+
+PUT /api/risk/{ip}/reset    (CSRF + AuditedMutate)
+  → clears strikes + score for the IP. Body is empty.
+```
+
+The hot path bumps the per-IP score on signal hits and decays it
+on clean traffic (capped at `risk.trust_recovery.per_hour` per
+hour). Strikes never decay; once `risk.strikes.block_at` is
+reached, the IP is permanently blocked until reset.
+
+#### `GET /api/loadmode` &nbsp;·&nbsp; `PUT /api/loadmode`
+
+`LoadMode { Normal | Elevated | Critical }` based on observed RPS.
+
+```
+GET /api/loadmode
+{
+  "mode": "normal",                 // auto-detected
+  "effective_mode": "elevated",     // override wins if pinned
+  "rps_last_sample": 1842,
+  "override_active": true,
+  "elevated_rps": 2000,
+  "critical_rps": 8000
+}
+
+PUT /api/loadmode           (CSRF + AuditedMutate)
+Body: { "override": "normal"|"elevated"|"critical"|"unset" }
+       Use the literal string `"unset"` to clear the override.
+       Field absent = no-op (also useful as a CSRF/health probe).
+```
+
+Hot path call cost: one `Relaxed` atomic add (`tick`) + one Arc
+load (`current`).  `Critical` short-circuits the verbose audit
+`fields` payload to `null` to keep chain writes cheap under DDoS.
+
+#### `GET /api/logging` &nbsp;·&nbsp; `PUT /api/logging`
+
+Operator-pinned audit-emission verbosity. Process-global per the
+deferred-RBAC decision.
+
+```
+GET /api/logging
+{
+  "level": "info",
+  "levels": ["silent", "error", "warn", "info", "debug", "trace"]
+}
+
+PUT /api/logging            (CSRF + AuditedMutate)
+Body: { "level": "info" }   // any string from `levels`
+```
+
+Below `Error` → no audit emit at all (block events still go
+through the inline 403 response — they just don't hit the chain).
+Below `Info` → drop the verbose `fields` payload.
+
+#### `GET /api/cold-tier`
+
+Read-only inventory of the configured `audit.sinks` array. Each
+row reports the destination + a `delivery` placeholder (`unknown`
+until the sink runtime publishes per-sink lag). Splunk tokens
+are redacted before they reach the response.
+
+```
+GET /api/cold-tier
+{
+  "sinks": [
+    {"id":"jsonl",  "kind":"file",   "destination":"/var/log/aegis/audit.jsonl", "delivery":"unknown"},
+    {"id":"splunk", "kind":"https",  "destination":"https://splunk:8088",         "delivery":"unknown"}
+  ],
+  "fallback_buffer_bytes": 0
+}
+```
+
 ## Response conventions
 
 - All JSON responses use `application/json; charset=utf-8`.

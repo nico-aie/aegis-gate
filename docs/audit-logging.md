@@ -127,6 +127,53 @@ record capturing:
 This feed has a dedicated sink group so auditors can consume it without
 wading through data-plane events. Tamper chain is separate.
 
+### P1 — `AuditedMutate` pipeline
+
+Every mutating endpoint added by P1–P8 (rules, tiers, blacklist,
+admin policy, detector mask, risk reset, load-mode override,
+verbosity) flows through a single wrapper:
+
+```
+1. CSRF cookie/header validation (admin_auth::csrf::validate)
+2. Mutator closure runs                       ← only on CSRF pass
+3. AdminChangeEntry → ChainWriter::append     ← only on Ok return
+4. AuditEvent emitted on the bus              ← same event, same diff
+```
+
+If CSRF fails or the mutator returns `Err`, **no chain entry is
+appended and no bus event is emitted**. The chain invariant —
+"every entry corresponds to a state change that actually
+happened" — holds for the entire P1–P8 surface.
+
+The `AuditedMutate.apply(req, before, after, mutator)` returns
+`MutationOutcome { value, chain_entry }` so handlers can surface
+the new chain head as an optimistic-concurrency token.
+
+| Failure | HTTP | `reason` |
+|---|---|---|
+| CSRF cookie missing | 403 | `csrf_missing_cookie` |
+| CSRF header missing | 403 | `csrf_missing_header` |
+| CSRF mismatch | 403 | `csrf_mismatch` |
+| Mutator returned Err | 400 | `validation` |
+| Conflict variant | 409 | `conflict` |
+| Internal | 500 | `internal` |
+
+### P8 — verbosity-gated emission
+
+The hot path consults `SharedVerbosity::current()` once per
+request:
+
+- below `Error` → no audit emit at all (block events still send
+  the inline 403 — they just don't hit the chain).
+- below `Info` → drop the verbose `fields` payload (path,
+  method, detector tags, strikes, load-mode, verbosity tag).
+
+`LoadMode::Critical` short-circuits the same `fields` payload to
+`null` even at the default `Info` verbosity, so the two
+mechanisms compose: a `Warn`-pinned operator at `Critical` load
+gets the smallest possible chain entry without losing the block
+reason.
+
 ## Access-log compatibility
 
 A lightweight "access log" variant in nginx `combined` format is produced

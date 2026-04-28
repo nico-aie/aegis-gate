@@ -438,6 +438,68 @@ body {
   .aegis-menu-button { display: inline-flex; }
 }
 
+/* ===== Detection-class toggles (Settings P2) ============== */
+
+.aegis-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--aegis-space-2, 0.5rem) var(--aegis-space-4, 1rem);
+  margin-top: var(--aegis-space-3, 0.75rem);
+}
+
+.aegis-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: var(--aegis-space-2, 0.5rem);
+  padding: var(--aegis-space-2, 0.5rem) 0;
+  border-bottom: 1px solid var(--aegis-border-subtle, rgba(127, 127, 127, 0.18));
+}
+
+.aegis-toggle-row label {
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.aegis-toggle-row input[type="checkbox"]:disabled + label,
+.aegis-toggle-row input[type="checkbox"]:disabled ~ label {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* ===== Per-tier detector overrides (Tier Config P3) ====== */
+
+.aegis-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: var(--aegis-space-5, 1.25rem);
+  margin-bottom: var(--aegis-space-2, 0.5rem);
+}
+
+.aegis-section-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.aegis-tier-overrides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: var(--aegis-space-3, 0.75rem);
+}
+
+.aegis-tier-override-head {
+  display: flex;
+  align-items: center;
+  gap: var(--aegis-space-2, 0.5rem);
+  margin-bottom: var(--aegis-space-2, 0.5rem);
+}
+
+.aegis-tier-override-head h3 {
+  margin: 0;
+  flex: 1;
+  font-size: 1rem;
+}
+
 /* ===== Reduced motion ==================================== */
 
 @media (prefers-reduced-motion: reduce) {

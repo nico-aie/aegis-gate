@@ -115,11 +115,37 @@ graceful_degradation:
     "/payments/*": { failure_mode: fail_close }
 ```
 
+## P7/P8 — degraded logging under load
+
+Three independent dials shape audit volume under stress:
+
+1. **`LoadMode::Critical`** (auto) — when sustained RPS crosses
+   `load_mode.critical_rps`, the audit `fields` payload drops
+   to `null`. Block reasons + risk score are preserved so the
+   audit chain still answers "what tripped".
+2. **Verbosity below `Info`** (operator pin) — same payload
+   stripping, applied independently of load. An operator
+   running a load test can pin verbosity to `Warn` even at
+   Normal mode.
+3. **Verbosity below `Error`** (operator pin) — full audit
+   suppression. The inline 403 still goes back to the client;
+   only the chain writes are skipped. Used during DDoS drills
+   where the chain is expected to overflow regardless.
+
+The two mechanisms compose additively — whichever stripper
+fires first wins. See `docs/adaptive-load-shedding.md` (P7) and
+`docs/audit-logging.md` (P8) for the full mechanics.
+
 ## Dashboard signaling
 
 - Red banner when any pool member's circuit is open
 - Warning when a detector has failed-open > N times in the last minute
 - Yellow banner when state backend falls back to local mode
+- **P7** Status-bar pill shows live `LoadMode` (`normal` /
+  `elevated` / `critical`) plus the last-sample RPS. Pinned
+  modes display `(pinned)` next to the level.
+- **P8** Status-bar pill shows the live verbosity. `silent` /
+  `trace` render warn; `error` renders err.
 
 ## Implementation
 

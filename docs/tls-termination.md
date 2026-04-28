@@ -88,35 +88,86 @@ with the old cert; new handshakes pick up the new one. No connection drops.
 ## Configuration
 
 ```yaml
+listeners:
+  data: [{ bind: "0.0.0.0:443" }]
+  admin: { bind: "127.0.0.1:9443" }
+  # P4: optional plain-HTTP redirect listener.
+  force_https: { bind: "0.0.0.0:80", status: 301 }   # 301 or 308
+
 tls:
-  listen: "0.0.0.0:443"
-  min_version: tls1_2       # tls1_3 in PCI mode
+  # P4 hardening
+  min_version: "1.2"          # "1.2" or "1.3"; rejected at config load otherwise
+  force_https: true           # informational; redirect listener above does the work
+  hsts:
+    max_age: 31536000         # >= 31536000 if `preload: true`
+    include_subdomains: true  # required for `preload: true`
+    preload: false
+
   certificates:
-    - host: "api.example.com"
-      cert_file: "/etc/waf/certs/api.pem"
-      key_file:  "${secret:file:/etc/waf/keys/api.key}"
-    - host: "*.example.com"
-      cert_file: "/etc/waf/certs/wildcard.pem"
-      key_file:  "/etc/waf/certs/wildcard.key"
-  default_cert:
-      cert_file: "/etc/waf/certs/default.pem"
-      key_file:  "/etc/waf/certs/default.key"
+    - cert_path: "/etc/waf/certs/api.pem"
+      key_ref:   "${secret:file:/etc/waf/keys/api.key}"
+      hosts:     ["api.example.com"]
+
+  # P5: ACME / Let's Encrypt automation
   acme:
-    enabled: false
     directory_url: "https://acme-v02.api.letsencrypt.org/directory"
-    email: "ops@example.com"
-    hosts: ["api.example.com"]
-    challenge: http01       # or tls_alpn01
-  ocsp_stapling: true
+    contacts: ["mailto:ops@example.com"]
+    domains:  ["api.example.com"]
+    account_key_path: "/var/lib/aegis/acme.json"
+    cert_dir:         "/var/lib/aegis/certs"
+    renew_before:     30d
+    terms_of_service_agreed: true
+    challenge: http01           # http01 | tls_alpn01 | dns01
 ```
+
+### P4 hardening invariants
+
+`WafConfig::validate()` rejects:
+
+| Field | Constraint |
+|---|---|
+| `tls.min_version` | must be `"1.2"` or `"1.3"` |
+| `tls.hsts.max_age` | must be > 0 (RFC 6797 §6.1.1) |
+| `tls.hsts.preload` | requires `max_age >= 31536000` and `include_subdomains: true` |
+| `listeners.force_https.status` | must be 301 or 308 |
+
+The hardened rustls `ServerConfig` is built via
+`aegis_proxy::listener::tls_policy::build_hardened_server_config(resolver, min_version)`
+which uses `ServerConfig::builder_with_protocol_versions(versions)`.
+Older clients fail the handshake rather than negotiate down.
+
+### P5 ACME flow
+
+1. Boot reads `tls.acme`, validates contacts / domains / TOS.
+2. `register_account` loads `account_key_path` if it exists or
+   registers a new account (persists `AccountCredentials` JSON
+   with `0600` mode).
+3. `place_order` extracts the HTTP-01 token + key authorisation
+   for each domain and publishes them to the `ChallengeStore`
+   shared with the `force_https_loop`.
+4. The plain-HTTP listener serves
+   `/.well-known/acme-challenge/{token}` directly (200 +
+   `application/octet-stream`); every other request redirects.
+5. After validation, finalise via `rcgen`-built CSR, download
+   the chain, write `cert_dir/{domain}/{cert,key}.pem` and
+   swap into the live `Arc<ArcSwap<CertStore>>`.
+6. The renewal scheduler (`spawn_renewal_scheduler`) ticks at
+   half the renew window, clamped to `[60s, 3600s]`, and
+   triggers `manager.issue()` whenever any inventoried cert is
+   within `renew_before` of expiry.
 
 ## Implementation
 
-- `src/tls/resolver.rs` — `DynamicResolver`, `CertStore`
-- `src/tls/loader.rs` — file parser + watcher
-- `src/tls/acme.rs` — ACME client (feature-gated)
-- `src/tls/ocsp.rs` — OCSP refresher
-- `src/tls/fips.rs` — FIPS provider selection + cipher allowlist
+- `aegis-proxy::listener::tls` — `DynamicResolver`, `CertStore`
+- `aegis-proxy::listener::tls_policy` — **P4** `protocol_versions_for`,
+  `build_hardened_server_config`, `format_hsts_header`,
+  `force_https_redirect_response`
+- `aegis-proxy::acme` — **P5** trait + `AcmeManager` state machine
+  + `ChallengeStore`
+- `aegis-proxy::acme_instant` — **P5 follow-up** `instant-acme`
+  network adapter + persistence helpers
+- `aegis-proxy::force_https_loop` — plain-HTTP listener that
+  serves both ACME HTTP-01 challenges and the redirect
 
 ## Performance notes
 
