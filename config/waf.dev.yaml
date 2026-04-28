@@ -1,0 +1,184 @@
+# Aegis-Gate — Development / Test-harness Configuration
+#
+# Self-contained config used by `tests/`:
+#   - no `${secret:env:…}` references — every credential is inline
+#     so `cargo run -p aegis-bin -- run --config config/waf.dev.yaml`
+#     works without bootstrapping anything else
+#   - `state.backend: in_memory` — no Redis dependency
+#   - tuned thresholds for single-host k6 / curl smoke runs
+#   - `compliance: null` so detector-flip tests aren't clamped
+#   - one literal admin: user "admin", password "aegis-test-1234"
+#
+# DO NOT use this config in production:
+#   - the password is in version control
+#   - the CSRF secret is a literal placeholder
+#   - rate limits + risk thresholds are loose to keep tests green
+#
+# To regenerate the password hash (e.g. rotate the test password):
+#   echo "<new-password>" | cargo run -p aegis-bin -- admin set-password
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+  # P4 — optional plain-HTTP redirect listener; off by default in
+  # dev so the data plane stays on :8080 without conflicts.
+  # force_https: { bind: "0.0.0.0:80", status: 301 }
+
+# ---------------------------------------------------------------------------
+# Routes — single catch-all so every test request reaches the data plane
+# ---------------------------------------------------------------------------
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+
+# ---------------------------------------------------------------------------
+# Upstream pools — single stub. Tests don't reach the upstream;
+# the proxy returns "OK" inline when a request makes it past the
+# security pipeline.
+# ---------------------------------------------------------------------------
+upstreams:
+  stub-pool:
+    members:
+      - addr: "127.0.0.1:9999"
+    lb: round_robin
+
+# ---------------------------------------------------------------------------
+# State backend — in-memory keeps tests deterministic
+# ---------------------------------------------------------------------------
+state:
+  backend: in_memory
+
+# ---------------------------------------------------------------------------
+# Detectors — every class on, so attack-corpus tests trip them all
+# ---------------------------------------------------------------------------
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: true }
+  brute_force:      { enabled: true }
+
+# ---------------------------------------------------------------------------
+# Risk scoring — tuned for the P6 k6 scenario (`risk-strikes.js`)
+# ---------------------------------------------------------------------------
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 40
+    block_at:     80
+    max:          100
+  trust_recovery:
+    per_hour: 30
+  strikes:
+    block_at: 50          # matches STRIKE_LIMIT default in risk-strikes.js
+
+# ---------------------------------------------------------------------------
+# Load mode — thresholds tuned for laptop k6 runs.
+# `loadmode-degradation.js` ramps to ~12 000 RPS in stage C, so
+# `critical_rps: 8000` puts us solidly in Critical at peak.
+# ---------------------------------------------------------------------------
+load_mode:
+  elevated_rps:    2000
+  critical_rps:    8000
+  sample_interval: 1s
+  hysteresis:      0.10
+
+# ---------------------------------------------------------------------------
+# Logging — start at "info" so every audit event lands; the P8
+# k6 scenario flips this to "silent" and back.
+# ---------------------------------------------------------------------------
+logging:
+  verbosity: info
+
+# ---------------------------------------------------------------------------
+# Audit — single jsonl sink under /tmp so dev runs are inspectable
+# ---------------------------------------------------------------------------
+audit:
+  sinks:
+    - jsonl:
+        path: "/tmp/aegis-dev-audit.jsonl"
+  chain:
+    enabled: true
+  retention: "7d"
+  pseudonymize_ip: false
+
+# ---------------------------------------------------------------------------
+# Rate limit — loose enough that smoke tests don't trip it
+# ---------------------------------------------------------------------------
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 10000
+      window: "1m"
+
+# ---------------------------------------------------------------------------
+# Rules — the detectors carry the load; no custom rules in dev
+# ---------------------------------------------------------------------------
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+# ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+observability:
+  prometheus:
+    path: "/metrics"
+  access_log:
+    format: json
+    sink: stdout
+
+# ---------------------------------------------------------------------------
+# Admin — inline literal credentials (test harness only)
+# user:     admin
+# password: aegis-test-1234
+# csrf:     test-csrf-secret-do-not-use-in-production-32b
+# ---------------------------------------------------------------------------
+admin:
+  bind: "127.0.0.1:9443"
+  dashboard_auth:
+    password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
+    csrf_secret_ref:   "test-csrf-secret-do-not-use-in-production-32b"
+    session_ttl_idle: "30m"
+    session_ttl_absolute: "8h"
+    ip_allowlist:
+      - "127.0.0.1/32"
+      - "::1/128"
+    totp_enabled: false
+    login_rate_limit:
+      per_ip:
+        limit: 100              # loose so the API smoke can run repeatedly
+        window: "1m"
+      per_user:
+        limit: 200
+        window: "15m"
+    lockout:
+      threshold: 50
+      window: "15m"
+      duration: "5m"
+
+# ---------------------------------------------------------------------------
+# Compliance — explicitly omitted so detector toggle tests aren't
+# clamped by PCI/HIPAA/SOC2 invariants. Set this in any production
+# config; see docs/compliance.md.
+# ---------------------------------------------------------------------------
+# compliance: null

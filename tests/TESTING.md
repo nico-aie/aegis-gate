@@ -48,36 +48,83 @@ The project follows a four-layer pyramid:
 
 ## 3. Bring-up
 
+The test harness ships a self-contained dev config at
+[`config/waf.dev.yaml`](../config/waf.dev.yaml) — it has no
+`${secret:env:...}` references, runs against the in-memory state
+backend, and pre-loads a fixed admin credential pair so the test
+layers can authenticate without a bootstrap step.
+
+> **Test admin credentials** (declared inline in
+> `config/waf.dev.yaml` — *do not use in production*):
+> - user: `admin`
+> - password: `aegis-test-1234`
+> - csrf secret: `test-csrf-secret-do-not-use-in-production-32b`
+
+To rotate the password, regenerate the argon2id hash and replace
+the `password_hash_ref` value:
+
+```sh
+echo "<new-password>" | cargo run -p aegis-bin -- admin set-password
+# → paste the printed hash into config/waf.dev.yaml
+```
+
+### Standard bring-up
+
 ```sh
 # 1. Build the gateway
 cargo build --workspace --release
 
-# 2. Bring up the test stack
+# 2. (Optional) Bring up the auxiliary test stack — Redis, k6,
+#    Nuclei, ZAP. The dev config doesn't require any of these
+#    for the unit + admin-API smoke layers; only k6 + scanner
+#    runs need the containers.
 docker compose \
   -f deploy/docker-compose.dev.yml \
   -f deploy/docker-compose.test.yml \
   up -d
 
-# 3. Run the gateway pointed at the dev config
+# 3. Validate the dev config first (catches schema drift fast)
+cargo run -p aegis-bin -- validate --config config/waf.dev.yaml
+# → expected: "config OK: config/waf.dev.yaml"
+
+# 4. Run the gateway pointed at the dev config
 target/release/aegis-bin run --config config/waf.dev.yaml &
 WAF_PID=$!
 
-# 4. Wait for readiness
+# 5. Wait for readiness
 until curl -sf http://127.0.0.1:9443/healthz/ready >/dev/null; do
   sleep 0.5
 done
 echo "ready"
 
-# 5. Export the admin creds the API/load layers need
+# 6. Export the admin creds the API/load layers need.
+#    These are the literals from config/waf.dev.yaml — fine to
+#    check into a runbook because the config itself is in VCS.
 export ADMIN_USER=admin
-export ADMIN_PASS=$(cat /run/secrets/aegis_admin_pass)
+export ADMIN_PASS=aegis-test-1234
 
-# 6. ... run tests ...
+# 7. ... run tests ...
 
-# 7. Tear down
+# 8. Tear down
 kill $WAF_PID
 docker compose -f deploy/docker-compose.dev.yml -f deploy/docker-compose.test.yml down
 ```
+
+### What's in `waf.dev.yaml` vs `waf.yaml`
+
+| Field | `waf.yaml` (production-shape) | `waf.dev.yaml` (test) |
+|---|---|---|
+| Listeners | TLS `:8443` + plain `:8080` + admin `:9443` | plain `:8080` + admin `:9443` |
+| Routes | 4 named routes, tier overrides | one catch-all |
+| Upstreams | 3 pools at `127.0.0.1:3001-3004` | one stub pool (`127.0.0.1:9999`) |
+| State | configurable | `in_memory` (forced) |
+| Admin password | `${secret:env:AEGIS_ADMIN_PASSWORD_HASH}` | inline argon2id hash |
+| CSRF secret | `${secret:env:AEGIS_CSRF_SECRET}` | inline placeholder |
+| Compliance | optional | `null` so detector toggle tests aren't clamped |
+| `risk.strikes.block_at` | not set (legacy decay only) | `50` (matches `STRIKE_LIMIT` default in `risk-strikes.js`) |
+| `load_mode.{elevated,critical}_rps` | defaults | `2000` / `8000` (laptop-friendly) |
+| Audit sinks | empty | one jsonl sink at `/tmp/aegis-dev-audit.jsonl` |
+| Rate limit (admin login) | per-IP 5/min, lockout 10 attempts | per-IP 100/min, lockout 50 — keeps API smoke re-runs fast |
 
 ## 4. Layer 1 — Rust unit + integration tests
 

@@ -1518,6 +1518,50 @@ path: /var/log/waf/audit.jsonl
     }
 
     #[test]
+    fn load_config_round_trip_dev_yaml() {
+        // The dev config is the one referenced by tests/TESTING.md
+        // and the CI bring-up; this test catches schema drift that
+        // would silently break the test harness.
+        let path = std::path::Path::new("../../config/waf.dev.yaml");
+        if path.exists() {
+            let cfg = super::load_config(path)
+                .unwrap_or_else(|e| panic!("waf.dev.yaml must parse: {e}"));
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("waf.dev.yaml must validate: {e}"));
+
+            // Sanity-check the test-harness invariants — these are
+            // what the k6 + tests/api scripts rely on.
+            assert_eq!(
+                cfg.state.backend,
+                StateBackendKind::InMemory,
+                "dev config must be self-contained (no Redis)",
+            );
+            assert!(
+                cfg.compliance.is_none(),
+                "dev config must not pin compliance modes — \
+                 detector toggle tests would be clamped",
+            );
+            let strikes = cfg.risk.strikes.as_ref().expect(
+                "dev config must declare risk.strikes for risk-strikes.js",
+            );
+            assert_eq!(
+                strikes.block_at, 50,
+                "must match STRIKE_LIMIT default in tests/load/risk-strikes.js",
+            );
+            assert!(
+                cfg.risk.trust_recovery.is_some(),
+                "dev config must enable trust recovery (P6)",
+            );
+            assert!(
+                cfg.admin.dashboard_auth.password_hash_ref
+                    .starts_with("$argon2id$"),
+                "admin password must be a real argon2id hash, \
+                 not a `${{secret:env:…}}` reference",
+            );
+        }
+    }
+
+    #[test]
     fn load_config_missing_file_returns_error() {
         let result = super::load_config(std::path::Path::new("/nonexistent/waf.yaml"));
         assert!(result.is_err());

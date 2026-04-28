@@ -42,23 +42,32 @@ tests/
 
 ## Running
 
-Bring the test stack up first (Docker compose with the dev
-config), then exercise the layers below in order.
+The test harness ships a self-contained dev config at
+[`config/waf.dev.yaml`](../config/waf.dev.yaml) — no Redis, no
+secret-resolver hookup, fixed admin credentials. The `cargo run`
+line below reads it directly. See
+[`TESTING.md`](./TESTING.md#3-bring-up) for the full diff
+against the production-shape `config/waf.yaml`.
 
 ```sh
+# Optional: bring up the auxiliary stack (Redis, k6, Nuclei, ZAP).
+# Required only for the load + scanner layers.
 docker compose \
   -f deploy/docker-compose.dev.yml \
   -f deploy/docker-compose.test.yml \
   up -d
 
+# Start the gateway against the dev config
 cargo run -p aegis-bin -- run --config config/waf.dev.yaml &
 ```
 
 ### Admin-API smoke
 
 ```sh
+# Credentials are baked into config/waf.dev.yaml — fine to check
+# in because the config itself is in VCS.
 export ADMIN_USER=admin
-export ADMIN_PASS=$(cat /run/secrets/aegis_admin_pass)
+export ADMIN_PASS=aegis-test-1234
 
 # All endpoints in dependency order (~5 s)
 ./tests/api/run-all.sh
