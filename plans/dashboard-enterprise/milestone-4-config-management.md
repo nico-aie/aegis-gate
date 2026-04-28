@@ -12,11 +12,11 @@ respectively).
 **Verification.** `cargo test -p aegis-control && cargo clippy -p aegis-control -- -D warnings`.
 
 **References.**
-- [`docs/dashboard-enterprise/pages/rule-manager.md`](../../docs/dashboard-enterprise/pages/rule-manager.md)
-- [`docs/dashboard-enterprise/pages/tier-config.md`](../../docs/dashboard-enterprise/pages/tier-config.md)
-- [`docs/dashboard-enterprise/pages/blacklist.md`](../../docs/dashboard-enterprise/pages/blacklist.md)
-- [`docs/dashboard-enterprise/pages/whitelist.md`](../../docs/dashboard-enterprise/pages/whitelist.md)
-- [`docs/dashboard-enterprise/pages/settings.md`](../../docs/dashboard-enterprise/pages/settings.md)
+- [`docs/control-plane/enterprise/pages/rule-manager.md`](../../docs/control-plane/enterprise/pages/rule-manager.md)
+- [`docs/control-plane/enterprise/pages/tier-config.md`](../../docs/control-plane/enterprise/pages/tier-config.md)
+- [`docs/control-plane/enterprise/pages/blacklist.md`](../../docs/control-plane/enterprise/pages/blacklist.md)
+- [`docs/control-plane/enterprise/pages/whitelist.md`](../../docs/control-plane/enterprise/pages/whitelist.md)
+- [`docs/control-plane/enterprise/pages/settings.md`](../../docs/control-plane/enterprise/pages/settings.md)
 
 ---
 

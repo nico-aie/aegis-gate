@@ -45,15 +45,44 @@ export const options = {
   insecureSkipTLSVerify: true,
 };
 
-function loginAdmin() {
-  const jar = http.cookieJar();
+// Login once at startup; abort the whole run on failure. We read
+// the `Set-Cookie` headers directly because the server emits the
+// `Secure` flag which k6's cookie jar drops over plain HTTP.
+export function setup() {
   const res = http.post(`${admin}/admin/login`,
     JSON.stringify({ user: __ENV.ADMIN_USER, password: __ENV.ADMIN_PASS }),
-    { headers: { "content-type": "application/json" }, jar },
+    { headers: { "content-type": "application/json" } },
   );
-  if (res.status >= 400) throw new Error(`admin login: ${res.status}`);
-  const csrf = jar.cookiesForURL(admin)["aegis_csrf"];
-  return { jar, csrf };
+  if (res.status >= 400) {
+    throw new Error(
+      `admin login failed: ${res.status} (check ADMIN_USER + ADMIN_PASS env)`,
+    );
+  }
+  const setCookies = res.headers["Set-Cookie"];
+  const raw = Array.isArray(setCookies) ? setCookies.join(",") : (setCookies || "");
+  const session = extractCookie(raw, "aegis_session");
+  const csrf = extractCookie(raw, "aegis_csrf");
+  if (!csrf) {
+    throw new Error("aegis_csrf cookie missing in login response");
+  }
+  return { csrf, session };
+}
+
+function extractCookie(setCookieHeader, name) {
+  const re = new RegExp(`${name}=([^;,\\s]+)`);
+  const m = setCookieHeader.match(re);
+  return m ? m[1] : null;
+}
+
+function buildAdminHeaders(data) {
+  const cookie = data.session
+    ? `aegis_session=${data.session}; aegis_csrf=${data.csrf}`
+    : `aegis_csrf=${data.csrf}`;
+  return {
+    "content-type": "application/json",
+    "x-csrf-token": data.csrf,
+    cookie,
+  };
 }
 
 function malicious() {
@@ -69,14 +98,11 @@ function clean() {
   });
 }
 
-export default function () {
-  const ctx = loginAdmin();
+export default function (data) {
+  const adminHeaders = buildAdminHeaders(data);
 
-  // Reset risk state for the source IP so the run is deterministic.
-  http.put(`${admin}/api/risk/${sourceIp}/reset`, "{}", {
-    headers: { "x-csrf-token": ctx.csrf, "content-type": "application/json" },
-    jar: ctx.jar,
-  });
+  // Reset risk state so the run is deterministic.
+  http.put(`${admin}/api/risk/${sourceIp}/reset`, "{}", { headers: adminHeaders });
 
   group("drive to strike block", () => {
     const t0 = Date.now();
@@ -96,12 +122,9 @@ export default function () {
   });
 
   // Snapshot the post-state so the run leaves a clear trail.
-  const snap = http.get(`${admin}/api/risk/${sourceIp}`, { jar: ctx.jar });
+  const snap = http.get(`${admin}/api/risk/${sourceIp}`, { headers: adminHeaders });
   console.log("post-state risk snapshot:", snap.body);
 
   // Cleanup so re-runs start from zero strikes.
-  http.put(`${admin}/api/risk/${sourceIp}/reset`, "{}", {
-    headers: { "x-csrf-token": ctx.csrf, "content-type": "application/json" },
-    jar: ctx.jar,
-  });
+  http.put(`${admin}/api/risk/${sourceIp}/reset`, "{}", { headers: adminHeaders });
 }

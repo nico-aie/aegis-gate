@@ -13,7 +13,7 @@
 //!   cache (`Mutex<Option<(Instant, StatsResponse)>>`) so a busy
 //!   dashboard polling at 1 s doesn't recompute on every request.
 //! - The JSON shape is documented in
-//!   `docs/dashboard-enterprise/api.md` §"Stats / Overview".
+//!   `docs/control-plane/enterprise/api.md` §"Stats / Overview".
 
 #![allow(dead_code)]
 
@@ -32,7 +32,7 @@ const REQUEST_WINDOW: Duration = Duration::from_secs(10);
 const THREAT_WINDOW: Duration = Duration::from_secs(300);
 /// Risk-score threshold above which an IP enters the active-threats
 /// set. 70 mirrors the existing risk engine boundary documented in
-/// `docs/risk-scoring.md`.
+/// `docs/security/risk-scoring.md`.
 const DEFAULT_RISK_THRESHOLD: u32 = 70;
 /// Default response cache TTL for [`StatsHandler::render`].
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(1);
@@ -66,7 +66,7 @@ impl UpstreamSummary {
 }
 
 /// JSON shape returned by `GET /api/stats`. Matches
-/// `docs/dashboard-enterprise/api.md` verbatim.
+/// `docs/control-plane/enterprise/api.md` verbatim.
 #[derive(Clone, Debug, Serialize)]
 pub struct StatsResponse {
     pub request_rate: f64,
@@ -88,7 +88,7 @@ pub struct TimeseriesPoint {
 }
 
 /// JSON shape returned by `GET /api/stats/timeseries`. Matches
-/// `docs/dashboard-enterprise/api.md` §"Stats / Overview".
+/// `docs/control-plane/enterprise/api.md` §"Stats / Overview".
 #[derive(Clone, Debug, Serialize)]
 pub struct TimeseriesResponse {
     pub window_seconds: u32,

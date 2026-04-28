@@ -43,7 +43,7 @@ crates/aegis-control/src/dashboard/legacy.rs   ← keeps DASHBOARD_HTML_V1
   from `legacy.rs`.
 - `crates/aegis-control/src/server.rs` — registers the new
   asset route + sets the security headers from
-  [`docs/dashboard-enterprise/security.md`](../../docs/dashboard-enterprise/security.md).
+  [`docs/control-plane/enterprise/security.md`](../../docs/control-plane/enterprise/security.md).
 - `crates/aegis-control/Cargo.toml` — **no new deps**. Confirm
   `mime_guess` (or equivalent already present) is available
   for content-type lookup; if not, hand-roll a small extension
@@ -76,7 +76,7 @@ crates/aegis-control/src/dashboard/legacy.rs   ← keeps DASHBOARD_HTML_V1
 ### D-M1-T1.2 SPA shell HTML
 
 - File: `assets/dashboard/index.html`
-- Skeleton matches [`docs/dashboard-enterprise/layout.md`](../../docs/dashboard-enterprise/layout.md):
+- Skeleton matches [`docs/control-plane/enterprise/layout.md`](../../docs/control-plane/enterprise/layout.md):
   top bar + sidebar + content + status bar.
 - Inline the SVG sprite from `icons.svg` (CI step or Rust build
   step — but since we have no build step, the simplest path is
@@ -116,7 +116,7 @@ crates/aegis-control/src/dashboard/legacy.rs   ← keeps DASHBOARD_HTML_V1
 ### D-M1-T1.5 Security headers
 
 - File: `src/server.rs`
-- Add the headers from [`docs/dashboard-enterprise/security.md`](../../docs/dashboard-enterprise/security.md)
+- Add the headers from [`docs/control-plane/enterprise/security.md`](../../docs/control-plane/enterprise/security.md)
   to every `/dashboard/*` response. Place behind a small tower
   middleware so it's reused.
 - Test: integration test fetches `/dashboard/` and asserts:

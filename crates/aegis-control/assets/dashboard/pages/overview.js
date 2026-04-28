@@ -5,7 +5,7 @@
 // `/dashboard/assets/components/*` and are dynamically imported on
 // first use so the page module stays small.
 //
-// Polling cadence aligned with `docs/dashboard-enterprise/pages/overview.md`:
+// Polling cadence aligned with `docs/control-plane/enterprise/pages/overview.md`:
 // - /api/stats every 1s
 // - /api/stats/timeseries every 5s
 // - /api/attacks/distribution every 10s

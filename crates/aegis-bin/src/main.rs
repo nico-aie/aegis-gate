@@ -303,5 +303,5 @@ fn print_help() {
     println!("    version                         Show version");
     println!("    help                            Show this help");
     println!();
-    println!("See docs/cli.md for the full subcommand reference.");
+    println!("See docs/operator/cli.md for the full subcommand reference.");
 }

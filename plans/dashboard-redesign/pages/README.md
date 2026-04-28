@@ -46,7 +46,7 @@ longer than a page is the workflow output, not the plan.
 
 ## Inputs
 
-- Design contract: [`docs/dashboard-enterprise/pages/<page>.md`](../../../docs/dashboard-enterprise/pages/<page>.md)
+- Design contract: [`docs/control-plane/enterprise/pages/<page>.md`](../../../docs/control-plane/enterprise/pages/<page>.md)
 - API endpoints used: <list — see api.md>
 - Components reused from M0: <list>
 - New components introduced: <list — keep small, ideally 0–1>
@@ -100,7 +100,7 @@ Apart from the page module + CSS deltas:
    stage 1 output. Keep this committed; it's the design
    record.
 2. Updates to
-   `docs/dashboard-enterprise/pages/<page>.md` if any
+   `docs/control-plane/enterprise/pages/<page>.md` if any
    contract decision diverged.
 3. A test addition under `tests/dashboard_polish.rs`,
    `tests/api/`, or `tests/e2e/dashboard/`.

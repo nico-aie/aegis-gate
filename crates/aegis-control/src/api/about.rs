@@ -11,7 +11,7 @@
 //!   `benchmark.configured_mode != null`; that field is added
 //!   later by the parallel B-T4.2 task in `plans/benchmark-mode.md`).
 //!
-//! Spec: `docs/dashboard-enterprise/api.md` §"Stats / Overview".
+//! Spec: `docs/control-plane/enterprise/api.md` §"Stats / Overview".
 
 #![allow(dead_code)]
 

@@ -46,6 +46,37 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # F-T7 — Pebble (Let's Encrypt's local ACME staging CA).
+  # Provides a real ACME directory the InstantAcmeProvider can
+  # round-trip against without hitting Let's Encrypt and without
+  # needing a public-facing domain. The challenge HTTP port is
+  # `pebble-challtestsrv:8080`; the directory URL the WAF talks
+  # to is https://pebble:14000/dir.
+  #
+  # Bring-up:
+  #   docker compose -f deploy/docker-compose.dev.yml \
+  #                  -f deploy/docker-compose.test.yml up -d pebble
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    container_name: aegis-pebble
+    # Trust the host so Pebble can probe back to the WAF on
+    # `host.docker.internal:5002` (the HTTP-01 challenge
+    # listener — `tests/api/acme.sh` brings up the WAF on that
+    # port).
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+    command:
+      - -config
+      - /test/config/pebble-config.json
+      - -dnsserver
+      - "127.0.0.1:8053"
+    ports:
+      - "14000:14000"   # ACME directory
+      - "15000:15000"   # management API
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   # Interactive etcdctl shell for debugging the control plane.
   # Usage: docker exec -it aegis-etcdctl etcdctl get /aegis/config/waf
   #

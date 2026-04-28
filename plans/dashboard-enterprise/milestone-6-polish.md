@@ -10,9 +10,9 @@ small touch to `docs/`.
 **Verification.** `cargo test -p aegis-control && cargo clippy -p aegis-control -- -D warnings`.
 
 **References.**
-- [`docs/dashboard-enterprise/accessibility.md`](../../docs/dashboard-enterprise/accessibility.md)
-- [`docs/dashboard-enterprise/security.md`](../../docs/dashboard-enterprise/security.md)
-- [`docs/dashboard-enterprise/assets.md`](../../docs/dashboard-enterprise/assets.md)
+- [`docs/control-plane/enterprise/accessibility.md`](../../docs/control-plane/enterprise/accessibility.md)
+- [`docs/control-plane/enterprise/security.md`](../../docs/control-plane/enterprise/security.md)
+- [`docs/control-plane/enterprise/assets.md`](../../docs/control-plane/enterprise/assets.md)
 
 ---
 
@@ -32,14 +32,14 @@ small touch to `docs/`.
 ### D-M6-T6.2 Contrast matrix
 
 - New test: `tests/dashboard/contrast.rs` — walks every
-  documented token pair from [`theme.md`](../../docs/dashboard-enterprise/theme.md)
+  documented token pair from [`theme.md`](../../docs/control-plane/enterprise/theme.md)
   through the WCAG formula. Fails on regression.
 
 ### D-M6-T6.3 Security headers e2e
 
 - New test: `tests/dashboard/headers.rs` — fetches one URL per
   surface (asset, page route, API endpoint, SSE stream) and
-  asserts every header in [`security.md`](../../docs/dashboard-enterprise/security.md)
+  asserts every header in [`security.md`](../../docs/control-plane/enterprise/security.md)
   §"Headers (full set)".
 
 ### D-M6-T6.4 XSS regression
@@ -60,7 +60,7 @@ small touch to `docs/`.
 
 - New test: `tests/dashboard/budget.rs` — walks
   `assets/dashboard/`, gzips each file, asserts each ≤ the
-  budget in [`assets.md` §size-budget](../../docs/dashboard-enterprise/assets.md#size-budget),
+  budget in [`assets.md` §size-budget](../../docs/control-plane/enterprise/assets.md#size-budget),
   total ≤ 220 KB gzipped.
 
 ### D-M6-T6.7 Lighthouse
@@ -71,11 +71,11 @@ small touch to `docs/`.
 
 ### D-M6-T6.8 Docs touch-up
 
-- Update `docs/dashboard.md` to point at
-  `docs/dashboard-enterprise/` for the v2 surface; keep the v1
+- Update `docs/control-plane/dashboard.md` to point at
+  `docs/control-plane/enterprise/` for the v2 surface; keep the v1
   contract section unchanged.
 - Update `docs/README.md` index with the new
-  `docs/dashboard-enterprise/` entry.
+  `docs/control-plane/enterprise/` entry.
 - Update `README.md` "Documentation" table.
 
 ### D-M6-T6.9 Remove legacy shell

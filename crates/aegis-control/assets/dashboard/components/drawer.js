@@ -1,6 +1,6 @@
 // Drawer component (D-M3-T3.1).
 //
-// Right-anchored 480px overlay per docs/dashboard-enterprise/components.md.
+// Right-anchored 480px overlay per docs/control-plane/enterprise/components.md.
 // Trapped focus, ESC closes, click-out closes (unless `dismissable: false`).
 // Renders body content as a string, a Node, or a JSON-serialisable object
 // (objects render as a pretty-printed `<pre>`). The Live Feed page uses

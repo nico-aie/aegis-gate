@@ -5,7 +5,7 @@
 >    (benchmark mode)
 > 2. [`../Architecture.md`](../Architecture.md) §5 (pipeline), §28.5
 >    (benchmark mode)
-> 3. [`../docs/benchmark-mode.md`](../docs/benchmark-mode.md) — design spec
+> 3. [`../docs/operator/benchmark-mode.md`](../docs/operator/benchmark-mode.md) — design spec
 > 4. [`./plan.md`](./plan.md) — assistant guide
 > 5. The cross-crate types referenced below live in `aegis-core`
 >    (`config::benchmark`, `types::benchmark`); see B-T1.x.
@@ -110,7 +110,7 @@ dashboard's `D-M{n}-T{x}.{y}`.
 | B-T6.2 | `config/README.md` (modify) | Document the new section. |
 | B-T6.3 | `tests/load/bench-headers.js` | k6 script reading `X-Aegis-Overhead-Us`, producing CSV for the SLO harness. |
 | B-T6.4 | CI gate | Run B-T2.7 criterion bench in CI nightly; fail if regression > 1 %. |
-| B-T6.5 | `docs/USAGE.md` (modify) | "Benchmarking your WAF" section with a copy-paste recipe (enable, run k6, read CSV, disable). |
+| B-T6.5 | `docs/operator/usage.md` (modify) | "Benchmarking your WAF" section with a copy-paste recipe (enable, run k6, read CSV, disable). |
 | B-T6.6 | `Implement-Progress.md` | Track entries per §0.3 protocol after each task. |
 
 ## Definition of Done
@@ -122,7 +122,7 @@ dashboard's `D-M{n}-T{x}.{y}`.
 - A reference k6 run with mode `headers` produces a CSV that matches
   the Prometheus `waf_bench_overhead_seconds` series within 5 %
   (sanity check that headers and metrics agree).
-- `docs/benchmark-mode.md` and `plans/benchmark-mode.md` cross-link
+- `docs/operator/benchmark-mode.md` and `plans/benchmark-mode.md` cross-link
   from `docs/README.md`, `Architecture.md`, `Requirement.md`,
   `plans/plan.md`, and `Implement-Progress.md`.
 - A live demo on the dashboard: toggle benchmark mode, watch the
@@ -147,12 +147,12 @@ B-T6.5 / B-T6.6 close the track.
 
 ## Cross-references
 
-- Design spec — [`../docs/benchmark-mode.md`](../docs/benchmark-mode.md)
+- Design spec — [`../docs/operator/benchmark-mode.md`](../docs/operator/benchmark-mode.md)
 - Performance target — [`../Requirement.md`](../Requirement.md) §3
 - Pipeline — [`../Architecture.md`](../Architecture.md) §5
-- API — [`../docs/dashboard-enterprise/api.md`](../docs/dashboard-enterprise/api.md)
+- API — [`../docs/control-plane/enterprise/api.md`](../docs/control-plane/enterprise/api.md)
   §benchmark
 - Dashboard panels —
-  [`../docs/dashboard-enterprise/pages/tracking.md`](../docs/dashboard-enterprise/pages/tracking.md)
+  [`../docs/control-plane/enterprise/pages/tracking.md`](../docs/control-plane/enterprise/pages/tracking.md)
   and
-  [`../docs/dashboard-enterprise/pages/analytics.md`](../docs/dashboard-enterprise/pages/analytics.md)
+  [`../docs/control-plane/enterprise/pages/analytics.md`](../docs/control-plane/enterprise/pages/analytics.md)

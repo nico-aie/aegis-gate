@@ -10,6 +10,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 trap 'echo "tests/api/run-all.sh aborted"; exit 1' ERR
 
+echo "==> tests/api/auth.sh"
+"$HERE/auth.sh"
+echo
+echo "==> tests/api/tls.sh"
+"$HERE/tls.sh"
+echo
 echo "==> tests/api/detectors.sh"
 "$HERE/detectors.sh"
 echo

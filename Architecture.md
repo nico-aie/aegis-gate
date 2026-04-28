@@ -462,7 +462,7 @@ impl rustls::server::ResolvesServerCert for DynamicResolver { ... }
 
 This subsystem authenticates **end-user traffic** routed through the WAF
 to upstream origins. It is distinct from dashboard/admin authentication
-(see §15 and [`docs/dashboard-auth.md`](docs/dashboard-auth.md)).
+(see §15 and [`docs/control-plane/dashboard-auth.md`](docs/control-plane/dashboard-auth.md)).
 
 ```rust
 pub enum AuthConfig {
@@ -484,7 +484,7 @@ pub enum AuthConfig {
 
 > **Deferred (origin-facing OIDC).** A browser-facing OIDC relying party
 > with PASETO session cookies is out of scope for v1. See
-> [`docs/deferred/rbac-sso.md`](docs/deferred/rbac-sso.md).
+> [`docs/future/rbac-sso.md`](docs/future/rbac-sso.md).
 
 ---
 
@@ -554,7 +554,7 @@ Out of scope for v1. The v1 WAF runs single-tenant: one config,
 one dashboard, one audit stream, one compliance profile. `tenant_id`
 on `RequestCtx` / `RouteCtx` is reserved (always `None`) and the
 tenant governor is not implemented. See
-[`docs/deferred/multi-tenancy.md`](docs/deferred/multi-tenancy.md).
+[`docs/future/multi-tenancy.md`](docs/future/multi-tenancy.md).
 
 ---
 
@@ -585,7 +585,7 @@ pub struct Secret(Zeroizing<Vec<u8>>);
 ## 15. Admin Plane
 
 Single admin principal, local authentication. No IdP in v1. Full
-spec in [`docs/dashboard-auth.md`](docs/dashboard-auth.md).
+spec in [`docs/control-plane/dashboard-auth.md`](docs/control-plane/dashboard-auth.md).
 
 - **Listener**: separate address, loopback by default, IP allowlist
   enforced at accept time.
@@ -611,7 +611,7 @@ spec in [`docs/dashboard-auth.md`](docs/dashboard-auth.md).
 
 > **Deferred**: OIDC/SSO, RBAC roles, per-user accounts, API
 > tokens, 4-eyes approval, SCIM, WebAuthn. See
-> [`docs/deferred/rbac-sso.md`](docs/deferred/rbac-sso.md).
+> [`docs/future/rbac-sso.md`](docs/future/rbac-sso.md).
 
 ---
 
@@ -869,7 +869,7 @@ members enter `probing` before joining the LB ring; removed members drain.
 
 ## 28.5 Benchmark Mode
 
-> Full design — [`docs/benchmark-mode.md`](docs/benchmark-mode.md).
+> Full design — [`docs/operator/benchmark-mode.md`](docs/operator/benchmark-mode.md).
 > Plan — [`plans/benchmark-mode.md`](plans/benchmark-mode.md).
 
 A request-scoped `BenchmarkContext` is allocated **only** when a
@@ -1051,7 +1051,7 @@ with a meaningful subset of the requirements.
 | **4** | Observability | Prometheus, access logs, W3C trace propagation, `/healthz/ready` + `/healthz/startup` |
 | **5** | Admin plane | Axum dashboard + admin API, argon2id password + HMAC session + CSRF + login rate-limit + IP allowlist, change approval, admin audit chain |
 | **6** | Clustered state | Redis backend, cluster-wide counters / auto-block / nonces, local fallback + reconcile |
-| **7** | *(deferred — multi-tenancy)* | See `docs/deferred/multi-tenancy.md` |
+| **7** | *(deferred — multi-tenancy)* | See `docs/future/multi-tenancy.md` |
 | **8** | Audit + SIEM | hash-chained audit, JSONL/Syslog/CEF/LEEF/OCSF/HEC/Kafka sinks, witness exporter |
 | **9** | Secrets | provider trait + env/file/Vault/AWS/GCP/Azure, rotation, zeroize |
 | **10** | Threat intel | feed fetchers (text/CSV/JSON/STIX/TAXII), store, provenance in audit |

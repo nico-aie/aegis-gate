@@ -14,10 +14,11 @@ source "$HERE/_common.sh"
 
 aegis_login
 
-# 1. GET shape
+# 1. GET shape — use `has` so false-valued fields aren't
+#    treated as missing by `jq -e` (which returns 1 on null OR false).
 body=$(aegis_get /api/loadmode)
 for key in mode effective_mode rps_last_sample override_active elevated_rps critical_rps; do
-  echo "$body" | jq -e ".$key" >/dev/null \
+  echo "$body" | jq -e "has(\"$key\")" >/dev/null \
     || { echo "FAIL: GET missing $key" >&2; exit 1; }
 done
 ok "GET /api/loadmode shape"

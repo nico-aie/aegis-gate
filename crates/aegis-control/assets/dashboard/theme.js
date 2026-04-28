@@ -5,7 +5,7 @@
 // first paint, eliminating flash-of-wrong-theme. ES `import`/`export`
 // would force module semantics (deferred) and reintroduce the flash.
 //
-// Persistence key documented in docs/dashboard-enterprise/theme.md
+// Persistence key documented in docs/control-plane/enterprise/theme.md
 // §"Theme toggle". Three preferences: "light" | "dark" | "system".
 // Default = "dark" (matches the screenshot reference).
 //
@@ -53,7 +53,7 @@
   }
 
   window.AegisTheme = {
-    /** Chart.js palette — see docs/dashboard-enterprise/theme.md §charts. */
+    /** Chart.js palette — see docs/control-plane/enterprise/theme.md §charts. */
     chart: {
       line: {
         traffic: "var(--color-info)",

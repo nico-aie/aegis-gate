@@ -278,7 +278,7 @@ waf_auth_failures_total{mechanism}
 - Verify against htpasswd-style file loaded via `SecretProvider`. Opt-in per route.
 - Test: correct/incorrect password cases.
 
-**M2-T5.13** *(deferred)* OIDC RP — see `docs/deferred/rbac-sso.md`.
+**M2-T5.13** *(deferred)* OIDC RP — see `docs/future/rbac-sso.md`.
 
 **M2-T5.14** OPA callout (feature `opa`)
 - File: `src/auth/opa.rs`

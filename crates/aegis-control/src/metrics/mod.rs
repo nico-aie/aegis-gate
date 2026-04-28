@@ -1,4 +1,5 @@
 pub mod exporter;
+pub mod request_duration;
 
 use prometheus::Registry;
 use std::sync::Arc;

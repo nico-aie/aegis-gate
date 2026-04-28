@@ -39,20 +39,45 @@ export const options = {
   insecureSkipTLSVerify: true,
 };
 
-function login() {
-  const jar = http.cookieJar();
+// Login once at startup; abort the whole run on failure. Reads
+// `Set-Cookie` headers directly because the server emits Secure
+// cookies which k6's jar drops over plain HTTP.
+export function setup() {
   const r = http.post(`${admin}/admin/login`,
     JSON.stringify({ user: __ENV.ADMIN_USER, password: __ENV.ADMIN_PASS }),
-    { headers: { "content-type": "application/json" }, jar });
-  if (r.status >= 400) throw new Error(`login: ${r.status}`);
-  return { jar, csrf: jar.cookiesForURL(admin)["aegis_csrf"] };
+    { headers: { "content-type": "application/json" } });
+  if (r.status >= 400) {
+    throw new Error(
+      `admin login failed: ${r.status} (check ADMIN_USER + ADMIN_PASS env)`,
+    );
+  }
+  const setCookies = r.headers["Set-Cookie"];
+  const raw = Array.isArray(setCookies) ? setCookies.join(",") : (setCookies || "");
+  const session = extractCookie(raw, "aegis_session");
+  const csrf = extractCookie(raw, "aegis_csrf");
+  if (!csrf) throw new Error("aegis_csrf cookie missing in login response");
+  return { csrf, session };
 }
 
-function setLevel(ctx, level) {
-  http.put(`${admin}/api/logging`, JSON.stringify({ level }), {
-    headers: { "content-type": "application/json", "x-csrf-token": ctx.csrf },
-    jar: ctx.jar,
-  });
+function extractCookie(setCookieHeader, name) {
+  const re = new RegExp(`${name}=([^;,\\s]+)`);
+  const m = setCookieHeader.match(re);
+  return m ? m[1] : null;
+}
+
+function buildAdminHeaders(data) {
+  const cookie = data.session
+    ? `aegis_session=${data.session}; aegis_csrf=${data.csrf}`
+    : `aegis_csrf=${data.csrf}`;
+  return {
+    "content-type": "application/json",
+    "x-csrf-token": data.csrf,
+    cookie,
+  };
+}
+
+function setLevel(headers, level) {
+  http.put(`${admin}/api/logging`, JSON.stringify({ level }), { headers });
 }
 
 function auditHigh() {
@@ -69,16 +94,15 @@ export function trafficLoop() {
   if (r.status === 403) blocks.add(1);
 }
 
-export default function () {
-  const ctx = login();
-  // baseline cursor before silent window
+export default function (data) {
+  const headers = buildAdminHeaders(data);
   const before = auditHigh();
-  setLevel(ctx, "silent");
-  sleep(8);                       // 8s of traffic at 100 rps = 800 blocks
+  setLevel(headers, "silent");
+  sleep(8); // 8s of traffic at 100 rps = 800 blocks
   const during = auditHigh();
-  setLevel(ctx, "info");
+  setLevel(headers, "info");
   silentNewEntries.add(during - before);
 
   // Restore default for follow-on tests.
-  setLevel(ctx, "info");
+  setLevel(headers, "info");
 }

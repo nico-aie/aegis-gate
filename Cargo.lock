@@ -112,6 +112,7 @@ dependencies = [
  "dashmap",
  "http",
  "ipnet",
+ "parking_lot",
  "regex",
  "serde",
  "serde_json",

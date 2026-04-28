@@ -100,7 +100,7 @@ fn contrast_ratio(fg: &str, bg: &str) -> f64 {
 #[test]
 fn text_on_surface_meets_wcag_aa() {
     // Body text: 4.5:1 minimum on every documented surface.
-    // Tokens from docs/dashboard-enterprise/theme.md.
+    // Tokens from docs/control-plane/enterprise/theme.md.
     let pairs: &[(&str, &str)] = &[
         // Dark theme: text-primary on each surface.
         ("e2e8f0", "0b1020"), // text-primary on surface-0
@@ -162,7 +162,7 @@ fn security_header_set_is_complete_and_documented() {
 
 #[test]
 fn bundle_under_documented_budget() {
-    // docs/dashboard-enterprise/assets.md §"Size budget" calls for
+    // docs/control-plane/enterprise/assets.md §"Size budget" calls for
     // ≤ 220 KB total *gzipped*. We approximate by capping the raw
     // total at ~700 KB (gzip compresses the asset mix at roughly
     // 3-4x for vanilla HTML/JS/CSS) — a coarse but catch-regression

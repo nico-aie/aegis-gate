@@ -3,7 +3,7 @@
 //! Boots a `DashboardServices` bundle, seeds the audit bus with a
 //! fixed event sequence, then exercises every new dashboard
 //! endpoint via its handler. Asserts the JSON shapes match
-//! `docs/dashboard-enterprise/api.md` and that the
+//! `docs/control-plane/enterprise/api.md` and that the
 //! `attacks/distribution` percentages sum to ~100.
 //!
 //! The test runs against the in-process handler — no TCP listener

@@ -33,9 +33,15 @@ const flipLatency = new Counter("flip_latency_ms");
 export const options = {
   scenarios: {
     flips: {
-      executor: "constant-vus",
-      vus: 10,
-      duration: duration,
+      // Iterate-bounded so strikes from the SQLi-on probes
+      // don't accumulate past `risk.strikes.block_at` (50)
+      // and turn every request into a strike-block 403,
+      // which would mask the actual signal we're measuring
+      // (mask-flip propagation latency).
+      executor: "shared-iterations",
+      vus: 5,
+      iterations: 30,
+      maxDuration: "60s",
     },
   },
   thresholds: {
@@ -47,26 +53,59 @@ export const options = {
 
 const sqliPayload = "?id=1+UNION+SELECT+password+FROM+users";
 
-// Login once per VU. Returns { jar, csrf } usable across the run.
-function loginAdmin() {
-  const jar = http.cookieJar();
+// `setup()` runs ONCE before any VU spins up. If admin login
+// fails here the whole run aborts with one clear error
+// instead of the per-VU retry storm we used to ship.
+//
+// k6 serialises the setup() return through JSON, so we stash
+// the cookie *values* (not the cookie jar object) and rebuild
+// a jar on each VU's first iteration.
+//
+// The server emits cookies with `Secure` (correct for
+// production), which k6's cookie jar silently drops on a plain
+// HTTP admin listener. We read the `Set-Cookie` headers
+// directly out of the login response to dodge that.
+export function setup() {
   const res = http.post(`${admin}/admin/login`,
     JSON.stringify({ user: __ENV.ADMIN_USER, password: __ENV.ADMIN_PASS }),
-    {
-      headers: { "content-type": "application/json" },
-      jar,
-    },
+    { headers: { "content-type": "application/json" } },
   );
   if (res.status >= 400) {
-    throw new Error(`admin login failed: ${res.status}`);
+    throw new Error(
+      `admin login failed: ${res.status} (check ADMIN_USER + ADMIN_PASS env)`,
+    );
   }
-  // The CSRF cookie is non-HttpOnly so we can read it back.
-  const csrf = jar.cookiesForURL(admin)["aegis_csrf"];
-  if (!csrf) throw new Error("aegis_csrf cookie missing after login");
-  return { jar, csrf };
+  const setCookies = res.headers["Set-Cookie"];
+  const raw = Array.isArray(setCookies) ? setCookies.join(",") : (setCookies || "");
+  const session = extractCookie(raw, "aegis_session");
+  const csrf = extractCookie(raw, "aegis_csrf");
+  if (!csrf) {
+    throw new Error("aegis_csrf cookie missing in login response Set-Cookie headers");
+  }
+  return { csrf, session };
 }
 
-function setMask(ctx, sqliEnabled) {
+function extractCookie(setCookieHeader, name) {
+  // Set-Cookie header values can repeat or be comma-separated
+  // when multiple cookies set in one response. Find each
+  // `<name>=<value>` and return the first match.
+  const re = new RegExp(`${name}=([^;,\\s]+)`);
+  const m = setCookieHeader.match(re);
+  return m ? m[1] : null;
+}
+
+function buildAdminHeaders(data) {
+  const cookieHeader = data.session
+    ? `aegis_session=${data.session}; aegis_csrf=${data.csrf}`
+    : `aegis_csrf=${data.csrf}`;
+  return {
+    "content-type": "application/json",
+    "x-csrf-token": data.csrf,
+    cookie: cookieHeader,
+  };
+}
+
+function setMask(headers, sqliEnabled) {
   const body = JSON.stringify({
     mask: {
       sqli: sqliEnabled, xss: true, path_traversal: true, ssrf: true,
@@ -75,17 +114,9 @@ function setMask(ctx, sqliEnabled) {
     },
   });
   const t0 = Date.now();
-  const res = http.put(`${admin}/api/detectors`, body, {
-    headers: {
-      "content-type": "application/json",
-      "x-csrf-token": ctx.csrf,
-    },
-    jar: ctx.jar,
-  });
+  const res = http.put(`${admin}/api/detectors`, body, { headers });
   flipLatency.add(Date.now() - t0);
-  check(res, {
-    "mask flip 200": (r) => r.status === 200,
-  });
+  check(res, { "mask flip 200": (r) => r.status === 200 });
 }
 
 function probeData() {
@@ -94,23 +125,30 @@ function probeData() {
   });
 }
 
-export default function () {
-  const ctx = loginAdmin();
+export default function (data) {
+  const headers = buildAdminHeaders(data);
+
+  // Reset risk state for our peer IP so strikes accrued in
+  // earlier iterations don't keep this iteration's "sqli off"
+  // probe blocked. The test measures **mask propagation**, not
+  // the strike system (that's risk-strikes.js).
+  http.put(`${admin}/api/risk/127.0.0.1/reset`, "{}", { headers });
 
   group("sqli on - request blocks", () => {
-    setMask(ctx, true);
-    sleep(0.2);                       // give the mask one sample window
+    setMask(headers, true);
+    sleep(0.2);
     const res = probeData();
     blockedDuringOn.add(res.status === 403);
   });
 
   group("sqli off - request allowed", () => {
-    setMask(ctx, false);
+    setMask(headers, false);
+    // Strike was added by the sqli-on probe above; clear it.
+    http.put(`${admin}/api/risk/127.0.0.1/reset`, "{}", { headers });
     sleep(0.2);
     const res = probeData();
     allowedDuringOff.add(res.status !== 403);
   });
 
-  // Restore default before exit.
-  setMask(ctx, true);
+  setMask(headers, true); // restore default before exit
 }

@@ -37,9 +37,9 @@ surfaces share an authoritative reference.
 ### Stage 1 — Design brief (claude.ai web)
 
 **Input:** the page's design contract at
-`docs/dashboard-enterprise/pages/<page>.md`, the API contract
+`docs/control-plane/enterprise/pages/<page>.md`, the API contract
 section for the relevant endpoints from
-`docs/dashboard-enterprise/api.md`, the milestone's plan file
+`docs/control-plane/enterprise/api.md`, the milestone's plan file
 under `plans/dashboard-redesign/pages/<id>.md`, and the
 foundation-level tokens from
 `plans/dashboard-redesign/design-system.md`.
@@ -59,8 +59,8 @@ WAF control plane. Output exactly one document in the
 attached format — no preamble, no follow-up questions.
 
 CONTEXT — read these in order:
-- design contract:    [paste content of docs/dashboard-enterprise/pages/<page>.md]
-- API contract:       [paste relevant section of docs/dashboard-enterprise/api.md]
+- design contract:    [paste content of docs/control-plane/enterprise/pages/<page>.md]
+- API contract:       [paste relevant section of docs/control-plane/enterprise/api.md]
 - design tokens:      [paste plans/dashboard-redesign/design-system.md]
 - milestone scope:    [paste plans/dashboard-redesign/pages/<id>.md]
 
@@ -166,7 +166,7 @@ Rules:
 - Audit: every mutating call MUST go through the existing
   `aegis_csrf` cookie + `X-CSRF-Token` header pattern. No
   endpoint that isn't already in
-  `docs/dashboard-enterprise/api.md`.
+  `docs/control-plane/enterprise/api.md`.
 - Tests: after editing, run
   `cargo test -p aegis-control --lib dashboard` and
   `cargo test --test dashboard_polish` and report the diff
@@ -229,7 +229,7 @@ The redesign of page <id> is in. Wrap it for ship:
 2. Add or extend the API smoke at
    `tests/api/<endpoint>.sh` if the page exercises an
    endpoint not yet covered there.
-3. Update `docs/dashboard-enterprise/pages/<page>.md` if any
+3. Update `docs/control-plane/enterprise/pages/<page>.md` if any
    of the design decisions diverged from the contract —
    keep doc and code in sync.
 4. Run, in this order:

@@ -3,7 +3,7 @@
 //!
 //! Single source of truth: every transport (today: aegis-proxy's
 //! admin_router) imports [`SECURITY_HEADERS`] and applies the same
-//! list. Spec lives in `docs/dashboard-enterprise/security.md`
+//! list. Spec lives in `docs/control-plane/enterprise/security.md`
 //! §"Headers (full set on dashboard responses)".
 
 #![allow(dead_code)]
@@ -12,7 +12,7 @@
 /// header value is identical to the way operators paste it into
 /// other tools.
 ///
-/// Mirrors `docs/dashboard-enterprise/security.md` §"Content
+/// Mirrors `docs/control-plane/enterprise/security.md` §"Content
 /// Security Policy" verbatim. `'unsafe-inline'` for styles is the
 /// Chart.js requirement documented there; everything else is tight.
 pub const CSP: &str = concat!(
@@ -30,7 +30,7 @@ pub const CSP: &str = concat!(
 );
 
 /// Permissions-Policy spelled out per
-/// `docs/dashboard-enterprise/security.md` §"Headers (full set …)".
+/// `docs/control-plane/enterprise/security.md` §"Headers (full set …)".
 pub const PERMISSIONS_POLICY: &str = "accelerometer=(), camera=(), \
     geolocation=(), gyroscope=(), magnetometer=(), microphone=(), \
     payment=(), usb=()";
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn full_set_size_matches_spec() {
-        // 9 headers per docs/dashboard-enterprise/security.md.
+        // 9 headers per docs/control-plane/enterprise/security.md.
         assert_eq!(SECURITY_HEADERS.len(), 9);
     }
 

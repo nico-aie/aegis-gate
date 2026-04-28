@@ -18,7 +18,7 @@
 
 ## Inputs
 
-- Design contract: [`docs/dashboard-enterprise/pages/settings.md`](../../../docs/dashboard-enterprise/pages/settings.md)
+- Design contract: [`docs/control-plane/enterprise/pages/settings.md`](../../../docs/control-plane/enterprise/pages/settings.md)
 - API endpoints used:
   - `GET /api/about` (build / env)
   - `GET /api/admin/sessions`

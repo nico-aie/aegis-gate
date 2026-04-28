@@ -1,6 +1,6 @@
 // Stat card component (D-M2-T2.9).
 //
-// Markup matches docs/dashboard-enterprise/components.md §"Stat card".
+// Markup matches docs/control-plane/enterprise/components.md §"Stat card".
 // Single-purpose: a labelled KPI tile with optional status colouring.
 // `create()` returns a fresh element; `update(el, props)` mutates an
 // existing one without re-creating the node so live updates keep

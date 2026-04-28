@@ -26,11 +26,14 @@ export ADMIN_PASS=$(cat /run/secrets/aegis_admin_pass)
 tests/api/
 ├── README.md            (this file)
 ├── _common.sh           login + CSRF helper sourced by every test
-├── detectors.sh         GET / PUT /api/detectors (P2 + P3)
+├── auth.sh              admin login + logout + CSRF reject (P1)
+├── tls.sh               TLS minimum + security headers   (P4)
+├── detectors.sh         GET / PUT /api/detectors          (P2 + P3)
 ├── risk.sh              GET /api/risk + PUT /api/risk/{ip}/reset (P6)
-├── loadmode.sh          GET / PUT /api/loadmode (P7)
-├── logging.sh           GET / PUT /api/logging (P8)
-├── cold-tier.sh         GET /api/cold-tier (P8)
+├── loadmode.sh          GET / PUT /api/loadmode           (P7)
+├── logging.sh           GET / PUT /api/logging            (P8)
+├── cold-tier.sh         GET /api/cold-tier                (P8)
+├── acme.sh              Pebble reachability + directory shape (F-T7)
 └── run-all.sh           bring-up + run every script + cleanup
 ```
 
@@ -55,11 +58,14 @@ Each script exits non-zero on any assertion failure; CI greps for
 
 | Script | Asserts |
 |---|---|
+| `auth.sh` | bad password → 401, good login → 200 + sets aegis_session + aegis_csrf, authenticated GET works, mutation without CSRF header → 403, logout invalidates session. |
+| `tls.sh` | TLS 1.0/1.1 rejected (where curl supports `--tls-max`), TLS 1.2/1.3 succeed, response carries HSTS + X-Content-Type-Options + X-Frame-Options + Referrer-Policy + Permissions-Policy. |
 | `detectors.sh` | GET shape (`mask`, `overrides`, `locked_classes`), PUT without CSRF → 403, PUT with CSRF + valid body → 200, mask round-trip. |
 | `risk.sh` | GET list shape (`total_tracked`, `clients`), GET unknown ip → 404, PUT reset clears state, PUT reset without CSRF → 403. |
 | `loadmode.sh` | GET shape (`mode`, `effective_mode`, …), PUT pin → 200 + `override_active: true`, PUT `unset` → `override_active: false`. |
 | `logging.sh` | GET ladder includes all 6 levels, PUT each level round-trips, unknown level → 400 with `validation` reason. |
 | `cold-tier.sh` | GET enumerates configured sinks, splunk token never appears in response body. |
+| `acme.sh` | Pebble directory reachable on `:14000`, advertises `newAccount` + `newOrder` + `newNonce`. |
 
 ## Notes
 

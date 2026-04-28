@@ -1,8 +1,8 @@
 /*
  * Aegis WAF dashboard chrome (D-M1-T1.4).
- * Design tokens from docs/dashboard-enterprise/theme.md.
- * Layout from docs/dashboard-enterprise/layout.md.
- * A11y from docs/dashboard-enterprise/accessibility.md.
+ * Design tokens from docs/control-plane/enterprise/theme.md.
+ * Layout from docs/control-plane/enterprise/layout.md.
+ * A11y from docs/control-plane/enterprise/accessibility.md.
  *
  * No build step — vanilla CSS custom properties + grid + flexbox.
  * The token block is the single source of truth for every page;

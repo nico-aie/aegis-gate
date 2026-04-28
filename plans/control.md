@@ -10,7 +10,7 @@ compliance enforcement, GitOps, and SLO alerts.
 
 > **v1 scope reminder:** OIDC/SSO, RBAC roles, API tokens, and multi-tenancy are
 > **DEFERRED**. v1 ships one admin principal with full privileges via
-> argon2id password + HMAC session + CSRF + TOTP + mTLS. See `docs/deferred/`.
+> argon2id password + HMAC session + CSRF + TOTP + mTLS. See `docs/future/`.
 
 **Entry point:** `pub async fn start(cfg, bus, metrics, readiness, cluster, cfg_bcast) -> Result<()>`
 
@@ -198,7 +198,7 @@ waf_state_snapshot_lag_seconds              (gauge)
 
 ## W4 — Dashboard Authentication
 
-Spec: `docs/dashboard-auth.md`. Config types live in `aegis-core::config` (§2.7 of `plans/plan.md`): `DashboardAuthConfig`, `LoginRateLimitConfig`, `LockoutConfig`, `MtlsAdminConfig`.
+Spec: `docs/control-plane/dashboard-auth.md`. Config types live in `aegis-core::config` (§2.7 of `plans/plan.md`): `DashboardAuthConfig`, `LoginRateLimitConfig`, `LockoutConfig`, `MtlsAdminConfig`.
 
 **M3-T4.1** Password verify + PHC
 - File: `src/admin_auth/password.rs`
@@ -266,7 +266,7 @@ Spec: `docs/dashboard-auth.md`. Config types live in `aegis-core::config` (§2.7
 - Test: signed commit → applied; unsigned commit → rejected with audit event; API edit → branch + PR created (mock Git).
 
 **M3-T5.4** *(deferred)* Change approval workflow
-- 4-eyes for Critical configuration mutations is deferred with RBAC. See `docs/deferred/rbac-sso.md`.
+- 4-eyes for Critical configuration mutations is deferred with RBAC. See `docs/future/rbac-sso.md`.
 
 **M3-T5.5** SLO / SLI + multi-burn alerts
 - File: `src/slo.rs`

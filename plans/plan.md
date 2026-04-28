@@ -13,7 +13,7 @@ Before implementing anything, load context in this exact order:
    - plans/control.md — `aegis-control` track
    - plans/dashboard-enterprise/README.md — enterprise dashboard
      track (D-M1/D-M2/… task IDs); design spec lives at
-     `docs/dashboard-enterprise/`
+     `docs/control-plane/enterprise/`
 
 Do not start coding without reading these.
 
@@ -37,7 +37,7 @@ Context files to read first (in order):
    - Dashboard:
        plans/dashboard-enterprise/README.md
        + plans/dashboard-enterprise/milestone-<N>-*.md
-       + docs/dashboard-enterprise/README.md   (design spec)
+       + docs/control-plane/enterprise/README.md   (design spec)
 
 Task:
 <copy NEXT TASK from Implement-Progress.md, e.g. "D-M1-T1.1 Asset embedder">

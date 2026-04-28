@@ -9,6 +9,7 @@ pub mod detectors;
 pub mod filters;
 pub mod load_mode;
 pub mod logging;
+pub mod login;
 pub mod mutation;
 pub mod risk;
 pub mod rules;

@@ -131,7 +131,7 @@ the chrome 11 times. Refresh once, sequence the pages.
   smoke).
 - Both themes look intentional under the screenshot review
   (workflow stage 4) at 1280 / 1440 / 1920.
-- An updated `docs/dashboard-enterprise/theme.md` and
+- An updated `docs/control-plane/enterprise/theme.md` and
   `components.md` reflect the M0 outcomes (these docs are
   the contract — they must move when the code does).
 

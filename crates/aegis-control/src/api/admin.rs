@@ -135,6 +135,18 @@ impl SessionStore {
         }
         Ok(())
     }
+
+    /// Remove a session unconditionally — used by `/admin/logout`,
+    /// which is the documented escape hatch when an operator
+    /// needs to invalidate their *own* current session.
+    /// Returns `true` if a row was removed.
+    pub fn force_remove(&self, id: &str) -> bool {
+        let mut s = self.inner.lock().expect("session store poisoned");
+        if s.current_id.as_deref() == Some(id) {
+            s.current_id = None;
+        }
+        s.sessions.remove(id).is_some()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -56,13 +56,20 @@ aegis_put() {
 }
 
 aegis_put_status() {
-  local path="$1" body="$2" csrf="${3:-$AEGIS_CSRF}"
-  local hdr=()
-  [[ -n "$csrf" ]] && hdr=(-H "x-csrf-token: $csrf")
-  curl "${AEGIS_CURL_OPTS[@]}" -X PUT \
-    -H "content-type: application/json" \
-    "${hdr[@]}" \
-    -d "$body" -o /dev/null -w "%{http_code}" "$AEGIS_ADMIN$path"
+  # `${3-...}` (no colon) substitutes only if the third arg is
+  # *unset*. Passing an explicit empty string keeps csrf="" so
+  # tests that probe the "missing CSRF" rejection path work.
+  local path="$1" body="$2" csrf="${3-$AEGIS_CSRF}"
+  if [[ -n "$csrf" ]]; then
+    curl "${AEGIS_CURL_OPTS[@]}" -X PUT \
+      -H "content-type: application/json" \
+      -H "x-csrf-token: $csrf" \
+      -d "$body" -o /dev/null -w "%{http_code}" "$AEGIS_ADMIN$path"
+  else
+    curl "${AEGIS_CURL_OPTS[@]}" -X PUT \
+      -H "content-type: application/json" \
+      -d "$body" -o /dev/null -w "%{http_code}" "$AEGIS_ADMIN$path"
+  fi
 }
 
 assert_eq() {

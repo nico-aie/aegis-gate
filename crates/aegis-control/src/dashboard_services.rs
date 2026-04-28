@@ -17,14 +17,18 @@ use std::sync::Arc;
 use aegis_core::audit::AuditEvent;
 use aegis_core::{AuditBus, LoadGauge, LoadModeConfig, SharedVerbosity};
 use aegis_security::detectors::SharedDetectorMask;
+use aegis_security::rate_limit::IpRateLimiter;
 use aegis_security::risk::RiskTracker;
 
+use crate::admin_auth::rate_limit::LoginRateLimiter;
+use crate::admin_auth::session::SessionStore as AuthSessionStore;
 use crate::api::{
     admin::{BreakGlass, SessionStore},
     attacks::{AttacksAggregator, AttacksHandler},
     audit::{AuditHandler, AuditRing, WitnessHandler, WitnessState},
     blacklist::AccessListStore,
     filters::{FilterCatalogue, FiltersHandler},
+    login::AdminIdentity,
     mutation::AuditedMutate,
     rules::{RuleStats, RuleStore},
     stats::{StatsAggregator, StatsHandler, UpstreamSummary},
@@ -68,8 +72,25 @@ pub struct DashboardServices {
     pub mutate: Arc<AuditedMutate>,
     pub detector_mask: SharedDetectorMask,
     pub risk: RiskTracker,
+    /// Per-IP volumetric guard. F-T2 — fires before any
+    /// detector runs so a single source IP can't flood the
+    /// pipeline. Strikes are accrued on the same key when the
+    /// limiter fires, so repeat offenders eventually cross
+    /// `risk.strikes.block_at` and get the permanent 403.
+    pub ip_rate_limiter: Arc<IpRateLimiter>,
     pub load_gauge: LoadGauge,
     pub verbosity: SharedVerbosity,
+    /// Auth-layer session store (HMAC-signed cookies). Distinct
+    /// from [`SessionStore`] which is the dashboard's view-side
+    /// list. F-T1 wires both: login creates an entry in each.
+    pub auth_sessions: Arc<AuthSessionStore>,
+    pub login_rate_limiter: Arc<LoginRateLimiter>,
+    /// Single configured admin identity (until RBAC lands). The
+    /// proxy reads `cfg.admin.dashboard_auth.password_hash_ref`
+    /// and builds this once at boot.
+    pub admin_identity: Arc<AdminIdentity>,
+    /// Idle TTL the login handler stamps on the session cookie.
+    pub session_idle_seconds: u64,
     pub environment: Option<String>,
 }
 
@@ -83,14 +104,30 @@ impl DashboardServices {
         pool_snapshot: PoolSnapshotProvider,
         environment: Option<String>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
+        // Default auth runtime: empty admin (every login fails),
+        // default rate limiter, blake3-of-empty-string session
+        // key. Tests that need real auth call `spawn_with_mask`
+        // directly with the runtime they want.
+        let auth_sessions = Arc::new(AuthSessionStore::new([0u8; 32]));
+        let login_rate_limiter =
+            Arc::new(LoginRateLimiter::new(Default::default()));
+        let admin_identity = Arc::new(AdminIdentity {
+            user: String::new(),
+            password_hash: String::new(),
+        });
         Self::spawn_with_mask(
             bus,
             pool_snapshot,
             environment,
             SharedDetectorMask::default(),
             RiskTracker::new(&aegis_core::config::RiskConfig::default()),
+            Arc::new(IpRateLimiter::new(Default::default())),
             LoadGauge::new(LoadModeConfig::default()),
             SharedVerbosity::default(),
+            auth_sessions,
+            login_rate_limiter,
+            admin_identity,
+            1800,
         )
     }
 
@@ -98,14 +135,20 @@ impl DashboardServices {
     /// [`SharedDetectorMask`], [`RiskTracker`], [`LoadGauge`], and
     /// [`SharedVerbosity`] with the data plane so every operator
     /// knob propagates uniformly across the proxy and dashboard.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_mask(
         bus: AuditBus,
         pool_snapshot: PoolSnapshotProvider,
         environment: Option<String>,
         detector_mask: SharedDetectorMask,
         risk: RiskTracker,
+        ip_rate_limiter: Arc<IpRateLimiter>,
         load_gauge: LoadGauge,
         verbosity: SharedVerbosity,
+        auth_sessions: Arc<AuthSessionStore>,
+        login_rate_limiter: Arc<LoginRateLimiter>,
+        admin_identity: Arc<AdminIdentity>,
+        session_idle_seconds: u64,
     ) -> (Self, tokio::task::JoinHandle<()>) {
         let stats_agg = Arc::new(StatsAggregator::new());
         let attacks_agg = Arc::new(AttacksAggregator::new());
@@ -197,8 +240,13 @@ impl DashboardServices {
                 mutate,
                 detector_mask,
                 risk,
+                ip_rate_limiter,
                 load_gauge,
                 verbosity,
+                auth_sessions,
+                login_rate_limiter,
+                admin_identity,
+                session_idle_seconds,
                 environment,
             },
             drain,
@@ -479,8 +527,16 @@ mod tests {
             None,
             initial_mask.clone(),
             RiskTracker::new(&aegis_core::config::RiskConfig::default()),
+            Arc::new(IpRateLimiter::new(Default::default())),
             LoadGauge::new(LoadModeConfig::default()),
             SharedVerbosity::default(),
+            Arc::new(AuthSessionStore::new([0u8; 32])),
+            Arc::new(LoginRateLimiter::new(Default::default())),
+            Arc::new(AdminIdentity {
+                user: String::new(),
+                password_hash: String::new(),
+            }),
+            1800,
         );
 
         // Sanity: starts all-on.
@@ -549,8 +605,16 @@ mod tests {
             None,
             initial_mask.clone(),
             RiskTracker::new(&aegis_core::config::RiskConfig::default()),
+            Arc::new(IpRateLimiter::new(Default::default())),
             LoadGauge::new(LoadModeConfig::default()),
             SharedVerbosity::default(),
+            Arc::new(AuthSessionStore::new([0u8; 32])),
+            Arc::new(LoginRateLimiter::new(Default::default())),
+            Arc::new(AdminIdentity {
+                user: String::new(),
+                password_hash: String::new(),
+            }),
+            1800,
         );
 
         let proposed = aegis_security::detectors::DetectorMask::all_enabled()

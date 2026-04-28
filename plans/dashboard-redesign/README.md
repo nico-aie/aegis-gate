@@ -19,9 +19,9 @@ so the SPA can actually authenticate.
 
 | Input | Where | Status |
 |---|---|---|
-| Design contract per page | [`docs/dashboard-enterprise/pages/*.md`](../../docs/dashboard-enterprise/pages/) | done |
-| API contract | [`docs/dashboard-enterprise/api.md`](../../docs/dashboard-enterprise/api.md) | done |
-| Layout / theme / a11y / components doc bundle | [`docs/dashboard-enterprise/{layout,theme,accessibility,components}.md`](../../docs/dashboard-enterprise/) | done — but theme + components need a refresh under M0 |
+| Design contract per page | [`docs/control-plane/enterprise/pages/*.md`](../../docs/control-plane/enterprise/pages/) | done |
+| API contract | [`docs/control-plane/enterprise/api.md`](../../docs/control-plane/enterprise/api.md) | done |
+| Layout / theme / a11y / components doc bundle | [`docs/control-plane/enterprise/{layout,theme,accessibility,components}.md`](../../docs/control-plane/enterprise/) | done — but theme + components need a refresh under M0 |
 | Admin login HTTP route | F-T1 in `post-k6-followup.md` | **pending — blocks ship** |
 | Asset embedder + bundle-size budget | `crates/aegis-control/src/dashboard/assets.rs` + `tests/dashboard_polish.rs` | done; budget is 700 KB raw |
 
@@ -87,7 +87,7 @@ hands once M0 has landed.
   representative dashboard browse session for 5 minutes
   without leaking memory or breaking the SSE channel.
 - Dark + light themes documented in
-  `docs/dashboard-enterprise/theme.md` (refreshed under M0).
+  `docs/control-plane/enterprise/theme.md` (refreshed under M0).
 - Each page has at least one Playwright E2E spec under
   `tests/e2e/dashboard/` (a new directory).
 

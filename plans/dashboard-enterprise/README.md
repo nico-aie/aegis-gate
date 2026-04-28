@@ -7,11 +7,11 @@
 >    progress protocol, execution rules)
 > 4. [`../control.md`](../control.md) — current control-plane plan
 >    (this track only touches `aegis-control`)
-> 5. [`../../docs/dashboard-enterprise/README.md`](../../docs/dashboard-enterprise/README.md)
+> 5. [`../../docs/control-plane/enterprise/README.md`](../../docs/control-plane/enterprise/README.md)
 >    — design spec for this work
 >
 > This plan is the **execution** companion to the design under
-> `docs/dashboard-enterprise/`. The design tells us *what* to build;
+> `docs/control-plane/enterprise/`. The design tells us *what* to build;
 > this plan slices the work into shippable milestones.
 
 ## Mission
@@ -65,17 +65,17 @@ value from M2 onward.
 - Lighthouse desktop score ≥ 95 on perf/a11y/best-practices.
 - Asset bundle ≤ 220KB gzipped total.
 - `Implement-Progress.md` updated at each milestone exit.
-- New entries in `docs/dashboard-enterprise/` referenced from
-  `docs/dashboard.md` and `docs/README.md`.
+- New entries in `docs/control-plane/enterprise/` referenced from
+  `docs/control-plane/dashboard.md` and `docs/README.md`.
 
 ## Cross-references
 
-- Design spec — [`docs/dashboard-enterprise/`](../../docs/dashboard-enterprise/)
-- Existing dashboard contract — [`docs/dashboard.md`](../../docs/dashboard.md)
-- Auth flow (unchanged) — [`docs/dashboard-auth.md`](../../docs/dashboard-auth.md)
-- Audit chain — [`docs/audit-logging.md`](../../docs/audit-logging.md)
-- SLO / SLI — [`docs/slo-sli-alerting.md`](../../docs/slo-sli-alerting.md)
-- Observability — [`docs/observability-prometheus-otel.md`](../../docs/observability-prometheus-otel.md)
+- Design spec — [`docs/control-plane/enterprise/`](../../docs/control-plane/enterprise/)
+- Existing dashboard contract — [`docs/control-plane/dashboard.md`](../../docs/control-plane/dashboard.md)
+- Auth flow (unchanged) — [`docs/control-plane/dashboard-auth.md`](../../docs/control-plane/dashboard-auth.md)
+- Audit chain — [`docs/observability/audit-logging.md`](../../docs/observability/audit-logging.md)
+- SLO / SLI — [`docs/observability/slo-sli-alerting.md`](../../docs/observability/slo-sli-alerting.md)
+- Observability — [`docs/observability/prometheus-otel.md`](../../docs/observability/prometheus-otel.md)
 
 ## Progress protocol
 

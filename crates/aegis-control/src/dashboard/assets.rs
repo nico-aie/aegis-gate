@@ -8,7 +8,7 @@
 //! (e.g. `"index.html"`, `"pages/overview.js"`). Unknown paths return
 //! `None`. The lookup table is built lazily on first call via
 //! [`std::sync::OnceLock`] so ETag computation runs exactly once per
-//! process — see `docs/dashboard-enterprise/assets.md`.
+//! process — see `docs/control-plane/enterprise/assets.md`.
 
 #![allow(dead_code)]
 
@@ -47,7 +47,7 @@ macro_rules! embed {
 
 /// Master inventory of embedded assets. Adding/removing an asset here
 /// must be matched in the M1 design spec
-/// (`docs/dashboard-enterprise/assets.md`) and the test inventory
+/// (`docs/control-plane/enterprise/assets.md`) and the test inventory
 /// (`EXPECTED_ASSETS` in this module).
 const RAW: &[(&str, &[u8], &str)] = &[
     // Top-level shell
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn index_html_has_skip_link_for_a11y() {
         // Skip-to-content link is required for keyboard a11y per
-        // docs/dashboard-enterprise/accessibility.md.
+        // docs/control-plane/enterprise/accessibility.md.
         let html = index_html();
         assert!(
             html.contains(r##"href="#aegis-content""##),
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn aegis_css_defines_core_design_tokens() {
-        // Every token from docs/dashboard-enterprise/theme.md that a
+        // Every token from docs/control-plane/enterprise/theme.md that a
         // page module is allowed to reference. If a page reaches for
         // a token, the page test will reasonably expect this list.
         let css = aegis_css();
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn aegis_css_has_visible_focus_ring() {
-        // a11y requirement from docs/dashboard-enterprise/accessibility.md
+        // a11y requirement from docs/control-plane/enterprise/accessibility.md
         let css = aegis_css();
         assert!(
             css.contains(":focus-visible") || css.contains(":focus "),
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn theme_js_exports_chart_palette() {
         // Pages later read window.AegisTheme.chart for the palette
-        // from docs/dashboard-enterprise/theme.md §charts.
+        // from docs/control-plane/enterprise/theme.md §charts.
         let js = theme_js();
         assert!(
             js.contains("AegisTheme") && js.contains("chart"),

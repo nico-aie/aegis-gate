@@ -13,7 +13,7 @@
 
 ## Inputs
 
-- Design contract: [`docs/dashboard-enterprise/pages/overview.md`](../../../docs/dashboard-enterprise/pages/overview.md)
+- Design contract: [`docs/control-plane/enterprise/pages/overview.md`](../../../docs/control-plane/enterprise/pages/overview.md)
 - API endpoints used:
   - `GET /api/stats` (1 s cache)
   - `GET /api/stats/timeseries?window=15m&step=5s`

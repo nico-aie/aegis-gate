@@ -3,7 +3,7 @@
 //! The Analytics page consumes this endpoint to render six charts.
 //! Operators do **not** pass raw PromQL — `expr` is a key from a
 //! fixed allow-list documented in
-//! `docs/dashboard-enterprise/api.md` §"Analytics". The server
+//! `docs/control-plane/enterprise/api.md` §"Analytics". The server
 //! resolves the key to its canonical PromQL string and either:
 //!   - answers from the in-process Prometheus registry (instantaneous
 //!     queries, no `start`/`end` provided), or
@@ -23,8 +23,8 @@
 use serde::Serialize;
 
 /// Allow-list of `expr` keys → canonical PromQL string. Mirrors
-/// `docs/dashboard-enterprise/api.md` §"Analytics" verbatim plus the
-/// benchmark-mode rows added by `docs/benchmark-mode.md`.
+/// `docs/control-plane/enterprise/api.md` §"Analytics" verbatim plus the
+/// benchmark-mode rows added by `docs/operator/benchmark-mode.md`.
 const ALLOW_LIST: &[(&str, &str)] = &[
     ("requests_rate", "sum(rate(waf_requests_total[$step]))"),
     (
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn allow_list_has_documented_keys() {
-        // All 13 keys from docs/dashboard-enterprise/api.md §analytics
+        // All 13 keys from docs/control-plane/enterprise/api.md §analytics
         // (8 base + 5 benchmark-mode) are recognised.
         for key in [
             "requests_rate",

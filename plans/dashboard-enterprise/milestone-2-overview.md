@@ -8,8 +8,8 @@ attacker IPs table.
 **Verification.** `cargo test -p aegis-control && cargo clippy -p aegis-control -- -D warnings`.
 
 **Reference.**
-[`docs/dashboard-enterprise/pages/overview.md`](../../docs/dashboard-enterprise/pages/overview.md),
-[`docs/dashboard-enterprise/api.md`](../../docs/dashboard-enterprise/api.md).
+[`docs/control-plane/enterprise/pages/overview.md`](../../docs/control-plane/enterprise/pages/overview.md),
+[`docs/control-plane/enterprise/api.md`](../../docs/control-plane/enterprise/api.md).
 
 ---
 
@@ -103,7 +103,7 @@ All endpoints are read-only. All return `application/json` with
 - Mounts the four stat-card components, the line chart, the
   donut, and the top-IPs table.
 - Polls each endpoint at the cadence in
-  [`docs/dashboard-enterprise/pages/overview.md`](../../docs/dashboard-enterprise/pages/overview.md).
+  [`docs/control-plane/enterprise/pages/overview.md`](../../docs/control-plane/enterprise/pages/overview.md).
 - Uses `requestAnimationFrame` for chart updates; pauses polling
   when `document.visibilityState !== "visible"`.
 - Test: a Rust integration test boots the server with seeded
@@ -124,10 +124,10 @@ All endpoints are read-only. All return `application/json` with
 
 - Files: `assets/dashboard/components/{stat-card,line-chart,donut,sparkline,table}.js`
 - Replace the M1 stubs with the real implementations described
-  in [`docs/dashboard-enterprise/components.md`](../../docs/dashboard-enterprise/components.md).
+  in [`docs/control-plane/enterprise/components.md`](../../docs/control-plane/enterprise/components.md).
 - Pull Chart.js from `/dashboard/assets/chart.umd.min.js` (vendored).
 - SRI hash assertion test as described in
-  [`docs/dashboard-enterprise/security.md`](../../docs/dashboard-enterprise/security.md).
+  [`docs/control-plane/enterprise/security.md`](../../docs/control-plane/enterprise/security.md).
 
 ## Exit gate
 

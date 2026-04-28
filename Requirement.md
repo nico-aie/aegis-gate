@@ -494,7 +494,7 @@ strictest setting with a single config switch.
 
 The dashboard and admin API are privileged surfaces. v1 ships with
 **local authentication** — no IdP, no directory service, no
-external dependencies. See [`docs/dashboard-auth.md`](docs/dashboard-auth.md)
+external dependencies. See [`docs/control-plane/dashboard-auth.md`](docs/control-plane/dashboard-auth.md)
 for the full spec.
 
 - **Separation** of data-plane and admin-plane listeners on distinct
@@ -520,7 +520,7 @@ for the full spec.
   admin hash chain (separate from detection events).
 
 > **Deferred to future work** (see
-> [`docs/deferred/rbac-sso.md`](docs/deferred/rbac-sso.md)): OIDC/SSO,
+> [`docs/future/rbac-sso.md`](docs/future/rbac-sso.md)): OIDC/SSO,
 > SAML, LDAP, role-based access control, per-user accounts, API
 > tokens, 4-eyes change approval, SCIM, WebAuthn.
 
@@ -556,7 +556,7 @@ stream, one set of metrics, one compliance profile, one rule
 namespace. All references to `tenant_id` in the request context
 are reserved for future use and always `None` in v1.
 
-See [`docs/deferred/multi-tenancy.md`](docs/deferred/multi-tenancy.md)
+See [`docs/future/multi-tenancy.md`](docs/future/multi-tenancy.md)
 for the original design and the future re-introduction plan.
 
 ---
@@ -790,7 +790,7 @@ in every environment.**
 - **CLI.** `waf bench {enable,disable,status}` with the same
   audit-logged toggle path as the dashboard.
 
-Full design — [`docs/benchmark-mode.md`](docs/benchmark-mode.md).
+Full design — [`docs/operator/benchmark-mode.md`](docs/operator/benchmark-mode.md).
 Plan — [`plans/benchmark-mode.md`](plans/benchmark-mode.md) (task
 ID prefix `B-`).
 

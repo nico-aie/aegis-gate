@@ -7,10 +7,10 @@ fully wired to backing data.
 **Verification.** `cargo test -p aegis-control && cargo clippy -p aegis-control -- -D warnings`.
 
 **References.**
-- [`docs/dashboard-enterprise/pages/live-feed.md`](../../docs/dashboard-enterprise/pages/live-feed.md)
-- [`docs/dashboard-enterprise/pages/attack-events.md`](../../docs/dashboard-enterprise/pages/attack-events.md)
-- [`docs/dashboard-enterprise/pages/audit-log.md`](../../docs/dashboard-enterprise/pages/audit-log.md)
-- [`docs/dashboard-enterprise/pages/analytics.md`](../../docs/dashboard-enterprise/pages/analytics.md)
+- [`docs/control-plane/enterprise/pages/live-feed.md`](../../docs/control-plane/enterprise/pages/live-feed.md)
+- [`docs/control-plane/enterprise/pages/attack-events.md`](../../docs/control-plane/enterprise/pages/attack-events.md)
+- [`docs/control-plane/enterprise/pages/audit-log.md`](../../docs/control-plane/enterprise/pages/audit-log.md)
+- [`docs/control-plane/enterprise/pages/analytics.md`](../../docs/control-plane/enterprise/pages/analytics.md)
 
 ---
 
@@ -107,14 +107,14 @@ fully wired to backing data.
 ### D-M3-T3.10 Analytics page
 
 - File: `assets/dashboard/pages/analytics.js`
-- Six chart cards as described in [`pages/analytics.md`](../../docs/dashboard-enterprise/pages/analytics.md).
+- Six chart cards as described in [`pages/analytics.md`](../../docs/control-plane/enterprise/pages/analytics.md).
 - Time-range selector; on change, all cards refetch.
 
 ### D-M3-T3.11 Analytics PromQL proxy
 
 - File: `src/api/analytics.rs`
 - `expr` parameter is **not** raw PromQL — it's a key from a
-  fixed allow-list (see [`api.md` §allow-list](../../docs/dashboard-enterprise/api.md#analytics)).
+  fixed allow-list (see [`api.md` §allow-list](../../docs/control-plane/enterprise/api.md#analytics)).
 - Resolves the key to PromQL, calls the local prometheus
   registry's text encoder for instantaneous queries, or — for
   range queries — buckets the metrics on the fly from the

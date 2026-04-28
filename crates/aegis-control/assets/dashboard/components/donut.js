@@ -1,7 +1,7 @@
 // Donut chart component (D-M2-T2.9).
 //
 // Vanilla SVG; renders proportional ring segments + a legend.
-// Inner radius 60% per docs/dashboard-enterprise/components.md.
+// Inner radius 60% per docs/control-plane/enterprise/components.md.
 // Click on a segment dispatches `aegis:slice-click` with detail
 // `{ name, value, pct }` so page modules don't need a callback prop.
 

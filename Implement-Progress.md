@@ -1,14 +1,500 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
+- Task: **Tests folder consolidation + new auth/TLS/rate-limit
+  smoke coverage**
+- Outcome: `tests/README.md` is now a single playbook (the old
+  `tests/TESTING.md` was promoted in place); three new test
+  scripts close coverage gaps that previously had no live
+  assertion. The admin-API smoke layer now runs auth + TLS
+  before any feature-specific endpoint, so a failure points
+  directly at the bearer concern without false signals.
+- Files changed:
+  - `tests/README.md` — combined README + TESTING into one
+    playbook; added the new entries to layout/SLO/CI sections.
+  - `tests/TESTING.md` — removed (content folded into README).
+  - `tests/api/auth.sh` — **new**. Verifies bad password → 401,
+    good login → 200 + aegis_session + aegis_csrf cookies,
+    authenticated GET, mutation without CSRF → 403, logout
+    invalidates session.
+  - `tests/api/tls.sh` — **new**. Asserts TLS 1.0/1.1 rejected
+    (where curl supports `--tls-max`), TLS 1.2/1.3 succeed,
+    HSTS + 4 hardening headers present on every response.
+  - `tests/load/rate-limit.js` — **new**. Single-VU burst
+    saturates the per-IP sliding-window limiter; threshold
+    `blocked_after_burst > 0.95`.
+  - `tests/api/run-all.sh` — `auth.sh` + `tls.sh` run first.
+  - `tests/api/README.md` — assertions table + layout updated.
+- Verification: `bash -n` clean on all new shell scripts; live
+  run blocked on bringing the dev gateway up — covered in
+  `tests/README.md` § 3.
+
+## Earlier Completed
+- Task: **Documentation restructure — flat docs/ → 8-category
+  taxonomy (operator, architecture, data-plane, security,
+  control-plane, observability, operations, future) + Phase B
+  intake template + tests/ folder consolidation.**
+- Outcome: every doc now lives in a category folder with a
+  category README, `docs/README.md` is a taxonomy index, all
+  cross-refs (220 internal + 60+ external + 41 in-code) point
+  at the new locations, and `docs/future/advanced-features.md`
+  opens an explicit intake/scoring funnel for the next phase.
+  Workspace `cargo check` clean. Two future phases (dashboard
+  redesign + Phase B advanced features) have a documented home
+  to land into.
+- Files changed (highlights):
+  - `docs/{operator,architecture,data-plane,security,control-plane,observability,operations,future}/README.md`
+    — **new**, per-category indexes.
+  - `docs/security/detectors/README.md` — **new**, detector index.
+  - `docs/future/advanced-features.md` — **new**, Phase B intake
+    template + 1–5 scoring rubric across Impact/Reach/Cost/Confidence.
+  - `docs/README.md` — full rewrite as taxonomy index.
+  - `docs/security/detectors/{sqli,xss,path-traversal,ssrf,header-injection,recon,brute-force,body-abuse}.md`
+    — moved from `docs/detection-*.md` and renamed (drop
+    `detection-` prefix; the folder name carries the meaning).
+  - `docs/control-plane/enterprise/` — moved from `docs/dashboard-enterprise/`.
+  - `docs/future/{multi-tenancy,rbac-sso}.md` — moved from `docs/deferred/`.
+  - `docs/observability/prometheus-otel.md` — moved + renamed
+    from `docs/observability-prometheus-otel.md`.
+  - All sibling-relative md links (220 hits) rewritten to
+    valid relative paths from each file's new location.
+  - `plans/{plan,benchmark-mode,security,control}.md` +
+    `plans/dashboard-{enterprise,redesign}/**` — updated to
+    point at the new doc paths.
+  - `Implement-Progress.md`, top-level `README.md`,
+    `Architecture.md`, `Requirement.md`, `tests/TESTING.md` —
+    updated to point at the new doc paths.
+  - 19 source files under `crates/` (Rust + dashboard JS/CSS/HTML)
+    — code comments rewritten to point at `docs/control-plane/enterprise/...`,
+    `docs/security/risk-scoring.md`, etc.
+- Verification:
+  - `cargo check --workspace` — clean
+  - `cargo test --workspace --no-run` — all targets build
+  - `grep -rE 'docs/(detection-|dashboard-enterprise|deferred|observability-prometheus-otel)' crates/ docs/ plans/ Implement-Progress.md README.md`
+    — empty (zero stale refs)
+
+## Earlier Completed
+- Task: **F-T6 / F-T7 / F-T8 / F-T9 / F-T10 — post-k6 polish
+  bundle (host-vs-laptop perf docs, audit + cold-tier k6
+  coverage, per-stage latency histogram, Pebble container,
+  AcmeManager wired into `run()`)**
+- Outcome: every post-k6 follow-up task is now closed. The
+  remaining work is purely a future TLS-listener migration to
+  hot-swap ACME-issued certs into the data-plane listener.
+- Files changed:
+  - `tests/load/README-perf.md` — **new** (F-T6). Documents
+    the laptop / CI-runner / dedicated-host SLO targets so
+    `baseline.js p99 < 5 ms` stops reading as a regression
+    when run on the wrong host. Captures the rule
+    `http_req_duration = host_noise + WAF_time` and points
+    at F-T10 for attribution.
+  - `tests/load/audit-since.js` — **new** (F-T9). Live
+    contract test for `/api/audit/since`: shape envelope,
+    cursor monotonicity, high-water empty-events return,
+    gap-flag semantics. Seeds the audit ring with 25
+    detector-tripping requests in `setup()` so the replay
+    has rows to assert on.
+  - `tests/load/cold-tier.js` — **new** (F-T9). Inventory
+    contract: every sink row has the four documented keys,
+    `secret_leak_observed == 0` (defence-in-depth grep
+    against the response body for `secret:`, `token_ref`,
+    `token=`, `hec[-_]token`).
+  - `crates/aegis-control/src/metrics/request_duration.rs`
+    — **new** (F-T10). `RequestStageHistogram` registers
+    `waf_request_duration_ms` as a `HistogramVec` keyed on
+    `stage` ∈ {`rate_limit`, `detect`, `respond`, `total`}.
+    Bucket layout 0.05 ms → 250 ms with 7+ buckets under
+    10 ms — preserves resolution under the p99 < 5 ms
+    contract. `record(stage, duration)` is one HashMap
+    lookup + atomic fetch_add. Stage label constants pinned
+    at compile time; tests verify uniqueness, bucket
+    density, and ms-conversion.
+  - `crates/aegis-control/src/metrics/mod.rs` — register
+    the new submodule.
+  - `crates/aegis-proxy/src/lib.rs` (F-T10) — `MetricsRegistry`
+    moved up from `admin_accept_loop` into `run()` so the
+    data plane shares the registry with the `/metrics`
+    endpoint. `RequestStageHistogram` registered once at
+    boot; threaded through `accept_loop` +
+    `handle_data_request`. Hot path measures `rate_limit`,
+    `detect`, and (via RAII guard) `total` per request.
+    Each measurement is one `Instant::elapsed()` + one
+    histogram observe — no async overhead.
+  - `deploy/docker-compose.test.yml` (F-T7) — Pebble
+    container added (`ghcr.io/letsencrypt/pebble:latest`),
+    bound to `:14000` (directory) and `:15000` (mgmt API),
+    with `host.docker.internal` extra-hosts so it can probe
+    back to the WAF for HTTP-01 challenges.
+  - `deploy/pebble/pebble-config.json` — **new** (F-T7).
+    Standard Pebble config; `httpPort: 5002` /
+    `tlsPort: 5001` are the challenge listeners the gateway
+    will eventually bind to.
+  - `tests/api/acme.sh` — **new** (F-T7). Reachability +
+    directory-document smoke. End-to-end ACME issue is
+    placeholder until the cert-store hot-swap follow-up
+    lands.
+  - `crates/aegis-proxy/src/lib.rs` (F-T8) — when
+    `cfg.tls.acme.is_some()`, `run()` constructs an
+    `InstantAcmeProvider` + `AcmeManager`, wires the
+    challenge store into the existing `force_https_loop`,
+    spawns the renewal scheduler, and triggers a first-
+    issuance attempt at boot. The cert-writer callback
+    today logs + relies on `persist_issued` having written
+    the PEMs to disk; a future commit replaces it with a
+    `CertStore::store(...)` swap once the data-plane
+    listener terminates TLS. Initial-issuance failure is
+    non-fatal — an offline directory does not keep the WAF
+    down.
+- Tests:
+  - aegis-control `metrics::request_duration`: 5 new —
+    register creates histogram, each stage label
+    independent, ms conversion, bucket density under 10 ms,
+    stage constants unique.
+  - aegis-proxy lib: existing 272 still pass; the new RAII
+    total-time guard exercised on every request path
+    through the existing test suite.
+- Status: DONE — **1,964 workspace tests pass** (was 1,959,
+  +5 net new). `cargo clippy --workspace -- -D warnings`
+  clean.
+- Date: 2026-04-28
+
+## Tracks now in flight
+
+| Track | Plan | State |
+|---|---|---|
+| Post-k6 follow-up (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | **all 10 closed**: F-T1/F-T2/F-T4/F-T5/F-T6/F-T7/F-T8/F-T9/F-T10 done; F-T3 closed as no-op (was cross-test contamination, not a real bug) |
+| Dashboard redesign (M0..M10) | [`plans/dashboard-redesign/README.md`](./plans/dashboard-redesign/README.md) | unblocked; M0 is the next step |
+
+## Next Task
+
+The post-k6 follow-up is **fully done**. The two remaining
+production-readiness items are both deeper migrations, each
+worth a fresh plan:
+
+1. **Cert-store hot-swap into the TLS listener.** F-T8 wired
+   AcmeManager but the cert-writer callback is a stub —
+   issued PEMs land on disk but don't get hot-swapped into a
+   live TLS data-plane listener. Real TLS termination on
+   `:443` is the migration this unlocks.
+2. **Dashboard redesign — M0 foundations.** The redesign
+   plan at `plans/dashboard-redesign/` is fully unblocked
+   (admin login works, all admin endpoints reachable). M0
+   replaces the current chrome (sidebar / topbar / status
+   bar / cmdk) before any page milestone.
+
+Either is a multi-day track; pick by which surface needs
+attention next.
+
+### Previous (F-T2 — wire per-IP rate limiting) — for context
+- Task: **F-T2 — wire per-IP rate limiting into the data-plane
+  hot path**
+- Outcome: the only remaining real-bug gap from the k6 baseline
+  is closed. `ddos-burst.js` went from
+  `auto_block_count = 0` (vacuous-pass empty counter) to
+  `auto_block_count = 40 001` with p95 block latency 1 ms.
+  12 of 13 SLO thresholds now PASS; the only FAIL is the
+  environmental `baseline.js p99` latency under F-T6.
+- Files changed:
+  - `crates/aegis-security/src/rate_limit/ip_limiter.rs` —
+    **new**. `IpRateLimiter` is a DashMap-backed per-IP
+    sliding-window log: each `consume(ip)` prunes timestamps
+    older than `window`, denies if the live count would
+    exceed `limit`, and returns a `RateDecision { allowed,
+    count, limit, retry_after_seconds }`. Critical
+    invariants: a denied request **does not** push a new
+    timestamp (so the gate reopens after the oldest entry
+    rolls out — no permanent block from a stuck flood);
+    different IPs share zero state; an idle-sweep prunes IPs
+    with no request in `2 × window` no more than once per
+    `IDLE_SWEEP_INTERVAL` (60 s) so the map is bounded
+    without overhead on the hot path. Cheap to clone
+    (Arc-shared internals).
+  - `crates/aegis-security/src/rate_limit/mod.rs` — re-export
+    `IpRateLimiter`, `IpRateLimitConfig`, and
+    `RateDecision as IpRateDecision` (the existing
+    `sliding::RateDecision` keeps the un-suffixed name —
+    they live at different abstraction levels).
+  - `crates/aegis-security/Cargo.toml` — add
+    `parking_lot.workspace = true` for the
+    `Mutex::try_lock` bounded-sweep implementation.
+  - `crates/aegis-control/src/dashboard_services.rs` —
+    `DashboardServices.ip_rate_limiter: Arc<IpRateLimiter>`
+    field added; threaded through `spawn_with_mask` so
+    proxy boot can hand the same handle to both planes.
+  - `crates/aegis-proxy/src/lib.rs` —
+    - `run()` constructs the limiter from the first
+      `cfg.rate_limit.buckets` entry that scopes
+      `Global` × `Ip`. Falls back to library defaults
+      (1 000 / 60 s) when none configured.
+    - Threaded through `accept_loop` + `admin_accept_loop`
+      so the same handle drives the data-plane hot path
+      and (eventually) the dashboard.
+    - `handle_data_request` consults `ip_rate_limiter
+      .consume(peer_ip)` immediately after the strike-block
+      short-circuit, **before any detector runs**. On deny,
+      it records a strike on the same IP (so repeat
+      offenders cross `risk.strikes.block_at` and
+      transition from 429 → 403 permanent block on the next
+      request), emits a `class:detection action:block
+      rule_id:ip-rate-limit` audit event (gated by the same
+      `verbosity ≥ Error` filter as P8), and returns 429 +
+      `Retry-After: <retry_after_seconds>`.
+  - `tests/load/ddos-burst.js` — replaced the vacuously-
+    passing `autoblock_latency_ms` threshold with a hard
+    `auto_block_count > 0` contract. Counts both 403
+    (strike-block) and 429 (rate-limit) responses. Adds
+    `count > 0` so a missing block now fails the test loud.
+  - `tests/results/{README.md, ddos-burst.log}` — captured
+    the post-F-T2 run; updated the threshold table.
+- Tests:
+  - aegis-security: 10 new in
+    `rate_limit::ip_limiter::tests`: under-limit allowed,
+    over-limit denied with retry-after, **denied request
+    does NOT extend window** (gate reopens), different-IP
+    independence, window recovery for one IP, reset clears
+    state, tracked-count grows with distinct IPs, config
+    observable, exact-limit boundary, 200-thread concurrent
+    cap.
+  - **Live integration:** `ddos-burst.js` against a fresh
+    gateway = 40 001 blocks across 50 000 requests at
+    5 000 RPS, p95 first-block latency 1 ms.
+- Status: DONE — **1,959 workspace tests pass** (was 1,949,
+  +10 net new from the IP limiter). `cargo clippy --workspace
+  -- -D warnings` clean.
+- Date: 2026-04-28
+
+## Tracks now in flight
+
+| Track | Plan | State |
+|---|---|---|
+| Post-k6 follow-up (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | F-T1 / F-T2 / F-T4 / F-T5 done; F-T3 closed as no-op (was cross-test contamination); F-T6, F-T9, F-T10 polish next |
+| Dashboard redesign (M0..M10) | [`plans/dashboard-redesign/README.md`](./plans/dashboard-redesign/README.md) | unblocked; M0 is the next step |
+
+## Next Task
+
+The post-k6 follow-up is now down to scheduling-flexible
+polish. Pick one:
+
+- **F-T6** (~half day) — `tests/load/README-perf.md` + a
+  laptop-vs-host SLO table so the `baseline.js` p99 fail
+  stops looking like a regression. Pure docs; no code.
+- **F-T9** (~2 hours) — k6 scripts for `/api/cold-tier` and
+  `/api/audit/since`. Closes the test-pyramid coverage gap.
+- **F-T10** (~half day) — `waf_request_duration_ms`
+  histogram split by pipeline stage so the baseline-test
+  delta can be attributed instead of opaque RTT.
+- **F-T7 + F-T8** (~2 days) — Pebble integration + wire
+  `AcmeManager` + `InstantAcmeProvider` into `run()`.
+  Largest remaining commit; closes the P5 deferred items.
+
+Or pivot to the **dashboard redesign track** —
+[`plans/dashboard-redesign/`](./plans/dashboard-redesign/)
+is fully unblocked now that login works.
+
+### Previous (F-T4 + F-T5) — for context
+- Task: **F-T4 + F-T5 — `config/waf.test.yaml` + admin-needing
+  k6 scripts fail fast on login error**
+- Outcome: 11 of 12 SLO thresholds in the post-F-T1 k6 baseline
+  PASS (was 0/12 in the original run). The single FAIL is
+  environmental (host-bound p99 latency, F-T6 already
+  documented).
+- Files changed:
+  - `config/waf.test.yaml` — **new**. Sibling to
+    `waf.dev.yaml` with `load_mode.elevated_rps: 500` and
+    `critical_rps: 2000` so `loadmode-degradation.js` reaches
+    Critical on a laptop (was `2000` / `8000` — host capped at
+    ~7 k RPS so Critical was never reached). Everything else
+    inherits from `waf.dev.yaml`. Pinned to `aws-lc-rs` rustls
+    provider implicitly via the workspace setting.
+  - `crates/aegis-core/src/config.rs` —
+    `load_config_round_trip_test_yaml` test asserts
+    `elevated_rps == 500`, `critical_rps == 2000`,
+    `state.backend == InMemory`, `compliance.is_none()`.
+    Schema drift will break CI before it breaks the k6 layer.
+  - `tests/load/loadmode-degradation.js` — stages re-tuned to
+    100 / 750 / 3000 RPS (each ~1.5× the boundary) + setup()
+    pre-flight check warns if the running config has
+    higher-than-test thresholds.
+  - `tests/load/{security-toggle-flips,risk-strikes,verbosity-pin}.js` —
+    moved login from `default()` into k6 `setup()`. Pre-flight
+    failure now aborts the whole run with one clear error
+    instead of millions of retry log lines. Cookies read
+    directly from `Set-Cookie` headers (k6's cookie jar drops
+    `Secure` cookies on the plain-HTTP admin listener) and
+    re-sent as a `cookie` request header. Passes
+    `data.csrf` / `data.session` through the setup→default
+    return value.
+  - `tests/load/security-toggle-flips.js` —
+    `executor: "shared-iterations", iterations: 30, vus: 5`
+    instead of duration-based; per-iteration call to
+    `/api/risk/127.0.0.1/reset` between sqli-on and sqli-off
+    probes so the test's own malicious traffic doesn't
+    accumulate strikes that would mask the propagation
+    signal.
+  - `tests/results/README.md` — rewritten with the post-
+    F-T4/F-T5 baseline. Documents the cross-test strike
+    contamination workaround (restart WAF between
+    mixed-tiers and ddos-burst). Threshold table now reads
+    11/12 PASS.
+- Test deltas:
+  - aegis-core: +1 — `load_config_round_trip_test_yaml`.
+  - **Live k6 + integration:** all 5 admin-needing k6 scripts
+    now run end-to-end against the real `/admin/login` route
+    (was: aborted on 404). 11 of 12 thresholds PASS.
+- Status: DONE — **1,949 workspace tests pass** (was 1,948,
+  +1 net new). `cargo clippy --workspace -- -D warnings`
+  clean. F-T4 + F-T5 complete; F-T2 is now the next post-k6
+  task.
+- Date: 2026-04-28
+
+## Tracks now in flight
+
+| Track | Plan | State |
+|---|---|---|
+| Post-k6 follow-up (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | F-T1 / F-T4 / F-T5 done; F-T2 next |
+| Dashboard redesign (M0..M10) | [`plans/dashboard-redesign/README.md`](./plans/dashboard-redesign/README.md) | unblocked; M0 is the next step |
+
+## Next Task
+
+Per the recommended order in
+[`plans/post-k6-followup.md`](./plans/post-k6-followup.md):
+
+1. **F-T2 — wire per-IP rate-limiting into the data-plane
+   hot path.** The bucket infra in
+   `aegis-security::rate_limit::buckets` is fully implemented
+   + unit-tested, but `handle_data_request` never calls it.
+   Confirmed by `ddos-burst.js` showing 0 auto-blocks across
+   50 000 requests at 5 000 RPS from one source IP. Wiring
+   pattern:
+   ```
+   tier classify  →  limiter.consume(peer.ip(), tier)
+                       │ allowed
+                       ▼
+                     run_all_filtered  …
+                       │ blocked
+                       ▼
+                     risk.record_malicious; 429 + Retry-After
+   ```
+   ~2-3 days. Update `ddos-burst.js` thresholds to require
+   `auto_block_count > 0` so a missing block actually
+   fails the test (currently passes vacuously).
+2. **F-T3 — diagnose the CRITICAL-tier 4xx rate.** Now
+   reframed: the original 5.99 % finding turned out to be
+   **cross-test strike contamination**, not a real bug
+   (clean-state mixed-tiers run shows 0.00 %). Closing
+   F-T3 as a no-op + documentation update is plausible —
+   only re-open if a clean-state run surfaces a real
+   regression. ~half day.
+3. **F-T6** documentation (host-vs-laptop latency
+   trade-off), **F-T7..F-T10** scheduling-flexible polish.
+
+### Previous (F-T1 — Wire `POST /admin/login` + `/admin/logout`) — for context
+- Task: **F-T1 — Wire `POST /admin/login` + `/admin/logout`**
+- Critical regression closed: every P1–P8 mutating endpoint now
+  reachable from outside the process; the `tests/api/run-all.sh`
+  suite (5 scripts, 21 assertions) exits 0 against a live
+  gateway.
+- Files changed:
+  - `crates/aegis-control/src/api/login.rs` — **new**.
+    `authenticate(...)` returns a `LoginOutcome` enum (Ok /
+    Unauthorized / RateLimited / BadRequest) with cookies +
+    body pre-built so the proxy just maps to a hyper
+    response. `logout(...)` returns `LogoutOutcome` with
+    cookie-clearing strings; idempotent. Helpers:
+    `derive_session_key(secret) → [u8; 32]` (blake3 of
+    secret, deterministic so restarts don't invalidate live
+    sessions when the secret is stable on disk),
+    `build_rate_limiter(&DashboardAuthConfig)` flattens the
+    YAML `per_ip` / `per_user` / `lockout` blocks into the
+    runtime `LoginRateLimitConfig`, `AdminIdentity` bundles
+    `(user, password_hash)`. Behaviour: missing-user path
+    runs `dummy_verify` for timing equality; pre-flight
+    check is lockout → rate-limit → allow; success clears
+    prior failure counters; bodies use the standard error
+    envelope.
+  - `crates/aegis-control/src/api/admin.rs` — add
+    `SessionStore::force_remove(id)` for the
+    `/admin/logout` foot-gun escape (the existing `revoke`
+    refuses to remove the current session).
+  - `crates/aegis-control/src/dashboard_services.rs` —
+    `DashboardServices` gains four auth-runtime fields
+    (`auth_sessions`, `login_rate_limiter`,
+    `admin_identity`, `session_idle_seconds`) threaded
+    through `spawn_with_mask`. `spawn` builds harmless
+    defaults (empty admin → every login fails); proxy boot
+    constructs the real runtime from
+    `cfg.admin.dashboard_auth.*`.
+  - `crates/aegis-proxy/src/lib.rs` — `handle_admin_request`
+    takes the peer `SocketAddr` and dispatches `POST
+    /admin/login` and `POST /admin/logout` to dedicated
+    async handlers. Handler logic split into pure
+    `process_admin_login(services, peer, ua, body_bytes)`
+    and `process_admin_logout(services, cookie?)` so unit
+    tests can drive them without faking a hyper `Incoming`
+    body.
+  - `tests/api/_common.sh` — two bash bugs found end-to-end:
+    (1) `${3:-$AEGIS_CSRF}` defaulted `""` → real CSRF,
+    defeating the "missing CSRF" test path; switched to
+    `${3-$AEGIS_CSRF}`; (2) `"${hdr[@]}"` failed under
+    `set -u` when the array was empty; switched to two
+    branches inside the curl call.
+  - `tests/api/loadmode.sh` — `jq -e ".override_active"`
+    returns 1 when the field is `false`; switched to
+    `jq -e "has(\"override_active\")"`.
+- Tests:
+  - aegis-control: 11 new in `api::login::tests`.
+  - aegis-proxy: 5 new for the `process_admin_login` /
+    `process_admin_logout` pure functions.
+  - **Live integration:** `tests/api/run-all.sh` against a
+    fresh gateway: 5 scripts, 21 assertions, **all PASS**.
+- Status: DONE — **1,948 workspace tests pass** (was 1,932,
+  +16 net new). `cargo clippy --workspace -- -D warnings`
+  clean. F-T1 unblocks 8 previously-blocked test surfaces.
+- Date: 2026-04-28
+
+## Tracks now in flight
+
+Two parallel tracks. F-T1 just landed; the rest of the
+post-k6 work + the dashboard redesign can proceed.
+
+| Track | Plan | State |
+|---|---|---|
+| Post-k6 follow-up (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | F-T1 done; F-T4 / F-T5 next |
+| Dashboard redesign (M0..M10) | [`plans/dashboard-redesign/README.md`](./plans/dashboard-redesign/README.md) | unblocked (login works); M0 is the next step |
+
+## Next Task
+
+Per the recommended order in
+[`plans/post-k6-followup.md`](./plans/post-k6-followup.md):
+
+1. **F-T5** — make admin-needing k6 scripts fail fast on
+   login error (move `loginAdmin()` into k6's `setup()` so a
+   4xx aborts the run instead of producing 700 k retry log
+   lines) **+** **F-T4** — ship a `config/waf.test.yaml`
+   with lower `load_mode` thresholds so
+   `loadmode-degradation.js` can reach Critical on a laptop.
+   ~1 day combined.
+2. *Re-run* the full k6 suite. Capture into `tests/results/`
+   so the post-F-T1 baseline is recorded.
+3. **F-T2** — wire per-IP rate-limiting into the data-plane
+   hot path.
+4. **F-T3** — diagnose the CRITICAL-tier 5.99 % failure
+   rate from `mixed-tiers.js`. Now possible because F-T1
+   landed: use the toggle endpoints to flip detectors
+   during the diagnostic re-run.
+
+After F-T1..F-T5 the test suite fully exercises the P1–P8
+surface. F-T7..F-T10 are scheduling-flexible polish.
+
+### Previous (Whole-system test run + post-k6 follow-up plan) — for context
 - Task: **Whole-system test run + post-k6 follow-up plan**
 - What landed:
   - Doc + harness refresh from the previous turn:
-    `docs/USAGE.md`, `docs/dashboard-enterprise/api.md`,
-    `docs/risk-scoring.md`, `docs/tls-termination.md`,
-    `docs/audit-logging.md`, `docs/adaptive-load-shedding.md`,
-    `docs/graceful-degradation.md`,
-    `docs/siem-log-forwarding.md` updated with P1–P8 surface.
+    `docs/operator/usage.md`, `docs/control-plane/enterprise/api.md`,
+    `docs/security/risk-scoring.md`, `docs/data-plane/tls-termination.md`,
+    `docs/observability/audit-logging.md`, `docs/data-plane/adaptive-load-shedding.md`,
+    `docs/data-plane/graceful-degradation.md`,
+    `docs/observability/siem-log-forwarding.md` updated with P1–P8 surface.
   - `tests/{api,load,security}/` — admin-API smoke layer,
     four new k6 scripts (`security-toggle-flips.js`,
     `risk-strikes.js`, `loadmode-degradation.js`,
@@ -1178,7 +1664,7 @@ since both share the dispatch wiring.
     aria-label coverage, landmark roles, live regions, WCAG-AA
     contrast on dark + light themes, security header table
     completeness, total + per-file bundle-size budget.
-  - `docs/dashboard.md` — pointer to `dashboard-enterprise/` +
+  - `docs/control-plane/dashboard.md` — pointer to `dashboard-enterprise/` +
     legacy-flag deprecation note.
   - Removed `crates/aegis-control/src/dashboard/legacy.rs` and
     the `pub use legacy::DASHBOARD_HTML_V1` re-export. The
@@ -1251,7 +1737,7 @@ These don't gate the milestones; they're green-flagged for follow-up:
   - `crates/aegis-control/src/api/analytics.rs` — new module:
     `ALLOW_LIST` const slice with 13 documented `expr` keys →
     canonical PromQL (8 base + 5 benchmark-mode rows from
-    `docs/benchmark-mode.md`). `lookup_promql(expr)` for
+    `docs/operator/benchmark-mode.md`). `lookup_promql(expr)` for
     validation. `AnalyticsResponse { expr, promql, result_type,
     value | points }` matches Prometheus's `/api/v1/query`
     taxonomy ("scalar" for instantaneous, "matrix" for range)
@@ -1676,7 +2162,7 @@ rephrased the comment to omit the example string.
     arms: `/api/about`, `/api/stats`, `/api/stats/timeseries`,
     `/api/upstreams/summary`, `/api/attacks/distribution`,
     `/api/attacks/top`. Each emits `Cache-Control` per
-    `docs/dashboard-enterprise/api.md` §"Caching"
+    `docs/control-plane/enterprise/api.md` §"Caching"
     (`max-age=1` for stats, `max-age=2` for upstreams,
     `max-age=10` for attacks + about). New helpers:
     `parse_query_u32(query, key, default)` (tolerates the spec's
@@ -1726,7 +2212,7 @@ rephrased the comment to omit the example string.
      subscriber.
   5. **Benchmark mode track** (B-T1..B-T6) — parallel to D, design
      specs already in place at `plans/benchmark-mode.md` +
-     `docs/benchmark-mode.md`.
+     `docs/operator/benchmark-mode.md`.
   6. Production Dockerfile + Helm chart, CI/CD pipeline, k6 +
      nuclei integration tests.
 - (was) Next: D-M4-T4.1 Rule Manager page
@@ -1744,7 +2230,7 @@ rephrased the comment to omit the example string.
   - T3.11 — `src/api/analytics.rs`: `/api/analytics/query`
     accepts `?expr=<allow-list-key>&start=&end=&step=`. The
     `expr` is **not** raw PromQL — it's a key from the fixed
-    allow-list in `docs/dashboard-enterprise/api.md` §analytics-
+    allow-list in `docs/control-plane/enterprise/api.md` §analytics-
     allowlist. Resolves to PromQL, queries the local Prometheus
     registry's text encoder for instantaneous queries, returns
     503 with `{"error":{"code":"no_history_backend"}}` for
@@ -1844,7 +2330,7 @@ rephrased the comment to omit the example string.
 
 ### Parallel track — Benchmark mode (B-)
 - Plan: [`plans/benchmark-mode.md`](plans/benchmark-mode.md)
-- Spec: [`docs/benchmark-mode.md`](docs/benchmark-mode.md)
+- Spec: [`docs/operator/benchmark-mode.md`](docs/operator/benchmark-mode.md)
 - Status: planning complete, no code yet. B-T1..B-T3 (data plane)
   unblocked; B-T4.5 / B-T4.6 (dashboard panels) gated on D-M3.
   May land in any order alongside the dashboard track.
@@ -1971,7 +2457,7 @@ rephrased the comment to omit the example string.
 | Cross-crate wiring (audit verify, admin set-password, admin enroll-totp, validate + compliance) | aegis-bin | 2026-04-27 |
 | README.md full rewrite (status, architecture, features, security, CLI) | project-wide | 2026-04-27 |
 | deploy/GUIDE.md deployment guide (dev, staging, production) | project-wide | 2026-04-27 |
-| docs/USAGE.md operations & usage guide | project-wide | 2026-04-27 |
+| docs/operator/usage.md operations & usage guide | project-wide | 2026-04-27 |
 | Data-plane detector wiring (7 OWASP detectors run on every request, block+audit on detection) | aegis-proxy | 2026-04-27 |
 | Admin listener wiring (dashboard, SSE stub, health, metrics, config API on :9443) | aegis-proxy | 2026-04-27 |
 | deploy/etcd/bootstrap.sh fix (self-shadowing function) | deploy | 2026-04-27 |

@@ -10,8 +10,8 @@
 //!   closure so the proxy plugs in its reader without forcing
 //!   `aegis-control` to depend on `aegis-proxy`.
 //!
-//! Spec: `docs/dashboard-enterprise/api.md` §"Tracking page" and
-//! `docs/dashboard-enterprise/pages/overview.md` §"Upstream pools".
+//! Spec: `docs/control-plane/enterprise/api.md` §"Tracking page" and
+//! `docs/control-plane/enterprise/pages/overview.md` §"Upstream pools".
 
 #![allow(dead_code)]
 
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 /// Default response cache TTL. The Tracking page polls
 /// `/api/tracking/snapshot` at 5 s but pages can override; 2 s
-/// matches `docs/dashboard-enterprise/api.md` §"Caching" for the
+/// matches `docs/control-plane/enterprise/api.md` §"Caching" for the
 /// tracking-snapshot family.
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(2);
 
@@ -44,7 +44,7 @@ pub struct PoolHealthSnapshot {
 }
 
 /// JSON shape returned by `GET /api/upstreams/summary`. Matches
-/// `docs/dashboard-enterprise/api.md`. State is one of
+/// `docs/control-plane/enterprise/api.md`. State is one of
 /// `Healthy | Degraded | Down` — the spec is explicit there are
 /// only 3 states (no `Unknown`).
 #[derive(Clone, Debug, Serialize)]

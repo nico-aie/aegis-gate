@@ -16,7 +16,7 @@
 //! 3. `"unknown"` fallback so the response is always non-empty
 //!    when there are detection events.
 //!
-//! Spec: `docs/dashboard-enterprise/api.md` §"Attack analytics".
+//! Spec: `docs/control-plane/enterprise/api.md` §"Attack analytics".
 
 #![allow(dead_code)]
 

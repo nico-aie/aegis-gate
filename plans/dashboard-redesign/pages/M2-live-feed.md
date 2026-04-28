@@ -14,7 +14,7 @@
 
 ## Inputs
 
-- Design contract: [`docs/dashboard-enterprise/pages/live-feed.md`](../../../docs/dashboard-enterprise/pages/live-feed.md)
+- Design contract: [`docs/control-plane/enterprise/pages/live-feed.md`](../../../docs/control-plane/enterprise/pages/live-feed.md)
 - API endpoints used:
   - `GET /dashboard/sse` — Server-Sent Events stream
   - `GET /api/audit/since?cursor=N&limit=200` — reconnect

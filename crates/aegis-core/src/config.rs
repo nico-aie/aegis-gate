@@ -1518,6 +1518,41 @@ path: /var/log/waf/audit.jsonl
     }
 
     #[test]
+    fn load_config_round_trip_test_yaml() {
+        // The test config is the one referenced by F-T4 +
+        // `tests/TESTING.md` for k6 runs that need lower
+        // load-mode thresholds. Schema drift here breaks the
+        // whole load-test layer.
+        let path = std::path::Path::new("../../config/waf.test.yaml");
+        if path.exists() {
+            let cfg = super::load_config(path)
+                .unwrap_or_else(|e| panic!("waf.test.yaml must parse: {e}"));
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("waf.test.yaml must validate: {e}"));
+
+            // Test-harness invariants — must match the
+            // hardcoded targets in tests/load/*.js.
+            assert_eq!(
+                cfg.load_mode.elevated_rps, 500,
+                "loadmode-degradation.js stage B expects elevated_rps=500",
+            );
+            assert_eq!(
+                cfg.load_mode.critical_rps, 2_000,
+                "loadmode-degradation.js stage C expects critical_rps=2000",
+            );
+            assert_eq!(
+                cfg.state.backend,
+                StateBackendKind::InMemory,
+                "test config must be self-contained (no Redis)",
+            );
+            assert!(
+                cfg.compliance.is_none(),
+                "test config must not pin compliance modes",
+            );
+        }
+    }
+
+    #[test]
     fn load_config_round_trip_dev_yaml() {
         // The dev config is the one referenced by tests/TESTING.md
         // and the CI bring-up; this test catches schema drift that

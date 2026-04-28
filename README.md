@@ -18,7 +18,7 @@ Workspace `cargo clippy -- -D warnings` clean.
 | **M1** Data Plane | `aegis-proxy` | TLS, HTTP/2, WebSocket, gRPC, routing, upstream pools, circuit breakers, rate-limiting quotas, canary, retries, caching, state backends, service discovery, hot reload |
 | **M2** Security Pipeline | `aegis-security` | Rule engine (AST + evaluator), OWASP detectors (SQLi, XSS, path traversal, SSRF, etc.), risk scoring, JA4/JA3 fingerprinting, bot classification, challenge ladder, DLP, JWT/OAuth, OpenAPI enforcement, GraphQL guard, FPE |
 | **M3** Control Plane | `aegis-control` | Prometheus metrics, health probes, dashboard + SSE, tracing, access logs, audit hash chain, 8 SIEM sinks, admin auth (argon2id + HMAC + CSRF + TOTP + mTLS), compliance (FIPS/PCI/SOC2/GDPR/HIPAA), GitOps loader, SLO alerting |
-| **D-M1..D-M6** Enterprise Dashboard | `aegis-control` (assets + api modules) | Vanilla-JS SPA shell + router + i18n + 11 sidebar pages (Overview, Live Feed, Attack Events, Analytics, Audit Log, Rule Manager, Tier Config, Blacklist, Whitelist, Settings, Tracking) + 27 `/api/*` endpoints + a11y/contrast/header/budget polish tests. See [`docs/dashboard-enterprise/`](docs/dashboard-enterprise/) for the design spec and [`plans/dashboard-enterprise/`](plans/dashboard-enterprise/) for the task plans. |
+| **D-M1..D-M6** Enterprise Dashboard | `aegis-control` (assets + api modules) | Vanilla-JS SPA shell + router + i18n + 11 sidebar pages (Overview, Live Feed, Attack Events, Analytics, Audit Log, Rule Manager, Tier Config, Blacklist, Whitelist, Settings, Tracking) + 27 `/api/*` endpoints + a11y/contrast/header/budget polish tests. See [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) for the design spec and [`plans/dashboard-enterprise/`](plans/dashboard-enterprise/) for the task plans. |
 
 **Deferred** (carried in `Implement-Progress.md`): mutating
 endpoints (writes are gated on the M3 audit-mutation pipeline);
@@ -42,7 +42,7 @@ docker compose -f deploy/docker-compose.dev.yml up -d
 ./target/release/waf run --config config/waf.yaml
 ```
 
-See [`docs/cli.md`](docs/cli.md) for the full CLI reference and [`deploy/GUIDE.md`](deploy/GUIDE.md) for deployment instructions.
+See [`docs/operator/cli.md`](docs/operator/cli.md) for the full CLI reference, [`docs/operator/usage.md`](docs/operator/usage.md) for the operator runbook, and [`deploy/GUIDE.md`](deploy/GUIDE.md) for deployment instructions.
 
 ## CLI Overview
 
@@ -72,11 +72,18 @@ aegis-gate/
 │   ├── dashboard-enterprise/   # D-M1..D-M6 dashboard track (complete)
 │   │   └── milestone-1..6-*.md
 │   └── benchmark-mode.md    # B-T1..B-T6 benchmark track (planning)
-├── docs/                    # Per-feature specifications (~55 files)
-│   ├── README.md            # Feature index + ownership map
-│   ├── cli.md               # Authoritative `waf` CLI reference
-│   ├── USAGE.md             # Operations & usage guide
-│   └── ...
+├── docs/                    # Per-feature specifications (~60 files, foldered)
+│   ├── README.md            # Taxonomy index + ownership map
+│   ├── operator/            # usage.md, cli.md, benchmark-mode.md
+│   ├── architecture/        # protocols
+│   ├── data-plane/          # M1 — proxy, routing, TLS, traffic mgmt
+│   ├── security/            # M2 — rules, detectors, risk, challenge
+│   │   └── detectors/       #   per-attack-class detector specs
+│   ├── control-plane/       # M3 — dashboard, admin API, hot-reload
+│   │   └── enterprise/      #   enterprise dashboard SPA spec
+│   ├── observability/       # metrics, audit, SIEM, SLO
+│   ├── operations/          # HA, compliance, residency, DR
+│   └── future/              # Phase B intake + deferred designs
 ├── deploy/                  # Docker Compose + deployment guide
 │   ├── GUIDE.md             # Deployment guide (dev, staging, production)
 │   ├── docker-compose.dev.yml
@@ -169,10 +176,10 @@ cargo clippy --workspace -- -D warnings
 
 | Document | Purpose |
 |----------|---------|
-| [`docs/cli.md`](docs/cli.md) | Authoritative CLI reference |
-| [`docs/USAGE.md`](docs/USAGE.md) | Operations and usage guide |
-| [`docs/dashboard-enterprise/`](docs/dashboard-enterprise/) | Enterprise dashboard design spec (layout, pages, API, accessibility, security) |
-| [`docs/benchmark-mode.md`](docs/benchmark-mode.md) | Benchmark mode design (gated, opt-in `X-Aegis-*` diagnostics) |
+| [`docs/operator/cli.md`](docs/operator/cli.md) | Authoritative CLI reference |
+| [`docs/operator/usage.md`](docs/operator/usage.md) | Operations and usage guide |
+| [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) | Enterprise dashboard design spec (layout, pages, API, accessibility, security) |
+| [`docs/operator/benchmark-mode.md`](docs/operator/benchmark-mode.md) | Benchmark mode design (gated, opt-in `X-Aegis-*` diagnostics) |
 | [`deploy/GUIDE.md`](deploy/GUIDE.md) | Deployment guide (dev → staging → production) |
 | [`deploy/README.md`](deploy/README.md) | Dev infrastructure quick start |
 | [`Architecture.md`](Architecture.md) | System design and decisions |

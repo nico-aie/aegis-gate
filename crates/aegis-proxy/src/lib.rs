@@ -70,6 +70,38 @@ pub async fn run(
     // + handles operator reset).
     let risk = aegis_security::risk::RiskTracker::new(&cfg.risk);
 
+    // F-T2 — per-IP rate limiter. Built from the first
+    // `cfg.rate_limit.buckets` entry that scopes globally to
+    // the IP discriminator. Falls back to library defaults
+    // (1 000 req / 60 s) when no such bucket is configured —
+    // safer than running with no volumetric guard at all.
+    let ip_rate_cfg = cfg
+        .rate_limit
+        .buckets
+        .iter()
+        .find(|b| {
+            matches!(b.scope, aegis_core::config::RlScope::Global)
+                && matches!(b.key, aegis_core::config::RlKey::Ip)
+        })
+        .map(|b| aegis_security::rate_limit::IpRateLimitConfig {
+            limit: b.limit.min(u32::MAX as u64) as u32,
+            window: b.window,
+        })
+        .unwrap_or_default();
+    let ip_rate_limiter = Arc::new(
+        aegis_security::rate_limit::IpRateLimiter::new(ip_rate_cfg),
+    );
+
+    // F-T10 — per-stage latency histogram. Build the metrics
+    // registry once here so both the data plane (which now
+    // emits `waf_request_duration_ms`) and the admin plane
+    // (which exposes `/metrics`) share the same series.
+    let metrics = aegis_control::metrics::MetricsRegistry::init();
+    let request_stage_hist = std::sync::Arc::new(
+        aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+            .expect("histogram registration failed"),
+    );
+
     // P7 load gauge. Hot path bumps the request counter; the
     // background sampler reads it and updates the live LoadMode.
     // Hot path + control plane share the same handle.
@@ -90,11 +122,21 @@ pub async fn run(
         let detectors = detectors.clone();
         let mask = mask.clone();
         let risk = risk.clone();
+        let ip_rate_limiter = ip_rate_limiter.clone();
         let load_gauge = load_gauge.clone();
         let verbosity = verbosity.clone();
+        let request_stage_hist = request_stage_hist.clone();
         let bus = bus.clone();
         handles.push(tokio::spawn(accept_loop(
-            tcp, detectors, mask, risk, load_gauge, verbosity, bus,
+            tcp,
+            detectors,
+            mask,
+            risk,
+            ip_rate_limiter,
+            load_gauge,
+            verbosity,
+            request_stage_hist,
+            bus,
         )));
     }
 
@@ -102,6 +144,81 @@ pub async fn run(
     // (which publishes new tokens) and the force-https listener
     // (which serves them on `/.well-known/acme-challenge/`).
     let challenges = crate::acme::ChallengeStore::new();
+
+    // F-T8 — wire AcmeManager + renewal scheduler when
+    // `tls.acme` is set in YAML. The data-plane listener stays
+    // plain HTTP today (the cert-store hot-swap into a TLS
+    // listener is a deeper migration, deferred); but
+    // first-issuance, persistence, and the renewal loop run.
+    // Operators bringing real TLS termination online need only
+    // wire `Arc<ArcSwap<CertStore>>` into the IssuedCert
+    // CertWriter callback below.
+    if let Some(acme_yaml) = cfg.tls.as_ref().and_then(|t| t.acme.as_ref()) {
+        let acme_cfg = crate::acme::AcmeConfig::from_core(acme_yaml);
+        let provider = std::sync::Arc::new(crate::acme_instant::InstantAcmeProvider::new());
+
+        // The cert writer is the integration seam. Today it
+        // logs + relies on persist_issued having already
+        // written the PEMs to disk in
+        // InstantAcmeProvider::finalize_and_download. A future
+        // commit replaces this stub with `cert_store.store(...)`
+        // once the data-plane listener terminates TLS.
+        let cert_writer: crate::acme::CertWriter = std::sync::Arc::new(|issued| {
+            tracing::info!(
+                domains = ?issued.domains,
+                "acme: cert issued and persisted to disk \
+                 (cert-store hot-swap deferred)",
+            );
+            Ok(())
+        });
+
+        let manager = std::sync::Arc::new(crate::acme::AcmeManager::new(
+            acme_cfg,
+            provider,
+            challenges.clone(),
+            cert_writer,
+        ));
+
+        // Renewal scheduler — periodically inspects every PEM
+        // under cert_dir and re-issues anything within
+        // `renew_before` of expiry.
+        let cert_dir = manager.config().cert_dir.clone();
+        let inventory: crate::acme::CertInventory = std::sync::Arc::new(move || {
+            // Best-effort sync read of every `cert.pem` under
+            // `cert_dir/<domain>/`. The scheduler runs at minute
+            // resolution so this is amortised.
+            let mut out = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(&cert_dir) {
+                for entry in rd.flatten() {
+                    let p = entry.path().join("cert.pem");
+                    if let Ok(bytes) = std::fs::read(&p) {
+                        out.push(bytes);
+                    }
+                }
+            }
+            out
+        });
+        let _renewer = crate::acme::spawn_renewal_scheduler(
+            std::sync::Arc::clone(&manager),
+            inventory,
+        );
+
+        // Trigger a first-issuance attempt at boot. This
+        // populates the challenge store + persists the cert
+        // before any traffic arrives. Failure is non-fatal —
+        // an offline directory shouldn't keep the WAF down.
+        let manager_boot = std::sync::Arc::clone(&manager);
+        tokio::spawn(async move {
+            if let Err(e) = manager_boot.issue().await {
+                tracing::warn!(
+                    error = %e,
+                    "acme: initial issuance failed; renewal scheduler will retry",
+                );
+            } else {
+                tracing::info!("acme: initial issuance succeeded");
+            }
+        });
+    }
 
     // P4 force-HTTPS redirect listener (optional). Spawns only if
     // `listeners.force_https` is set. Also responds to HTTP-01
@@ -126,8 +243,10 @@ pub async fn run(
     let admin_bus = bus;
     let admin_mask = mask.clone();
     let admin_risk = risk.clone();
+    let admin_ip_rate_limiter = ip_rate_limiter.clone();
     let admin_load_gauge = load_gauge.clone();
     let admin_verbosity = verbosity.clone();
+    let admin_metrics = metrics.clone();
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -135,8 +254,10 @@ pub async fn run(
         admin_bus,
         admin_mask,
         admin_risk,
+        admin_ip_rate_limiter,
         admin_load_gauge,
         admin_verbosity,
+        admin_metrics,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);
@@ -163,26 +284,54 @@ async fn admin_accept_loop(
     bus: AuditBus,
     mask: aegis_security::detectors::SharedDetectorMask,
     risk: aegis_security::risk::RiskTracker,
+    ip_rate_limiter: Arc<aegis_security::rate_limit::IpRateLimiter>,
     load_gauge: aegis_core::LoadGauge,
     verbosity: aegis_core::SharedVerbosity,
+    metrics: aegis_control::metrics::MetricsRegistry,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
-    let metrics = aegis_control::metrics::MetricsRegistry::init();
+    // F-T10: metrics registry is now built in `run()` so the
+    // data-plane histogram series is registered into the same
+    // registry the `/metrics` endpoint scrapes.
 
     // Build the dashboard service bundle once at boot. The drain
     // task runs for the lifetime of the admin listener — see
     // `aegis-control::dashboard_services` (D-M2-T2.7).
     let pool_provider =
         aegis_control::dashboard_services::pool_snapshot_provider(&cfg);
+
+    // F-T1 — auth runtime. Session store HMAC key derives from
+    // `csrf_secret_ref`; the configured admin identity loads from
+    // `password_hash_ref` (single-user model until RBAC). The
+    // rate-limiter flattens the YAML's per-IP / per-user / lockout
+    // blocks into the runtime config.
+    let auth = &cfg.admin.dashboard_auth;
+    let session_key = aegis_control::api::login::derive_session_key(&auth.csrf_secret_ref);
+    let auth_sessions = Arc::new(
+        aegis_control::admin_auth::session::SessionStore::new(session_key),
+    );
+    let login_rate_limiter = aegis_control::api::login::build_rate_limiter(auth);
+    let admin_identity = Arc::new(aegis_control::api::login::AdminIdentity {
+        // Single-admin model: hard-code "admin" until RBAC lands.
+        user: "admin".into(),
+        password_hash: auth.password_hash_ref.clone(),
+    });
+    let session_idle_seconds = auth.session_ttl_idle.as_secs();
+
     let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask(
         bus,
         pool_provider,
         cfg.admin.environment.clone(),
         mask,
         risk,
+        ip_rate_limiter,
         load_gauge,
         verbosity,
+        auth_sessions,
+        login_rate_limiter,
+        admin_identity,
+        session_idle_seconds,
     );
     let services = Arc::new(services);
 
@@ -212,7 +361,7 @@ async fn admin_accept_loop(
                 async move {
                     Ok::<_, Infallible>(
                         handle_admin_request(
-                            req, &cfg, &readiness, &startup, &metrics, &services,
+                            req, peer, &cfg, &readiness, &startup, &metrics, &services,
                         )
                         .await,
                     )
@@ -231,6 +380,7 @@ async fn admin_accept_loop(
 /// first — the rest fall through to the existing sync path.
 async fn handle_admin_request(
     req: hyper::Request<hyper::body::Incoming>,
+    peer: std::net::SocketAddr,
     cfg: &WafConfig,
     readiness: &ReadinessSignal,
     startup: &aegis_control::health::StartupProbe,
@@ -239,6 +389,16 @@ async fn handle_admin_request(
 ) -> Response<Full<Bytes>> {
     let method = req.method().clone();
     let path = req.uri().path().to_owned();
+
+    // F-T1 — auth front door. Login is open (rate-limited);
+    // logout reads the session cookie. Both bypass the regular
+    // admin_router because they need access to the auth runtime.
+    if method == hyper::Method::POST && path == "/admin/login" {
+        return handle_admin_login(req, peer, services).await;
+    }
+    if method == hyper::Method::POST && path == "/admin/logout" {
+        return handle_admin_logout(req, services);
+    }
 
     // P2 mutating endpoint: PUT /api/detectors. Reads body
     // asynchronously, runs through AuditedMutate.
@@ -675,6 +835,133 @@ fn mutation_error_response(
     json_body_response(err.http_status(), err.to_body(), "private, no-store")
 }
 
+async fn handle_admin_login(
+    req: hyper::Request<hyper::body::Incoming>,
+    peer: std::net::SocketAddr,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let user_agent = req
+        .headers()
+        .get(hyper::header::USER_AGENT)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return json_body_response(
+                400,
+                serde_json::json!({"ok":false,"reason":"bad_request",
+                                   "message":"failed to read request body"})
+                    .to_string(),
+                "private, no-store",
+            );
+        }
+    };
+    process_admin_login(services, peer, &user_agent, body_bytes.as_ref())
+}
+
+/// Pure body of the login handler — no `Incoming`, so unit
+/// tests can drive it without faking a TCP body. The async
+/// wrapper above just collects the body and delegates here.
+fn process_admin_login(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    peer: std::net::SocketAddr,
+    user_agent: &str,
+    body_bytes: &[u8],
+) -> Response<Full<Bytes>> {
+    let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
+    let outcome = aegis_control::api::login::authenticate(
+        body_str,
+        &services.admin_identity,
+        &services.login_rate_limiter,
+        &services.auth_sessions,
+        &services.sessions,
+        &peer.ip().to_string(),
+        user_agent,
+        services.session_idle_seconds,
+    );
+
+    use aegis_control::api::login::LoginOutcome;
+    match outcome {
+        LoginOutcome::Ok {
+            session_cookie,
+            csrf_cookie,
+            body,
+        } => Response::builder()
+            .status(200)
+            .header("content-type", "application/json; charset=utf-8")
+            .header("cache-control", "no-store")
+            .header("set-cookie", session_cookie)
+            .header("set-cookie", csrf_cookie)
+            .body(Full::new(Bytes::from(body)))
+            .unwrap(),
+        LoginOutcome::Unauthorized { body } => {
+            json_body_response(401, body, "no-store")
+        }
+        LoginOutcome::RateLimited {
+            retry_after_seconds,
+            body,
+        } => Response::builder()
+            .status(429)
+            .header("content-type", "application/json; charset=utf-8")
+            .header("cache-control", "no-store")
+            .header("retry-after", retry_after_seconds.to_string())
+            .body(Full::new(Bytes::from(body)))
+            .unwrap(),
+        LoginOutcome::BadRequest { body } => {
+            json_body_response(400, body, "no-store")
+        }
+    }
+}
+
+fn handle_admin_logout(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let cookie_value = req
+        .headers()
+        .get_all(hyper::header::COOKIE)
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
+        .map(|s| s.to_string());
+    process_admin_logout(services, cookie_value.as_deref())
+}
+
+/// Pure body of logout — same testability story as
+/// [`process_admin_login`].
+fn process_admin_logout(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    session_cookie: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let outcome = aegis_control::api::login::logout(
+        session_cookie,
+        &services.auth_sessions,
+        &services.sessions,
+    );
+    use aegis_control::api::login::LogoutOutcome;
+    let (clear_session, clear_csrf) = match outcome {
+        LogoutOutcome::Ok {
+            clear_session_cookie,
+            clear_csrf_cookie,
+        }
+        | LogoutOutcome::NoSession {
+            clear_session_cookie,
+            clear_csrf_cookie,
+        } => (clear_session_cookie, clear_csrf_cookie),
+    };
+    Response::builder()
+        .status(204)
+        .header("cache-control", "no-store")
+        .header("set-cookie", clear_session)
+        .header("set-cookie", clear_csrf)
+        .body(Full::new(Bytes::new()))
+        .unwrap()
+}
+
 /// Render a [`MaskState`] as a JSON object with `base` and
 /// `overrides` keys. Used as the `before`/`after` payload of the
 /// audit-chain diff so reviewers can see exactly which tier (and
@@ -1076,7 +1363,7 @@ fn json_response(status: u16, value: &serde_json::Value) -> Response<Full<Bytes>
 
 /// JSON response from a pre-rendered body. Adds `Cache-Control` per
 /// the per-endpoint TTLs documented in
-/// `docs/dashboard-enterprise/api.md` §"Caching".
+/// `docs/control-plane/enterprise/api.md` §"Caching".
 fn json_body_response(status: u16, body: String, cache_control: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -1089,7 +1376,7 @@ fn json_body_response(status: u16, body: String, cache_control: &str) -> Respons
 /// Apply the documented dashboard security headers to a response
 /// builder. Single application point for the
 /// `aegis_control::dashboard::security::SECURITY_HEADERS` table — see
-/// `docs/dashboard-enterprise/security.md` §"Headers (full set …)".
+/// `docs/control-plane/enterprise/security.md` §"Headers (full set …)".
 fn apply_dashboard_security_headers(
     mut builder: hyper::http::response::Builder,
 ) -> hyper::http::response::Builder {
@@ -1225,13 +1512,16 @@ fn handle_force_https_request(
     crate::listener::tls_policy::force_https_redirect_response(host, &path_owned, status)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     tcp: tokio::net::TcpListener,
     detectors: Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>,
     mask: aegis_security::detectors::SharedDetectorMask,
     risk: aegis_security::risk::RiskTracker,
+    ip_rate_limiter: Arc<aegis_security::rate_limit::IpRateLimiter>,
     load_gauge: aegis_core::LoadGauge,
     verbosity: aegis_core::SharedVerbosity,
+    request_stage_hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     bus: AuditBus,
 ) {
     loop {
@@ -1246,8 +1536,10 @@ async fn accept_loop(
         let detectors = detectors.clone();
         let mask = mask.clone();
         let risk = risk.clone();
+        let ip_rate_limiter = ip_rate_limiter.clone();
         let load_gauge = load_gauge.clone();
         let verbosity = verbosity.clone();
+        let request_stage_hist = request_stage_hist.clone();
         let bus = bus.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
@@ -1255,8 +1547,10 @@ async fn accept_loop(
                 let detectors = detectors.clone();
                 let mask = mask.clone();
                 let risk = risk.clone();
+                let ip_rate_limiter = ip_rate_limiter.clone();
                 let load_gauge = load_gauge.clone();
                 let verbosity = verbosity.clone();
+                let request_stage_hist = request_stage_hist.clone();
                 let bus = bus.clone();
                 async move {
                     Ok::<_, Infallible>(handle_data_request(
@@ -1265,8 +1559,10 @@ async fn accept_loop(
                         &detectors,
                         &mask,
                         &risk,
+                        &ip_rate_limiter,
                         &load_gauge,
                         &verbosity,
+                        &request_stage_hist,
                         &bus,
                     ))
                 }
@@ -1286,10 +1582,33 @@ fn handle_data_request(
     detectors: &[Box<dyn aegis_security::detectors::Detector>],
     mask: &aegis_security::detectors::SharedDetectorMask,
     risk: &aegis_security::risk::RiskTracker,
+    ip_rate_limiter: &aegis_security::rate_limit::IpRateLimiter,
     load_gauge: &aegis_core::LoadGauge,
     verbosity: &aegis_core::SharedVerbosity,
+    request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     bus: &AuditBus,
 ) -> Response<Full<Bytes>> {
+    use aegis_control::metrics::request_duration::stage as stages;
+    // RAII guard records the total duration on every exit
+    // (early-return on rate-limit, strike-block, detector block,
+    // or the Allow / Challenge / Block bottom). One sample per
+    // request — no double-counting.
+    struct TotalGuard<'a> {
+        h: &'a aegis_control::metrics::request_duration::RequestStageHistogram,
+        t0: std::time::Instant,
+    }
+    impl<'a> Drop for TotalGuard<'a> {
+        fn drop(&mut self) {
+            self.h.record(
+                aegis_control::metrics::request_duration::stage::TOTAL,
+                self.t0.elapsed(),
+            );
+        }
+    }
+    let _total_guard = TotalGuard {
+        h: request_stage_hist,
+        t0: std::time::Instant::now(),
+    };
     // P7: bump the request counter so the sampler can update mode.
     load_gauge.tick();
     let load_mode = load_gauge.current();
@@ -1337,12 +1656,87 @@ fn handle_data_request(
         );
     }
 
+    // F-T2 — per-IP volumetric guard. Fires before the
+    // detector pipeline so a flooding source can't burn CPU
+    // on regex matchers. A denied request still records a
+    // strike, so repeat offenders eventually cross
+    // `risk.strikes.block_at` and get the permanent 403 path
+    // above instead of the 429 here.
+    let rate_t0 = std::time::Instant::now();
+    let rate_decision = ip_rate_limiter.consume(peer_ip);
+    request_stage_hist.record(stages::RATE_LIMIT, rate_t0.elapsed());
+    if !rate_decision.allowed {
+        let post_state = risk.record_malicious(peer_ip, 30);
+        let reason = format!(
+            "rate limit: {}/{} in last {}s",
+            rate_decision.count,
+            rate_decision.limit,
+            ip_rate_limiter.config().window.as_secs(),
+        );
+        let allow_emit = verbosity
+            .current()
+            .is_at_least(aegis_core::VerbosityLevel::Error);
+        if allow_emit {
+            let ev = aegis_core::audit::AuditEvent {
+                schema_version: 1,
+                ts: chrono::Utc::now(),
+                request_id: blake3::hash(
+                    format!(
+                        "{}:{}",
+                        peer,
+                        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                    )
+                    .as_bytes(),
+                )
+                .to_hex()
+                .to_string(),
+                class: aegis_core::audit::AuditClass::Detection,
+                tenant_id: None,
+                tier: None,
+                action: "block".into(),
+                reason: reason.clone(),
+                client_ip: peer_ip.to_string(),
+                route_id: None,
+                rule_id: Some("ip-rate-limit".into()),
+                risk_score: Some(post_state.score),
+                fields: if load_mode.is_critical() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!({
+                        "path": req.uri().to_string(),
+                        "method": req.method().to_string(),
+                        "rate_count": rate_decision.count,
+                        "rate_limit": rate_decision.limit,
+                        "strikes": post_state.strikes,
+                    })
+                },
+            };
+            bus.emit(ev);
+        }
+        return Response::builder()
+            .status(429)
+            .header("content-type", "application/json")
+            .header("retry-after", rate_decision.retry_after_seconds.to_string())
+            .body(Full::new(Bytes::from(
+                serde_json::json!({
+                    "error": "rate_limited",
+                    "reason": reason,
+                    "retry_after_seconds": rate_decision.retry_after_seconds,
+                    "strikes": post_state.strikes,
+                })
+                .to_string(),
+            )))
+            .unwrap();
+    }
+
     // Run security detectors filtered by the effective mask for
     // this tier. A class turned off via PUT /api/detectors (base
     // or per-tier override) short-circuits before the detector body
     // runs.
     let effective = mask.resolve(Some(tier));
+    let detect_t0 = std::time::Instant::now();
     let signals = aegis_security::detectors::run_all_filtered(detectors, effective, &view);
+    request_stage_hist.record(stages::DETECT, detect_t0.elapsed());
 
     if !signals.is_empty() {
         let total_score: u32 = signals.iter().map(|s| s.score).sum();
@@ -1534,11 +1928,27 @@ state:
         let risk = aegis_security::risk::RiskTracker::new(
             &aegis_core::config::RiskConfig::default(),
         );
+        let ip_rate_limiter = Arc::new(
+            aegis_security::rate_limit::IpRateLimiter::new(Default::default()),
+        );
         let load_gauge = aegis_core::LoadGauge::new(aegis_core::LoadModeConfig::default());
         let verbosity = aegis_core::SharedVerbosity::default();
+        let metrics_reg = aegis_control::metrics::MetricsRegistry::init();
+        let request_stage_hist = std::sync::Arc::new(
+            aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics_reg)
+                .unwrap(),
+        );
         let bus = aegis_core::AuditBus::new(64);
         let _handle = tokio::spawn(accept_loop(
-            tcp, detectors, mask, risk, load_gauge, verbosity, bus,
+            tcp,
+            detectors,
+            mask,
+            risk,
+            ip_rate_limiter,
+            load_gauge,
+            verbosity,
+            request_stage_hist,
+            bus,
         ));
 
         // Give the accept loop a moment to start.
@@ -1694,6 +2104,165 @@ state:
         let resp = dashboard_shell_response(false);
         assert_eq!(resp.status(), 200);
         assert_security_headers(resp.headers());
+    }
+
+    // ---------- F-T1 admin login + logout end-to-end --------------------
+
+    /// Build a `DashboardServices` with a real argon2id-hashed
+    /// admin so the login handler can succeed.
+    fn services_with_admin(
+        password: &str,
+    ) -> std::sync::Arc<aegis_control::dashboard_services::DashboardServices> {
+        use aegis_control::admin_auth::password::hash_password;
+        use aegis_control::admin_auth::rate_limit::LoginRateLimiter;
+        use aegis_control::admin_auth::session::SessionStore as AuthSessionStore;
+        use aegis_control::api::login::{derive_session_key, AdminIdentity};
+
+        let bus = aegis_core::AuditBus::new(8);
+        let pool = std::sync::Arc::new(|| {
+            aegis_control::api::upstreams::PoolHealthSnapshot { pools: Vec::new() }
+        });
+        let identity = std::sync::Arc::new(AdminIdentity {
+            user: "admin".into(),
+            password_hash: hash_password(password).unwrap(),
+        });
+        let key = derive_session_key("test-secret-32b");
+        let auth_sessions = std::sync::Arc::new(AuthSessionStore::new(key));
+        let rate_limiter =
+            std::sync::Arc::new(LoginRateLimiter::new(Default::default()));
+        let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask(
+            bus,
+            pool,
+            None,
+            aegis_security::detectors::SharedDetectorMask::default(),
+            aegis_security::risk::RiskTracker::new(
+                &aegis_core::config::RiskConfig::default(),
+            ),
+            std::sync::Arc::new(
+                aegis_security::rate_limit::IpRateLimiter::new(Default::default()),
+            ),
+            aegis_core::LoadGauge::new(aegis_core::LoadModeConfig::default()),
+            aegis_core::SharedVerbosity::default(),
+            auth_sessions,
+            rate_limiter,
+            identity,
+            1800,
+        );
+        std::sync::Arc::new(services)
+    }
+
+    #[tokio::test]
+    async fn login_handler_issues_two_set_cookies_on_success() {
+        let services = services_with_admin("test-pw-1234");
+        let body = serde_json::json!({"user":"admin","password":"test-pw-1234"})
+            .to_string();
+        let resp = process_admin_login(
+            &services,
+            "127.0.0.1:54321".parse().unwrap(),
+            "test-ua/1.0",
+            body.as_bytes(),
+        );
+        assert_eq!(resp.status().as_u16(), 200);
+        let cookies: Vec<&str> = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|h| h.to_str().ok())
+            .collect();
+        assert_eq!(cookies.len(), 2, "expected aegis_session + aegis_csrf");
+        assert!(
+            cookies.iter().any(|c| c.starts_with("aegis_session=")),
+            "session cookie missing: {cookies:?}",
+        );
+        assert!(
+            cookies.iter().any(|c| c.starts_with("aegis_csrf=")),
+            "csrf cookie missing: {cookies:?}",
+        );
+        // Cache-Control: no-store on every credential-handling response.
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "no-store",
+        );
+    }
+
+    #[tokio::test]
+    async fn login_handler_returns_401_on_wrong_password() {
+        let services = services_with_admin("right");
+        let body = serde_json::json!({"user":"admin","password":"wrong"}).to_string();
+        let resp = process_admin_login(
+            &services,
+            "127.0.0.1:0".parse().unwrap(),
+            "ua",
+            body.as_bytes(),
+        );
+        assert_eq!(resp.status().as_u16(), 401);
+    }
+
+    #[tokio::test]
+    async fn login_handler_returns_400_on_invalid_json() {
+        let services = services_with_admin("right");
+        let resp = process_admin_login(
+            &services,
+            "127.0.0.1:0".parse().unwrap(),
+            "ua",
+            b"not json",
+        );
+        assert_eq!(resp.status().as_u16(), 400);
+    }
+
+    #[tokio::test]
+    async fn logout_handler_clears_both_cookies_after_login() {
+        let services = services_with_admin("test-pw-1234");
+        let body = serde_json::json!({"user":"admin","password":"test-pw-1234"})
+            .to_string();
+        let login_resp = process_admin_login(
+            &services,
+            "127.0.0.1:0".parse().unwrap(),
+            "ua",
+            body.as_bytes(),
+        );
+        assert_eq!(login_resp.status().as_u16(), 200);
+
+        // Pull the signed session cookie value back out so logout
+        // can validate it.
+        let session_cookie_str = login_resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|h| h.to_str().ok())
+            .find(|c| c.starts_with("aegis_session="))
+            .unwrap()
+            .to_string();
+        let session_value = session_cookie_str
+            .strip_prefix("aegis_session=")
+            .and_then(|s| s.split(';').next())
+            .unwrap();
+
+        let resp = process_admin_logout(&services, Some(session_value));
+        assert_eq!(resp.status().as_u16(), 204);
+        let clears: Vec<&str> = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|h| h.to_str().ok())
+            .collect();
+        assert_eq!(clears.len(), 2);
+        assert!(
+            clears.iter().all(|c| c.contains("Max-Age=0")),
+            "logout must clear both cookies, got {clears:?}",
+        );
+        // Auth session is gone — no more accepting that cookie.
+        assert_eq!(services.auth_sessions.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn logout_handler_is_idempotent_without_cookie() {
+        let services = services_with_admin("test-pw-1234");
+        let resp = process_admin_logout(&services, None);
+        // Same 204 + cookie-clearing whether or not a session
+        // existed — caller never has to know.
+        assert_eq!(resp.status().as_u16(), 204);
+        assert_eq!(resp.headers().get_all("set-cookie").iter().count(), 2);
     }
 
     #[test]

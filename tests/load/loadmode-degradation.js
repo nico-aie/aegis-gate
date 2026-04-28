@@ -6,13 +6,18 @@
 //   stage B: mid RPS  → mode = "elevated"
 //   stage C: high RPS → mode = "critical"
 //
-// The thresholds depend on the config's `load_mode` settings.
-// This script reads them from /api/loadmode at startup and
-// scales each stage to ~1.5× the relevant boundary so the
-// transitions are obvious without flooding the host.
+// **REQUIRES** `config/waf.test.yaml` (or any config with
+// `load_mode.elevated_rps <= 500` and
+// `load_mode.critical_rps <= 2000`). Stages are sized for
+// those numbers — running against the dev config (which
+// targets 8000 RPS for Critical) will leave Critical
+// unreachable on a laptop. Verified at startup by reading
+// /api/loadmode and emitting a console warning when the
+// thresholds don't match.
 //
 // Run with:
-//   k6 run tests/load/loadmode-degradation.js
+//   target/release/waf run --config config/waf.test.yaml &
+//   docker exec aegis-k6 k6 run /scripts/loadmode-degradation.js
 //
 // Environment:
 //   WAF_TARGET / WAF_ADMIN as elsewhere.
@@ -27,48 +32,62 @@ const admin = __ENV.WAF_ADMIN || "https://host.docker.internal:9443";
 const sawElevated = new Rate("auto_elevated_observed");
 const sawCritical = new Rate("auto_critical_observed");
 
-let elevatedRps = 2000;
-let criticalRps = 8000;
+// Stages target the waf.test.yaml thresholds (500 / 2000 RPS).
+// Anything 1.5× the boundary is enough to put the auto-mode
+// solidly in that band over the 8 s sample window — without
+// melting the laptop.
+const STAGE_LOW_RPS = 100;
+const STAGE_MID_RPS = 750;     // 1.5× elevated_rps=500
+const STAGE_HIGH_RPS = 3000;   // 1.5× critical_rps=2000
 
 export function setup() {
+  // Cross-check the running config so a mis-bring-up
+  // (running against waf.dev.yaml) surfaces immediately
+  // instead of as a "rate>0" threshold breach 32 s later.
   const r = http.get(`${admin}/api/loadmode`, {
     headers: { accept: "application/json" },
     insecureSkipTLSVerify: true,
   });
   if (r.status === 200) {
     const body = JSON.parse(r.body);
-    elevatedRps = body.elevated_rps || elevatedRps;
-    criticalRps = body.critical_rps || criticalRps;
+    if (body.elevated_rps > 1000 || body.critical_rps > 5000) {
+      console.warn(
+        `loadmode-degradation expects waf.test.yaml thresholds ` +
+        `(<=500 / <=2000), got elevated=${body.elevated_rps}, ` +
+        `critical=${body.critical_rps}. Stages won't reach Critical.`
+      );
+    }
+    return { elevatedRps: body.elevated_rps, criticalRps: body.critical_rps };
   }
-  return { elevatedRps, criticalRps };
+  return { elevatedRps: 500, criticalRps: 2000 };
 }
 
 export const options = {
   scenarios: {
     low: {
       executor: "constant-arrival-rate",
-      rate: 200, timeUnit: "1s", duration: "5s",
-      preAllocatedVUs: 50,
+      rate: STAGE_LOW_RPS, timeUnit: "1s", duration: "5s",
+      preAllocatedVUs: 30,
       exec: "stageA",
     },
     mid: {
       executor: "constant-arrival-rate",
-      rate: 3500, timeUnit: "1s", duration: "8s",
-      preAllocatedVUs: 200,
+      rate: STAGE_MID_RPS, timeUnit: "1s", duration: "8s",
+      preAllocatedVUs: 80,
       startTime: "8s",
       exec: "stageB",
     },
     high: {
       executor: "constant-arrival-rate",
-      rate: 12000, timeUnit: "1s", duration: "8s",
-      preAllocatedVUs: 600, maxVUs: 1500,
+      rate: STAGE_HIGH_RPS, timeUnit: "1s", duration: "10s",
+      preAllocatedVUs: 250, maxVUs: 600,
       startTime: "20s",
       exec: "stageC",
     },
     sample_mode: {
       executor: "constant-vus",
       vus: 1,
-      duration: "32s",
+      duration: "34s",
       exec: "sampleMode",
     },
   },

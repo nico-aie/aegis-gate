@@ -18,7 +18,7 @@ export const DEFAULT_ROUTE = "overview";
 const PREFIX = "/dashboard/";
 
 // Path → page-module loader. Order matches the sidebar order in
-// docs/dashboard-enterprise/layout.md so the test that walks this
+// docs/control-plane/enterprise/layout.md so the test that walks this
 // table can read top-to-bottom.
 export const ROUTES = {
   overview:  () => import("/dashboard/assets/pages/overview.js"),

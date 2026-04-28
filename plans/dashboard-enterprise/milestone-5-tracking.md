@@ -8,7 +8,7 @@ sync status, active alerts.
 **Crate touched.** `aegis-control`.
 **Verification.** `cargo test -p aegis-control && cargo clippy -p aegis-control -- -D warnings`.
 
-**Reference.** [`docs/dashboard-enterprise/pages/tracking.md`](../../docs/dashboard-enterprise/pages/tracking.md).
+**Reference.** [`docs/control-plane/enterprise/pages/tracking.md`](../../docs/control-plane/enterprise/pages/tracking.md).
 
 ---
 
@@ -83,7 +83,7 @@ All read-only except `/api/certs/{host}/renew`.
 ### D-M5-T5.8 Tracking page UI
 
 - File: `assets/dashboard/pages/tracking.js`
-- Six-section layout from [`pages/tracking.md`](../../docs/dashboard-enterprise/pages/tracking.md).
+- Six-section layout from [`pages/tracking.md`](../../docs/control-plane/enterprise/pages/tracking.md).
 - Polls `/api/tracking/snapshot` every 5s; per-section
   drill-ins fetch the dedicated endpoint on demand.
 - Drawers for upstream pools, cluster peers, alerts.
