@@ -1,8 +1,130 @@
 # Aegis-Gate Implementation Progress
 
 ## Last Completed
-- Task: **P5 follow-up — `instant-acme` network adapter +
-  background renewal scheduler**
+- Task: **Whole-system test run + post-k6 follow-up plan**
+- What landed:
+  - Doc + harness refresh from the previous turn:
+    `docs/USAGE.md`, `docs/dashboard-enterprise/api.md`,
+    `docs/risk-scoring.md`, `docs/tls-termination.md`,
+    `docs/audit-logging.md`, `docs/adaptive-load-shedding.md`,
+    `docs/graceful-degradation.md`,
+    `docs/siem-log-forwarding.md` updated with P1–P8 surface.
+  - `tests/{api,load,security}/` — admin-API smoke layer,
+    four new k6 scripts (`security-toggle-flips.js`,
+    `risk-strikes.js`, `loadmode-degradation.js`,
+    `verbosity-pin.js`), `tests/TESTING.md` end-to-end
+    playbook, `tests/README.md` rewritten.
+  - `config/waf.dev.yaml` — self-contained dev/test config
+    with no `${secret:env:…}` references, real argon2id
+    hash for the test password, `risk.strikes.block_at: 50`
+    matching the k6 default, `compliance: null` so detector
+    toggle tests aren't clamped. New
+    `aegis-core::config::tests::load_config_round_trip_dev_yaml`
+    keeps it parseable as the schema evolves.
+  - `deploy/docker-compose.test.yml` —
+    `aegis-etcdctl` container fix: `quay.io/coreos/etcd:v3.5.13`
+    is distroless (no `sleep`, no shell) so the original
+    `entrypoint: ["sleep", "infinity"]` failed at start.
+    Replaced with `etcdctl watch --prefix /__aegis_keepalive__`
+    which uses only the bundled binary and survives etcd
+    restarts. Removed the duplicate `--endpoints` flag
+    (etcdctl rejected the `ETCDCTL_ENDPOINTS` shadow).
+  - `tests/results/` — first whole-system k6 run results
+    captured against the dev gateway: per-script `.log`
+    files (large logs trimmed to first 50 + last 200 lines)
+    plus a consolidated `README.md` with the SLO threshold
+    table.
+  - `plans/post-k6-followup.md` — **new**: 10-task plan
+    (F-T1..F-T10) tiered by criticality, derived directly
+    from the k6 + API-smoke run findings.
+- Test results summary (full detail in
+  `tests/results/README.md`):
+  - 4 of 7 k6 scripts ran end-to-end: `baseline.js`
+    (42 811 RPS sustained ✓; p99 latency over the 5 ms SLO
+    on a laptop), `mixed-tiers.js` (`critical_fail_open == 0`
+    ✓; tier:critical 4xx rate 5.99 % over the 1 % threshold),
+    `ddos-burst.js` (data plane survived the 5 000 RPS flood),
+    `loadmode-degradation.js` (P7 auto-mode confirmed:
+    8 / 8 polls saw `mode = "elevated"` during stage B).
+  - 3 of 7 k6 scripts blocked by the missing
+    `POST /admin/login` HTTP route: `security-toggle-flips.js`,
+    `risk-strikes.js`, `verbosity-pin.js`.
+  - All 5 `tests/api/*.sh` smoke scripts will hit the same
+    404 when run.
+- Status: DONE — **1,932 workspace tests pass**,
+  `cargo clippy --workspace -- -D warnings` clean, dev
+  config validates, k6 results captured, follow-up plan
+  written.
+- Date: 2026-04-28
+
+## Tracks now in flight
+
+Two parallel tracks. F-T1 from the post-k6 work blocks the
+dashboard track from shipping a working login flow, so it's
+the join point.
+
+| Track | Plan | Why it exists |
+|---|---|---|
+| Post-k6 follow-up (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | 1 critical regression + 2 latent bugs found by the whole-system k6 + API-smoke run |
+| Dashboard redesign (M0..M10) | [`plans/dashboard-redesign/README.md`](./plans/dashboard-redesign/README.md) | Current UI ships the data wiring but the presentation, density, and operator workflows are below the bar. 10 page milestones + 1 foundation milestone, executed via a Claude-design workflow |
+
+## Next Task
+
+The whole-system run uncovered one critical regression and
+two real bugs. **Follow** [`plans/post-k6-followup.md`](./plans/post-k6-followup.md)
+in execution order:
+
+1. **F-T1 — Wire `POST /admin/login` + `/admin/logout`**
+   (~1 day). Highest-leverage change in the plan: closes the
+   gap between the existing argon2id + session + CSRF
+   primitives and the HTTP front door. Unblocks 8 tests
+   (3 k6 + 5 API smoke) on a single landing.
+2. **F-T5 + F-T4** in parallel (~1 day combined) — make
+   admin-needing k6 scripts fail fast on login errors, ship
+   a `config/waf.test.yaml` with thresholds tuned so
+   `loadmode-degradation.js` can reach Critical on a laptop.
+3. *Re-run* the full k6 + `tests/api/run-all.sh` suite.
+   Re-generate `tests/results/`.
+4. **F-T2 — wire per-IP rate-limiting into the data-plane
+   hot path** (~2-3 days). The bucket infra in
+   `aegis-security::rate_limit` exists but isn't consulted
+   from `handle_data_request`. Confirmed by `ddos-burst`
+   producing 0 auto-block events across 50 000 single-source
+   requests at 5 000 RPS.
+5. **F-T3 — diagnose CRITICAL-tier 5.99 % failure rate**
+   (~half day). Depends on F-T1 (uses the toggle endpoints
+   to flip detectors during the re-run).
+
+After F-T1..F-T5 land, the test suite is fully exercising the
+P1–P8 surface. F-T7..F-T10 are scheduling-flexible polish
+(ACME integration, observability, k6 coverage gaps).
+
+### Dashboard redesign — running in parallel
+
+[`plans/dashboard-redesign/`](./plans/dashboard-redesign/) is a
+self-contained 11-milestone track:
+
+- **M0 Foundations** — token migration, chrome rebuild,
+  component refresh, command palette. Must land first.
+  ~5 days.
+- **M1..M10** — one page per milestone. M1 (Overview), M2
+  (Live Feed), M10 (Settings) seeded; M3..M9 written
+  just-in-time when work starts.
+- Each milestone runs a 5-stage Claude-design workflow
+  (brief → critique → impl → visual review → ship)
+  documented in
+  [`plans/dashboard-redesign/workflow.md`](./plans/dashboard-redesign/workflow.md)
+  with copy-paste prompt templates per stage.
+- Design system (tokens, typography, spacing, motion) lives
+  at
+  [`plans/dashboard-redesign/design-system.md`](./plans/dashboard-redesign/design-system.md)
+  and is the contract every page consumes.
+
+Page milestones may run in parallel with the post-k6 work
+**after** F-T1 (admin login HTTP route) lands — the SPA
+can't authenticate until then.
+
+### Track + follow-up status
 - Crates: aegis-proxy (new acme_instant module + renewal helper
   in acme.rs), workspace Cargo.toml (instant-acme dep)
 - Files changed:
@@ -120,7 +242,15 @@ when the plan was approved (Prometheus + SIEM sinks already
 cover 80 % of the cold-tier requirement). All eight original
 concerns are mapped to landed code.
 
-### Previous (P8 — Verbosity slider + cold-tier surface + UI pills) — for context
+The whole-system k6 + API-smoke run on 2026-04-28 surfaced one
+foundational gap (the admin login HTTP route was never wired,
+so P1's CSRF/session pipeline can't actually be reached from
+outside the process) and two latent data-plane gaps (per-IP
+rate-limit not on the hot path; CRITICAL-tier 4xx rate above
+SLO). All three are now planned in
+[`plans/post-k6-followup.md`](./plans/post-k6-followup.md).
+
+### Previous (P5 follow-up — `instant-acme` adapter) — for context
 - Task: **Security-toggle plan, Phase P8 — Verbosity slider +
   cold-tier surface + UI pills**
 - Crates: aegis-core (Verbosity primitive + LoggingConfig schema),
