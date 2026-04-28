@@ -48,10 +48,26 @@ services:
 
   # Interactive etcdctl shell for debugging the control plane.
   # Usage: docker exec -it aegis-etcdctl etcdctl get /aegis/config/waf
+  #
+  # The etcd image since v3.5 is distroless — no `sleep`, no
+  # shell, only the `etcd` + `etcdctl` binaries. Keep the
+  # container alive by blocking on `etcdctl watch` against a
+  # never-modified key. `watch` retries through transient
+  # disconnects, so the container survives etcd restarts.
   etcdctl:
     image: quay.io/coreos/etcd:v3.5.13
     container_name: aegis-etcdctl
-    entrypoint: ["sleep", "infinity"]
+    depends_on:
+      etcd:
+        condition: service_healthy
+    # Endpoint comes from ETCDCTL_ENDPOINTS — passing it both as
+    # a flag and as an env var makes etcdctl exit with
+    # "conflicting environment variable is shadowed".
+    entrypoint:
+      - /usr/local/bin/etcdctl
+      - watch
+      - --prefix
+      - /__aegis_keepalive__
     environment:
       ETCDCTL_API: "3"
       ETCDCTL_ENDPOINTS: "http://etcd:2379"
