@@ -43,8 +43,12 @@ The project follows a four-layer pyramid:
 - `bats` *(optional, only for adding new shell tests)*
 - Ports `8080` (data plane), `8443` (TLS data plane), `9443`
   (admin), `4443` (Pebble) free on the host
-- An `ADMIN_USER` / `ADMIN_PASS` pair — bootstrap with
-  `cargo run -p aegis-bin -- admin init` if you don't have one
+- An `ADMIN_USER` / `ADMIN_PASS` pair — `config/waf.dev.yaml`
+  ships with a baked-in `admin` / `aegis-test-1234` already
+  hashed inline. To use a different password, generate a hash
+  with `echo "<new-pw>" | cargo run -p aegis-bin -- admin
+  set-password` and replace the `password_hash_ref` value in
+  the dev config.
 
 ## 3. Bring-up
 
@@ -70,9 +74,19 @@ echo "<new-password>" | cargo run -p aegis-bin -- admin set-password
 
 ### Standard bring-up
 
+> **Binary name.** The package is `aegis-bin` but the produced
+> binary is **`waf`** (see `[[bin]] name = "waf"` in
+> `crates/aegis-bin/Cargo.toml`). After a build the executable
+> lives at `target/{debug,release}/waf` — there is no
+> `target/release/aegis-bin`. Below uses `cargo run` so cargo
+> picks the right path automatically.
+
 ```sh
-# 1. Build the gateway
-cargo build --workspace --release
+# 1. (Optional) Pre-build a release binary if you'll re-run
+#    the gateway many times — release is ~10× faster than debug
+#    for the load layers.
+cargo build --release --workspace
+#    → produces target/release/waf  (NOT target/release/aegis-bin)
 
 # 2. (Optional) Bring up the auxiliary test stack — Redis, k6,
 #    Nuclei, ZAP. The dev config doesn't require any of these
@@ -87,8 +101,18 @@ docker compose \
 cargo run -p aegis-bin -- validate --config config/waf.dev.yaml
 # → expected: "config OK: config/waf.dev.yaml"
 
-# 4. Run the gateway pointed at the dev config
-target/release/aegis-bin run --config config/waf.dev.yaml &
+# 4. Run the gateway pointed at the dev config.
+#    Pick ONE of the three forms below — they're equivalent.
+#
+#    a) cargo wrapper (debug build, slowest, fine for API smoke):
+cargo run -p aegis-bin -- run --config config/waf.dev.yaml &
+#
+#    b) cargo wrapper (release build):
+cargo run --release -p aegis-bin -- run --config config/waf.dev.yaml &
+#
+#    c) pre-built release binary (fastest startup; needs step 1):
+target/release/waf run --config config/waf.dev.yaml &
+#
 WAF_PID=$!
 
 # 5. Wait for readiness
@@ -319,7 +343,8 @@ add no PR-level signal.
 
 | Problem | Where to look |
 |---|---|
-| `aegis-bin` won't start | `cargo run -p aegis-bin -- check --config config/waf.dev.yaml` |
+| Gateway won't start | `cargo run -p aegis-bin -- validate --config config/waf.dev.yaml` (subcommand is `validate`, not `check`) |
+| `target/release/aegis-bin: no such file` | The binary is named `waf` — use `target/release/waf` or `cargo run -p aegis-bin -- run` |
 | Port 9443 already in use | `lsof -i :9443` — usually a stale gateway process |
 | k6 can't reach the gateway | `host.docker.internal:8080` requires Docker Desktop or `--add-host` |
 | `tests/api` returns 401 | session cookie missing; check `ADMIN_USER` / `ADMIN_PASS` |
