@@ -123,6 +123,21 @@ pub async fn run(
     // plane reads/writes via /api/logging.
     let verbosity = aegis_core::SharedVerbosity::from_config(&cfg.logging);
 
+    // Carry-over A (post-2026-04-29 perf re-run) — the Allow
+    // branch in `handle_data_request` previously returned a
+    // synthetic `OK\n` body; we now resolve a real upstream
+    // member via `crate::proxy::ProxyContext` and call
+    // `crate::upstream::forward::forward()`. The `pipeline`
+    // field on ProxyContext is unused by the forward path,
+    // so passing the workspace `NoopPipeline` here is a
+    // placeholder until the parallel pipelines converge.
+    let upstream_ctx = Arc::new(
+        crate::proxy::ProxyContext::build(
+            &cfg,
+            Arc::new(aegis_security::NoopPipeline),
+        )?,
+    );
+
     // Data-plane listeners.
     for listener_cfg in &cfg.listeners.data {
         let addr = listener_cfg.bind;
@@ -137,6 +152,7 @@ pub async fn run(
         let verbosity = verbosity.clone();
         let request_stage_hist = request_stage_hist.clone();
         let bus = bus.clone();
+        let upstream_ctx_l = upstream_ctx.clone();
         handles.push(tokio::spawn(accept_loop(
             tcp,
             detectors,
@@ -147,6 +163,7 @@ pub async fn run(
             verbosity,
             request_stage_hist,
             bus,
+            upstream_ctx_l,
         )));
     }
 
@@ -1599,6 +1616,7 @@ async fn accept_loop(
     verbosity: aegis_core::SharedVerbosity,
     request_stage_hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     bus: AuditBus,
+    upstream_ctx: Arc<crate::proxy::ProxyContext>,
 ) {
     loop {
         let (stream, peer) = match tcp.accept().await {
@@ -1617,6 +1635,7 @@ async fn accept_loop(
         let verbosity = verbosity.clone();
         let request_stage_hist = request_stage_hist.clone();
         let bus = bus.clone();
+        let upstream_ctx = upstream_ctx.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
@@ -1628,6 +1647,7 @@ async fn accept_loop(
                 let verbosity = verbosity.clone();
                 let request_stage_hist = request_stage_hist.clone();
                 let bus = bus.clone();
+                let upstream_ctx = upstream_ctx.clone();
                 async move {
                     Ok::<_, Infallible>(handle_data_request(
                         req,
@@ -1640,7 +1660,8 @@ async fn accept_loop(
                         &verbosity,
                         &request_stage_hist,
                         &bus,
-                    ))
+                        &upstream_ctx,
+                    ).await)
                 }
             });
 
@@ -1652,7 +1673,7 @@ async fn accept_loop(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_data_request(
+async fn handle_data_request(
     req: hyper::Request<hyper::body::Incoming>,
     peer: std::net::SocketAddr,
     detectors: &[Box<dyn aegis_security::detectors::Detector>],
@@ -1663,6 +1684,7 @@ fn handle_data_request(
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     bus: &AuditBus,
+    upstream_ctx: &Arc<crate::proxy::ProxyContext>,
 ) -> Response<Full<Bytes>> {
     use aegis_control::metrics::request_duration::stage as stages;
     // RAII guard records the total duration on every exit
@@ -1911,8 +1933,124 @@ fn handle_data_request(
             )))
             .unwrap(),
         aegis_security::risk::RiskLevel::Allow => {
-            // No detections + low score — proxy to upstream (stub).
-            Response::new(Full::new(Bytes::from("OK\n")))
+            // Carry-over A (post-2026-04-29 perf re-run) — fixed.
+            // Forward the request to a real upstream member via
+            // the same `crate::upstream::forward` path
+            // `crate::proxy::handle_request` uses. Falls back to
+            // a 502 on connect / handshake / send failure so
+            // the live data plane never silently swallows a
+            // broken upstream.
+            forward_allow_to_upstream(req, upstream_ctx).await
+        }
+    }
+}
+
+/// Resolve a route + member from the live `ProxyContext`,
+/// collect the request body, and forward through
+/// `upstream::forward::forward()`. Returns 404 on no-route,
+/// 502 / 503 on circuit-breaker / no-healthy-member / connect
+/// failure.
+async fn forward_allow_to_upstream(
+    req: hyper::Request<hyper::body::Incoming>,
+    ctx: &Arc<crate::proxy::ProxyContext>,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    use std::sync::atomic::Ordering;
+
+    let host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost")
+        .to_string();
+    let path = req.uri().path().to_string();
+    let method = req.method().clone();
+
+    let route_ctx = match ctx.route_table.resolve(&host, &path, &method) {
+        Some(r) => r,
+        None => {
+            return Response::builder()
+                .status(hyper::StatusCode::NOT_FOUND)
+                .body(Full::new(Bytes::from("no matching route\n")))
+                .unwrap();
+        }
+    };
+
+    if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
+        if !cb.allow_request() {
+            return Response::builder()
+                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                .body(Full::new(Bytes::from("circuit open\n")))
+                .unwrap();
+        }
+    }
+
+    let pool = match ctx.pools.get(&route_ctx.upstream) {
+        Some(p) => p,
+        None => {
+            return Response::builder()
+                .status(hyper::StatusCode::BAD_GATEWAY)
+                .body(Full::new(Bytes::from("unknown upstream\n")))
+                .unwrap();
+        }
+    };
+
+    let member = match pool.strategy.pick(&pool.members, None) {
+        Some(m) => m,
+        None => {
+            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
+                cb.record_failure();
+            }
+            return Response::builder()
+                .status(hyper::StatusCode::BAD_GATEWAY)
+                .body(Full::new(Bytes::from("no healthy upstream\n")))
+                .unwrap();
+        }
+    };
+
+    let (parts, body) = req.into_parts();
+    let body_bytes = match body.collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to collect client body");
+            return Response::builder()
+                .status(hyper::StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::from("body read error\n")))
+                .unwrap();
+        }
+    };
+
+    member.inflight.fetch_add(1, Ordering::Relaxed);
+    let result = crate::upstream::forward::forward(
+        member,
+        parts.method,
+        parts.uri,
+        parts.headers,
+        body_bytes,
+    )
+    .await;
+    member.inflight.fetch_sub(1, Ordering::Relaxed);
+
+    match result {
+        Ok(resp) => {
+            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
+                if resp.status().is_server_error() {
+                    cb.record_failure();
+                } else {
+                    cb.record_success();
+                }
+            }
+            resp
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "upstream forward failed");
+            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
+                cb.record_failure();
+            }
+            Response::builder()
+                .status(hyper::StatusCode::BAD_GATEWAY)
+                .body(Full::new(Bytes::from("upstream error\n")))
+                .unwrap()
         }
     }
 }
@@ -1971,10 +2109,51 @@ mod tests {
     use aegis_core::ReadinessSignal;
     use std::sync::Arc;
 
+    /// Spin up a tokio HTTP/1.1 mock that answers every request
+    /// with `200 OK` + `body`. Returns the bound address +
+    /// the join handle.
+    async fn spawn_mock_upstream(
+        body: &'static [u8],
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use hyper::service::service_fn;
+        use std::convert::Infallible;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            loop {
+                let (sock, _) = match listener.accept().await {
+                    Ok(c) => c,
+                    Err(_) => break,
+                };
+                tokio::spawn(async move {
+                    let io = TokioIo::new(sock);
+                    let svc =
+                        service_fn(move |_req: hyper::Request<hyper::body::Incoming>| async move {
+                            Ok::<_, Infallible>(
+                                hyper::Response::builder()
+                                    .status(200)
+                                    .body(Full::new(Bytes::from(body)))
+                                    .unwrap(),
+                            )
+                        });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
+        });
+        (addr, handle)
+    }
+
     #[tokio::test]
     async fn run_binds_and_serves_200() {
-        // Build a minimal config pointing at a random free port.
-        let yaml = r#"
+        // B4-T3 carry-over A: data plane now actually forwards
+        // through `upstream::forward`. Stand up a mock upstream
+        // and point the route table at it so the Allow branch
+        // returns the upstream's 200, not a synthetic stub.
+        let (upstream_addr, _upstream_h) = spawn_mock_upstream(b"upstream-ok").await;
+        let yaml = format!(
+            r#"
 listeners:
   data:
     - bind: "127.0.0.1:0"
@@ -1987,11 +2166,12 @@ routes:
 upstreams:
   default:
     members:
-      - addr: "127.0.0.1:9999"
+      - addr: "{upstream_addr}"
 state:
   backend: in_memory
-"#;
-        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+"#
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
 
         // We can't use port 0 with the current `run()` because it spawns
         // tasks internally. Instead, bind manually and test the accept loop.
@@ -2015,6 +2195,13 @@ state:
                 .unwrap(),
         );
         let bus = aegis_core::AuditBus::new(64);
+        let upstream_ctx = std::sync::Arc::new(
+            crate::proxy::ProxyContext::build(
+                &cfg,
+                std::sync::Arc::new(aegis_security::NoopPipeline),
+            )
+            .unwrap(),
+        );
         let _handle = tokio::spawn(accept_loop(
             tcp,
             detectors,
@@ -2025,6 +2212,7 @@ state:
             verbosity,
             request_stage_hist,
             bus,
+            upstream_ctx,
         ));
 
         // Give the accept loop a moment to start.
