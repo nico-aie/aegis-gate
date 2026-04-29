@@ -1,5 +1,9 @@
 # Milestone D-M6 — Polish & Sunset Legacy
 
+> **Status:** Closed — D-M6 shipped.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 **Goal.** Tighten everything: accessibility audit, security
 headers verified end-to-end, perf budget enforced in CI, doc
 updates, legacy shell removed.

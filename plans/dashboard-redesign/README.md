@@ -1,5 +1,9 @@
 # Dashboard Redesign Track
 
+> **Status:** Queued — Eleven milestones (M0..M10). Runs **after** Phase B closes.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 > **Status.** Planning. The current dashboard SPA at
 > `crates/aegis-control/assets/dashboard/` ships an MVP that
 > covers the data wiring (P1–P8 endpoints) but the

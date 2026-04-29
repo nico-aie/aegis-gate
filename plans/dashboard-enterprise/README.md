@@ -1,5 +1,9 @@
 # Enterprise Dashboard — Task Plan
 
+> **Status:** Closed — D-M1..D-M6 shipped — enterprise SPA bundled into the binary. Reference only.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 > **Read first:**
 > 1. [`../../README.md`](../../README.md)
 > 2. [`../../Implement-Progress.md`](../../Implement-Progress.md)

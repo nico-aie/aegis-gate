@@ -1,5 +1,9 @@
 # Milestone D-M2 — Overview Page
 
+> **Status:** Closed — D-M2 shipped.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 **Goal.** Wire the Overview page to real data: 4 stat tiles,
 realtime traffic line chart, attack-distribution donut, top
 attacker IPs table.

@@ -1,5 +1,9 @@
 # Control Plane — `aegis-control` Task Plan
 
+> **Status:** Closed — M3 (control plane) shipped. Reference only.
+>
+> See [`README.md`](./README.md) for the track status board.
+
 > **Before reading this:** Read `README.md`, then `Implement-Progress.md`,
 > then `plans/plan.md` (shared types §2, traits §3, boot §4, conventions §5).
 > This file contains only the per-task breakdown for `aegis-control`.

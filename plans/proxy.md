@@ -1,5 +1,9 @@
 # Proxy Core — `aegis-proxy` Task Plan
 
+> **Status:** Closed — M1 (proxy core) shipped. Reference only; do not start new work here.
+>
+> See [`README.md`](./README.md) for the track status board.
+
 > **Before reading this:** Read `README.md`, then `Implement-Progress.md`,
 > then `plans/plan.md` (shared types §2, traits §3, boot §4, conventions §5).
 > This file contains only the per-task implementation breakdown for `aegis-proxy`.

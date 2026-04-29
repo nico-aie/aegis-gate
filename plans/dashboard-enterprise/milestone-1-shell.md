@@ -1,5 +1,9 @@
 # Milestone D-M1 — SPA Shell
 
+> **Status:** Closed — D-M1 shipped.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 **Goal.** Replace the embedded single-file dashboard with a real SPA
 shell: sidebar nav, top bar, status bar, client-side router,
 asset embedder. Pages are placeholder ("Coming soon") at this

@@ -13,6 +13,11 @@
 >   durable summaries — update only when the underlying state
 >   changes, not on every task.
 > - Append a row to **Completed Tasks Log** when a task closes.
+>
+> **For at-a-glance track priority** see
+> [`plans/README.md`](./plans/README.md). For per-doc Implemented /
+> Partial / Designed-only status see
+> [`plans/implementation-matrix.md`](./plans/implementation-matrix.md).
 
 ---
 
@@ -31,36 +36,45 @@
 
 ## Last Completed
 
-**Task:** Phase B promoted to active track; dashboard redesign
-deferred until Phase B closes.
+**Task:** `plans/` folder cleanup — separation of concerns
+(status board / AI guide / implementation matrix), Status banners
+on every plan file.
 
-**Outcome.** The eleven Partial / Designed-only gaps the doc audit
-surfaced are now organised into a real track —
-[`plans/phase-b/README.md`](./plans/phase-b/README.md) — with six
-milestones (B1..B6). Execution priority is now:
-
-1. **Phase B (active)** — close the unfinished features so a
-   multi-node, secret-manager-backed, GeoIP-aware deployment is
-   actually possible.
-2. **Dashboard redesign (queued)** — runs after Phase B closes.
-
-The reasoning: operators can run a usable single-node WAF today,
-but they cannot deploy multi-node, plug in Vault, fetch a STIX
-feed, or block by country. Closing those gaps is higher-impact
-than a dashboard refresh.
+**Outcome.** A reader landing in `plans/` now lands on a
+[`README.md`](./plans/README.md) status board that tells them
+in three columns: **what's active**, **what's queued**, and
+**what's closed**. The AI guide (`plan.md`) is now purely the
+rules + protocol — its old § 1 / § 1.9 implementation matrix
+moved into a stand-alone, living
+[`implementation-matrix.md`](./plans/implementation-matrix.md).
+Every one of the 21 plan files now carries a one-line
+`> **Status:**` banner so the state is obvious before you read
+the body.
 
 **Files changed.**
-- `plans/phase-b/README.md` — **new**, milestone breakdown for
-  B1..B6 with concrete task tables, doc updates per close, and a
-  Definition of Done covering the multi-node deploy proof points.
-- `plans/plan.md` — § 0.5 track table reordered (Phase B at top,
-  dashboard redesign queued); § 1.9 rewritten as a milestone
-  index pointing at `plans/phase-b/`.
-- `Implement-Progress.md` — Next Task points at B1-T1; tracks
-  + future-phases sections reordered.
+- `plans/README.md` — **new**, status board with priority table,
+  layout map, task-ID conventions, and updating-priority
+  protocol.
+- `plans/implementation-matrix.md` — **new**, extracted from the
+  old `plan.md` § 1; cross-references each Partial / Designed-only
+  row to the Phase B task that closes it.
+- `plans/plan.md` — slimmed to AI assistant guide only (rules,
+  protocol, mental model, prompt template). Old § 1 / § 1.9
+  removed (now lives in `implementation-matrix.md`).
+- `plans/{phase-b,dashboard-redesign}/**/*.md`,
+  `plans/{proxy,security,control,post-k6-followup,benchmark-mode}.md`,
+  `plans/dashboard-enterprise/**/*.md` — **21 files** now carry
+  a `> **Status:**` banner (Active / Queued / Queued-supporting /
+  Closed / Folded).
+- `Implement-Progress.md` — header points at `plans/README.md`
+  for priority + `plans/implementation-matrix.md` for per-doc
+  status; this Last Completed entry recorded.
 
 **Verification.** No code changes — pure plan reorganisation.
-Workspace test count unchanged (1,964 passing).
+Workspace test count unchanged (1,964 passing). All in-doc
+relative paths in the new banners verified (`../README.md` from
+top-level plan files, `../../README.md` from
+`dashboard-redesign/pages/`).
 
 ---
 
@@ -70,12 +84,11 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-04-29 | Phase B promoted to active; dashboard redesign queued | New `plans/phase-b/README.md` (B1..B6); `plans/plan.md` track table reordered. |
 | 2026-04-29 | Doc-by-doc implementation audit + Status banners + lean Implement-Progress rewrite | 58 doc Status banners inserted; matrix in `plans/plan.md` § 1; `Implement-Progress.md` shrank 2,526 → 337 lines. |
 | 2026-04-29 | Tests folder consolidation + new auth/TLS/rate-limit smoke coverage | `tests/README.md` is now a single playbook; new `tests/api/{auth,tls}.sh` + `tests/load/rate-limit.js` close P1/P4/rate-limit gaps. |
 | 2026-04-28 | Documentation restructure — flat docs/ → 8-category taxonomy | `operator/`, `architecture/`, `data-plane/`, `security/{,detectors/}`, `control-plane/{,enterprise/}`, `observability/`, `operations/`, `future/`. 220 internal + 60+ external + 41 in-code refs rewritten. |
-| 2026-04-28 | F-T6 / F-T7 / F-T8 / F-T9 / F-T10 — post-k6 polish bundle | host-vs-laptop perf docs, audit + cold-tier k6 coverage, per-stage latency histogram (`request_duration.rs`), Pebble container, AcmeManager wired into `run()`. 1,964 tests pass. |
-| 2026-04-27 | Dashboard track close-out (D-M1..D-M6) | Enterprise SPA bundled into the binary; +275 tests; clippy clean. Re-design track now opens as the next dashboard phase. |
-| 2026-04-27 | Dashboard track close-out (D-M1..D-M6) | Enterprise SPA bundled into the binary; +275 tests; clippy clean. |
+| 2026-04-28 | F-T6..F-T10 — post-k6 polish bundle | Per-stage latency histogram, Pebble container, AcmeManager wired into `run()`. 1,964 tests pass. |
 
 ---
 
@@ -372,3 +385,4 @@ Append-only. One row per closed task.
 | Doc-by-doc implementation audit + Status banners + Phase B candidate seeds | docs/, plans/plan.md | 2026-04-29 |
 | Implement-Progress.md rewritten as lean future-proof template | Implement-Progress.md | 2026-04-29 |
 | Phase B promoted to active track — `plans/phase-b/` formalised, dashboard redesign queued | plans/, Implement-Progress.md | 2026-04-29 |
+| `plans/` cleanup — README status board + extracted implementation-matrix.md + 21 Status banners + AI-guide-only `plan.md` | plans/, Implement-Progress.md | 2026-04-29 |

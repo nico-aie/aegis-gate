@@ -1,5 +1,9 @@
 # M10 — Settings
 
+> **Status:** Queued — M10 — Settings page redesign brief.
+>
+> See [`README.md`](../../README.md) for the track status board.
+
 > **Status.** seed
 >
 > **Effort.** ~3 days

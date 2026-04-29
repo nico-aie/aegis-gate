@@ -1,5 +1,9 @@
 # Per-page Plans — index + template
 
+> **Status:** Queued — supporting — Per-page redesign brief index.
+>
+> See [`README.md`](../../README.md) for the track status board.
+
 > Each file in this directory is one milestone (M1..M10).
 > They are *small* — each runs the
 > [`../workflow.md`](../workflow.md) loop end-to-end and

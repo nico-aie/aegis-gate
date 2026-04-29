@@ -1,5 +1,9 @@
 # Benchmark Mode — Task Plan
 
+> **Status:** Folded — Benchmark mode (B-T1..B-T6) folded into Phase B as **B5-T2** — see [`phase-b/README.md`](./phase-b/README.md#b5--protocols--benchmark).
+>
+> See [`README.md`](./README.md) for the track status board.
+
 > **Read first:**
 > 1. [`../Requirement.md`](../Requirement.md) §3 (perf targets), §34
 >    (benchmark mode)

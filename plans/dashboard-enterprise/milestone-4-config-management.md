@@ -1,5 +1,9 @@
 # Milestone D-M4 — Configuration Management
 
+> **Status:** Closed — D-M4 shipped.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 **Goal.** Rule Manager, Tier Config, Blacklist, Whitelist, Settings.
 This is the most mutation-heavy milestone — every save flows
 through CSRF + audit chain.

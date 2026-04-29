@@ -1,5 +1,9 @@
 # Milestone 0 — Foundations
 
+> **Status:** Queued — M0 detail. Track does not start until Phase B closes.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 > **Goal.** Replace the current chrome (sidebar, topbar,
 > status bar, command palette) and the 14 components with
 > the token set + grammar in

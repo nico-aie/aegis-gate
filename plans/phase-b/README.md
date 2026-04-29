@@ -1,5 +1,9 @@
 # Phase B — Production-Readiness Track
 
+> **Status:** Active — Production-readiness — six milestones (B1..B6) closing every Partial / Designed-only doc banner. Runs **before** dashboard redesign.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 **Goal.** Close every "Partial" / "Designed only" row in
 [`plans/plan.md` § 1](../plan.md#1-doc-by-doc-implementation-status).
 The current scope (P1–P8 + F-T1..F-T10 + dashboard track D-M1..D-M6)

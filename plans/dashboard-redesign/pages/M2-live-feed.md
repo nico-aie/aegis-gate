@@ -1,5 +1,9 @@
 # M2 — Live Feed
 
+> **Status:** Queued — M2 — Live Feed page redesign brief.
+>
+> See [`README.md`](../../README.md) for the track status board.
+
 > **Status.** seed
 >
 > **Effort.** ~4 days

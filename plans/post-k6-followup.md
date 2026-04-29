@@ -1,5 +1,9 @@
 # Post-k6 Follow-up Plan
 
+> **Status:** Closed — P1..P8 + F-T1..F-T10 shipped. Reference only.
+>
+> See [`README.md`](./README.md) for the track status board.
+
 > **Source.** Findings from the 2026-04-28 k6 + tests/api smoke
 > run captured under [`tests/results/`](../tests/results/). This
 > plan converts each test failure / blocked test / harness

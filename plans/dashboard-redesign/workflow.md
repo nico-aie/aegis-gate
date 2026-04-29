@@ -1,5 +1,9 @@
 # Claude-Design Workflow
 
+> **Status:** Queued — supporting — Claude-Design 5-stage loop reference for the dashboard-redesign track.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 > **Purpose.** Define a deterministic, repeatable process for
 > driving a single dashboard milestone (M0..M10) from
 > requirements → design → implementation → ship using Claude

@@ -1,5 +1,9 @@
 # Milestone D-M3 — Operator Views
 
+> **Status:** Closed — D-M3 shipped.
+>
+> See [`README.md`](../README.md) for the track status board.
+
 **Goal.** Live Feed, Attack Events, Audit Log, and Analytics pages
 fully wired to backing data.
 
