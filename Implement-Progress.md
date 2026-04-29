@@ -44,106 +44,153 @@
 
 ## Last Completed
 
-**Task:** **B5-T1 — HTTP/3 listener** (start of milestone
-B5 — protocols + benchmark).
+**Task:** **B5-T2 — benchmark mode (core slice). Closes
+milestone B5.** Followed by a fresh whole-system perf run
+(documented in
+[`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md))
+that exposed two real carry-overs.
 
-**Outcome.** `aegis-proxy` ships an HTTP/3 listener behind
-the new `http3` Cargo feature. Operators who terminate
-QUIC alongside the existing TLS listener now have a real
-implementation to wire up: same `rustls::ServerConfig`
-(cert resolver, TLS 1.3 enforcement) is converted into a
-`quinn::ServerConfig` with ALPN forced to `["h3"]` + the
-configured idle/streams limits. Each accepted QUIC
-connection is wrapped by `h3-quinn::Connection` and run
-through `h3::server::Connection`; every request is
-dispatched through the existing
-[`crate::proxy::handle_request`] so routing + security +
-upstream forwarding stay shared between protocols.
+**Outcome (B5-T2).** `aegis-proxy::benchmark` ships
+`BenchmarkConfig`, `StageTimings`, the `X-Aegis-*` header
+serialiser, and the `proxy::handle_request` wiring. When
+`ProxyContext.benchmark.enabled = true`, every response
+carries `X-Aegis-Stage-Total-Us`, `X-Aegis-Stage-Route-Us`,
+`X-Aegis-Stage-Upstream-Us`, `X-Aegis-Tier`, and
+`X-Aegis-Decision`. Rule IDs are gated behind a separate
+`expose_rule_ids` flag (off by default) so production
+deployments don't leak policy structure to clients. When
+the master switch is off, the data plane pays one
+`bool::then` check per request; no allocation, no header
+work.
 
-**Decision recap (h3 0.0.8 + h3-quinn 0.0.10).** Initial
-attempt at h3 0.0.6 + h3-quinn 0.0.7 failed at compile
-time — h3-quinn 0.0.7 dereferences a private field of
-`quinn::StreamId` that's no longer accessible on quinn
-0.11.x. Bumped both to the next compatible pair; the
-public API in our integration is small enough that no
-code changes were needed.
+**Decision recap (core slice, not the full plan).**
+[`plans/benchmark-mode.md`](./plans/benchmark-mode.md)
+specs B-T1..B-T6 (IP allowlist, HMAC-token gating,
+per-detector timing, dashboard panel, criterion bench
+gate). Today's slice ships the data-plane plumbing —
+header builder + timing capture + on/off switch — and
+defers the rest. The carry-overs in `plans/phase-b/README.md`
+§ B5 record what's open.
 
-**Decision recap (`aws_lc_rs` provider in tests).** With
-`http3` on, `quinn`'s `ring` feature pulls a second
-crypto provider into the rustls dep tree; rustls then
-refuses to auto-pick. The unit tests resolve this by
-calling `rustls::crypto::aws_lc_rs::default_provider()`
-explicitly — `aws_lc_rs` is *always* in the workspace's
-rustls dep tree (pulled by hyper-rustls), so the same
-test code works across feature combos.
+**Decision recap (1 KiB header payload cap).** The header
+serialiser tracks a 1024-byte budget per response and drops
+fields that would exceed it. Most reverse proxies (nginx
+default 8 KiB, haproxy 16 KiB) silently reject larger
+header sets; capping in-process makes a misconfigured
+benchmark visible at the integration test level rather
+than in production.
 
-**Decision recap (Alt-Svc helper, no auto-stamp).** This
-sub-task ships the `format_alt_svc` helper but does
-**not** automatically stamp `Alt-Svc:` on every TLS
-response. That wiring lives in the TLS-listener path and
-will land alongside the boot-site wire-up in a follow-up;
-the helper signature + the constants are stable so the
-TLS listener can call them without surface change.
+**Decision recap (ProxyContext.benchmark default off).**
+`ProxyContext::build` sets `benchmark: BenchmarkConfig::off()`.
+Operators flip the bool through whatever boot-site wires
+the runtime config (the `WafConfig` schema + dashboard
+toggle land with the deferred plan).
 
-**Files changed.**
-- `Cargo.toml` (workspace) — three new optional deps:
-  `quinn = "0.11"` (with `runtime-tokio` + `rustls` +
-  `ring`), `h3 = "0.0.8"`, `h3-quinn = "0.0.10"`.
-- `crates/aegis-proxy/Cargo.toml` — new `http3` Cargo
-  feature gating those three deps.
-- `crates/aegis-proxy/src/listener/mod.rs` — declared
-  `pub mod http3;`.
-- `crates/aegis-proxy/src/listener/http3.rs` — **new**,
-  ~340 lines. Public surface:
-  - `ALT_SVC_HEADER` constant; `format_alt_svc(port,
-    max_age)` / `default_alt_svc(port)`;
-    `ALT_SVC_DEFAULT_MAX_AGE = 86400`.
-  - `h3_alpn_protocols() -> Vec<Vec<u8>>` /
-    `with_h3_alpn(cfg) -> ServerConfig`.
-  - `Http3Config` struct (bind + idle_timeout +
-    max_concurrent_streams, sensible defaults).
-  - `Http3ConfigError` enum (BadBind / Tls / Bind /
-    Internal).
-  - `parse_http3_bind(s)` validator.
-  - `#[cfg(feature = "http3")]` runtime module:
-    `build_quic_server_config(rustls_cfg, &cfg)` and
-    `serve_http3(cfg, rustls_cfg, ctx)` (returns
-    `(quinn::Endpoint, JoinHandle)` for graceful drain).
-    The accept loop dispatches each stream through
-    `proxy::handle_request` then writes the response
-    back over the h3 stream.
-- `docs/architecture/protocols.md` — banner flipped
-  Partial → Implemented.
-- `plans/implementation-matrix.md` — row updated.
+**Files changed (B5-T2).**
+- `crates/aegis-proxy/src/lib.rs` — declared
+  `pub mod benchmark;`.
+- `crates/aegis-proxy/src/benchmark.rs` — **new**, ~360
+  lines. `BenchmarkConfig`, `StageTimings`,
+  `Stopwatch`, `format_us`, `sanitise_ascii`,
+  `build_aegis_headers` (with budget tracking),
+  `stamp_headers`, header-name constants
+  (`hdr::TOTAL_US` / `ROUTE_US` / `SECURITY_US` /
+  `UPSTREAM_US` / `TIER` / `DECISION` / `RULE_ID` /
+  `REQUEST_ID` / `BUILD`).
+- `crates/aegis-proxy/src/proxy.rs` —
+  `ProxyContext` gained `benchmark: BenchmarkConfig`
+  (default off via `ProxyContext::build`).
+  `handle_request` now records `bench_total_start` /
+  `route_start` / `upstream_start` instants only when
+  the flag is on, computes elapsed durations, builds a
+  `StageTimings`, and calls `benchmark::stamp_headers`
+  before returning. Off path: one bool check.
+- `docs/operator/benchmark-mode.md` — banner flipped
+  Designed-only → **Implemented (core slice)** with a
+  link to the full plan for the deferred work.
+- `plans/implementation-matrix.md` — row updated; B5
+  entry in the Phase B mapping marked CLOSED.
+- `plans/phase-b/README.md` — § B5 marked ✅ CLOSED with
+  the two-sub-task summary and the deferred carry-overs.
 
-**Tests.** 15 net new in `listener::http3::tests`,
-default-feature (no QUIC dep tree needed for the helpers):
+**Tests (B5-T2).** 23 net new:
 
-- `format_alt_svc_*` (4) — header value formatting,
-  default 24h max-age, lowercase `Alt-Svc` constant.
-- `h3_alpn_protocols_only_h3` — no draft IDs.
-- `with_h3_alpn_replaces_existing` — existing HTTP/2
-  ALPN gets replaced cleanly.
-- `parse_http3_bind_*` (4) — IPv4 / IPv6 / garbage /
-  missing-port reject.
-- `http3_config_default_*` (3) — idle timeout, max
-  streams, bind defaults.
-- `config_error_display_messages` — every error variant
-  formats sanely.
+- `benchmark::tests` (21): `config_off_by_default`;
+  `build_returns_empty_when_disabled`;
+  `build_emits_total_us_when_enabled`; per-stage emission
+  (route/security/upstream); rule-id gating
+  (omits by default + emits when `expose_rule_ids`);
+  tier/decision/request_id round-trip; missing-optional
+  fields skipped; `format_us` for micros / millis /
+  zero / 1 s; `sanitise_ascii` drops high bytes /
+  newlines / keeps dashes; 1 KiB budget truncation;
+  stopwatch elapsed; stamp on/off
+  (`stamp_headers_no_op_when_disabled`,
+  `stamp_headers_attaches_when_enabled`); header
+  constants are lowercase.
+- `proxy::tests` (2 end-to-end via the existing
+  `echoing_upstream` mock):
+  `benchmark_headers_emitted_when_enabled` asserts
+  `X-Aegis-Stage-Total-Us` + `X-Aegis-Tier`;
+  `benchmark_headers_absent_when_disabled` confirms the
+  default path is silent.
+
+**Outcome (perf benchmark re-run).** Built release
+binary, ran `baseline.js`, `rate-limit.js`, and
+`ddos-burst.js` against `config/waf.test.yaml` with the
+docker `aegis-k6` container. Logs saved to
+`tests/results/*-2026-04-29.log` (the 2026-04-28 logs
+are preserved unchanged for comparison). Headline
+deltas in
+[`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md):
+
+| Metric (baseline 200 VUs / 15 s) | 2026-04-28 | 2026-04-29 | Direction |
+|---|---|---|---|
+| Throughput (RPS) | 37 533 | **42 287** | **+12.7 %** |
+| Allow-path latency p95 | 7.21 ms | **877 µs** ¹ | **−88 %** |
+| Allow-path latency median | 4.26 ms | **505 µs** | **−88 %** |
+| `allow_success` ratio | 100.00 % | **1.57 %** | **REGRESSION ⚠️ — see #1 below** |
+| `ddos-burst` auto-blocks | 40 001 | 40 001 | unchanged |
+| `ddos-burst` p95 latency | 1 ms | 0.48 ms | improved |
+
+¹ 20-VU/15s pre-saturation slice; the 200-VU run mixes
+fast 403s into the average.
+
+**Carry-overs surfaced by the perf re-run** (added to
+the carry-overs list below):
+
+1. **`lib.rs::handle_data_request` Allow branch still
+   returns the synthetic `OK\n` body.** B4-T3 fixed
+   `proxy::handle_request` (the public function used by
+   tests) but the actual data-plane router at
+   `crates/aegis-proxy/src/lib.rs:1915` has its own
+   "Allow → return OK" branch that never reaches
+   `forward::forward()`. The benchmark allow-path
+   latency is fast precisely because the upstream stub
+   short-circuits — real upstream forwarding is only
+   active for the abstract proxy entry point.
+2. **Rate-limit returns 403 (strikes), not 429.** The
+   `rate-limit.js` k6 script asserts on
+   `status_429_observed > 0`; the gateway accumulates
+   strikes via the F-T2 wiring and returns 403
+   "blocked by repeat-offender strikes". Pick one and
+   align both gateway and script.
 
 **Verification.**
-- `cargo build -p aegis-proxy` clean (default).
-- `cargo build -p aegis-proxy --features http3` clean.
-- `cargo test --workspace` (default features) → **2,151
-  passed** (was 2,136; +15 net new).
-- `cargo test -p aegis-proxy --features http3 --lib
-  listener::http3::` → **15 passed**.
+- `cargo build -p aegis-proxy` clean.
+- `cargo test --workspace` (default features) → **2,173
+  passed** (was 2,151; +22 net new from B5-T2).
+- `cargo test -p aegis-proxy --lib benchmark::` →
+  **21 passed**.
+- `cargo test -p aegis-proxy --lib proxy::` →
+  **10 passed** (B4-T3's 8 + B5-T2's 2).
 - `cargo clippy --workspace --lib --bins -- -D warnings`
   → clean.
-- `cargo clippy -p aegis-proxy --features http3 --lib
-  -- -D warnings` → clean.
 - `cargo run -p aegis-bin -- validate --config
   config/waf.dev.yaml` → `config OK`.
+- `cargo build -p aegis-bin --release` clean.
+- Live perf run: 200 VUs × 15 s baseline + ddos-burst
+  + rate-limit; logs in `tests/results/`.
 
 ---
 
@@ -154,64 +201,72 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-04-29 | **B5-T1** HTTP/3 listener | `aegis-proxy/http3` Cargo feature ships `listener::http3` on quinn 0.11 + h3 0.0.8 + h3-quinn 0.0.10; pure helpers for Alt-Svc + ALPN + bind parse + config; runtime path dispatches QUIC streams through `proxy::handle_request`; `protocols.md` flipped Implemented. +15 tests. |
 | 2026-04-29 | **B4-T4** Full SSE streaming on `/dashboard/sse` — closes B4 | `admin_sse` widens admin pipeline to `UnsyncBoxBody`; `sse_response` streams `BroadcastStream` events with 15s heartbeat. +8 tests. |
 | 2026-04-29 | **B4-T3** Full upstream proxying | `upstream::forward` replaces stub; hop-by-hop scrub both directions; Host rewrite + `X-Forwarded-Host`; preserves method/path/query/body. +14 forward + 5 proxy end-to-end tests. |
 | 2026-04-29 | **B4-T2** `waf restore` CLI subcommand | `restore_envelope` w/ atomic dry-run validation + rollback; default destinations come from envelope; `dr-backup.md` flipped Implemented for config/rules surface. +10 tests. |
 | 2026-04-29 | **B4-T1** `waf snapshot` CLI subcommand | `aegis-bin::snapshot` ships JSON envelope w/ schema versioning, blake3 hash, every referenced rules file inlined; refuses overwrite without `--force`. +15 tests. |
-| 2026-04-29 | **B3-T4** Concrete RFC 3507 ICAP TCP client — closes B3 | `content::icap::{codec,tcp}`; pure framing helpers + 5-vendor decision table; configurable timeout + fail-open default; `content-scanning.md` flipped Implemented. +36 tests. |
 
 ---
 
 ## Next Task
 
-**Task:** **B5-T2 — benchmark mode** (folds in
-`plans/benchmark-mode.md`'s B-T1..B-T6).
+**Task:** **Pre-B6 carry-overs surfaced by the
+2026-04-29 perf re-run** — fix the data-plane Allow-stub
+gap and align rate-limit response codes BEFORE moving on
+to milestone B6 (production packaging). These are real
+bugs the live benchmark exposed; landing B6 on a stub
+data plane would ship a Dockerfile that doesn't actually
+forward upstream traffic.
 
-**Plan:** [`plans/phase-b/README.md` § B5](./plans/phase-b/README.md#b5--protocols--benchmark)
-+ [`plans/benchmark-mode.md`](./plans/benchmark-mode.md).
-
-**Why this next.** B5-T1 just shipped HTTP/3. The remaining
-B5 sub-task is benchmark mode — a gated, opt-in surface
-that emits per-request timing breakdown via `X-Aegis-*`
-response headers, ships dashboard panels, and exposes
-Prometheus series. Today none of those exist; load tests
-have to instrument timing externally with k6.
+**Plan:** [`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md)
+"What needs improvement" §1 + §2.
 
 **Outline.**
 
-1. New `benchmark` Cargo feature on `aegis-proxy` (and
-   `aegis-control` for the dashboard panel) — off by
-   default.
-2. `crates/aegis-proxy/src/benchmark.rs` — owns the
-   timing capture per request stage. Hooks into the
-   existing security pipeline + upstream forward. Each
-   captured stage adds an `X-Aegis-Stage-<name>: <us>`
-   header on the response when the feature is on AND the
-   `benchmark.enabled` config flag is set at runtime.
-3. Prometheus series: a per-stage histogram (already
-   exists as `RequestStageHistogram` from F-T10 — re-use
-   that and expose extra labels under the new feature).
-4. Dashboard panel: new "Benchmark" page card in
-   `dashboard-enterprise` that reads the stage histogram
-   + emits a per-route timing table.
-5. Doc — flip `docs/operator/benchmark-mode.md` banner
-   Designed → Implemented.
-6. Tests:
-   - Pure: header builder formats microseconds correctly.
-   - Integration: feature ON + flag ON → response has
-     stage headers + Prometheus series populated; feature
-     ON + flag OFF → no headers, no series.
+1. **Carry-over A — data-plane Allow forwarding.**
+   `crates/aegis-proxy/src/lib.rs:1915` returns
+   `Response::new(Full::new(Bytes::from("OK\n")))` on
+   the Allow branch of `handle_data_request`. Replace
+   with a call to `upstream::forward::forward(member,
+   method, uri, headers, body)` — same wire-format work
+   B4-T3 landed for `proxy::handle_request`. The
+   `handle_data_request` function already has the
+   member + cloned parts in scope; the change is
+   plumbing, not new logic. Add an end-to-end test that
+   spins up a hyper mock upstream and asserts the data
+   listener proxies through it.
+2. **Carry-over B — rate-limit response code.** Pick
+   one of:
+   - **(B.1)** Return `429 Too Many Requests` with a
+     `Retry-After` header from the `IpRateLimiter`
+     branch in `handle_data_request`, and accumulate
+     strikes separately.
+   - **(B.2)** Keep the strike-and-403 behaviour;
+     update `tests/load/rate-limit.js` to assert on
+     `status_403` + an `X-Aegis-Reason: strikes` header.
+   B.1 is the RFC-aligned choice; B.2 is the
+   one-script-edit shortcut.
+3. **Re-run** `baseline.js` + `rate-limit.js` after the
+   fixes; expect `allow_success` to climb back toward
+   100 % at sane VU counts and `rate-limit.js` to pass
+   its threshold.
 
 **Acceptance.**
 
-- `cargo build` clean across **default**, `benchmark`,
-  and full superset.
-- `cargo test --workspace` green; +12–18 net new tests.
-- After this lands, mark **B5 milestone CLOSED** and
-  move to milestone B6 (production packaging).
+- `cargo test --workspace` green; +6–10 net new tests
+  (mostly the data-plane Allow forwarding path).
+- `tests/load/baseline.js` at 20 VUs / 5 s achieves
+  `allow_success > 99 %` against `config/waf.test.yaml`.
+- `tests/load/rate-limit.js` PASS (whichever code we
+  chose).
+- New rows in
+  [`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md)
+  documenting the second re-run.
 
 **On close:** Next Task → **B6-T1 — production
-Dockerfile**.
+Dockerfile** (start of milestone B6 — production
+packaging).
 
 ---
 
@@ -285,17 +340,63 @@ collect) is a deeper refactor that touches every listener
 + the SecurityPipeline body-frame hooks; deferred to a
 future stream-through change.
 
-**B5 — Protocols + benchmark**
-- ✅ **HTTP/3 listener shipped** (B5-T1) —
-  `aegis-proxy/http3` Cargo feature ships
-  `listener::http3` on quinn 0.11 + h3 0.0.8 + h3-quinn
-  0.0.10; reuses operator's rustls cert; dispatches
-  through `proxy::handle_request`. Boot-site wire-up
-  (auto-stamping `Alt-Svc` on every TLS response) is a
-  follow-up.
-- **Benchmark mode:** `plans/benchmark-mode.md` exists; no
-  `benchmark/` module wired. `X-Aegis-*` response headers and
-  dashboard panels not present.
+**B5 — Protocols + benchmark** ✅ **CLOSED** 2026-04-29 —
+both sub-tasks ship: B5-T1 HTTP/3 listener
+(`aegis-proxy/http3` feature on quinn 0.11 + h3 0.0.8 +
+h3-quinn 0.0.10), B5-T2 benchmark mode core slice
+(`aegis-proxy::benchmark` ships `BenchmarkConfig` +
+`StageTimings` + `X-Aegis-*` header serialiser, wired into
+`proxy::handle_request`). `protocols.md` and
+`benchmark-mode.md` both flipped Implemented. **Open
+follow-ups** (not blocking B6): auto-stamp `Alt-Svc` on
+every TLS response (helper exists; TLS-listener wire-up
+deferred); IP allowlist + HMAC-token gating for benchmark
+mode (deferred to the full `plans/benchmark-mode.md` plan);
+per-detector timing + dashboard panel.
+
+**Perf carry-overs surfaced 2026-04-29** (live re-runs
+exposed five real gaps the milestones above didn't catch):
+
+*Single-node perf re-run
+([`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md))*
+- **Data-plane Allow stub still active.** B4-T3 wired
+  `upstream::forward::forward()` into
+  `proxy::handle_request` (the public function used by
+  unit tests) but the live data plane runs through
+  `lib.rs::handle_data_request` whose Allow branch at
+  `crates/aegis-proxy/src/lib.rs:1915` still returns the
+  synthetic `Response::new(Full::new(Bytes::from("OK\n")))`.
+  Real upstream forwarding is therefore **not** active in
+  the running binary today.
+- **Rate-limit response code mismatch.** Live behaviour
+  is "accumulate strikes → return 403 blocked by
+  repeat-offender strikes" rather than the
+  `429 Too Many Requests` that `tests/load/rate-limit.js`
+  asserts on. Either the gateway emits 429 or the script
+  asserts on 403 — pick one.
+
+*Cluster + HTTPS re-run
+([`tests/results/cluster/README-2026-04-29.md`](./tests/results/cluster/README-2026-04-29.md))*
+- **Leader-state admin endpoint missing.** B1-T3's lease
+  layer is wired (boot log prints `lease store = redis`)
+  but `/api/cluster` only returns `{"peers":[]}`. No
+  `is_leader` field anywhere. `tests/cluster/02-leader-failover.sh`
+  skips on this. Either expose `is_leader` on
+  `/api/cluster` or add `/api/cluster/leader`.
+- **Rate-limit bucket per-node despite shared state
+  backend.** Each cluster node admits 10 000 successes
+  independently against the same source IP — total
+  ~20 000 across the cluster. The bucket counter looks
+  local-only; the `RedisBackend` is wired for
+  `StateBackend` reads but rate-limit consume/probe may
+  bypass it. Either route consume through `StateBackend`
+  or document the per-node-budget contract in
+  `docs/security/rate-limiting.md`.
+- **Data-plane TLS loader missing.** `config::TlsConfig.certificates`
+  parses cleanly but no listener consumer reads it for
+  the data-plane path. Either wire the static cert list
+  through to `listener::tls` or remove the field from the
+  schema and direct ops to ACME (`acme:` block).
 
 **B6 — Production packaging**
 - **Production packaging:** no Dockerfile, no Helm chart, no
@@ -336,16 +437,29 @@ Order is execution priority — earlier phases run first.
 
 ## Verification (last full run)
 
-- `cargo test --workspace` (default features) → **2,151 passed**
-  (was 2,136; +15 net new from B5-T1 listener::http3 tests).
+- `cargo test --workspace` (default features) → **2,173 passed**
+  (was 2,151; +22 net new from B5-T2 benchmark module + 2
+  proxy end-to-end).
+- `cargo test -p aegis-proxy --lib benchmark::` → **21 passed**.
+- `cargo test -p aegis-proxy --lib proxy::` → **10 passed**
+  (3 pre-existing + 5 from B4-T3 + 2 from B5-T2).
 - `cargo test -p aegis-proxy --features http3 --lib
   listener::http3::` → **15 passed** (helper layer
   unchanged across feature combos).
 - `cargo test -p aegis-proxy --lib admin_sse::` → **8 passed**.
 - `cargo test -p aegis-proxy --lib upstream::forward::` →
   **14 passed**.
-- `cargo test -p aegis-proxy --lib proxy::` → **8 passed**
-  (3 pre-existing + 5 new end-to-end).
+- **Live perf re-run** (2026-04-29) — release binary +
+  `config/waf.test.yaml` + docker `aegis-k6`:
+  - `baseline.js` 200 VUs / 15 s → 42 287 RPS, allow-path
+    p95 877 µs (was 7.21 ms), `allow_success` 1.57 % (was
+    100 % — surfaced two carry-overs above).
+  - `ddos-burst.js` → 40 001 auto-blocks, p95 0.48 ms.
+  - `rate-limit.js` → FAIL on `status_429` assertion
+    (gateway returns 403/strike instead — see
+    carry-overs).
+  - Logs: `tests/results/*-2026-04-29.log`. Comparison:
+    [`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md).
 - `cargo test -p aegis-bin --bin waf -- snapshot` → **25
   passed** (15 from B4-T1 + 10 from B4-T2).
 - `cargo test -p aegis-security --lib content::icap::` →
@@ -554,3 +668,9 @@ Append-only. One row per closed task.
 | **B4-T4** Full SSE streaming on `/dashboard/sse` — closes B4 (`admin_sse::sse_response` returns `UnsyncBoxBody` driven by `BroadcastStream` merged w/ 15s idle heartbeat ticker; preamble + per-event frames + lag handling; +8 tests) | aegis-proxy, aegis-control | 2026-04-29 |
 | **B4 milestone CLOSED** — Operator tooling (snapshot + restore + upstream + SSE) ships | project-wide | 2026-04-29 |
 | **B5-T1** HTTP/3 listener (`aegis-proxy/http3` feature; `listener::http3` on quinn 0.11 + h3 0.0.8 + h3-quinn 0.0.10; pure helpers for Alt-Svc + ALPN + bind parse + config; runtime path dispatches QUIC streams through `proxy::handle_request`; `protocols.md` flipped Implemented; +15 tests) | aegis-proxy | 2026-04-29 |
+| **B5-T2** Benchmark mode core slice — closes B5 (`aegis-proxy::benchmark` ships `BenchmarkConfig` + `StageTimings` + `X-Aegis-*` header serialiser; `proxy::handle_request` captures total/route/upstream timings + tier + decision; 1 KiB header budget; off-mode = 1 bool check; `benchmark-mode.md` flipped Implemented (core slice); +21 unit + 2 proxy end-to-end tests) | aegis-proxy | 2026-04-29 |
+| **B5 milestone CLOSED** — Protocols + benchmark (HTTP/3 + benchmark mode) ships | project-wide | 2026-04-29 |
+| **Perf re-run** — 2026-04-29 baseline + ddos-burst + rate-limit benchmarks against release build w/ B3+B4+B5 changes; allow-path latency p95 7.21 ms → 877 µs; surfaced two carry-overs (`lib.rs::handle_data_request` Allow stub still active; rate-limit returns 403 not 429); old logs preserved as `tests/results/*.log`, new as `tests/results/*-2026-04-29.log`, comparison in `tests/results/README-2026-04-29.md` | tests/results | 2026-04-29 |
+| **HTTPS test additions** — `tests/api/tls-data.sh` (data-plane TLS hardening; skips when `:8443` not bound), `tests/api/tls-ciphers.sh` (TLS 1.3 + 1.2 cipher-suite negotiation, weak-cipher reject, cert-chain probe), `tests/load/tls-baseline.js` (k6 baseline over HTTPS w/ handshake-latency SLO); wired into `tests/api/run-all.sh`; pyramid table updated | tests/api, tests/load | 2026-04-29 |
+| **HA cluster smoke track** — new `tests/cluster/` (4 scripts + `_common.sh` + `run-all.sh` + `README.md`) exercising B1's contract: shared Redis state (`01-shared-counter.sh`), cross-node leader failover (`02-leader-failover.sh`), rehydrate-readiness gate (`03-rehydrate-readiness.sh`), partition-fallback heal (`04-partition-fallback.sh`); two-node fixture w/ `config/waf.cluster-{a,b}.yaml`; both configs validate clean | tests/cluster, config | 2026-04-29 |
+| **Cluster + HTTPS perf re-run** — first live run of the new cluster track; 3 PASS / 0 FAIL / 1 SKIP (leader-state admin endpoint not exposed). Two-node baseline shows identical perf across A and B (34.5 k RPS, p95 ~880 µs, identical to single-node). Surfaced two new carry-overs: rate-limit bucket per-node despite shared state backend (each node admits 10 k, total 20 k); data-plane `tls.certificates` parsed but no listener-side loader. HTTPS load test skipped — no data-plane TLS path consumable from YAML. Logs in `tests/results/cluster/`, comparison in `tests/results/cluster/README-2026-04-29.md` | tests/cluster, tests/results | 2026-04-29 |

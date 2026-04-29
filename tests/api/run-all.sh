@@ -16,6 +16,12 @@ echo
 echo "==> tests/api/tls.sh"
 "$HERE/tls.sh"
 echo
+echo "==> tests/api/tls-ciphers.sh"
+"$HERE/tls-ciphers.sh"
+echo
+echo "==> tests/api/tls-data.sh"
+"$HERE/tls-data.sh"
+echo
 echo "==> tests/api/detectors.sh"
 "$HERE/detectors.sh"
 echo

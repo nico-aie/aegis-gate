@@ -23,12 +23,23 @@ tests/
 │   ├── logging.sh                /api/logging            (P8)
 │   ├── cold-tier.sh              /api/cold-tier          (P8)
 │   ├── acme.sh                   Pebble round-trip       (F-T7)
-│   ├── tls.sh                    TLS hardening + headers (P4 hardening)
+│   ├── tls.sh                    TLS hardening + headers on admin :9443 (P4)
+│   ├── tls-ciphers.sh            cipher-suite negotiation + weak-suite reject (P4)
+│   ├── tls-data.sh               TLS hardening on the data plane (skips when :8443 not bound)
 │   ├── auth.sh                   admin login + lockout + CSRF reject (P1)
 │   └── run-all.sh                drive everything in dependency order
+├── cluster/                      HA two-node smoke tests (Phase B B1)
+│   ├── README.md                 orchestration + bring-up notes
+│   ├── _common.sh                two-node + redis fixture helpers
+│   ├── 01-shared-counter.sh      state shared across nodes via Redis
+│   ├── 02-leader-failover.sh     killing the leader hands off the lease
+│   ├── 03-rehydrate-readiness.sh /healthz/ready 503 → 200 across the warm-up window
+│   ├── 04-partition-fallback.sh  Redis partition → fallback → heal
+│   └── run-all.sh                drive the whole cluster track
 ├── load/                         k6 scripts — latency, throughput, toggles
 │   ├── README-perf.md            host-vs-laptop SLO targets    (F-T6)
-│   ├── baseline.js               golden-path SLOs              (M1 W5 DoD)
+│   ├── baseline.js               golden-path SLOs over plaintext HTTP (M1 W5 DoD)
+│   ├── tls-baseline.js           same shape as baseline.js, over HTTPS (skips when :8443 not bound)
 │   ├── mixed-tiers.js            multi-tier traffic blend      (M2 T1.5)
 │   ├── ddos-burst.js             single-source flood           (M2 T2.3)
 │   ├── security-toggle-flips.js  flip detector class mid-traffic (P2)
@@ -38,6 +49,10 @@ tests/
 │   ├── audit-since.js            /api/audit/since contract     (F-T9)
 │   ├── cold-tier.js              /api/cold-tier inventory      (F-T9)
 │   └── rate-limit.js             per-IP rate-limit saturation
+├── results/                      k6 artefacts + comparison reports
+│   ├── README.md                 2026-04-28 baseline (post F-T1..F-T10)
+│   ├── README-2026-04-29.md      post Phase B B3..B5 re-run + carry-overs
+│   └── *.log                     per-script k6 output (date-suffixed = newer run)
 └── security/                     attack corpora + scanner runners
     ├── corpus/
     │   ├── benign/               FP regression — must NOT trigger any detector
@@ -67,8 +82,9 @@ The project follows a four-layer pyramid:
 |---|---|---|
 | Rust unit | `crates/*/src/**` `#[cfg(test)]` | hot-path correctness, state machines, parsers |
 | Rust integration | `crates/*/tests/*.rs` | dashboard router, audit chain, services bundle |
-| Admin-API smoke | `tests/api/*.sh` | live endpoint shapes, CSRF, AuditedMutate round-trip |
-| Load + behaviour | `tests/load/*.js` | latency / throughput SLOs + P2/P6/P7/P8 scenarios |
+| Admin-API smoke | `tests/api/*.sh` | live endpoint shapes, CSRF, AuditedMutate round-trip, TLS hardening + cipher negotiation |
+| HA cluster smoke | `tests/cluster/*.sh` | two-node fixture against shared Redis — counter sharing, leader failover, rehydrate gate, partition fallback (Phase B B1) |
+| Load + behaviour | `tests/load/*.js` | latency / throughput SLOs + P2/P6/P7/P8 scenarios; HTTPS variant runs the same shape over TLS |
 | Attack replay | `tests/security/*` | OWASP corpus, Nuclei, ZAP |
 
 ## 2. Prerequisites
@@ -76,8 +92,14 @@ The project follows a four-layer pyramid:
 - Rust toolchain matching `rust-version` in `Cargo.toml`
 - Docker + Docker Compose (for the test stack: Redis, k6, Nuclei, ZAP, Pebble for ACME)
 - `curl` and `jq` (for the API smoke layer)
+- `openssl` (for `tests/api/tls-ciphers.sh`'s cipher-negotiation probes — the script skips quietly if absent)
 - `bats` *(optional, only for adding new shell tests)*
-- Ports `8080` (data plane), `8443` (TLS data plane), `9443` (admin), `4443` (Pebble) free on the host
+- Ports free on the host:
+  - `8080` (data plane plaintext) and `8443` (TLS data plane) for the single-node tracks
+  - `9443` (admin) for the single-node tracks
+  - `8090`, `9543` for the second cluster node — see [`tests/cluster/README.md`](./cluster/README.md)
+  - `6379` (Redis) for both the cluster fixture and the optional shared-state work
+  - `4443` (Pebble) for ACME
 - An `ADMIN_USER` / `ADMIN_PASS` pair — `config/waf.dev.yaml` ships with
   a baked-in `admin` / `aegis-test-1234` already hashed inline. To use a
   different password, generate a hash with

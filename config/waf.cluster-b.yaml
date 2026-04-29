@@ -1,0 +1,82 @@
+# Aegis-Gate — Cluster Node B (HA test fixture)
+#
+# See `waf.cluster-a.yaml` for orientation. Only the bind ports
+# differ; both nodes target the same Redis primary so per-IP
+# rate-limit counters + block lists are shared.
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8090"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9543"
+
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+
+upstreams:
+  stub-pool:
+    members:
+      - addr: "127.0.0.1:9999"
+    lb: round_robin
+
+state:
+  backend: redis
+  redis:
+    urls: ["redis://127.0.0.1:6379"]
+    pool_size: 8
+    timeout: "1s"
+  reconcile:
+    readiness_warm_ms: "5s"
+
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: true }
+  brute_force:      { enabled: true }
+
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 40
+    block_at:     80
+    max:          100
+  trust_recovery:
+    per_hour: 30
+  strikes:
+    block_at: 50
+
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 10000
+      window: "1m"
+
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+observability:
+  prometheus:
+    path: "/metrics"
+  access_log:
+    format: json
+    sink: stdout

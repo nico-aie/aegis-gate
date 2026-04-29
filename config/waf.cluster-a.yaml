@@ -1,0 +1,104 @@
+# Aegis-Gate — Cluster Node A (HA test fixture)
+#
+# Pairs with `waf.cluster-b.yaml` to drive the `tests/cluster/`
+# scripts. Both nodes share the same Redis backend so they form a
+# real two-node cluster on a single host.
+#
+# Node-distinguishing values:
+#   - data plane on :8080  (cluster-b uses :8090)
+#   - admin plane on :9443 (cluster-b uses :9543)
+#   - node id in audit ring derived from hostname + PID at boot
+#
+# Bring-up:
+#   docker run -d --name aegis-cluster-redis \
+#     -p 6379:6379 redis:7-alpine \
+#     redis-server --save "" --appendonly no
+#   target/release/waf run --config config/waf.cluster-a.yaml &
+#   target/release/waf run --config config/waf.cluster-b.yaml &
+#
+# Tear-down:
+#   pkill -f 'waf run --config config/waf.cluster-' ; \
+#     docker rm -f aegis-cluster-redis
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+
+upstreams:
+  stub-pool:
+    members:
+      - addr: "127.0.0.1:9999"
+    lb: round_robin
+
+# ---------------------------------------------------------------------------
+# Redis-backed state — the whole point of this fixture. Both
+# cluster nodes round-trip rate-limit counters + block lists through
+# the same primary so a request to either node sees the union
+# state.
+# ---------------------------------------------------------------------------
+state:
+  backend: redis
+  redis:
+    urls: ["redis://127.0.0.1:6379"]
+    pool_size: 8
+    timeout: "1s"
+  reconcile:
+    readiness_warm_ms: "5s"
+
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: true }
+  brute_force:      { enabled: true }
+
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 40
+    block_at:     80
+    max:          100
+  trust_recovery:
+    per_hour: 30
+  strikes:
+    block_at: 50
+
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 10000
+      window: "1m"
+
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+observability:
+  prometheus:
+    path: "/metrics"
+  access_log:
+    format: json
+    sink: stdout
