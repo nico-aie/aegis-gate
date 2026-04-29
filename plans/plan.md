@@ -156,19 +156,27 @@ If something feels unclear → it likely belongs in aegis-core.
 
 ### Tracks currently in flight
 
-| Track | Plan root | Task ID prefix | Crates touched |
-|-------|-----------|----------------|----------------|
-| Proxy core | `plans/proxy.md` | `M{n}-T{x}.{y}` | aegis-proxy (+ aegis-core) |
-| Security pipeline | `plans/security.md` | `M{n}-T{x}.{y}` | aegis-security |
-| Control plane | `plans/control.md` | `M{n}-T{x}.{y}` | aegis-control |
-| Enterprise dashboard | `plans/dashboard-enterprise/` | `D-M{n}-T{x}.{y}` | aegis-control only |
-| Benchmark mode | `plans/benchmark-mode.md` | `B-T{n}.{y}` | aegis-core, aegis-proxy, aegis-security, aegis-control, aegis-bin |
+Order is execution priority — earlier tracks run first. As of
+2026-04-29:
 
-The `D-` and `B-` prefixes keep dashboard and benchmark task IDs
-disjoint from the original M1/M2/M3 IDs already in the Completed
-Tasks Log. The dashboard and benchmark tracks are parallel — B-T1..B-T3
-can land before D-M1 finishes; B-T4.5 / B-T4.6 (dashboard panels)
-are the only B- tasks gated on dashboard milestones.
+| # | Track | Plan root | Task ID prefix | State |
+|---|---|---|---|---|
+| 1 | **Phase B — production-readiness** | `plans/phase-b/README.md` | `B<n>-T<x>` | **active**, B1-T1 unblocked |
+| 2 | Dashboard redesign (M0..M10) | `plans/dashboard-redesign/` | `R-M{n}-T{x}` | queued — runs after Phase B closes |
+| — | Proxy core (closed) | `plans/proxy.md` | `M{n}-T{x}.{y}` | closed |
+| — | Security pipeline (closed) | `plans/security.md` | `M{n}-T{x}.{y}` | closed |
+| — | Control plane (closed) | `plans/control.md` | `M{n}-T{x}.{y}` | closed |
+| — | Enterprise dashboard (closed) | `plans/dashboard-enterprise/` | `D-M{n}-T{x}.{y}` | closed |
+| — | Security toggles + post-k6 (closed) | `plans/post-k6-followup.md` | `P<n>` / `F-T<n>` | closed |
+| — | Benchmark mode | `plans/benchmark-mode.md` | `B-T{n}.{y}` | folded into Phase B (B5-T2) |
+
+**Why Phase B before dashboard redesign.** The audit in § 1
+surfaced eleven Partial / Designed-only features. Operators can
+run a single-node WAF today but cannot deploy multi-node, plug in
+Vault, fetch a STIX feed, or block by country. Closing those gaps
+is higher-impact than a dashboard refresh, so this track runs
+first. See [`plans/phase-b/README.md`](./phase-b/README.md) for the
+milestone breakdown.
 
 ---
 
@@ -311,27 +319,30 @@ this table together.
 
 ---
 
-## 1.9 Phase B candidate seeds (suggested)
+## 1.9 Phase B — production-readiness track
 
-The audit above surfaces concrete gaps. Each is a candidate for the
-[`advanced-features.md`](../docs/future/advanced-features.md) intake;
-none are in flight today.
+**Status: active.** The eleven gaps the audit above surfaced are
+now organised into six milestones in
+[`plans/phase-b/README.md`](./phase-b/README.md). Phase B runs
+**before** the dashboard redesign — closing these unblocks
+multi-node deployment, real secret managers, real threat-intel
+feeds, and GeoIP filtering, all of which an operator hits on day
+one of a real production deploy.
 
-| # | Gap | Doc affected | Suggested track |
-|---|---|---|---|
-| 1 | Real Redis backend (replace `RedisBackendStub` with a `deadpool-redis` impl + Lua eval + reconnect) | `operations/ha-clustering.md` | `aegis-proxy` |
-| 2 | Cross-node leader lease (Redis SET NX EX) + gate ACME + GitOps + threat-intel + witness export on lease | `operations/ha-clustering.md` | `aegis-proxy` |
-| 3 | Service-discovery adapters: Consul, etcd, k8s | `data-plane/service-discovery.md` | `aegis-proxy` |
-| 4 | GeoIP filter — MaxMind reader + country/ASN match in rule engine | `security/geoip-filtering.md` | `aegis-security` |
-| 5 | STIX/TAXII fetch loop into `ThreatIntelStore` | `security/threat-intelligence.md` | `aegis-security` |
-| 6 | Concrete ICAP TCP client implementing `IcapClient` | `security/content-scanning.md` | `aegis-security` |
-| 7 | Vault / AWS SM / GCP SM / Azure KV / HSM secret resolvers | `control-plane/secrets-management.md` | `aegis-proxy` |
-| 8 | `waf snapshot` / `waf restore` CLI + `.tar.zst` (de)serializer | `operations/dr-backup.md` | `aegis-bin` + `aegis-proxy` |
-| 9 | HTTP/3 support (quinn / h3) | `architecture/protocols.md` | `aegis-proxy` |
-| 10 | Built-in git poll driver implementing `GitClient` | `control-plane/gitops-change-management.md` | `aegis-control` |
-| 11 | Benchmark mode (`X-Aegis-*` headers + dashboard panels) — `plans/benchmark-mode.md` is the live track | `operator/benchmark-mode.md` | cross-crate |
+| Milestone | Theme | First task |
+|---|---|---|
+| **B1** | HA & multi-node (Redis backend + cross-node leader lease + rehydrate) | **B1-T1** Real Redis backend |
+| **B2** | Operational integrations (Vault / AWS / GCP / Azure secret resolvers, Consul / etcd / k8s service discovery) | B2-T1 Vault resolver |
+| **B3** | Data feeds + filtering (git poll driver, STIX/TAXII, GeoIP MaxMind, ICAP TCP client) | B3-T1 git poll driver |
+| **B4** | Operator tooling (`waf snapshot`/`restore`, full upstream proxying, full SSE streaming) | B4-T1 `waf snapshot` |
+| **B5** | Protocols + benchmark (HTTP/3, benchmark mode folded in) | B5-T1 HTTP/3 |
+| **B6** | Production packaging (Dockerfile, Helm, GitHub Actions, HSM, fd-passing) | B6-T1 Production Dockerfile |
 
-These are the eleven most-referenced "deferred but useful" gaps the
-matrix above produces. When one is accepted into Phase B, move its
-row out of this list and into the appropriate doc + track.
+Each closed milestone flips the matching `> **Status:**` banners in
+`docs/` from **Partial** to **Implemented** and removes the
+matching row from the carry-overs list in `Implement-Progress.md`.
+
+When all six close, the dashboard redesign track
+([`plans/dashboard-redesign/`](./dashboard-redesign/)) becomes the
+active focus.
 

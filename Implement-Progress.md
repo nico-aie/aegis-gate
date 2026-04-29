@@ -21,51 +21,46 @@
 - **As of:** 2026-04-29
 - **Workspace tests:** 1,964 passing
 - **Clippy:** clean (`cargo clippy --workspace -- -D warnings`)
-- **Latest activity:** doc audit + Status banners on every feature
-  doc (this turn).
+- **Active track:** Phase B — production-readiness
+  ([`plans/phase-b/`](./plans/phase-b/README.md))
+- **Next task:** B1-T1 — Real Redis state backend
+- **Latest activity:** Phase B promoted to active; dashboard
+  redesign queued behind it.
 
 ---
 
 ## Last Completed
 
-**Task:** Doc-by-doc implementation audit + lean Implement-Progress
-rewrite.
+**Task:** Phase B promoted to active track; dashboard redesign
+deferred until Phase B closes.
 
-**Outcome.** Every doc under `docs/` now carries a one-line
-`> **Status:** ...` banner classifying it as Implemented / Partial /
-Designed only / Deferred / Intake template; the master matrix lives
-at [`plans/plan.md` § 1](./plans/plan.md#1-doc-by-doc-implementation-status)
-with module paths so future audits start from evidence. Eleven
-concrete Phase B candidates seeded into [§ 1.9](./plans/plan.md#19-phase-b-candidate-seeds-suggested).
-This file was rewritten to a lean template that won't bloat as
-future tasks land — the protocol is captured at the top so the
-next author can follow it.
+**Outcome.** The eleven Partial / Designed-only gaps the doc audit
+surfaced are now organised into a real track —
+[`plans/phase-b/README.md`](./plans/phase-b/README.md) — with six
+milestones (B1..B6). Execution priority is now:
 
-**Headline gaps surfaced (Phase B candidates):**
-1. Real Redis state backend (currently `RedisBackendStub`).
-2. Cross-node leader lease + ACME/GitOps/witness gating.
-3. Service-discovery adapters (Consul / etcd / k8s).
-4. GeoIP filter (no MaxMind reader anywhere).
-5. STIX/TAXII fetch loop into `ThreatIntelStore`.
-6. Concrete `IcapClient` TCP implementation.
-7. Vault / AWS SM / GCP SM / Azure KV / HSM secret resolvers.
-8. `waf snapshot` / `waf restore` CLI + `.tar.zst` writer.
-9. HTTP/3 (no quinn / h3 today).
-10. Concrete git poll-and-pull driver implementing `GitClient`.
-11. Benchmark mode (`X-Aegis-*` headers + dashboard panels) —
-    [`plans/benchmark-mode.md`](./plans/benchmark-mode.md) is the
-    open track.
+1. **Phase B (active)** — close the unfinished features so a
+   multi-node, secret-manager-backed, GeoIP-aware deployment is
+   actually possible.
+2. **Dashboard redesign (queued)** — runs after Phase B closes.
+
+The reasoning: operators can run a usable single-node WAF today,
+but they cannot deploy multi-node, plug in Vault, fetch a STIX
+feed, or block by country. Closing those gaps is higher-impact
+than a dashboard refresh.
 
 **Files changed.**
-- 58 doc files in `docs/` — banner inserted above any pre-existing
-  intro blockquote (zero content lost).
-- `plans/plan.md` — new § 1 implementation matrix and § 1.9 Phase B
-  candidate seeds.
-- `Implement-Progress.md` — full rewrite to the lean template.
+- `plans/phase-b/README.md` — **new**, milestone breakdown for
+  B1..B6 with concrete task tables, doc updates per close, and a
+  Definition of Done covering the multi-node deploy proof points.
+- `plans/plan.md` — § 0.5 track table reordered (Phase B at top,
+  dashboard redesign queued); § 1.9 rewritten as a milestone
+  index pointing at `plans/phase-b/`.
+- `Implement-Progress.md` — Next Task points at B1-T1; tracks
+  + future-phases sections reordered.
 
-**Verification.** `cargo check --workspace` clean; spot-checked
-`rule-engine.md`, `ha-clustering.md`, `per-route-quotas.md` to
-confirm banners added without removing existing topic blockquotes.
+**Verification.** No code changes — pure plan reorganisation.
+Workspace test count unchanged (1,964 passing).
 
 ---
 
@@ -75,116 +70,157 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-04-29 | Doc-by-doc implementation audit + Status banners + lean Implement-Progress rewrite | 58 doc Status banners inserted; matrix in `plans/plan.md` § 1; `Implement-Progress.md` shrank 2,526 → 337 lines. |
 | 2026-04-29 | Tests folder consolidation + new auth/TLS/rate-limit smoke coverage | `tests/README.md` is now a single playbook; new `tests/api/{auth,tls}.sh` + `tests/load/rate-limit.js` close P1/P4/rate-limit gaps. |
 | 2026-04-28 | Documentation restructure — flat docs/ → 8-category taxonomy | `operator/`, `architecture/`, `data-plane/`, `security/{,detectors/}`, `control-plane/{,enterprise/}`, `observability/`, `operations/`, `future/`. 220 internal + 60+ external + 41 in-code refs rewritten. |
 | 2026-04-28 | F-T6 / F-T7 / F-T8 / F-T9 / F-T10 — post-k6 polish bundle | host-vs-laptop perf docs, audit + cold-tier k6 coverage, per-stage latency histogram (`request_duration.rs`), Pebble container, AcmeManager wired into `run()`. 1,964 tests pass. |
 | 2026-04-27 | Dashboard track close-out (D-M1..D-M6) | Enterprise SPA bundled into the binary; +275 tests; clippy clean. Re-design track now opens as the next dashboard phase. |
-| 2026-04-27 | Security-toggle plan close-out (P1..P8) | AuditedMutate pipeline, detector mask + per-tier override, TLS hardening, ACME, risk strikes, LoadMode, verbosity gating. All 8 admin-API surfaces shipped. |
+| 2026-04-27 | Dashboard track close-out (D-M1..D-M6) | Enterprise SPA bundled into the binary; +275 tests; clippy clean. |
 
 ---
 
 ## Next Task
 
-> Pick **one** of the open tracks below or take the highest-ranked
-> Phase B candidate. No track is gated on another today.
+**Task:** **B1-T1 — Real Redis state backend.**
 
-**Open tracks (no clear owner yet):**
+**Plan:** [`plans/phase-b/README.md` § B1](./plans/phase-b/README.md#b1--ha--multi-node-unblocks-everything-else).
 
-1. **Dashboard redesign — M0 foundations.**
-   Plan: [`plans/dashboard-redesign/milestone-0-foundations.md`](./plans/dashboard-redesign/milestone-0-foundations.md).
-   Highest-impact next move because it shapes every subsequent
-   page redesign.
+**Why this first.** Every "HA clustering" claim in
+[`docs/operations/ha-clustering.md`](./docs/operations/ha-clustering.md)
+is fiction until this lands. The `StateBackend` trait + Lua scripts
+are already shipped, so this is contained work. Closing B1-T1
+unblocks B1-T2 (cross-node leader lease) and B1-T3..T6 (rehydrate,
+partition-safe merge), which together turn the cluster claim real.
 
-2. **Benchmark mode — B-T1.**
-   Plan: [`plans/benchmark-mode.md`](./plans/benchmark-mode.md).
-   Spec: [`docs/operator/benchmark-mode.md`](./docs/operator/benchmark-mode.md).
-   B-T1..B-T3 (data plane) are unblocked; B-T4.5/T4.6 (dashboard
-   panels) are gated on the dashboard redesign.
+**Outline.**
 
-3. **Phase B intake.**
-   Open [`docs/future/advanced-features.md`](./docs/future/advanced-features.md)
-   with one of the eleven candidate seeds in
-   [`plans/plan.md` § 1.9](./plans/plan.md#19-phase-b-candidate-seeds-suggested).
-   Score it (Impact / Reach / Cost / Confidence) and either accept
-   or park.
+1. Replace `RedisBackendStub` in
+   `crates/aegis-proxy/src/state/redis.rs` with a `deadpool-redis`
+   backed `RedisBackend` that satisfies `aegis_core::StateBackend`.
+2. Use the existing `SLIDING_WINDOW_LUA` + `TOKEN_BUCKET_LUA`
+   scripts via `EVAL` (cache `EVALSHA` if practical).
+3. Add reconnect + per-call timeout wired from `RedisConfig`.
+4. Unit tests behind a `redis` feature flag using `testcontainers`
+   or a mock; CI runs the live ones against the existing
+   `aegis-redis` service in `deploy/docker-compose.test.yml`.
+5. Do NOT yet wire `aegis-bin` to select Redis from config — that's
+   B1-T2's scope (so this task is purely additive and safe to land
+   incrementally).
 
-**No active task in flight.** When you start one, replace this
-section with the standard "Next Task" block from [`plans/plan.md`
-§ 0.3](./plans/plan.md#03-progress-file-protocol-strict).
+**Acceptance.**
+
+- `cargo test -p aegis-proxy --features redis` green.
+- `cargo clippy --workspace -- -D warnings` clean.
+- A short manual smoke run that points an `InMemoryBackend` and a
+  `RedisBackend` at the same operations and asserts identical
+  behaviour for `incr_window`, `token_bucket`, `auto_block`,
+  `consume_nonce`.
+
+**On close:** push this Last Completed entry into Recent History,
+update Next Task to **B1-T2 — Backend selection in `aegis-bin`**,
+keep the `> **Status:** Partial` banner on
+`docs/operations/ha-clustering.md` (don't flip until B1 closes).
 
 ---
 
 ## Tracks in flight
 
-| Track | Plan | State |
-|---|---|---|
-| Security toggles (P1..P8) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | **closed** — all 8 phases + F-T1..F-T10 follow-up shipped |
-| Dashboard track (D-M1..D-M6) | [`plans/dashboard-enterprise/`](./plans/dashboard-enterprise/) | **closed** — SPA bundled, all 6 milestones shipped |
-| Dashboard redesign (M0..M10) | [`plans/dashboard-redesign/`](./plans/dashboard-redesign/) | **open**, M0 unblocked |
-| Benchmark mode (B-T1..B-T6) | [`plans/benchmark-mode.md`](./plans/benchmark-mode.md) | **open**, B-T1..B-T3 unblocked |
-| Phase B advanced features | [`docs/future/advanced-features.md`](./docs/future/advanced-features.md) | **open intake**, 11 candidate seeds in `plans/plan.md` § 1.9 |
+Order is execution priority — earlier rows run first.
+
+| # | Track | Plan | State |
+|---|---|---|---|
+| 1 | **Phase B — production-readiness (B1..B6)** | [`plans/phase-b/README.md`](./plans/phase-b/README.md) | **active**; B1-T1 unblocked |
+| 2 | Dashboard redesign (M0..M10) | [`plans/dashboard-redesign/`](./plans/dashboard-redesign/) | **queued** — runs after Phase B closes |
+| — | Benchmark mode (B-T1..B-T6) | [`plans/benchmark-mode.md`](./plans/benchmark-mode.md) | folded into Phase B as B5-T2 |
+| — | Security toggles (P1..P8) + post-k6 (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | closed |
+| — | Dashboard track (D-M1..D-M6) | [`plans/dashboard-enterprise/`](./plans/dashboard-enterprise/) | closed |
+| — | Phase B intake | [`docs/future/advanced-features.md`](./docs/future/advanced-features.md) | open — for items NOT covered by `plans/phase-b/` |
 
 ---
 
 ## Carry-overs / known limitations
 
-Durable list of things that work but aren't fully shipped. Update
-when the underlying state changes, not on every task.
+Durable list of things that work but aren't fully shipped. Each row
+is grouped under the Phase B milestone that closes it, so when a
+milestone ships you can see exactly which lines to delete. See
+[`plans/phase-b/README.md`](./plans/phase-b/README.md) for the task
+breakdown.
 
+**B1 — HA & multi-node (highest priority — closes first)**
 - **HA clustering:** `aegis-bin` always wires `InMemoryBackend`.
   `RedisBackendStub` carries config + Lua scripts only — no real
   Redis I/O. No cross-node leader lease, no rehydrate phase.
-  Single-node deployments are unaffected. See
+  Single-node deployments unaffected. See
   [`docs/operations/ha-clustering.md`](./docs/operations/ha-clustering.md).
+- **Per-member pool health:** hardcoded to 0 in
+  `pool_snapshot_provider` until the cluster runtime ships
+  (depends on B1-T1..T2).
+
+**B2 — Operational integrations**
+- **Secrets resolvers:** `env` + `file` work; Vault / AWS SM /
+  GCP SM / Azure KV / HSM return `NotImplemented` stubs.
 - **Service discovery:** `file` watcher + churn safety in
   `aegis-proxy/src/sd/`; Consul / etcd / k8s adapters not
   implemented despite being mentioned in the module doc.
-- **Secrets resolvers:** `env` + `file` work; Vault / AWS SM /
-  GCP SM / Azure KV / HSM return `NotImplemented` stubs.
-- **Threat-intel feeds:** in-memory `ThreatIntelStore` exists,
-  no STIX/TAXII fetcher loop — feeds must be loaded externally.
-- **Content scanning:** archive-bomb guard real, ICAP client is a
-  trait + types stub (no concrete TCP client).
+
+**B3 — Data feeds + filtering**
 - **GitOps:** `GitClient` trait + signature verify + dry-run
   validate present; no concrete git poll-and-pull driver wired.
-- **HTTP/3:** not implemented (no `quinn` / `h3` dependency).
-- **GeoIP:** not implemented anywhere.
+- **Threat-intel feeds:** in-memory `ThreatIntelStore` exists,
+  no STIX/TAXII fetcher loop — feeds must be loaded externally.
+- **GeoIP:** not implemented anywhere (no MaxMind reader).
+- **Content scanning:** archive-bomb guard real, ICAP client is a
+  trait + types stub (no concrete TCP client).
+
+**B4 — Operator tooling**
 - **DR:** `SnapshotMeta` shape exists; `waf snapshot` / `waf
   restore` CLI + `.tar.zst` writer not wired.
+- **Full upstream proxying:** currently stub "OK" for clean
+  requests — needs real TCP connect to pool members.
+- **`/dashboard/sse`:** currently returns one event then closes
+  (M1-era stub). Full streaming body needs AuditBus subscription
+  wiring.
+
+**B5 — Protocols + benchmark**
+- **HTTP/3:** not implemented (no `quinn` / `h3` dependency).
+- **Benchmark mode:** `plans/benchmark-mode.md` exists; no
+  `benchmark/` module wired. `X-Aegis-*` response headers and
+  dashboard panels not present.
+
+**B6 — Production packaging**
+- **Production packaging:** no Dockerfile, no Helm chart, no
+  GitHub Actions CI — `deploy/` ships dev/test compose only.
 - **Zero-downtime ops:** `supervisor.rs` + `hotbin.rs` + drain
   exist; no live binary-handover via fd-passing — restart is via
   supervised re-exec only.
-- **Per-member pool health:** hardcoded to 0 in
-  `pool_snapshot_provider` until the cluster runtime ships.
-- **`/dashboard/sse`:** currently returns one event then closes
-  (M1-era stub). T2.8 wired the pill; full streaming body needs
-  AuditBus subscription wiring.
-- **Production packaging:** no Dockerfile, no Helm chart, no
-  GitHub Actions CI — `deploy/` ships dev/test compose only.
 
-When one of these graduates to "shipped", remove the line and add
-the matching row to the Completed Tasks Log.
+When a milestone closes, delete the rows above it and append a
+"**Bx milestone**" row to the Completed Tasks Log.
 
 ---
 
 ## Future phases
 
-Two big-shape phases queued, each with a planning track in `plans/`.
-Phase B does not start until the dashboard redesign is at least
-mid-flight.
+Order is execution priority — earlier phases run first.
 
-1. **Dashboard redesign** —
+1. **Phase B — production-readiness (active).**
+   [`plans/phase-b/README.md`](./plans/phase-b/README.md).
+   Six milestones (B1..B6) that close every Partial /
+   Designed-only banner currently in `docs/`. Each milestone close
+   removes the matching block of carry-overs above and flips the
+   matching `> **Status:**` banners.
+2. **Dashboard redesign (queued).**
    [`plans/dashboard-redesign/`](./plans/dashboard-redesign/).
    Eleven milestones (M0..M10), Claude Design–driven workflow
-   documented in `workflow.md`. Implementation notes land under
+   documented in `workflow.md`. **Does not start until Phase B
+   closes.** Implementation notes will land under
    [`docs/control-plane/enterprise/`](./docs/control-plane/enterprise/)
    as the milestones close.
-2. **Phase B advanced features** —
+3. **Open intake.**
    [`docs/future/advanced-features.md`](./docs/future/advanced-features.md)
-   is the open intake; eleven concrete candidates seeded in
-   [`plans/plan.md` § 1.9](./plans/plan.md#19-phase-b-candidate-seeds-suggested).
-   Each accepted candidate moves out of `future/` into the
-   appropriate category folder + opens its own track in `plans/`.
+   for proposals NOT covered by Phase B (e.g. multi-tenancy,
+   RBAC/SSO, anything new). Scored against the Impact / Reach /
+   Cost / Confidence rubric.
 
 ---
 
@@ -335,3 +371,4 @@ Append-only. One row per closed task.
 | Tests folder consolidation + new auth/TLS/rate-limit smoke coverage | tests/ | 2026-04-29 |
 | Doc-by-doc implementation audit + Status banners + Phase B candidate seeds | docs/, plans/plan.md | 2026-04-29 |
 | Implement-Progress.md rewritten as lean future-proof template | Implement-Progress.md | 2026-04-29 |
+| Phase B promoted to active track — `plans/phase-b/` formalised, dashboard redesign queued | plans/, Implement-Progress.md | 2026-04-29 |
