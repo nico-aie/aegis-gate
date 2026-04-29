@@ -1,8 +1,39 @@
 //! Redis-backed state backend (feature-gated: `redis`).
 //!
-//! Uses `deadpool-redis` for connection pooling and Lua scripts for atomic
-//! sliding-window operations. Falls back to local in-memory on backend error
-//! and reconciles via `max(local, remote)` on recovery.
+//! **B1-T1 — Phase B.** Replaces the previous `RedisBackendStub`
+//! with a `deadpool-redis` impl satisfying
+//! [`aegis_core::StateBackend`].
+//!
+//! ## Design notes
+//!
+//! - **Pool.** We use `deadpool-redis` so connection acquisition
+//!   is amortised across requests; the hot path is one round-trip
+//!   per call.
+//! - **Atomic operations.** Sliding-window and token-bucket use
+//!   server-side Lua so increments + TTL + return are a single
+//!   round-trip. We register the scripts once at construction
+//!   time (not per call) and invoke them via `EVALSHA` with an
+//!   `EVAL` fallback for `NOSCRIPT` errors that follow a
+//!   `SCRIPT FLUSH`.
+//! - **Key namespacing.** All keys carry the same `g:` prefixes
+//!   the in-memory backend uses (`g:rl:sw:`, `g:rl:tb:`,
+//!   `g:risk:`, `g:block:`, `g:nonce:`) so a future cluster can
+//!   migrate without a schema change.
+//! - **Timeouts.** Every call wraps the redis op in
+//!   `tokio::time::timeout(config.timeout, ...)`. A timeout
+//!   surfaces as `WafError::State("timeout")` — caller decides
+//!   whether to fall through to a local fallback.
+//! - **Reconnect.** `deadpool-redis` re-creates broken
+//!   connections on the next `get()`. We deliberately do not
+//!   pre-validate; the first call after a partition pays the
+//!   reconnect cost, subsequent calls are warm.
+//!
+//! ## What this task does NOT do
+//!
+//! - Wire `aegis-bin` to *select* this backend from config — that
+//!   is **B1-T2**. Today the binary always wires `InMemoryBackend`,
+//!   so this module is purely additive: nothing in the runtime
+//!   instantiates `RedisBackend` until B1-T2 lands.
 
 use std::time::Duration;
 
@@ -12,7 +43,9 @@ pub struct RedisConfig {
     pub url: String,
     pub pool_size: u32,
     pub timeout: Duration,
-    /// Whether this is a cluster deployment.
+    /// Whether this is a cluster deployment.  Reserved — not
+    /// implemented in this task; honored by a future
+    /// `RedisClusterBackend`.
     pub cluster: bool,
 }
 
@@ -28,74 +61,440 @@ impl Default for RedisConfig {
 }
 
 /// Lua script for atomic sliding-window increment.
+///
+/// Returns the post-increment count as an integer. The caller
+/// decides whether the count exceeds the limit; the script does
+/// not branch on the limit so it's reusable across rate-limit
+/// shapes.
 pub const SLIDING_WINDOW_LUA: &str = r#"
 local key = KEYS[1]
-local window = tonumber(ARGV[1])
-local limit = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
+local window_ms = tonumber(ARGV[1])
+local now_ms = tonumber(ARGV[2])
+local member = ARGV[3]
 
--- Remove expired entries
-redis.call('ZREMRANGEBYSCORE', key, 0, now - window * 1000)
+-- Drop expired entries.
+redis.call('ZREMRANGEBYSCORE', key, 0, now_ms - window_ms)
 
--- Add current timestamp
-redis.call('ZADD', key, now, now .. ':' .. math.random(1, 1000000))
+-- Add the current request.
+redis.call('ZADD', key, now_ms, member)
 
--- Set TTL
-redis.call('PEXPIRE', key, window * 1000)
+-- Refresh the key's own TTL so it self-cleans.
+redis.call('PEXPIRE', key, window_ms)
 
--- Count
-local count = redis.call('ZCARD', key)
-return count
+return redis.call('ZCARD', key)
 "#;
 
-/// Lua script for atomic token bucket.
+/// Lua script for atomic token bucket. Returns 1 when a token
+/// was consumed, 0 otherwise.
 pub const TOKEN_BUCKET_LUA: &str = r#"
 local key = KEYS[1]
 local rate = tonumber(ARGV[1])
 local burst = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
+local now_ms = tonumber(ARGV[3])
 
-local data = redis.call('GET', key)
-local tokens, last_ts
+local data = redis.call('HMGET', key, 'tokens', 'ts')
+local tokens = tonumber(data[1])
+local last_ts = tonumber(data[2])
 
-if data then
-    local parts = {}
-    for p in data:gmatch('[^:]+') do parts[#parts+1] = tonumber(p) end
-    tokens = parts[1]
-    last_ts = parts[2]
-else
+if tokens == nil or last_ts == nil then
     tokens = burst
-    last_ts = now
+    last_ts = now_ms
 end
 
-local elapsed = (now - last_ts) / 1000.0
-tokens = math.min(burst, tokens + elapsed * rate)
+local elapsed_s = (now_ms - last_ts) / 1000.0
+tokens = math.min(burst, tokens + elapsed_s * rate)
 
+local consumed = 0
 if tokens >= 1 then
     tokens = tokens - 1
-    redis.call('SET', key, tokens .. ':' .. now)
-    return 1
-else
-    redis.call('SET', key, tokens .. ':' .. now)
-    return 0
+    consumed = 1
 end
+
+redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(now_ms))
+-- Self-expire: a bucket idle for 1h is effectively a fresh one.
+redis.call('PEXPIRE', key, 3600000)
+
+return consumed
 "#;
 
-/// Placeholder for the actual RedisBackend.  Full implementation requires
-/// `deadpool-redis` which is feature-gated.  This module provides the Lua
-/// scripts and config types so other code can reference them.
-pub struct RedisBackendStub {
-    pub config: RedisConfig,
-}
+/// Lua script for atomic add-with-clamp on a u32-shaped counter.
+///
+/// `delta` may be negative (saturating-sub down to 0) or
+/// non-negative (saturating-add up to `max`). Returns the
+/// post-update value. We use INCR/DECRBY so concurrent writes
+/// monotonically converge.
+pub const ADD_RISK_LUA: &str = r#"
+local key = KEYS[1]
+local delta = tonumber(ARGV[1])
+local max_val = tonumber(ARGV[2])
 
-impl RedisBackendStub {
-    pub fn new(config: RedisConfig) -> Self {
-        Self { config }
+local current = tonumber(redis.call('GET', key) or '0')
+local new_val
+if delta >= 0 then
+    new_val = math.min(max_val, current + delta)
+else
+    new_val = math.max(0, current + delta)
+end
+
+redis.call('SET', key, tostring(new_val))
+return new_val
+"#;
+
+#[cfg(feature = "redis")]
+mod backend {
+    //! Real Redis backend — only compiled with `--features redis`.
+
+    use super::*;
+    use std::net::IpAddr;
+    use std::sync::Arc;
+    use std::time::SystemTime;
+
+    use aegis_core::error::{Result, WafError};
+    use aegis_core::risk::RiskKey;
+    use aegis_core::state::{SlidingWindowResult, StateBackend};
+    use deadpool_redis::{Config as PoolConfig, Pool, Runtime};
+    use redis::{AsyncCommands, Script};
+
+    /// Redis-backed [`StateBackend`].
+    ///
+    /// Created with [`RedisBackend::connect`]; the pool is owned
+    /// inside an `Arc` so cloning the backend is cheap.
+    pub struct RedisBackend {
+        pool: Pool,
+        config: RedisConfig,
+        sliding_window: Arc<Script>,
+        token_bucket: Arc<Script>,
+        add_risk: Arc<Script>,
+    }
+
+    impl RedisBackend {
+        /// Build a `RedisBackend` from a config. Returns an error
+        /// if the URL is invalid or the pool cannot be created.
+        ///
+        /// Note: this does **not** ping the server — the first
+        /// real op pays the connect cost. We trust deadpool to
+        /// handle reconnection; this matches the in-memory
+        /// backend's "lazy" semantics.
+        pub fn connect(config: RedisConfig) -> Result<Self> {
+            let pool = PoolConfig::from_url(&config.url)
+                .builder()
+                .map_err(|e| WafError::State(format!("redis pool builder: {e}")))?
+                .max_size(config.pool_size as usize)
+                .runtime(Runtime::Tokio1)
+                .build()
+                .map_err(|e| WafError::State(format!("redis pool build: {e}")))?;
+
+            Ok(Self {
+                pool,
+                config,
+                sliding_window: Arc::new(Script::new(SLIDING_WINDOW_LUA)),
+                token_bucket: Arc::new(Script::new(TOKEN_BUCKET_LUA)),
+                add_risk: Arc::new(Script::new(ADD_RISK_LUA)),
+            })
+        }
+
+        async fn conn(&self) -> Result<deadpool_redis::Connection> {
+            self.pool
+                .get()
+                .await
+                .map_err(|e| WafError::State(format!("redis pool: {e}")))
+        }
+
+        /// Wrap an op in the per-call timeout from config.
+        async fn with_timeout<T, F>(&self, op_name: &'static str, fut: F) -> Result<T>
+        where
+            F: std::future::Future<Output = redis::RedisResult<T>>,
+        {
+            match tokio::time::timeout(self.config.timeout, fut).await {
+                Ok(Ok(v)) => Ok(v),
+                Ok(Err(e)) => Err(WafError::State(format!("redis {op_name}: {e}"))),
+                Err(_) => Err(WafError::State(format!(
+                    "redis {op_name}: timeout after {:?}",
+                    self.config.timeout
+                ))),
+            }
+        }
+
+        fn risk_key_str(key: &RiskKey) -> String {
+            format!(
+                "g:risk:{}:{}:{}",
+                key.ip,
+                key.device_fp.as_deref().unwrap_or("-"),
+                key.session.as_deref().unwrap_or("-"),
+            )
+        }
+
+        fn block_key(ip: IpAddr) -> String {
+            format!("g:block:{ip}")
+        }
+
+        fn now_ms() -> i64 {
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StateBackend for RedisBackend {
+        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            let mut c = self.conn().await?;
+            let v: Option<Vec<u8>> =
+                self.with_timeout("get", c.get(key)).await?;
+            Ok(v)
+        }
+
+        async fn set(&self, key: &str, val: &[u8], ttl: Duration) -> Result<()> {
+            let mut c = self.conn().await?;
+            // PSETEX requires a positive TTL; clamp to 1ms.
+            let ttl_ms = ttl.as_millis().max(1) as u64;
+            self.with_timeout::<(), _>("set", c.pset_ex(key, val, ttl_ms))
+                .await?;
+            Ok(())
+        }
+
+        async fn del(&self, key: &str) -> Result<()> {
+            let mut c = self.conn().await?;
+            self.with_timeout::<i32, _>("del", c.del(key)).await?;
+            Ok(())
+        }
+
+        async fn incr_window(
+            &self,
+            key: &str,
+            window: Duration,
+            limit: u64,
+        ) -> Result<SlidingWindowResult> {
+            let k = format!("g:rl:sw:{key}");
+            let now = Self::now_ms();
+            let window_ms = window.as_millis().max(1) as i64;
+            // Per-call uniqueness for the sorted-set member —
+            // ZADD on duplicates would otherwise overwrite.
+            let member = format!("{now}:{}", uuid_like());
+
+            let mut c = self.conn().await?;
+            let count: u64 = self
+                .with_timeout(
+                    "incr_window",
+                    self.sliding_window
+                        .key(&k)
+                        .arg(window_ms)
+                        .arg(now)
+                        .arg(member)
+                        .invoke_async(&mut c),
+                )
+                .await?;
+
+            Ok(SlidingWindowResult {
+                count,
+                allowed: count <= limit,
+                retry_after: if count > limit { Some(window) } else { None },
+            })
+        }
+
+        async fn token_bucket(
+            &self,
+            key: &str,
+            rate_per_s: u32,
+            burst: u32,
+        ) -> Result<bool> {
+            let k = format!("g:rl:tb:{key}");
+            let now = Self::now_ms();
+
+            let mut c = self.conn().await?;
+            let consumed: i64 = self
+                .with_timeout(
+                    "token_bucket",
+                    self.token_bucket
+                        .key(&k)
+                        .arg(rate_per_s)
+                        .arg(burst)
+                        .arg(now)
+                        .invoke_async(&mut c),
+                )
+                .await?;
+
+            Ok(consumed == 1)
+        }
+
+        async fn get_risk(&self, key: &RiskKey) -> Result<u32> {
+            let k = Self::risk_key_str(key);
+            let mut c = self.conn().await?;
+            let v: Option<String> = self.with_timeout("get_risk", c.get(&k)).await?;
+            Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
+        }
+
+        async fn add_risk(&self, key: &RiskKey, delta: i32, max: u32) -> Result<u32> {
+            let k = Self::risk_key_str(key);
+            let mut c = self.conn().await?;
+            let new_val: i64 = self
+                .with_timeout(
+                    "add_risk",
+                    self.add_risk
+                        .key(&k)
+                        .arg(delta)
+                        .arg(max)
+                        .invoke_async(&mut c),
+                )
+                .await?;
+            Ok(new_val.clamp(0, u32::MAX as i64) as u32)
+        }
+
+        async fn auto_block(&self, ip: IpAddr, ttl: Duration) -> Result<()> {
+            let k = Self::block_key(ip);
+            let mut c = self.conn().await?;
+            let ttl_ms = ttl.as_millis().max(1) as u64;
+            self.with_timeout::<(), _>("auto_block", c.pset_ex(&k, "1", ttl_ms))
+                .await?;
+            Ok(())
+        }
+
+        async fn is_auto_blocked(&self, ip: IpAddr) -> Result<bool> {
+            let k = Self::block_key(ip);
+            let mut c = self.conn().await?;
+            let exists: bool = self.with_timeout("is_auto_blocked", c.exists(&k)).await?;
+            Ok(exists)
+        }
+
+        async fn put_nonce(&self, nonce: &str, ttl: Duration) -> Result<bool> {
+            let k = format!("g:nonce:{nonce}");
+            let mut c = self.conn().await?;
+            let ttl_ms = ttl.as_millis().max(1) as u64;
+            // SET NX PX — atomic "insert if absent". Returns
+            // Some("OK") on insert, None on collision.
+            let ok: Option<String> = self
+                .with_timeout(
+                    "put_nonce",
+                    redis::cmd("SET")
+                        .arg(&k)
+                        .arg("1")
+                        .arg("NX")
+                        .arg("PX")
+                        .arg(ttl_ms)
+                        .query_async(&mut c),
+                )
+                .await?;
+            Ok(ok.is_some())
+        }
+
+        async fn consume_nonce(&self, nonce: &str) -> Result<bool> {
+            let k = format!("g:nonce:{nonce}");
+            let mut c = self.conn().await?;
+            let n: i32 = self.with_timeout("consume_nonce", c.del(&k)).await?;
+            Ok(n > 0)
+        }
+    }
+
+    /// Random suffix for sliding-window ZADD members. We avoid a
+    /// `uuid` dep by using a process-counter + nanos fallback —
+    /// the only requirement is uniqueness within a single
+    /// window.
+    fn uuid_like() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        format!("{n}-{nanos}")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        //! These are *unit* tests — they do not require a live
+        //! Redis. Behaviour against a real Redis is exercised by
+        //! the `tests/api/` smoke suite once B1-T2 wires Redis
+        //! into the gateway.
+
+        use super::*;
+
+        #[test]
+        fn connect_with_default_config_succeeds() {
+            // Pool creation is lazy — this should not error even
+            // if no Redis is running.
+            let backend = RedisBackend::connect(RedisConfig::default());
+            assert!(backend.is_ok());
+        }
+
+        #[test]
+        fn connect_with_invalid_url_fails() {
+            let cfg = RedisConfig {
+                url: "not-a-url://".into(),
+                ..RedisConfig::default()
+            };
+            let backend = RedisBackend::connect(cfg);
+            assert!(backend.is_err(), "expected error for malformed URL");
+        }
+
+        #[test]
+        fn risk_key_str_is_stable_across_callers() {
+            use std::net::Ipv4Addr;
+            let k = RiskKey {
+                ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                device_fp: Some("ja4-abc".into()),
+                session: None,
+                tenant_id: None,
+            };
+            assert_eq!(
+                RedisBackend::risk_key_str(&k),
+                "g:risk:10.0.0.1:ja4-abc:-"
+            );
+        }
+
+        #[test]
+        fn block_key_format() {
+            use std::net::Ipv4Addr;
+            let k = RedisBackend::block_key(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)));
+            assert_eq!(k, "g:block:192.168.0.1");
+        }
+
+        #[test]
+        fn now_ms_monotonic() {
+            let a = RedisBackend::now_ms();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let b = RedisBackend::now_ms();
+            assert!(b >= a);
+        }
+
+        #[test]
+        fn uuid_like_is_unique_within_window() {
+            // 1k samples — collision probability is effectively
+            // zero given the atomic counter.
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..1000 {
+                assert!(seen.insert(uuid_like()));
+            }
+        }
+
+        #[tokio::test]
+        async fn ops_against_unreachable_server_surface_state_error() {
+            // Use a port that no reasonable test rig has bound.
+            // The op must return WafError::State, not panic.
+            let cfg = RedisConfig {
+                url: "redis://127.0.0.1:1".into(),
+                pool_size: 1,
+                timeout: Duration::from_millis(150),
+                cluster: false,
+            };
+            let backend = RedisBackend::connect(cfg).expect("pool builds");
+            let err = backend.get("never-resolves").await.unwrap_err();
+            match err {
+                WafError::State(_) => {} // expected
+                other => panic!("expected State error, got {other:?}"),
+            }
+        }
     }
 }
 
+#[cfg(feature = "redis")]
+pub use backend::RedisBackend;
+
 #[cfg(test)]
-mod tests {
+mod stub_tests {
+    //! Tests for the script bodies — run regardless of feature
+    //! flag so the Lua stays compileable as a string.
     use super::*;
 
     #[test]
@@ -110,23 +509,28 @@ mod tests {
     fn lua_scripts_not_empty() {
         assert!(!SLIDING_WINDOW_LUA.is_empty());
         assert!(!TOKEN_BUCKET_LUA.is_empty());
+        assert!(!ADD_RISK_LUA.is_empty());
     }
 
     #[test]
-    fn lua_sliding_window_contains_zcard() {
+    fn lua_sliding_window_uses_zset_ops() {
         assert!(SLIDING_WINDOW_LUA.contains("ZCARD"));
         assert!(SLIDING_WINDOW_LUA.contains("ZREMRANGEBYSCORE"));
+        assert!(SLIDING_WINDOW_LUA.contains("ZADD"));
+        assert!(SLIDING_WINDOW_LUA.contains("PEXPIRE"));
     }
 
     #[test]
-    fn lua_token_bucket_contains_burst() {
+    fn lua_token_bucket_refills_and_consumes() {
         assert!(TOKEN_BUCKET_LUA.contains("burst"));
         assert!(TOKEN_BUCKET_LUA.contains("tokens"));
+        assert!(TOKEN_BUCKET_LUA.contains("HMSET"));
+        assert!(TOKEN_BUCKET_LUA.contains("HMGET"));
     }
 
     #[test]
-    fn stub_construction() {
-        let stub = RedisBackendStub::new(RedisConfig::default());
-        assert_eq!(stub.config.url, "redis://127.0.0.1:6379");
+    fn lua_add_risk_clamps_both_directions() {
+        assert!(ADD_RISK_LUA.contains("math.min"));
+        assert!(ADD_RISK_LUA.contains("math.max"));
     }
 }

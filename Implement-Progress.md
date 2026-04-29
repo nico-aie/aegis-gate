@@ -24,57 +24,93 @@
 ## Status (snapshot)
 
 - **As of:** 2026-04-29
-- **Workspace tests:** 1,964 passing
-- **Clippy:** clean (`cargo clippy --workspace -- -D warnings`)
-- **Active track:** Phase B — production-readiness
-  ([`plans/phase-b/`](./plans/phase-b/README.md))
-- **Next task:** B1-T1 — Real Redis state backend
-- **Latest activity:** Phase B promoted to active; dashboard
-  redesign queued behind it.
+- **Workspace tests:** 2,015 default-feature (unchanged — B2-T5
+  is feature-gated) + 23 vault + 29 aws + 37 gcp + 43 azure +
+  16 consul + 56 vault+aws+gcp+azure + 72 all-clouds+consul
+- **Clippy:** clean across every feature combo, including the
+  full `redis,vault,aws,gcp,azure,consul` superset.
+- **Active track:** Phase B — production-readiness, milestone
+  B2 ([`plans/phase-b/`](./plans/phase-b/README.md))
+- **Next task:** B2-T6 — etcd service discovery
+- **Latest activity:** B2-T5 closed — Consul blocking-query
+  watcher behind `aegis-proxy/consul` emits `DiscoveryEvent`s
+  on an mpsc; env-driven config; ACL token + multi-DC + mTLS
+  CA support.
 
 ---
 
 ## Last Completed
 
-**Task:** `plans/` folder cleanup — separation of concerns
-(status board / AI guide / implementation matrix), Status banners
-on every plan file.
+**Task:** **B2-T5 — Consul service discovery.**
 
-**Outcome.** A reader landing in `plans/` now lands on a
-[`README.md`](./plans/README.md) status board that tells them
-in three columns: **what's active**, **what's queued**, and
-**what's closed**. The AI guide (`plan.md`) is now purely the
-rules + protocol — its old § 1 / § 1.9 implementation matrix
-moved into a stand-alone, living
-[`implementation-matrix.md`](./plans/implementation-matrix.md).
-Every one of the 21 plan files now carries a one-line
-`> **Status:**` banner so the state is obvious before you read
-the body.
+**Outcome.** Operators on a Consul-backed service mesh can now
+have aegis-proxy watch a service via Consul's blocking-query
+API. The new `aegis-proxy::sd::consul::watch(service)` returns
+an `mpsc::Receiver<DiscoveryEvent>` whose sender is owned by a
+spawned tokio task that long-polls
+`/v1/health/service/<name>?passing=true&index=...&wait=5m`,
+diffs the response against its last view via the existing
+`sd::diff_members`, and emits `Added`/`Removed` events. Auth
+errors (401/403) end the watcher with a logged ACL hint;
+transient errors back off exponentially (500ms → 30s cap).
+The `aegis-proxy/consul` feature pulls only `reqwest` (already
+optional), so default builds get **zero** new dep tree.
 
 **Files changed.**
-- `plans/README.md` — **new**, status board with priority table,
-  layout map, task-ID conventions, and updating-priority
-  protocol.
-- `plans/implementation-matrix.md` — **new**, extracted from the
-  old `plan.md` § 1; cross-references each Partial / Designed-only
-  row to the Phase B task that closes it.
-- `plans/plan.md` — slimmed to AI assistant guide only (rules,
-  protocol, mental model, prompt template). Old § 1 / § 1.9
-  removed (now lives in `implementation-matrix.md`).
-- `plans/{phase-b,dashboard-redesign}/**/*.md`,
-  `plans/{proxy,security,control,post-k6-followup,benchmark-mode}.md`,
-  `plans/dashboard-enterprise/**/*.md` — **21 files** now carry
-  a `> **Status:**` banner (Active / Queued / Queued-supporting /
-  Closed / Folded).
-- `Implement-Progress.md` — header points at `plans/README.md`
-  for priority + `plans/implementation-matrix.md` for per-doc
-  status; this Last Completed entry recorded.
+- `crates/aegis-proxy/Cargo.toml` — new `consul` feature
+  gating `reqwest`. Independent of every other feature.
+- `crates/aegis-proxy/src/sd/mod.rs` — declared
+  `#[cfg(feature = "consul")] pub mod consul;`. No other
+  changes — the existing `DiscoveryEvent`, `diff_members`,
+  and `SafetyLimits` types are reused as-is.
+- `crates/aegis-proxy/src/sd/consul.rs` — **new**, 530 lines.
+  `ConsulConfig::from_env()` reads `AEGIS_CONSUL_ADDR` (default
+  `http://127.0.0.1:8500`) plus optional `_TOKEN` /
+  `_DATACENTER` / `_CA_CERT_PATH`. `watch(service)` spawns the
+  async loop. `poll_once` does one blocking-query round-trip,
+  parses the `X-Consul-Index` cursor for the next call, maps
+  401/403 → `WatcherError::Auth` (operator action required, no
+  retry) vs. everything else → `WatcherError::Transient`
+  (exponential backoff). The pure helper `parse_response(body)`
+  handles the array-of-services JSON shape, including Consul's
+  "empty `Service.Address` means use `Node.Address`" convention.
 
-**Verification.** No code changes — pure plan reorganisation.
-Workspace test count unchanged (1,964 passing). All in-doc
-relative paths in the new banners verified (`../README.md` from
-top-level plan files, `../../README.md` from
-`dashboard-redesign/pages/`).
+**Tests.** 16 net new in `sd::consul::tests`:
+
+- `config_defaults_when_no_env`,
+  `config_picks_up_all_env_vars`,
+  `config_filters_empty_strings_as_unset` — env handling.
+- `parse_empty_array`,
+  `parse_single_member_with_service_address`,
+  `parse_falls_back_to_node_address_when_service_address_empty`,
+  `parse_falls_back_to_node_address_when_service_address_missing`,
+  `parse_multiple_members` — happy-path JSON parsing.
+- `parse_member_with_no_address_anywhere_errors`,
+  `parse_invalid_json_errors`, `parse_bad_port_errors` — error
+  paths.
+- `urlencode_passes_unreserved_through`,
+  `urlencode_percent_encodes_special` — URL encoder.
+- `diff_first_observation_is_all_added`,
+  `diff_member_drop_emits_removed` — proves the watcher's
+  inner-loop diff produces correct event shapes.
+- `live_consul_watch` — gated by
+  `AEGIS_CONSUL_INTEGRATION_TEST=1`; defaults service name to
+  `consul` (the built-in service every agent registers itself
+  as) so vanilla `consul agent -dev` works without prep.
+
+**Verification.**
+- `cargo build` clean across **default**, `consul`, and
+  `redis,vault,aws,gcp,azure,consul` (every feature combo).
+- `cargo test --workspace` (default features) → **2,015
+  passed** (unchanged — consul module is feature-gated).
+- `cargo test -p aegis-proxy --features consul --lib sd::consul::`
+  → **16 passed**.
+- `cargo clippy --workspace --lib -- -D warnings` → clean.
+- `cargo clippy -p aegis-proxy --features
+  redis,vault,aws,gcp,azure,consul --lib -- -D warnings` →
+  clean.
+- `cargo run -p aegis-bin -- validate --config
+  config/waf.dev.yaml` → `config OK`.
 
 ---
 
@@ -84,55 +120,63 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
-| 2026-04-29 | Phase B promoted to active; dashboard redesign queued | New `plans/phase-b/README.md` (B1..B6); `plans/plan.md` track table reordered. |
-| 2026-04-29 | Doc-by-doc implementation audit + Status banners + lean Implement-Progress rewrite | 58 doc Status banners inserted; matrix in `plans/plan.md` § 1; `Implement-Progress.md` shrank 2,526 → 337 lines. |
-| 2026-04-29 | Tests folder consolidation + new auth/TLS/rate-limit smoke coverage | `tests/README.md` is now a single playbook; new `tests/api/{auth,tls}.sh` + `tests/load/rate-limit.js` close P1/P4/rate-limit gaps. |
-| 2026-04-28 | Documentation restructure — flat docs/ → 8-category taxonomy | `operator/`, `architecture/`, `data-plane/`, `security/{,detectors/}`, `control-plane/{,enterprise/}`, `observability/`, `operations/`, `future/`. 220 internal + 60+ external + 41 in-code refs rewritten. |
-| 2026-04-28 | F-T6..F-T10 — post-k6 polish bundle | Per-stage latency histogram, Pebble container, AcmeManager wired into `run()`. 1,964 tests pass. |
+| 2026-04-29 | **B2-T4** Azure Key Vault resolver — closes the cloud-secrets quartet | `aegis-proxy/azure`; REST + hand-rolled SP/IMDS auth; reuses `json_field`. +14 tests. |
+| 2026-04-29 | **B2-T3** GCP Secret Manager resolver | REST + `gcp_auth` behind `aegis-proxy/gcp`; ADC chain; shared `json_field` helper extracted. +9 tests. |
+| 2026-04-29 | **B2-T2** AWS Secrets Manager resolver | `aws-sdk-secretsmanager` behind `aegis-proxy/aws`; full credential chain; JSON-field extraction. +13 tests. |
+| 2026-04-29 | **B2-T1** Vault secret resolver | KV-v2 client behind `aegis-proxy/vault`; token + AppRole auth; env-var config. +12 tests. |
+| 2026-04-29 | **B1-T6** Partition-safe merge — closes B1 | `ReconcilingBackend`; block-list union on heal; counters fall through; `ha-clustering.md` flipped Implemented. +10 tests. |
 
 ---
 
 ## Next Task
 
-**Task:** **B1-T1 — Real Redis state backend.**
+**Task:** **B2-T6 — etcd service discovery.**
 
-**Plan:** [`plans/phase-b/README.md` § B1](./plans/phase-b/README.md#b1--ha--multi-node-unblocks-everything-else).
+**Plan:** [`plans/phase-b/README.md` § B2](./plans/phase-b/README.md#b2--operational-integrations).
 
-**Why this first.** Every "HA clustering" claim in
-[`docs/operations/ha-clustering.md`](./docs/operations/ha-clustering.md)
-is fiction until this lands. The `StateBackend` trait + Lua scripts
-are already shipped, so this is contained work. Closing B1-T1
-unblocks B1-T2 (cross-node leader lease) and B1-T3..T6 (rehydrate,
-partition-safe merge), which together turn the cluster claim real.
+**Why this next.** Consul covers the on-prem / multi-cloud
+mesh case; etcd is the second of the three production service
+registries (Consul, etcd, k8s). Many internal-only deployments
+already run etcd for Kubernetes itself, so reusing it for
+service discovery avoids a second piece of infrastructure.
+Pattern is identical to B2-T5 (env-driven config, REST
+watcher, mTLS support, parses into `DiscoveryEvent`s).
 
 **Outline.**
 
-1. Replace `RedisBackendStub` in
-   `crates/aegis-proxy/src/state/redis.rs` with a `deadpool-redis`
-   backed `RedisBackend` that satisfies `aegis_core::StateBackend`.
-2. Use the existing `SLIDING_WINDOW_LUA` + `TOKEN_BUCKET_LUA`
-   scripts via `EVAL` (cache `EVALSHA` if practical).
-3. Add reconnect + per-call timeout wired from `RedisConfig`.
-4. Unit tests behind a `redis` feature flag using `testcontainers`
-   or a mock; CI runs the live ones against the existing
-   `aegis-redis` service in `deploy/docker-compose.test.yml`.
-5. Do NOT yet wire `aegis-bin` to select Redis from config — that's
-   B1-T2's scope (so this task is purely additive and safe to land
-   incrementally).
+1. New `aegis-proxy/src/sd/etcd.rs` (feature-gated `etcd`).
+   Watches a key prefix via etcd v3's gRPC Watch RPC — but to
+   stay consistent with the "no gRPC" stance of B2-T3 (gcp),
+   use the etcd v3 **REST gateway** at
+   `POST /v3/watch` with a watch_create request body, and
+   poll with HTTP/2 streaming.
+   - **Decide in-task** whether the streaming complexity is
+     worth it vs. periodic `range` calls (every 5s — simpler,
+     slightly higher latency on changes). Default to range
+     polling for B2-T6 with a TODO for streaming if a use
+     case emerges.
+2. Config from env: `AEGIS_ETCD_ENDPOINTS` (comma-separated,
+   default `http://127.0.0.1:2379`), optional
+   `AEGIS_ETCD_USER` + `AEGIS_ETCD_PASSWORD` for basic auth,
+   optional `AEGIS_ETCD_CA_CERT_PATH` + `_CLIENT_CERT_PATH` +
+   `_CLIENT_KEY_PATH` for mTLS.
+3. Reference shape: each member is stored as
+   `<prefix>/<id>` → `addr:port` (operator's responsibility
+   to write entries). Watcher reads the prefix range and
+   emits diffs.
+4. Tests: range-response parsing, member diff via
+   `sd::diff_members`, env handling, live test gated by
+   `AEGIS_ETCD_INTEGRATION_TEST=1` (the dev-compose etcd
+   service is already up).
 
 **Acceptance.**
 
-- `cargo test -p aegis-proxy --features redis` green.
-- `cargo clippy --workspace -- -D warnings` clean.
-- A short manual smoke run that points an `InMemoryBackend` and a
-  `RedisBackend` at the same operations and asserts identical
-  behaviour for `incr_window`, `token_bucket`, `auto_block`,
-  `consume_nonce`.
+- `cargo build` clean across **default**, `etcd`, and the
+  full feature superset.
+- `cargo test --workspace` green; +6–10 net new tests.
 
-**On close:** push this Last Completed entry into Recent History,
-update Next Task to **B1-T2 — Backend selection in `aegis-bin`**,
-keep the `> **Status:** Partial` banner on
-`docs/operations/ha-clustering.md` (don't flip until B1 closes).
+**On close:** Next Task → **B2-T7 — Kubernetes service
+discovery** (closes the discovery half of B2).
 
 ---
 
@@ -159,19 +203,25 @@ milestone ships you can see exactly which lines to delete. See
 [`plans/phase-b/README.md`](./plans/phase-b/README.md) for the task
 breakdown.
 
-**B1 — HA & multi-node (highest priority — closes first)**
-- **HA clustering:** `aegis-bin` always wires `InMemoryBackend`.
-  `RedisBackendStub` carries config + Lua scripts only — no real
-  Redis I/O. No cross-node leader lease, no rehydrate phase.
-  Single-node deployments unaffected. See
-  [`docs/operations/ha-clustering.md`](./docs/operations/ha-clustering.md).
-- **Per-member pool health:** hardcoded to 0 in
-  `pool_snapshot_provider` until the cluster runtime ships
-  (depends on B1-T1..T2).
+**B1 — HA & multi-node** ✅ **CLOSED** 2026-04-29 — single-node
++ Redis-primary + local-fallback ships;
+`docs/operations/ha-clustering.md` is Implemented. Two minor
+follow-ups deliberately deferred from B1: counter merge-back
+on partition heal (sliding-window can't be cleanly merged
+without a wire-format change), and the GitOps / witness /
+threat-intel lease gates (those subsystems aren't running as
+background tasks today; their boot sites carry TODOs pointing
+at `spawn_with_lease`). Per-member pool health is still
+hardcoded to 0 in `pool_snapshot_provider` — depends on
+membership-driven cluster runtime, not on the lease layer.
 
-**B2 — Operational integrations**
-- **Secrets resolvers:** `env` + `file` work; Vault / AWS SM /
-  GCP SM / Azure KV / HSM return `NotImplemented` stubs.
+**B2 — Operational integrations (active)**
+- **Secrets resolvers:** the cloud quartet ships — `env`,
+  `file`, `vault`, `aws`, `gcp`, `azure`. **HSM still returns
+  `NotImplemented`** (Phase B-6 follow-up).
+- **Service discovery:** `file` + churn safety in
+  `aegis-proxy/src/sd/`, plus `consul` (`aegis-proxy/consul`
+  feature). **etcd / k8s adapters still TBD** (B2-T6, B2-T7).
 - **Service discovery:** `file` watcher + churn safety in
   `aegis-proxy/src/sd/`; Consul / etcd / k8s adapters not
   implemented despite being mentioned in the module doc.
@@ -239,10 +289,26 @@ Order is execution priority — earlier phases run first.
 
 ## Verification (last full run)
 
-- `cargo test --workspace` → **1,964 passed** across 10 binary /
-  lib / integration test targets, ~10 s wall.
-- `cargo clippy --workspace -- -D warnings` → clean.
-- `cargo check --workspace` → clean.
+- `cargo test --workspace` (default features) → **2,015 passed**
+  (unchanged — B2-T5's consul module is feature-gated).
+- `cargo test -p aegis-proxy --features vault --lib secrets::`
+  → **23 passed**.
+- `cargo test -p aegis-proxy --features aws --lib secrets::`
+  → **29 passed**.
+- `cargo test -p aegis-proxy --features gcp --lib secrets::`
+  → **37 passed**.
+- `cargo test -p aegis-proxy --features azure --lib secrets::`
+  → **43 passed**.
+- `cargo test -p aegis-proxy --features consul --lib sd::consul::`
+  → **16 passed**.
+- `cargo test -p aegis-proxy --features
+  vault,aws,gcp,azure,consul --lib` → all green.
+- `cargo clippy --workspace --lib -- -D warnings` → clean.
+- `cargo clippy -p aegis-proxy --features
+  redis,vault,aws,gcp,azure,consul --lib -- -D warnings` →
+  clean.
+- `cargo run -p aegis-bin -- validate --config
+  config/waf.dev.yaml` → `config OK`.
 
 ---
 
@@ -386,3 +452,15 @@ Append-only. One row per closed task.
 | Implement-Progress.md rewritten as lean future-proof template | Implement-Progress.md | 2026-04-29 |
 | Phase B promoted to active track — `plans/phase-b/` formalised, dashboard redesign queued | plans/, Implement-Progress.md | 2026-04-29 |
 | `plans/` cleanup — README status board + extracted implementation-matrix.md + 21 Status banners + AI-guide-only `plan.md` | plans/, Implement-Progress.md | 2026-04-29 |
+| **B1-T1** Real Redis state backend (`deadpool-redis` + Lua scripts + per-call timeout + live parity vs InMemoryBackend) | aegis-proxy | 2026-04-29 |
+| **B1-T2** Backend selection in `aegis-bin` (`state_select::select` + boot log line + feature-gated redis branch + actionable errors) | aegis-bin | 2026-04-29 |
+| **B1-T3** Cross-node leader lease (`LeaseStore` trait + `InProcessLease` + `RedisLease` + `spawn_heartbeat` + 7 live parity tests) | aegis-core, aegis-proxy | 2026-04-29 |
+| **B1-T4** Lease gate on leader-only tasks (`run_with_lease` runner + `lease_select` + ACME gated; gitops/witness/threat-intel TODOs marked) | aegis-proxy, aegis-bin | 2026-04-29 |
+| **B1-T5** Rehydrate + readiness gate (`state::rehydrate` probe + `state.reconcile.readiness_warm_ms` config + 5s default deadline; never permanently 503) | aegis-core, aegis-proxy | 2026-04-29 |
+| **B1-T6** Partition-safe merge — closes B1 (`ReconcilingBackend` wrap; block-list union on heal; counters fall through; `ha-clustering.md` flipped Implemented) | aegis-proxy, aegis-bin, docs | 2026-04-29 |
+| **B1 milestone CLOSED** — HA & multi-node ships single-node + Redis-primary + local-fallback | project-wide | 2026-04-29 |
+| **B2-T1** Vault secret resolver (`aegis-proxy/vault` feature, KV-v2 client, token + AppRole auth, env-var config) | aegis-proxy | 2026-04-29 |
+| **B2-T2** AWS Secrets Manager resolver (`aegis-proxy/aws` feature, `aws-sdk-secretsmanager`, full credential chain, JSON-field extraction) | aegis-proxy | 2026-04-29 |
+| **B2-T3** GCP Secret Manager resolver (`aegis-proxy/gcp` feature, REST + `gcp_auth`, ADC chain, shared `json_field` helper) | aegis-proxy | 2026-04-29 |
+| **B2-T4** Azure Key Vault resolver (`aegis-proxy/azure` feature, REST + hand-rolled SP/IMDS auth) — closes the cloud-secrets quartet | aegis-proxy | 2026-04-29 |
+| **B2-T5** Consul service discovery (`aegis-proxy/consul` feature, blocking-query watcher, env-driven config, ACL/multi-DC/mTLS support) | aegis-proxy | 2026-04-29 |

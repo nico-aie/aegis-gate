@@ -4,6 +4,38 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# `redis` enables the deadpool-redis-backed `RedisBackend`. Off by
+# default so single-node builds don't pull the Redis dep tree.
+default = []
+redis = ["dep:redis", "dep:deadpool-redis"]
+# `vault` enables resolution of `${secret:vault:<path>#<field>}`
+# config references against a HashiCorp Vault server. Off by
+# default so single-node + non-Vault deployments stay slim.
+vault = ["dep:reqwest"]
+# `aws` enables resolution of
+# `${secret:aws:<arn>#<field>}` against AWS Secrets Manager.
+# Pulls the official AWS SDK (credential chain: env, profile,
+# IMDSv2, web-identity / IRSA on EKS).
+aws = ["dep:aws-config", "dep:aws-sdk-secretsmanager"]
+# `gcp` enables resolution of
+# `${secret:gcp:projects/<proj>/secrets/<name>/versions/<ver>#<field>}`
+# against GCP Secret Manager. REST-based (`reqwest` reused from
+# `vault`). Auth via Application Default Credentials.
+gcp = ["dep:reqwest", "dep:gcp_auth", "dep:base64"]
+# `azure` enables resolution of
+# `${secret:azure:<vault-name>/<secret-name>[/<version>]#<field>}`
+# against Azure Key Vault. REST-based (`reqwest` reused). Auth
+# via service-principal env vars or Managed Identity (IMDS) —
+# hand-rolled rather than pulling the preview `azure_identity`
+# crate.
+azure = ["dep:reqwest"]
+# `consul` enables a Consul-backed service-discovery watcher
+# (`sd::consul::watch`). REST + blocking queries via reqwest;
+# env-driven config (`AEGIS_CONSUL_ADDR`, optional `_TOKEN` /
+# `_DATACENTER` / `_CA_CERT_PATH` for mTLS clusters).
+consul = ["dep:reqwest"]
+
 [dependencies]
 aegis-core = { path = "../aegis-core" }
 aegis-control = { path = "../aegis-control" }
@@ -34,9 +66,28 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true
 
+# Optional — gated by the `redis` feature. Bringing these in
+# here (rather than as workspace.dependencies pulled by every
+# crate) keeps the dep tree pruned for builds that don't need
+# Redis.
+redis = { workspace = true, optional = true }
+deadpool-redis = { workspace = true, optional = true }
+
+# Optional — gated by the `vault` feature. Same pruning rationale.
+reqwest = { workspace = true, optional = true }
+
+# Optional — gated by the `aws` feature.
+aws-config = { workspace = true, optional = true }
+aws-sdk-secretsmanager = { workspace = true, optional = true }
+
+# Optional — gated by the `gcp` feature.
+gcp_auth = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+
 [dev-dependencies]
 aegis-security = { path = "../aegis-security" }
 futures = "0.3"
+parking_lot.workspace = true
 rustls-pki-types.workspace = true
 tempfile = "3"
 time = "0.3"

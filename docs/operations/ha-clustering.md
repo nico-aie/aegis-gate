@@ -1,8 +1,8 @@
 # HA Clustering & Distributed State (v2, enterprise)
 
-> **Status:** Partial — `StateBackend` trait + `InMemoryBackend` shipped. `RedisBackendStub` is config + Lua scripts only — **no `redis_cluster` / `raft` / `foca_swim` backends, no cross-node leader lease, no rehydrate phase**. Single-node only today.
+> **Status:** Implemented (single-node + Redis primary + local-fallback) — `StateBackend` trait, `InMemoryBackend`, `RedisBackend` (`deadpool-redis` + Lua), `LeaseStore` (`InProcessLease` + `RedisLease` + heartbeat + `run_with_lease` runner gating ACME), `state::rehydrate` warm-up gating `/healthz/ready`, and `ReconcilingBackend` (block-list union + fallback on partition). **Not yet implemented:** `redis_cluster` slot-hashed shards, `raft` (`openraft`-based), `foca_swim` gossip — these are queued as Phase B candidates beyond B1. The current Redis primary is single-replica.
 >
-> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+> See [`../../plans/implementation-matrix.md`](../../plans/implementation-matrix.md) for the full matrix.
 
 > **Enterprise addendum.** Multiple WAF nodes share rate-limit counters,
 > DDoS block lists, challenge nonces, risk scores, device fingerprints,

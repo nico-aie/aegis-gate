@@ -1,6 +1,6 @@
 # SLO / SLI / Alerting (v2, enterprise)
 
-> **Status:** Implemented — `slo.rs` (674 lines) — 5 SLI kinds, multi-burn windows, 5 receiver kinds.
+> **Status:** Implemented — `slo.rs` — 5 SLI kinds, multi-burn windows, 6 receiver kinds (PagerDuty / Slack / Alertmanager-Webhook / ServiceNow / Jira / **VipTalk**). VipTalk is the project's default chat receiver and is the only kind with in-process HTTP delivery (`slo::dispatch::send_alert`, behind `aegis-control/alerts`); the other five are descriptive metadata that an operator-side dispatcher (typically Alertmanager) reads and routes off-box.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
@@ -76,6 +76,66 @@ See [`dashboard.md`](../control-plane/dashboard.md).
 
 ## Alert routing
 
+Six receiver kinds. **VipTalk is the project's default** — a
+fresh deployment that calls
+[`aegis_control::slo::default_receivers()`](../../crates/aegis-control/src/slo.rs)
+gets one VipTalk receiver pre-wired against the dev/UAT bot.
+For every other receiver kind the SLO engine emits the
+metadata; an operator-side dispatcher (Alertmanager, a
+sidecar, a CronJob — whatever the deployment standardised on)
+reads it and delivers off-box.
+
+| Receiver | Delivery |
+|---|---|
+| **VipTalk** | In-process HTTP POST via `slo::dispatch::send_alert` (behind the `aegis-control/alerts` Cargo feature). |
+| PagerDuty / Slack / Alertmanager-Webhook / ServiceNow / Jira | Operator-side. The SLO engine emits the receiver definition; a sidecar dispatcher delivers. |
+
+### VipTalk default receiver
+
+The chat receiver wraps the VipTalk Bot API:
+
+```text
+POST https://api.viptalk.org/v1/bot/<bot-token>/sendMessage
+Content-Type: application/x-www-form-urlencoded
+
+text=<formatted-alert>&roomIds=<room>[&roomIds=<room>...]
+```
+
+Operators override the default bot + room via two env vars at
+boot:
+
+| Env | Purpose | Default |
+|---|---|---|
+| `AEGIS_VIPTALK_BOT_TOKEN` | Bot identity slug from the `/v1/bot/<token>/...` URL | `QGJvdF8yYXB0b2h4Ymdq_…` (project dev/UAT bot — replace in prod) |
+| `AEGIS_VIPTALK_ROOM_IDS` | Comma-separated Matrix-style room IDs the bot posts to | `!QNxJHzVzJBrLWIOLPo:matrix-uat.viptalk.org` |
+| `AEGIS_VIPTALK_API_BASE` | API root (override for sovereign / private VipTalk deployments) | `https://api.viptalk.org` |
+
+To **disable** VipTalk routing entirely, build your own
+`Vec<AlertReceiver>` in your config builder instead of calling
+`default_receivers()`.
+
+### Message format
+
+Each alert renders as a multi-line chat message. The exact
+shape comes from `slo::dispatch::format_alert_text`; tests
+assert on it so the format is stable:
+
+```text
+[Page] SLO breach: DataPlaneAvailability
+Burn rate: 14.00× over 1h window
+Budget consumed: 2.0%
+Fired at: 2026-04-29T07:31:14.123Z
+Runbook: https://runbooks.example.com/slo/data-plane
+```
+
+When an alert resolves the engine fires a follow-up message
+with `Resolved at: <timestamp>` appended.
+
+### Routing config (operator-side dispatcher)
+
+The other five receiver kinds remain plain config the
+operator's dispatcher consumes:
+
 ```yaml
 alerting:
   routes:
@@ -98,6 +158,12 @@ alerting:
       type: slack
       webhook: "${secret:env:SLACK_WEBHOOK}"
 ```
+
+The `aegis-control/alerts` feature is **independent** of this
+config: enabling the feature flips on real VipTalk delivery,
+the others remain operator-side regardless. Operators who don't
+want any in-process HTTP from the gateway just leave the feature
+off.
 
 ## Runbooks
 
@@ -124,10 +190,16 @@ slo:
 
 ## Implementation
 
-- `src/slo/sli.rs` — SLI derivation from metrics
-- `src/slo/burn_rate.rs` — multi-window burn-rate calculator
-- `src/alerting/router.rs` — match + receiver dispatch
-- `src/alerting/receivers/{pagerduty,jira,slack,webhook}.rs`
+- [`crates/aegis-control/src/slo.rs`](../../crates/aegis-control/src/slo.rs) —
+  `SloEngine` + `SliKind` + `AlertReceiver` + `default_receivers()`
+- [`crates/aegis-control/src/slo/dispatch.rs`](../../crates/aegis-control/src/slo/dispatch.rs) —
+  `send_alert(alert, &receivers) -> DispatchSummary`. VipTalk
+  receivers get real HTTP delivery (gated by
+  `aegis-control/alerts`); other kinds count as `external` in
+  the summary so the operator's dispatcher takes over.
+- The `format_alert_text` helper is the wire-format
+  source-of-truth — change one place, change every receiver
+  that reads it.
 
 ## Performance notes
 

@@ -3,6 +3,9 @@ use std::sync::Arc;
 
 use aegis_core::{AuditBus, ReadinessSignal};
 
+mod lease_select;
+mod state_select;
+
 fn main() {
     tracing_subscriber::fmt::init();
 
@@ -80,13 +83,25 @@ fn run_gateway(config_path: &std::path::Path) -> aegis_core::Result<()> {
 
     let pipeline: Arc<dyn aegis_core::SecurityPipeline> =
         Arc::new(aegis_security::NoopPipeline);
-    let state: Arc<dyn aegis_core::StateBackend> =
-        Arc::new(aegis_proxy::state::InMemoryBackend::new());
+    let (state, state_summary) = state_select::select(&cfg)?;
+    tracing::info!("state backend = {state_summary}");
+
+    let node_id = lease_select::derive_node_id();
+    let (lease_store, lease_summary) = lease_select::select(&cfg, node_id)?;
+    tracing::info!("lease store = {lease_summary}");
+
     let bus = AuditBus::new(4096);
     let readiness = ReadinessSignal::default();
 
     let rt = tokio::runtime::Runtime::new().map_err(aegis_core::WafError::Io)?;
-    rt.block_on(aegis_proxy::run(cfg, pipeline, state, bus, readiness))
+    rt.block_on(aegis_proxy::run(
+        cfg,
+        pipeline,
+        state,
+        lease_store,
+        bus,
+        readiness,
+    ))
 }
 
 // ---------------------------------------------------------------------------

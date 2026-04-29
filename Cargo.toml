@@ -92,3 +92,36 @@ humantime-serde = "1"
 # crypto provider — instant-acme's default is `ring`, which would
 # leave rustls unable to pick a process-level provider.
 instant-acme = { version = "0.7", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
+
+# Redis state backend (B1-T1 — Phase B). Pulled in only via the
+# `aegis-proxy/redis` feature so single-node builds still compile
+# without a Redis dep tree.
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "script"] }
+deadpool-redis = { version = "0.18", default-features = false, features = ["rt_tokio_1"] }
+
+# HTTP client for secret-manager integrations (B2 — Phase B).
+# Pulled only when an operator opts into a remote secrets backend
+# (vault / aws / gcp / azure). `default-features = false` skips
+# native-tls; we reuse the workspace rustls stack via `rustls-tls`
+# so secret-manager calls share the same TLS provider as the
+# rest of the gateway.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# AWS Secrets Manager resolver (B2-T2 — Phase B). Pulled only via
+# the `aegis-proxy/aws` feature. We pin the SDK to the
+# `behavior-version-latest` to avoid the build-time deprecation
+# warning while keeping behaviour stable across minor version
+# bumps. `aws-config` carries the credential chain (env, profile,
+# IMDSv2, web-identity for EKS IRSA) so operators don't have to
+# wire any of it themselves.
+aws-config = { version = "1.5", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls", "credentials-process", "sso"] }
+aws-sdk-secretsmanager = { version = "1.49", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+
+# GCP Secret Manager resolver (B2-T3 — Phase B). REST-based
+# (`reqwest`) with `gcp_auth` for Application Default
+# Credentials — covers env var (`GOOGLE_APPLICATION_CREDENTIALS`),
+# GKE workload identity, and gcloud user creds. Avoids the gRPC
+# stack the official `google-cloud-secret-manager` crate would
+# pull (tonic + prost). `base64` decodes the API's payload.
+gcp_auth = { version = "0.12", default-features = false, features = ["webpki-roots"] }
+base64 = "0.22"

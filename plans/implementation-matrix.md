@@ -117,7 +117,7 @@ table — keep them in sync.
 
 | Doc | Status | Notes / module path |
 |---|---|---|
-| [`ha-clustering.md`](../docs/operations/ha-clustering.md) | **Partial** | `StateBackend` trait + `InMemoryBackend` shipped; `RedisBackendStub` is config + Lua scripts only. `aegis-bin` always wires the in-memory backend. **Single-node only** — Phase B **B1** (full milestone). |
+| [`ha-clustering.md`](../docs/operations/ha-clustering.md) | **Implemented** | B1 closed (T1..T6): `RedisBackend` (deadpool-redis + Lua) + `LeaseStore` trait with Redis impl + heartbeat + `run_with_lease` (ACME gated), `rehydrate` warm-up gating `/healthz/ready`, `ReconcilingBackend` (block-list union + fallback on partition). `redis_cluster` / `raft` / `foca_swim` remain Phase B candidates beyond B1. |
 | [`compliance.md`](../docs/operations/compliance.md) | **Implemented** | `compliance/{fips,gdpr,hipaa,pci,soc2,mod}.rs` — full mode matrix. |
 | [`data-residency-retention.md`](../docs/operations/data-residency-retention.md) | **Implemented** | `aegis-control/src/residency.rs` — sweep, erase_subject, rechain, region pin, retention policy. |
 | [`dr-backup.md`](../docs/operations/dr-backup.md) | **Partial** | `SnapshotMeta` shape exists; `waf snapshot` / `waf restore` CLI + `.tar.zst` writer **not** wired — Phase B **B4-T1..T2**. |
@@ -141,7 +141,7 @@ in lockstep — keep the table and the milestone status in sync.
 
 | Milestone | Theme | Closes these matrix rows |
 |---|---|---|
-| **B1** | HA & multi-node | `ha-clustering.md` |
+| ~~**B1**~~ ✅ | HA & multi-node — **closed 2026-04-29** | ~~`ha-clustering.md`~~ flipped to Implemented |
 | **B2** | Operational integrations | `secrets-management.md` (most), `service-discovery.md` |
 | **B3** | Data feeds + filtering | `gitops-change-management.md`, `threat-intelligence.md`, `geoip-filtering.md`, `content-scanning.md`, `ip-reputation.md` (partial) |
 | **B4** | Operator tooling | `dr-backup.md` (+ removes carry-overs for upstream proxying and SSE streaming) |

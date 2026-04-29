@@ -8,6 +8,14 @@ rust-version.workspace = true
 name = "waf"
 path = "src/main.rs"
 
+[features]
+# `redis` flips on `aegis-proxy/redis`, which compiles the
+# real RedisBackend into the data plane. Default is off so a
+# single-node build stays slim. Enable with:
+#   cargo build -p aegis-bin --features redis
+default = []
+redis = ["aegis-proxy/redis"]
+
 [dependencies]
 aegis-core = { path = "../aegis-core" }
 aegis-proxy = { path = "../aegis-proxy" }

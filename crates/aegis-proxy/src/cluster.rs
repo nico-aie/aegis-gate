@@ -8,15 +8,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Identity of a cluster node.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NodeId(pub String);
-
-impl std::fmt::Display for NodeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+// `NodeId` lives in `aegis-core` so the lease trait + every
+// backend can share a single type. The shape (`pub String` newtype)
+// is unchanged, so the existing `NodeId("foo".into())` syntax in
+// callers continues to compile.
+pub use aegis_core::cluster::NodeId;
 
 /// State of a peer as seen by this node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -29,12 +29,16 @@ The order below is the recommended execution order — earlier
 milestones unblock later ones. Within a milestone the sub-tasks are
 mostly independent and can be parallelised.
 
-### B1 — HA & multi-node (unblocks everything else)
+### B1 — HA & multi-node (unblocks everything else) — ✅ CLOSED 2026-04-29
 
-The `StateBackend` trait + `InMemoryBackend` are already shipped;
-this milestone makes the cluster claim in
+All six sub-tasks shipped:
 [`docs/operations/ha-clustering.md`](../../docs/operations/ha-clustering.md)
-real.
+flipped Partial → Implemented; `aegis-bin` wires single-node
+in-memory **or** Redis primary + in-memory fallback from
+config; ACME issuance is gated on a Redis-backed leader lease;
+`/healthz/ready` waits for state-backend rehydrate; partition
+falls through transparently to local with block-list union on
+heal.
 
 | Task | Outcome |
 |---|---|
@@ -72,6 +76,19 @@ discovery. The trait surface exists; concrete drivers do not.
 and
 [`docs/data-plane/service-discovery.md`](../../docs/data-plane/service-discovery.md)
 banners from **Partial** to **Implemented**.
+
+#### Side-quest landed during B2: VipTalk default alert routing
+
+Out-of-band addition (2026-04-29) — added a `VipTalk` variant
+to `aegis-control::slo::ReceiverKind` plus a real
+HTTP-delivery `slo::dispatch::send_alert` behind the new
+`aegis-control/alerts` Cargo feature. `default_receivers()`
+seeds a single VipTalk receiver pointed at the project's
+dev/UAT bot; operators override via
+`AEGIS_VIPTALK_BOT_TOKEN` / `AEGIS_VIPTALK_ROOM_IDS` /
+`AEGIS_VIPTALK_API_BASE` env vars. Doc:
+[`docs/observability/slo-sli-alerting.md`](../../docs/observability/slo-sli-alerting.md)
+§"Alert routing".
 
 ---
 

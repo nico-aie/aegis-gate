@@ -23,6 +23,7 @@ pub mod acme;
 pub mod acme_instant;
 pub mod cache;
 pub mod cluster;
+pub mod cluster_lease;
 pub mod dr;
 pub mod hotbin;
 pub mod listener;
@@ -46,10 +47,17 @@ pub mod upstream;
 /// Binds each listener in `cfg.listeners.data`, spawns accept loops, and
 /// starts the admin listener on `cfg.listeners.admin.bind`.
 /// Serves until the process receives SIGTERM / Ctrl-C.
+///
+/// `lease_store` provides the cluster-wide lease used to gate
+/// leader-only tasks (B1-T4 — ACME today; GitOps / threat-intel /
+/// witness once they're wired). For single-node deployments
+/// `aegis-bin` passes an `InProcessLease`; for multi-node it
+/// passes a `RedisLease`.
 pub async fn run(
     cfg: Arc<WafConfig>,
     _pipeline: Arc<dyn SecurityPipeline>,
-    _state: Arc<dyn StateBackend>,
+    state: Arc<dyn StateBackend>,
+    lease_store: Arc<dyn aegis_core::cluster::LeaseStore>,
     bus: AuditBus,
     readiness: ReadinessSignal,
 ) -> aegis_core::Result<()> {
@@ -145,14 +153,13 @@ pub async fn run(
     // (which serves them on `/.well-known/acme-challenge/`).
     let challenges = crate::acme::ChallengeStore::new();
 
-    // F-T8 — wire AcmeManager + renewal scheduler when
-    // `tls.acme` is set in YAML. The data-plane listener stays
-    // plain HTTP today (the cert-store hot-swap into a TLS
-    // listener is a deeper migration, deferred); but
-    // first-issuance, persistence, and the renewal loop run.
-    // Operators bringing real TLS termination online need only
-    // wire `Arc<ArcSwap<CertStore>>` into the IssuedCert
-    // CertWriter callback below.
+    // F-T8 + B1-T4 — wire AcmeManager + renewal scheduler when
+    // `tls.acme` is set in YAML, gated on the leader lease so
+    // exactly one node in a cluster issues each cert. The
+    // data-plane listener stays plain HTTP today (the
+    // cert-store hot-swap into a TLS listener is a deeper
+    // migration, deferred); but first-issuance, persistence,
+    // and the renewal loop run on the lease holder.
     if let Some(acme_yaml) = cfg.tls.as_ref().and_then(|t| t.acme.as_ref()) {
         let acme_cfg = crate::acme::AcmeConfig::from_core(acme_yaml);
         let provider = std::sync::Arc::new(crate::acme_instant::InstantAcmeProvider::new());
@@ -178,47 +185,71 @@ pub async fn run(
             challenges.clone(),
             cert_writer,
         ));
-
-        // Renewal scheduler — periodically inspects every PEM
-        // under cert_dir and re-issues anything within
-        // `renew_before` of expiry.
         let cert_dir = manager.config().cert_dir.clone();
-        let inventory: crate::acme::CertInventory = std::sync::Arc::new(move || {
-            // Best-effort sync read of every `cert.pem` under
-            // `cert_dir/<domain>/`. The scheduler runs at minute
-            // resolution so this is amortised.
-            let mut out = Vec::new();
-            if let Ok(rd) = std::fs::read_dir(&cert_dir) {
-                for entry in rd.flatten() {
-                    let p = entry.path().join("cert.pem");
-                    if let Ok(bytes) = std::fs::read(&p) {
-                        out.push(bytes);
-                    }
-                }
-            }
-            out
-        });
-        let _renewer = crate::acme::spawn_renewal_scheduler(
-            std::sync::Arc::clone(&manager),
-            inventory,
-        );
 
-        // Trigger a first-issuance attempt at boot. This
-        // populates the challenge store + persists the cert
-        // before any traffic arrives. Failure is non-fatal —
-        // an offline directory shouldn't keep the WAF down.
-        let manager_boot = std::sync::Arc::clone(&manager);
-        tokio::spawn(async move {
-            if let Err(e) = manager_boot.issue().await {
-                tracing::warn!(
-                    error = %e,
-                    "acme: initial issuance failed; renewal scheduler will retry",
-                );
-            } else {
-                tracing::info!("acme: initial issuance succeeded");
-            }
-        });
+        // ACME runs only on the leader. The lease key is the
+        // contract — every node uses the same string. TTL is
+        // 60s, comfortably longer than a typical issue
+        // round-trip (~5–15s) and short enough to fail over
+        // within a minute if the leader dies. The runner
+        // re-acquires after each loss with a half-TTL backoff.
+        let lease_store_for_acme = lease_store.clone();
+        let manager_for_runner = std::sync::Arc::clone(&manager);
+        handles.push(crate::cluster_lease::spawn_with_lease(
+            lease_store_for_acme,
+            "leader:acme",
+            std::time::Duration::from_secs(60),
+            move |_holder, lost| {
+                let manager = std::sync::Arc::clone(&manager_for_runner);
+                let cert_dir = cert_dir.clone();
+                async move {
+                    // Initial issuance, then the renewal
+                    // scheduler. Both are cancelled if the
+                    // lease is lost.
+                    let inventory: crate::acme::CertInventory = std::sync::Arc::new(move || {
+                        let mut out = Vec::new();
+                        if let Ok(rd) = std::fs::read_dir(&cert_dir) {
+                            for entry in rd.flatten() {
+                                let p = entry.path().join("cert.pem");
+                                if let Ok(bytes) = std::fs::read(&p) {
+                                    out.push(bytes);
+                                }
+                            }
+                        }
+                        out
+                    });
+                    let renewer = crate::acme::spawn_renewal_scheduler(
+                        std::sync::Arc::clone(&manager),
+                        inventory,
+                    );
+
+                    if let Err(e) = manager.issue().await {
+                        tracing::warn!(
+                            error = %e,
+                            "acme: initial issuance failed; renewal scheduler will retry",
+                        );
+                    } else {
+                        tracing::info!("acme: initial issuance succeeded (leader)");
+                    }
+
+                    // Park here until the lease is lost. When
+                    // it fires, abort the renewal task and
+                    // return so the runner re-acquires.
+                    lost.notified().await;
+                    renewer.abort();
+                    tracing::info!("acme: lease lost; renewal task aborted");
+                }
+            },
+        ));
     }
+
+    // TODO(B1-T4 follow-up): when GitOps poll, witness export,
+    // and threat-intel fetcher are wired into the boot path,
+    // gate each on a `"leader:<name>"` lease using the same
+    // `crate::cluster_lease::spawn_with_lease(...)` pattern.
+    // None of those subsystems run as background tasks today,
+    // so there's no live code to gate; documenting the seam here
+    // so the next dev knows where it goes.
 
     // P4 force-HTTPS redirect listener (optional). Spawns only if
     // `listeners.force_https` is set. Also responds to HTTP-01
@@ -261,9 +292,47 @@ pub async fn run(
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);
-    readiness.state_backend_up.store(true, Ordering::Relaxed);
     readiness.certs_loaded.store(true, Ordering::Relaxed);
     readiness.pool_has_healthy.store(true, Ordering::Relaxed);
+
+    // B1-T5 — readiness gate. Hold `state_backend_up` at false
+    // until the rehydrate probe round-trips through the
+    // `StateBackend`. While that flag is false, the existing
+    // `ReadinessSignal::is_ready()` returns false, so
+    // `/healthz/ready` continues to return 503 — exactly the
+    // behaviour we want for a fresh node booted against a
+    // shared Redis. The deadline comes from
+    // `cfg.state.reconcile.readiness_warm_ms` (default 5 s).
+    //
+    // Even if rehydrate fails (e.g. unreachable Redis, bad
+    // password) we flip readiness to true at the deadline — a
+    // mis-configured backend must never permanently 503 the
+    // node; the operator gets a `tracing::warn` line + a
+    // detailed error in the result.
+    {
+        let store = std::sync::Arc::clone(&state);
+        let readiness_for_warmup = readiness.clone();
+        let deadline = cfg.state.reconcile.readiness_warm_ms;
+        tokio::spawn(async move {
+            let result = crate::state::rehydrate(store, deadline).await;
+            if result.completed {
+                tracing::info!(
+                    elapsed_ms = result.elapsed.as_millis() as u64,
+                    "state backend rehydrate succeeded; readiness flipped to ready",
+                );
+            } else {
+                tracing::warn!(
+                    elapsed_ms = result.elapsed.as_millis() as u64,
+                    deadline_ms = deadline.as_millis() as u64,
+                    error = result.error.unwrap_or_default(),
+                    "state backend rehydrate did not complete; flipping readiness anyway to avoid permanent 503",
+                );
+            }
+            readiness_for_warmup
+                .state_backend_up
+                .store(true, Ordering::Relaxed);
+        });
+    }
 
     // Hold alive until shutdown signal.
     tokio::signal::ctrl_c().await.ok();

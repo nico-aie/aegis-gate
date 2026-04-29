@@ -547,10 +547,59 @@ pub struct StateConfig {
     pub backend: StateBackendKind,
     #[serde(default)]
     pub redis: Option<RedisConfig>,
+    #[serde(default)]
+    pub reconcile: ReconcileConfig,
 }
 
 fn default_state_backend() -> StateBackendKind {
     StateBackendKind::InMemory
+}
+
+/// State-backend reconciliation policy.
+///
+/// **B1-T5 — Phase B.** Today only `readiness_warm_ms` is honored
+/// (the maximum time a fresh node will wait for its state backend
+/// to round-trip before it flips `/healthz/ready` to 200). The
+/// `mode` field is reserved for B1-T6 partition-safe merge.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReconcileConfig {
+    /// How long the gateway holds `/healthz/ready` at 503 while
+    /// warming the state backend on boot. After this elapses
+    /// readiness flips to ready regardless of warm-up outcome
+    /// (we never want a permanently-503 node).
+    #[serde(default = "default_readiness_warm", with = "humantime_serde")]
+    pub readiness_warm_ms: Duration,
+
+    /// Reserved for B1-T6.
+    #[serde(default = "default_reconcile_mode")]
+    pub mode: ReconcileMode,
+}
+
+impl Default for ReconcileConfig {
+    fn default() -> Self {
+        Self {
+            readiness_warm_ms: default_readiness_warm(),
+            mode: default_reconcile_mode(),
+        }
+    }
+}
+
+fn default_readiness_warm() -> Duration {
+    Duration::from_secs(5)
+}
+
+fn default_reconcile_mode() -> ReconcileMode {
+    ReconcileMode::Max
+}
+
+/// Partition-recovery merge mode. **Reserved** — only `Max` is
+/// implemented (and that only by B1-T6).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileMode {
+    Max,
+    Latest,
+    FailSafe,
 }
 
 #[derive(Clone, Deserialize, Debug, PartialEq)]
