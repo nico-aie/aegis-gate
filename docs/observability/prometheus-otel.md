@@ -1,5 +1,9 @@
 # Observability: Prometheus & OpenTelemetry (v2, new)
 
+> **Status:** Implemented — `metrics/{exporter,request_duration,mod}.rs` + `tracing_init.rs` + `access_log.rs`. Per-stage WAF latency landed F-T10.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** Prometheus `/metrics` endpoint on the control-plane
 > listener, W3C Trace Context propagation, OTLP exporter, and
 > configurable access-log formats. See also [`slo-sli-alerting.md`](./slo-sli-alerting.md).

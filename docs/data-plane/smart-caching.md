@@ -1,5 +1,9 @@
 # Smart Caching
 
+> **Status:** Implemented — `aegis-proxy/src/cache/mod.rs` — `TierCache`, vary-aware, max-age honored.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Reduce backend load and tail latency by serving repeated requests from an in-process cache. The cache is **tier-aware**: different routes get different caching policies that balance freshness, safety, and throughput.

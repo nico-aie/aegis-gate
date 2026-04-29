@@ -1,5 +1,9 @@
 # Per-Route Quotas & Buffering (v2, new)
 
+> **Status:** Implemented — `aegis-proxy/src/quota.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** Body size, header size, and I/O timeout limits are
 > now declarative **per route**, with tier defaults and tenant overrides.
 

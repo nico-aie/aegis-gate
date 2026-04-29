@@ -1,5 +1,9 @@
 # Challenge Engine (v2)
 
+> **Status:** Implemented — `challenge/{ladder,captcha,token,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** the challenge engine is now a **progressive escalation state
 > machine** with pluggable CAPTCHA providers (Turnstile, hCaptcha,
 > reCAPTCHA v3) at the top of the ladder, and a **human-confidence score**

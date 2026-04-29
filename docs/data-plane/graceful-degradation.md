@@ -1,5 +1,9 @@
 # Graceful Degradation & Circuit Breaker (v2)
 
+> **Status:** Implemented — Circuit breaker + load shedder + cache fallback wired through `lib.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** circuit breaking is now **per upstream pool member** (not
 > per backend), driven by the [`upstream-pools.md`](./upstream-pools.md)
 > health manager, and coordinated with

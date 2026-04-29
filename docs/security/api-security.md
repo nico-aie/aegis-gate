@@ -1,5 +1,9 @@
 # API Security (v2, enterprise)
 
+> **Status:** Implemented — `api_security/{api_keys,graphql,hmac_sign,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Positive security for REST and GraphQL:
 > **OpenAPI 3 schema enforcement**, **GraphQL query validation**,
 > depth / cost limits, and response-shape validation.

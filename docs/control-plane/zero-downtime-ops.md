@@ -1,5 +1,9 @@
 # Zero-Downtime Operations (v2, new)
 
+> **Status:** Partial — `supervisor.rs` + `hotbin.rs` + drain in `lib.rs`; SO_REUSEPORT in the listener layer. **No live binary-handover via fd-passing**.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** SO_REUSEPORT worker model, graceful drain on shutdown,
 > hot binary reload via listener-FD handoff, and dry-run config
 > validation before any swap.

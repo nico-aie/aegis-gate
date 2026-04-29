@@ -1,5 +1,9 @@
 # Audit Logging (v2)
 
+> **Status:** Implemented — `audit/{chain,verify,witness,state_snapshot,mod}.rs`. SHA-256 hash chain + `audit verify` CLI + verbosity gating (P8).
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** audit events are now **tamper-evident** via a hash chain,
 > **forwarded to SIEM** in standard formats (syslog RFC 5424, CEF, LEEF, OCSF,
 > Kafka), and a separate **admin change log** tracks every control-plane

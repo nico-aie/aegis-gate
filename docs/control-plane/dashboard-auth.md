@@ -1,5 +1,9 @@
 # Dashboard & Admin API Authentication
 
+> **Status:** Implemented — `admin_auth/{password,session,csrf,mtls,rate_limit,totp,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 Local authentication for the Aegis-Gate dashboard and admin API.
 
 ## v1 Scope

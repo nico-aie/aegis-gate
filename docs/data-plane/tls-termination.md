@@ -1,5 +1,9 @@
 # TLS Termination (v2)
 
+> **Status:** Implemented — `listener/{tls,tls_policy}.rs` + `acme.rs` + `acme_instant.rs` + `ocsp.rs`. P4 hardening + P5 ACME via Pebble (F-T7/F-T8).
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** TLS is **promoted from bonus to required**. The listener now
 > supports SNI with a dynamic cert resolver, file-watch reloads without
 > dropping connections, optional ACME auto-issue, OCSP stapling, FIPS mode,

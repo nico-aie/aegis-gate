@@ -1,5 +1,9 @@
 # GitOps & Change Management (v2, enterprise)
 
+> **Status:** Partial — `gitops.rs` ships `GitClient` trait + signature verify + dry-run + `GitOpsLoader`. **No concrete git poll-and-pull driver** wired into the runtime.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** WAF config, rules, and routing live in Git.
 > Changes go through PR review + signed commits + CI lint + dry-run +
 > admin approval. The WAF pulls signed commits from `main` and reloads

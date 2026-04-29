@@ -1,5 +1,9 @@
 # Benchmark Mode
 
+> **Status:** Designed only — Track `plans/benchmark-mode.md` (B-T1..B-T6) is open; no `benchmark/` module yet — `X-Aegis-*` headers + dashboard panels are not wired.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Status.** Design complete; implementation tracked in
 > [`../plans/benchmark-mode.md`](../plans/benchmark-mode.md) (task ID
 > prefix `B-`). Disabled by default in every environment.

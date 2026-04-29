@@ -1,5 +1,9 @@
 # Response Filtering (v2)
 
+> **Status:** Implemented — `aegis-security/src/response_filter.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** response filtering now shares a pipeline with the
 > enterprise **DLP** subsystem ([`dlp.md`](./dlp.md)), supports
 > **format-preserving encryption (FPE)** tokenization for regulated

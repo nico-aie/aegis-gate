@@ -1,5 +1,7 @@
 # Phase B — advanced-features intake
 
+> **Status:** Intake template — see [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 **Status:** open. Use this doc to propose, score, and triage candidate
 features for the next major scope expansion. The current scope (P1–P8
 plus the F-T1..F-T10 follow-up) is closed; this is the catch-basin for

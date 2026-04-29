@@ -1,5 +1,9 @@
 # Request Body Abuse
 
+> **Status:** Implemented — `aegis-security/src/detectors/body_abuse.rs`.
+>
+> See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Detect malformed, oversized, or abusive request bodies that aim to exhaust resources or exploit parser bugs. Body abuse is an attack on the WAF and backend's **parsing infrastructure** rather than on the application logic.

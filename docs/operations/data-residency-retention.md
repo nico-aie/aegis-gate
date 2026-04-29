@@ -1,5 +1,9 @@
 # Data Residency & Retention (v2, enterprise)
 
+> **Status:** Implemented — `aegis-control/src/residency.rs` — sweep, erase_subject, rechain, region pin, retention policy.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Pin tenant data to a region, enforce
 > per-class retention ceilings, and support GDPR right-to-erasure
 > workflows.

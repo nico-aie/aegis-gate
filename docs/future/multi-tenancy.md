@@ -1,5 +1,9 @@
 # Multi-Tenancy (DEFERRED — future work)
 
+> **Status:** Deferred — No production code; design preserved as reference.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **DEFERRED.** Multi-tenancy is out of scope for v1. v1 runs as a
 > single-tenant WAF: one config, one dashboard, one audit stream,
 > one set of metrics. This document is retained as design reference

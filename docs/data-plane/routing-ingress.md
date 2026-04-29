@@ -1,5 +1,9 @@
 # Routing & Ingress (v2, new)
 
+> **Status:** Implemented — `aegis-proxy/src/route/{host,path,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** The WAF gains a k8s-ingress / nginx `server` style route
 > table: host + path matching, wildcards, regex, longest-prefix-wins,
 > and per-route policy attachment. Replaces v1's single-upstream model.

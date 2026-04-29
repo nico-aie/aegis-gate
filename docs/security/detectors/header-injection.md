@@ -1,5 +1,9 @@
 # HTTP Header Injection
 
+> **Status:** Implemented — `aegis-security/src/detectors/header_injection.rs`.
+>
+> See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Detect CRLF injection attacks — attempts to inject newlines into headers, which can lead to header smuggling, cache poisoning, response splitting, and cookie injection.

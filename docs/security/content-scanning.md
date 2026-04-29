@@ -1,5 +1,9 @@
 # Content Scanning (ICAP / AV) (v2, enterprise)
 
+> **Status:** Partial — `content/{archive,icap,mod}.rs` — archive-bomb guard real, **ICAP client is a trait + types stub** (no concrete TCP client).
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Route request bodies and response payloads
 > to an **ICAP (RFC 3507)** antivirus server (ClamAV or commercial
 > scanners) for malware / exploit checks.

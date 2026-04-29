@@ -1,5 +1,9 @@
 # Reverse Proxy Core (v2)
 
+> **Status:** Implemented — `aegis-proxy/src/{lib,proxy,supervisor}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** The proxy is no longer a single-upstream forwarder. It now fronts
 > a route table, multiple upstream pools, multi-protocol adapters, and TLS
 > termination with SNI. See [`routing-ingress.md`](./routing-ingress.md),

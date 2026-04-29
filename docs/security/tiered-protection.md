@@ -1,5 +1,9 @@
 # Tiered Protection Policy (v2)
 
+> **Status:** Implemented — `aegis-core/src/tier.rs` + per-tier detector mask overrides (P2/P3).
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** tiers are now **resolved after route matching** (see
 > [`routing-ingress.md`](../data-plane/routing-ingress.md)) and can be **overridden
 > per tenant** ([`multi-tenancy.md`](../future/multi-tenancy.md)). CRITICAL tier

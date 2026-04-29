@@ -1,5 +1,9 @@
 # Config Hot Reload (v2)
 
+> **Status:** Implemented — `gitops::dry_run_validate` + `secrets.rs` resolver + reload signal.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** hot reload now runs a **dry-run validator** before any swap,
 > resolves **secret references** through pluggable providers, and optionally
 > pulls from Git (GitOps). Malformed updates are rejected and the running

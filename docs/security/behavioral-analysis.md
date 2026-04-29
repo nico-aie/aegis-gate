@@ -1,5 +1,9 @@
 # Behavioral Anomaly Detection
 
+> **Status:** Implemented — `aegis-security/src/behavior.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Signature-based detection catches known attacks. Behavioral analysis catches **unknown** attacks by looking at how a client interacts with the site rather than what payloads it sends. Real users browse in recognizable patterns; bots, scrapers, and attackers don't.

@@ -1,5 +1,9 @@
 # XSS Detection
 
+> **Status:** Implemented — `aegis-security/src/detectors/xss.rs`.
+>
+> See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Detect cross-site scripting attempts — attacker payloads that aim to inject JavaScript into pages viewed by other users. The WAF detects XSS in both inbound (attacker submitting payload) and outbound (payload reflected in response) directions.

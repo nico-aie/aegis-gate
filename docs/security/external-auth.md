@@ -1,5 +1,9 @@
 # External Authentication (v2, new)
 
+> **Status:** Implemented — `auth/{basic,forward,jwt,opa,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** Data-plane authentication for protected routes:
 > **ForwardAuth** subrequests (nginx `auth_request` / Traefik ForwardAuth),
 > **JWT validation** with JWKS cache, **OIDC** session cookies, HTTP

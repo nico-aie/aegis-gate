@@ -1,5 +1,9 @@
 # DDoS Protection (v2)
 
+> **Status:** Implemented — `aegis-security/src/ddos.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** auto-block state now lives in the **clustered state backend**
 > so every node agrees on who is blocked, detection runs **per tenant**, and
 > L7 adaptive load shedding kicks in before the per-IP thresholds. See

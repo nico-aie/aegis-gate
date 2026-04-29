@@ -1,5 +1,9 @@
 # Protocol Support (v2, new)
 
+> **Status:** Partial — HTTP/1.1 + HTTP/2 + WebSocket + gRPC implemented in `aegis-proxy/src/proto/{h2,ws,grpc}.rs`. **HTTP/3 not implemented**.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** HTTP/1.1 + HTTP/2 + HTTP/3 (optional), WebSocket upgrade
 > passthrough, and gRPC transit. v1 shipped HTTP/1.1 only.
 

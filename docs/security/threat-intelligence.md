@@ -1,5 +1,9 @@
 # Threat Intelligence (v2, enterprise)
 
+> **Status:** Partial — `threat_intel.rs` ships an in-memory `ThreatIntelStore` + indicator types. **No STIX/TAXII fetch loop**.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Ingests STIX 2.1 / TAXII 2.1 collections,
 > commercial feeds, and plain-text IP/URL lists. Indicators feed
 > [`ip-reputation.md`](./ip-reputation.md) and the

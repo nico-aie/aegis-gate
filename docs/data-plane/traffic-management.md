@@ -1,5 +1,9 @@
 # Traffic Management (v2, new)
 
+> **Status:** Implemented — `aegis-proxy/src/traffic.rs` — canary, steering, shadow mirror, retries.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** Canary releases, header/cookie-based steering, shadow
 > mirroring, and retries with budgets. Sits between
 > [`routing-ingress.md`](./routing-ingress.md) and

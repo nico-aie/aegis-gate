@@ -1,5 +1,9 @@
 # `waf` — CLI reference (authoritative)
 
+> **Status:** Implemented — Every subcommand documented exists in `aegis-bin`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 This is the single source of truth for the `aegis-bin` binary. All
 documents that mention `./waf <cmd>` MUST match this list. Adding or
 renaming a subcommand requires updating this file in the same PR.

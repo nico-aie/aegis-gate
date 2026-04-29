@@ -1,5 +1,9 @@
 # HA Clustering & Distributed State (v2, enterprise)
 
+> **Status:** Partial — `StateBackend` trait + `InMemoryBackend` shipped. `RedisBackendStub` is config + Lua scripts only — **no `redis_cluster` / `raft` / `foca_swim` backends, no cross-node leader lease, no rehydrate phase**. Single-node only today.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Multiple WAF nodes share rate-limit counters,
 > DDoS block lists, challenge nonces, risk scores, device fingerprints,
 > and session state so an attack mitigated on one node is mitigated

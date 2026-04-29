@@ -1,5 +1,9 @@
 # Rule Engine (v2)
 
+> **Status:** Implemented — `aegis-security/src/rules/{ast,eval,parser,linter,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 scope.** The rule engine evaluates a priority-ordered AST and
 > sits alongside **schema-based** positive-security guards (OpenAPI +
 > GraphQL — see [`api-security.md`](./api-security.md)). It references

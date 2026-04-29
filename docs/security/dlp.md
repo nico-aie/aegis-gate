@@ -1,5 +1,9 @@
 # Data Loss Prevention (DLP) (v2, enterprise)
 
+> **Status:** Implemented — `dlp/{fpe,mod}.rs` — pattern matching + AES-FF1 FPE.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Scans requests **and** responses for sensitive
 > data (PII, credentials, card numbers, health identifiers) and redacts,
 > masks, tokenizes, or blocks based on policy. Shared with

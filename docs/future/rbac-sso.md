@@ -1,5 +1,9 @@
 # RBAC & OIDC SSO (DEFERRED — future work)
 
+> **Status:** Deferred — No production code; OIDC / SAML / RBAC retained for future reference.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **DEFERRED.** This feature is out of scope for v1. Dashboard and
 > admin API access in v1 is protected by local auth — see
 > [`../dashboard-auth.md`](../dashboard-auth.md) (argon2id password,

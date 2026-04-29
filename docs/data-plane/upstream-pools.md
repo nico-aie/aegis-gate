@@ -1,5 +1,9 @@
 # Upstream Pools & Load Balancing (v2, new)
 
+> **Status:** Implemented — `upstream/{lb,health,circuit,tls,mod}.rs` — 5 LB strategies, health checks, circuit breaker.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** Replaces v1's single upstream. Each route points at a
 > **pool** of backend members with a load-balancing strategy, active and
 > passive health checks, and a per-member circuit breaker.

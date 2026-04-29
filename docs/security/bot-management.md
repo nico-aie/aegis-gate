@@ -1,5 +1,9 @@
 # Bot Management (v2, enterprise)
 
+> **Status:** Implemented — `aegis-security/src/bots.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Classifies traffic into `human | good_bot |
 > likely_bot | known_bad` using fingerprints, behavior, reputation, and
 > verification signals. Feeds

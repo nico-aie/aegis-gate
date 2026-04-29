@@ -1,5 +1,9 @@
 # Adaptive Load Shedding (v2, enterprise)
 
+> **Status:** Implemented — `aegis-proxy/src/shed.rs` + `aegis-core/src/load_mode.rs` (P7).
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Under saturation, the WAF sheds lowest-tier
 > traffic first so CRITICAL routes keep serving. Uses the **Gradient2**
 > algorithm (adaptive concurrency) to find the stable concurrency

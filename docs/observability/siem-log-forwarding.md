@@ -1,5 +1,9 @@
 # SIEM Log Forwarding (v2, enterprise)
 
+> **Status:** Implemented — All 8 sinks: `audit/sinks/{cef,ecs,jsonl,kafka,leef,ocsf,splunk_hec,syslog}.rs`. Cold-tier surface @ `/api/cold-tier`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Forward audit events to Splunk, Elastic,
 > Chronicle, QRadar, Sentinel, Sumo, Datadog, and any generic collector
 > via syslog RFC 5424, CEF, LEEF, OCSF, or Kafka. Formatters and

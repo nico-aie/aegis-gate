@@ -1,5 +1,9 @@
 # Path Traversal Detection
 
+> **Status:** Implemented — `aegis-security/src/detectors/path_traversal.rs`.
+>
+> See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Block attempts to access files outside the web root using `../` and related sequences. Path traversal attacks target file-serving endpoints, template loaders, include directives, and any code that builds a filesystem path from user input.

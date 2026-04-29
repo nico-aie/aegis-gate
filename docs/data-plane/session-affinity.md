@@ -1,5 +1,9 @@
 # Session Affinity (v2, new)
 
+> **Status:** Implemented — `aegis-proxy/src/session.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** Sticky routing via cookie injection or consistent-hash
 > over a chosen request attribute.
 

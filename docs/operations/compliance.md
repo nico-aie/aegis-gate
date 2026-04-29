@@ -1,5 +1,9 @@
 # Compliance Modes (v2, enterprise)
 
+> **Status:** Implemented — `compliance/{fips,gdpr,hipaa,pci,soc2,mod}.rs` — full mode matrix.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** FIPS 140-2/3, PCI-DSS, HIPAA, SOC 2, and
 > GDPR modes enable specific technical controls — ciphers, retention,
 > redaction, audit rigor — with a single config switch each.

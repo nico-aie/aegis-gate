@@ -1,5 +1,9 @@
 # SLO / SLI / Alerting (v2, enterprise)
 
+> **Status:** Implemented — `slo.rs` (674 lines) — 5 SLI kinds, multi-burn windows, 5 receiver kinds.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Defines SLIs, SLOs, burn-rate alerts,
 > and paging routes for the WAF itself. Drives the dashboard Alerts
 > view and the Prometheus alertmanager wiring.

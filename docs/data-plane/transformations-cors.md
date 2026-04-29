@@ -1,5 +1,9 @@
 # Request/Response Transformations & CORS (v2, new)
 
+> **Status:** Implemented — `aegis-proxy/src/transform/{cors,vars,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2.** Header manipulation, URL rewrite, redirect, and a full
 > CORS handler — per route. Previously only available via external tools.
 

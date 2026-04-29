@@ -1,5 +1,9 @@
 # Device Fingerprinting (v2)
 
+> **Status:** Implemented — `fingerprint/{ja3,ja4,h2,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** fingerprints now feed the **bot classifier**
 > ([`bot-management.md`](./bot-management.md)), JA4 is the default (JA3 kept
 > for compatibility), the device store is **clustered**, and fingerprints

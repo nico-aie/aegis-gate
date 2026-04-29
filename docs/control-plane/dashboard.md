@@ -1,5 +1,9 @@
 # Dashboard
 
+> **Status:** Implemented — `dashboard/{mod,assets,dispatch,sse,overview,security}.rs` + 27 read-only `/api/*` handlers + bundled SPA.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Status.** The dashboard now ships as the multi-page enterprise
 > SPA documented in [`enterprise/`](./enterprise/)
 > — see that subdirectory for the design spec, page-by-page behaviour,

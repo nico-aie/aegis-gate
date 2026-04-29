@@ -1,5 +1,9 @@
 # IP Reputation & Proxy Detection (v2)
 
+> **Status:** Partial — `ip_rep/{asn,xff,mod}.rs` — XFF validation + ASN matching. **No live threat-intel feed fetcher.**
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** the reputation pipeline now consumes **STIX 2.1 / TAXII 2.1**
 > threat-intel feeds with provenance tags, supports **per-tenant** lists,
 > and records feed-id + confidence on every block so auditors can trace

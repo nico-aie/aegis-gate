@@ -1,5 +1,9 @@
 # GeoIP Filtering (Bonus)
 
+> **Status:** Designed only — No `maxmind` / `country_code` code anywhere. Phase B candidate.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Block, allow, or challenge traffic based on the geographic origin of the client IP. GeoIP is a blunt instrument — it shouldn't be the primary defense — but it's a useful filter for compliance (geo-blocked products), targeted attack response, and traffic shaping.

@@ -1,5 +1,9 @@
 # Transaction Velocity Tracking
 
+> **Status:** Implemented — `aegis-security/src/velocity.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Limit how often a specific user can perform sensitive actions. Where [rate limiting](./rate-limiting.md) controls overall request frequency, velocity tracking controls **transaction frequency** — withdrawals, deposits, password changes, address updates. This is the core defense against account takeover and fraudulent transactions on CRITICAL tier routes.

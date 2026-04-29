@@ -1,5 +1,9 @@
 # Risk Scoring (v2)
 
+> **Status:** Implemented — `risk/{tracker,mod}.rs` + `aegis-core::RiskKey`. P6 strikes + trust recovery.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** scores are now distributed via the `StateBackend` abstraction
 > so a client's risk follows them across cluster nodes. The decision logic
 > (Allow / Challenge / Block) is unchanged. Bot classification and JWT

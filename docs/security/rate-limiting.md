@@ -1,5 +1,9 @@
 # Rate Limiting (v2)
 
+> **Status:** Implemented — `rate_limit/{bucket,sliding,ip_limiter,mod}.rs`.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **v1 → v2:** counters are now **clusterable**. The algorithm choice and
 > scoping are unchanged, but state lives behind a `StateBackend` trait so a
 > multi-node WAF fleet shares a single view of each limit. See

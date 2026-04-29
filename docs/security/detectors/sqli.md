@@ -1,5 +1,9 @@
 # SQL Injection Detection
 
+> **Status:** Implemented — `aegis-security/src/detectors/sqli.rs`.
+>
+> See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Detect attempts to inject SQL into query parameters, request bodies, headers, and paths. SQLi is one of the most impactful web vulnerabilities — successful exploitation can leak entire databases — and it's one of the most common attack patterns on the internet.

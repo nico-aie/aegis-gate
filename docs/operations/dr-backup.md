@@ -1,5 +1,9 @@
 # Disaster Recovery & Backup (v2, enterprise)
 
+> **Status:** Partial — `aegis-proxy/src/dr.rs` ships `SnapshotMeta` + struct shape; the `waf snapshot` / `waf restore` CLI + `.tar.zst` writer are **not wired**.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** RPO / RTO targets, backup surfaces, and
 > restore drills for audit logs, state backend, secrets, and config.
 

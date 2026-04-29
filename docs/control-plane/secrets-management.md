@@ -1,5 +1,9 @@
 # Secrets Management (v2, enterprise)
 
+> **Status:** Partial — `aegis-proxy/src/secrets.rs` — `env` and `file` providers work. **Vault / AWS SM / GCP SM / Azure KV / HSM return `NotImplemented`.**
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **Enterprise addendum.** Secrets never live in `waf.yaml`. They are
 > referenced via `${secret:provider:path[#field]}` and resolved at
 > compile time by a pluggable provider stack. Rotation is push-based

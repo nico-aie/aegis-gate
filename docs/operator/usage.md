@@ -1,5 +1,9 @@
 # Aegis-Gate Usage & Operations Guide
 
+> **Status:** Implemented — Operator runbook current; references real `waf` subcommands.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 Complete guide to operating Aegis-Gate in development and production.
 
 ---

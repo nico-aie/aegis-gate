@@ -1,5 +1,9 @@
 # Reconnaissance Detection
 
+> **Status:** Implemented — `aegis-security/src/detectors/recon.rs`.
+>
+> See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Detect scanners, crawlers, and other reconnaissance activity before they find something exploitable. Reconnaissance is the quietest phase of an attack — identifying it early lets the WAF block the attacker before they pivot to exploitation.

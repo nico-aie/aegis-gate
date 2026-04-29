@@ -1,5 +1,9 @@
 # Brute Force & Credential Stuffing Detection
 
+> **Status:** Partial — `BruteForce` is a `DetectorClass` + admin-API surface; the detection itself is delivered through `velocity.rs` (login-failure counter). No dedicated `detectors/brute_force.rs`.
+>
+> See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Detect attempts to guess credentials — either by trying many passwords against one account (brute force) or trying one password against many accounts (credential stuffing). These are the most common attacks on login endpoints, and the most effective mitigation is at the WAF layer where the attacker can be stopped before the backend authentication system is even touched.

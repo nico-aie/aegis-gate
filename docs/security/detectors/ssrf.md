@@ -1,5 +1,9 @@
 # SSRF (Server-Side Request Forgery) Detection
 
+> **Status:** Implemented — `aegis-security/src/detectors/ssrf.rs`.
+>
+> See [`../../../plans/plan.md`](../../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 ## Purpose
 
 Detect requests that attempt to coerce the backend into making outbound connections to internal services, cloud metadata endpoints, or private networks. SSRF is especially dangerous on cloud platforms where the metadata service can leak credentials.

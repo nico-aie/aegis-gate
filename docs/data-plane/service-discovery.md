@@ -1,5 +1,9 @@
 # Service Discovery (v2, new, optional)
 
+> **Status:** Partial — `sd/mod.rs` ships file watcher + diff helpers + churn safety. **Consul / etcd / k8s adapters NOT implemented**.
+>
+> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+
 > **New in v2 (optional).** Populate upstream pool membership
 > dynamically from File, DNS SRV, Consul, etcd, or Kubernetes endpoints,
 > so backend scale-out / scale-in doesn't require a config edit.
