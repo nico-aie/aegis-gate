@@ -27,8 +27,10 @@ with_two_nodes
 # admin API yet — skip with a clear message.
 leader_view() {
   local admin="$1"
+  # Carry-over 3 surface lives at `/api/cluster`; the response
+  # carries `is_leader`, `leader_node`, and `our_node`.
   curl --silent --insecure --max-time 2 \
-       "$admin/api/cluster/leader" 2>/dev/null
+       "$admin/api/cluster" 2>/dev/null
 }
 
 view_a=$(leader_view "$NODE_A_ADMIN" || echo "")
@@ -92,10 +94,12 @@ echo "==> killing leader (node $leader, pid $leader_pid)"
 stop_node "$leader_pid"
 if [[ "$leader" == "A" ]]; then NODE_A_PID=""; else NODE_B_PID=""; fi
 
-# Survivor must claim the lease within 2 × heartbeat ≈ 4 s.
-# We give 10 s to absorb scheduler jitter on busy CI hosts.
+# Survivor must claim the lease within roughly
+# TTL + retry-half-TTL + leader-view-poll-period
+# (5 + 2.5 + 2 ≈ 10 s today). Give 25 s to absorb scheduler
+# jitter on busy CI hosts and the in-process polling cadence.
 acquired=""
-for _ in $(seq 1 40); do
+for _ in $(seq 1 100); do
   is_leader=$(leader_view "$survivor_admin" \
               | jq -r '.is_leader // false' 2>/dev/null \
               || echo "false")
@@ -107,7 +111,7 @@ for _ in $(seq 1 40); do
 done
 
 if [[ -z "$acquired" ]]; then
-  echo "FAIL: survivor (node $survivor) did not acquire leadership within 10 s"
+  echo "FAIL: survivor (node $survivor) did not acquire leadership within 25 s"
   exit 1
 fi
 ok "node $survivor took over leadership after $leader died"

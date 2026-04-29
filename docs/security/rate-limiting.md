@@ -4,10 +4,33 @@
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
-> **v1 → v2:** counters are now **clusterable**. The algorithm choice and
-> scoping are unchanged, but state lives behind a `StateBackend` trait so a
-> multi-node WAF fleet shares a single view of each limit. See
-> [`ha-clustering.md`](../operations/ha-clustering.md).
+> **Two limiter surfaces, two contracts** (clarified after
+> the 2026-04-29 cluster smoke surfaced the distinction):
+>
+> - **Per-IP volumetric guard** —
+>   `rate_limit::ip_limiter::IpRateLimiter` is the very-first
+>   thing the hot path calls in `handle_data_request`. It's a
+>   **per-node** sliding-window log keyed on `peer.ip()` with a
+>   local `DashMap`. It does **not** share state across
+>   cluster nodes — by design, because under DDoS each node
+>   should drop a flooding source independently rather than
+>   hop the cluster for every counter read. With N nodes
+>   and a budget B, the cluster admits up to N × B
+>   per-IP-per-window in the worst case; that's the contract.
+> - **Named-bucket limiter** —
+>   `rate_limit::sliding::check` is what `rate_limit.buckets[*]`
+>   blocks in YAML wire to. It takes a `&dyn StateBackend`,
+>   so when the cluster runs on Redis
+>   (`state.backend: redis`) every node reads + writes
+>   through the **shared** Redis primary — one counter per
+>   `(key, bucket)` for the whole fleet. This is the
+>   "clusterable" surface the v1 → v2 redesign promised.
+>
+> The two are distinct on purpose. If you want strictly
+> clustered per-IP enforcement, declare a route-level bucket
+> with `key: ip` and let the named-bucket limiter gate it;
+> the volumetric guard then acts as a fast local DDoS shield
+> in front of it.
 
 ## Purpose
 

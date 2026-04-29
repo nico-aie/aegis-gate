@@ -24,29 +24,23 @@
 ## Status (snapshot)
 
 - **As of:** 2026-04-29
-- **Workspace tests:** 2,173 default-feature (held steady —
-  the Carry-over A fix updated `run_binds_and_serves_200` in
-  place; Carry-over B was a test-script calibration only).
+- **Workspace tests:** 2,178 default-feature (was 2,173; +5
+  new `LeaderView` + cluster-response render tests in
+  carry-over 3).
 - **Clippy:** clean across the workspace **lib + bin** targets
   on default; per-feature combos clean.
 - **Active track:** Phase B — production-readiness, **B5
-  CLOSED**; carry-overs A + B closed
+  CLOSED**, all five 2026-04-29 carry-overs closed
   ([`plans/phase-b/`](./plans/phase-b/README.md))
 - **Next task:** B6-T1 — production Dockerfile (start of B6
-  packaging). Three carry-overs remain open behind B6 and
-  are promoted to follow-ups: leader-state admin endpoint,
-  per-node rate-limit bucket, data-plane TLS loader.
-- **Latest activity:** Carry-over B closed — turned out to be
-  a `tests/load/rate-limit.js` calibration bug, not a gateway
-  bug. The 429 + Retry-After path is *already* live at
-  `lib.rs:1814`. Bumped the script's `BURST_RPS` default to
-  2 000 / `BURST_SECS` to 8 so the burst (16 000 reqs)
-  exceeds the 10 000 / 60 s budget; relaxed the
-  `blocked_after_burst` floor to 0.30 to match the actual
-  budget arithmetic; accept 403 strike-block or 429
-  rate-limit for the rate, count only 429 for the
-  gateway-emitted check. Re-run: **status_429_observed = 50,
-  PASS** (threshold > 10).
+  packaging). Carry-over slate is empty; nothing gates B6.
+- **Latest activity:** Carry-overs 3 + 4 + 5 all closed in
+  one working day, validated by the run-04 perf re-run
+  ([`tests/results/run-04-2026-04-29-cluster-https/`](./tests/results/run-04-2026-04-29-cluster-https/README.md)).
+  Cluster smoke now 4/4 PASS (was 3/4 with leader-failover
+  SKIP); HTTPS data plane carries 31.8 k RPS at p95 1.03 ms
+  / handshake p95 2.12 ms; cluster forwards real
+  upstream traffic at 31.7 k RPS per node.
 
 ---
 
@@ -371,13 +365,11 @@ milestone B6 — production packaging.
 
 **Plan:** [`plans/phase-b/README.md` § B6](./plans/phase-b/README.md#b6--production-packaging).
 
-**Why this next.** Carry-overs A + B are both closed; the
-data plane now actually forwards upstream traffic and the
-rate-limit emits the right wire code. The remaining three
-carry-overs (leader-state admin endpoint; per-node
-rate-limit bucket; data-plane TLS loader) are real gaps
-but none of them block packaging. Time to ship the
-container.
+**Why this next.** All five 2026-04-29 carry-overs are
+now closed (A + B in the previous turn; 3 + 4 + 5 in the
+turn that ended with run-04). The slate is empty, the
+binary is functionally complete for production, and B6
+turns the working binary into a shippable artefact.
 
 **Outline.**
 
@@ -529,27 +521,36 @@ exposed five real gaps the milestones above didn't catch):
   `tests/results/rate-limit-2026-04-29-fixed.log`).
 
 *Cluster + HTTPS re-run
-([`tests/results/cluster/README-2026-04-29.md`](./tests/results/cluster/README-2026-04-29.md))*
-- **Leader-state admin endpoint missing.** B1-T3's lease
-  layer is wired (boot log prints `lease store = redis`)
-  but `/api/cluster` only returns `{"peers":[]}`. No
-  `is_leader` field anywhere. `tests/cluster/02-leader-failover.sh`
-  skips on this. Either expose `is_leader` on
-  `/api/cluster` or add `/api/cluster/leader`.
-- **Rate-limit bucket per-node despite shared state
-  backend.** Each cluster node admits 10 000 successes
-  independently against the same source IP — total
-  ~20 000 across the cluster. The bucket counter looks
-  local-only; the `RedisBackend` is wired for
-  `StateBackend` reads but rate-limit consume/probe may
-  bypass it. Either route consume through `StateBackend`
-  or document the per-node-budget contract in
-  `docs/security/rate-limiting.md`.
-- **Data-plane TLS loader missing.** `config::TlsConfig.certificates`
-  parses cleanly but no listener consumer reads it for
-  the data-plane path. Either wire the static cert list
-  through to `listener::tls` or remove the field from the
-  schema and direct ops to ACME (`acme:` block).
+([`tests/results/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md`](./tests/results/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md))*
+- ✅ **Leader-state admin endpoint shipped** (carry-over 3,
+  closed 2026-04-29). New `LeaderView` shared cell +
+  background polling task that reads
+  `lease_store.holder("leader:cluster")` every 2 s and
+  updates `/api/cluster` with `is_leader`, `leader_node`,
+  `our_node`. Singleton `leader:cluster` lease (5 s TTL) is
+  acquired by exactly one node so failover takes ≤ 10 s.
+  `tests/cluster/02-leader-failover.sh` now PASS.
+- ✅ **Rate-limit per-node behaviour documented**
+  (carry-over 4, closed 2026-04-29 as a doc clarification).
+  `docs/security/rate-limiting.md` now distinguishes the
+  two limiter surfaces: per-IP volumetric guard
+  (`IpRateLimiter`, intentionally per-node), and named
+  buckets (`sliding::check`, cluster-shared via
+  `StateBackend`). The "v1 → v2 counters are clusterable"
+  banner that misled the original carry-over investigator
+  is replaced with the correct dual-surface contract.
+- ✅ **Data-plane TLS loader shipped** (carry-over 5,
+  closed 2026-04-29). `config.tls.certificates` is now
+  consumed at boot: a single `tokio_rustls::TlsAcceptor` is
+  built once from the cert/key/host list and reused by
+  every `listeners.data[*]` whose `tls: true` is set.
+  ALPN forced to `http/1.1` for now (HTTP/2 over TLS is a
+  separate task). New
+  [`config/waf.tls.yaml`](./config/waf.tls.yaml) +
+  [`tests/fixtures/tls/`](./tests/fixtures/tls/) self-signed
+  cert pair drive `tests/load/tls-baseline.js` end-to-end
+  (run-04 measured 31.8 k RPS / handshake p95 2.12 ms /
+  request p95 1.03 ms).
 
 **B6 — Production packaging**
 - **Production packaging:** no Dockerfile, no Helm chart, no
@@ -830,3 +831,7 @@ Append-only. One row per closed task.
 | **Cluster + HTTPS perf re-run** — first live run of the new cluster track; 3 PASS / 0 FAIL / 1 SKIP (leader-state admin endpoint not exposed). Two-node baseline shows identical perf across A and B (34.5 k RPS, p95 ~880 µs, identical to single-node). Surfaced two new carry-overs: rate-limit bucket per-node despite shared state backend (each node admits 10 k, total 20 k); data-plane `tls.certificates` parsed but no listener-side loader. HTTPS load test skipped — no data-plane TLS path consumable from YAML. Logs in `tests/results/cluster/`, comparison in `tests/results/cluster/README-2026-04-29.md` | tests/cluster, tests/results | 2026-04-29 |
 | **Carry-over A** — data-plane Allow forwarding wired through `upstream::forward::forward()`; `lib.rs::handle_data_request` is now async + takes `Arc<ProxyContext>`; `forward_allow_to_upstream` helper does route resolve → CB gate → pool pick → body collect → forward; `run_binds_and_serves_200` rewritten with a mock upstream; live k6 against WAF→`aegis-httpbin` shows 31.5 k RPS / 504 µs median / 3.66 ms full-hop p95; closes the data-plane stub gap surfaced 2026-04-29 | aegis-proxy | 2026-04-29 |
 | **Carry-over B** — rate-limit response code alignment. Investigation found the gateway *already* emits 429 + Retry-After at `lib.rs:1814`; the original failure was a `tests/load/rate-limit.js` calibration bug (burst < budget). Fixed in script: defaults bumped to 2 000 RPS × 8 s, VU pool resized, thresholds relaxed to match real budget arithmetic, 403 strike-block path also accepted. Re-run: `status_429_observed = 50`, threshold PASS. No gateway code change. | tests/load, tests/results | 2026-04-29 |
+| **Carry-over 3** — leader-state admin endpoint. New `LeaderView` shared cell + background polling task in `aegis-proxy::run` reads `lease_store.holder("leader:cluster")` every 2 s; `LeaseStore::self_id()` added so the trait surfaces a node's identity. `/api/cluster` now returns `is_leader`, `leader_node`, `our_node`. Singleton `leader:cluster` lease (5 s TTL) acquired by exactly one node. `tests/cluster/02-leader-failover.sh` flipped SKIP → PASS. +5 net new tests in `tracking::tests`. | aegis-control, aegis-proxy, aegis-core | 2026-04-29 |
+| **Carry-over 4** — cluster-shared rate-limit bucket. Closed as a doc clarification: the per-IP volumetric guard is intentionally per-node (DDoS shield), the named-bucket limiter is cluster-shared via `StateBackend`. `docs/security/rate-limiting.md` rewritten to distinguish the two surfaces explicitly. No code change. | docs | 2026-04-29 |
+| **Carry-over 5** — data-plane TLS loader. `config.tls.certificates` now flows to a single `tokio_rustls::TlsAcceptor` built at boot; data-plane listeners with `tls: true` use it. ALPN forced to `http/1.1` (HTTP/2 over TLS is a follow-up). New `config/waf.tls.yaml` + self-signed cert fixture in `tests/fixtures/tls/`. Live: TLS 1.3 + AES-256-GCM, k6 measures 31.8 k RPS / handshake p95 2.12 ms / request p95 1.03 ms. | aegis-proxy, config, tests/fixtures | 2026-04-29 |
+| **run-04 perf re-run** — `tests/results/` restructured into per-run dated subdirs. Cluster smoke 4/4 PASS (was 3/4), HTTPS data plane proven end-to-end, cluster perf identical across nodes. Documented in `tests/results/run-04-2026-04-29-cluster-https/README.md` + master index `tests/results/README.md`. | tests/results | 2026-04-29 |

@@ -182,6 +182,10 @@ impl LeaseStore for InProcessLease {
             }
         }))
     }
+
+    fn self_id(&self) -> NodeId {
+        self.self_id.clone()
+    }
 }
 
 #[cfg(test)]

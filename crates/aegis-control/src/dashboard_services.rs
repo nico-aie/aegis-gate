@@ -96,6 +96,12 @@ pub struct DashboardServices {
     /// drain task subscribes to. Used by `/dashboard/sse` (B4-T4)
     /// and any future streaming surface that needs live events.
     pub bus: AuditBus,
+    /// Live cluster-leader view. `None` for single-node /
+    /// test builds; `Some` when `aegis-proxy::run` wires the
+    /// leader-poll background task. See
+    /// [`crate::api::tracking::LeaderView`] (carry-over 3,
+    /// post 2026-04-29 cluster smoke).
+    pub leader_view: Option<Arc<crate::api::tracking::LeaderView>>,
 }
 
 impl DashboardServices {
@@ -154,6 +160,46 @@ impl DashboardServices {
         admin_identity: Arc<AdminIdentity>,
         session_idle_seconds: u64,
     ) -> (Self, tokio::task::JoinHandle<()>) {
+        Self::spawn_with_mask_and_leader(
+            bus,
+            pool_snapshot,
+            environment,
+            detector_mask,
+            risk,
+            ip_rate_limiter,
+            load_gauge,
+            verbosity,
+            auth_sessions,
+            login_rate_limiter,
+            admin_identity,
+            session_idle_seconds,
+            None,
+        )
+    }
+
+    /// Same as [`spawn_with_mask`] but accepts a live
+    /// [`crate::api::tracking::LeaderView`]. The proxy's
+    /// `run()` builds one of these and threads it in so
+    /// `/api/cluster` reports `is_leader` + `leader_node`
+    /// correctly. Older call sites (tests, single-node
+    /// builds) keep using `spawn_with_mask` and get the
+    /// `None` placeholder behaviour.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_mask_and_leader(
+        bus: AuditBus,
+        pool_snapshot: PoolSnapshotProvider,
+        environment: Option<String>,
+        detector_mask: SharedDetectorMask,
+        risk: RiskTracker,
+        ip_rate_limiter: Arc<IpRateLimiter>,
+        load_gauge: LoadGauge,
+        verbosity: SharedVerbosity,
+        auth_sessions: Arc<AuthSessionStore>,
+        login_rate_limiter: Arc<LoginRateLimiter>,
+        admin_identity: Arc<AdminIdentity>,
+        session_idle_seconds: u64,
+        leader_view: Option<Arc<crate::api::tracking::LeaderView>>,
+    ) -> (Self, tokio::task::JoinHandle<()>) {
         let stats_agg = Arc::new(StatsAggregator::new());
         let attacks_agg = Arc::new(AttacksAggregator::new());
         let audit_ring = Arc::new(AuditRing::new());
@@ -190,7 +236,13 @@ impl DashboardServices {
         let upstreams = Arc::new(UpstreamHandler::new(move || {
             upstreams_pool_provider()
         }));
-        let tracking = Arc::new(TrackingHandler::new(Arc::clone(&upstreams)));
+        let tracking = Arc::new(match leader_view.as_ref() {
+            Some(lv) => TrackingHandler::with_leader_view(
+                Arc::clone(&upstreams),
+                Arc::clone(lv),
+            ),
+            None => TrackingHandler::new(Arc::clone(&upstreams)),
+        });
 
         let attacks = Arc::new(AttacksHandler::new(Arc::clone(&attacks_agg)));
 
@@ -254,6 +306,7 @@ impl DashboardServices {
                 session_idle_seconds,
                 environment,
                 bus: bus_handle,
+                leader_view,
             },
             drain,
         )

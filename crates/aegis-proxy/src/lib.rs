@@ -138,11 +138,70 @@ pub async fn run(
         )?,
     );
 
+    // Carry-over 5 (post-2026-04-29 cluster smoke) — build a
+    // single `TlsAcceptor` once if `cfg.tls.certificates` is
+    // populated. Each data listener that flips
+    // `tls: true` reuses this acceptor; the rest stay plain
+    // TCP. `key_ref` is treated as a file path here; secret-
+    // manager resolution (`${secret:vault:...}`) for keys is a
+    // separate task.
+    let tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>> =
+        match cfg.tls.as_ref() {
+            Some(tls_cfg) if !tls_cfg.certificates.is_empty() => {
+                let entries: Vec<(_, _, &[String])> = tls_cfg
+                    .certificates
+                    .iter()
+                    .map(|c| {
+                        let hosts: &[String] = &c.hosts;
+                        (c.cert_path.clone(), std::path::PathBuf::from(&c.key_ref), hosts)
+                    })
+                    .collect();
+                let store = crate::listener::tls::CertStore::load(&entries)
+                    .map_err(|e| {
+                        aegis_core::WafError::Config(format!(
+                            "tls.certificates: failed to load cert/key pairs: {e}"
+                        ))
+                    })?;
+                let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(
+                    Arc::new(arc_swap::ArcSwap::from_pointee(store)),
+                ));
+                let mut server_cfg = crate::listener::tls_policy::build_hardened_server_config(
+                    resolver,
+                    tls_cfg.min_version.as_deref(),
+                )
+                .map_err(|e| {
+                    aegis_core::WafError::Config(format!(
+                        "tls: rustls config build failed: {e}"
+                    ))
+                })?;
+                // Carry-over 5: the data-plane handler in
+                // `accept_loop` runs HTTP/1.1 only — restrict
+                // ALPN here so curl + browsers don't negotiate
+                // HTTP/2 and stall waiting for an H2 server.
+                // Auto-detecting HTTP/2 on the data plane is a
+                // separate task.
+                server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+                Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(
+                    server_cfg,
+                ))))
+            }
+            _ => None,
+        };
+
     // Data-plane listeners.
     for listener_cfg in &cfg.listeners.data {
         let addr = listener_cfg.bind;
         let tcp = tokio::net::TcpListener::bind(addr).await?;
-        tracing::info!("data-plane listening on {addr}");
+        let listener_tls = listener_cfg.tls;
+        tracing::info!(
+            "data-plane listening on {addr} (tls={})",
+            listener_tls
+        );
+        if listener_tls && tls_acceptor.is_none() {
+            return Err(aegis_core::WafError::Config(format!(
+                "listener {addr} has tls: true but no `tls.certificates` configured"
+            )));
+        }
 
         let detectors = detectors.clone();
         let mask = mask.clone();
@@ -153,6 +212,7 @@ pub async fn run(
         let request_stage_hist = request_stage_hist.clone();
         let bus = bus.clone();
         let upstream_ctx_l = upstream_ctx.clone();
+        let acceptor = if listener_tls { tls_acceptor.clone() } else { None };
         handles.push(tokio::spawn(accept_loop(
             tcp,
             detectors,
@@ -164,6 +224,7 @@ pub async fn run(
             request_stage_hist,
             bus,
             upstream_ctx_l,
+            acceptor,
         )));
     }
 
@@ -297,6 +358,7 @@ pub async fn run(
     let admin_load_gauge = load_gauge.clone();
     let admin_verbosity = verbosity.clone();
     let admin_metrics = metrics.clone();
+    let admin_lease_store = lease_store.clone();
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -308,6 +370,7 @@ pub async fn run(
         admin_load_gauge,
         admin_verbosity,
         admin_metrics,
+        admin_lease_store,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);
@@ -376,6 +439,7 @@ async fn admin_accept_loop(
     load_gauge: aegis_core::LoadGauge,
     verbosity: aegis_core::SharedVerbosity,
     metrics: aegis_control::metrics::MetricsRegistry,
+    lease_store: Arc<dyn aegis_core::cluster::LeaseStore>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -407,7 +471,67 @@ async fn admin_accept_loop(
     });
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
-    let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask(
+    // Carry-over 3 (post-2026-04-29 cluster smoke) — build a
+    // shared `LeaderView` and start a background poller that
+    // updates it from `lease_store.holder("leader:cluster")`
+    // every two seconds. The admin handler reads this view
+    // synchronously when `/api/cluster` is fetched.
+    let our_node_id = lease_store.self_id().as_str().to_string();
+    let leader_view = Arc::new(
+        aegis_control::api::tracking::LeaderView::new(our_node_id),
+    );
+
+    // Singleton "I am the cluster leader" lease — distinct
+    // from the per-task leases (`leader:acme`, `leader:gitops`,
+    // …) above. The runner does no work; it just holds the
+    // lease so exactly one node is identifiable as
+    // *the* cluster leader for admin / dashboard surfaces.
+    {
+        let lease_store_for_cluster = lease_store.clone();
+        // TTL kept tight (5 s) because this lease has zero
+        // task body — the failover budget is just
+        // TTL + retry-half-TTL + leader-view-poll-period
+        // (5 + 2.5 + 2 ≈ 10 s) which keeps
+        // `tests/cluster/02-leader-failover.sh` predictable.
+        crate::cluster_lease::spawn_with_lease(
+            lease_store_for_cluster,
+            "leader:cluster",
+            std::time::Duration::from_secs(5),
+            move |_holder, lost| async move {
+                // No-op factory — just wait until the lease
+                // is lost. The wrapper takes care of release.
+                lost.notified().await;
+            },
+        );
+    }
+
+    {
+        let store: Arc<dyn aegis_core::cluster::LeaseStore> =
+            Arc::clone(&lease_store);
+        let lv = Arc::clone(&leader_view);
+        tokio::spawn(async move {
+            let key = "leader:cluster".to_string();
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                match store.holder(&key).await {
+                    Ok(holder) => {
+                        let h: Option<String> =
+                            holder.map(|n: aegis_core::cluster::NodeId| {
+                                n.as_str().to_string()
+                            });
+                        lv.set_holder(h);
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "leader-view poll failed");
+                    }
+                }
+            }
+        });
+    }
+
+    let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask_and_leader(
         bus,
         pool_provider,
         cfg.admin.environment.clone(),
@@ -420,6 +544,7 @@ async fn admin_accept_loop(
         login_rate_limiter,
         admin_identity,
         session_idle_seconds,
+        Some(Arc::clone(&leader_view)),
     );
     let services = Arc::new(services);
 
@@ -1617,6 +1742,7 @@ async fn accept_loop(
     request_stage_hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     bus: AuditBus,
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
+    tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
 ) {
     loop {
         let (stream, peer) = match tcp.accept().await {
@@ -1636,8 +1762,8 @@ async fn accept_loop(
         let request_stage_hist = request_stage_hist.clone();
         let bus = bus.clone();
         let upstream_ctx = upstream_ctx.clone();
+        let acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
-            let io = TokioIo::new(stream);
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let detectors = detectors.clone();
                 let mask = mask.clone();
@@ -1665,8 +1791,38 @@ async fn accept_loop(
                 }
             });
 
-            if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
-                tracing::debug!("connection from {peer} closed: {e}");
+            // Carry-over 5 — when the listener is configured
+            // for TLS, do the rustls handshake first, then
+            // serve hyper over the encrypted stream. Otherwise
+            // serve plain HTTP/1.1 directly.
+            match acceptor {
+                Some(acc) => match acc.accept(stream).await {
+                    Ok(tls_stream) => {
+                        let io = TokioIo::new(tls_stream);
+                        if let Err(e) = http1::Builder::new()
+                            .serve_connection(io, svc)
+                            .await
+                        {
+                            tracing::debug!(
+                                "tls connection from {peer} closed: {e}"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "tls handshake from {peer} failed: {e}"
+                        );
+                    }
+                },
+                None => {
+                    let io = TokioIo::new(stream);
+                    if let Err(e) = http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await
+                    {
+                        tracing::debug!("connection from {peer} closed: {e}");
+                    }
+                }
             }
         });
     }
@@ -2213,6 +2369,7 @@ state:
             request_stage_hist,
             bus,
             upstream_ctx,
+            None, // no tls_acceptor in this plain-http test
         ));
 
         // Give the accept loop a moment to start.

@@ -310,6 +310,10 @@ impl LeaseStore for RedisLease {
                 .map(|(holder, _fence)| NodeId::new(holder))
         }))
     }
+
+    fn self_id(&self) -> NodeId {
+        self.self_id.clone()
+    }
 }
 
 // Quiet the linter — `SystemTime` is conditionally used by future

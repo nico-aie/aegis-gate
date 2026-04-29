@@ -1,15 +1,21 @@
-# Aegis-Gate — Cluster Node B (HA test fixture)
+# Aegis-Gate — Data-plane TLS test fixture (carry-over 5)
 #
-# See `waf.cluster-a.yaml` for orientation. Only the bind ports
-# differ; both nodes target the same Redis primary so per-IP
-# rate-limit counters + block lists are shared.
+# Mirrors waf.test.yaml but flips the data-plane listener to
+# TLS:8443 and points at the self-signed cert in
+# tests/fixtures/tls/. Used by tests/load/tls-baseline.js to
+# exercise the HTTPS data-plane path end-to-end.
+#
+# DO NOT use this config in production:
+#   - the cert is self-signed
+#   - the key is in version control
+#   - admin password is the test default
 
 listeners:
   data:
-    - bind: "0.0.0.0:8090"
-      tls: false
+    - bind: "0.0.0.0:8443"
+      tls: true
   admin:
-    bind: "127.0.0.1:9543"
+    bind: "127.0.0.1:9443"
 
 routes:
   - id: catch-all
@@ -23,14 +29,19 @@ upstreams:
       - addr: "127.0.0.1:8081"
     lb: round_robin
 
+# Carry-over 5 wired this through to the listener — when the
+# data listener has tls: true and tls.certificates is non-empty,
+# the proxy builds a `tokio_rustls::TlsAcceptor` once and uses
+# it for every accepted connection on that listener.
+tls:
+  certificates:
+    - cert_path: "tests/fixtures/tls/cert.pem"
+      key_ref: "tests/fixtures/tls/key.pem"
+      hosts: ["127.0.0.1", "localhost"]
+  min_version: "1.2"
+
 state:
-  backend: redis
-  redis:
-    urls: ["redis://127.0.0.1:6379"]
-    pool_size: 8
-    timeout: "1s"
-  reconcile:
-    readiness_warm_ms: "5s"
+  backend: in_memory
 
 detectors:
   sqli:             { enabled: true }

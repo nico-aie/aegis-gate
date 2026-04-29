@@ -124,6 +124,16 @@ pub trait LeaseStore: Send + Sync + 'static {
     /// Observability — who currently holds `key`? Returns `None`
     /// if no live holder.
     async fn holder(&self, key: &str) -> Result<Option<NodeId>>;
+
+    /// The identity *this* store acquires leases under. Used by
+    /// admin observability surfaces (carry-over 3, post
+    /// 2026-04-29 cluster smoke) to render
+    /// `is_leader = self_id() == holder("leader:cluster")`.
+    /// Default impl returns "unknown" so existing concrete
+    /// stores compile without change; in-tree impls override.
+    fn self_id(&self) -> NodeId {
+        NodeId::new("unknown")
+    }
 }
 
 #[cfg(test)]
