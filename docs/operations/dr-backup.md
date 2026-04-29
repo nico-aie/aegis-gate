@@ -1,6 +1,17 @@
 # Disaster Recovery & Backup (v2, enterprise)
 
-> **Status:** Partial — `aegis-proxy/src/dr.rs` ships `SnapshotMeta` + struct shape; the `waf snapshot` / `waf restore` CLI + `.tar.zst` writer are **not wired**.
+> **Status:** Implemented (config/rules round-trip) —
+> `waf snapshot --output <path>` and `waf restore --from
+> <path>` ship in `aegis-bin::snapshot`. The envelope is
+> a self-describing JSON document (`schema_version`,
+> `binary_version`, blake3 `config_hash`, `node_id`,
+> `created_at`, plus `config_yaml` and every referenced
+> rules file). Restore validates schema + binary major +
+> hash + dry-run-loads the YAML before committing.
+> State-backend snapshots (Redis RDB) and audit-log
+> restore remain operator-driven via the external systems
+> documented below — only the WAF's own config + rules
+> surface ships through this CLI.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 

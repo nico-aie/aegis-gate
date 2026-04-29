@@ -3,6 +3,9 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "taxii")]
+pub mod taxii;
+
 /// Threat intel indicator.
 #[derive(Clone, Debug)]
 pub struct Indicator {

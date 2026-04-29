@@ -25,6 +25,7 @@ http = "1"
 bytes = "1"
 hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1", "http2", "server-auto"] }
+http-body = "1"
 http-body-util = "0.1"
 
 # Serialization
@@ -77,7 +78,7 @@ chrono = { version = "0.4", features = ["serde"] }
 jsonwebtoken = "9"
 
 # Streams
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync", "time"] }
 
 # Testing
 tokio-test = "0.4"
@@ -125,3 +126,17 @@ aws-sdk-secretsmanager = { version = "1.49", default-features = false, features 
 # pull (tonic + prost). `base64` decodes the API's payload.
 gcp_auth = { version = "0.12", default-features = false, features = ["webpki-roots"] }
 base64 = "0.22"
+
+# MaxMind GeoIP2 reader (B3-T3 — Phase B). Pulled only via the
+# `aegis-security/geoip` feature. Pure-Rust mmap reader for
+# `.mmdb` files — works for both GeoLite2-Country and
+# GeoLite2-ASN.
+maxminddb = "0.24"
+
+# HTTP/3 stack (B5-T1 — Phase B). Pulled only via the
+# `aegis-proxy/http3` feature so the QUIC dep tree (quinn + h3)
+# stays out of single-protocol builds. Versions pinned to the
+# combination that builds cleanly against rustls 0.23.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
+h3 = "0.0.8"
+h3-quinn = "0.0.10"

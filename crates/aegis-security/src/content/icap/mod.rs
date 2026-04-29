@@ -1,5 +1,19 @@
-/// ICAP antivirus integration (RFC 3507 stub).
-///
+//! ICAP antivirus integration (RFC 3507).
+//!
+//! - [`IcapClient`] is the trait the rest of the gateway
+//!   talks to. [`StubIcapClient`] is the in-process EICAR
+//!   detector used in tests.
+//! - [`tcp::IcapTcpClient`] is the real TCP client — speaks
+//!   RFC 3507 against an external scanner (c-icap, Symantec,
+//!   McAfee, Sophos, Trend Micro …) on default port 1344.
+//! - [`codec`] holds the pure framing helpers so the client
+//!   wire-format is fully testable without I/O.
+
+pub mod codec;
+pub mod tcp;
+
+pub use tcp::{IcapTcpClient, IcapTcpError, IcapTcpOptions};
+
 /// ICAP mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IcapMode {

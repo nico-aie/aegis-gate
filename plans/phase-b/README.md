@@ -56,7 +56,18 @@ carry-over from `Implement-Progress.md`.
 
 ---
 
-### B2 — Operational integrations
+### B2 — Operational integrations — ✅ CLOSED 2026-04-29
+
+All seven sub-tasks shipped: cloud-secrets quartet (vault,
+aws, gcp, azure) + the three production service registries
+(consul, etcd, k8s).
+[`docs/control-plane/secrets-management.md`](../../docs/control-plane/secrets-management.md)
+and
+[`docs/data-plane/service-discovery.md`](../../docs/data-plane/service-discovery.md)
+both flipped Partial → Implemented; HSM (B6-T4) and DNS SRV
+remain on the deferred list.
+
+#### Original B2 plan (preserved for reference)
 
 Production deployments need real secret managers and real service
 discovery. The trait surface exists; concrete drivers do not.
@@ -92,56 +103,67 @@ dev/UAT bot; operators override via
 
 ---
 
-### B3 — Data feeds + filtering
+### B3 — Data feeds + filtering — ✅ CLOSED 2026-04-29
 
-Closes the remaining security-policy gaps surfaced by the audit.
+All four sub-tasks shipped:
 
 | Task | Outcome |
 |---|---|
-| **B3-T1** Built-in git poll-and-pull driver | Concrete `GitClient` impl using `gix` or `git2`. Polls a remote repo, pulls signed commits, runs the existing `dry_run_validate`, applies on success. Fits behind the existing `gitops::GitOpsLoader`. |
-| **B3-T2** STIX / TAXII fetch loop | Background task that pulls STIX 2.1 from a TAXII collection and feeds `ThreatIntelStore::insert_indicator`. Configurable interval, leader-only (gated by B1-T4). |
-| **B3-T3** GeoIP MaxMind reader | New `aegis-security/src/geoip/`. Reads `GeoLite2-Country.mmdb` + `GeoLite2-ASN.mmdb`. New rule-engine condition `Country(<code>)` and `Asn(<num>)`. Hot-reload on file change. |
-| **B3-T4** Concrete ICAP TCP client | Implement `IcapClient` (`aegis-security/src/content/icap.rs`) — RFC 3507 REQMOD/RESPMOD over TCP. Configurable scan timeout, fail-open on timeout (configurable). |
+| **B3-T1** Built-in git poll-and-pull driver | `aegis-control/gitops/poll_driver.rs` — `GitPollDriver` shells out to system `git` for clone/fetch/show/verify-commit; signature parser; read-only by design. +9 tests. |
+| **B3-T2** STIX / TAXII fetch loop | `aegis-security/taxii` Cargo feature; TAXII 2.1 client + paginated fetcher + STIX 2.1 pattern decoder feeding `ThreatIntelStore`. +38 tests. |
+| **B3-T3** GeoIP MaxMind reader | `aegis-security/geoip` Cargo feature; `MaxMindReader` w/ atomic hot-reload; rule engine grew `country` / `asn` conditions threaded via new `EvalContext`. +23 tests. |
+| **B3-T4** Concrete ICAP TCP client | `content/icap/{codec,tcp}.rs` — RFC 3507 REQMOD/RESPMOD TCP client; pure framing helpers; decision table for 5 vendor infection-header forms; configurable timeout + fail-open default. +35 tests. |
 
-**Doc updates on close:** flip banners on
-[`gitops-change-management.md`](../../docs/control-plane/gitops-change-management.md),
+**Doc updates on close:**
 [`threat-intelligence.md`](../../docs/security/threat-intelligence.md),
 [`geoip-filtering.md`](../../docs/security/geoip-filtering.md),
-and [`content-scanning.md`](../../docs/security/content-scanning.md).
+and [`content-scanning.md`](../../docs/security/content-scanning.md)
+all flipped Partial → Implemented.
+[`gitops-change-management.md`](../../docs/control-plane/gitops-change-management.md)
+banner stays Partial until the boot-site lease-gate wrap lands —
+the driver itself ships, but multi-node deployments need
+`spawn_with_lease("leader:gitops", …)` at `aegis-bin` /
+`aegis-proxy::run` to avoid double-applying commits.
 
 ---
 
-### B4 — Operator tooling
+### B4 — Operator tooling — ✅ CLOSED 2026-04-29
 
-`waf snapshot` / `waf restore` already have a `SnapshotMeta` shape
-in `aegis-proxy/src/dr.rs`; this milestone wires them as real CLI
-subcommands. Adds the upstream-proxying maturity that the audit
-flagged.
+All four sub-tasks shipped:
 
 | Task | Outcome |
 |---|---|
-| **B4-T1** `waf snapshot` CLI | New subcommand in `aegis-bin`. Writes effective config + rules + version stamp into a `.tar.zst` with an embedded `SnapshotMeta`. |
-| **B4-T2** `waf restore` CLI | Reads a snapshot, runs `dry_run_validate`, then applies via the existing hot-reload path. Refuses to restore across a major-version break. |
-| **B4-T3** Full upstream proxying | Replace the "OK" stub in `aegis-proxy/src/proxy.rs` with a real TCP/HTTP client that proxies to selected pool members, honors retry/circuit-breaker policy. |
-| **B4-T4** Full SSE streaming on `/dashboard/sse` | Replace the one-event-then-close stub with a streaming hyper body that subscribes to the `AuditBus` and writes events as they arrive, with backpressure + heartbeat. |
+| **B4-T1** `waf snapshot` CLI | `aegis-bin::snapshot` writes a JSON envelope (config + rules + blake3 hash + schema versioning); refuses overwrite without `--force`. +15 tests. |
+| **B4-T2** `waf restore` CLI | `restore_envelope` w/ atomic temp-write + `aegis_core::load_config` dry-run + rollback on failure. +10 tests. |
+| **B4-T3** Full upstream proxying | `upstream::forward` replaces the stub: hop-by-hop scrub on both directions, `Host` rewrite + `X-Forwarded-Host`, body byte-for-byte. +14 forward + 5 proxy end-to-end tests. |
+| **B4-T4** Full SSE streaming on `/dashboard/sse` | `admin_sse::sse_response` returns `UnsyncBoxBody<Bytes, Infallible>` driven by a `BroadcastStream` merged with an idle heartbeat tick; preamble + per-event `data:` frames + 15s heartbeat + lag handling. +8 tests. |
 
-**Doc updates on close:** flip
-[`dr-backup.md`](../../docs/operations/dr-backup.md) to
-**Implemented**; remove the upstream-proxy + SSE rows from the
-carry-overs list.
+**Doc updates on close:**
+[`dr-backup.md`](../../docs/operations/dr-backup.md) flipped
+Partial → Implemented for the config/rules surface (B4-T1 +
+B4-T2). Upstream-proxy + SSE carry-overs removed.
 
 ---
 
-### B5 — Protocols + benchmark
+### B5 — Protocols + benchmark — ✅ CLOSED 2026-04-29
+
+Both sub-tasks shipped:
 
 | Task | Outcome |
 |---|---|
-| **B5-T1** HTTP/3 listener | Add `quinn` + `h3` deps, terminate QUIC alongside the existing TLS listener. Reuse the same routing + security pipeline. Negotiate via Alt-Svc. |
-| **B5-T2** Benchmark mode (folds in existing `plans/benchmark-mode.md`) | B-T1..B-T6 already specced. Land `X-Aegis-*` response headers + dashboard panels + Prometheus series. Gated, opt-in, default off. |
+| **B5-T1** HTTP/3 listener | `aegis-proxy/http3` Cargo feature ships `listener::http3` on quinn 0.11 + h3 0.0.8 + h3-quinn 0.0.10; pure helpers for Alt-Svc + ALPN; runtime path dispatches QUIC streams through `proxy::handle_request`. +15 tests. |
+| **B5-T2** Benchmark mode (core slice) | `aegis-proxy::benchmark` ships `BenchmarkConfig` + `StageTimings` + `X-Aegis-*` header serialiser, wired into `proxy::handle_request` with per-request total + route + upstream timings, plus tier + decision. IP allowlist / HMAC tokens / per-detector timing / dashboard panel deferred to follow-ups. +21 unit + 2 proxy end-to-end tests. |
 
-**Doc updates on close:** flip
+**Doc updates on close:**
 [`protocols.md`](../../docs/architecture/protocols.md) and
-[`benchmark-mode.md`](../../docs/operator/benchmark-mode.md).
+[`benchmark-mode.md`](../../docs/operator/benchmark-mode.md)
+both flipped Designed/Partial → Implemented.
+
+**Carry-over:** auto-stamping `Alt-Svc` on every TLS
+response (the helper exists, the wire-up at the TLS
+listener does not yet) and the full benchmark-mode plan
+(B-T1..B-T6) — IP allowlist, HMAC tokens, per-detector
+timing, dashboard panel — remain open.
 
 ---
 

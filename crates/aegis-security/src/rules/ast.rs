@@ -101,6 +101,14 @@ pub enum Condition {
     BotClass(Vec<String>),
     ThreatFeed { id: String, min_confidence: u32 },
     SchemaViolation,
+    /// Match peer IP's country code (ISO-3166 alpha-2, e.g. `["CN","RU"]`).
+    /// Codes are compared case-insensitively. Requires a `GeoIpLookup`
+    /// in `EvalContext`; falls through to false otherwise.
+    Country(Vec<String>),
+    /// Match peer IP's autonomous system number. Requires a
+    /// `GeoIpLookup` in `EvalContext`; falls through to false
+    /// otherwise.
+    Asn(Vec<u32>),
     True,
 }
 
@@ -168,6 +176,8 @@ impl<'de> Deserialize<'de> for Condition {
                         let tf: TF = map.next_value()?;
                         Ok(Condition::ThreatFeed { id: tf.id, min_confidence: tf.min_confidence })
                     }
+                    "country" => Ok(Condition::Country(map.next_value()?)),
+                    "asn" => Ok(Condition::Asn(map.next_value()?)),
                     _ => Err(de::Error::custom(format!("unknown condition: {key}"))),
                 }
             }

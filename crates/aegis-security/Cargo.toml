@@ -4,6 +4,20 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Off by default. With `taxii`, `threat_intel::taxii` exposes a
+# real TAXII 2.1 client + background fetcher loop that feeds
+# `ThreatIntelStore`. Without it, the module is absent — the
+# store still exists for in-memory / file-loaded feeds.
+default = []
+taxii = ["dep:reqwest"]
+# Off by default. With `geoip`, `geoip::MaxMindReader` opens
+# MaxMind `.mmdb` files (Country + ASN); without it, the
+# `geoip` module is absent. The new rule-engine
+# `country` / `asn` conditions still parse — they just
+# evaluate to false when no reader is wired.
+geoip = ["dep:maxminddb"]
+
 [dependencies]
 aegis-core = { path = "../aegis-core" }
 arc-swap.workspace = true
@@ -20,6 +34,12 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+# Optional — gated by the `taxii` feature.
+reqwest = { workspace = true, optional = true }
+
+# Optional — gated by the `geoip` feature.
+maxminddb = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

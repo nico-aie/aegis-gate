@@ -37,3 +37,4 @@ reqwest = { workspace = true, optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 parking_lot.workspace = true
+tempfile = "3"

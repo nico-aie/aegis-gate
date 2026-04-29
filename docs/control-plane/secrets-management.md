@@ -1,8 +1,8 @@
 # Secrets Management (v2, enterprise)
 
-> **Status:** Partial — `aegis-proxy/src/secrets.rs` — `env` and `file` providers work. **Vault / AWS SM / GCP SM / Azure KV / HSM return `NotImplemented`.**
+> **Status:** Implemented (cloud quartet) — `aegis-proxy/src/secrets/`. Built-in: `env`, `file` (sync). Feature-gated: `vault` (KV-v2), `aws` (Secrets Manager via official SDK), `gcp` (Secret Manager via REST + `gcp_auth`), `azure` (Key Vault via REST + hand-rolled SP/IMDS auth). All four cloud resolvers route through `secrets/json_field.rs` for JSON-or-plain-string field extraction. **HSM** still returns `NotImplemented` (Phase B-6 follow-up).
 >
-> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+> See [`../../plans/implementation-matrix.md`](../../plans/implementation-matrix.md) for the full matrix.
 
 > **Enterprise addendum.** Secrets never live in `waf.yaml`. They are
 > referenced via `${secret:provider:path[#field]}` and resolved at

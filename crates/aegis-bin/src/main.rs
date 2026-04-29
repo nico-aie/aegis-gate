@@ -4,6 +4,7 @@ use std::sync::Arc;
 use aegis_core::{AuditBus, ReadinessSignal};
 
 mod lease_select;
+mod snapshot;
 mod state_select;
 
 fn main() {
@@ -26,6 +27,8 @@ fn main() {
         "validate" => cmd_validate(&args),
         "audit" => cmd_audit(&args),
         "admin" => cmd_admin(&args),
+        "snapshot" => snapshot::cmd_snapshot(&args),
+        "restore" => snapshot::cmd_restore(&args),
         "version" => {
             println!(
                 "aegis-gate {} ({})",
@@ -315,6 +318,8 @@ fn print_help() {
     println!("    audit     verify --from <path> Verify audit chain integrity");
     println!("    admin     set-password          Hash admin password (argon2id)");
     println!("    admin     enroll-totp           Generate TOTP secret + recovery codes");
+    println!("    snapshot  --output <path>       Bundle effective config + rules into a JSON snapshot");
+    println!("    restore   --from <path>         Restore config + rules from a snapshot (validates first)");
     println!("    version                         Show version");
     println!("    help                            Show this help");
     println!();

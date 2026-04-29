@@ -1,8 +1,8 @@
 # Service Discovery (v2, new, optional)
 
-> **Status:** Partial — `sd/mod.rs` ships file watcher + diff helpers + churn safety. **Consul / etcd / k8s adapters NOT implemented**.
+> **Status:** Implemented — `sd/mod.rs` ships file watcher + `diff_members` + churn safety; feature-gated `consul` (`sd/consul.rs` — blocking-query watcher), `etcd` (`sd/etcd.rs` — v3 REST gateway range polling), and `k8s` (`sd/k8s.rs` — EndpointSlice streaming watch) round out the production registries. DNS SRV remains designed-only and is a Phase B candidate.
 >
-> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+> See [`../../plans/implementation-matrix.md`](../../plans/implementation-matrix.md) for the full matrix.
 
 > **New in v2 (optional).** Populate upstream pool membership
 > dynamically from File, DNS SRV, Consul, etcd, or Kubernetes endpoints,

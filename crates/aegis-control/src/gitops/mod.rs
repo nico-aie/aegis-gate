@@ -9,6 +9,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
+pub mod poll_driver;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------

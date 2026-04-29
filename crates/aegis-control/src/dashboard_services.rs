@@ -92,6 +92,10 @@ pub struct DashboardServices {
     /// Idle TTL the login handler stamps on the session cookie.
     pub session_idle_seconds: u64,
     pub environment: Option<String>,
+    /// Live audit bus — a clone of the broadcast handle the
+    /// drain task subscribes to. Used by `/dashboard/sse` (B4-T4)
+    /// and any future streaming surface that needs live events.
+    pub bus: AuditBus,
 }
 
 impl DashboardServices {
@@ -163,6 +167,7 @@ impl DashboardServices {
         let sessions = Arc::new(SessionStore::new());
         let break_glass = Arc::new(BreakGlass::new());
         let mutate = Arc::new(AuditedMutate::new(bus.clone()));
+        let bus_handle = bus.clone();
 
         // Stats handler reduces the full pool snapshot to the
         // embedded `UpstreamSummary` (no per-pool list — that's
@@ -248,6 +253,7 @@ impl DashboardServices {
                 admin_identity,
                 session_idle_seconds,
                 environment,
+                bus: bus_handle,
             },
             drain,
         )

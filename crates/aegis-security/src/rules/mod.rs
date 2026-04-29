@@ -13,7 +13,7 @@ use linter::LintError;
 use parser::ParseError;
 
 pub use ast::{Condition, MatchOp, RuleAction, Scope};
-pub use eval::evaluate;
+pub use eval::{evaluate, evaluate_with_ctx, EvalContext};
 pub use parser::parse;
 
 /// Thread-safe rule set with hot-reload.

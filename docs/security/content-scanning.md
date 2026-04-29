@@ -1,6 +1,16 @@
 # Content Scanning (ICAP / AV) (v2, enterprise)
 
-> **Status:** Partial — `content/{archive,icap,mod}.rs` — archive-bomb guard real, **ICAP client is a trait + types stub** (no concrete TCP client).
+> **Status:** Implemented —
+> `content::icap` ships the trait + an in-process
+> `StubIcapClient` and the `IcapTcpClient` real RFC 3507 TCP
+> client. Pure `codec` helpers handle wire framing
+> (REQMOD/RESPMOD, chunked body, `Encapsulated:` offsets,
+> response decode); default decision table covers c-icap /
+> Symantec / Sophos / McAfee / Trend Micro infection
+> headers (`X-Infection-Found`, `X-Virus-ID`,
+> `X-Violations-Found`). Configurable scan timeout,
+> fail-open default. Archive-bomb guard remains in
+> `content::archive`.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 

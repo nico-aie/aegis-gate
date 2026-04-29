@@ -14,6 +14,7 @@ pub mod ddos;
 pub mod detectors;
 pub mod dlp;
 pub mod fingerprint;
+pub mod geoip;
 pub mod ip_rep;
 pub mod noop;
 pub mod pipeline;

@@ -1,13 +1,58 @@
+use std::sync::Arc;
+
 use aegis_core::context::RouteCtx;
 use aegis_core::decision::{Action, ChallengeLevel, Decision};
 use aegis_core::pipeline::RequestView;
 
+use crate::geoip::GeoIpLookup;
+
 use super::ast::{Condition, MatchOp, Rule, RuleAction, Scope};
+
+/// Side-channel context the evaluator uses for conditions that
+/// can't be answered from `RequestView` alone (currently:
+/// `Country`, `Asn`).
+///
+/// All fields are optional — when a feature isn't wired the
+/// matching condition simply evaluates to `false`, mirroring
+/// the existing `JwtClaim` / `BotClass` / `ThreatFeed`
+/// behaviour. This keeps every rule file backwards-compatible
+/// regardless of which features the build was compiled with.
+#[derive(Clone, Default)]
+pub struct EvalContext {
+    /// GeoIP lookup. When `None`, `Country` / `Asn` always
+    /// match `false`.
+    pub geoip: Option<Arc<dyn GeoIpLookup>>,
+}
+
+impl EvalContext {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn with_geoip(mut self, geoip: Arc<dyn GeoIpLookup>) -> Self {
+        self.geoip = Some(geoip);
+        self
+    }
+}
 
 /// Evaluate rules against a request.  Rules are evaluated in priority order
 /// (highest first).  Terminal actions short-circuit; non-terminal actions
 /// (RaiseRisk, LogOnly) accumulate and evaluation continues.
+///
+/// Backwards-compatible shim — calls
+/// [`evaluate_with_ctx`] with an empty [`EvalContext`].
 pub fn evaluate(rules: &[Rule], req: &RequestView<'_>, route: &RouteCtx) -> Decision {
+    evaluate_with_ctx(rules, req, route, &EvalContext::empty())
+}
+
+/// Like [`evaluate`] but threads an [`EvalContext`] through to
+/// `Country` / `Asn` conditions.
+pub fn evaluate_with_ctx(
+    rules: &[Rule],
+    req: &RequestView<'_>,
+    route: &RouteCtx,
+    ctx: &EvalContext,
+) -> Decision {
     let mut sorted: Vec<&Rule> = rules.iter().collect();
     sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
 
@@ -25,7 +70,7 @@ pub fn evaluate(rules: &[Rule], req: &RequestView<'_>, route: &RouteCtx) -> Deci
             }
         }
 
-        if !matches_condition(&rule.condition, req) {
+        if !matches_condition(&rule.condition, req, ctx) {
             continue;
         }
 
@@ -94,12 +139,12 @@ pub fn evaluate(rules: &[Rule], req: &RequestView<'_>, route: &RouteCtx) -> Deci
     }
 }
 
-fn matches_condition(cond: &Condition, req: &RequestView<'_>) -> bool {
+fn matches_condition(cond: &Condition, req: &RequestView<'_>, ctx: &EvalContext) -> bool {
     match cond {
         Condition::True => true,
-        Condition::All(children) => children.iter().all(|c| matches_condition(c, req)),
-        Condition::Any(children) => children.iter().any(|c| matches_condition(c, req)),
-        Condition::Not(inner) => !matches_condition(inner, req),
+        Condition::All(children) => children.iter().all(|c| matches_condition(c, req, ctx)),
+        Condition::Any(children) => children.iter().any(|c| matches_condition(c, req, ctx)),
+        Condition::Not(inner) => !matches_condition(inner, req, ctx),
         Condition::Method(methods) => {
             let m = req.method.as_str();
             methods.iter().any(|allowed| allowed.eq_ignore_ascii_case(m))
@@ -155,6 +200,20 @@ fn matches_condition(cond: &Condition, req: &RequestView<'_>) -> bool {
                     || cidr == &ip_str
             })
         }
+        Condition::Country(codes) => match &ctx.geoip {
+            Some(geoip) => match geoip.country(req.peer.ip()) {
+                Some(c) => codes.iter().any(|wanted| wanted.eq_ignore_ascii_case(&c)),
+                None => false,
+            },
+            None => false,
+        },
+        Condition::Asn(asns) => match &ctx.geoip {
+            Some(geoip) => match geoip.asn(req.peer.ip()) {
+                Some(found) => asns.contains(&found),
+                None => false,
+            },
+            None => false,
+        },
         // These require external context not available in simple eval:
         Condition::JwtClaim { .. }
         | Condition::BotClass(_)
@@ -522,6 +581,159 @@ mod tests {
         assert!(matches!(
             d.action,
             Action::RateLimited { retry_after_s: 60 }
+        ));
+    }
+
+    // ---- Country / ASN conditions (B3-T3) ----
+
+    fn country_block_rule(codes: &[&str]) -> Rule {
+        Rule {
+            id: "geo-block".into(),
+            priority: 100,
+            scope: Scope::Global,
+            condition: Condition::Country(codes.iter().map(|s| s.to_string()).collect()),
+            action: RuleAction::Block { status: 451 },
+        }
+    }
+
+    fn asn_block_rule(asns: &[u32]) -> Rule {
+        Rule {
+            id: "asn-block".into(),
+            priority: 100,
+            scope: Scope::Global,
+            condition: Condition::Asn(asns.to_vec()),
+            action: RuleAction::Block { status: 403 },
+        }
+    }
+
+    fn ctx_with_country(ip: &str, code: &str) -> EvalContext {
+        let geo = crate::geoip::StaticGeoIp::new().with_country(ip, code);
+        EvalContext::empty().with_geoip(Arc::new(geo))
+    }
+
+    fn ctx_with_asn(ip: &str, asn: u32) -> EvalContext {
+        let geo = crate::geoip::StaticGeoIp::new().with_asn(ip, asn);
+        EvalContext::empty().with_geoip(Arc::new(geo))
+    }
+
+    #[test]
+    fn country_condition_blocks_matching_country() {
+        let rules = vec![country_block_rule(&["CN", "RU"])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        let ctx = ctx_with_country("127.0.0.1", "CN");
+        let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        assert!(matches!(d.action, Action::Block { status: 451 }));
+    }
+
+    #[test]
+    fn country_condition_allows_non_matching_country() {
+        let rules = vec![country_block_rule(&["CN", "RU"])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        let ctx = ctx_with_country("127.0.0.1", "US");
+        let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        assert!(matches!(d.action, Action::Allow));
+    }
+
+    #[test]
+    fn country_condition_is_case_insensitive() {
+        let rules = vec![country_block_rule(&["cn"])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        let ctx = ctx_with_country("127.0.0.1", "CN");
+        let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        assert!(matches!(d.action, Action::Block { .. }));
+    }
+
+    #[test]
+    fn country_condition_returns_false_when_no_geoip_wired() {
+        let rules = vec![country_block_rule(&["CN"])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        // Default `evaluate` has no context — geo always false.
+        let d = evaluate(&rules, &req, &route());
+        assert!(matches!(d.action, Action::Allow));
+    }
+
+    #[test]
+    fn country_condition_returns_false_when_ip_unknown() {
+        let rules = vec![country_block_rule(&["CN"])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        // GeoIP wired but knows a different IP.
+        let ctx = ctx_with_country("8.8.8.8", "CN");
+        let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        assert!(matches!(d.action, Action::Allow));
+    }
+
+    #[test]
+    fn asn_condition_blocks_matching_asn() {
+        let rules = vec![asn_block_rule(&[15169, 16509])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        let ctx = ctx_with_asn("127.0.0.1", 15169);
+        let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        assert!(matches!(d.action, Action::Block { status: 403 }));
+    }
+
+    #[test]
+    fn asn_condition_allows_non_matching_asn() {
+        let rules = vec![asn_block_rule(&[15169])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        let ctx = ctx_with_asn("127.0.0.1", 16509);
+        let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        assert!(matches!(d.action, Action::Allow));
+    }
+
+    #[test]
+    fn asn_condition_returns_false_without_geoip() {
+        let rules = vec![asn_block_rule(&[15169])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        let d = evaluate(&rules, &req, &route());
+        assert!(matches!(d.action, Action::Allow));
+    }
+
+    #[test]
+    fn empty_country_list_never_matches() {
+        let rules = vec![country_block_rule(&[])];
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view(&m, &u, &h, &b);
+        let ctx = ctx_with_country("127.0.0.1", "CN");
+        let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        assert!(matches!(d.action, Action::Allow));
+    }
+
+    #[test]
+    fn country_in_compound_condition() {
+        // Block POST /admin only from a specific country.
+        let rules = vec![Rule {
+            id: "compound".into(),
+            priority: 100,
+            scope: Scope::Global,
+            condition: Condition::All(vec![
+                Condition::Method(vec!["POST".into()]),
+                Condition::PathMatches(MatchOp::Prefix("/admin".into())),
+                Condition::Country(vec!["CN".into()]),
+            ]),
+            action: RuleAction::Block { status: 451 },
+        }];
+        let ctx = ctx_with_country("127.0.0.1", "CN");
+        // All three match → blocked.
+        let (m, u, h, b) = view("POST", "/admin/users");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(matches!(
+            evaluate_with_ctx(&rules, &req, &route(), &ctx).action,
+            Action::Block { .. }
+        ));
+        // Wrong path → allowed.
+        let (m2, u2, h2, b2) = view("POST", "/public");
+        let req2 = make_view(&m2, &u2, &h2, &b2);
+        assert!(matches!(
+            evaluate_with_ctx(&rules, &req2, &route(), &ctx).action,
+            Action::Allow
         ));
     }
 }

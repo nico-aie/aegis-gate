@@ -1,6 +1,7 @@
 pub mod lb;
 pub mod health;
 pub mod circuit;
+pub mod forward;
 pub mod tls;
 
 use std::net::SocketAddr;

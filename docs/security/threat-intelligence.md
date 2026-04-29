@@ -1,6 +1,13 @@
 # Threat Intelligence (v2, enterprise)
 
-> **Status:** Partial — `threat_intel.rs` ships an in-memory `ThreatIntelStore` + indicator types. **No STIX/TAXII fetch loop**.
+> **Status:** Implemented — `threat_intel::ThreatIntelStore`
+> ships in-memory indicator storage; `threat_intel::taxii`
+> (gated by the `aegis-security/taxii` Cargo feature) ships a
+> TAXII 2.1 client + background fetcher loop that decodes STIX
+> 2.1 patterns (IPv4 / IPv6 / domain / URL / SHA-256) into
+> indicators and ingests them on a configurable interval.
+> Lease-gating the loop is the boot site's responsibility (same
+> pattern as ACME and the gitops poll driver).
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 

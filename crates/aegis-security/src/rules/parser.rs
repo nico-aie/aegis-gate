@@ -206,4 +206,64 @@ mod tests {
         let rules = parse(yaml).unwrap();
         assert_eq!(rules.len(), 1);
     }
+
+    #[test]
+    fn parse_country_condition() {
+        let yaml = r#"
+- id: geo-block
+  priority: 200
+  when:
+    country: ["CN", "RU", "KP"]
+  then:
+    block:
+      status: 451
+"#;
+        let rules = parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].condition {
+            crate::rules::Condition::Country(codes) => {
+                assert_eq!(codes, &vec!["CN".to_string(), "RU".to_string(), "KP".to_string()]);
+            }
+            other => panic!("expected Country, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_asn_condition() {
+        let yaml = r#"
+- id: asn-block
+  priority: 100
+  when:
+    asn: [13335, 16509]
+  then:
+    block:
+      status: 403
+"#;
+        let rules = parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].condition {
+            crate::rules::Condition::Asn(asns) => {
+                assert_eq!(asns, &vec![13335u32, 16509u32]);
+            }
+            other => panic!("expected Asn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_country_inside_compound() {
+        let yaml = r#"
+- id: tiered
+  priority: 50
+  when:
+    all:
+      - path_matches:
+          prefix: "/api"
+      - country: ["CN"]
+  then:
+    challenge:
+      level: captcha
+"#;
+        let rules = parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+    }
 }

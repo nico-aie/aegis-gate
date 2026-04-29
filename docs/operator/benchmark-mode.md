@@ -1,6 +1,19 @@
 # Benchmark Mode
 
-> **Status:** Designed only — Track `plans/benchmark-mode.md` (B-T1..B-T6) is open; no `benchmark/` module yet — `X-Aegis-*` headers + dashboard panels are not wired.
+> **Status:** Implemented (core slice) —
+> `aegis-proxy::benchmark` ships `BenchmarkConfig`,
+> `StageTimings`, header serialiser, and proxy-side
+> wiring. When `ProxyContext.benchmark.enabled` is true,
+> every response carries `X-Aegis-Stage-Total-Us` +
+> per-stage timings (route, upstream) plus `X-Aegis-Tier`
+> and `X-Aegis-Decision`. Rule IDs are gated behind
+> `expose_rule_ids` (off by default). Header payload
+> capped at 1 KiB to defend against misconfigured
+> downstream proxies. **Deferred to follow-ups:** IP
+> allowlist + HMAC token gating, per-detector timing,
+> dashboard panel — see
+> [`../../plans/benchmark-mode.md`](../../plans/benchmark-mode.md)
+> for the full plan.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 

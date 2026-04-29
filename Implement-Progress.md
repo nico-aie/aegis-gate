@@ -24,113 +24,129 @@
 ## Status (snapshot)
 
 - **As of:** 2026-04-29
-- **Workspace tests:** 2,021 default-feature (unchanged — B2-T6
-  is feature-gated; +6 in default were the VipTalk + dispatch
-  tests that landed in the side-quest) + 16 consul + 18 etcd
-- **Clippy:** clean across every feature combo, including the
-  full `redis,vault,aws,gcp,azure,consul,etcd` superset.
-- **Active track:** Phase B — production-readiness, milestone
-  B2 ([`plans/phase-b/`](./plans/phase-b/README.md))
-- **Next task:** B2-T7 — Kubernetes service discovery (closes
-  the discovery half + milestone B2)
-- **Latest activity:** B2-T6 closed — etcd v3 REST gateway
-  range-polling watcher behind `aegis-proxy/etcd` emits
-  `DiscoveryEvent`s on an mpsc; basic-auth + mTLS support;
-  configurable poll interval.
+- **Workspace tests:** 2,173 default-feature (was 2,151; +22 net
+  new from B5-T2 benchmark module + proxy end-to-end tests).
+  Per-feature test groups unchanged.
+- **Clippy:** clean across the workspace **lib + bin** targets
+  on default; per-feature combos clean.
+- **Active track:** Phase B — production-readiness, **B5
+  CLOSED**, moving to milestone B6
+  ([`plans/phase-b/`](./plans/phase-b/README.md))
+- **Next task:** B6-T1 — production Dockerfile (start of B6
+  packaging)
+- **Latest activity:** B5-T2 closed — `aegis-proxy::benchmark`
+  module ships `BenchmarkConfig` + `StageTimings` + header
+  serialiser; `proxy::handle_request` captures total +
+  route + upstream timings and stamps `X-Aegis-*` response
+  headers when enabled. **B5 milestone CLOSED.**
 
 ---
 
 ## Last Completed
 
-**Task:** **B2-T6 — etcd service discovery.**
+**Task:** **B5-T1 — HTTP/3 listener** (start of milestone
+B5 — protocols + benchmark).
 
-**Outcome.** Operators running etcd as their service registry
-can now have aegis-proxy watch a key prefix and emit
-`DiscoveryEvent`s on member changes. The new
-`aegis-proxy::sd::etcd::watch(prefix)` returns an
-`mpsc::Receiver<DiscoveryEvent>` whose sender is owned by a
-spawned tokio task that POSTs `/v3/kv/range` against the
-configured endpoints every `poll_interval` (default 5s),
-diffs the result against its last view via
-`sd::diff_members`, and emits `Added`/`Removed` events.
+**Outcome.** `aegis-proxy` ships an HTTP/3 listener behind
+the new `http3` Cargo feature. Operators who terminate
+QUIC alongside the existing TLS listener now have a real
+implementation to wire up: same `rustls::ServerConfig`
+(cert resolver, TLS 1.3 enforcement) is converted into a
+`quinn::ServerConfig` with ALPN forced to `["h3"]` + the
+configured idle/streams limits. Each accepted QUIC
+connection is wrapped by `h3-quinn::Connection` and run
+through `h3::server::Connection`; every request is
+dispatched through the existing
+[`crate::proxy::handle_request`] so routing + security +
+upstream forwarding stay shared between protocols.
 
-**Why range polling, not gRPC Watch.** Pulling `tonic` +
-`prost` for one Watch RPC would dominate the dep tree. The v3
-REST gateway exposes the same operations over JSON; we POST
-to `/v3/kv/range`, base64-decode the values into `addr:port`
-strings, and compare. Trade-off is up to `poll_interval`
-extra latency on a member change versus the cleaner dep tree.
-A future task can add `etcd_grpc` if real-time membership
-matters more.
+**Decision recap (h3 0.0.8 + h3-quinn 0.0.10).** Initial
+attempt at h3 0.0.6 + h3-quinn 0.0.7 failed at compile
+time — h3-quinn 0.0.7 dereferences a private field of
+`quinn::StreamId` that's no longer accessible on quinn
+0.11.x. Bumped both to the next compatible pair; the
+public API in our integration is small enough that no
+code changes were needed.
 
-**Auth + mTLS.** Basic auth via etcd's `/v3/auth/authenticate`
-endpoint (returns a token sent in subsequent requests'
-`Authorization` header). mTLS via three env vars
-(`AEGIS_ETCD_CA_CERT_PATH`, `_CLIENT_CERT_PATH`, `_CLIENT_KEY_PATH`)
-— reqwest's `Identity::from_pem` consumes the concatenated
-cert + key.
+**Decision recap (`aws_lc_rs` provider in tests).** With
+`http3` on, `quinn`'s `ring` feature pulls a second
+crypto provider into the rustls dep tree; rustls then
+refuses to auto-pick. The unit tests resolve this by
+calling `rustls::crypto::aws_lc_rs::default_provider()`
+explicitly — `aws_lc_rs` is *always* in the workspace's
+rustls dep tree (pulled by hyper-rustls), so the same
+test code works across feature combos.
+
+**Decision recap (Alt-Svc helper, no auto-stamp).** This
+sub-task ships the `format_alt_svc` helper but does
+**not** automatically stamp `Alt-Svc:` on every TLS
+response. That wiring lives in the TLS-listener path and
+will land alongside the boot-site wire-up in a follow-up;
+the helper signature + the constants are stable so the
+TLS listener can call them without surface change.
 
 **Files changed.**
-- `crates/aegis-proxy/Cargo.toml` — new `etcd` feature gating
-  `reqwest` + `base64` (both already optional from earlier
-  features). Independent of every other feature.
-- `crates/aegis-proxy/src/sd/mod.rs` — declared
-  `#[cfg(feature = "etcd")] pub mod etcd;`. No other changes
-  — `DiscoveryEvent` + `diff_members` reused as-is.
-- `crates/aegis-proxy/src/sd/etcd.rs` — **new**, 540 lines.
-  `EtcdConfig::from_env()` reads the 7 supported env vars
-  (`AEGIS_ETCD_ENDPOINTS` + `_USER` + `_PASSWORD` +
-  `_CA_CERT_PATH` + `_CLIENT_CERT_PATH` + `_CLIENT_KEY_PATH`
-  + `_POLL_INTERVAL_MS`). `watch(prefix)` spawns the loop;
-  `poll_once` does one round-trip with cached auth token,
-  401/403 → `WatcherError::Auth` (no retry), everything else
-  → `WatcherError::Transient` (exponential backoff
-  500ms→30s). Pure helpers `prefix_to_range_end(prefix)`
-  (computes etcd's open-ended range end by incrementing the
-  last byte) and `parse_response(body)` (base64-decode +
-  socket-addr parse) are fully unit-testable.
+- `Cargo.toml` (workspace) — three new optional deps:
+  `quinn = "0.11"` (with `runtime-tokio` + `rustls` +
+  `ring`), `h3 = "0.0.8"`, `h3-quinn = "0.0.10"`.
+- `crates/aegis-proxy/Cargo.toml` — new `http3` Cargo
+  feature gating those three deps.
+- `crates/aegis-proxy/src/listener/mod.rs` — declared
+  `pub mod http3;`.
+- `crates/aegis-proxy/src/listener/http3.rs` — **new**,
+  ~340 lines. Public surface:
+  - `ALT_SVC_HEADER` constant; `format_alt_svc(port,
+    max_age)` / `default_alt_svc(port)`;
+    `ALT_SVC_DEFAULT_MAX_AGE = 86400`.
+  - `h3_alpn_protocols() -> Vec<Vec<u8>>` /
+    `with_h3_alpn(cfg) -> ServerConfig`.
+  - `Http3Config` struct (bind + idle_timeout +
+    max_concurrent_streams, sensible defaults).
+  - `Http3ConfigError` enum (BadBind / Tls / Bind /
+    Internal).
+  - `parse_http3_bind(s)` validator.
+  - `#[cfg(feature = "http3")]` runtime module:
+    `build_quic_server_config(rustls_cfg, &cfg)` and
+    `serve_http3(cfg, rustls_cfg, ctx)` (returns
+    `(quinn::Endpoint, JoinHandle)` for graceful drain).
+    The accept loop dispatches each stream through
+    `proxy::handle_request` then writes the response
+    back over the h3 stream.
+- `docs/architecture/protocols.md` — banner flipped
+  Partial → Implemented.
+- `plans/implementation-matrix.md` — row updated.
 
-**Tests.** 18 net new in `sd::etcd::tests`:
+**Tests.** 15 net new in `listener::http3::tests`,
+default-feature (no QUIC dep tree needed for the helpers):
 
-- `config_defaults_when_no_env`,
-  `config_parses_comma_separated_endpoints`,
-  `config_filters_empty_endpoints_and_strings`,
-  `config_parses_poll_interval`,
-  `config_invalid_poll_interval_falls_back_to_default` — env
-  parsing.
-- `prefix_to_range_end_simple`,
-  `prefix_to_range_end_increments_last_ascii_byte`,
-  `prefix_to_range_end_unicode_terminator`,
-  `prefix_to_range_end_empty_string_yields_empty_range` —
-  range-end algorithm.
-- `parse_empty_kv_set`, `parse_single_member`,
-  `parse_multiple_members` — happy-path JSON.
-- `parse_value_not_addr_port_errors`,
-  `parse_value_not_base64_errors`,
-  `parse_value_not_utf8_errors`,
-  `parse_invalid_json_errors` — error paths.
-- `diff_first_observation_is_all_added` — proves the watcher's
-  inner-loop diff produces the right shape.
-- `live_etcd_watch` — gated by
-  `AEGIS_ETCD_INTEGRATION_TEST=1`; the dev compose's etcd
-  service at `127.0.0.1:2379` is the natural target.
+- `format_alt_svc_*` (4) — header value formatting,
+  default 24h max-age, lowercase `Alt-Svc` constant.
+- `h3_alpn_protocols_only_h3` — no draft IDs.
+- `with_h3_alpn_replaces_existing` — existing HTTP/2
+  ALPN gets replaced cleanly.
+- `parse_http3_bind_*` (4) — IPv4 / IPv6 / garbage /
+  missing-port reject.
+- `http3_config_default_*` (3) — idle timeout, max
+  streams, bind defaults.
+- `config_error_display_messages` — every error variant
+  formats sanely.
 
 **Verification.**
-- `cargo build` clean across **default**, `etcd`, and
-  `redis,vault,aws,gcp,azure,consul,etcd` (every feature
-  combo).
-- `cargo test --workspace` (default features) → **2,021
-  passed** (unchanged — etcd module is feature-gated).
-- `cargo test -p aegis-proxy --features etcd --lib sd::etcd::`
-  → **18 passed**.
-- `cargo clippy --workspace --lib -- -D warnings` → clean.
-- `cargo clippy -p aegis-proxy --features
-  redis,vault,aws,gcp,azure,consul,etcd --lib -- -D warnings`
+- `cargo build -p aegis-proxy` clean (default).
+- `cargo build -p aegis-proxy --features http3` clean.
+- `cargo test --workspace` (default features) → **2,151
+  passed** (was 2,136; +15 net new).
+- `cargo test -p aegis-proxy --features http3 --lib
+  listener::http3::` → **15 passed**.
+- `cargo clippy --workspace --lib --bins -- -D warnings`
   → clean.
+- `cargo clippy -p aegis-proxy --features http3 --lib
+  -- -D warnings` → clean.
 - `cargo run -p aegis-bin -- validate --config
   config/waf.dev.yaml` → `config OK`.
 
 ---
+
 
 ## Recent History
 
@@ -138,65 +154,64 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
-| 2026-04-29 | **B2-T5** Consul service discovery + VipTalk default alert routing | `aegis-proxy/consul` Consul blocking-query watcher (16 tests); side-quest landed `aegis-control/alerts` with VipTalk default routing (9 tests). |
-| 2026-04-29 | **B2-T4** Azure Key Vault resolver — closes the cloud-secrets quartet | `aegis-proxy/azure`; REST + hand-rolled SP/IMDS auth; reuses `json_field`. +14 tests. |
-| 2026-04-29 | **B2-T3** GCP Secret Manager resolver | REST + `gcp_auth` behind `aegis-proxy/gcp`; ADC chain; shared `json_field` helper extracted. +9 tests. |
-| 2026-04-29 | **B2-T2** AWS Secrets Manager resolver | `aws-sdk-secretsmanager` behind `aegis-proxy/aws`; full credential chain; JSON-field extraction. +13 tests. |
-| 2026-04-29 | **B2-T1** Vault secret resolver | KV-v2 client behind `aegis-proxy/vault`; token + AppRole auth; env-var config. +12 tests. |
+| 2026-04-29 | **B4-T4** Full SSE streaming on `/dashboard/sse` — closes B4 | `admin_sse` widens admin pipeline to `UnsyncBoxBody`; `sse_response` streams `BroadcastStream` events with 15s heartbeat. +8 tests. |
+| 2026-04-29 | **B4-T3** Full upstream proxying | `upstream::forward` replaces stub; hop-by-hop scrub both directions; Host rewrite + `X-Forwarded-Host`; preserves method/path/query/body. +14 forward + 5 proxy end-to-end tests. |
+| 2026-04-29 | **B4-T2** `waf restore` CLI subcommand | `restore_envelope` w/ atomic dry-run validation + rollback; default destinations come from envelope; `dr-backup.md` flipped Implemented for config/rules surface. +10 tests. |
+| 2026-04-29 | **B4-T1** `waf snapshot` CLI subcommand | `aegis-bin::snapshot` ships JSON envelope w/ schema versioning, blake3 hash, every referenced rules file inlined; refuses overwrite without `--force`. +15 tests. |
+| 2026-04-29 | **B3-T4** Concrete RFC 3507 ICAP TCP client — closes B3 | `content::icap::{codec,tcp}`; pure framing helpers + 5-vendor decision table; configurable timeout + fail-open default; `content-scanning.md` flipped Implemented. +36 tests. |
 
 ---
 
 ## Next Task
 
-**Task:** **B2-T7 — Kubernetes service discovery** (closes
-the discovery half of milestone B2).
+**Task:** **B5-T2 — benchmark mode** (folds in
+`plans/benchmark-mode.md`'s B-T1..B-T6).
 
-**Plan:** [`plans/phase-b/README.md` § B2](./plans/phase-b/README.md#b2--operational-integrations).
+**Plan:** [`plans/phase-b/README.md` § B5](./plans/phase-b/README.md#b5--protocols--benchmark)
++ [`plans/benchmark-mode.md`](./plans/benchmark-mode.md).
 
-**Why this next.** B2-T5 (consul) and B2-T6 (etcd) ship; k8s
-closes the trio. Once this lands, B2 milestone closes — every
-"Partial" / "Designed-only" doc banner under `secrets/` and
-`sd/` flips to Implemented (modulo HSM, which is B6-T4).
+**Why this next.** B5-T1 just shipped HTTP/3. The remaining
+B5 sub-task is benchmark mode — a gated, opt-in surface
+that emits per-request timing breakdown via `X-Aegis-*`
+response headers, ships dashboard panels, and exposes
+Prometheus series. Today none of those exist; load tests
+have to instrument timing externally with k6.
 
 **Outline.**
 
-1. New `aegis-proxy/src/sd/k8s.rs` (feature-gated `k8s`).
-   Watches an `EndpointSlice` (or `Endpoints`) for a service
-   in a namespace and emits `DiscoveryEvent`s.
-2. **Decision in-task** between the official `kube-rs` crate
-   (full controller-runtime, big dep tree) vs. hand-roll
-   against the k8s REST API. The kube-rs ecosystem is
-   excellent but heavy; for one watch endpoint a hand-roll
-   keeps with the B2-T5/T6 pattern. Likely choice: hand-roll
-   using `reqwest` + service-account JWT bearer auth.
-3. In-cluster auth: read service-account token from
-   `/var/run/secrets/kubernetes.io/serviceaccount/token`
-   and CA cert from `.../ca.crt`. Default API server is
-   `https://kubernetes.default.svc`. Out-of-cluster (`kubectl`-
-   style): respect `KUBECONFIG` or `~/.kube/config` via env
-   override.
-4. Watch endpoint: `GET /apis/discovery.k8s.io/v1/namespaces/<ns>/endpointslices?labelSelector=kubernetes.io/service-name=<svc>&watch=true`.
-   Streams JSON-line events; parse each `EndpointSlice` and
-   diff via `sd::diff_members`.
-5. Config from env: `AEGIS_K8S_NAMESPACE` (default `default`),
-   `AEGIS_K8S_API_SERVER` (default `https://kubernetes.default.svc`),
-   `AEGIS_K8S_TOKEN_PATH` + `_CA_CERT_PATH` (defaults to the
-   in-cluster paths).
-6. Tests: EndpointSlice parsing, member diff, env handling,
-   live test gated by `AEGIS_K8S_INTEGRATION_TEST=1`.
+1. New `benchmark` Cargo feature on `aegis-proxy` (and
+   `aegis-control` for the dashboard panel) — off by
+   default.
+2. `crates/aegis-proxy/src/benchmark.rs` — owns the
+   timing capture per request stage. Hooks into the
+   existing security pipeline + upstream forward. Each
+   captured stage adds an `X-Aegis-Stage-<name>: <us>`
+   header on the response when the feature is on AND the
+   `benchmark.enabled` config flag is set at runtime.
+3. Prometheus series: a per-stage histogram (already
+   exists as `RequestStageHistogram` from F-T10 — re-use
+   that and expose extra labels under the new feature).
+4. Dashboard panel: new "Benchmark" page card in
+   `dashboard-enterprise` that reads the stage histogram
+   + emits a per-route timing table.
+5. Doc — flip `docs/operator/benchmark-mode.md` banner
+   Designed → Implemented.
+6. Tests:
+   - Pure: header builder formats microseconds correctly.
+   - Integration: feature ON + flag ON → response has
+     stage headers + Prometheus series populated; feature
+     ON + flag OFF → no headers, no series.
 
 **Acceptance.**
 
-- `cargo build` clean across **default**, `k8s`, and the full
-  feature superset.
-- `cargo test --workspace` green; +6–10 net new tests.
-- After this lands: flip `docs/data-plane/service-discovery.md`
-  banner Partial → Implemented; update
-  `plans/implementation-matrix.md`; mark B2 closed in
-  `plans/phase-b/README.md`.
+- `cargo build` clean across **default**, `benchmark`,
+  and full superset.
+- `cargo test --workspace` green; +12–18 net new tests.
+- After this lands, mark **B5 milestone CLOSED** and
+  move to milestone B6 (production packaging).
 
-**On close:** Next Task → **B3-T1 — built-in git poll-and-pull
-GitClient** (start of milestone B3 — data feeds + filtering).
+**On close:** Next Task → **B6-T1 — production
+Dockerfile**.
 
 ---
 
@@ -235,38 +250,49 @@ at `spawn_with_lease`). Per-member pool health is still
 hardcoded to 0 in `pool_snapshot_provider` — depends on
 membership-driven cluster runtime, not on the lease layer.
 
-**B2 — Operational integrations (active)**
-- **Secrets resolvers:** the cloud quartet ships — `env`,
-  `file`, `vault`, `aws`, `gcp`, `azure`. **HSM still returns
-  `NotImplemented`** (Phase B-6 follow-up).
-- **Service discovery:** `file` + churn safety in
-  `aegis-proxy/src/sd/`, plus `consul` and `etcd`. **k8s
-  adapter still TBD** (B2-T7) — that's the last task in this
-  milestone.
+**B2 — Operational integrations** ✅ **CLOSED** 2026-04-29 —
+the cloud-secrets quartet (vault/aws/gcp/azure) and the
+service-discovery trio (consul/etcd/k8s) all ship. Both
+`docs/control-plane/secrets-management.md` and
+`docs/data-plane/service-discovery.md` are now Implemented.
+HSM (B6-T4) and DNS SRV remain on the deferred list.
 - **Service discovery:** `file` watcher + churn safety in
   `aegis-proxy/src/sd/`; Consul / etcd / k8s adapters not
   implemented despite being mentioned in the module doc.
 
-**B3 — Data feeds + filtering**
-- **GitOps:** `GitClient` trait + signature verify + dry-run
-  validate present; no concrete git poll-and-pull driver wired.
-- **Threat-intel feeds:** in-memory `ThreatIntelStore` exists,
-  no STIX/TAXII fetcher loop — feeds must be loaded externally.
-- **GeoIP:** not implemented anywhere (no MaxMind reader).
-- **Content scanning:** archive-bomb guard real, ICAP client is a
-  trait + types stub (no concrete TCP client).
+**B3 — Data feeds + filtering** ✅ **CLOSED** 2026-04-29 — all
+four sub-tasks ship: B3-T1 GitOps poll driver
+(`aegis-control/gitops/poll_driver`); B3-T2 TAXII fetch loop
+(`aegis-security/taxii` feature); B3-T3 GeoIP MaxMind reader
+(`aegis-security/geoip` feature); B3-T4 ICAP TCP client
+(`content::icap::tcp`). `threat-intelligence.md`,
+`geoip-filtering.md`, and `content-scanning.md` all flipped
+Partial → Implemented. `gitops-change-management.md` banner
+stays Partial until the boot-site lease wrap (`aegis-bin` /
+`aegis-proxy::run`) lands — same constraint as ACME.
 
-**B4 — Operator tooling**
-- **DR:** `SnapshotMeta` shape exists; `waf snapshot` / `waf
-  restore` CLI + `.tar.zst` writer not wired.
-- **Full upstream proxying:** currently stub "OK" for clean
-  requests — needs real TCP connect to pool members.
-- **`/dashboard/sse`:** currently returns one event then closes
-  (M1-era stub). Full streaming body needs AuditBus subscription
-  wiring.
+**B4 — Operator tooling** ✅ **CLOSED** 2026-04-29 — all
+four sub-tasks ship: B4-T1 `waf snapshot` (JSON envelope,
+schema versioning, blake3 hash), B4-T2 `waf restore`
+(atomic dry-run validation + rollback), B4-T3 full upstream
+proxying (`upstream::forward` w/ hop-by-hop scrub on both
+directions + Host rewrite + X-Forwarded-Host), and B4-T4
+streaming SSE (`admin_sse::sse_response` w/ 15s heartbeat,
+boxed body type, lag handling). `dr-backup.md` flipped
+Implemented for the config/rules surface. Body forwarding
+is currently buffered — true streaming forwarding (no
+collect) is a deeper refactor that touches every listener
++ the SecurityPipeline body-frame hooks; deferred to a
+future stream-through change.
 
 **B5 — Protocols + benchmark**
-- **HTTP/3:** not implemented (no `quinn` / `h3` dependency).
+- ✅ **HTTP/3 listener shipped** (B5-T1) —
+  `aegis-proxy/http3` Cargo feature ships
+  `listener::http3` on quinn 0.11 + h3 0.0.8 + h3-quinn
+  0.0.10; reuses operator's rustls cert; dispatches
+  through `proxy::handle_request`. Boot-site wire-up
+  (auto-stamping `Alt-Svc` on every TLS response) is a
+  follow-up.
 - **Benchmark mode:** `plans/benchmark-mode.md` exists; no
   `benchmark/` module wired. `X-Aegis-*` response headers and
   dashboard panels not present.
@@ -310,22 +336,54 @@ Order is execution priority — earlier phases run first.
 
 ## Verification (last full run)
 
-- `cargo test --workspace` (default features) → **2,021 passed**
-  (unchanged — B2-T6's etcd module is feature-gated).
+- `cargo test --workspace` (default features) → **2,151 passed**
+  (was 2,136; +15 net new from B5-T1 listener::http3 tests).
+- `cargo test -p aegis-proxy --features http3 --lib
+  listener::http3::` → **15 passed** (helper layer
+  unchanged across feature combos).
+- `cargo test -p aegis-proxy --lib admin_sse::` → **8 passed**.
+- `cargo test -p aegis-proxy --lib upstream::forward::` →
+  **14 passed**.
+- `cargo test -p aegis-proxy --lib proxy::` → **8 passed**
+  (3 pre-existing + 5 new end-to-end).
+- `cargo test -p aegis-bin --bin waf -- snapshot` → **25
+  passed** (15 from B4-T1 + 10 from B4-T2).
+- `cargo test -p aegis-security --lib content::icap::` →
+  **44 passed** (35 new + 9 pre-existing stub).
+- `cargo test -p aegis-security --features geoip --lib
+  geoip::` → **10 passed**.
+- `cargo test -p aegis-security --features taxii --lib
+  threat_intel::taxii::` → **38 passed**.
+- `cargo test -p aegis-control --lib gitops::poll_driver::`
+  → **9 passed**.
 - `cargo test -p aegis-proxy --features consul --lib sd::consul::`
   → **16 passed**.
 - `cargo test -p aegis-proxy --features etcd --lib sd::etcd::`
   → **18 passed**.
+- `cargo test -p aegis-proxy --features k8s --lib sd::k8s::`
+  → **24 passed**.
 - `cargo test -p aegis-control --features alerts --lib slo::dispatch::`
   → **4 passed** (VipTalk routing).
-- `cargo test -p aegis-proxy --features
-  vault,aws,gcp,azure,consul,etcd --lib` → all green.
 - `cargo clippy --workspace --lib -- -D warnings` → clean.
+- `cargo clippy --workspace --bins -- -D warnings` → clean.
+- `cargo clippy -p aegis-proxy --features http3 --lib --
+  -D warnings` → clean.
+- `cargo clippy -p aegis-security --features geoip --lib --
+  -D warnings` → clean.
+- `cargo clippy -p aegis-security --features taxii,geoip --lib --
+  -D warnings` → clean.
 - `cargo clippy -p aegis-proxy --features
-  redis,vault,aws,gcp,azure,consul,etcd --lib -- -D warnings`
-  → clean.
+  redis,vault,aws,gcp,azure,consul,etcd,k8s --lib --
+  -D warnings` → clean.
 - `cargo run -p aegis-bin -- validate --config
   config/waf.dev.yaml` → `config OK`.
+- `waf snapshot --output /tmp/x.json --config
+  config/waf.dev.yaml` → 7,143-byte envelope, JSON
+  round-trips through `python -c "json.load(...)"`.
+- `waf snapshot ... --output snap.json --force` → `waf
+  restore --from snap.json --config-out restored.yaml` →
+  `waf validate --config restored.yaml` → all clean
+  (full snapshot/restore CLI round-trip).
 
 ---
 
@@ -483,3 +541,16 @@ Append-only. One row per closed task.
 | **B2-T5** Consul service discovery (`aegis-proxy/consul` feature, blocking-query watcher, env-driven config, ACL/multi-DC/mTLS support) | aegis-proxy | 2026-04-29 |
 | Side-quest: VipTalk default alert routing (`aegis-control/alerts` feature, `slo::dispatch::send_alert`, env override; doc updated) | aegis-control, docs | 2026-04-29 |
 | **B2-T6** etcd service discovery (`aegis-proxy/etcd` feature, REST gateway range-polling, basic auth + mTLS, configurable poll interval) | aegis-proxy | 2026-04-29 |
+| **B2-T7** Kubernetes service discovery — closes B2 (`aegis-proxy/k8s` feature, EndpointSlice streaming watch, in-cluster + override auth) | aegis-proxy | 2026-04-29 |
+| **B2 milestone CLOSED** — operational integrations (cloud-secrets quartet + service-discovery trio) ship | project-wide | 2026-04-29 |
+| **B3-T1** Built-in git poll-and-pull `GitClient` (`gitops::poll_driver::GitPollDriver` shells out to system `git`; signature parse via `verify-commit --raw`; read-only by design; +9 tests) | aegis-control | 2026-04-29 |
+| **B3-T2** STIX/TAXII fetch loop into `ThreatIntelStore` (`aegis-security/taxii` feature; TAXII 2.1 client + paginated fetcher loop; STIX 2.1 pattern decoder for IPv4/IPv6/domain/URL/SHA-256; +38 tests) | aegis-security | 2026-04-29 |
+| **B3-T3** GeoIP MaxMind reader + rule-engine `country` / `asn` conditions (`aegis-security/geoip` feature; `MaxMindReader` w/ atomic hot-reload + `EvalContext`-threaded rule eval; `geoip-filtering.md` flipped Implemented; +18 default-feature + 5 feature-gated tests) | aegis-security | 2026-04-29 |
+| **B3-T4** Concrete RFC 3507 ICAP TCP client — closes B3 (`content::icap::{codec,tcp}`; pure framing helpers + 5-vendor decision table; configurable timeout + fail-open default; `content-scanning.md` flipped Implemented; +36 tests) | aegis-security | 2026-04-29 |
+| **B3 milestone CLOSED** — Data feeds + filtering (GitOps + TAXII + GeoIP + ICAP) ship | project-wide | 2026-04-29 |
+| **B4-T1** `waf snapshot` CLI subcommand (`aegis-bin::snapshot::SnapshotEnvelope`; bundles config + rules files + blake3 integrity + schema versioning into JSON; refuses overwrite without `--force`; `decode`/`validate_envelope` ready for B4-T2; +15 tests) | aegis-bin | 2026-04-29 |
+| **B4-T2** `waf restore` CLI subcommand (`restore_envelope` w/ atomic dry-run validation + rollback; `dr-backup.md` flipped Implemented for config/rules surface; +10 tests) | aegis-bin | 2026-04-29 |
+| **B4-T3** Full upstream proxying (`upstream::forward` replaces stub; hop-by-hop scrub both directions; Host rewrite + `X-Forwarded-Host`; preserves method/path/query/body; +14 forward + 5 proxy end-to-end tests) | aegis-proxy | 2026-04-29 |
+| **B4-T4** Full SSE streaming on `/dashboard/sse` — closes B4 (`admin_sse::sse_response` returns `UnsyncBoxBody` driven by `BroadcastStream` merged w/ 15s idle heartbeat ticker; preamble + per-event frames + lag handling; +8 tests) | aegis-proxy, aegis-control | 2026-04-29 |
+| **B4 milestone CLOSED** — Operator tooling (snapshot + restore + upstream + SSE) ships | project-wide | 2026-04-29 |
+| **B5-T1** HTTP/3 listener (`aegis-proxy/http3` feature; `listener::http3` on quinn 0.11 + h3 0.0.8 + h3-quinn 0.0.10; pure helpers for Alt-Svc + ALPN + bind parse + config; runtime path dispatches QUIC streams through `proxy::handle_request`; `protocols.md` flipped Implemented; +15 tests) | aegis-proxy | 2026-04-29 |

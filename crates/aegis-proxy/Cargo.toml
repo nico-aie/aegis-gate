@@ -47,6 +47,11 @@ etcd = ["dep:reqwest", "dep:base64"]
 # config (`AEGIS_K8S_API_SERVER`, `AEGIS_K8S_NAMESPACE`,
 # `AEGIS_K8S_TOKEN_PATH`, `AEGIS_K8S_CA_CERT_PATH`).
 k8s = ["dep:reqwest"]
+# `http3` adds a QUIC listener (`listener::http3`) that
+# terminates HTTP/3 alongside the existing TLS listener,
+# reusing the same `rustls::ServerConfig`. Off by default
+# because `quinn` + `h3` pull a sizeable QUIC dep tree.
+http3 = ["dep:quinn", "dep:h3", "dep:h3-quinn"]
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
@@ -59,6 +64,7 @@ bytes.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
 http.workspace = true
+http-body.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -76,6 +82,8 @@ serde_yaml.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+tokio-stream.workspace = true
+futures = "0.3"
 tracing.workspace = true
 
 # Optional — gated by the `redis` feature. Bringing these in
@@ -95,6 +103,11 @@ aws-sdk-secretsmanager = { workspace = true, optional = true }
 # Optional — gated by the `gcp` feature.
 gcp_auth = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
+
+# Optional — gated by the `http3` feature.
+quinn = { workspace = true, optional = true }
+h3 = { workspace = true, optional = true }
+h3-quinn = { workspace = true, optional = true }
 
 [dev-dependencies]
 aegis-security = { path = "../aegis-security" }

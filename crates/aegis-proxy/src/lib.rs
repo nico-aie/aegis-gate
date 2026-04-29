@@ -21,6 +21,8 @@ use aegis_core::{AuditBus, ReadinessSignal};
 
 pub mod acme;
 pub mod acme_instant;
+pub mod admin_sse;
+pub mod benchmark;
 pub mod cache;
 pub mod cluster;
 pub mod cluster_lease;
@@ -428,12 +430,24 @@ async fn admin_accept_loop(
                 let metrics = metrics.clone();
                 let services = services.clone();
                 async move {
-                    Ok::<_, Infallible>(
-                        handle_admin_request(
-                            req, peer, &cfg, &readiness, &startup, &metrics, &services,
-                        )
-                        .await,
+                    // B4-T4: streaming SSE branches before the
+                    // buffered admin pipeline. Everything else
+                    // returns `Full<Bytes>` and is boxed into
+                    // the unified streaming body type.
+                    if req.method() == hyper::Method::GET
+                        && req.uri().path() == "/dashboard/sse"
+                    {
+                        let query = req.uri().query().unwrap_or("").to_string();
+                        return Ok::<_, Infallible>(admin_sse::sse_response(
+                            &services.bus,
+                            &query,
+                        ));
+                    }
+                    let resp = handle_admin_request(
+                        req, peer, &cfg, &readiness, &startup, &metrics, &services,
                     )
+                    .await;
+                    Ok::<_, Infallible>(admin_sse::into_boxed(resp))
                 }
             });
 
@@ -1096,19 +1110,12 @@ fn admin_router(
     }
 
     match path {
-        // SSE stub — returns a connected status message.
-        // Full SSE streaming requires a streaming body (future work).
-        "/dashboard/sse" => {
-            Response::builder()
-                .status(200)
-                .header("content-type", "text/event-stream")
-                .header("cache-control", "no-cache")
-                .header("connection", "keep-alive")
-                .body(Full::new(Bytes::from(
-                    "data: {\"class\":\"system\",\"action\":\"connected\",\"reason\":\"dashboard SSE connected\",\"ts\":\"\"}\n\n"
-                )))
-                .unwrap()
-        }
+        // `/dashboard/sse` is intercepted at the listener
+        // service_fn (B4-T4) and returns a streaming body.
+        // If a request reaches `admin_router` with that path
+        // (for example via tests that bypass the listener),
+        // surface a 404 — the buffered router can no longer
+        // serve SSE.
 
         // Health probes.
         "/healthz/live" => {

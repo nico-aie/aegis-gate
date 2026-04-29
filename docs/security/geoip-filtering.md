@@ -1,6 +1,14 @@
 # GeoIP Filtering (Bonus)
 
-> **Status:** Designed only — No `maxmind` / `country_code` code anywhere. Phase B candidate.
+> **Status:** Implemented —
+> `aegis-security::geoip::GeoIpLookup` trait +
+> `geoip::reader::MaxMindReader` (gated by the
+> `aegis-security/geoip` Cargo feature) read MaxMind
+> `.mmdb` files for Country and ASN. The rule engine grew
+> `country: ["XX"]` / `asn: [N, N]` conditions with
+> case-insensitive country matching. Hot-reload via
+> `reload_country` / `reload_asn`. Both DBs are
+> independently optional.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 

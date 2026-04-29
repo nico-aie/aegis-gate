@@ -1,6 +1,13 @@
 # Protocol Support (v2, new)
 
-> **Status:** Partial — HTTP/1.1 + HTTP/2 + WebSocket + gRPC implemented in `aegis-proxy/src/proto/{h2,ws,grpc}.rs`. **HTTP/3 not implemented**.
+> **Status:** Implemented — HTTP/1.1 + HTTP/2 + WebSocket
+> + gRPC live in `aegis-proxy/src/proto/{h2,ws,grpc}.rs`;
+> HTTP/3 (gated by the `aegis-proxy/http3` Cargo feature)
+> ships as `listener::http3` on quinn 0.11 + h3 0.0.8 +
+> h3-quinn 0.0.10. The QUIC listener reuses the operator's
+> `rustls::ServerConfig` with ALPN forced to `["h3"]`;
+> clients are pointed at the QUIC port via `Alt-Svc:`
+> headers (`format_alt_svc` helper) on TLS responses.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 

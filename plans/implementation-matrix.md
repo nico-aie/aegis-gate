@@ -31,13 +31,13 @@ table — keep them in sync.
 |---|---|---|
 | [`docs/operator/usage.md`](../docs/operator/usage.md) | **Implemented** | Operator runbook is current; references real subcommands. |
 | [`docs/operator/cli.md`](../docs/operator/cli.md) | **Implemented** | Every subcommand exists in `aegis-bin/src/main.rs`. |
-| [`docs/operator/benchmark-mode.md`](../docs/operator/benchmark-mode.md) | **Designed only** | Spec only; folded into Phase B as **B5-T2**. |
+| [`docs/operator/benchmark-mode.md`](../docs/operator/benchmark-mode.md) | **Implemented** (core slice) | `aegis-proxy::benchmark`: `BenchmarkConfig` + `StageTimings` + `X-Aegis-*` header serialiser; wired into `proxy::handle_request`. IP allowlist / HMAC tokens / dashboard panel deferred. |
 
 ## 2. Architecture
 
 | Doc | Status | Notes / module path |
 |---|---|---|
-| [`docs/architecture/protocols.md`](../docs/architecture/protocols.md) | **Partial** | HTTP/1.1 + HTTP/2 + WebSocket + gRPC: `aegis-proxy/src/proto/{h2,ws,grpc}.rs`. **HTTP/3 not implemented** (no `quinn`/`h3`/`s2n-quic` dependency) — Phase B **B5-T1**. |
+| [`docs/architecture/protocols.md`](../docs/architecture/protocols.md) | **Implemented** | HTTP/1.1 + HTTP/2 + WebSocket + gRPC: `aegis-proxy/src/proto/{h2,ws,grpc}.rs`; HTTP/3: `listener/http3.rs` (gated by `aegis-proxy/http3` — quinn 0.11 + h3 0.0.8 + h3-quinn 0.0.10). |
 
 ## 3. Data plane (M1 / aegis-proxy)
 
@@ -51,7 +51,7 @@ table — keep them in sync.
 | [`session-affinity.md`](../docs/data-plane/session-affinity.md) | **Implemented** | `aegis-proxy/src/session.rs`. |
 | [`per-route-quotas.md`](../docs/data-plane/per-route-quotas.md) | **Implemented** | `aegis-proxy/src/quota.rs`. |
 | [`transformations-cors.md`](../docs/data-plane/transformations-cors.md) | **Implemented** | `aegis-proxy/src/transform/{cors,vars,mod}.rs`. |
-| [`service-discovery.md`](../docs/data-plane/service-discovery.md) | **Partial** | `sd/mod.rs` ships file watcher + diff helpers + churn safety limits. **`consul` / `etcd` / `k8s` adapters NOT implemented** — Phase B **B2-T5..T7**. |
+| [`service-discovery.md`](../docs/data-plane/service-discovery.md) | **Implemented** | B2 closed (T5..T7): `sd/mod.rs` (file + diff + churn) + feature-gated `consul` / `etcd` / `k8s` watchers. DNS SRV remains designed-only. |
 | [`smart-caching.md`](../docs/data-plane/smart-caching.md) | **Implemented** | `aegis-proxy/src/cache/mod.rs` — `TierCache`, vary-aware, max-age honored. |
 | [`adaptive-load-shedding.md`](../docs/data-plane/adaptive-load-shedding.md) | **Implemented** | `aegis-proxy/src/shed.rs` + `aegis-core/src/load_mode.rs` (P7). |
 | [`graceful-degradation.md`](../docs/data-plane/graceful-degradation.md) | **Implemented** | Circuit breaker (`upstream/circuit.rs`) + load shedder (`shed.rs`) + cache fallback. |
@@ -65,16 +65,16 @@ table — keep them in sync.
 | [`rate-limiting.md`](../docs/security/rate-limiting.md) | **Implemented** | `rate_limit/{bucket,sliding,ip_limiter,mod}.rs`. |
 | [`ddos-protection.md`](../docs/security/ddos-protection.md) | **Implemented** | `aegis-security/src/ddos.rs`. |
 | [`ip-reputation.md`](../docs/security/ip-reputation.md) | **Partial** | `ip_rep/{asn,xff,mod}.rs` — XFF validation + ASN matching. **No live threat-intel feed fetcher** — Phase B **B3-T2**. |
-| [`geoip-filtering.md`](../docs/security/geoip-filtering.md) | **Designed only** | No `maxmind` / `country_code` code anywhere — Phase B **B3-T3**. |
+| [`geoip-filtering.md`](../docs/security/geoip-filtering.md) | **Implemented** | `geoip/{mod,reader}.rs` (gated by `aegis-security/geoip`) + rule-engine `country` / `asn` conditions with hot-reload. |
 | [`device-fingerprinting.md`](../docs/security/device-fingerprinting.md) | **Implemented** | `fingerprint/{ja3,ja4,h2,mod}.rs`. |
 | [`risk-scoring.md`](../docs/security/risk-scoring.md) | **Implemented** | `risk/{tracker,mod}.rs` + `aegis-core::RiskKey`. P6 strikes + trust recovery. |
 | [`challenge-engine.md`](../docs/security/challenge-engine.md) | **Implemented** | `challenge/{ladder,captcha,token,mod}.rs`. |
 | [`bot-management.md`](../docs/security/bot-management.md) | **Implemented** | `aegis-security/src/bots.rs`. |
 | [`behavioral-analysis.md`](../docs/security/behavioral-analysis.md) | **Implemented** | `aegis-security/src/behavior.rs`. |
 | [`transaction-velocity.md`](../docs/security/transaction-velocity.md) | **Implemented** | `aegis-security/src/velocity.rs`. |
-| [`threat-intelligence.md`](../docs/security/threat-intelligence.md) | **Partial** | `threat_intel.rs` ships an in-memory `ThreatIntelStore` + indicator types. **No STIX/TAXII fetch loop** — Phase B **B3-T2**. |
+| [`threat-intelligence.md`](../docs/security/threat-intelligence.md) | **Implemented** | `threat_intel/mod.rs` (store) + `threat_intel/taxii.rs` (TAXII 2.1 client + fetcher loop, gated by `aegis-security/taxii`). |
 | [`api-security.md`](../docs/security/api-security.md) | **Implemented** | `api_security/{api_keys,graphql,hmac_sign,mod}.rs`. |
-| [`content-scanning.md`](../docs/security/content-scanning.md) | **Partial** | Archive-bomb guard real, **ICAP client is a trait + types stub** — Phase B **B3-T4**. |
+| [`content-scanning.md`](../docs/security/content-scanning.md) | **Implemented** | `content/icap/{mod,codec,tcp}.rs` — RFC 3507 TCP client + pure framing helpers + decision table covering 5 vendor infection-header forms. |
 | [`dlp.md`](../docs/security/dlp.md) | **Implemented** | `dlp/{fpe,mod}.rs` — pattern matching + AES-FF1 FPE. |
 | [`response-filtering.md`](../docs/security/response-filtering.md) | **Implemented** | `aegis-security/src/response_filter.rs`. |
 | [`external-auth.md`](../docs/security/external-auth.md) | **Implemented** | `auth/{basic,forward,jwt,opa,mod}.rs`. |
@@ -100,7 +100,7 @@ table — keep them in sync.
 | [`dashboard-auth.md`](../docs/control-plane/dashboard-auth.md) | **Implemented** | `admin_auth/{password,session,csrf,mtls,rate_limit,totp,mod}.rs`. |
 | [`config-hot-reload.md`](../docs/control-plane/config-hot-reload.md) | **Implemented** | `gitops::dry_run_validate` + `secrets.rs` resolver + reload signal. |
 | [`gitops-change-management.md`](../docs/control-plane/gitops-change-management.md) | **Partial** | `GitClient` trait + signature verify + dry-run + `GitOpsLoader`. **No concrete git poll-and-pull driver** — Phase B **B3-T1**. |
-| [`secrets-management.md`](../docs/control-plane/secrets-management.md) | **Partial** | `env` + `file` providers work. **Vault / AWS SM / GCP SM / Azure KV / HSM return `NotImplemented`** — Phase B **B2-T1..T4** + **B6-T4** (HSM). |
+| [`secrets-management.md`](../docs/control-plane/secrets-management.md) | **Implemented** (cloud quartet) | B2-T1..T4 closed: `env` + `file` (sync) + feature-gated `vault` / `aws` / `gcp` / `azure` resolvers. **HSM** still returns `NotImplemented` — B6-T4. |
 | [`zero-downtime-ops.md`](../docs/control-plane/zero-downtime-ops.md) | **Partial** | `supervisor.rs` + `hotbin.rs` + drain; SO_REUSEPORT in the listener layer. **No live binary-handover via fd-passing** — Phase B **B6-T5**. |
 | [`enterprise/`](../docs/control-plane/enterprise/) | **Implemented** | D-M1..D-M6 closed; SPA bundled into the binary, served from `/dashboard/`. Dashboard-redesign track is queued behind Phase B. |
 
@@ -120,7 +120,7 @@ table — keep them in sync.
 | [`ha-clustering.md`](../docs/operations/ha-clustering.md) | **Implemented** | B1 closed (T1..T6): `RedisBackend` (deadpool-redis + Lua) + `LeaseStore` trait with Redis impl + heartbeat + `run_with_lease` (ACME gated), `rehydrate` warm-up gating `/healthz/ready`, `ReconcilingBackend` (block-list union + fallback on partition). `redis_cluster` / `raft` / `foca_swim` remain Phase B candidates beyond B1. |
 | [`compliance.md`](../docs/operations/compliance.md) | **Implemented** | `compliance/{fips,gdpr,hipaa,pci,soc2,mod}.rs` — full mode matrix. |
 | [`data-residency-retention.md`](../docs/operations/data-residency-retention.md) | **Implemented** | `aegis-control/src/residency.rs` — sweep, erase_subject, rechain, region pin, retention policy. |
-| [`dr-backup.md`](../docs/operations/dr-backup.md) | **Partial** | `SnapshotMeta` shape exists; `waf snapshot` / `waf restore` CLI + `.tar.zst` writer **not** wired — Phase B **B4-T1..T2**. |
+| [`dr-backup.md`](../docs/operations/dr-backup.md) | **Implemented** (config + rules) | `aegis-bin::snapshot` ships `waf snapshot` + `waf restore`; JSON envelope with blake3 hash + schema versioning + dry-run validation on restore. State-backend / audit-log restore remain external-system flows. |
 
 ## 8. Future
 
@@ -142,8 +142,8 @@ in lockstep — keep the table and the milestone status in sync.
 | Milestone | Theme | Closes these matrix rows |
 |---|---|---|
 | ~~**B1**~~ ✅ | HA & multi-node — **closed 2026-04-29** | ~~`ha-clustering.md`~~ flipped to Implemented |
-| **B2** | Operational integrations | `secrets-management.md` (most), `service-discovery.md` |
-| **B3** | Data feeds + filtering | `gitops-change-management.md`, `threat-intelligence.md`, `geoip-filtering.md`, `content-scanning.md`, `ip-reputation.md` (partial) |
-| **B4** | Operator tooling | `dr-backup.md` (+ removes carry-overs for upstream proxying and SSE streaming) |
-| **B5** | Protocols + benchmark | `protocols.md`, `benchmark-mode.md` |
+| ~~**B2**~~ ✅ | Operational integrations — **closed 2026-04-29** (HSM deferred to B6-T4) | ~~`secrets-management.md` (most), `service-discovery.md`~~ both flipped to Implemented |
+| ~~**B3**~~ ✅ | Data feeds + filtering — **closed 2026-04-29** (B3-T1..T4) | ~~`threat-intelligence.md`, `geoip-filtering.md`, `content-scanning.md`~~ all flipped to Implemented; `gitops-change-management.md` driver lands but banner stays Partial pending boot-site lease wrap |
+| ~~**B4**~~ ✅ | Operator tooling — **closed 2026-04-29** (B4-T1..T4) | ~~`dr-backup.md`~~ flipped Implemented; upstream-proxy + SSE carry-overs removed |
+| ~~**B5**~~ ✅ | Protocols + benchmark — **closed 2026-04-29** (B5-T1 + B5-T2) | ~~`protocols.md`, `benchmark-mode.md`~~ both flipped Implemented |
 | **B6** | Production packaging | `secrets-management.md` (HSM), `zero-downtime-ops.md` |
