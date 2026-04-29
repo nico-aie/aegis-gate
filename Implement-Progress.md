@@ -24,91 +24,109 @@
 ## Status (snapshot)
 
 - **As of:** 2026-04-29
-- **Workspace tests:** 2,015 default-feature (unchanged — B2-T5
-  is feature-gated) + 23 vault + 29 aws + 37 gcp + 43 azure +
-  16 consul + 56 vault+aws+gcp+azure + 72 all-clouds+consul
+- **Workspace tests:** 2,021 default-feature (unchanged — B2-T6
+  is feature-gated; +6 in default were the VipTalk + dispatch
+  tests that landed in the side-quest) + 16 consul + 18 etcd
 - **Clippy:** clean across every feature combo, including the
-  full `redis,vault,aws,gcp,azure,consul` superset.
+  full `redis,vault,aws,gcp,azure,consul,etcd` superset.
 - **Active track:** Phase B — production-readiness, milestone
   B2 ([`plans/phase-b/`](./plans/phase-b/README.md))
-- **Next task:** B2-T6 — etcd service discovery
-- **Latest activity:** B2-T5 closed — Consul blocking-query
-  watcher behind `aegis-proxy/consul` emits `DiscoveryEvent`s
-  on an mpsc; env-driven config; ACL token + multi-DC + mTLS
-  CA support.
+- **Next task:** B2-T7 — Kubernetes service discovery (closes
+  the discovery half + milestone B2)
+- **Latest activity:** B2-T6 closed — etcd v3 REST gateway
+  range-polling watcher behind `aegis-proxy/etcd` emits
+  `DiscoveryEvent`s on an mpsc; basic-auth + mTLS support;
+  configurable poll interval.
 
 ---
 
 ## Last Completed
 
-**Task:** **B2-T5 — Consul service discovery.**
+**Task:** **B2-T6 — etcd service discovery.**
 
-**Outcome.** Operators on a Consul-backed service mesh can now
-have aegis-proxy watch a service via Consul's blocking-query
-API. The new `aegis-proxy::sd::consul::watch(service)` returns
-an `mpsc::Receiver<DiscoveryEvent>` whose sender is owned by a
-spawned tokio task that long-polls
-`/v1/health/service/<name>?passing=true&index=...&wait=5m`,
-diffs the response against its last view via the existing
-`sd::diff_members`, and emits `Added`/`Removed` events. Auth
-errors (401/403) end the watcher with a logged ACL hint;
-transient errors back off exponentially (500ms → 30s cap).
-The `aegis-proxy/consul` feature pulls only `reqwest` (already
-optional), so default builds get **zero** new dep tree.
+**Outcome.** Operators running etcd as their service registry
+can now have aegis-proxy watch a key prefix and emit
+`DiscoveryEvent`s on member changes. The new
+`aegis-proxy::sd::etcd::watch(prefix)` returns an
+`mpsc::Receiver<DiscoveryEvent>` whose sender is owned by a
+spawned tokio task that POSTs `/v3/kv/range` against the
+configured endpoints every `poll_interval` (default 5s),
+diffs the result against its last view via
+`sd::diff_members`, and emits `Added`/`Removed` events.
+
+**Why range polling, not gRPC Watch.** Pulling `tonic` +
+`prost` for one Watch RPC would dominate the dep tree. The v3
+REST gateway exposes the same operations over JSON; we POST
+to `/v3/kv/range`, base64-decode the values into `addr:port`
+strings, and compare. Trade-off is up to `poll_interval`
+extra latency on a member change versus the cleaner dep tree.
+A future task can add `etcd_grpc` if real-time membership
+matters more.
+
+**Auth + mTLS.** Basic auth via etcd's `/v3/auth/authenticate`
+endpoint (returns a token sent in subsequent requests'
+`Authorization` header). mTLS via three env vars
+(`AEGIS_ETCD_CA_CERT_PATH`, `_CLIENT_CERT_PATH`, `_CLIENT_KEY_PATH`)
+— reqwest's `Identity::from_pem` consumes the concatenated
+cert + key.
 
 **Files changed.**
-- `crates/aegis-proxy/Cargo.toml` — new `consul` feature
-  gating `reqwest`. Independent of every other feature.
+- `crates/aegis-proxy/Cargo.toml` — new `etcd` feature gating
+  `reqwest` + `base64` (both already optional from earlier
+  features). Independent of every other feature.
 - `crates/aegis-proxy/src/sd/mod.rs` — declared
-  `#[cfg(feature = "consul")] pub mod consul;`. No other
-  changes — the existing `DiscoveryEvent`, `diff_members`,
-  and `SafetyLimits` types are reused as-is.
-- `crates/aegis-proxy/src/sd/consul.rs` — **new**, 530 lines.
-  `ConsulConfig::from_env()` reads `AEGIS_CONSUL_ADDR` (default
-  `http://127.0.0.1:8500`) plus optional `_TOKEN` /
-  `_DATACENTER` / `_CA_CERT_PATH`. `watch(service)` spawns the
-  async loop. `poll_once` does one blocking-query round-trip,
-  parses the `X-Consul-Index` cursor for the next call, maps
-  401/403 → `WatcherError::Auth` (operator action required, no
-  retry) vs. everything else → `WatcherError::Transient`
-  (exponential backoff). The pure helper `parse_response(body)`
-  handles the array-of-services JSON shape, including Consul's
-  "empty `Service.Address` means use `Node.Address`" convention.
+  `#[cfg(feature = "etcd")] pub mod etcd;`. No other changes
+  — `DiscoveryEvent` + `diff_members` reused as-is.
+- `crates/aegis-proxy/src/sd/etcd.rs` — **new**, 540 lines.
+  `EtcdConfig::from_env()` reads the 7 supported env vars
+  (`AEGIS_ETCD_ENDPOINTS` + `_USER` + `_PASSWORD` +
+  `_CA_CERT_PATH` + `_CLIENT_CERT_PATH` + `_CLIENT_KEY_PATH`
+  + `_POLL_INTERVAL_MS`). `watch(prefix)` spawns the loop;
+  `poll_once` does one round-trip with cached auth token,
+  401/403 → `WatcherError::Auth` (no retry), everything else
+  → `WatcherError::Transient` (exponential backoff
+  500ms→30s). Pure helpers `prefix_to_range_end(prefix)`
+  (computes etcd's open-ended range end by incrementing the
+  last byte) and `parse_response(body)` (base64-decode +
+  socket-addr parse) are fully unit-testable.
 
-**Tests.** 16 net new in `sd::consul::tests`:
+**Tests.** 18 net new in `sd::etcd::tests`:
 
 - `config_defaults_when_no_env`,
-  `config_picks_up_all_env_vars`,
-  `config_filters_empty_strings_as_unset` — env handling.
-- `parse_empty_array`,
-  `parse_single_member_with_service_address`,
-  `parse_falls_back_to_node_address_when_service_address_empty`,
-  `parse_falls_back_to_node_address_when_service_address_missing`,
-  `parse_multiple_members` — happy-path JSON parsing.
-- `parse_member_with_no_address_anywhere_errors`,
-  `parse_invalid_json_errors`, `parse_bad_port_errors` — error
-  paths.
-- `urlencode_passes_unreserved_through`,
-  `urlencode_percent_encodes_special` — URL encoder.
-- `diff_first_observation_is_all_added`,
-  `diff_member_drop_emits_removed` — proves the watcher's
-  inner-loop diff produces correct event shapes.
-- `live_consul_watch` — gated by
-  `AEGIS_CONSUL_INTEGRATION_TEST=1`; defaults service name to
-  `consul` (the built-in service every agent registers itself
-  as) so vanilla `consul agent -dev` works without prep.
+  `config_parses_comma_separated_endpoints`,
+  `config_filters_empty_endpoints_and_strings`,
+  `config_parses_poll_interval`,
+  `config_invalid_poll_interval_falls_back_to_default` — env
+  parsing.
+- `prefix_to_range_end_simple`,
+  `prefix_to_range_end_increments_last_ascii_byte`,
+  `prefix_to_range_end_unicode_terminator`,
+  `prefix_to_range_end_empty_string_yields_empty_range` —
+  range-end algorithm.
+- `parse_empty_kv_set`, `parse_single_member`,
+  `parse_multiple_members` — happy-path JSON.
+- `parse_value_not_addr_port_errors`,
+  `parse_value_not_base64_errors`,
+  `parse_value_not_utf8_errors`,
+  `parse_invalid_json_errors` — error paths.
+- `diff_first_observation_is_all_added` — proves the watcher's
+  inner-loop diff produces the right shape.
+- `live_etcd_watch` — gated by
+  `AEGIS_ETCD_INTEGRATION_TEST=1`; the dev compose's etcd
+  service at `127.0.0.1:2379` is the natural target.
 
 **Verification.**
-- `cargo build` clean across **default**, `consul`, and
-  `redis,vault,aws,gcp,azure,consul` (every feature combo).
-- `cargo test --workspace` (default features) → **2,015
-  passed** (unchanged — consul module is feature-gated).
-- `cargo test -p aegis-proxy --features consul --lib sd::consul::`
-  → **16 passed**.
+- `cargo build` clean across **default**, `etcd`, and
+  `redis,vault,aws,gcp,azure,consul,etcd` (every feature
+  combo).
+- `cargo test --workspace` (default features) → **2,021
+  passed** (unchanged — etcd module is feature-gated).
+- `cargo test -p aegis-proxy --features etcd --lib sd::etcd::`
+  → **18 passed**.
 - `cargo clippy --workspace --lib -- -D warnings` → clean.
 - `cargo clippy -p aegis-proxy --features
-  redis,vault,aws,gcp,azure,consul --lib -- -D warnings` →
-  clean.
+  redis,vault,aws,gcp,azure,consul,etcd --lib -- -D warnings`
+  → clean.
 - `cargo run -p aegis-bin -- validate --config
   config/waf.dev.yaml` → `config OK`.
 
@@ -120,63 +138,65 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-04-29 | **B2-T5** Consul service discovery + VipTalk default alert routing | `aegis-proxy/consul` Consul blocking-query watcher (16 tests); side-quest landed `aegis-control/alerts` with VipTalk default routing (9 tests). |
 | 2026-04-29 | **B2-T4** Azure Key Vault resolver — closes the cloud-secrets quartet | `aegis-proxy/azure`; REST + hand-rolled SP/IMDS auth; reuses `json_field`. +14 tests. |
 | 2026-04-29 | **B2-T3** GCP Secret Manager resolver | REST + `gcp_auth` behind `aegis-proxy/gcp`; ADC chain; shared `json_field` helper extracted. +9 tests. |
 | 2026-04-29 | **B2-T2** AWS Secrets Manager resolver | `aws-sdk-secretsmanager` behind `aegis-proxy/aws`; full credential chain; JSON-field extraction. +13 tests. |
 | 2026-04-29 | **B2-T1** Vault secret resolver | KV-v2 client behind `aegis-proxy/vault`; token + AppRole auth; env-var config. +12 tests. |
-| 2026-04-29 | **B1-T6** Partition-safe merge — closes B1 | `ReconcilingBackend`; block-list union on heal; counters fall through; `ha-clustering.md` flipped Implemented. +10 tests. |
 
 ---
 
 ## Next Task
 
-**Task:** **B2-T6 — etcd service discovery.**
+**Task:** **B2-T7 — Kubernetes service discovery** (closes
+the discovery half of milestone B2).
 
 **Plan:** [`plans/phase-b/README.md` § B2](./plans/phase-b/README.md#b2--operational-integrations).
 
-**Why this next.** Consul covers the on-prem / multi-cloud
-mesh case; etcd is the second of the three production service
-registries (Consul, etcd, k8s). Many internal-only deployments
-already run etcd for Kubernetes itself, so reusing it for
-service discovery avoids a second piece of infrastructure.
-Pattern is identical to B2-T5 (env-driven config, REST
-watcher, mTLS support, parses into `DiscoveryEvent`s).
+**Why this next.** B2-T5 (consul) and B2-T6 (etcd) ship; k8s
+closes the trio. Once this lands, B2 milestone closes — every
+"Partial" / "Designed-only" doc banner under `secrets/` and
+`sd/` flips to Implemented (modulo HSM, which is B6-T4).
 
 **Outline.**
 
-1. New `aegis-proxy/src/sd/etcd.rs` (feature-gated `etcd`).
-   Watches a key prefix via etcd v3's gRPC Watch RPC — but to
-   stay consistent with the "no gRPC" stance of B2-T3 (gcp),
-   use the etcd v3 **REST gateway** at
-   `POST /v3/watch` with a watch_create request body, and
-   poll with HTTP/2 streaming.
-   - **Decide in-task** whether the streaming complexity is
-     worth it vs. periodic `range` calls (every 5s — simpler,
-     slightly higher latency on changes). Default to range
-     polling for B2-T6 with a TODO for streaming if a use
-     case emerges.
-2. Config from env: `AEGIS_ETCD_ENDPOINTS` (comma-separated,
-   default `http://127.0.0.1:2379`), optional
-   `AEGIS_ETCD_USER` + `AEGIS_ETCD_PASSWORD` for basic auth,
-   optional `AEGIS_ETCD_CA_CERT_PATH` + `_CLIENT_CERT_PATH` +
-   `_CLIENT_KEY_PATH` for mTLS.
-3. Reference shape: each member is stored as
-   `<prefix>/<id>` → `addr:port` (operator's responsibility
-   to write entries). Watcher reads the prefix range and
-   emits diffs.
-4. Tests: range-response parsing, member diff via
-   `sd::diff_members`, env handling, live test gated by
-   `AEGIS_ETCD_INTEGRATION_TEST=1` (the dev-compose etcd
-   service is already up).
+1. New `aegis-proxy/src/sd/k8s.rs` (feature-gated `k8s`).
+   Watches an `EndpointSlice` (or `Endpoints`) for a service
+   in a namespace and emits `DiscoveryEvent`s.
+2. **Decision in-task** between the official `kube-rs` crate
+   (full controller-runtime, big dep tree) vs. hand-roll
+   against the k8s REST API. The kube-rs ecosystem is
+   excellent but heavy; for one watch endpoint a hand-roll
+   keeps with the B2-T5/T6 pattern. Likely choice: hand-roll
+   using `reqwest` + service-account JWT bearer auth.
+3. In-cluster auth: read service-account token from
+   `/var/run/secrets/kubernetes.io/serviceaccount/token`
+   and CA cert from `.../ca.crt`. Default API server is
+   `https://kubernetes.default.svc`. Out-of-cluster (`kubectl`-
+   style): respect `KUBECONFIG` or `~/.kube/config` via env
+   override.
+4. Watch endpoint: `GET /apis/discovery.k8s.io/v1/namespaces/<ns>/endpointslices?labelSelector=kubernetes.io/service-name=<svc>&watch=true`.
+   Streams JSON-line events; parse each `EndpointSlice` and
+   diff via `sd::diff_members`.
+5. Config from env: `AEGIS_K8S_NAMESPACE` (default `default`),
+   `AEGIS_K8S_API_SERVER` (default `https://kubernetes.default.svc`),
+   `AEGIS_K8S_TOKEN_PATH` + `_CA_CERT_PATH` (defaults to the
+   in-cluster paths).
+6. Tests: EndpointSlice parsing, member diff, env handling,
+   live test gated by `AEGIS_K8S_INTEGRATION_TEST=1`.
 
 **Acceptance.**
 
-- `cargo build` clean across **default**, `etcd`, and the
-  full feature superset.
+- `cargo build` clean across **default**, `k8s`, and the full
+  feature superset.
 - `cargo test --workspace` green; +6–10 net new tests.
+- After this lands: flip `docs/data-plane/service-discovery.md`
+  banner Partial → Implemented; update
+  `plans/implementation-matrix.md`; mark B2 closed in
+  `plans/phase-b/README.md`.
 
-**On close:** Next Task → **B2-T7 — Kubernetes service
-discovery** (closes the discovery half of B2).
+**On close:** Next Task → **B3-T1 — built-in git poll-and-pull
+GitClient** (start of milestone B3 — data feeds + filtering).
 
 ---
 
@@ -220,8 +240,9 @@ membership-driven cluster runtime, not on the lease layer.
   `file`, `vault`, `aws`, `gcp`, `azure`. **HSM still returns
   `NotImplemented`** (Phase B-6 follow-up).
 - **Service discovery:** `file` + churn safety in
-  `aegis-proxy/src/sd/`, plus `consul` (`aegis-proxy/consul`
-  feature). **etcd / k8s adapters still TBD** (B2-T6, B2-T7).
+  `aegis-proxy/src/sd/`, plus `consul` and `etcd`. **k8s
+  adapter still TBD** (B2-T7) — that's the last task in this
+  milestone.
 - **Service discovery:** `file` watcher + churn safety in
   `aegis-proxy/src/sd/`; Consul / etcd / k8s adapters not
   implemented despite being mentioned in the module doc.
@@ -289,24 +310,20 @@ Order is execution priority — earlier phases run first.
 
 ## Verification (last full run)
 
-- `cargo test --workspace` (default features) → **2,015 passed**
-  (unchanged — B2-T5's consul module is feature-gated).
-- `cargo test -p aegis-proxy --features vault --lib secrets::`
-  → **23 passed**.
-- `cargo test -p aegis-proxy --features aws --lib secrets::`
-  → **29 passed**.
-- `cargo test -p aegis-proxy --features gcp --lib secrets::`
-  → **37 passed**.
-- `cargo test -p aegis-proxy --features azure --lib secrets::`
-  → **43 passed**.
+- `cargo test --workspace` (default features) → **2,021 passed**
+  (unchanged — B2-T6's etcd module is feature-gated).
 - `cargo test -p aegis-proxy --features consul --lib sd::consul::`
   → **16 passed**.
+- `cargo test -p aegis-proxy --features etcd --lib sd::etcd::`
+  → **18 passed**.
+- `cargo test -p aegis-control --features alerts --lib slo::dispatch::`
+  → **4 passed** (VipTalk routing).
 - `cargo test -p aegis-proxy --features
-  vault,aws,gcp,azure,consul --lib` → all green.
+  vault,aws,gcp,azure,consul,etcd --lib` → all green.
 - `cargo clippy --workspace --lib -- -D warnings` → clean.
 - `cargo clippy -p aegis-proxy --features
-  redis,vault,aws,gcp,azure,consul --lib -- -D warnings` →
-  clean.
+  redis,vault,aws,gcp,azure,consul,etcd --lib -- -D warnings`
+  → clean.
 - `cargo run -p aegis-bin -- validate --config
   config/waf.dev.yaml` → `config OK`.
 
@@ -464,3 +481,5 @@ Append-only. One row per closed task.
 | **B2-T3** GCP Secret Manager resolver (`aegis-proxy/gcp` feature, REST + `gcp_auth`, ADC chain, shared `json_field` helper) | aegis-proxy | 2026-04-29 |
 | **B2-T4** Azure Key Vault resolver (`aegis-proxy/azure` feature, REST + hand-rolled SP/IMDS auth) — closes the cloud-secrets quartet | aegis-proxy | 2026-04-29 |
 | **B2-T5** Consul service discovery (`aegis-proxy/consul` feature, blocking-query watcher, env-driven config, ACL/multi-DC/mTLS support) | aegis-proxy | 2026-04-29 |
+| Side-quest: VipTalk default alert routing (`aegis-control/alerts` feature, `slo::dispatch::send_alert`, env override; doc updated) | aegis-control, docs | 2026-04-29 |
+| **B2-T6** etcd service discovery (`aegis-proxy/etcd` feature, REST gateway range-polling, basic auth + mTLS, configurable poll interval) | aegis-proxy | 2026-04-29 |

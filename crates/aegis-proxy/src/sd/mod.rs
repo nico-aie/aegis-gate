@@ -1,12 +1,15 @@
 //! Service discovery backends.
 //!
 //! Backends: `file` watcher (always-on), `consul` (B2-T5 — feature
-//! `consul`), `etcd` / `k8s` (B2-T6 / B2-T7, feature-gated, TBD).
-//! Safety limits: `min_members`, `max_churn_per_interval`.
+//! `consul`), `etcd` (B2-T6 — feature `etcd`), `k8s` (B2-T7 —
+//! TBD). Safety limits: `min_members`, `max_churn_per_interval`.
 //! New members enter `probing` until active health confirms them.
 
 #[cfg(feature = "consul")]
 pub mod consul;
+
+#[cfg(feature = "etcd")]
+pub mod etcd;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;

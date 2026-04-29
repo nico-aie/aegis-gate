@@ -35,6 +35,18 @@ azure = ["dep:reqwest"]
 # env-driven config (`AEGIS_CONSUL_ADDR`, optional `_TOKEN` /
 # `_DATACENTER` / `_CA_CERT_PATH` for mTLS clusters).
 consul = ["dep:reqwest"]
+# `etcd` enables an etcd v3 REST gateway range-polling watcher
+# (`sd::etcd::watch`). Reuses `reqwest` + `base64` (already
+# pulled by other features). Env-driven config (`AEGIS_ETCD_ENDPOINTS`,
+# optional `_USER` / `_PASSWORD` / `_CA_CERT_PATH` /
+# `_CLIENT_CERT_PATH` / `_CLIENT_KEY_PATH` for auth + mTLS).
+etcd = ["dep:reqwest", "dep:base64"]
+# `k8s` enables a Kubernetes EndpointSlice watcher
+# (`sd::k8s::watch`). REST + streaming JSON lines via reqwest;
+# auto-detects in-cluster service-account creds. Env-driven
+# config (`AEGIS_K8S_API_SERVER`, `AEGIS_K8S_NAMESPACE`,
+# `AEGIS_K8S_TOKEN_PATH`, `AEGIS_K8S_CA_CERT_PATH`).
+k8s = ["dep:reqwest"]
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
