@@ -272,9 +272,26 @@ function useApi(url, { intervalMs = 5000, fallback = null } = {}) {
   return { ...state, reload };
 }
 
-// Live request stream from /dashboard/sse. Falls back to the
-// mock generator when the server isn't reachable so the page
-// still renders something during dev.
+// Live request stream from /dashboard/sse. Drop-in replacement for
+// useLiveFeed — produces the same row shape (id, ts, ip, method,
+// path, region, tier, risk, action, rules, cat, geo) so the Live
+// Feed page renders without conditionals. Returns
+// `{ events, connected }`; pages that only need rows should
+// destructure both anyway so they can show the connection state.
+let _realLiveSeq = 0;
+function tierForRisk(r) {
+  if (r >= 90) return 'crit';
+  if (r >= 60) return 'high';
+  if (r >= 25) return 'med';
+  return 'low';
+}
+function fmtTs(epoch) {
+  const d = new Date(epoch);
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
 function useRealLiveFeed(maxLen = 60, paused = false) {
   const [events, setEvents] = useState([]);
   const [connected, setConnected] = useState(false);
@@ -288,19 +305,26 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
       es.onmessage = (e) => {
         try {
           const ev = JSON.parse(e.data);
-          // Map proxy SSE event shape onto the design's:
-          // { t, ip, method, path, status, latency, risk, action, rules, cat }
+          const epoch = ev.ts_ms || Date.now();
+          const risk = ev.risk_score || 0;
+          const action = ev.action || 'allow';
+          const ip = ev.client_ip || ev.ip || '0.0.0.0';
           const mapped = {
-            t: ev.ts_ms || Date.now(),
-            ip: ev.client_ip || ev.ip || '0.0.0.0',
+            id: ++_realLiveSeq,
+            ts: fmtTs(epoch),
+            epoch,
+            ip,
+            geo: null,
             method: ev.method || 'GET',
             path: ev.path || '/',
-            status: ev.status || (ev.action === 'block' ? 403 : 200),
-            latency: ev.latency_ms || Math.floor(Math.random() * 50) + 5,
-            risk: ev.risk_score || 0,
-            action: ev.action || 'allow',
-            rules: ev.rule_id ? [ev.rule_id] : [],
-            cat: ev.category || null,
+            region: ev.region || '',
+            tier: ev.tier || tierForRisk(risk),
+            risk,
+            action,
+            rules: ev.rule_id ? [ev.rule_id] : (ev.rules || []),
+            cat: ev.category || ev.cat || null,
+            status: ev.status || (action === 'block' ? 403 : 200),
+            latency: ev.latency_ms || 0,
           };
           setEvents(prev => [...prev, mapped].slice(-maxLen));
         } catch (_) { /* ignore malformed line */ }
@@ -361,6 +385,16 @@ function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
   return useApi(`/api/audit/since?${params.toString()}`, { intervalMs: 3000, fallback: null });
 }
 
+// Hook: route table — read-only view of the routing trie. Fed by
+// /api/routes (CI-T5). Cached server-side for 30s; client polls
+// every 30s so a hot-reload surfaces within one tick.
+function useRoutesApi() {
+  return useApi('/api/routes', { intervalMs: 30000, fallback: { routes: [] } });
+}
+function useTiersApi() {
+  return useApi('/api/tiers', { intervalMs: 30000, fallback: { tiers: TIERS } });
+}
+
 // Hook: cluster, slo, certs, alerts, gitops, upstreams (Tracking page)
 function useClusterApi()  { return useApi('/api/cluster',         { intervalMs: 5000, fallback: { peers: CLUSTER } }); }
 function useSloApi()      { return useApi('/api/slo',             { intervalMs: 10000, fallback: null }); }
@@ -410,6 +444,22 @@ async function rulesToggle(id) {
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
 
+// CI-T6 — settings mutation helpers. Same CSRF + JSON pattern as
+// the Rule CRUD wrappers above.
+async function settingsModePut(mode) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/mode', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ mode }),
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
+function useModeApi() {
+  return useApi('/api/mode', { intervalMs: 5000, fallback: { mode: 'enforce' } });
+}
+
 // DD-T7 — config-version polling. Returns { applied: bool, latencyMs }.
 // `expectedVersion` is the version returned by a successful mutation;
 // the hook polls /api/config/version every 250ms until version moves
@@ -442,5 +492,8 @@ Object.assign(window, {
   useAttacksDistributionApi, useAttacksTopApi,
   useAuditLogApi,
   useClusterApi, useSloApi, useCertsApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
+  useRoutesApi, useTiersApi,
   rulesPost, rulesPut, rulesDelete, rulesToggle, waitForVersion,
+  // CI-T6 — settings mutations
+  useModeApi, settingsModePut,
 });

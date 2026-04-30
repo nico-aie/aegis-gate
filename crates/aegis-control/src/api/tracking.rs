@@ -9,6 +9,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -58,6 +59,45 @@ impl SloResponse {
                 },
             ],
         }
+    }
+
+    /// CI-T4/T7 — build the response from the live SLO engine's
+    /// per-objective `BudgetStatus` snapshot. `burn_1h`, `burn_6h`,
+    /// `burn_3d` are populated from `BudgetStatus::burn_rates` —
+    /// any windows the SLO objective doesn't declare stay 0.0.
+    pub fn from_budget_status(status: Vec<crate::slo::BudgetStatus>) -> Self {
+        fn pick(rates: &[crate::slo::BurnRate], hours: u64) -> f64 {
+            rates
+                .iter()
+                .find(|r| r.window_hours == hours)
+                .map(|r| r.rate)
+                .unwrap_or(0.0)
+        }
+        let slis = status
+            .into_iter()
+            .map(|s| SliRow {
+                name: format!("{:?}", s.sli)
+                    .chars()
+                    .flat_map(|c| {
+                        // CamelCase → snake_case for friendly display.
+                        if c.is_uppercase() {
+                            vec!['_', c.to_ascii_lowercase()]
+                        } else {
+                            vec![c]
+                        }
+                    })
+                    .collect::<String>()
+                    .trim_start_matches('_')
+                    .to_string(),
+                current: s.current * 100.0,
+                target: s.target * 100.0,
+                budget_remaining: s.budget_remaining_pct / 100.0,
+                burn_1h: pick(&s.burn_rates, 1),
+                burn_6h: pick(&s.burn_rates, 6),
+                burn_3d: pick(&s.burn_rates, 72),
+            })
+            .collect();
+        Self { slis }
     }
 }
 
@@ -251,6 +291,34 @@ impl GitopsStatusResponse {
             break_glass_active: false,
         }
     }
+
+    /// CI-T4 — build the response from the live `GitOpsLoader`.
+    /// `last_sync` and `signature_ok` come from the most-recent
+    /// `ApplyRecord`; if no apply has happened yet, falls back to
+    /// the placeholder's "no data" shape but with `repo` + `branch`
+    /// populated from the loader config so the UI can still show
+    /// what's configured.
+    pub fn from_loader(loader: &crate::gitops::GitOpsLoader) -> Self {
+        let cfg = loader.config();
+        let last = loader.apply_log().into_iter().last();
+        let (last_sync, head_commit, signature_ok) = match last {
+            Some(rec) => (
+                Some(rec.ts),
+                Some(rec.commit_sha),
+                matches!(rec.outcome, crate::gitops::ApplyOutcome::Applied),
+            ),
+            None => (None, loader.last_applied_sha(), true),
+        };
+        Self {
+            repo: Some(cfg.repo_url.clone()),
+            branch: Some(cfg.branch.clone()),
+            last_sync,
+            head_commit,
+            signature_ok,
+            drift: false,
+            break_glass_active: false,
+        }
+    }
 }
 
 // ---------- Alerts -----------------------------------------------------
@@ -285,6 +353,35 @@ impl AlertsResponse {
             resolved: Vec::new(),
         }
     }
+
+    /// CI-T4 — pull the engine's active alerts and split them into
+    /// `firing` (not yet acked) vs `resolved` (acked-by-id).
+    /// `pending` stays empty — the engine doesn't expose a
+    /// pre-fire window today.
+    pub fn from_engine(
+        engine: &crate::slo::SloEngine,
+        acked: &std::collections::HashSet<String>,
+    ) -> Self {
+        let active = engine.active_alerts();
+        let mut firing = Vec::with_capacity(active.len());
+        let mut resolved = Vec::with_capacity(active.len());
+        for a in active {
+            let id = format!("{:?}-{}h", a.sli, a.window_hours);
+            let alert = Alert {
+                name: id.clone(),
+                severity: format!("{:?}", a.severity).to_lowercase(),
+                since: a.fired_at,
+                runbook_url: Some(a.runbook_url),
+                receivers: Vec::new(),
+            };
+            if acked.contains(&id) {
+                resolved.push(alert);
+            } else {
+                firing.push(alert);
+            }
+        }
+        Self { firing, pending: Vec::new(), resolved }
+    }
 }
 
 // ---------- Snapshot aggregate -----------------------------------------
@@ -300,6 +397,13 @@ pub struct TrackingSnapshot {
         crate::api::upstreams::UpstreamSummaryResponse,
 }
 
+/// Closure type for "give me the current cert inventory" — plugged
+/// in by the proxy at boot. The dashboard hits this on every
+/// `/api/certs` call (no cache; cert files are tiny and parsing
+/// happens off the hot path).
+pub type CertInventoryProvider =
+    Arc<dyn Fn() -> Vec<CertInventoryEntry> + Send + Sync + 'static>;
+
 #[derive(Clone)]
 pub struct TrackingHandler {
     upstream_handler: Arc<crate::api::upstreams::UpstreamHandler>,
@@ -308,6 +412,18 @@ pub struct TrackingHandler {
     /// "no cluster wired" placeholder behaviour for builds
     /// that don't run with a `LeaseStore`.
     leader_view: Option<Arc<LeaderView>>,
+    /// CI-T4 — live SLO engine. `None` keeps placeholder shape.
+    /// `Mutex<Option<...>>` so the proxy can wire it post-construction
+    /// through the existing `Arc<TrackingHandler>` shared with the
+    /// admin listener.
+    slo_engine: Arc<Mutex<Option<Arc<crate::slo::SloEngine>>>>,
+    /// CI-T4 — live GitOps loader.
+    gitops_loader: Arc<Mutex<Option<Arc<crate::gitops::GitOpsLoader>>>>,
+    /// CI-T4 — cert inventory provider.
+    cert_provider: Arc<Mutex<Option<CertInventoryProvider>>>,
+    /// CI-T4 — acknowledged alert IDs. Survives the process but
+    /// not restarts (intentional — alerts re-evaluate on boot).
+    ack_store: Arc<Mutex<HashSet<String>>>,
 }
 
 impl TrackingHandler {
@@ -316,6 +432,10 @@ impl TrackingHandler {
             upstream_handler,
             cache: Arc::new(Mutex::new(None)),
             leader_view: None,
+            slo_engine: Arc::new(Mutex::new(None)),
+            gitops_loader: Arc::new(Mutex::new(None)),
+            cert_provider: Arc::new(Mutex::new(None)),
+            ack_store: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -328,15 +448,62 @@ impl TrackingHandler {
         upstream_handler: Arc<crate::api::upstreams::UpstreamHandler>,
         leader_view: Arc<LeaderView>,
     ) -> Self {
-        Self {
-            upstream_handler,
-            cache: Arc::new(Mutex::new(None)),
-            leader_view: Some(leader_view),
-        }
+        let mut h = Self::new(upstream_handler);
+        h.leader_view = Some(leader_view);
+        h
+    }
+
+    /// Wire the SLO engine that backs `/api/slo` and `/api/alerts`.
+    /// Idempotent — overwrites any previous engine.
+    pub fn set_slo_engine(&self, engine: Arc<crate::slo::SloEngine>) {
+        *self.slo_engine.lock().expect("slo engine slot poisoned") = Some(engine);
+    }
+
+    /// Wire the GitOps loader that backs `/api/gitops/status`.
+    pub fn set_gitops_loader(&self, loader: Arc<crate::gitops::GitOpsLoader>) {
+        *self.gitops_loader.lock().expect("gitops slot poisoned") = Some(loader);
+    }
+
+    /// Wire a cert inventory provider that backs `/api/certs`.
+    pub fn set_cert_provider(&self, provider: CertInventoryProvider) {
+        *self.cert_provider.lock().expect("cert provider slot poisoned") = Some(provider);
+    }
+
+    /// Acknowledge an alert by id. The next `render_alerts()` call
+    /// will exclude this id from the firing list.
+    /// Returns `true` if the alert was newly acknowledged.
+    pub fn ack(&self, alert_id: &str) -> bool {
+        let mut store = self.ack_store.lock().expect("ack store poisoned");
+        store.insert(alert_id.to_string())
+    }
+
+    /// Returns the set of currently-acked alert ids. Used by
+    /// tests + the renderer.
+    pub fn acked_ids(&self) -> Vec<String> {
+        self.ack_store
+            .lock()
+            .expect("ack store poisoned")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    fn slo(&self) -> Option<Arc<crate::slo::SloEngine>> {
+        self.slo_engine.lock().ok()?.clone()
+    }
+    fn gitops(&self) -> Option<Arc<crate::gitops::GitOpsLoader>> {
+        self.gitops_loader.lock().ok()?.clone()
+    }
+    fn certs(&self) -> Option<CertInventoryProvider> {
+        self.cert_provider.lock().ok()?.clone()
     }
 
     pub fn render_slo(&self) -> String {
-        serde_json::to_string(&SloResponse::placeholder()).unwrap_or_else(|_| "{}".into())
+        let body = match self.slo() {
+            None => SloResponse::placeholder(),
+            Some(engine) => SloResponse::from_budget_status(engine.budget_status()),
+        };
+        serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn render_cluster(&self) -> String {
@@ -360,17 +527,34 @@ impl TrackingHandler {
     }
 
     pub fn render_certs(&self) -> String {
-        serde_json::to_string(&CertsResponse::placeholder()).unwrap_or_else(|_| "{}".into())
+        let body = match self.certs() {
+            None => CertsResponse::placeholder(),
+            Some(p) => CertsResponse::from_inventory(p(), chrono::Utc::now()),
+        };
+        serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn render_gitops(&self) -> String {
-        serde_json::to_string(&GitopsStatusResponse::placeholder())
-            .unwrap_or_else(|_| "{}".into())
+        let body = match self.gitops() {
+            None => GitopsStatusResponse::placeholder(),
+            Some(loader) => GitopsStatusResponse::from_loader(loader.as_ref()),
+        };
+        serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn render_alerts(&self) -> String {
-        serde_json::to_string(&AlertsResponse::placeholder())
-            .unwrap_or_else(|_| "{}".into())
+        let body = match self.slo() {
+            None => AlertsResponse::placeholder(),
+            Some(engine) => {
+                let acked = self
+                    .ack_store
+                    .lock()
+                    .expect("ack store poisoned")
+                    .clone();
+                AlertsResponse::from_engine(engine.as_ref(), &acked)
+            }
+        };
+        serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
 
     /// Aggregate snapshot. Cached for 2s (per the docs spec for the
@@ -387,12 +571,35 @@ impl TrackingHandler {
             }
         }
         let upstream = self.upstream_handler.snapshot();
+        let slo = match self.slo() {
+            None => SloResponse::placeholder(),
+            Some(e) => SloResponse::from_budget_status(e.budget_status()),
+        };
+        let certs = match self.certs() {
+            None => CertsResponse::placeholder(),
+            Some(p) => CertsResponse::from_inventory(p(), chrono::Utc::now()),
+        };
+        let gitops = match self.gitops() {
+            None => GitopsStatusResponse::placeholder(),
+            Some(l) => GitopsStatusResponse::from_loader(l.as_ref()),
+        };
+        let alerts = match self.slo() {
+            None => AlertsResponse::placeholder(),
+            Some(e) => {
+                let acked = self
+                    .ack_store
+                    .lock()
+                    .expect("ack store poisoned")
+                    .clone();
+                AlertsResponse::from_engine(e.as_ref(), &acked)
+            }
+        };
         let snap = TrackingSnapshot {
-            slo: SloResponse::placeholder(),
+            slo,
             cluster: self.cluster_response(),
-            certs: CertsResponse::placeholder(),
-            gitops: GitopsStatusResponse::placeholder(),
-            alerts: AlertsResponse::placeholder(),
+            certs,
+            gitops,
+            alerts,
             upstream,
         };
         let body = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into());

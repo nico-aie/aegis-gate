@@ -174,13 +174,16 @@ pub async fn run(
                         "tls: rustls config build failed: {e}"
                     ))
                 })?;
-                // Carry-over 5: the data-plane handler in
-                // `accept_loop` runs HTTP/1.1 only — restrict
-                // ALPN here so curl + browsers don't negotiate
-                // HTTP/2 and stall waiting for an H2 server.
-                // Auto-detecting HTTP/2 on the data plane is a
-                // separate task.
-                server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+                // CI-T10 — the data-plane TLS branch in
+                // `accept_loop` now uses
+                // `hyper_util::server::conn::auto::Builder`, so
+                // ALPN can advertise both h2 and http/1.1 and
+                // the right protocol stack handles the negotiated
+                // outcome. (`build_hardened_server_config` already
+                // sets this list — keep it explicit here so a
+                // future refactor can't accidentally regress.)
+                server_cfg.alpn_protocols =
+                    vec![b"h2".to_vec(), b"http/1.1".to_vec()];
                 Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(
                     server_cfg,
                 ))))
@@ -687,7 +690,166 @@ async fn admin_accept_loop(
     // ModeStore + audit sink.
     let mut services = services;
     services.interop = interop.clone();
+
+    // CI-T5 — seed `services.routes` from `cfg.routes` so
+    // /api/routes returns the live routing trie. Hot-reload
+    // re-invokes this through `cfg_swap` (TODO when route
+    // hot-reload lands; today routes are boot-time only).
+    services.routes.set(
+        cfg.routes
+            .iter()
+            .map(|r| aegis_control::api::routes::RouteSummary {
+                id: r.id.clone(),
+                host: r.host.clone(),
+                path: r.path.clone(),
+                match_type: match r.match_type {
+                    aegis_core::config::MatchType::Exact => "exact",
+                    aegis_core::config::MatchType::Prefix => "prefix",
+                    aegis_core::config::MatchType::Regex => "regex",
+                    aegis_core::config::MatchType::Glob => "glob",
+                }
+                .to_string(),
+                methods: r.methods.clone().unwrap_or_default(),
+                upstream: r.upstream.clone(),
+                tier_override: r.tier_override.map(|t| match t {
+                    aegis_core::tier::Tier::Critical => "critical",
+                    aegis_core::tier::Tier::High => "high",
+                    aegis_core::tier::Tier::Medium => "medium",
+                    aegis_core::tier::Tier::CatchAll => "catch_all",
+                }
+                .to_string()),
+            })
+            .collect(),
+    );
+
+    // CI-T4 — wire the SLO engine. `default_objectives()` covers
+    // availability + audit delivery + overhead. The engine is
+    // also fed by the audit-bus drain task spawned below so
+    // /api/slo + /api/alerts return live data.
+    let slo_engine = Arc::new(
+        aegis_control::slo::SloEngine::new(aegis_control::slo::default_objectives()),
+    );
+    services.tracking.set_slo_engine(Arc::clone(&slo_engine));
+
+    // CI-T4 — wire the cert inventory provider. Reads PEM files
+    // referenced by `cfg.tls.certificates` on every /api/certs
+    // call — cheap (small files, parsed off the hot path) and
+    // reflects hot-reloads automatically.
+    if let Some(tls) = cfg.tls.as_ref() {
+        let certs_cfg: Vec<aegis_core::config::CertConfig> = tls.certificates.clone();
+        let provider: aegis_control::api::tracking::CertInventoryProvider =
+            Arc::new(move || {
+                let mut out = Vec::new();
+                for c in &certs_cfg {
+                    if let Some(entry) = read_cert_inventory(c) {
+                        out.push(entry);
+                    }
+                }
+                out
+            });
+        services.tracking.set_cert_provider(provider);
+    }
+
+    // CI-T8 — wire a GeoIP reader into the AttacksHandler so
+    // /api/attacks/top rows carry country + ASN. Behind a feature
+    // flag because the MaxMind DB reader pulls in `maxminddb` as
+    // a dependency. Without the feature, the trait is still
+    // available but no enrichment happens.
+    #[cfg(feature = "geoip")]
+    {
+        let country = cfg.geoip.country_db.clone();
+        let asn = cfg.geoip.asn_db.clone();
+        if country.is_some() || asn.is_some() {
+            match aegis_security::geoip::MaxMindReader::open(
+                country.as_deref(),
+                asn.as_deref(),
+            ) {
+                Ok(reader) => {
+                    services.attacks.set_geo_lookup(Arc::new(reader));
+                    tracing::info!(
+                        country = ?cfg.geoip.country_db,
+                        asn = ?cfg.geoip.asn_db,
+                        "geoip reader wired into AttacksHandler",
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to open MaxMind DBs; /api/attacks/top will not carry geo",
+                    );
+                }
+            }
+        }
+    }
+
     let services = Arc::new(services);
+
+    // CI-T4 — drive the SLO engine from the audit bus. Every
+    // `Detection` / `Access` event with `action == "allow"` is a
+    // 1.0 availability sample; everything else (block, challenge,
+    // rate_limit) is a 0.0 sample. Every event landing here also
+    // counts as a 1.0 audit-delivery sample (we observed it).
+    {
+        let engine = Arc::clone(&slo_engine);
+        let mut rx = services.bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        let allow = ev.action == "allow";
+                        engine.record(aegis_control::slo::SliSample {
+                            kind: aegis_control::slo::SliKind::DataPlaneAvailability,
+                            value: if allow { 1.0 } else { 0.0 },
+                            ts: ev.ts,
+                        });
+                        engine.record(aegis_control::slo::SliSample {
+                            kind: aegis_control::slo::SliKind::AuditDeliveryRate,
+                            value: 1.0,
+                            ts: ev.ts,
+                        });
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                }
+            }
+        });
+    }
+
+    // CI-T7 — periodic SLO evaluation + alert dispatch. Calls
+    // `engine.evaluate()` every 30 s; every newly-fired alert is
+    // piped through `slo::dispatch::send_alert(default_receivers())`
+    // which (with `aegis-control/alerts` on) delivers to VipTalk.
+    // Without the feature flag, dispatch logs the alert and counts
+    // it as "external" (operator-side delivery).
+    {
+        let engine = Arc::clone(&slo_engine);
+        let receivers = aegis_control::slo::default_receivers();
+        tokio::spawn(async move {
+            let mut tick =
+                tokio::time::interval(std::time::Duration::from_secs(30));
+            tick.tick().await; // skip the immediate first tick
+            loop {
+                tick.tick().await;
+                let new_alerts = engine.evaluate();
+                if new_alerts.is_empty() {
+                    continue;
+                }
+                for alert in &new_alerts {
+                    let summary =
+                        aegis_control::slo::dispatch::send_alert(alert, &receivers).await;
+                    tracing::info!(
+                        sli = ?alert.sli,
+                        severity = ?alert.severity,
+                        burn_rate = alert.burn_rate,
+                        delivered = summary.delivered.len(),
+                        failed = summary.failed.len(),
+                        external = summary.external.len(),
+                        "slo alert dispatched",
+                    );
+                }
+            }
+        });
+    }
 
     loop {
         let (stream, peer) = match tcp.accept().await {
@@ -833,7 +995,140 @@ async fn handle_admin_request(
         }
     }
 
+    // CI-T4 — alert ack. Audit-mutated; CSRF-gated. The ack
+    // store lives on `services.tracking`; render_alerts() then
+    // moves the alert from `firing` to `resolved`.
+    if method == hyper::Method::POST && path.starts_with("/api/alerts/") {
+        let suffix = &path["/api/alerts/".len()..];
+        if let Some(alert_id) = suffix.strip_suffix("/ack") {
+            if !alert_id.is_empty() && !alert_id.contains('/') {
+                return handle_alert_ack(req, alert_id, services).await;
+            }
+        }
+    }
+
+    // CI-T6 — global enforce / log_only toggle (shadow mode).
+    // Wraps the interop ModeStore so dashboard mutations and the
+    // /__waf_control mutations route through the same global
+    // mode plane. Audit-mutated; CSRF-gated.
+    if method == hyper::Method::PUT && path == "/api/mode" {
+        return handle_mode_put(req, services).await;
+    }
+
     admin_router(req, cfg, readiness, startup, metrics, services)
+}
+
+async fn handle_mode_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "mode-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+        ),
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let parsed: serde_json::Value =
+        serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str })
+            .unwrap_or(serde_json::Value::Null);
+    let mode_str = parsed
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let new_mode = match mode_str {
+        "enforce" => aegis_control::interop::headers::Mode::Enforce,
+        "log_only" | "shadow" => aegis_control::interop::headers::Mode::LogOnly,
+        _ => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(
+                "mode must be 'enforce' or 'log_only'".into(),
+            ),
+        ),
+    };
+
+    let Some(rt) = services.interop.as_ref() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "interop runtime not wired".into(),
+            ),
+        );
+    };
+    let before = serde_json::json!({"mode": rt.modes.current().default.as_str()});
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/mode",
+        action: "mode_set",
+        reason: "operator pins global mode",
+    };
+    let modes = rt.modes.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        serde_json::json!({"mode": new_mode.as_str()}),
+        || {
+            modes.set_all(new_mode);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "mode": new_mode.as_str(),
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_alert_ack(
+    req: hyper::Request<hyper::body::Incoming>,
+    alert_id: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "alert-ack");
+    let resource = format!("/api/alerts/{alert_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "alert_ack",
+        reason: "operator acknowledged alert",
+    };
+    let tracking = services.tracking.clone();
+    let alert_id_owned = alert_id.to_string();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        serde_json::Value::Null,
+        serde_json::json!({"alert_id": alert_id, "acked": true}),
+        || {
+            tracking.ack(&alert_id_owned);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "alert_id": alert_id,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
 }
 
 async fn handle_logging_put(
@@ -2126,6 +2421,12 @@ fn admin_router(
             let body = serde_json::json!({"tiers": services.tiers.list()});
             json_body_response(200, body.to_string(), "private, max-age=5")
         }
+        "/api/routes" => {
+            // Read-only view of the routing trie seeded from
+            // `cfg.routes` at boot. Cached 30 s — config is
+            // hot-reloadable but doesn't change on every request.
+            json_body_response(200, services.routes.render(), "private, max-age=30")
+        }
         "/api/blacklist" => {
             let body = serde_json::json!({"entries": services.blacklist.list()});
             json_body_response(200, body.to_string(), "private, max-age=2")
@@ -2167,6 +2468,20 @@ fn admin_router(
         // (handled in `handle_admin_request`).
         "/api/loadmode" => {
             let body = aegis_control::api::load_mode::render_get(&services.load_gauge);
+            json_body_response(200, body, "private, max-age=2")
+        }
+
+        // CI-T6 — current global enforce / log_only mode (interop
+        // ModeStore). Mirror surface of `/__waf_control/mode`
+        // gated behind dashboard auth. PUT lands at the matching
+        // mutation handler in dispatch.
+        "/api/mode" => {
+            let mode = services
+                .interop
+                .as_ref()
+                .map(|rt| rt.modes.current().default.as_str())
+                .unwrap_or("enforce");
+            let body = serde_json::json!({"mode": mode}).to_string();
             json_body_response(200, body, "private, max-age=2")
         }
 
@@ -2310,6 +2625,49 @@ fn json_response(status: u16, value: &serde_json::Value) -> Response<Full<Bytes>
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body)))
         .unwrap()
+}
+
+/// CI-T4 — parse one configured cert into the dashboard's
+/// inventory shape. Returns `None` when the file is missing or
+/// can't be parsed as PEM (the cert provider is best-effort —
+/// the real cert loader in `listener::tls` already failed loudly
+/// at boot if certs are bad, so silent skips are safe here).
+fn read_cert_inventory(
+    cfg: &aegis_core::config::CertConfig,
+) -> Option<aegis_control::api::tracking::CertInventoryEntry> {
+    use std::io::BufReader;
+    use x509_parser::prelude::FromDer;
+
+    let pem_bytes = std::fs::read(&cfg.cert_path).ok()?;
+    let mut reader = BufReader::new(pem_bytes.as_slice());
+    let first = rustls_pemfile::certs(&mut reader)
+        .next()
+        .and_then(|r| r.ok())?;
+    let (_rest, parsed) = x509_parser::certificate::X509Certificate::from_der(&first).ok()?;
+
+    let issuer = parsed
+        .issuer()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| parsed.issuer().to_string());
+
+    let host = cfg
+        .hosts
+        .first()
+        .cloned()
+        .unwrap_or_else(|| cfg.cert_path.display().to_string());
+
+    let not_after_secs = parsed.validity().not_after.timestamp();
+    let expires_at = chrono::DateTime::<chrono::Utc>::from_timestamp(not_after_secs, 0)?;
+
+    Some(aegis_control::api::tracking::CertInventoryEntry {
+        host,
+        issuer,
+        expires_at,
+        source: "static".into(),
+    })
 }
 
 /// JSON response from a pre-rendered body. Adds `Cache-Control` per
@@ -2739,13 +3097,23 @@ async fn accept_loop(
             // for TLS, do the rustls handshake first, then
             // serve hyper over the encrypted stream. Otherwise
             // serve plain HTTP/1.1 directly.
+            //
+            // CI-T10 — the TLS branch uses
+            // `hyper_util::server::conn::auto::Builder` so an
+            // ALPN-negotiated `h2` actually serves over HTTP/2;
+            // before this, ALPN advertised h2 but the listener
+            // only spoke h1. The plain branch stays h1-only —
+            // there's no h2-without-TLS in our deployment shape
+            // (h2c isn't on the supported list).
             match acceptor {
                 Some(acc) => match acc.accept(stream).await {
                     Ok(tls_stream) => {
                         let io = TokioIo::new(tls_stream);
-                        if let Err(e) = http1::Builder::new()
-                            .serve_connection(io, svc)
-                            .await
+                        let builder = hyper_util::server::conn::auto::Builder::new(
+                            hyper_util::rt::TokioExecutor::new(),
+                        );
+                        if let Err(e) =
+                            builder.serve_connection_with_upgrades(io, svc).await
                         {
                             tracing::debug!(
                                 "tls connection from {peer} closed: {e}"

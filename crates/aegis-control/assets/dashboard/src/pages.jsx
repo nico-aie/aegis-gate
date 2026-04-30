@@ -2,40 +2,90 @@
 const { useState: useStateP, useEffect: useEffectP, useMemo: useMemoP, useRef: useRefP } = React;
 
 // ============== OVERVIEW ==============
+// Color palette for OWASP categories — used to overlay a colour on
+// API-returned `name` strings (which are stable identifiers like
+// `sqli`, `xss`, `ssrf`, …).
+const CAT_COLOR = {
+  sqli: '#F6465D',
+  xss: '#A555E0',
+  ssrf: '#FF8C42',
+  path_traversal: '#FCD535',
+  recon: '#4DA8FF',
+  cmdi: '#FF4D4D',
+  lfi: '#E0A415',
+  honeypot: '#FCD535',
+  rce: '#F6465D',
+  body_abuse: '#A87715',
+  header_injection: '#6B4710',
+  brute_force: '#3B2A1A',
+};
+function colorFor(name) { return CAT_COLOR[name] || '#6B7280'; }
+
 function PageOverview() {
-  const series = window.useTrafficSeries(60);
+  const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
+  const tsApi = window.useTimeseriesApi(60, 1);    // /api/stats/timeseries — 60s window, 1s buckets
+  const distApi = window.useAttacksDistributionApi(900); // /api/attacks/distribution — 15m
+  const topApi = window.useAttacksTopApi(900, 5);  // /api/attacks/top — 5 attackers, 15m
   const tick = window.useTicking(2000);
   const [drawerEvent, setDrawerEvent] = useStateP(null);
 
-  const totalNow = series[series.length - 1]?.total || 0;
-  const blockNow = series[series.length - 1]?.blocked || 0;
-  const blockRate = totalNow ? ((blockNow / totalNow) * 100).toFixed(1) : '0.0';
-  const totalBlocks = series.reduce((s, x) => s + x.blocked, 0) + 638947;
+  // Adapt /api/stats/timeseries → series shape the TrafficChart wants.
+  const series = useMemoP(() => {
+    const pts = tsApi.data?.points || [];
+    if (pts.length === 0) return window.useTrafficSeries ? [] : [];
+    return pts.map(p => ({ total: p.total, blocked: p.blocked }));
+  }, [tsApi.data]);
 
   const sparkTotal = series.slice(-30).map(s => s.total);
   const sparkBlocked = series.slice(-30).map(s => s.blocked);
 
-  // Distribution
-  const dist = window.ATTACK_CATS.map(c => ({
-    name: c.label, color: c.color, value: 50 + Math.floor(Math.random() * 600 + (c.id === 'ssrf' ? 400 : 0) + (c.id === 'sqli' ? 300 : 0)),
+  // KPI tiles fed by /api/stats; fall back to derived values when the
+  // endpoint hasn't replied yet so first paint isn't blank.
+  const requestRate = stats.data?.request_rate;
+  const blocksTotal = stats.data?.blocks_total ?? 0;
+  const blockRate = stats.data?.block_rate_pct;
+  const activeThreats = stats.data?.active_threats ?? 0;
+  const upstream = stats.data?.upstream;
+
+  // Adapt /api/attacks/distribution → donut slices (name + color + value).
+  const dist = useMemoP(() => {
+    const cats = distApi.data?.categories || [];
+    return cats.map(c => ({
+      name: c.name, color: colorFor(c.name), value: c.count,
+    }));
+  }, [distApi.data]);
+
+  // Top attackers — real API rows. Geo enrichment isn't on the
+  // server response yet (GeoIP join is a follow-up); the table shows
+  // CI-T8 — identifier + categories + risk + (when MaxMind DBs
+  // are loaded server-side) country + ASN. Geo arrives only for
+  // public IPs; fingerprint identifiers (`fp:<ja4>`) get null.
+  const topAttackers = (topApi.data?.attackers || []).map(a => ({
+    id: a.identifier,
+    fingerprint: a.identifier.startsWith('fp:') ? a.identifier : null,
+    hits: a.hits,
+    cats: a.categories || [],
+    risk: a.risk,
+    country: a.country || null,
+    asn: a.asn || null,
+    // The WorldMap renderer wants `{cc, city, lat, lon}`. We
+    // only have `country` from the backend right now; lat/lon
+    // would need a city DB. Pass partial geo so the map can
+    // place a country-level blip; full lat/lon arrives when
+    // the operator ships a GeoLite2-City.mmdb (follow-up).
+    geo: a.country ? { cc: a.country, city: '', lat: 0, lon: 0 } : null,
   }));
 
-  // Map blips
-  const blips = window.ATTACKER_GEO.slice(0, 12).map((g, i) => ({
-    ...g,
-    label: `${g.cc} · ${g.city}`,
-    show: i < 5,
-  }));
-
-  // Top attackers
-  const topAttackers = window.ATTACKER_GEO.slice(0, 5).map((g, i) => ({
-    id: g.ip,
-    geo: g,
-    hits: 4521 - i * 720 + Math.floor(Math.random() * 100),
-    cats: i === 0 ? ['honeypot', 'recon'] : i === 1 ? ['sqli', 'cmdi'] : i === 2 ? ['ssrf'] : i === 3 ? ['recon'] : ['xss', 'path_traversal'],
-    risk: 100 - i * 8,
-    fingerprint: i % 2 === 0 ? `fp:${Math.random().toString(16).slice(2, 18)}` : null,
-  }));
+  // Map blips — real country codes when available, else hide
+  // the layer (the page used to fall back to mock fixtures
+  // here, which lied about live state).
+  const blips = topAttackers
+    .filter(a => a.country)
+    .slice(0, 12)
+    .map((a, i) => ({
+      cc: a.country, city: '', lat: 0, lon: 0,
+      ip: a.id, label: a.country, show: i < 5,
+    }));
 
   return (
     <>
@@ -67,16 +117,16 @@ function PageOverview() {
       <div className="kpi-row">
         <window.StatTile
           title="Requests / s"
-          value={(totalNow / 10).toFixed(1)}
-          sub={<>last 10 seconds <span style={{ color: 'var(--up)' }}><window.I.ArrowUp/> 12%</span></>}
+          value={requestRate !== undefined ? requestRate.toFixed(1) : '—'}
+          sub={<>1-second sliding average</>}
           icon={<window.I.Activity />}
           sparkData={sparkTotal}
           sparkColor="#3B82F6"
         />
         <window.StatTile
           title="Block rate"
-          value={`${blockRate}%`}
-          sub={<><span className="num">{totalBlocks.toLocaleString()}</span> blocked total</>}
+          value={blockRate !== undefined ? `${blockRate.toFixed(1)}%` : '—'}
+          sub={<><span className="num">{blocksTotal.toLocaleString()}</span> blocked total</>}
           icon={<window.I.Ban />}
           tone="down"
           sparkData={sparkBlocked}
@@ -84,17 +134,21 @@ function PageOverview() {
         />
         <window.StatTile
           title="Active threats"
-          value="47"
-          sub={<>IPs over risk threshold · <span style={{ color: 'var(--down)' }}>3 critical</span></>}
+          value={String(activeThreats)}
+          sub={<>IPs over risk threshold · last 15m</>}
           icon={<window.I.Siren />}
           tone="warn"
         />
         <window.StatTile
           title="Upstream"
-          value="Healthy"
-          sub="22 of 24 members up · 2 degraded"
+          value={upstream
+            ? (upstream.unhealthy === 0 ? 'Healthy' : upstream.unhealthy < upstream.healthy ? 'Degraded' : 'Down')
+            : '—'}
+          sub={upstream
+            ? `${upstream.healthy} of ${upstream.healthy + upstream.unhealthy} members up`
+            : 'awaiting first stats sample'}
           icon={<window.I.Server />}
-          tone="up"
+          tone={upstream ? (upstream.unhealthy === 0 ? 'up' : 'warn') : undefined}
         />
       </div>
 
@@ -106,8 +160,10 @@ function PageOverview() {
             <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Real-time geolocation of blocked requests · last 60s</div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <span className="pill block">12 active sources</span>
-            <span className="pill warn">3 ASN-flagged</span>
+            <span className="pill block">{topAttackers.length} active sources</span>
+            <span className={`pill ${blips.length > 0 ? 'ok' : 'warn'}`}>
+              {blips.length > 0 ? `${blips.length} geo-tagged` : 'geo DB not loaded'}
+            </span>
           </div>
         </div>
         <window.WorldMap blips={blips} h={300} />
@@ -197,11 +253,16 @@ function PageOverview() {
             </tr>
           </thead>
           <tbody>
+            {topAttackers.length === 0 && (
+              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                No attackers observed in the last 15 minutes.
+              </td></tr>
+            )}
             {topAttackers.map((a, i) => (
-              <tr key={i} onClick={() => setDrawerEvent(a)}>
+              <tr key={`${a.id}-${i}`} onClick={() => setDrawerEvent(a)}>
                 <td className="num dim">{i + 1}</td>
-                <td className="mono" style={{ fontSize: 12 }}>{a.fingerprint || a.id}</td>
-                <td><span style={{ color: 'var(--ink-mute)' }}>{a.geo.cc} · {a.geo.city}</span></td>
+                <td className="mono" style={{ fontSize: 12 }}>{a.id}</td>
+                <td><span style={{ color: 'var(--ink-mute)' }}>{a.geo ? `${a.geo.cc} · ${a.geo.city}` : '—'}</span></td>
                 <td className="num">{a.hits.toLocaleString()}</td>
                 <td>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -281,7 +342,7 @@ X-Forwarded-For: ${data.ip}
 // ============== LIVE FEED ==============
 function PageLiveFeed() {
   const [paused, setPaused] = useStateP(false);
-  const events = window.useLiveFeed(80, paused, 8);
+  const { events, connected } = window.useRealLiveFeed(80, paused);
   const [filterAction, setFilterAction] = useStateP('all');
   const [filterTier, setFilterTier] = useStateP('all');
   const [search, setSearch] = useStateP('');
@@ -301,7 +362,12 @@ function PageLiveFeed() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Live Feed</h1>
-          <p className="page-subtitle">{events.length.toLocaleString()} of {events.length.toLocaleString()} events · streaming via SSE <span className="pill ok" style={{ marginLeft: 6 }}>connected</span></p>
+          <p className="page-subtitle">
+            {filtered.length.toLocaleString()} of {events.length.toLocaleString()} events · streaming via SSE
+            <span className={`pill ${connected ? 'ok' : 'warn'}`} style={{ marginLeft: 6 }}>
+              {connected ? 'connected' : 'disconnected'}
+            </span>
+          </p>
         </div>
         <div className="page-actions">
           <button className="btn"><window.I.Download /> CSV</button>
@@ -331,8 +397,10 @@ function PageLiveFeed() {
             <input className="input" style={{ paddingLeft: 28 }} placeholder="Filter by IP, path…" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
-            <span className="pill ok" style={{ marginRight: 6 }}>● live</span>
-            buffer {events.length}/1000
+            <span className={`pill ${connected ? 'ok' : 'warn'}`} style={{ marginRight: 6 }}>
+              {connected ? '● live' : '○ idle'}
+            </span>
+            buffer {events.length}/80
           </span>
         </div>
       </div>
@@ -594,47 +662,116 @@ function PageAnalytics() {
 
 // ============== AUDIT LOG ==============
 function PageAuditLog() {
+  const [ipFilter, setIpFilter] = useStateP('');
+  const [ruleIdFilter, setRuleIdFilter] = useStateP('');
+  const [requestIdFilter, setRequestIdFilter] = useStateP('');
+  const [debouncedQ, setDebouncedQ] = useStateP({ ip: '', ruleId: '', requestId: '' });
+
+  // Debounce filter inputs so the API isn't hit on every keystroke.
+  useEffectP(() => {
+    const t = setTimeout(() => setDebouncedQ({
+      ip: ipFilter.trim(), ruleId: ruleIdFilter.trim(), requestId: requestIdFilter.trim(),
+    }), 250);
+    return () => clearTimeout(t);
+  }, [ipFilter, ruleIdFilter, requestIdFilter]);
+
+  const audit = window.useAuditLogApi({
+    ip: debouncedQ.ip || undefined,
+    ruleId: debouncedQ.ruleId || undefined,
+    requestId: debouncedQ.requestId || undefined,
+    limit: 200,
+  });
+  const events = audit.data?.events || [];
+  const gap = audit.data?.gap;
+
+  function fmt(ts) {
+    try {
+      const d = new Date(ts);
+      const h = String(d.getHours()).padStart(2, '0');
+      const m = String(d.getMinutes()).padStart(2, '0');
+      const s = String(d.getSeconds()).padStart(2, '0');
+      return `${h}:${m}:${s}`;
+    } catch (_) { return ts; }
+  }
+  function classPill(c) {
+    if (c === 'admin')     return 'warn';
+    if (c === 'system')    return 'info';
+    if (c === 'access')    return 'neutral';
+    if (c === 'detection') return 'block';
+    return 'neutral';
+  }
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Audit Log</h1>
           <p className="page-subtitle">
-            Searchable hash chain · 1.4M events
-            <span style={{ marginLeft: 8 }}><span className="pill ok">verified</span></span>
-            <span style={{ marginLeft: 6 }}><span className="pill info">witness 12s ago</span></span>
+            Hash-chained · {events.length.toLocaleString()} events shown
+            <span style={{ marginLeft: 8 }}>
+              <span className={`pill ${audit.error ? 'warn' : 'ok'}`}>
+                {audit.error ? 'fetch failed' : 'live'}
+              </span>
+            </span>
+            {gap && (
+              <span style={{ marginLeft: 6 }}>
+                <span className="pill warn">stream gap</span>
+              </span>
+            )}
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn"><window.I.Refresh /> Verify chain</button>
-          <button className="btn"><window.I.Download /> NDJSON</button>
+          <button className="btn" onClick={() => audit.reload && audit.reload()}>
+            <window.I.Refresh /> Refresh
+          </button>
         </div>
       </div>
 
       <div className="card flat" style={{ padding: 12, marginBottom: 12 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select className="input select" style={{ width: 120 }}><option>Last 24h</option><option>Last 7d</option><option>Custom range</option></select>
-          <select className="input select" style={{ width: 120 }}><option>All classes</option><option>Admin</option><option>System</option><option>Detection</option></select>
-          <select className="input select" style={{ width: 120 }}><option>All actors</option><option>admin</option><option>gitops</option><option>system</option></select>
-          <input className="input" style={{ flex: 1, maxWidth: 280 }} placeholder="Search request_id, target, hash…" />
+          <input className="input" style={{ width: 160 }} placeholder="client IP"
+                 value={ipFilter} onChange={e => setIpFilter(e.target.value)} />
+          <input className="input" style={{ width: 200 }} placeholder="rule_id"
+                 value={ruleIdFilter} onChange={e => setRuleIdFilter(e.target.value)} />
+          <input className="input" style={{ flex: 1, maxWidth: 320 }} placeholder="request_id"
+                 value={requestIdFilter} onChange={e => setRequestIdFilter(e.target.value)} />
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
+            cursor {audit.data?.cursor ?? 0} → {audit.data?.next_cursor ?? 0}
+          </span>
         </div>
       </div>
 
       <div className="card" style={{ padding: 0 }}>
         <table className="tbl tbl-compact">
-          <thead><tr><th style={{ width: 90 }}>Time</th><th style={{ width: 90 }}>Class</th><th style={{ width: 110 }}>Actor</th><th style={{ width: 150 }}>Action</th><th>Target</th><th>Reason</th><th style={{ width: 130 }}>Hash</th></tr></thead>
+          <thead><tr>
+            <th style={{ width: 90 }}>Time</th>
+            <th style={{ width: 90 }}>Class</th>
+            <th style={{ width: 90 }}>Action</th>
+            <th style={{ width: 130 }}>Client IP</th>
+            <th style={{ width: 160 }}>Rule</th>
+            <th>Reason</th>
+            <th style={{ width: 200 }}>Request ID</th>
+          </tr></thead>
           <tbody>
-            {[...window.ADMIN_LOG, ...window.ADMIN_LOG.map(l => ({...l, ts: '15:'+l.ts.slice(3), hash: l.hash.slice(0,11)+'a'}))].slice(0, 14).map((l, i) => (
-              <tr key={i}>
-                <td className="num dim">{l.ts}</td>
-                <td><span className={`pill ${l.class === 'admin' ? 'warn' : l.class === 'system' ? 'info' : 'allow'}`}>{l.class}</span></td>
-                <td className="mono">{l.actor}</td>
-                <td className="mono" style={{ color: 'var(--ink)' }}>{l.action}</td>
-                <td className="mono dim">{l.target}</td>
-                <td className="dim">{l.reason}</td>
-                <td className="mono" style={{ fontSize: 10, color: 'var(--brand-yellow)' }}>{l.hash}</td>
-              </tr>
-            ))}
+            {events.length === 0 && (
+              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                No audit events match the current filters.
+              </td></tr>
+            )}
+            {events.slice().reverse().map((row) => {
+              const e = row.event || row; // /api/audit/since flattens AuditEvent into the row
+              return (
+                <tr key={row.seq}>
+                  <td className="num dim">{fmt(e.ts)}</td>
+                  <td><span className={`pill ${classPill(e.class)}`}>{e.class}</span></td>
+                  <td className="mono" style={{ color: 'var(--ink)' }}>{e.action}</td>
+                  <td className="mono">{e.client_ip || '—'}</td>
+                  <td className="mono dim" style={{ fontSize: 11 }}>{e.rule_id || '—'}</td>
+                  <td className="dim">{e.reason}</td>
+                  <td className="mono" style={{ fontSize: 10, color: 'var(--brand-yellow)' }}>{e.request_id}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1005,90 +1142,125 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
 
 // ============== TIER CONFIG ==============
 function PageTierConfig() {
-  const [selected, setSelected] = useStateP(window.TIERS[1]);
+  const tiersApi = window.useTiersApi();
+  const routesApi = window.useRoutesApi();
+  const tiers = tiersApi.data?.tiers || [];
+  const routes = routesApi.data?.routes || [];
+  const [selectedName, setSelectedName] = useStateP(null);
+
+  // Auto-select the first tier when data lands.
+  useEffectP(() => {
+    if (!selectedName && tiers.length > 0) setSelectedName(tiers[0].name);
+  }, [tiers.length, selectedName]);
+
+  const selected = tiers.find(t => t.name === selectedName) || tiers[0] || null;
+  const routesForSelected = selected
+    ? routes.filter(r => r.tier_override === selected.name)
+    : [];
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Tier Config</h1>
-          <p className="page-subtitle">Pipeline assignment per tier · 4 active tiers · 60 routes assigned</p>
+          <p className="page-subtitle">
+            Pipeline assignment per tier ·
+            <span className="num"> {tiers.length}</span> active tiers ·
+            <span className="num"> {routes.length}</span> routes
+            <span style={{ marginLeft: 8 }}>
+              <span className={`pill ${tiersApi.error || routesApi.error ? 'warn' : 'ok'}`}>
+                {tiersApi.error || routesApi.error ? 'fetch failed' : 'live'}
+              </span>
+            </span>
+          </p>
         </div>
-        <div className="page-actions"><button className="btn primary"><window.I.Plus /> New tier</button></div>
+        <div className="page-actions">
+          <button className="btn" onClick={() => { tiersApi.reload && tiersApi.reload(); routesApi.reload && routesApi.reload(); }}>
+            <window.I.Refresh /> Refresh
+          </button>
+        </div>
       </div>
 
       <div className="split-list">
         <div className="left">
           <div style={{ overflow: 'auto', flex: 1 }}>
-            {window.TIERS.map(t => (
-              <button key={t.name} onClick={() => setSelected(t)}
-                style={{ display: 'block', width: '100%', textAlign: 'left', padding: 14, border: 'none', borderBottom: '1px solid var(--hairline)',
-                  background: selected === t ? 'var(--surface-active)' : 'transparent',
-                  borderLeft: selected === t ? '3px solid var(--brand-yellow)' : '3px solid transparent',
-                  cursor: 'pointer', color: 'inherit' }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{t.name}</div>
-                <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>{t.desc}</div>
-                <div style={{ display: 'flex', gap: 6, fontSize: 10 }}>
-                  <span className="pill neutral">{t.routes} routes</span>
-                  <span className="pill neutral">{t.detectors}/7 detectors</span>
-                </div>
-              </button>
-            ))}
+            {tiers.length === 0 && (
+              <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                No tiers configured.
+              </div>
+            )}
+            {tiers.map(t => {
+              const tierRouteCount = routes.filter(r => r.tier_override === t.name).length;
+              const detectorCount = (t.pipeline || []).filter(p => !['rate', 'rules', 'risk', 'challenge'].includes(p)).length;
+              return (
+                <button key={t.name} onClick={() => setSelectedName(t.name)}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: 14, border: 'none', borderBottom: '1px solid var(--hairline)',
+                    background: selected && selected.name === t.name ? 'var(--surface-active)' : 'transparent',
+                    borderLeft: selected && selected.name === t.name ? '3px solid var(--brand-yellow)' : '3px solid transparent',
+                    cursor: 'pointer', color: 'inherit' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{t.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>
+                    risk ≥ {t.risk_threshold} · block ≥ {t.block_threshold}/s
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, fontSize: 10 }}>
+                    <span className="pill neutral">{tierRouteCount} routes</span>
+                    <span className="pill neutral">{detectorCount} detectors</span>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
         <div className="right" style={{ padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
-              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{selected.desc} · <span className="num">{selected.hits1h.toLocaleString()}</span> req/1h</div>
-            </div>
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button className="btn">Cancel</button>
-              <button className="btn primary">Save tier</button>
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            {[
-              { name: 'TLS profile', icon: '🔒', val: selected.tls, opts: ['fips', 'modern', 'compat'] },
-              { name: 'Rate-limit profile', icon: '⏱', val: selected.rateLimit, opts: ['lenient','standard','strict'] },
-              { name: 'Challenge ladder', icon: '🛡', val: selected.challenge, opts: ['none','js-only','js+captcha','strict'] },
-              { name: 'DLP action', icon: '🔐', val: 'mask', opts: ['audit_only','mask','block'] },
-            ].map(s => (
-              <div key={s.name} style={{ background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>{s.name}</div>
-                  <div className={`toggle on`} style={{ marginLeft: 'auto' }} />
+          {selected ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                    {(selected.pipeline || []).length} pipeline stages · risk threshold <span className="num">{selected.risk_threshold}</span>
+                  </div>
                 </div>
-                <select className="input select" defaultValue={s.val}>
-                  {s.opts.map(o => <option key={o}>{o}</option>)}
-                </select>
               </div>
-            ))}
-          </div>
 
-          <div style={{ marginTop: 16, background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Detector set ({selected.detectors}/7 enabled)</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-              {['sqli','xss','path_traversal','ssrf','header_injection','body_abuse','recon'].map((d, i) => (
-                <label key={d} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 8px', background: 'var(--surface-2)', borderRadius: 4 }}>
-                  <div className={`toggle ${i < selected.detectors ? 'on' : ''}`} style={{ width: 28, height: 16 }} />
-                  <span>{d}</span>
-                </label>
-              ))}
-            </div>
-          </div>
+              <div style={{ background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 12, marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Pipeline ({(selected.pipeline || []).length} stages)</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {(selected.pipeline || []).map(p => (
+                    <span key={p} className="pill neutral" style={{ fontSize: 10 }}>{p}</span>
+                  ))}
+                </div>
+              </div>
 
-          <div style={{ marginTop: 16 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Routes assigned ({selected.routes})</div>
-            <table className="tbl tbl-compact">
-              <thead><tr><th>Route</th><th>Method</th><th>Hits 1h</th><th>Avg risk</th></tr></thead>
-              <tbody>
-                {window.ROUTES.slice(0, 6).map(r => (
-                  <tr key={r}><td className="mono">{r}</td><td className="mono dim">ANY</td><td className="num">{Math.floor(Math.random()*8000).toLocaleString()}</td><td><window.RiskMeter value={Math.floor(Math.random()*60)} /></td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+                  Routes assigned to <span className="mono">{selected.name}</span> ({routesForSelected.length})
+                </div>
+                <table className="tbl tbl-compact">
+                  <thead><tr><th>Route ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th></tr></thead>
+                  <tbody>
+                    {routesForSelected.length === 0 && (
+                      <tr><td colSpan={6} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                        No routes assigned to this tier.
+                      </td></tr>
+                    )}
+                    {routesForSelected.map(r => (
+                      <tr key={r.id}>
+                        <td className="mono">{r.id}</td>
+                        <td className="mono dim">{r.host || '*'}</td>
+                        <td className="mono">{r.path}</td>
+                        <td><span className="pill neutral">{r.match_type}</span></td>
+                        <td className="mono dim">{r.methods.length === 0 ? 'ANY' : r.methods.join(', ')}</td>
+                        <td className="mono">{r.upstream}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div style={{ padding: 24, color: 'var(--ink-dim)', fontSize: 12 }}>Select a tier to inspect.</div>
+          )}
         </div>
       </div>
     </>
@@ -1098,29 +1270,31 @@ function PageTierConfig() {
 // ============== BLACKLIST / WHITELIST ==============
 function ListPage({ kind }) {
   const isBL = kind === 'blacklist';
-  const data = isBL ? window.BLACKLIST : window.WHITELIST;
+  const api = isBL ? window.useBlacklistApi() : window.useWhitelistApi();
+  // Server returns `{entries: [...]}`; mock fallback was already
+  // a flat array — accept either shape.
+  const raw = api.data?.entries ?? api.data ?? [];
+  const data = Array.isArray(raw) ? raw : [];
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">{isBL ? 'Blacklist' : 'Whitelist'}</h1>
           <p className="page-subtitle">
-            {data.length} entries ·
-            <span className="num"> {data.reduce((s, x) => s + (isBL ? x.hits24 : x.bypasses24), 0).toLocaleString()}</span> {isBL ? 'hits' : 'bypasses'} in 24h
+            {data.length.toLocaleString()} entries
+            <span style={{ marginLeft: 8 }}>
+              <span className={`pill ${api.error ? 'warn' : 'ok'}`}>
+                {api.error ? 'fetch failed' : 'live'}
+              </span>
+            </span>
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn"><window.I.Download /> Bulk import</button>
+          <button className="btn" onClick={() => api.reload && api.reload()}>
+            <window.I.Refresh /> Refresh
+          </button>
           <button className="btn primary"><window.I.Plus /> Add entry</button>
-        </div>
-      </div>
-
-      <div className="card flat" style={{ padding: 12, marginBottom: 12 }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select className="input select" style={{ width: 130 }}><option>All types</option><option>IP</option><option>CIDR</option><option>ASN</option><option>Country</option><option>Fingerprint</option></select>
-          <select className="input select" style={{ width: 130 }}><option>All scopes</option><option>global</option><option>per-route</option><option>per-tier</option></select>
-          <select className="input select" style={{ width: 110 }}><option>Active</option><option>Expired</option><option>All</option></select>
-          <input className="input" style={{ flex: 1, maxWidth: 320 }} placeholder="Search by value, reason…" />
         </div>
       </div>
 
@@ -1130,43 +1304,40 @@ function ListPage({ kind }) {
             <tr>
               <th style={{ width: 90 }}>Type</th>
               <th>Value</th>
-              <th style={{ width: 160 }}>Scope</th>
+              <th>Note</th>
               <th style={{ width: 130 }}>{isBL ? 'Action' : 'Bypass'}</th>
-              <th>Reason</th>
-              <th style={{ width: 110 }}>Expires</th>
-              <th style={{ width: 90 }}>{isBL ? 'Hits 24h' : 'Bypasses 24h'}</th>
-              <th style={{ width: 100 }}>Last</th>
-              <th style={{ width: 60 }}></th>
+              <th style={{ width: 130 }}>Expires</th>
+              <th style={{ width: 130 }}>Created</th>
             </tr>
           </thead>
           <tbody>
+            {data.length === 0 && (
+              <tr><td colSpan={6} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                No entries.
+              </td></tr>
+            )}
             {data.map(e => (
               <tr key={e.id}>
-                <td><span className={`pill ${e.type === 'country' ? 'solid-yellow' : 'neutral'}`}>{e.type}</span></td>
-                <td className="mono" style={{ color: 'var(--ink-strong)' }}>
-                  {e.type === 'country' ? (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 16, lineHeight: 1 }}>{e.flag}</span>
-                      <span style={{ fontWeight: 600 }}>{e.value}</span>
-                      <span className="dim" style={{ fontFamily: 'var(--font-sans)', fontWeight: 400 }}>{e.country}</span>
-                    </span>
-                  ) : e.value}
+                <td><span className="pill neutral">{e.kind || e.type}</span></td>
+                <td className="mono" style={{ color: 'var(--ink-strong)' }}>{e.value}</td>
+                <td className="dim" style={{ maxWidth: 280, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {e.note || e.reason || ''}
                 </td>
-                <td className="mono dim">{e.scope}</td>
                 <td>
-                  {isBL ? <window.ActionPill value={e.action} /> : (
+                  {isBL ? <window.ActionPill value={e.action || 'block'} /> : (
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {e.bypass.includes('all')
+                      {(e.bypass || []).includes('all')
                         ? <span className="pill solid-yellow">all · high-trust</span>
-                        : e.bypass.map(b => <span key={b} className="pill neutral" style={{ fontSize: 9 }}>{b}</span>)}
+                        : (e.bypass || []).map(b => <span key={b} className="pill neutral" style={{ fontSize: 9 }}>{b}</span>)}
                     </div>
                   )}
                 </td>
-                <td className="dim" style={{ maxWidth: 280, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.reason}</td>
-                <td className="num" style={{ color: e.expires ? 'var(--warn)' : 'var(--ink-dim)' }}>{e.expires ? e.expires.slice(0, 10) : 'never'}</td>
-                <td className="num">{(isBL ? e.hits24 : e.bypasses24).toLocaleString()}</td>
-                <td className="dim">{isBL ? e.lastHit : e.lastBypass}</td>
-                <td><button className="icon-btn"><window.I.Edit /></button></td>
+                <td className="num" style={{ color: e.expires_at ? 'var(--warn)' : 'var(--ink-dim)' }}>
+                  {e.expires_at ? new Date(e.expires_at).toISOString().slice(0, 10) : 'never'}
+                </td>
+                <td className="dim" style={{ fontSize: 11 }}>
+                  {e.created_at ? new Date(e.created_at).toISOString().slice(0, 10) : '—'}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1178,37 +1349,88 @@ function ListPage({ kind }) {
 
 // ============== SETTINGS ==============
 function PageSettings() {
-  const [shadow, setShadow] = useStateP(true);
+  const modeApi = window.useModeApi();
+  const mode = modeApi.data?.mode || 'enforce';
+  const isShadow = mode === 'log_only';
+  const [busy, setBusy] = useStateP(false);
+
+  // CI-T6 wires this single toggle to the live API. The other
+  // controls below stay local-only (risk thresholds, honeypots,
+  // response filtering) — wiring those needs new mutation
+  // endpoints that aren't shipped yet.
   const [allow, setAllow] = useStateP(51);
   const [challenge, setChallenge] = useStateP(75);
   const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
   const [stackTraces, setStackTraces] = useStateP(true);
   const [redactJSON, setRedactJSON] = useStateP(true);
+
+  async function toggleShadow() {
+    if (busy) return;
+    setBusy(true);
+    const next = isShadow ? 'enforce' : 'log_only';
+    try {
+      const before = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' })
+        .then(r => r.json()).then(j => Number(j.version) || 0).catch(() => 0);
+      const result = await window.settingsModePut(next);
+      if (result && result.ok) {
+        const v = await window.waitForVersion(before + 1, 10000);
+        if (v.applied) {
+          window.aegisToast(`Mode → ${next} · applied in ${v.latencyMs} ms`, 'ok');
+        } else {
+          window.aegisToast(`Mode → ${next} · pending after 10 s`, 'warn');
+        }
+        modeApi.reload && modeApi.reload();
+      } else {
+        const msg = (result && (result.message || result.error || result.reason)) || 'unknown error';
+        window.aegisToast(`Mode change failed: ${msg}`, 'err');
+      }
+    } catch (err) {
+      window.aegisToast(`Mode change error: ${err.message || err}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Settings</h1>
-          <p className="page-subtitle">Changes apply immediately — no restart required</p>
+          <p className="page-subtitle">
+            Changes apply immediately — no restart required
+            <span style={{ marginLeft: 8 }}>
+              <span className={`pill ${isShadow ? 'warn' : 'ok'}`}>
+                {isShadow ? 'log_only' : 'enforce'}
+              </span>
+            </span>
+          </p>
         </div>
-        <div className="page-actions"><button className="btn primary"><window.I.Check /> Save all</button></div>
       </div>
 
-      <div className="banner warn" style={{ marginBottom: 12 }}>
-        <div style={{ marginTop: 1 }}><window.I.Siren /></div>
-        <div style={{ flex: 1 }}>
-          <div className="banner-strong">Shadow mode is ON — no traffic is being blocked.</div>
-          <div>Use this to test new rules safely before enforcing. Detection events still appear in Live Feed with their original action.</div>
+      {isShadow && (
+        <div className="banner warn" style={{ marginBottom: 12 }}>
+          <div style={{ marginTop: 1 }}><window.I.Siren /></div>
+          <div style={{ flex: 1 }}>
+            <div className="banner-strong">Shadow mode is ON — no traffic is being blocked.</div>
+            <div>Detection events still appear in Live Feed with their original action.</div>
+          </div>
+          <span className="pill warn" style={{ alignSelf: 'flex-start' }}>ACTIVE</span>
         </div>
-        <span className="pill warn" style={{ alignSelf: 'flex-start' }}>ACTIVE</span>
-      </div>
+      )}
 
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-head">
           <div className="card-title">Shadow Mode (Dry-Run)</div>
-          <div className={`toggle ${shadow ? 'on' : ''}`} onClick={() => setShadow(s => !s)} />
+          <div
+            className={`toggle ${isShadow ? 'on' : ''}`}
+            onClick={busy ? undefined : toggleShadow}
+            style={{ cursor: busy ? 'wait' : 'pointer' }}
+          />
         </div>
-        <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>Log detections without blocking. Requests that would be blocked/challenged are forwarded; events still appear in Live Feed with original action.</div>
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+          Log detections without blocking. Audit chain still records every event;
+          /api/mode endpoint is audit-mutated and CSRF-gated.
+        </div>
       </div>
 
       <div className="card" style={{ marginBottom: 12 }}>
@@ -1305,47 +1527,113 @@ function PageSettings() {
 
 // ============== TRACKING ==============
 function PageTracking() {
+  // Live API hooks. SLO / certs / alerts / gitops still return
+  // placeholder shapes server-side (CI-T4 will replace those);
+  // cluster + upstreams are real today.
+  const cluster = window.useClusterApi();
+  const upstreamsApi = window.useUpstreamsApi();
+  const slo = window.useSloApi();
+  const certs = window.useCertsApi();
+  const alerts = window.useAlertsApi();
+  const gitops = window.useGitopsApi();
+
+  // Pool list adapter — server returns `{pools: [{...}]}`; mock
+  // fallback is `[{...}]`; accept either shape.
+  const upstreamsRaw = upstreamsApi.data?.pools ?? upstreamsApi.data ?? [];
+  const upstreams = Array.isArray(upstreamsRaw) ? upstreamsRaw : [];
+
+  const peers = cluster.data?.peers || [];
+  const ourNode = cluster.data?.our_node;
+  const isLeader = cluster.data?.is_leader;
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Tracking</h1>
-          <p className="page-subtitle">Operational state · SLO · cluster · GitOps · cert health</p>
+          <p className="page-subtitle">
+            Operational state · SLO · cluster · GitOps · cert health
+            <span style={{ marginLeft: 8 }}>
+              <span className={`pill ${isLeader ? 'solid-yellow' : 'neutral'}`}>
+                {ourNode ? `node ${ourNode}${isLeader ? ' · leader' : ''}` : 'standalone'}
+              </span>
+            </span>
+          </p>
         </div>
-        <div className="page-actions"><button className="btn"><window.I.Refresh /> Refresh</button></div>
+        <div className="page-actions">
+          <button className="btn" onClick={() => {
+            cluster.reload && cluster.reload();
+            upstreamsApi.reload && upstreamsApi.reload();
+            slo.reload && slo.reload();
+            certs.reload && certs.reload();
+            alerts.reload && alerts.reload();
+            gitops.reload && gitops.reload();
+          }}>
+            <window.I.Refresh /> Refresh
+          </button>
+        </div>
       </div>
 
       <div className="grid-12" style={{ marginBottom: 12 }}>
         <div className="col-6 card">
-          <window.SectionHeader title="SLO burn rate" sub="30d rolling window" />
+          <window.SectionHeader title="SLO budget" sub="live engine · burn windows pending wiring" />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {[
-              { name: 'availability', val: '99.972%', target: '99.95%', burn: 0.4, tone: 'up' },
-              { name: 'overhead p95', val: '12.4ms', target: '30ms',   burn: 0.2, tone: 'up' },
-              { name: 'overhead p99', val: '94µs',   target: '100µs',  burn: 1.8, tone: 'warn' },
-              { name: 'audit delivery', val: '99.94%', target: '99.9%', burn: 0.3, tone: 'up' },
-            ].map(s => (
-              <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '120px 80px 80px 1fr 60px', gap: 10, alignItems: 'center', fontSize: 12 }}>
-                <span>{s.name}</span>
-                <span className="num" style={{ color: `var(--${s.tone === 'up' ? 'up' : s.tone === 'warn' ? 'warn' : 'down'})` }}>{s.val}</span>
-                <span className="dim">{s.target}</span>
-                <window.Sparkline data={Array.from({length:24}, () => 1 + Math.random()*s.burn)} w={180} h={20} color={s.tone === 'up' ? '#0ECB81' : s.tone === 'warn' ? '#F0B90B' : '#F6465D'} />
-                <span className={`pill ${s.tone}`}>{s.burn}× burn</span>
+            {(slo.data?.slis || []).length === 0 && (
+              <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                No SLO data — engine warming up.
               </div>
-            ))}
+            )}
+            {(slo.data?.slis || []).map(s => {
+              const tone = s.budget_remaining > 0.5 ? 'up' : s.budget_remaining > 0.1 ? 'warn' : 'down';
+              return (
+                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}>
+                  <span>{s.name}</span>
+                  <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
+                    {s.current.toFixed(2)}%
+                  </span>
+                  <span className="dim">{s.target.toFixed(2)}%</span>
+                  <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
+                  </div>
+                  <span className={`pill ${tone}`}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
+                </div>
+              );
+            })}
           </div>
         </div>
         <div className="col-6 card">
-          <window.SectionHeader title="Active alerts" sub={`${window.ALERTS.length} firing · 0 silenced`} actions={<button className="btn sm">Alertmanager →</button>} />
+          {(() => {
+            const firing = alerts.data?.firing || [];
+            const resolved = alerts.data?.resolved || [];
+            return (
+              <window.SectionHeader
+                title="Active alerts"
+                sub={`${firing.length} firing · ${resolved.length} acked`}
+              />
+            );
+          })()}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {window.ALERTS.map((a, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 12 }}>
-                <span className={`pill ${a.sev}`}>{a.sev}</span>
+            {(alerts.data?.firing || []).length === 0 && (
+              <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                No alerts firing.
+              </div>
+            )}
+            {(alerts.data?.firing || []).map(a => (
+              <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 12 }}>
+                <span className={`pill ${a.severity === 'page' ? 'err' : a.severity === 'ticket' ? 'warn' : 'info'}`}>
+                  {a.severity}
+                </span>
                 <div style={{ flex: 1 }}>
                   <div className="mono" style={{ color: 'var(--ink)' }}>{a.name}</div>
-                  <div className="dim" style={{ fontSize: 11 }}>{a.desc}</div>
+                  {a.runbook_url && (
+                    <a href={a.runbook_url} target="_blank" rel="noopener noreferrer" className="dim" style={{ fontSize: 11 }}>
+                      runbook ↗
+                    </a>
+                  )}
                 </div>
-                <span className="dim">{a.since}</span>
+                <span className="dim" style={{ fontSize: 11 }}>
+                  {a.since ? new Date(a.since).toLocaleTimeString() : ''}
+                </span>
               </div>
             ))}
           </div>
@@ -1353,29 +1641,46 @@ function PageTracking() {
       </div>
 
       <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Upstream pools" sub={`${window.UPSTREAMS.length} pools · ${window.UPSTREAMS.reduce((s,x)=>s+x.healthy,0)}/${window.UPSTREAMS.reduce((s,x)=>s+x.members,0)} healthy`} />
+        {(() => {
+          const totalMembers = upstreams.reduce((s, x) => s + (x.members || x.total_members || 0), 0);
+          const totalHealthy = upstreams.reduce((s, x) => s + (x.healthy || x.healthy_members || 0), 0);
+          return (
+            <window.SectionHeader
+              title="Upstream pools"
+              sub={`${upstreams.length} pools · ${totalHealthy}/${totalMembers} healthy`}
+            />
+          );
+        })()}
         <table className="tbl tbl-compact">
           <thead><tr><th>Pool</th><th>Members</th><th>LB</th><th>Circuit</th><th>p99</th><th>req/s</th><th>Status</th></tr></thead>
           <tbody>
-            {window.UPSTREAMS.map(p => {
-              const ok = p.healthy === p.members;
-              const half = p.cb === 'half-open';
-              const open = p.cb === 'open';
+            {upstreams.length === 0 && (
+              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                No upstream pools registered.
+              </td></tr>
+            )}
+            {upstreams.map(p => {
+              const total = p.members ?? p.total_members ?? 0;
+              const healthy = p.healthy ?? p.healthy_members ?? 0;
+              const cb = p.cb || p.circuit_breaker || 'closed';
+              const ok = total > 0 && healthy === total;
+              const half = cb === 'half-open';
+              const open = cb === 'open';
               return (
                 <tr key={p.name}>
                   <td className="mono">{p.name}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 2 }}>
-                      {Array.from({length: p.members}).map((_, i) => (
-                        <span key={i} style={{ width: 8, height: 14, background: i < p.healthy ? 'var(--up)' : 'var(--down)', borderRadius: 1 }} />
+                      {Array.from({length: total}).map((_, i) => (
+                        <span key={i} style={{ width: 8, height: 14, background: i < healthy ? 'var(--up)' : 'var(--down)', borderRadius: 1 }} />
                       ))}
-                      <span className="num dim" style={{ marginLeft: 6, fontSize: 11 }}>{p.healthy}/{p.members}</span>
+                      <span className="num dim" style={{ marginLeft: 6, fontSize: 11 }}>{healthy}/{total}</span>
                     </div>
                   </td>
-                  <td className="mono dim">{p.lb}</td>
-                  <td><span className={`pill ${open ? 'err' : half ? 'warn' : 'ok'}`}>{p.cb}</span></td>
+                  <td className="mono dim">{p.lb || '—'}</td>
+                  <td><span className={`pill ${open ? 'err' : half ? 'warn' : 'ok'}`}>{cb}</span></td>
                   <td className="num">{p.p99 ? `${p.p99}ms` : '—'}</td>
-                  <td className="num">{p.rps.toLocaleString()}</td>
+                  <td className="num">{(p.rps ?? 0).toLocaleString()}</td>
                   <td>{ok && !open ? <span className="pill ok">healthy</span> : open ? <span className="pill err">down</span> : <span className="pill warn">degraded</span>}</td>
                 </tr>
               );
@@ -1386,37 +1691,59 @@ function PageTracking() {
 
       <div className="grid-12" style={{ marginBottom: 12 }}>
         <div className="col-6 card">
-          <window.SectionHeader title="Cluster peers" sub="5 nodes · raft consensus" />
+          <window.SectionHeader
+            title="Cluster peers"
+            sub={`${peers.length} ${peers.length === 1 ? 'node' : 'nodes'} · ${cluster.data?.leader_node ? `leader: ${cluster.data.leader_node}` : 'no leader observed'}`}
+          />
           <table className="tbl tbl-compact">
             <thead><tr><th>ID</th><th>Address</th><th>Version</th><th>Role</th><th>Heartbeat</th><th>Leases</th></tr></thead>
             <tbody>
-              {window.CLUSTER.map(c => (
+              {peers.length === 0 && (
+                <tr><td colSpan={6} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                  Single-node deployment — no cluster peers.
+                </td></tr>
+              )}
+              {peers.map(c => (
                 <tr key={c.id}>
                   <td className="mono">{c.id}</td>
-                  <td className="mono dim">{c.addr}</td>
-                  <td><span className={`pill ${c.skew ? 'warn' : 'neutral'}`}>{c.ver}</span></td>
-                  <td><span className={`pill ${c.role === 'leader' ? 'solid-yellow' : 'neutral'}`}>{c.role}</span></td>
-                  <td className="num dim">{c.lastHB}</td>
-                  <td>{c.leases.length === 0 ? <span className="dim">—</span> : c.leases.map(l => <span key={l} className="pill info" style={{ marginRight: 4 }}>{l}</span>)}</td>
+                  <td className="mono dim">{c.addr || '—'}</td>
+                  <td><span className="pill neutral">{c.version || '—'}</span></td>
+                  <td><span className={`pill ${c.id === cluster.data?.leader_node ? 'solid-yellow' : 'neutral'}`}>
+                    {c.id === cluster.data?.leader_node ? 'leader' : 'follower'}
+                  </span></td>
+                  <td className="num dim">{c.last_heartbeat ? new Date(c.last_heartbeat).toLocaleTimeString() : '—'}</td>
+                  <td>{(c.leases || []).length === 0 ? <span className="dim">—</span> : c.leases.map(l => <span key={l} className="pill info" style={{ marginRight: 4 }}>{l}</span>)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <div className="col-6 card">
-          <window.SectionHeader title="Cert freshness" />
+          {(() => {
+            const certList = certs.data?.certs || [];
+            return (
+              <window.SectionHeader
+                title="Cert freshness"
+                sub={`${certList.length} cert${certList.length === 1 ? '' : 's'} loaded`}
+              />
+            );
+          })()}
           <table className="tbl tbl-compact">
-            <thead><tr><th>Host</th><th>Issuer</th><th>Source</th><th>Expires</th><th>Action</th></tr></thead>
+            <thead><tr><th>Host</th><th>Issuer</th><th>Source</th><th>Expires</th></tr></thead>
             <tbody>
-              {window.CERTS.map(c => {
-                const tone = c.days < 7 ? 'err' : c.days < 30 ? 'warn' : 'ok';
+              {(certs.data?.certs || []).length === 0 && (
+                <tr><td colSpan={4} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                  No certs configured (data plane is plaintext).
+                </td></tr>
+              )}
+              {(certs.data?.certs || []).map(c => {
+                const tone = c.days_to_expiry < 7 ? 'err' : c.days_to_expiry < 30 ? 'warn' : 'ok';
                 return (
-                  <tr key={c.host}>
+                  <tr key={c.host + c.issuer}>
                     <td className="mono">{c.host}</td>
                     <td className="dim">{c.issuer}</td>
                     <td><span className="pill neutral">{c.source}</span></td>
-                    <td><span className={`pill ${tone}`}>{c.days}d</span></td>
-                    <td>{c.source === 'acme' ? <button className="btn sm">Renew</button> : <span className="dim">—</span>}</td>
+                    <td><span className={`pill ${tone}`}>{c.days_to_expiry}d</span></td>
                   </tr>
                 );
               })}
@@ -1426,20 +1753,41 @@ function PageTracking() {
       </div>
 
       <div className="card">
-        <window.SectionHeader title="GitOps sync" sub="auto-pull every 60s from main" actions={<button className="btn sm">Force resync</button>} />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
-          <div><div className="field-label">Repo</div><div className="mono">git@github.com:org/aegis-config</div></div>
-          <div><div className="field-label">Branch</div><span className="pill neutral">main</span></div>
-          <div><div className="field-label">Last sync</div><span className="num">14s ago</span></div>
-          <div><div className="field-label">Drift</div><span className="pill ok">none</span></div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <div className="field-label">HEAD commit</div>
-            <div className="mono" style={{ fontSize: 11 }}>
-              <span style={{ color: 'var(--brand-yellow)' }}>a8b1f2c</span> <span className="dim">— update sqli-007 risk threshold (admin, 17:09)</span>
-              <span className="pill ok" style={{ marginLeft: 8 }}>signature verified</span>
-            </div>
-          </div>
-        </div>
+        {(() => {
+          const g = gitops.data || {};
+          const configured = Boolean(g.repo);
+          return (
+            <>
+              <window.SectionHeader
+                title="GitOps sync"
+                sub={configured ? `auto-pull from ${g.branch || 'main'}` : 'not configured'}
+              />
+              {configured ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
+                  <div><div className="field-label">Repo</div><div className="mono">{g.repo}</div></div>
+                  <div><div className="field-label">Branch</div><span className="pill neutral">{g.branch}</span></div>
+                  <div><div className="field-label">Last sync</div><span className="num">{g.last_sync ? new Date(g.last_sync).toLocaleTimeString() : '—'}</span></div>
+                  <div><div className="field-label">Drift</div><span className={`pill ${g.drift ? 'warn' : 'ok'}`}>{g.drift ? 'drift' : 'none'}</span></div>
+                  {g.head_commit && (
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <div className="field-label">HEAD commit</div>
+                      <div className="mono" style={{ fontSize: 11 }}>
+                        <span style={{ color: 'var(--brand-yellow)' }}>{g.head_commit.slice(0, 7)}</span>
+                        <span className={`pill ${g.signature_ok ? 'ok' : 'err'}`} style={{ marginLeft: 8 }}>
+                          {g.signature_ok ? 'signature verified' : 'signature failed'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)' }}>
+                  GitOps disabled. Set <span className="mono">gitops.repo_url</span> in your config to enable config-as-code.
+                </div>
+              )}
+            </>
+          );
+        })()}
       </div>
     </>
   );

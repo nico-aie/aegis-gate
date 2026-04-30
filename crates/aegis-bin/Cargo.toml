@@ -20,6 +20,17 @@ redis = ["aegis-proxy/redis"]
 # only links on Linux/BSD/macOS/Windows hosts, but enforcement
 # semantics differ.
 affinity = ["dep:core_affinity", "aegis-proxy/affinity"]
+# `alerts` flips on real HTTP delivery for SLO alerts via
+# `aegis-control::slo::dispatch::send_alert`. Default ships
+# the in-process variant that logs the alert and counts it as
+# "external" so an off-box dispatcher can pick it up. Enable
+# with: `cargo build -p aegis-bin --features "redis alerts"`.
+alerts = ["aegis-control/alerts"]
+# `geoip` enriches /api/attacks/top with country + ASN per
+# attacker. Requires MaxMind .mmdb files at the paths configured
+# in `geoip.country_db` / `geoip.asn_db`. Without these DBs the
+# lookups silently return None and the API drops the fields.
+geoip = ["aegis-proxy/geoip"]
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }

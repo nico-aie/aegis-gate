@@ -12,6 +12,7 @@ pub mod logging;
 pub mod login;
 pub mod mutation;
 pub mod risk;
+pub mod routes;
 pub mod rules;
 pub mod runtime;
 pub mod stats;

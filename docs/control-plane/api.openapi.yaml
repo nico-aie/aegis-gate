@@ -1,0 +1,1221 @@
+openapi: 3.0.3
+info:
+  title: Aegis WAF — Admin API
+  description: |
+    The admin-plane HTTP surface served by `aegis-bin` (the `waf` binary)
+    on the address configured at `admin.bind` (default `127.0.0.1:9443`).
+
+    This spec is the contract between the **Aegis WAF Console** dashboard
+    (under `/dashboard/`) and the WAF runtime — every endpoint listed here
+    is consumed by the dashboard, used by SOC scripts, or both.
+
+    ## Auth flow
+
+    1. **IP allowlist** — `admin.dashboard_auth.ip_allowlist` rejects
+       connections at accept time before any handler runs.
+    2. **mTLS** (optional) — when `admin.dashboard_auth.mtls_required`
+       is set, a client certificate signed by the operator CA bypasses
+       password auth.
+    3. **Login** — `POST /admin/login` with `{user, password}` (+ TOTP
+       when enabled) sets two cookies:
+         - `aegis_session` (`HttpOnly; Secure; SameSite=Strict`,
+           idle TTL 30 min)
+         - `aegis_csrf` (readable by JS — required as the
+           `x-csrf-token` header on every mutation)
+    4. **Read endpoints** — currently unauthenticated on the admin
+       listener; the IP allowlist is the only gate. (Subject to change
+       — operators wanting full auth on reads should bind admin to
+       loopback only.)
+    5. **Mutations** (`POST` / `PUT` / `DELETE`) — require the cookie
+       pair plus the `x-csrf-token` header. Every mutation lands on
+       the audit chain via `services.mutate.apply()`.
+
+    ## Hot-reload contract
+
+    Every successful mutation increments the audit-chain length, which
+    is exposed via `GET /api/config/version`. The dashboard polls this
+    after every CRUD call to surface "Applied in X.X s" toasts. The
+    Hackathon WAF-FE §2 contract caps this round-trip at 10 s.
+
+    ## Error envelope
+
+    Every error response (`>= 400`) returns a JSON object with at
+    least `ok: false` and a machine-readable `reason`. Where possible
+    a human-readable `message` is included. See
+    [`#/components/schemas/Error`](#/components/schemas/Error).
+
+  version: "1.4.2"
+  contact:
+    name: Aegis-Gate
+  license:
+    name: TBD
+
+servers:
+  - url: http://localhost:9443
+    description: Local dev (admin listener, plaintext loopback)
+  - url: https://{host}:9443
+    description: Production admin listener (TLS, IP-allowlisted)
+    variables:
+      host:
+        default: aegis-gate.local
+        description: Operator-specific admin host
+
+tags:
+  - name: Auth
+    description: Login / logout / session management.
+  - name: Stats
+    description: Live request stats, time-series, attack distribution.
+  - name: Audit
+    description: Hash-chained audit log with filters.
+  - name: Rules
+    description: Rule list + audit-mutated CRUD.
+  - name: Lists
+    description: Blacklist / whitelist + tier config.
+  - name: Tracking
+    description: Cluster, SLO, certs, alerts, GitOps.
+  - name: Settings
+    description: Mode, detector mask, load-mode override, logging.
+  - name: System
+    description: Health, runtime, about, hot-reload version.
+  - name: Interop
+    description: External interop control plane (`/__waf_control/*`).
+
+# -----------------------------------------------------------------------
+# Security schemes
+# -----------------------------------------------------------------------
+components:
+  securitySchemes:
+    cookieSession:
+      type: apiKey
+      in: cookie
+      name: aegis_session
+      description: |
+        HMAC-signed session cookie. Set by `POST /admin/login` (with
+        `HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=1800`).
+        Idle TTL 30 min, absolute TTL 8 h. Revoked by
+        `POST /admin/logout` and on lockout.
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: x-csrf-token
+      description: |
+        Double-submit CSRF token. Must match the value of the
+        `aegis_csrf` cookie (which is readable by the dashboard's
+        JS). Required on every mutation.
+    mtlsClient:
+      type: http
+      scheme: bearer
+      description: |
+        Mutual TLS — placeholder representation in OpenAPI 3.0.3
+        (which lacks a native `mutualTLS` scheme; that's 3.1+).
+        Operationally: present a client certificate signed by the
+        operator CA. When `admin.dashboard_auth.mtls_required: true`,
+        mTLS bypasses password auth. The `bearer` shape here is
+        purely a 3.0.3 modeling crutch.
+
+  # ---------------------------------------------------------------------
+  # Schemas — error envelope + response payloads
+  # ---------------------------------------------------------------------
+  schemas:
+
+    Error:
+      type: object
+      required: [ok, reason]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        reason:
+          type: string
+          description: Machine-readable error code.
+          example: csrf_missing_cookie
+        message:
+          type: string
+          description: Human-readable error description.
+          example: missing aegis_csrf cookie
+
+    MutationOk:
+      type: object
+      required: [ok, request_id]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        request_id:
+          type: string
+          description: Audit-chain request ID (sha256 hex of mutation).
+
+    AboutResponse:
+      type: object
+      required: [name, version]
+      properties:
+        name: { type: string, example: "Aegis WAF" }
+        version: { type: string, example: "1.4.2" }
+        build_sha: { type: string, nullable: true }
+        environment: { type: string, nullable: true }
+
+    StatsResponse:
+      type: object
+      required: [request_rate, blocks_total, block_rate_pct, active_threats, upstream, ts]
+      properties:
+        request_rate: { type: number, format: double, description: "1-second sliding RPS" }
+        blocks_total: { type: integer, format: int64, description: "Lifetime block count" }
+        block_rate_pct: { type: number, format: double }
+        active_threats: { type: integer, description: "Distinct IPs above the risk threshold in the last 15 min" }
+        upstream: { $ref: '#/components/schemas/UpstreamSummary' }
+        ts: { type: string, format: date-time }
+
+    UpstreamSummary:
+      type: object
+      required: [state, healthy_members, total_members]
+      properties:
+        state:
+          type: string
+          enum: [Up, Degraded, Down]
+        healthy_members: { type: integer }
+        total_members: { type: integer }
+
+    TimeseriesResponse:
+      type: object
+      required: [window_seconds, step_seconds, points]
+      properties:
+        window_seconds: { type: integer }
+        step_seconds: { type: integer }
+        points:
+          type: array
+          items:
+            type: object
+            required: [ts, total, blocked]
+            properties:
+              ts: { type: string, format: date-time }
+              total: { type: integer }
+              blocked: { type: integer }
+
+    DistributionResponse:
+      type: object
+      required: [window_seconds, categories]
+      properties:
+        window_seconds: { type: integer }
+        categories:
+          type: array
+          items:
+            type: object
+            required: [name, count, pct]
+            properties:
+              name: { type: string, example: "sqli" }
+              count: { type: integer }
+              pct: { type: number, format: double }
+
+    TopAttackersResponse:
+      type: object
+      required: [window_seconds, limit, attackers]
+      properties:
+        window_seconds: { type: integer }
+        limit: { type: integer }
+        attackers:
+          type: array
+          items: { $ref: '#/components/schemas/Attacker' }
+
+    Attacker:
+      type: object
+      required: [identifier, hits, categories, risk, last_seen]
+      properties:
+        identifier: { type: string, description: "client_ip or fp:<ja4>" }
+        hits: { type: integer, format: int64 }
+        categories:
+          type: array
+          items: { type: string }
+        risk: { type: integer, minimum: 0, maximum: 100 }
+        last_seen: { type: string, format: date-time }
+        country:
+          type: string
+          nullable: true
+          description: ISO-3166 alpha-2 (CI-T8 — present when MaxMind country DB is loaded).
+        asn:
+          type: integer
+          nullable: true
+          description: ASN number (CI-T8 — present when MaxMind ASN DB is loaded).
+
+    AuditSinceResponse:
+      type: object
+      required: [cursor, next_cursor, events, gap]
+      properties:
+        cursor: { type: integer, format: int64 }
+        next_cursor: { type: integer, format: int64 }
+        gap:
+          type: boolean
+          description: True if the in-process ring evicted events between cursor and next_cursor.
+        events:
+          type: array
+          items:
+            allOf:
+              - type: object
+                required: [seq]
+                properties:
+                  seq: { type: integer, format: int64 }
+              - $ref: '#/components/schemas/AuditEvent'
+
+    AuditEvent:
+      type: object
+      required: [schema_version, ts, request_id, class, action, reason, client_ip]
+      properties:
+        schema_version: { type: integer }
+        ts: { type: string, format: date-time }
+        request_id: { type: string }
+        class:
+          type: string
+          enum: [detection, admin, access, system]
+        tenant_id: { type: string, nullable: true }
+        tier:
+          type: string
+          nullable: true
+          enum: [critical, high, medium, catch_all]
+        action: { type: string, example: "block" }
+        reason: { type: string }
+        client_ip: { type: string }
+        route_id: { type: string, nullable: true }
+        rule_id: { type: string, nullable: true }
+        risk_score: { type: integer, nullable: true }
+        fields:
+          type: object
+          additionalProperties: true
+
+    Rule:
+      type: object
+      required: [id, body, enabled, updated_at]
+      properties:
+        id: { type: string }
+        body: { type: string, description: "Rule DSL source" }
+        enabled: { type: boolean }
+        updated_at: { type: string, format: date-time }
+
+    RulesResponse:
+      type: object
+      required: [rules]
+      properties:
+        rules:
+          type: array
+          items: { $ref: '#/components/schemas/Rule' }
+
+    RulePostBody:
+      type: object
+      required: [id, body, enabled]
+      properties:
+        id:
+          type: string
+          example: "owasp-sqli-001"
+        body:
+          type: string
+          example: "rule \"sqli\" { ... }"
+        enabled: { type: boolean }
+
+    RulePutBody:
+      type: object
+      required: [body, enabled]
+      properties:
+        body: { type: string }
+        enabled: { type: boolean }
+
+    AccessListEntry:
+      type: object
+      required: [id, kind, value, note, created_at]
+      properties:
+        id: { type: string }
+        kind:
+          type: string
+          enum: [ip, cidr, asn]
+        value: { type: string }
+        note: { type: string }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        bypass:
+          type: array
+          items: { type: string }
+          description: "Whitelist only — list of detector/action names to bypass."
+        created_at: { type: string, format: date-time }
+
+    AccessListResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/AccessListEntry' }
+
+    Tier:
+      type: object
+      required: [name, pipeline, risk_threshold, block_threshold, updated_at]
+      properties:
+        name:
+          type: string
+          enum: [critical, high, medium, low, catch_all]
+        pipeline:
+          type: array
+          items: { type: string }
+        risk_threshold: { type: integer }
+        block_threshold: { type: integer }
+        updated_at: { type: string, format: date-time }
+
+    TiersResponse:
+      type: object
+      required: [tiers]
+      properties:
+        tiers:
+          type: array
+          items: { $ref: '#/components/schemas/Tier' }
+
+    RouteSummary:
+      type: object
+      required: [id, path, match_type, methods, upstream]
+      properties:
+        id: { type: string }
+        host: { type: string, nullable: true }
+        path: { type: string }
+        match_type:
+          type: string
+          enum: [exact, prefix, regex, glob]
+        methods:
+          type: array
+          items: { type: string, example: "POST" }
+        upstream: { type: string }
+        tier_override:
+          type: string
+          nullable: true
+          enum: [critical, high, medium, catch_all]
+
+    RoutesResponse:
+      type: object
+      required: [routes]
+      properties:
+        routes:
+          type: array
+          items: { $ref: '#/components/schemas/RouteSummary' }
+
+    UpstreamsResponse:
+      type: object
+      required: [pools]
+      properties:
+        pools:
+          type: array
+          items:
+            type: object
+            required: [name, members, healthy]
+            properties:
+              name: { type: string }
+              members: { type: integer }
+              healthy: { type: integer }
+              lb: { type: string }
+              circuit_breaker:
+                type: string
+                enum: [closed, half-open, open]
+
+    ClusterResponse:
+      type: object
+      required: [peers, is_leader]
+      properties:
+        peers:
+          type: array
+          items: { $ref: '#/components/schemas/ClusterPeer' }
+        is_leader: { type: boolean }
+        leader_node: { type: string, nullable: true }
+        our_node: { type: string }
+
+    ClusterPeer:
+      type: object
+      required: [id, addr, version, last_heartbeat, leases]
+      properties:
+        id: { type: string }
+        addr: { type: string }
+        version: { type: string }
+        last_heartbeat: { type: string, format: date-time }
+        leases:
+          type: array
+          items: { type: string }
+
+    SloResponse:
+      type: object
+      required: [slis]
+      properties:
+        slis:
+          type: array
+          items:
+            type: object
+            required: [name, current, target, budget_remaining, burn_1h, burn_6h, burn_3d]
+            properties:
+              name: { type: string }
+              current: { type: number, format: double, description: "0–100 (%)" }
+              target: { type: number, format: double, description: "0–100 (%)" }
+              budget_remaining: { type: number, format: double, description: "0.0–1.0" }
+              burn_1h: { type: number, format: double }
+              burn_6h: { type: number, format: double }
+              burn_3d: { type: number, format: double }
+
+    CertsResponse:
+      type: object
+      required: [certs]
+      properties:
+        certs:
+          type: array
+          items:
+            type: object
+            required: [host, issuer, expires_at, days_to_expiry, source]
+            properties:
+              host: { type: string }
+              issuer: { type: string }
+              expires_at: { type: string, format: date-time }
+              days_to_expiry: { type: integer }
+              source:
+                type: string
+                enum: [acme, static, mtls]
+
+    AlertsResponse:
+      type: object
+      required: [firing, pending, resolved]
+      properties:
+        firing:
+          type: array
+          items: { $ref: '#/components/schemas/Alert' }
+        pending:
+          type: array
+          items: { $ref: '#/components/schemas/Alert' }
+        resolved:
+          type: array
+          items: { $ref: '#/components/schemas/Alert' }
+
+    Alert:
+      type: object
+      required: [name, severity, since]
+      properties:
+        name: { type: string, example: "DataPlaneAvailability-1h" }
+        severity:
+          type: string
+          enum: [info, ticket, page]
+        since: { type: string, format: date-time }
+        runbook_url: { type: string, nullable: true }
+        receivers:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              last_status: { type: string, enum: [delivered, failed, pending] }
+
+    GitopsStatusResponse:
+      type: object
+      required: [signature_ok, drift, break_glass_active]
+      properties:
+        repo: { type: string, nullable: true }
+        branch: { type: string, nullable: true }
+        last_sync:
+          type: string
+          format: date-time
+          nullable: true
+        head_commit: { type: string, nullable: true }
+        signature_ok: { type: boolean }
+        drift: { type: boolean }
+        break_glass_active: { type: boolean }
+
+    ConfigVersionResponse:
+      type: object
+      required: [version, applied_at_ms, applied_on_node]
+      properties:
+        version:
+          type: integer
+          description: Audit-chain length. Monotonic; increments on every successful mutation.
+        applied_at_ms: { type: integer, format: int64 }
+        applied_on_node: { type: string }
+
+    ModeResponse:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [enforce, log_only]
+
+    ModePutBody:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [enforce, log_only, shadow]
+          description: "shadow is an alias for log_only."
+
+    LoadModeResponse:
+      type: object
+      required: [mode, effective_mode, override_active, elevated_rps, critical_rps]
+      properties:
+        mode:
+          type: string
+          enum: [normal, elevated, critical]
+        effective_mode:
+          type: string
+          enum: [normal, elevated, critical]
+        rps_last_sample: { type: integer }
+        override_active: { type: boolean }
+        elevated_rps: { type: integer }
+        critical_rps: { type: integer }
+
+    LoadModePutBody:
+      type: object
+      properties:
+        override:
+          type: string
+          enum: [normal, elevated, critical, unset]
+          description: "`unset` clears the manual override."
+
+    DetectorsResponse:
+      type: object
+      required: [mask, overrides, locked_classes, compliance_modes]
+      properties:
+        mask:
+          type: object
+          additionalProperties: { type: boolean }
+          example:
+            sqli: true
+            xss: true
+            ssrf: true
+        overrides:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: { type: boolean }
+        locked_classes:
+          type: array
+          items: { type: string }
+        compliance_modes:
+          type: array
+          items: { type: string }
+
+    DetectorsPutBody:
+      type: object
+      properties:
+        mask:
+          type: object
+          additionalProperties: { type: boolean }
+        overrides:
+          type: object
+          additionalProperties:
+            nullable: true
+            type: object
+            additionalProperties: { type: boolean }
+
+    RuntimeResponse:
+      type: object
+      required: [workers, blocking_threads, stack_size_kb, host_logical_cpus]
+      properties:
+        workers: { type: integer }
+        workers_mode: { type: string, enum: [auto, fixed] }
+        blocking_threads: { type: integer }
+        stack_size_kb: { type: integer }
+        cpu_affinity_requested: { type: boolean }
+        cpu_affinity_active: { type: boolean }
+        host_logical_cpus: { type: integer }
+
+    LoginRequest:
+      type: object
+      required: [user, password]
+      properties:
+        user: { type: string }
+        password: { type: string, format: password }
+        totp_code:
+          type: string
+          description: "Required when `totp_enabled: true`."
+
+    LoginResponse:
+      type: object
+      required: [ok, user, session_idle_seconds]
+      properties:
+        ok: { type: boolean, enum: [true] }
+        user: { type: string }
+        session_idle_seconds: { type: integer }
+
+# -----------------------------------------------------------------------
+# Default security — every endpoint requires the cookie pair unless
+# overridden (login + logout + interop opt-out below).
+# -----------------------------------------------------------------------
+security:
+  - cookieSession: []
+
+paths:
+
+  # ----------------------------------------------------------------- Auth
+  /admin/login:
+    post:
+      tags: [Auth]
+      summary: Establish a session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Session + CSRF cookies set on success.
+          headers:
+            Set-Cookie:
+              description: Two cookies — `aegis_session` (HttpOnly) and `aegis_csrf` (JS-readable).
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '401':
+          description: Invalid credentials, missing TOTP, or locked out.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Rate-limited (per-IP or per-user).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current session
+      responses:
+        '200':
+          description: Session revoked; both cookies cleared.
+
+  /admin/drain:
+    post:
+      tags: [System]
+      summary: Mark this node draining (HA-T5)
+      description: |
+        Flips `readiness.draining = true`. `/healthz/ready?strict=1`
+        returns 503 immediately so the LB pulls the node out; in-flight
+        requests complete; SIGTERM auto-drain runs the same path.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: Draining started.
+
+  # ----------------------------------------------------------------- System
+  /api/about:
+    get:
+      tags: [System]
+      summary: Build / version metadata
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AboutResponse' }
+
+  /api/runtime:
+    get:
+      tags: [System]
+      summary: Tokio runtime sizing snapshot
+      responses:
+        '200':
+          description: Stable across the process lifetime.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuntimeResponse' }
+
+  /api/config/version:
+    get:
+      tags: [System]
+      summary: Audit-chain length (hot-reload visibility)
+      description: |
+        Increments on every successful mutation. The dashboard polls
+        this every 250 ms after a mutation to show "Applied in X.X s"
+        toasts. SLA: ≤ 10 s (Hackathon WAF-FE §2 #5).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfigVersionResponse' }
+
+  # ----------------------------------------------------------------- Stats
+  /api/stats:
+    get:
+      tags: [Stats]
+      summary: Live request KPIs
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatsResponse' }
+
+  /api/stats/timeseries:
+    get:
+      tags: [Stats]
+      summary: Windowed request rate timeseries
+      parameters:
+        - in: query
+          name: window
+          schema: { type: integer, default: 900 }
+        - in: query
+          name: step
+          schema: { type: integer, default: 5 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TimeseriesResponse' }
+
+  /api/attacks/distribution:
+    get:
+      tags: [Stats]
+      summary: OWASP-class breakdown of blocks
+      parameters:
+        - in: query
+          name: window
+          schema: { type: integer, default: 900 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DistributionResponse' }
+
+  /api/attacks/top:
+    get:
+      tags: [Stats]
+      summary: Top attackers by hits
+      parameters:
+        - in: query
+          name: window
+          schema: { type: integer, default: 900 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 10 }
+      responses:
+        '200':
+          description: OK. `country` + `asn` populated when MaxMind DBs are loaded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TopAttackersResponse' }
+
+  # ----------------------------------------------------------------- Audit
+  /api/audit/since:
+    get:
+      tags: [Audit]
+      summary: Filtered audit chain
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 200 }
+        - in: query
+          name: ip
+          schema: { type: string }
+        - in: query
+          name: rule_id
+          schema: { type: string }
+        - in: query
+          name: request_id
+          schema: { type: string }
+        - in: query
+          name: from
+          schema: { type: integer, format: int64 }
+        - in: query
+          name: to
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditSinceResponse' }
+
+  # ----------------------------------------------------------------- Rules
+  /api/rules:
+    get:
+      tags: [Rules]
+      summary: All rules
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RulesResponse' }
+    post:
+      tags: [Rules]
+      summary: Create a rule (audit-mutated)
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RulePostBody' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationOk' }
+        '403':
+          description: CSRF gate
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Rule with this id already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/rules/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    put:
+      tags: [Rules]
+      summary: Replace a rule (audit-mutated)
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RulePutBody' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationOk' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Rules]
+      summary: Delete a rule (audit-mutated)
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationOk' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/rules/{id}/toggle:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    put:
+      tags: [Rules]
+      summary: Flip a rule's enabled flag (audit-mutated)
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationOk' }
+
+  # ----------------------------------------------------------------- Lists
+  /api/blacklist:
+    get:
+      tags: [Lists]
+      summary: Blacklist entries
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessListResponse' }
+
+  /api/whitelist:
+    get:
+      tags: [Lists]
+      summary: Whitelist entries
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessListResponse' }
+
+  /api/tiers:
+    get:
+      tags: [Lists]
+      summary: Tier definitions
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TiersResponse' }
+
+  /api/routes:
+    get:
+      tags: [Lists]
+      summary: Routing trie snapshot (CI-T5)
+      responses:
+        '200':
+          description: OK. Cached server-side for 30 s.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesResponse' }
+
+  # ----------------------------------------------------------------- Tracking
+  /api/upstreams:
+    get:
+      tags: [Tracking]
+      summary: Per-pool upstream health
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpstreamsResponse' }
+
+  /api/cluster:
+    get:
+      tags: [Tracking]
+      summary: Cluster peers + leader
+      responses:
+        '200':
+          description: "OK. `peers: []` and `is_leader: true` in single-node mode."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClusterResponse' }
+
+  /api/slo:
+    get:
+      tags: [Tracking]
+      summary: SLO budget + burn rates (CI-T4 + CI-T7)
+      responses:
+        '200':
+          description: OK. `current` / `target` are percentages; `budget_remaining` is 0–1.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SloResponse' }
+
+  /api/certs:
+    get:
+      tags: [Tracking]
+      summary: TLS cert inventory (CI-T4)
+      responses:
+        '200':
+          description: OK. Empty when `cfg.tls.certificates` is empty.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertsResponse' }
+
+  /api/alerts:
+    get:
+      tags: [Tracking]
+      summary: Currently-firing SLO alerts (CI-T4)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertsResponse' }
+
+  /api/alerts/{id}/ack:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, example: "DataPlaneAvailability-1h" }
+    post:
+      tags: [Tracking]
+      summary: Acknowledge an alert (CI-T4, audit-mutated)
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: OK. Alert moves from `firing` to `resolved`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      alert_id: { type: string }
+
+  /api/gitops/status:
+    get:
+      tags: [Tracking]
+      summary: GitOps loader state (CI-T4)
+      responses:
+        '200':
+          description: OK. Fields nullable when GitOps isn't configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GitopsStatusResponse' }
+
+  # ----------------------------------------------------------------- Settings
+  /api/mode:
+    get:
+      tags: [Settings]
+      summary: Global enforce / log_only mode (CI-T6)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModeResponse' }
+    put:
+      tags: [Settings]
+      summary: Toggle the global mode (audit-mutated)
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModePutBody' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      mode: { type: string }
+        '400':
+          description: Invalid mode value
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/loadmode:
+    get:
+      tags: [Settings]
+      summary: Auto-degradation thresholds + current mode
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoadModeResponse' }
+    put:
+      tags: [Settings]
+      summary: Pin or clear the manual override (audit-mutated)
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoadModePutBody' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationOk' }
+
+  /api/detectors:
+    get:
+      tags: [Settings]
+      summary: Detector mask + tier overrides
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetectorsResponse' }
+    put:
+      tags: [Settings]
+      summary: Update detector mask (audit-mutated)
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DetectorsPutBody' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationOk' }
+        '422':
+          description: Compliance profile forbids the requested mask
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ----------------------------------------------------------------- Interop
+  # The interop control plane is documented separately because its
+  # auth model differs (operator-supplied API key, not the dashboard
+  # session). See the WAF Interop Contract v2.3 for the full spec.
+  /__waf_control/capabilities:
+    get:
+      tags: [Interop]
+      summary: Capability discovery
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                description: |
+                  Full shape in `aegis_control::interop::control::CapabilityResponse`.
+                  Always-on (no auth required).
+
+  /__waf_control/reset_state:
+    post:
+      tags: [Interop]
+      summary: Reset runtime state (audit-preserving)
+      security: []
+      responses:
+        '200':
+          description: OK; new state version returned.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /__waf_control/set_profile:
+    post:
+      tags: [Interop]
+      summary: Switch interop mode profile
+      security: []
+      responses:
+        '200':
+          description: OK
+
+  /__waf_control/flush_cache:
+    post:
+      tags: [Interop]
+      summary: Flush interop caches
+      security: []
+      responses:
+        '200':
+          description: OK

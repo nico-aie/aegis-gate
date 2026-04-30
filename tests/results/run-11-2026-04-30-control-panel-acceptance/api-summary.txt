@@ -1,0 +1,26 @@
+Endpoint summary — captured 2026-04-30
+===============================================
+endpoint                                 code     bytes      first 80 bytes of body
+------------------------------------------------------------------------------
+/api/about                               200 74 {"name":"Aegis WAF","version":"0.1.0","build_sha":null,"environment":null}
+/api/stats                               200 178 {"request_rate":0.0,"blocks_total":0,"block_rate_pct":0.0,"active_threats":0,"up
+/api/stats/timeseries                    200 9410 {"window_seconds":900,"step_seconds":5,"points":[{"ts":"2026-04-30T15:31:30Z","t
+/api/attacks/distribution                200 38 {"window_seconds":900,"categories":[]}
+/api/attacks/top                         200 47 {"window_seconds":900,"limit":5,"attackers":[]}
+/api/audit/since                         200 52 {"cursor":0,"next_cursor":0,"events":[],"gap":false}
+/api/rules                               200 12 {"rules":[]}
+/api/blacklist                           200 14 {"entries":[]}
+/api/whitelist                           200 14 {"entries":[]}
+/api/tiers                               200 657 {"tiers":[{"block_threshold":10,"name":"critical","pipeline":["rate","rules","sq
+/api/routes                              200 133 {"routes":[{"id":"catch-all","host":null,"path":"/","match_type":"prefix","metho
+/api/upstreams                           200 107 {"state":"Down","healthy_members":0,"total_members":1,"pools":[{"name":"stub-poo
+/api/cluster                             200 270 {"peers":[{"id":"unknown-host-37576-1777563966544094000","addr":"","version":"0.
+/api/slo                                 200 267 {"slis":[{"name":"data_plane_availability","current":100.0,"target":99.9,"budget
+/api/certs                               200 12 {"certs":[]}
+/api/alerts                              200 40 {"firing":[],"pending":[],"resolved":[]}
+/api/gitops/status                       200 124 {"repo":null,"branch":null,"last_sync":null,"head_commit":null,"signature_ok":tr
+/api/mode                                200 18 {"mode":"enforce"}
+/api/loadmode                            200 126 {"mode":"normal","effective_mode":"normal","rps_last_sample":0,"override_active"
+/api/detectors                           200 198 {"mask":{"sqli":true,"xss":true,"path_traversal":true,"ssrf":true,"header_inject
+/api/runtime                             200 162 {"workers":12,"workers_mode":"auto","blocking_threads":512,"stack_size_kb":2048,
+/api/config/version                      200 102 {"applied_at_ms":1777563985855,"applied_on_node":"unknown-host-37576-17775639665

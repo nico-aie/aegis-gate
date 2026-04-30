@@ -14,6 +14,11 @@ redis = ["dep:redis", "dep:deadpool-redis"]
 # enforcement is advisory. Off by default — the runtime config
 # `cpu_affinity: true` is honoured only if this feature is on.
 affinity = []
+# `geoip` plumbs the MaxMind GeoIP reader into the AttacksHandler
+# so /api/attacks/top rows carry country + ASN. Off by default so
+# builds without MaxMind DBs stay slim. Wires through to
+# `aegis-security/geoip` (the actual reader implementation).
+geoip = ["aegis-security/geoip"]
 # `vault` enables resolution of `${secret:vault:<path>#<field>}`
 # config references against a HashiCorp Vault server. Off by
 # default so single-node + non-Vault deployments stay slim.
@@ -83,6 +88,7 @@ regex.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 rustls-pki-types.workspace = true
+x509-parser.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true

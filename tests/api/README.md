@@ -34,6 +34,7 @@ tests/api/
 ├── logging.sh           GET / PUT /api/logging            (P8)
 ├── cold-tier.sh         GET /api/cold-tier                (P8)
 ├── acme.sh              Pebble reachability + directory shape (F-T7)
+├── openapi-shape.sh     OpenAPI 3.0.3 contract test       (CI-T9)
 └── run-all.sh           bring-up + run every script + cleanup
 ```
 

@@ -30,6 +30,7 @@ use crate::api::{
     filters::{FilterCatalogue, FiltersHandler},
     login::AdminIdentity,
     mutation::AuditedMutate,
+    routes::RoutesHandler,
     rules::{RuleStats, RuleStore},
     stats::{StatsAggregator, StatsHandler, UpstreamSummary},
     tiers::TierStore,
@@ -64,6 +65,7 @@ pub struct DashboardServices {
     pub rules: Arc<RuleStore>,
     pub rule_stats: Arc<RuleStats>,
     pub tiers: Arc<TierStore>,
+    pub routes: Arc<RoutesHandler>,
     pub blacklist: Arc<AccessListStore>,
     pub whitelist: Arc<AccessListStore>,
     pub sessions: Arc<SessionStore>,
@@ -212,6 +214,7 @@ impl DashboardServices {
         let rules = Arc::new(RuleStore::new());
         let rule_stats = Arc::new(RuleStats::new());
         let tiers = Arc::new(TierStore::new());
+        let routes = Arc::new(RoutesHandler::new());
         let blacklist = Arc::new(AccessListStore::new());
         let whitelist = Arc::new(AccessListStore::new());
         let sessions = Arc::new(SessionStore::new());
@@ -293,6 +296,7 @@ impl DashboardServices {
                 rules,
                 rule_stats,
                 tiers,
+                routes,
                 blacklist,
                 whitelist,
                 sessions,

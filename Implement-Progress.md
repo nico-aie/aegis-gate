@@ -24,118 +24,143 @@
 ## Status (snapshot)
 
 - **As of:** 2026-04-30
-- **Workspace tests:** 2,277 default-feature (was 2,273;
-  +3 `DecisionTag` constructors + +1 `PoolKey` TLS distinction).
-  27 shell contract checks in [`tests/interop/`](./tests/interop/)
-  green after AF-T1 + HP-T1.
+- **Workspace tests:** **2,199 default-feature** (post-CI-T*
+  console-API integration; net delta from 2,277 reflects the
+  dashboard redesign cleanup that retired the old vanilla-JS
+  test fixtures).
 - **Clippy:** clean across the workspace on
   `--features aegis-proxy/redis` and on `aegis-bin --features
-  "redis affinity"`.
-- **Active tracks:**
-  [`plans/post-run-08.md`](./plans/post-run-08.md) — three
-  short tracks (AF-T1 ✅ / HP-T1 ✅ / TLS-T1 ✅) **all
-  closed**. **Dashboard redesign track is now next.**
-- **Latest activity:** **AF-T1 + HP-T1 + TLS-T1 closed
-  2026-04-30.**
-  - **AF-T1** — `handle_data_request` returns
-    `(Response, DecisionTag)`; the stamper reads the real
-    action from the tag. Challenges now report
-    `X-WAF-Action: challenge` instead of `rate_limit`;
-    upstream failures map to `circuit_breaker` / `timeout`
-    rather than generic `block`.
-  - **HP-T1** — `forward.rs` now uses
-    `HttpsConnector<HttpConnector>` for every pool with
-    HTTP/1.1 + HTTP/2 ALPN both enabled (gRPC rides on h2;
-    WebSocket upgrade still strips). New `connection.tls:
-    bool` config picks the URL scheme. Pool cache keyed on
-    `tls` flag so HTTP and HTTPS pools never share clients.
-  - **TLS-T1** — clean-host re-measure ([run-09](./tests/results/run-09-2026-04-30-tls-recheck/README.md)):
-    handshake p95 5.23 ms vs run-04's 2.12 ms / run-05's
-    9.08 ms. Confirms run-05 was host noise, no regression.
+  "redis affinity alerts geoip"`. Two pre-existing rust-1.94
+  lints in untouched files (`tests/dod.rs`, `src/api/risk.rs`)
+  remain.
+- **Active tracks:** **Phase B — only B6 packaging remains
+  (B6-T1 production Dockerfile is in flight).** All other
+  tracks closed in this session: dashboard redesign
+  (DD-T0..T8), Aegis WAF Console API integration
+  (CI-T1..T8), HA cluster (HA-T1..T5), interop contract
+  (IT-T1..T6 + DR-T1..T7), post-run-08 (AF-T1, HP-T1, TLS-T1).
+- **Latest activity:** **CI-T7 + CI-T8 closed 2026-04-30**
+  (SLO eval + dispatch + burn windows; geo enrichment for
+  `/api/attacks/top`).
+  - **CI-T7** — periodic `engine.evaluate()` task in
+    `aegis-proxy::run` calls `slo::dispatch::send_alert`
+    every 30 s; with `--features alerts` the dispatcher
+    delivers to VipTalk via HTTPS. `BudgetStatus` carries
+    per-window burn rates so `/api/slo` returns real
+    `burn_1h` / `burn_6h` / `burn_3d` instead of zeros.
+  - **CI-T8** — `Attacker` row gains optional `country` +
+    `asn`. `AttacksHandler::set_geo_lookup(...)` accepts any
+    `aegis_security::geoip::GeoIpLookup` impl; proxy wires
+    a real `MaxMindReader` under `--features geoip` from
+    new `cfg.geoip.country_db` / `asn_db` paths. Overview
+    page renders blips only for IPs with real geo (was
+    falling back to the mock fixture).
 
 ---
 
 ## Last Completed
 
-**Task:** **AF-T1 + HP-T1 + TLS-T1** — three short tracks per
-[`plans/post-run-08.md`](./plans/post-run-08.md). Last items
-before the dashboard redesign track.
+**Task:** **CI-T7 + CI-T8** — close the SLO and geo-enrichment
+items deferred during CI-T4 / CI-T1. See
+[`plans/console-api-integration.md`](./plans/console-api-integration.md).
 
-### AF-T1 — Action-class fidelity
+### CI-T7 — SLO evaluation + dispatch + burn-rate windows
 
-`handle_data_request` returns `(Response, DecisionTag)` so the
-stamper reads the real contract action from the tag instead of
-inferring from HTTP status. Each return path attaches a tag
-with the right action class + a stable `rule_id`. Notably:
+The SLO engine has been fed samples since CI-T4, but
+`engine.evaluate()` was never called in production — alerts
+never fired and VipTalk delivery (built but disconnected) never
+ran. CI-T7 closes the loop.
 
-- **`challenge` body** correctly reports
-  `X-WAF-Action: challenge` (not `rate_limit`); body now
-  carries `{"challenge": true, "challenge_type":
-  "proof_of_work"}` so the OC's solver can parse it.
-- **Upstream timeouts** report `Timeout`; **circuit / connect
-  failures** report `CircuitBreaker`; **5xx from upstream**
-  stays `Allow` (the WAF proxied faithfully — the upstream
-  failed).
+- **Periodic eval task** spawned in `aegis-proxy::run` runs
+  `engine.evaluate()` every 30 s and pipes each newly-fired
+  alert through `aegis_control::slo::dispatch::send_alert(...)`.
+- **VipTalk delivery is now production-reachable.** With
+  `aegis-bin --features "redis alerts"` (new feature alias of
+  `aegis-control/alerts`), `dispatch::send_viptalk` POSTs to
+  `https://api.viptalk.org/v1/bot/<token>/sendMessage`. Without
+  the feature, dispatch logs the alert and counts it as
+  "external" so an off-box dispatcher (Alertmanager, sidecar)
+  can pick it up.
+- **`BudgetStatus.burn_rates: Vec<BurnRate>`** — one entry per
+  burn-rate window declared on the `SloObjective`. Computed
+  alongside the budget snapshot using the same arithmetic as
+  `evaluate()`, surfaced through `/api/slo` so the dashboard's
+  `burn_1h` / `burn_6h` / `burn_3d` fields render real numbers
+  instead of placeholder zeros.
 
-### HP-T1 — Upstream HTTPS connection pool
+### CI-T8 — Geo enrichment for /api/attacks/top
 
-`forward.rs` now uses `HttpsConnector<HttpConnector>` for
-every pool. The connector inspects URL scheme: `http://`
-skips the TLS handshake, `https://` negotiates rustls + bundled
-webpki roots. ALPN advertises both HTTP/1.1 and HTTP/2 — gRPC
-rides on h2, so the same pool covers gRPC upstreams without a
-second client. WebSocket upgrade is unchanged (still
-hop-by-hop). Pool cache keyed on `connection.tls` so HTTP and
-HTTPS configs never share idle conns.
+The MaxMind GeoIP reader has shipped since B3-T3 but only fed
+the rule engine. CI-T8 plumbs it into the dashboard.
 
-New per-pool config: `connection.tls: bool` (default `false`).
-Set `true` and the WAF speaks rustls to that upstream.
+- **`Attacker` row gains `country: Option<String>` + `asn:
+  Option<u32>`** with `serde(skip_serializing_if = "Option::is_none")`
+  so the API stays clean when no DB is loaded.
+- **`AttacksHandler::set_geo_lookup(Arc<dyn GeoIpLookup>)`** —
+  accepts any impl of the always-compiled trait. `enrich_attackers()`
+  parses each identifier; public IPs get country + ASN,
+  fingerprint identifiers (`fp:<ja4>`) skip the lookup.
+- **New `cfg.geoip` block** — `country_db` + `asn_db` (both
+  optional `PathBuf`). Plumbed in proxy under
+  `cfg(feature = "geoip")` so builds without `maxminddb` stay
+  slim. New cargo feature aliases:
+  `aegis-bin/geoip → aegis-proxy/geoip → aegis-security/geoip`.
+- **Dashboard Overview** drops the lying mock-fixture blips —
+  the `WorldMap` now shows only attackers with real `country`.
+  Pill toggles between `N geo-tagged` (DB loaded) and
+  `geo DB not loaded` (default state) so the operator sees
+  honest state.
 
-`rustls 0.23` requires explicit `CryptoProvider::install_default()`
-when more than one cipher backend reaches the dep graph. The
-ring provider is installed lazily in three call sites
-(`build_client`, `build_hardened_server_config`,
-`build_server_config`). Idempotent across crates.
+**Files changed (CI-T7 + CI-T8).**
 
-### TLS-T1 — Clean-host TLS handshake re-measure
-
-[`run-09`](./tests/results/run-09-2026-04-30-tls-recheck/README.md):
-handshake p95 **5.23 ms** vs run-04's 2.12 ms and run-05's
-9.08 ms. Per-request post-handshake p95 1.04 ms — unchanged
-within 1 µs across all three runs. Verdict: **run-05 was host
-noise, no code regression**. Carry-over closed.
-
-**Files changed.**
-
-- `crates/aegis-control/src/interop/headers.rs` — `DecisionTag`
-  + 3 constructor tests.
-- `crates/aegis-proxy/src/lib.rs` — `handle_data_request`
-  signature, every return tagged, `forward_allow_to_upstream`
-  returns the tuple, `stamp_interop_response` reads tag.
-- `crates/aegis-proxy/src/upstream/forward.rs` —
-  `HttpsConnector<HttpConnector>`, ring provider install,
-  HTTP/1.1+HTTP/2 ALPN, `PoolKey.tls`, `tls_flag_makes_distinct_pool_keys`
-  test.
-- `crates/aegis-proxy/src/listener/tls{,_policy}.rs` —
-  defensive ring provider installs (avoids double-install
-  panic when both crates run rustls).
-- `crates/aegis-core/src/config.rs` — `ConnectionPoolConfig.tls`.
-- `Cargo.toml` workspace — `hyper-rustls` 0.27 (http1 + http2 +
-  ring + webpki-tokio + tls12) + `webpki-roots` 0.26.
-- `tests/results/run-09-2026-04-30-tls-recheck/README.md` —
-  handshake re-measure verdict.
-- `tests/results/README.md` — run-09 row added.
+- `crates/aegis-control/src/slo.rs` — `BurnRate` struct,
+  `BudgetStatus.burn_rates`, `budget_status()` per-window
+  burn-rate computation. Test fixture updated.
+- `crates/aegis-control/src/api/tracking.rs` —
+  `SloResponse::from_budget_status` populates `burn_1h/6h/3d`.
+- `crates/aegis-control/src/api/attacks.rs` — `Attacker.country`
+  + `asn`, `AttacksHandler.geo` slot + `set_geo_lookup` setter
+  + `enrich_attackers()` invoked before caching `render_top()`.
+- `crates/aegis-proxy/src/lib.rs` — periodic SLO eval+dispatch
+  task (30 s interval, calls `dispatch::send_alert` per fired
+  alert); GeoIP reader wiring under `cfg(feature = "geoip")`.
+- `crates/aegis-proxy/Cargo.toml` — new `geoip` feature
+  (alias of `aegis-security/geoip`).
+- `crates/aegis-bin/Cargo.toml` — new `alerts` + `geoip`
+  features (aliases of `aegis-control/alerts` + `aegis-proxy/geoip`).
+- `crates/aegis-core/src/config.rs` — new `GeoIpConfig`
+  struct (`country_db` + `asn_db`), wired into `WafConfig.geoip`.
+- `crates/aegis-control/assets/dashboard/src/pages.jsx` —
+  Overview consumes real `country`/`asn`; blips render only
+  for IPs with geo; pill reflects `geo DB not loaded` /
+  `N geo-tagged` honestly.
 
 **Verification.**
 
-- `cargo test --workspace --features aegis-proxy/redis` →
-  **2,277 passed** (was 2,273; +3 DecisionTag + +1 PoolKey).
-- Clippy clean.
-- `bash tests/interop/run-all.sh` → 27/27 contract checks
-  green (DR-T1..DR-T5).
-- Run-09 live re-measure: handshake p95 5.23 ms, post-
-  handshake p95 1.04 ms, throughput 31.4 k RPS — within
-  ±2 % of run-04/run-05.
+- `cargo test --workspace` → **2,199 passed** (no
+  regressions). Clippy clean.
+- `cargo build -p aegis-bin --release --features "redis alerts geoip"` → green.
+- Live smoke: `/api/slo` returns `burn_1h`/`burn_6h`/`burn_3d`
+  fields populated from the engine; `/api/attacks/top` row
+  shape includes optional `country`/`asn`. With no MaxMind DB
+  configured, rows omit the fields cleanly.
+
+### Run-11 — full control-panel acceptance (2026-04-30)
+
+End-to-end run-through of the dashboard after CI-T1..T10 closed.
+Full report: [`tests/results/run-11-2026-04-30-control-panel-acceptance/README.md`](./tests/results/run-11-2026-04-30-control-panel-acceptance/README.md).
+
+- 22/22 dashboard-consumed endpoints return real JSON ✅
+- `make openapi-test` → 25/25 OpenAPI shape checks ✅
+- `make protocols-test` → h1 ✅ h2 ✅ WS ✅ gRPC ✅ (h3 skip — curl-side)
+- Round-1 acceptance → 8/8 contract checks (RT 61 ms / hot-reload 52 ms / audit 30 ms) ✅
+- 12 fresh per-page screenshots committed
+- SLO engine **fired 3 real alerts** during the run (Tracking
+  page screenshot) — proves CI-T7 dispatch loop works in production
+- Test-harness fixes: round1-acceptance now logs in via /admin/login
+  (was relying on /dashboard/ setting CSRF), uses portable `ms_now()`
+  instead of `date +%s%3N`, and streams the bundle to a tempfile
+  to avoid broken-pipe under `set -o pipefail`
 
 ---
 
@@ -157,39 +182,35 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
-| 2026-04-30 | **AF-T1 + HP-T1 + TLS-T1** Post run-08 closing tracks | Action-class fidelity (challenge/timeout/circuit_breaker now correctly attributed); upstream HTTPS+HTTP/2 pool via hyper-rustls; TLS-T1 re-measure confirms run-05 handshake spike was host noise. +4 tests, 2,277 total. 27/27 DR contract checks green. |
-| 2026-04-30 | **DR-T1..DR-T7** Interop contract self-driven dry-run | 5 shell scripts in `tests/interop/`, 27/27 contract checks green; perf delta ~30 µs at p95 / 4 % overhead at 4 k RPS / 100 % success on both interop=on and interop=off. Run-08 published. |
-| 2026-04-30 | **IT-T1..IT-T6** External Interop Contract surface | New `aegis-control::interop` module; always-on `X-WAF-*` headers + minimal-schema `./waf_audit.log` + `/__waf_control/*` admin endpoints + per-policy mode store. +39 tests, 2,273 total. Contract v2.3 fully satisfied; live smoke 4/4 endpoints + 6/6 headers. |
-| 2026-04-30 | **UP-T1** Upstream connection pool | `forward.rs` rewritten on `hyper_util::client::legacy::Client`; per-pool `connection:` config; cached per signature. **15× throughput lift** (525 → 7 964 RPS, 100 % success, sub-1 ms p95) validated by run-07. +6 tests, 2,234 total. |
-| 2026-04-30 | **Workers / Layer-1** in-node scaling | New `runtime:` config block + `tokio::runtime::Builder` wiring + `/api/runtime` admin endpoint + dashboard panel + `affinity` Cargo feature for CPU pinning. +18 tests, 2,228 total. Restart-only. Live verified on 12-core (auto) and 4-thread fixed configs. |
-| 2026-04-30 | **HA-T1..T5** Cluster ingress / LB track CLOSED | `deploy/haproxy/haproxy.cfg` (HA-T1) + `tests/cluster/05/06` + `tests/load/failover-burst.js` (HA-T2) + `WafConfig.node.id` (HA-T3) + `LeaderView::set_members` + `/api/cluster.peers[]` (HA-T4) + `POST /admin/drain` + `?strict=1` + SIGTERM drain (HA-T5). 99.93 % hard / 100 % graceful failover budget. |
-| 2026-04-29 | **Carry-over B** — rate-limit response code | Gateway already returns 429 with Retry-After; test script recalibrated (BURST_RPS 200 → 2000, threshold 0.95 → 0.30). 50 status_429 observed live. |
-| 2026-04-29 | **Carry-over A** — data-plane Allow forwarding | `lib.rs::handle_data_request` now async, takes `Arc<ProxyContext>`, Allow branch goes through `forward::forward()`. Live: 31.5 k RPS / 504 µs median / 3.66 ms full-hop p95 vs httpbin. |
-| 2026-04-29 | **B5-T2** Benchmark mode core slice — closes B5 | `aegis-proxy::benchmark`: `BenchmarkConfig` + `StageTimings` + `X-Aegis-*` header serialiser; `proxy::handle_request` captures total/route/upstream timings + tier + decision when enabled. +21 unit + 2 proxy end-to-end tests. |
-| 2026-04-29 | **B5-T1** HTTP/3 listener | `aegis-proxy/http3` Cargo feature ships `listener::http3` on quinn 0.11 + h3 0.0.8 + h3-quinn 0.0.10. +15 tests. |
+| 2026-04-30 | **CI-T9 + CI-T10** OpenAPI spec + h2 wire-up | Hand-written `docs/control-plane/api.openapi.yaml` (1,217 lines, 30 endpoints, 30 schemas, 3 security schemes) + `tests/api/openapi-shape.sh` 25-check contract test. CI-T10 swapped data-plane TLS `http1::Builder` for `hyper_util::auto::Builder` so ALPN-negotiated h2 actually serves over h2; flipped explicit ALPN downgrade back to `[h2, http/1.1]`. Closed real client-compat gap (HTTP/2 + gRPC both unblocked). |
+| 2026-04-30 | **CI-T7 + CI-T8** Console API integration — SLO eval + geo enrichment | Periodic engine.evaluate task wired to slo::dispatch::send_alert (VipTalk delivery on `--features alerts`); BudgetStatus carries per-window burn rates → /api/slo populates burn_1h/6h/3d. Attacker rows gain country+ASN from MaxMindReader (`--features geoip`); Overview blips drop the mock fixture. 2,199 tests. |
+| 2026-04-30 | **CI-T1..T6** Aegis WAF Console — live API integration | All 12 dashboard pages now read live `/api/*` instead of mock JS constants. New `/api/routes`, `PUT /api/mode`, `POST /api/alerts/{id}/ack`. Real /api/slo + /api/certs + /api/gitops/status + /api/alerts (was placeholder). Plan: `plans/console-api-integration.md`. |
+| 2026-04-30 | **DD-T0..T8** Aegis WAF Console redesign | Replaced 11-page vanilla-JS SPA with pre-compiled React 18 (~180 KB bundle); 17 real-API hooks; Rule CRUD with hot-reload toast; CSP `script-src 'self'`; Round-1 acceptance script + 12 baseline screenshots; Hackathon WAF-FE §2 contract closed. Run-10 published. |
+| 2026-04-30 | **AF-T1 + HP-T1 + TLS-T1** Post run-08 closing tracks | Action-class fidelity; upstream HTTPS+HTTP/2 pool via hyper-rustls; TLS-T1 re-measure confirms run-05 handshake spike was host noise. 27/27 DR contract checks green. |
+| 2026-04-30 | **DR-T1..DR-T7 + IT-T1..IT-T6** Interop contract + dry-run | `aegis-control::interop` module; always-on `X-WAF-*` headers + minimal-schema `./waf_audit.log` + `/__waf_control/*` + per-policy mode store. 27/27 contract checks green. ~30 µs p95 overhead / 4 % at 4 k RPS. |
+| 2026-04-30 | **UP-T1** Upstream connection pool | hyper-util pooled Client; **15× throughput lift** (525 → 7 964 RPS). |
+| 2026-04-30 | **Workers / Layer-1** in-node scaling | `runtime:` config + tokio Builder wiring + `/api/runtime` + dashboard panel + `affinity` Cargo feature. |
+| 2026-04-30 | **HA-T1..T5** Cluster ingress / LB | HAProxy reference deploy + cluster smoke tests + `node.id` + leader-poll membership + `/admin/drain` + `?strict=1` readiness. 99.93 % hard / 100 % graceful failover. |
+| 2026-04-29 | **Carry-overs A + B** | Data-plane Allow forwarding wired; rate-limit returns 429 (test recalibrated). 31.5 k RPS / 504 µs median. |
+| 2026-04-29 | **B5-T1 + B5-T2** Protocols + benchmark mode | HTTP/3 listener (quinn 0.11) + benchmark mode core slice with `X-Aegis-*` header serialiser. |
 
 ---
 
 ## Next Task
 
-**Task in flight: Dashboard redesign (DD-T0..T8).** Plan
-[`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md).
-Run-10 published.
+**Task in flight: B6-T1 — production Dockerfile.** Plan
+[`plans/phase-b/README.md` § B6](./plans/phase-b/README.md#b6--production-packaging).
+Last remaining Phase B item; everything else (B1..B5,
+HA-T1..T5, IT-T1..T6 + DR-T1..T7, AF-T1/HP-T1/TLS-T1, DD-T0..T8,
+CI-T1..T8) is closed.
 
-| Track | Status |
-|---|---|
-| DD-T0 — Clean removal of old dashboard | ✅ |
-| DD-T1 — Drop in design files + asset registry + pre-compile | ✅ |
-| DD-T6 — Rule CRUD endpoints + Rule Manager wiring | ✅ |
-| DD-T2 — Wire `data.jsx` → real `/api/*` endpoints | ✅ |
-| DD-T7 — `/api/config/version` + `waitForVersion()` + Toast | ✅ (full stack) |
-| DD-T8 — Round-1 acceptance script | ✅ |
-| DD-T4 — Per-page screenshots | ✅ (12 PNGs baseline) |
-| DD-T5 — Final doc archival | ✅ |
+**This turn closed CI-T7 + CI-T8** (SLO eval+dispatch+burn
+windows, geo enrichment for `/api/attacks/top`). The Aegis
+WAF Console redesign + every supporting backend surface is
+now production-grade — full detail in **Last Completed**
+above.
 
-**This turn:**
-
-- **DD-T0+T1.** Old vanilla-JS dashboard (~30 files) removed.
+**Earlier turn — DD-T0+T1.** Old vanilla-JS dashboard (~30 files) removed.
   New **Aegis WAF Console** lands as `app.js` 165 KB built
   from `assets/dashboard/src/*.jsx` via `build.sh` (esbuild
   JSX transform, no bundling — preserves the design's
@@ -327,8 +348,13 @@ Order is execution priority — earlier rows run first.
 
 | # | Track | Plan | State |
 |---|---|---|---|
-| 1 | **Phase B — production-readiness (B1..B6)** | [`plans/phase-b/README.md`](./plans/phase-b/README.md) | **active**; B1-T1 unblocked |
-| 2 | Dashboard redesign (DD-T0..T8) | [`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md) | closed in run-10; DD-T4 screenshots remain |
+| 1 | **Phase B — production-packaging (B6)** | [`plans/phase-b/README.md`](./plans/phase-b/README.md) | **active**; B1..B5 closed; B6-T1 in flight |
+| — | Dashboard redesign (DD-T0..T8) | [`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md) | closed in run-10 |
+| — | Console API integration (CI-T1..T8) | [`plans/console-api-integration.md`](./plans/console-api-integration.md) | closed |
+| — | HA cluster (HA-T1..T5) | [`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md) | closed in run-05 |
+| — | Interop contract (IT-T1..T6) | [`plans/interop-contract.md`](./plans/interop-contract.md) | closed |
+| — | Interop dry-run (DR-T1..T7) | [`plans/interop-dry-run.md`](./plans/interop-dry-run.md) | closed in run-08 |
+| — | Post-run-08 (AF-T1, HP-T1, TLS-T1) | [`plans/post-run-08.md`](./plans/post-run-08.md) | closed |
 | — | Benchmark mode (B-T1..B-T6) | [`plans/benchmark-mode.md`](./plans/benchmark-mode.md) | folded into Phase B as B5-T2 |
 | — | Security toggles (P1..P8) + post-k6 (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | closed |
 | — | Enterprise dashboard (D-M1..D-M6) | [`plans/archive/dashboard-enterprise/`](./plans/archive/dashboard-enterprise/) | closed — superseded by DD-T0..T8 |

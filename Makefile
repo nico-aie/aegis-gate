@@ -110,6 +110,15 @@ smoke: ## curl the data plane + admin health (assumes `make run` is up)
 	@printf "Admin  %-32s " "$(SMOKE_ADMIN)/healthz/ready"
 	@curl -s  -o /dev/null -w "%{http_code}\n" $(SMOKE_ADMIN)/healthz/ready || echo "DOWN"
 
+openapi-test: ## OpenAPI shape contract test (assumes `make run` is up)
+	@AEGIS_ADMIN=$(SMOKE_ADMIN) bash tests/api/openapi-shape.sh
+
+openapi-lint: ## Lint docs/control-plane/api.openapi.yaml via redocly
+	@npx --yes -p '@redocly/cli@latest' redocly lint docs/control-plane/api.openapi.yaml
+
+protocols-test: ## Multi-protocol smoke — h1/h2/h3/WS/gRPC (assumes `make run` is up)
+	@bash tests/protocols/run-all.sh
+
 ##@ Cleanup
 
 clean: ## cargo clean (does NOT delete dev certs)

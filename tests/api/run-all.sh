@@ -37,4 +37,7 @@ echo
 echo "==> tests/api/cold-tier.sh"
 "$HERE/cold-tier.sh"
 echo
+echo "==> tests/api/openapi-shape.sh"
+"$HERE/openapi-shape.sh"
+echo
 echo "all admin-API smoke tests passed"

@@ -102,6 +102,13 @@ pub struct WafConfig {
     /// can't resize once built.
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    /// CI-T8 — MaxMind GeoIP databases. When set, the
+    /// `aegis-security/geoip` reader loads them at boot and the
+    /// AttacksHandler enriches `/api/attacks/top` rows with
+    /// country + ASN. Both fields are optional (set only the DB
+    /// you have); both unset = no enrichment.
+    #[serde(default)]
+    pub geoip: GeoIpConfig,
     /// External interop surface. Always-on by default — exposes
     /// `/__waf_control/*` (capability discovery, runtime-state
     /// reset, mode toggle, cache flush), the always-on `X-WAF-*`
@@ -159,6 +166,20 @@ pub struct NodeConfig {
     /// audit log entries, lease holder strings.
     #[serde(default)]
     pub id: Option<String>,
+}
+
+/// MaxMind GeoIP databases (CI-T8). Path-only — the actual
+/// readers live in `aegis-security` behind the `geoip` feature.
+/// Both fields optional — set only the DB you have; both unset
+/// is the same as omitting the `geoip:` block entirely.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct GeoIpConfig {
+    /// Path to a MaxMind `GeoLite2-Country.mmdb` (or compatible).
+    #[serde(default)]
+    pub country_db: Option<PathBuf>,
+    /// Path to a MaxMind `GeoLite2-ASN.mmdb` (or compatible).
+    #[serde(default)]
+    pub asn_db: Option<PathBuf>,
 }
 
 /// In-process runtime sizing — Layer-1 of the three-layer scaling

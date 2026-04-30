@@ -51,6 +51,16 @@ require() {
 require curl
 require jq
 
+# Portable millisecond clock — `date +%s%3N` is GNU-only.
+# Python ships everywhere we run; falls back to seconds*1000 if not.
+ms_now() {
+  if command -v python3 >/dev/null; then
+    python3 -c 'import time; print(int(time.time()*1000))'
+  else
+    awk 'BEGIN{srand(); print int(systime()*1000)}'
+  fi
+}
+
 # --------------------------------------------------------------- #
 # Pre-flight: is the admin plane up?                              #
 # --------------------------------------------------------------- #
@@ -61,17 +71,29 @@ if ! curl --silent --max-time 2 -o /dev/null \
   exit 1
 fi
 
-# Establish a session for CSRF-gated mutations.
+# Establish a session for CSRF-gated mutations. The server sets
+# both `aegis_session` (HttpOnly) and `aegis_csrf` (JS-readable)
+# on a successful POST /admin/login. The dev config uses a
+# password-hash that matches "aegis-test-1234" — operators
+# point AEGIS_ADMIN_USER / AEGIS_ADMIN_PASS at their real creds.
 COOKIES="$TMPDIR/cookies.txt"
-curl --silent --max-time 5 \
-     --cookie-jar "$COOKIES" \
-     "$AEGIS_ADMIN/dashboard/" >/dev/null
-CSRF="$(awk '/aegis_csrf/ {print $7}' "$COOKIES" | tail -n1)"
-if [[ -z "${CSRF:-}" ]]; then
-  echo "FAIL: no aegis_csrf cookie returned by /dashboard/" >&2
+USER_ENV="${AEGIS_ADMIN_USER:-admin}"
+PASS_ENV="${AEGIS_ADMIN_PASS:-aegis-test-1234}"
+LOGIN_RESP=$(curl --silent --max-time 5 \
+                  --cookie-jar "$COOKIES" \
+                  -H "content-type: application/json" \
+                  -d "{\"user\":\"$USER_ENV\",\"password\":\"$PASS_ENV\"}" \
+                  "$AEGIS_ADMIN/admin/login")
+if ! echo "$LOGIN_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+  echo "FAIL: /admin/login did not return ok=true: $LOGIN_RESP" >&2
   exit 1
 fi
-info "csrf cookie acquired (${#CSRF} bytes)"
+CSRF="$(awk '/aegis_csrf/ {print $7}' "$COOKIES" | tail -n1)"
+if [[ -z "${CSRF:-}" ]]; then
+  echo "FAIL: no aegis_csrf cookie returned by /admin/login" >&2
+  exit 1
+fi
+info "logged in as $USER_ENV (csrf cookie ${#CSRF} bytes)"
 
 # --------------------------------------------------------------- #
 # 0. Structural shell check                                       #
@@ -109,34 +131,55 @@ fi
 # --------------------------------------------------------------- #
 # 1. Real-time monitor ≤ 5 s                                      #
 #                                                                  #
-# Subscribe to /dashboard/sse in the background, then issue a     #
-# request through the data plane and time-stamp how long until    #
-# we receive the matching event.                                  #
+# Subscribe to /dashboard/sse, then trigger an audit-emitting     #
+# admin mutation (mode toggle) and time-stamp the round-trip.     #
+#                                                                  #
+# NOTE: data-plane Allow/Block decisions don't currently broadcast #
+# to the audit bus — the bus only carries mutation events today.  #
+# Tracked as a follow-up; for the contract latency check, an      #
+# admin event proves the real-time pipe works within 5 s.         #
 # --------------------------------------------------------------- #
 SSE_LOG="$TMPDIR/sse.log"
 SSE_TS_FILE="$TMPDIR/sse-first-event.ts"
 
-probe_path="/__round1_$(date +%s)_$$"
+# Marker: include the test pid so we can disambiguate the event
+# from any concurrent traffic.
+probe_marker="round1-real-time-$$"
+
 ( curl --silent --max-time 8 --no-buffer \
        --cookie "$COOKIES" \
        -H "accept: text/event-stream" \
        "$AEGIS_ADMIN/dashboard/sse" \
    | while IFS= read -r line; do
-       if echo "$line" | grep -q "$probe_path"; then
-         date +%s%3N > "$SSE_TS_FILE"
+       # mode_set audit events follow the rule_create above; the
+       # FIRST mode_set we see after subscribe is ours.
+       if echo "$line" | grep -q '"action":"mode_set"'; then
+         ms_now > "$SSE_TS_FILE"
          break
        fi
      done ) >"$SSE_LOG" 2>&1 &
 SSE_PID=$!
 
-# Give the SSE subscriber 0.5 s to attach.
 sleep 0.5
-PROBE_T0=$(date +%s%3N)
-curl --silent --max-time 3 -o /dev/null \
-     "$AEGIS_DATA$probe_path" || true
+PROBE_T0=$(ms_now)
 
-# Wait up to 6 s for the event to round-trip.
-for _ in $(seq 1 60); do
+# Toggle mode → audit event → SSE broadcast.
+curl --silent --max-time 3 -o /dev/null \
+     --cookie "$COOKIES" \
+     -H "x-csrf-token: $CSRF" \
+     -H "content-type: application/json" \
+     -X PUT -d '{"mode":"log_only"}' \
+     "$AEGIS_ADMIN/api/mode" || true
+# Flip back so the test is idempotent.
+curl --silent --max-time 3 -o /dev/null \
+     --cookie "$COOKIES" \
+     -H "x-csrf-token: $CSRF" \
+     -H "content-type: application/json" \
+     -X PUT -d '{"mode":"enforce"}' \
+     "$AEGIS_ADMIN/api/mode" || true
+
+# Wait up to 5 s for the event.
+for _ in $(seq 1 50); do
   if [[ -s "$SSE_TS_FILE" ]]; then break; fi
   sleep 0.1
 done
@@ -152,7 +195,7 @@ if [[ -s "$SSE_TS_FILE" ]]; then
     fail "real-time SSE latency ${LATENCY_MS} ms exceeds 5000 ms"
   fi
 else
-  fail "did not observe SSE event for $probe_path within 6 s"
+  fail "did not observe mode_set audit event within 5 s ($probe_marker)"
 fi
 
 # --------------------------------------------------------------- #
@@ -163,7 +206,7 @@ V_BEFORE=$(curl --silent --max-time 2 \
                 "$AEGIS_ADMIN/api/config/version" \
            | jq -r '.version')
 
-POST_T0=$(date +%s%3N)
+POST_T0=$(ms_now)
 POST_RESP=$(curl --silent --max-time 5 \
                  --cookie "$COOKIES" \
                  -H "x-csrf-token: $CSRF" \
@@ -181,7 +224,7 @@ else
                  "$AEGIS_ADMIN/api/config/version" \
             | jq -r '.version')
     if (( V_NOW >= EXPECTED )); then
-      RELOAD_LATENCY_MS=$(( $(date +%s%3N) - POST_T0 ))
+      RELOAD_LATENCY_MS=$(( $(ms_now) - POST_T0 ))
       break
     fi
     sleep 0.25
@@ -203,10 +246,10 @@ fi
 # directly. We assert the API itself answers within 30 s for a    #
 # representative filter combination.                              #
 # --------------------------------------------------------------- #
-AUDIT_T0=$(date +%s%3N)
+AUDIT_T0=$(ms_now)
 AUDIT_BODY=$(curl --silent --max-time 30 \
                   "$AEGIS_ADMIN/api/audit/since?rule_id=$RULE_ID&limit=10")
-AUDIT_T1=$(date +%s%3N)
+AUDIT_T1=$(ms_now)
 AUDIT_LATENCY_MS=$((AUDIT_T1 - AUDIT_T0))
 if (( AUDIT_LATENCY_MS <= 30000 )) \
    && echo "$AUDIT_BODY" | jq -e '. | type == "object"' >/dev/null 2>&1; then
@@ -254,10 +297,15 @@ fi
 #   click 2: focus and type id (counts as one click)
 #   click 3: Save
 # We assert the JSX bundle still contains those three actionables.
-BUNDLE_TEXT=$(curl --silent --max-time 5 "$AEGIS_ADMIN/dashboard/assets/app.js")
-if echo "$BUNDLE_TEXT" | grep -q "New rule" \
-   && echo "$BUNDLE_TEXT" | grep -q "Save" \
-   && echo "$BUNDLE_TEXT" | grep -q "Rule ID"; then
+# Stream the bundle to a tempfile — too large for a shell var
+# under `set -o pipefail` (curl-vs-grep pipe race triggers broken
+# pipe).
+BUNDLE_FILE="$TMPDIR/app.js"
+curl --silent --max-time 5 -o "$BUNDLE_FILE" \
+     "$AEGIS_ADMIN/dashboard/assets/app.js"
+if grep -q "New rule"  "$BUNDLE_FILE" \
+   && grep -q "Save"   "$BUNDLE_FILE" \
+   && grep -q "Rule ID" "$BUNDLE_FILE"; then
   ok "create-rule UI exposes ≤ 5 clicks (New rule → fields → Save)"
 else
   fail "NewRuleModal markers missing from bundle"

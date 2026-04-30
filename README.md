@@ -210,6 +210,7 @@ cargo clippy --workspace -- -D warnings
 | [`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md) | **SOC team operations runbook** — config → build → deploy → login → test → monitor, plus incident playbooks |
 | [`docs/operator/cli.md`](docs/operator/cli.md) | Authoritative CLI reference |
 | [`docs/operator/usage.md`](docs/operator/usage.md) | Day-1 bring-up + day-2 operations guide |
+| [`docs/control-plane/api.openapi.yaml`](docs/control-plane/api.openapi.yaml) | **OpenAPI 3.0.3 contract** for the admin API — generate clients with `openapi-generator-cli`, render with `swagger-ui` or `redocly preview-docs` |
 | [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) | Aegis WAF Console design spec (layout, pages, API, accessibility, security) |
 | [`docs/operator/benchmark-mode.md`](docs/operator/benchmark-mode.md) | Benchmark mode design (gated, opt-in `X-Aegis-*` diagnostics) |
 | [`deploy/GUIDE.md`](deploy/GUIDE.md) | Deployment guide (dev → staging → production) |

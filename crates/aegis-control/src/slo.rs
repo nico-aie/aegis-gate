@@ -356,16 +356,18 @@ impl SloEngine {
         self.fired_history.lock().unwrap().clone()
     }
 
-    /// Get current budget status for all objectives.
+    /// Get current budget status for all objectives. Includes a
+    /// per-burn-window burn rate so the dashboard can render real
+    /// 1h/6h/3d numbers instead of the placeholder zeros that
+    /// shipped with CI-T4.
     pub fn budget_status(&self) -> Vec<BudgetStatus> {
         let buffers = self.buffers.lock().unwrap();
         self.objectives
             .iter()
             .map(|obj| {
                 let window = Duration::days(obj.window_days as i64);
-                let avg = buffers
-                    .get(&obj.sli)
-                    .and_then(|buf| buf.average_in_window(window));
+                let buf = buffers.get(&obj.sli);
+                let avg = buf.and_then(|b| b.average_in_window(window));
                 let budget = 1.0 - obj.target;
                 let consumed = match avg {
                     Some(v) => {
@@ -378,15 +380,48 @@ impl SloEngine {
                     }
                     None => 0.0,
                 };
+                // Per-window burn rate = (error_rate in window) /
+                // (error budget). Same arithmetic the engine's
+                // `evaluate()` uses for the alert decision; surface
+                // it here so /api/slo can show it without firing
+                // an alert.
+                let burn_rates = obj
+                    .burn_rates
+                    .iter()
+                    .map(|burn| {
+                        let win_dur = Duration::hours(burn.window_hours as i64);
+                        let win_avg = buf.and_then(|b| b.average_in_window(win_dur));
+                        let rate = match win_avg {
+                            Some(v) if budget > 0.0 => (1.0 - v) / budget,
+                            _ => 0.0,
+                        };
+                        BurnRate {
+                            window_hours: burn.window_hours,
+                            rate,
+                        }
+                    })
+                    .collect();
                 BudgetStatus {
                     sli: obj.sli.clone(),
                     target: obj.target,
                     current: avg.unwrap_or(1.0),
                     budget_remaining_pct: (100.0 - consumed).max(0.0),
+                    burn_rates,
                 }
             })
             .collect()
     }
+}
+
+/// One row of [`BudgetStatus::burn_rates`]. `rate` is the ratio
+/// `error_rate / error_budget` measured over `window_hours`. A
+/// value of `1.0` means the SLO is being burned at exactly the
+/// long-run break-even pace; values above the burn-window's
+/// configured `budget_pct` trip the alert.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BurnRate {
+    pub window_hours: u64,
+    pub rate: f64,
 }
 
 /// Budget consumption status for display.
@@ -396,6 +431,11 @@ pub struct BudgetStatus {
     pub target: f64,
     pub current: f64,
     pub budget_remaining_pct: f64,
+    /// Per-burn-window burn rate. One entry per window declared
+    /// on the [`SloObjective`]. Empty when the objective has no
+    /// burn-rate windows configured.
+    #[serde(default)]
+    pub burn_rates: Vec<BurnRate>,
 }
 
 // ---------------------------------------------------------------------------
@@ -743,9 +783,12 @@ mod tests {
             target: 0.999,
             current: 0.998,
             budget_remaining_pct: 50.0,
+            burn_rates: vec![BurnRate { window_hours: 1, rate: 0.4 }],
         };
         let json = serde_json::to_string(&bs).unwrap();
         assert!(json.contains("CertFreshnessDays"));
+        assert!(json.contains("burn_rates"));
+        assert!(json.contains("\"window_hours\":1"));
     }
 
     #[test]

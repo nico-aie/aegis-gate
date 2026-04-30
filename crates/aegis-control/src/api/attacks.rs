@@ -62,6 +62,15 @@ pub struct Attacker {
     pub risk: u32,
     /// RFC 3339 (with `Z`) timestamp of the most recent hit.
     pub last_seen: chrono::DateTime<chrono::Utc>,
+    /// CI-T8 — ISO-3166 alpha-2 country code, populated when a
+    /// GeoIP reader is wired into the handler and the identifier
+    /// parses as a public IP. `None` for fingerprint identifiers
+    /// or when no GeoIP DB is loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// CI-T8 — autonomous-system number from the GeoIP ASN DB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asn: Option<u32>,
 }
 
 /// JSON shape returned by `GET /api/attacks/top`.
@@ -278,6 +287,8 @@ impl AttacksAggregator {
                 categories: a.categories.into_iter().collect(),
                 risk: a.risk,
                 last_seen: a.last_seen,
+                country: None,
+                asn: None,
             })
             .collect();
         // Sort by hits desc, then identifier asc for stable output.
@@ -538,6 +549,10 @@ pub struct AttacksHandler {
     threat_intel_cache: Mutex<Option<(Instant, u32, u32, ThreatIntelResponse)>>,
     bot_mix_cache: Mutex<Option<(Instant, u32, BotMixResponse)>>,
     cache_ttl: Duration,
+    /// CI-T8 — optional GeoIP reader. When set, `render_top()`
+    /// looks up `country` + `asn` for every attacker whose
+    /// identifier parses as a public IP. None = no enrichment.
+    geo: Mutex<Option<Arc<dyn aegis_security::geoip::GeoIpLookup>>>,
 }
 
 impl AttacksHandler {
@@ -554,6 +569,36 @@ impl AttacksHandler {
             threat_intel_cache: Mutex::new(None),
             bot_mix_cache: Mutex::new(None),
             cache_ttl,
+            geo: Mutex::new(None),
+        }
+    }
+
+    /// CI-T8 — wire a GeoIP reader. The proxy calls this at boot
+    /// when `aegis-security/geoip` is on and the operator has
+    /// configured a country / ASN DB.
+    pub fn set_geo_lookup(
+        &self,
+        lookup: Arc<dyn aegis_security::geoip::GeoIpLookup>,
+    ) {
+        *self.geo.lock().expect("attacks geo slot poisoned") = Some(lookup);
+    }
+
+    fn enrich_attackers(&self, attackers: &mut [Attacker]) {
+        let Some(geo) = self
+            .geo
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+        else {
+            return;
+        };
+        for a in attackers.iter_mut() {
+            // Identifiers that aren't public IPs (e.g. `fp:<ja4>`)
+            // get parse() == Err and skip the lookup.
+            if let Ok(ip) = a.identifier.parse::<std::net::IpAddr>() {
+                a.country = geo.country(ip);
+                a.asn = geo.asn(ip);
+            }
         }
     }
 
@@ -604,7 +649,8 @@ impl AttacksHandler {
             }
         }
 
-        let response = self.agg.top(window_seconds, limit);
+        let mut response = self.agg.top(window_seconds, limit);
+        self.enrich_attackers(&mut response.attackers);
         let body = serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
         let mut cache = self.top_cache.lock().expect("attacks cache poisoned");
         *cache = Some((now, window_seconds, limit, response));

@@ -569,6 +569,7 @@ Witness export shape: [`docs/observability/audit-witness.md`](../observability/a
 | If you need | Read |
 |---|---|
 | Full YAML config reference | [`config/README.md`](../../config/README.md) |
+| **Admin API contract (OpenAPI 3.0.3)** | [`docs/control-plane/api.openapi.yaml`](../control-plane/api.openapi.yaml) — feed to `swagger-ui` or `openapi-generator-cli` for typed clients |
 | Rule DSL grammar + examples | [`docs/security/rule-engine.md`](../security/rule-engine.md) |
 | Detector-by-detector spec | [`docs/security/detectors/`](../security/detectors/) |
 | Compliance profiles (FIPS / PCI / SOC2 / GDPR / HIPAA) | [`docs/operations/compliance.md`](../operations/compliance.md) |
