@@ -16,11 +16,15 @@ hand. For deeper specs, each section links to its canonical doc.
 
 | Need | Command / file |
 |---|---|
+| **Fresh-clone setup** | `make setup` (generates dev cert + release build) |
+| **Boot the WAF** | `make run` (uses `config/prod.yaml`) |
+| **Smoke test** | `make smoke` (curls data + admin endpoints) |
+| **All make targets** | `make help` |
 | Config file | `config/prod.yaml` (production), `config/dev.yaml` (dev) |
-| Validate config without booting | `waf validate --config config/prod.yaml` |
-| Build release binary | `cargo build -p aegis-bin --release --features redis` |
-| Run gateway | `target/release/waf run --config config/prod.yaml` |
-| Dashboard URL | `http://<admin-host>:9443/dashboard/` |
+| Validate config without booting | `make validate` (or `waf validate --config <file>`) |
+| Build release binary | `make build` (or `cargo build -p aegis-bin --release --features "$FEATURES"`) |
+| Run gateway | `make run` (or `target/release/waf run --config config/prod.yaml`) |
+| Dashboard URL | `https://<admin-host>:9443/dashboard/` |
 | Default dev login | user `admin` / pass `aegis-test-1234` (DEV ONLY) |
 | Health probe | `curl http://<admin>:9443/healthz/ready` |
 | Metrics endpoint | `curl http://<admin>:9443/metrics` |

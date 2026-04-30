@@ -35,21 +35,27 @@ clean (modulo two pre-existing rust 1.94 lints in untouched files).
 ## Quick Start
 
 ```sh
-# 1. Build (release, with cluster support)
-cargo build -p aegis-bin --release --features redis
+# 1. One-shot setup — generates self-signed dev cert + release build
+make setup
 
-# 2. (Optional) Start dev infra — etcd, Prometheus, Jaeger, Redis, httpbin
-docker compose -f deploy/docker-compose.dev.yml up -d
+# 2. Boot the WAF
+make run                    # uses config/prod.yaml by default
 
-# 3. Validate, then run
-./target/release/waf validate --config config/prod.yaml
-./target/release/waf run      --config config/prod.yaml
+# 3. Smoke test (in another terminal)
+make smoke
 ```
 
-That's the full first-light path. Full step-by-step + tuning + admin
-auth: [`QUICKSTART.md`](QUICKSTART.md). Production deployment:
-[`deploy/GUIDE.md`](deploy/GUIDE.md). YAML reference:
-[`config/README.md`](config/README.md).
+Run `make help` to see every target. Common overrides:
+
+```sh
+CONFIG=config/dev.yaml make run                          # boot dev config
+FEATURES="redis alerts geoip taxii http3" make build     # custom feature set
+make test                                                # cargo test --workspace
+```
+
+Full step-by-step + tuning + admin auth: [`QUICKSTART.md`](QUICKSTART.md).
+Production deployment: [`deploy/GUIDE.md`](deploy/GUIDE.md).
+YAML reference: [`config/README.md`](config/README.md).
 
 ### Three-layer scaling
 
