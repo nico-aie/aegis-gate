@@ -593,6 +593,13 @@ pub struct ConnectionPoolConfig {
     /// `max_idle_per_host`. Defaults to true.
     #[serde(default = "default_keep_alive")]
     pub keep_alive: bool,
+    /// HP-T1 — when `true`, requests are forwarded over
+    /// rustls + HTTP/1.1 (`https://<addr>`) using the host's
+    /// webpki root certificates. Default `false` (plain HTTP).
+    /// The TLS session pool is shared by every member of a
+    /// pool that has the same connection signature.
+    #[serde(default)]
+    pub tls: bool,
 }
 
 impl Default for ConnectionPoolConfig {
@@ -601,6 +608,7 @@ impl Default for ConnectionPoolConfig {
             max_idle_per_host: default_pool_max_idle_per_host(),
             idle_timeout: default_pool_idle_timeout(),
             keep_alive: default_keep_alive(),
+            tls: false,
         }
     }
 }

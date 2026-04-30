@@ -136,6 +136,14 @@ fn load_certified_key(
 
 /// Build a `rustls::ServerConfig` using the `DynamicResolver`.
 pub fn build_server_config(resolver: Arc<DynamicResolver>) -> rustls::ServerConfig {
+    // rustls 0.23 requires explicit CryptoProvider install when
+    // multiple cipher backends are visible (post HP-T1, both
+    // ring and aws-lc-rs reach this crate). Idempotent.
+    static PROVIDER_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    PROVIDER_INIT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+
     let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(resolver);

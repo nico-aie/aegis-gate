@@ -47,6 +47,16 @@ pub fn build_hardened_server_config(
     resolver: Arc<DynamicResolver>,
     min_version: Option<&str>,
 ) -> Result<rustls::ServerConfig, rustls::Error> {
+    // rustls 0.23 requires an explicit CryptoProvider when more
+    // than one cipher backend feature is reachable in the
+    // dependency graph (HP-T1 added hyper-rustls which enables
+    // ring alongside aws-lc-rs). Install the ring provider once
+    // per process; idempotent across crates.
+    static PROVIDER_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    PROVIDER_INIT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+
     let versions = protocol_versions_for(min_version);
     let mut config = rustls::ServerConfig::builder_with_protocol_versions(versions)
         .with_no_client_auth()

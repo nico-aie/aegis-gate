@@ -79,6 +79,43 @@ impl CacheState {
     }
 }
 
+/// Tag attached to a data-plane response so the post-processing
+/// stamper knows the *real* contract action and rule attribution
+/// instead of inferring from HTTP status. AF-T1: a `challenge`
+/// body and a rate-limit response both use status 429 — they
+/// cannot be told apart from status alone, so the data-plane
+/// handler emits a `DecisionTag` alongside the response.
+///
+/// `rule_id` is what populates `X-WAF-Rule-Id` and the audit
+/// log's `rule_id` field. `None` means "no specific rule
+/// applies" — stamper defaults to the literal `none`.
+#[derive(Clone, Debug)]
+pub struct DecisionTag {
+    pub action: Action,
+    pub rule_id: Option<String>,
+}
+
+impl DecisionTag {
+    pub fn allow() -> Self {
+        Self { action: Action::Allow, rule_id: None }
+    }
+    pub fn block(rule_id: impl Into<String>) -> Self {
+        Self { action: Action::Block, rule_id: Some(rule_id.into()) }
+    }
+    pub fn rate_limit(rule_id: impl Into<String>) -> Self {
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()) }
+    }
+    pub fn challenge(rule_id: impl Into<String>) -> Self {
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()) }
+    }
+    pub fn timeout(rule_id: impl Into<String>) -> Self {
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()) }
+    }
+    pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()) }
+    }
+}
+
 /// All six required headers, packaged for stamping onto any
 /// response builder.
 #[derive(Clone, Debug)]
@@ -220,6 +257,34 @@ mod tests {
         let mut h = HeaderMap::new();
         Decision::allow("rid".into(), 0, Mode::Enforce).stamp(&mut h);
         assert_eq!(h.get(RISK_SCORE).unwrap(), "0");
+    }
+
+    // DecisionTag (AF-T1) — exists so the data-plane handler
+    // can communicate the real action separately from HTTP status.
+    #[test]
+    fn decision_tag_constructors_set_action() {
+        assert_eq!(DecisionTag::allow().action, Action::Allow);
+        assert_eq!(DecisionTag::block("r").action, Action::Block);
+        assert_eq!(DecisionTag::rate_limit("r").action, Action::RateLimit);
+        assert_eq!(DecisionTag::challenge("r").action, Action::Challenge);
+        assert_eq!(DecisionTag::timeout("r").action, Action::Timeout);
+        assert_eq!(
+            DecisionTag::circuit_breaker("r").action,
+            Action::CircuitBreaker,
+        );
+    }
+
+    #[test]
+    fn decision_tag_allow_has_no_rule_id() {
+        // Allow paths set X-WAF-Rule-Id: none — the constructor
+        // mirrors that.
+        assert!(DecisionTag::allow().rule_id.is_none());
+    }
+
+    #[test]
+    fn decision_tag_block_records_rule_id() {
+        let t = DecisionTag::block("rule-sqli-001");
+        assert_eq!(t.rule_id.as_deref(), Some("rule-sqli-001"));
     }
 
     #[test]

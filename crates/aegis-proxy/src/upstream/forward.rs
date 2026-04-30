@@ -38,6 +38,7 @@ use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response};
+use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 
@@ -196,7 +197,12 @@ pub fn replay_response_status_and_headers<B>(
 /// signature, not the member address, so two pools that point at
 /// the same backend with the same tuning share the connection
 /// cache.
-type PooledClient = Client<HttpConnector, Full<Bytes>>;
+/// HP-T1: the connector is `HttpsConnector<HttpConnector>` for
+/// every pool. The connector inspects the URL scheme and only
+/// performs a TLS handshake on `https://`; `http://` URLs use
+/// the inner plain TCP path. One `Client` shape covers both
+/// modes without a duplicated cache.
+type PooledClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 /// Build a pooled HTTP/1.1 client honouring `cfg`.
 ///
@@ -206,8 +212,37 @@ type PooledClient = Client<HttpConnector, Full<Bytes>>;
 /// `Connection: close` header so the upstream sees the intent;
 /// the actual reuse decision lives in the pool ceiling.
 fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
-    let mut connector = HttpConnector::new();
-    connector.set_nodelay(true);
+    // rustls 0.23 requires an explicit CryptoProvider when more
+    // than one cipher backend feature is reachable. Install
+    // the ring provider once per process; subsequent calls
+    // succeed silently. Idempotent.
+    static PROVIDER_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    PROVIDER_INIT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+
+    let mut http = HttpConnector::new();
+    http.set_nodelay(true);
+    // Allow plain `http://` URLs through the underlying connector
+    // — without this, hyper-rustls would refuse them and force
+    // every member to be `https://`.
+    http.enforce_http(false);
+
+    // Enable both HTTP/1.1 and HTTP/2 ALPN. The connector
+    // negotiates which one the upstream actually speaks; gRPC
+    // rides on HTTP/2 so this is the same path that lets us
+    // forward gRPC upstreams. WebSocket upgrade is separate
+    // (the data-plane handler doesn't currently forward
+    // upgrade frames — strips them as hop-by-hop). HTTP/3
+    // upstream lives behind the inbound `http3` Cargo feature
+    // and isn't in this pool yet.
+    let connector = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_webpki_roots()
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(http);
+
     let effective_pool_size = if cfg.keep_alive {
         cfg.max_idle_per_host
     } else {
@@ -230,6 +265,7 @@ struct PoolKey {
     max_idle_per_host: usize,
     idle_timeout_ms: u64,
     keep_alive: bool,
+    tls: bool,
 }
 
 impl From<&ConnectionPoolConfig> for PoolKey {
@@ -238,6 +274,7 @@ impl From<&ConnectionPoolConfig> for PoolKey {
             max_idle_per_host: c.max_idle_per_host,
             idle_timeout_ms: c.idle_timeout.as_millis().min(u64::MAX as u128) as u64,
             keep_alive: c.keep_alive,
+            tls: c.tls,
         }
     }
 }
@@ -255,12 +292,12 @@ fn client_cache() -> &'static RwLock<HashMap<PoolKey, Arc<PooledClient>>> {
 fn pooled_client(cfg: &ConnectionPoolConfig) -> Arc<PooledClient> {
     let key = PoolKey::from(cfg);
     {
-        let r = client_cache().read().expect("client cache poisoned");
+        let r = client_cache().read().unwrap_or_else(|p| p.into_inner());
         if let Some(c) = r.get(&key) {
             return c.clone();
         }
     }
-    let mut w = client_cache().write().expect("client cache poisoned");
+    let mut w = client_cache().write().unwrap_or_else(|p| p.into_inner());
     w.entry(key)
         .or_insert_with(|| Arc::new(build_client(cfg)))
         .clone()
@@ -271,7 +308,7 @@ fn pooled_client(cfg: &ConnectionPoolConfig) -> Arc<PooledClient> {
 /// code never calls this; the cache is intentionally process-wide.
 #[doc(hidden)]
 pub fn _reset_client_cache() {
-    let mut w = client_cache().write().expect("client cache poisoned");
+    let mut w = client_cache().write().unwrap_or_else(|p| p.into_inner());
     w.clear();
 }
 
@@ -311,7 +348,8 @@ pub async fn forward(
         );
     }
 
-    let target_uri: Uri = format!("http://{}{}", member.addr, pq)
+    let scheme = if cfg.tls { "https" } else { "http" };
+    let target_uri: Uri = format!("{scheme}://{}{}", member.addr, pq)
         .parse()
         .map_err(|e: http::uri::InvalidUri| {
             ForwardError::BadRequest(e.to_string())
@@ -661,6 +699,7 @@ mod tests {
             max_idle_per_host: 32,
             idle_timeout: Duration::from_secs(30),
             keep_alive: true,
+            tls: false,
         };
 
         for _ in 0..5 {
@@ -686,6 +725,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tls_flag_makes_distinct_pool_keys() {
+        // HP-T1: two configs differing only on `tls` MUST hash
+        // to distinct keys so an HTTP pool and an HTTPS pool
+        // never share the same cached `Client`.
+        let http = ConnectionPoolConfig {
+            max_idle_per_host: 32,
+            idle_timeout: Duration::from_secs(30),
+            keep_alive: true,
+            tls: false,
+        };
+        let https = ConnectionPoolConfig { tls: true, ..http.clone() };
+        assert_ne!(super::PoolKey::from(&http), super::PoolKey::from(&https));
+    }
+
     #[tokio::test]
     async fn keep_alive_disabled_opens_a_connection_per_request() {
         super::_reset_client_cache();
@@ -695,6 +749,7 @@ mod tests {
             max_idle_per_host: 32,
             idle_timeout: Duration::from_secs(30),
             keep_alive: false, // request-side `Connection: close`
+            tls: false,
         };
 
         for _ in 0..3 {

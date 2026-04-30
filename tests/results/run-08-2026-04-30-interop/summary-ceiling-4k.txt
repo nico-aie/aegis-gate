@@ -1,0 +1,6 @@
+interop   | workers  | RPS          | p50       | p95       | allow_success
+----------+----------+--------------+-----------+-----------+--------------
+==> interop=true workers=auto
+true      | auto     | 3996.368372  | 447.41µs | 729.29µs | 100.00%
+==> interop=false workers=auto
+false     | auto     | 3995.984067  | 409.7µs  | 700.87µs | 100.00%

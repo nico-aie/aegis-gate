@@ -1,0 +1,18 @@
+interop   | workers  | RPS          | p50       | p95       | allow_success
+----------+----------+--------------+-----------+-----------+--------------
+==> interop=true workers=2
+true      | 2        | 999.864447   | 740.91µs | 1.08ms    | 100.00%
+==> interop=true workers=4
+true      | 4        | 999.960759   | 612.66µs | 883.09µs | 100.00%
+==> interop=true workers=12
+true      | 12       | 999.98276    | 769.89µs | 1.1ms     | 100.00%
+==> interop=true workers=auto
+true      | auto     | 999.429539   | 613.91µs | 958.64µs | 100.00%
+==> interop=false workers=2
+false     | 2        | 338.600076   | 645.58µs | 1.2ms     | 100.00%
+==> interop=false workers=4
+false     | 4        | 999.69979    | 755.79µs | 1.41ms    | 100.00%
+==> interop=false workers=12
+false     | 12       | 999.984265   | 664.58µs | 1.13ms    | 100.00%
+==> interop=false workers=auto
+false     | auto     | 339.008357   | 593.16µs | 1.04ms    | 100.00%

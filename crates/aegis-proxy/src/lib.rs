@@ -2192,14 +2192,22 @@ fn build_interop_runtime(
     }))
 }
 
-/// HK-T2 + HK-T1 — stamp `X-WAF-*` headers + write minimal-
-/// schema audit on every data-plane response.
+/// AF-T1 — stamp `X-WAF-*` headers + write the minimal-schema
+/// audit line on every data-plane response.
 ///
-/// Maps the existing response status to a contract decision
-/// class. When the interop surface is off (`interop = None`)
-/// the response is returned unchanged.
+/// Reads the contract action from the [`DecisionTag`] the
+/// data-plane handler attached, NOT from the HTTP status. This
+/// matters for `challenge` responses (status 429, body carries
+/// "challenge", contract action MUST be `challenge` not
+/// `rate_limit`) and for upstream failure modes that map onto
+/// `circuit_breaker` / `timeout` rather than the generic
+/// `block` an HTTP 502 would suggest.
+///
+/// When the interop surface is off (`interop = None`) the
+/// response is returned unchanged.
 fn stamp_interop_response(
     mut resp: Response<Full<Bytes>>,
+    decision_tag: aegis_control::interop::headers::DecisionTag,
     interop: Option<&Arc<aegis_control::interop::InteropRuntime>>,
     peer: std::net::SocketAddr,
     method: &hyper::Method,
@@ -2207,29 +2215,10 @@ fn stamp_interop_response(
     risk_score: u32,
 ) -> Response<Full<Bytes>> {
     use aegis_control::interop::audit::MinimalAuditEntry;
-    use aegis_control::interop::headers::{Action, CacheState, Decision};
+    use aegis_control::interop::headers::{CacheState, Decision};
 
     let Some(rt) = interop else {
         return resp;
-    };
-
-    // Map HTTP status → contract action. Status 200..399 = allow
-    // (the upstream replied OK or near-OK); other codes map onto
-    // the WAF's denial classes.
-    let status = resp.status().as_u16();
-    let action = match status {
-        200..=399 => Action::Allow,
-        429 => {
-            // Could be challenge or rate_limit; we set both for the
-            // same status code. Default to rate_limit; the body
-            // contains "challenge" in the challenge case but we
-            // don't peek the body here. Bonus headers from the
-            // emitter would clarify; the contract accepts either.
-            Action::RateLimit
-        }
-        503 => Action::CircuitBreaker,
-        504 => Action::Timeout,
-        _ => Action::Block,
     };
 
     // Generate a request id. UUID v4 isn't on our crate list yet,
@@ -2258,8 +2247,8 @@ fn stamp_interop_response(
     let decision = Decision {
         request_id: request_id.clone(),
         risk_score,
-        action,
-        rule_id: None,
+        action: decision_tag.action,
+        rule_id: decision_tag.rule_id.clone(),
         cache: CacheState::Bypass,
         mode,
     };
@@ -2272,10 +2261,10 @@ fn stamp_interop_response(
             ip: peer.ip().to_string(),
             method: method.as_str().to_string(),
             path: path.to_string(),
-            action: action.as_str().to_string(),
+            action: decision_tag.action.as_str().to_string(),
             risk_score,
             mode: mode.as_str().to_string(),
-            rule_id: None,
+            rule_id: decision_tag.rule_id,
         };
         if let Err(e) = sink.append(&entry) {
             tracing::warn!(error = %e, "interop audit write failed");
@@ -2335,7 +2324,7 @@ async fn accept_loop(
                 async move {
                     let method = req.method().clone();
                     let path = req.uri().path().to_string();
-                    let resp = handle_data_request(
+                    let (resp, decision) = handle_data_request(
                         req,
                         peer,
                         &detectors,
@@ -2350,6 +2339,7 @@ async fn accept_loop(
                     ).await;
                     let resp = stamp_interop_response(
                         resp,
+                        decision,
                         interop.as_ref(),
                         peer,
                         &method,
@@ -2410,7 +2400,11 @@ async fn handle_data_request(
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
-) -> Response<Full<Bytes>> {
+) -> (
+    Response<Full<Bytes>>,
+    aegis_control::interop::headers::DecisionTag,
+) {
+    use aegis_control::interop::headers::DecisionTag;
     use aegis_control::metrics::request_duration::stage as stages;
     // RAII guard records the total duration on every exit
     // (early-return on rate-limit, strike-block, detector block,
@@ -2468,7 +2462,7 @@ async fn handle_data_request(
     // any detectors. Saves CPU under DDoS from known-bad sources.
     let peer_ip = peer.ip();
     if risk.is_strike_blocked(peer_ip) {
-        return blocked_response(
+        let resp = blocked_response(
             peer,
             "blocked by repeat-offender strikes",
             None,
@@ -2477,6 +2471,7 @@ async fn handle_data_request(
             req.method(),
             bus,
         );
+        return (resp, DecisionTag::block("risk-strikes"));
     }
 
     // F-T2 — per-IP volumetric guard. Fires before the
@@ -2536,7 +2531,7 @@ async fn handle_data_request(
             };
             bus.emit(ev);
         }
-        return Response::builder()
+        let resp = Response::builder()
             .status(429)
             .header("content-type", "application/json")
             .header("retry-after", rate_decision.retry_after_seconds.to_string())
@@ -2550,6 +2545,7 @@ async fn handle_data_request(
                 .to_string(),
             )))
             .unwrap();
+        return (resp, DecisionTag::rate_limit("ip-rate-limit"));
     }
 
     // Run security detectors filtered by the effective mask for
@@ -2614,7 +2610,12 @@ async fn handle_data_request(
             bus.emit(ev);
         }
 
-        return Response::builder()
+        let detector_rule = if tags.is_empty() {
+            "detectors".to_string()
+        } else {
+            format!("detector:{}", tags.join(","))
+        };
+        let resp = Response::builder()
             .status(403)
             .header("content-type", "application/json")
             .body(Full::new(Bytes::from(
@@ -2626,6 +2627,7 @@ async fn handle_data_request(
                 .to_string(),
             )))
             .unwrap();
+        return (resp, DecisionTag::block(detector_rule));
     }
 
     // Clean request — let the trust-recovery clock claw back any
@@ -2636,35 +2638,46 @@ async fn handle_data_request(
     // configured `RiskThresholds`.
     risk.record_clean(peer_ip);
     match risk.level(peer_ip) {
-        aegis_security::risk::RiskLevel::Block => blocked_response(
-            peer,
-            "blocked by risk score",
-            None,
-            risk.snapshot(peer_ip).map(|s| s.score),
-            req.uri(),
-            req.method(),
-            bus,
-        ),
-        aegis_security::risk::RiskLevel::Challenge => Response::builder()
-            .status(429)
-            .header("content-type", "application/json")
-            .header("retry-after", "5")
-            .body(Full::new(Bytes::from(
-                serde_json::json!({
-                    "error": "challenge_required",
-                    "reason": "risk score over challenge threshold",
-                })
-                .to_string(),
-            )))
-            .unwrap(),
+        aegis_security::risk::RiskLevel::Block => {
+            let resp = blocked_response(
+                peer,
+                "blocked by risk score",
+                None,
+                risk.snapshot(peer_ip).map(|s| s.score),
+                req.uri(),
+                req.method(),
+                bus,
+            );
+            (resp, DecisionTag::block("risk-score"))
+        }
+        aegis_security::risk::RiskLevel::Challenge => {
+            // AF-T1: contract-level distinction. Even though
+            // the HTTP status (429) and Retry-After header are
+            // shaped like rate-limit, the body carries
+            // "challenge" and the contract action MUST be
+            // `challenge` so the OC's challenge-solver path
+            // engages.
+            let resp = Response::builder()
+                .status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "5")
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "challenge": true,
+                        "reason": "risk score over challenge threshold",
+                        "challenge_type": "proof_of_work",
+                    })
+                    .to_string(),
+                )))
+                .unwrap();
+            (resp, DecisionTag::challenge("risk-challenge"))
+        }
         aegis_security::risk::RiskLevel::Allow => {
-            // Carry-over A (post-2026-04-29 perf re-run) — fixed.
             // Forward the request to a real upstream member via
-            // the same `crate::upstream::forward` path
-            // `crate::proxy::handle_request` uses. Falls back to
-            // a 502 on connect / handshake / send failure so
-            // the live data plane never silently swallows a
-            // broken upstream.
+            // `crate::upstream::forward`. The forwarder maps
+            // its outcome onto a status code; we infer the
+            // contract action from that (allow on 2xx/3xx,
+            // block / circuit_breaker / timeout otherwise).
             forward_allow_to_upstream(req, upstream_ctx).await
         }
     }
@@ -2678,7 +2691,11 @@ async fn handle_data_request(
 async fn forward_allow_to_upstream(
     req: hyper::Request<hyper::body::Incoming>,
     ctx: &Arc<crate::proxy::ProxyContext>,
-) -> Response<Full<Bytes>> {
+) -> (
+    Response<Full<Bytes>>,
+    aegis_control::interop::headers::DecisionTag,
+) {
+    use aegis_control::interop::headers::DecisionTag;
     use http_body_util::BodyExt;
     use std::sync::atomic::Ordering;
 
@@ -2694,29 +2711,32 @@ async fn forward_allow_to_upstream(
     let route_ctx = match ctx.route_table.resolve(&host, &path, &method) {
         Some(r) => r,
         None => {
-            return Response::builder()
+            let resp = Response::builder()
                 .status(hyper::StatusCode::NOT_FOUND)
                 .body(Full::new(Bytes::from("no matching route\n")))
                 .unwrap();
+            return (resp, DecisionTag::block("no-route"));
         }
     };
 
     if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
         if !cb.allow_request() {
-            return Response::builder()
+            let resp = Response::builder()
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                 .body(Full::new(Bytes::from("circuit open\n")))
                 .unwrap();
+            return (resp, DecisionTag::circuit_breaker("circuit-open"));
         }
     }
 
     let pool = match ctx.pools.get(&route_ctx.upstream) {
         Some(p) => p,
         None => {
-            return Response::builder()
+            let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
                 .body(Full::new(Bytes::from("unknown upstream\n")))
                 .unwrap();
+            return (resp, DecisionTag::block("unknown-upstream"));
         }
     };
 
@@ -2726,10 +2746,11 @@ async fn forward_allow_to_upstream(
             if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
                 cb.record_failure();
             }
-            return Response::builder()
+            let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
                 .body(Full::new(Bytes::from("no healthy upstream\n")))
                 .unwrap();
+            return (resp, DecisionTag::circuit_breaker("no-healthy-upstream"));
         }
     };
 
@@ -2738,10 +2759,11 @@ async fn forward_allow_to_upstream(
         Ok(c) => c.to_bytes(),
         Err(e) => {
             tracing::warn!(error = %e, "failed to collect client body");
-            return Response::builder()
+            let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_REQUEST)
                 .body(Full::new(Bytes::from("body read error\n")))
                 .unwrap();
+            return (resp, DecisionTag::block("body-read-error"));
         }
     };
 
@@ -2766,17 +2788,37 @@ async fn forward_allow_to_upstream(
                     cb.record_success();
                 }
             }
-            resp
+            // 5xx from upstream is not a WAF block — we proxied
+            // faithfully; the contract action stays `allow` (the
+            // upstream's failure is what the client sees).
+            (resp, DecisionTag::allow())
         }
         Err(e) => {
             tracing::warn!(error = %e, "upstream forward failed");
             if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
                 cb.record_failure();
             }
-            Response::builder()
+            // AF-T1: distinguish forward-failure modes for the
+            // contract. Connect/Handshake/Send timeouts → Timeout;
+            // anything else → CircuitBreaker (we refused to
+            // proxy further or the breaker tripped).
+            let action_tag = match &e {
+                crate::upstream::forward::ForwardError::Send(m)
+                    if m.contains("timed out") =>
+                {
+                    DecisionTag::timeout("upstream-timeout")
+                }
+                crate::upstream::forward::ForwardError::Connect(_)
+                | crate::upstream::forward::ForwardError::Handshake(_) => {
+                    DecisionTag::circuit_breaker("upstream-unreachable")
+                }
+                _ => DecisionTag::circuit_breaker("upstream-error"),
+            };
+            let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
                 .body(Full::new(Bytes::from("upstream error\n")))
-                .unwrap()
+                .unwrap();
+            (resp, action_tag)
         }
     }
 }

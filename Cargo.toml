@@ -44,6 +44,8 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 # TLS
 rustls = "0.23"
 tokio-rustls = "0.26"
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "ring", "webpki-tokio", "tls12"] }
+webpki-roots = "0.26"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
 rcgen = "0.13"
