@@ -89,7 +89,7 @@ fn run_gateway(config_path: &std::path::Path) -> aegis_core::Result<()> {
     let (state, state_summary) = state_select::select(&cfg)?;
     tracing::info!("state backend = {state_summary}");
 
-    let node_id = lease_select::derive_node_id();
+    let node_id = lease_select::derive_node_id(&cfg);
     let (lease_store, lease_summary) = lease_select::select(&cfg, node_id)?;
     tracing::info!("lease store = {lease_summary}");
 

@@ -29,11 +29,17 @@
   carry-over 3).
 - **Clippy:** clean across the workspace **lib + bin** targets
   on default; per-feature combos clean.
-- **Active track:** Phase B — production-readiness, **B5
-  CLOSED**, all five 2026-04-29 carry-overs closed
-  ([`plans/phase-b/`](./plans/phase-b/README.md))
-- **Next task:** B6-T1 — production Dockerfile (start of B6
-  packaging). Carry-over slate is empty; nothing gates B6.
+- **Active tracks:** Phase B — production-readiness
+  ([`plans/phase-b/`](./plans/phase-b/README.md), B5
+  CLOSED, B6 next) + **Cluster ingress / LB**
+  ([`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md))
+  running in parallel.
+- **Next task:** Either **HA-T1** (HAProxy reference
+  deploy — closes carry-over 6, ~2 hr) or **B6-T1**
+  (production Dockerfile, ~3-4 hr). They don't block
+  each other. HA-T1 unlocks publishable cluster SLOs;
+  B6-T1 unlocks shippable container artifacts. Pick by
+  which guarantee matters more next.
 - **Latest activity:** Carry-overs 3 + 4 + 5 all closed in
   one working day, validated by the run-04 perf re-run
   ([`tests/results/run-04-2026-04-29-cluster-https/`](./tests/results/run-04-2026-04-29-cluster-https/README.md)).
@@ -551,6 +557,21 @@ exposed five real gaps the milestones above didn't catch):
   cert pair drive `tests/load/tls-baseline.js` end-to-end
   (run-04 measured 31.8 k RPS / handshake p95 2.12 ms /
   request p95 1.03 ms).
+- **Carry-over 6 (open, plan published)**: HA perf test
+  routes traffic per-port, not via a single load
+  balancer. Plan
+  [`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md)
+  breaks the fix into five sub-tracks (HA-T1 HAProxy
+  reference deploy, HA-T2 single-VIP load tests, HA-T3
+  stable `node.id`, HA-T4 `peers[]` membership, HA-T5
+  LB-friendly readiness). Test-side analysis remains in
+  [`tests/cluster/HA-TEST-METHODOLOGY.md`](./tests/cluster/HA-TEST-METHODOLOGY.md);
+  doc-side updates landed in
+  [`docs/operations/ha-clustering.md`](./docs/operations/ha-clustering.md)
+  (new §"Cluster topology", §"Load balancer patterns" with
+  k8s Ingress + Nginx + HAProxy recipes, §"Roadmap"
+  tracking the eight open HA items). Carry-over 6 closes
+  when HA-T1 + HA-T2 land (the rest are nice-to-have).
 
 **B6 — Production packaging**
 - **Production packaging:** no Dockerfile, no Helm chart, no
@@ -835,3 +856,5 @@ Append-only. One row per closed task.
 | **Carry-over 4** — cluster-shared rate-limit bucket. Closed as a doc clarification: the per-IP volumetric guard is intentionally per-node (DDoS shield), the named-bucket limiter is cluster-shared via `StateBackend`. `docs/security/rate-limiting.md` rewritten to distinguish the two surfaces explicitly. No code change. | docs | 2026-04-29 |
 | **Carry-over 5** — data-plane TLS loader. `config.tls.certificates` now flows to a single `tokio_rustls::TlsAcceptor` built at boot; data-plane listeners with `tls: true` use it. ALPN forced to `http/1.1` (HTTP/2 over TLS is a follow-up). New `config/waf.tls.yaml` + self-signed cert fixture in `tests/fixtures/tls/`. Live: TLS 1.3 + AES-256-GCM, k6 measures 31.8 k RPS / handshake p95 2.12 ms / request p95 1.03 ms. | aegis-proxy, config, tests/fixtures | 2026-04-29 |
 | **run-04 perf re-run** — `tests/results/` restructured into per-run dated subdirs. Cluster smoke 4/4 PASS (was 3/4), HTTPS data plane proven end-to-end, cluster perf identical across nodes. Documented in `tests/results/run-04-2026-04-29-cluster-https/README.md` + master index `tests/results/README.md`. | tests/results | 2026-04-29 |
+| **Carry-over 6 (NEW, open)** — HA perf test methodology gap noted: cluster perf hits each node on its own port, not via a single VIP / LB. New `tests/cluster/HA-TEST-METHODOLOGY.md` analyses three remediation options (DNS RR / HAProxy / SO_REUSEPORT), recommends HAProxy in front. Cluster + run-04 + master READMEs cross-reference the doc. Test-infra gap, not a runtime bug. | tests/cluster, tests/results, docs | 2026-04-29 |
+| **HA cluster docs + ingress plan** — rewrote `docs/operations/ha-clustering.md` to align with what shipped vs the v2-design placeholder (drop `state.backends[]` array, document actual `state.redis` block); added §"Cluster topology" diagram, §"Load balancer patterns" (k8s Ingress / Nginx / HAProxy recipes), §"Roadmap" with 8 open HA items + carry-over 6 + B-track cross-refs. New `plans/cluster-ingress-lb.md` breaks the fix into HA-T1..HA-T5 sub-tracks (~1.5 days total); promoted to second active track in `plans/README.md`. | docs/operations, plans | 2026-04-29 |

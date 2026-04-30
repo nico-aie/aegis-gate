@@ -106,6 +106,48 @@ cat config/waf.new.yaml | docker exec -i aegis-etcdctl \
 up. For dev-only setups, run `etcdctl` on the host (pointing at
 `localhost:2379`) or `docker exec aegis-etcd etcdctl ...`.
 
+## HAProxy in front of the WAF cluster (HA-T1)
+
+When you want to drive the cluster through a single VIP
+(matching production HA topology), bring up the optional
+`aegis-lb` HAProxy container:
+
+```sh
+# Bring up just the LB (the rest of the stack is orthogonal).
+docker compose -f deploy/docker-compose.dev.yml --profile ha up -d aegis-lb
+
+# Build the WAF release with redis support.
+cargo build -p aegis-bin --release --features redis
+
+# Start two WAF nodes that the LB will load-balance across.
+target/release/waf run --config config/waf.cluster-a.yaml &  # :8080 / :9443
+target/release/waf run --config config/waf.cluster-b.yaml &  # :8090 / :9543
+
+# Hit the single VIP — HAProxy round-robins to both nodes.
+curl -sI http://127.0.0.1:9180/                # plaintext
+curl -ksI https://127.0.0.1:9443/              # TLS (uses tests/fixtures/tls cert)
+
+# Watch the LB stats — proves both backends served traffic.
+curl -s http://127.0.0.1:8404/ | grep -E "cluster_http,waf-(a|b),"
+
+# Tear down.
+pkill -f 'target/release/waf'
+docker compose -f deploy/docker-compose.dev.yml --profile ha down
+```
+
+Topology + design rationale: see
+[`../docs/operations/ha-clustering.md` § "Load balancer
+patterns"](../docs/operations/ha-clustering.md). The plan
+lives at
+[`../plans/cluster-ingress-lb.md`](../plans/cluster-ingress-lb.md);
+the tests that drive this rig live under
+[`../tests/cluster/`](../tests/cluster/) (`05` + `06` are
+gated by `AEGIS_LB_TESTS=1`).
+
+The LB is **opt-in via `--profile ha`** so the default
+`docker compose up -d` doesn't pull HAProxy on every dev
+iteration.
+
 ## Adding a service
 
 1. Decide which plane it belongs to. Record the answer here and in the table above.

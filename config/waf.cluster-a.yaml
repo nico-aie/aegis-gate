@@ -20,6 +20,13 @@
 #   pkill -f 'waf run --config config/waf.cluster-' ; \
 #     docker rm -f aegis-cluster-redis
 
+# HA-T3 — stable node identity. With this in place the
+# `LeaderView` reports `our_node: "waf-a"` instead of the
+# host-pid-nanos fallback, and the `leader:cluster` lease
+# survives restart of this binary cleanly.
+node:
+  id: "waf-a"
+
 listeners:
   data:
     - bind: "0.0.0.0:8080"

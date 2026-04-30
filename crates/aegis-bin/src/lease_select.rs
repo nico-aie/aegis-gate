@@ -22,13 +22,25 @@ use aegis_proxy::cluster_lease::InProcessLease;
 
 /// Derive a stable `NodeId` for this process.
 ///
-/// Composition: hostname + PID + nanos-since-epoch. Stable
-/// within one process lifetime; unique across nodes (hostname is
-/// the cluster-wide discriminator) and across restarts of the
-/// same node (nanos differ). For a long-lived deployment an
-/// operator can override this via `AEGIS_NODE_ID` — handy for
-/// testing or when the hostname is non-distinguishing.
-pub fn derive_node_id() -> NodeId {
+/// Resolution order (first match wins):
+///
+/// 1. `cfg.node.id` (HA-T3) — operator-supplied stable string.
+/// 2. `AEGIS_NODE_ID` env var — same intent, lower precedence
+///    so YAML wins over the environment.
+/// 3. `${HOSTNAME}-${PID}-${NANOS}` — derived. Stable within
+///    one process lifetime; not stable across restarts.
+///
+/// For long-running production clusters set option 1 in YAML
+/// (e.g. `node.id: "${POD_NAME}"` populated from a k8s
+/// downward-API mount). Tests pass `&WafConfig::default()` if
+/// they want the legacy host-pid-nanos behaviour.
+pub fn derive_node_id(cfg: &WafConfig) -> NodeId {
+    if let Some(explicit) = cfg.node.id.as_deref() {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return NodeId::new(trimmed);
+        }
+    }
     if let Ok(explicit) = std::env::var("AEGIS_NODE_ID") {
         if !explicit.is_empty() {
             return NodeId::new(explicit);

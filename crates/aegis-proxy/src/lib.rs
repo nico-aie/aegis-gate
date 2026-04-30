@@ -531,6 +531,73 @@ async fn admin_accept_loop(
         });
     }
 
+    // HA-T4 — membership heartbeat + roster poller.
+    //
+    // Each node publishes its identity by holding the lease
+    // `members:<our_node_id>` (15s TTL, refreshed every
+    // ~7.5s by the heartbeat layer). The same poller that
+    // tracks `leader:cluster` enumerates `members:*` keys
+    // every 5s and feeds the result into
+    // `LeaderView::members`, which the admin handler then
+    // serialises as `/api/cluster.peers[]`.
+    {
+        let lease_store_for_membership = Arc::clone(&lease_store);
+        let our_node = lease_store.self_id();
+        crate::cluster_lease::spawn_with_lease(
+            lease_store_for_membership,
+            // The `acquire` semantics work here because each
+            // node uses its OWN node-id-suffixed key — no
+            // contention.
+            &format!("members:{}", our_node.as_str()),
+            std::time::Duration::from_secs(15),
+            move |_holder, lost| async move {
+                lost.notified().await;
+            },
+        );
+    }
+    {
+        let store: Arc<dyn aegis_core::cluster::LeaseStore> =
+            Arc::clone(&lease_store);
+        let lv = Arc::clone(&leader_view);
+        let cfg_version = env!("CARGO_PKG_VERSION").to_string();
+        tokio::spawn(async move {
+            let prefix = "members:".to_string();
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                match store.list_keys_with_prefix(&prefix).await {
+                    Ok(keys) => {
+                        let mut peers: Vec<aegis_control::api::tracking::ClusterPeer> =
+                            Vec::with_capacity(keys.len());
+                        for full in keys {
+                            let id = full
+                                .strip_prefix(&prefix)
+                                .map(|s| s.to_string())
+                                .unwrap_or(full);
+                            peers.push(
+                                aegis_control::api::tracking::ClusterPeer {
+                                    id,
+                                    addr: String::new(),
+                                    version: cfg_version.clone(),
+                                    last_heartbeat: chrono::Utc::now(),
+                                    leases: Vec::new(),
+                                },
+                            );
+                        }
+                        // Sort by id so the dashboard ordering
+                        // is stable across polls.
+                        peers.sort_by(|a, b| a.id.cmp(&b.id));
+                        lv.set_members(peers);
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "members poll failed");
+                    }
+                }
+            }
+        });
+    }
+
     let (services, _drain) = aegis_control::dashboard_services::DashboardServices::spawn_with_mask_and_leader(
         bus,
         pool_provider,

@@ -101,7 +101,7 @@ pub fn build_envelope(config_path: &Path) -> Result<SnapshotEnvelope, SnapshotEr
             yaml: text,
         });
     }
-    let node_id = lease_select::derive_node_id().as_str().to_string();
+    let node_id = lease_select::derive_node_id(&cfg).as_str().to_string();
     let created_at = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -51,10 +51,17 @@ state at run-04 (the latest run):
 | 3 | leader-state admin endpoint missing | ✅ closed | run-04 |
 | 4 | per-node rate-limit bucket vs cluster-shared | ✅ closed (doc clarification) | run-04 |
 | 5 | data-plane TLS loader missing | ✅ closed | run-04 |
+| 6 | HA perf test routes per-port, no LB / single VIP | **open** — see [`tests/cluster/HA-TEST-METHODOLOGY.md`](../cluster/HA-TEST-METHODOLOGY.md) | — |
 
-After run-04 the open list is empty. The next gating issue
-is **B6-T1 (production Dockerfile)** — see
-[`Implement-Progress.md` § Next Task](../../Implement-Progress.md#next-task).
+After run-04, carry-overs A / B / 3 / 4 / 5 are all closed.
+A **new** carry-over (#6) was surfaced *by* run-04 —
+the cluster perf harness drives traffic per-port instead
+of through a single LB. That's a test-infra gap, not a
+runtime bug; the recommended fix is HAProxy in front of
+the cluster (option 2 in `HA-TEST-METHODOLOGY.md`).
+Treat carry-over 6 as the gating task for the *next*
+cluster perf publication; B6-T1 (production Dockerfile)
+can land in parallel.
 
 ## Adding a new run
 

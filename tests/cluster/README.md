@@ -93,6 +93,18 @@ docker rm -f aegis-cluster-redis 2>/dev/null || true
 
 ## Known limitations
 
+- **No load balancer in front of the cluster.** The current
+  perf harness drives k6 at `:8080` (node A) and `:8090`
+  (node B) sequentially. That proves per-node throughput
+  + correctness but does **not** measure the HA properties
+  operators actually buy when they deploy a fleet — single-
+  endpoint throughput, mid-burst failover, sticky sessions,
+  upstream pool sharing. Three concrete options for closing
+  the gap (HAProxy / DNS round-robin / `SO_REUSEPORT`) are
+  in
+  [`HA-TEST-METHODOLOGY.md`](./HA-TEST-METHODOLOGY.md). The
+  recommended next step is option 2 (HAProxy in front) —
+  see `Implement-Progress.md`'s carry-over list.
 - These scripts run **two nodes on one host**. That's enough to
   prove the state-backend + lease + readiness contracts, but it
   doesn't exercise real network partitions (use `tc qdisc` or a
@@ -105,10 +117,9 @@ docker rm -f aegis-cluster-redis 2>/dev/null || true
   per-bucket count via the metrics endpoint once
   `waf_rate_limit_bucket_value` lands.
 - `02-leader-failover.sh` and `04-partition-fallback.sh` both
-  depend on admin endpoints (`/api/cluster/leader`,
-  `/api/blocks`) that may not be exposed in every build —
-  they `skip` cleanly when absent so the milestone can land
-  the data-plane behaviour first and the surface later.
+  depend on admin endpoints (`/api/cluster`,
+  `/api/blocks`). The leader-state surface landed in
+  carry-over 3 (run-04); `/api/blocks` remains a follow-up.
 
 ## Sister tracks
 

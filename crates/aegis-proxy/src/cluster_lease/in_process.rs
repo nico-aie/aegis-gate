@@ -186,6 +186,22 @@ impl LeaseStore for InProcessLease {
     fn self_id(&self) -> NodeId {
         self.self_id.clone()
     }
+
+    async fn list_keys_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<String>> {
+        let now = Instant::now();
+        let leases = self.leases.lock().expect("lease mutex poisoned");
+        let out = leases
+            .iter()
+            .filter(|(k, slot)| {
+                k.starts_with(prefix) && slot.expires_at > now
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        Ok(out)
+    }
 }
 
 #[cfg(test)]

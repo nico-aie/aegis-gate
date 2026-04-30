@@ -34,4 +34,18 @@ for script in 01-shared-counter.sh 02-leader-failover.sh \
   echo
 done
 
-echo "all cluster smoke tests passed"
+# Opt-in LB tests (HA-T2). Off by default because they pull
+# the haproxy:2.9-alpine image and bring up an extra
+# container; not every dev iteration needs them. Set
+# `AEGIS_LB_TESTS=1` (or pass --lb) to run.
+if [[ "${AEGIS_LB_TESTS:-0}" == "1" || "${1:-}" == "--lb" ]]; then
+  for script in 05-single-vip-baseline.sh 06-mid-burst-failover.sh; do
+    echo "==================== $script ===================="
+    "$HERE/$script"
+    echo
+  done
+  echo "all cluster smoke tests + LB tests passed"
+else
+  echo "(LB tests skipped — set AEGIS_LB_TESTS=1 or pass --lb to run 05/06)"
+  echo "all cluster smoke tests passed"
+fi

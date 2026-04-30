@@ -101,6 +101,40 @@ services:
     ports:
       - "8081:8080"
 
+  # ---------- HA cluster reference LB (HA-T1) ----------
+  #
+  # Health-checked round-robin in front of two WAF nodes that
+  # the operator runs on the host (`config/waf.cluster-{a,b}.yaml`).
+  # Pulled by `tests/cluster/05-single-vip-baseline.sh` and
+  # `06-mid-burst-failover.sh` to measure cluster SLOs through
+  # a single VIP. Optional — if you don't pass
+  # `--profile ha` only the rest of the stack comes up.
+  #
+  # See `plans/cluster-ingress-lb.md` and
+  # `docs/operations/ha-clustering.md` § "Load balancer
+  # patterns" for the design rationale.
+  aegis-lb:
+    image: haproxy:2.9-alpine
+    container_name: aegis-lb
+    profiles: ["ha"]
+    ports:
+      - "9180:9180"  # plaintext VIP
+      - "9443:9443"  # TLS VIP (requires cert mount)
+      - "8404:8404"  # stats endpoint (used by tests)
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ../tests/fixtures/tls:/etc/haproxy/certs:ro
+    extra_hosts:
+      # Linux: `host.docker.internal` doesn't resolve by
+      # default. This adds the gateway IP so the same hostname
+      # the haproxy.cfg uses works on every platform.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8404/ | grep -q FRONTEND || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   etcd-data:
 

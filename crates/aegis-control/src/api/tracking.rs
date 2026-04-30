@@ -114,6 +114,12 @@ pub struct LeaderView {
     /// the first poll is in flight or the store is
     /// unreachable.
     pub current_holder: arc_swap::ArcSwapOption<String>,
+    /// Live cluster membership (HA-T4). The polling task
+    /// rebuilds this from `lease_store.list_keys_with_prefix("members:")`
+    /// every couple of seconds. Empty until the first
+    /// successful poll OR when the lease store doesn't
+    /// support enumeration.
+    pub members: arc_swap::ArcSwap<Vec<ClusterPeer>>,
 }
 
 impl LeaderView {
@@ -121,7 +127,22 @@ impl LeaderView {
         Self {
             our_node: our_node.into(),
             current_holder: arc_swap::ArcSwapOption::from(None),
+            members: arc_swap::ArcSwap::from_pointee(Vec::new()),
         }
+    }
+
+    /// Replace the current membership snapshot. Lock-free
+    /// from the reader's perspective. Called by the
+    /// `aegis-proxy::run` background poller every couple of
+    /// seconds.
+    pub fn set_members(&self, peers: Vec<ClusterPeer>) {
+        self.members.store(Arc::new(peers));
+    }
+
+    /// Latest membership snapshot, cloned out so callers
+    /// don't pin the internal `Arc`.
+    pub fn members(&self) -> Vec<ClusterPeer> {
+        (*self.members.load_full()).clone()
     }
 
     /// True iff our node id matches the latest holder. Lock-free.
@@ -330,7 +351,7 @@ impl TrackingHandler {
         match self.leader_view.as_ref() {
             None => ClusterResponse::placeholder(),
             Some(view) => ClusterResponse {
-                peers: Vec::new(),
+                peers: view.members(),
                 is_leader: view.is_leader(),
                 leader_node: view.leader_node(),
                 our_node: view.our_node.clone(),
@@ -484,6 +505,21 @@ mod tests {
             serde_json::from_str(&h.render_cluster()).unwrap();
         assert_eq!(v["is_leader"], serde_json::json!(false));
         assert!(v["leader_node"].is_null());
+    }
+
+    #[test]
+    fn cluster_response_round_trips_explicit_node_id() {
+        // HA-T3 round-trip — when an operator pins
+        // `node.id: "pod-7"`, that string should appear as
+        // `our_node` on every node's /api/cluster.
+        let view = Arc::new(LeaderView::new("pod-7"));
+        view.set_holder(Some("pod-7".to_string()));
+        let h = handler_with_leader(view);
+        let v: serde_json::Value =
+            serde_json::from_str(&h.render_cluster()).unwrap();
+        assert_eq!(v["our_node"], serde_json::json!("pod-7"));
+        assert_eq!(v["leader_node"], serde_json::json!("pod-7"));
+        assert_eq!(v["is_leader"], serde_json::json!(true));
     }
 
     #[test]

@@ -314,6 +314,33 @@ impl LeaseStore for RedisLease {
     fn self_id(&self) -> NodeId {
         self.self_id.clone()
     }
+
+    async fn list_keys_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<String>> {
+        // KEYS is O(N) on the Redis keyspace; for the
+        // membership use case (< 100 keys) that's fine and
+        // dodges the streaming-iterator complexity SCAN
+        // would impose on the trait return type.
+        use redis::AsyncCommands;
+        let pattern = format!("{}{}*", "g:lease:", prefix);
+        let mut c = self.conn().await?;
+        let raw: Vec<String> = self
+            .with_timeout(
+                "lease list_keys KEYS",
+                c.keys::<_, Vec<String>>(pattern),
+            )
+            .await?;
+        // Strip the `g:lease:` prefix + drop the per-lease
+        // `:fence` companion keys.
+        let out = raw
+            .into_iter()
+            .filter(|k| !k.ends_with(":fence"))
+            .filter_map(|k| k.strip_prefix("g:lease:").map(|s| s.to_string()))
+            .collect();
+        Ok(out)
+    }
 }
 
 // Quiet the linter — `SystemTime` is conditionally used by future

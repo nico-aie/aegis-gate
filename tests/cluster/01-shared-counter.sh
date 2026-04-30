@@ -83,3 +83,31 @@ echo "node B consume metric: ${metric_b:-0}"
 # this prints for diagnostics only.
 
 ok "shared-counter signal verified across cluster nodes"
+
+# HA-T4 — peers visibility. After the membership heartbeat
+# + poller has had ~10s to converge, both nodes should see
+# each other in `/api/cluster.peers[]`. The poll interval is
+# 5s in the impl; we wait 12s to absorb cold-start.
+echo "==> waiting 12s for membership convergence"
+sleep 12
+peers_a=$(curl --silent --insecure --max-time 2 \
+              "$NODE_A_ADMIN/api/cluster" 2>/dev/null \
+              | jq -r '.peers[].id' | sort)
+peers_b=$(curl --silent --insecure --max-time 2 \
+              "$NODE_B_ADMIN/api/cluster" 2>/dev/null \
+              | jq -r '.peers[].id' | sort)
+echo "node A sees peers: $(echo "$peers_a" | tr '\n' ' ')"
+echo "node B sees peers: $(echo "$peers_b" | tr '\n' ' ')"
+
+# Each node should see *both* itself and the other node.
+for p in waf-a waf-b; do
+  if ! echo "$peers_a" | grep -q "^$p$"; then
+    echo "FAIL: node A missing peer '$p' in /api/cluster.peers"
+    exit 1
+  fi
+  if ! echo "$peers_b" | grep -q "^$p$"; then
+    echo "FAIL: node B missing peer '$p' in /api/cluster.peers"
+    exit 1
+  fi
+done
+ok "both nodes report both members in /api/cluster.peers[]"

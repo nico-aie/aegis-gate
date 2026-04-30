@@ -86,6 +86,26 @@ pub struct WafConfig {
     pub load_mode: crate::load_mode::LoadModeConfig,
     #[serde(default)]
     pub logging: crate::verbosity::LoggingConfig,
+    /// Node identity for cluster mode (HA-T3). When set, this
+    /// is the value the lease layer + admin observability use
+    /// for "who am I". When unset, derived from hostname + PID
+    /// + nanos at boot, which is sufficient for single-node and
+    /// short-lived test rigs but unstable across restarts. For
+    /// long-running production clusters, set this to a stable
+    /// per-pod identifier (k8s `${POD_NAME}`, hostname, etc.).
+    #[serde(default)]
+    pub node: NodeConfig,
+}
+
+/// Node identity for cluster mode. Optional — `id: None` means
+/// "derive at boot". See [`crate::cluster::NodeId`] for what
+/// the lease layer does with the value.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct NodeConfig {
+    /// Stable node ID. Surfaces in `/api/cluster.our_node`,
+    /// audit log entries, lease holder strings.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 impl WafConfig {

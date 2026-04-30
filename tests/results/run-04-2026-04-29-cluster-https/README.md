@@ -137,10 +137,32 @@ setup.
 ## What needs improvement
 
 After this run **all five carry-overs surfaced 2026-04-29
-are closed**. The next gating issue is the start of
-milestone B6 (production packaging) — see
-[`Implement-Progress.md`](../../../Implement-Progress.md)
-"Next Task". No new carry-overs surfaced by this run.
+are closed**. But the run *itself* surfaced one **new**
+carry-over worth flagging:
+
+### New carry-over — HA test routes traffic per-port, not via a single VIP
+
+The "cluster perf" rows above measure each node by hitting
+its dedicated port (`:8080` for A, `:8090` for B). In
+production, clients hit a single VIP / DNS name and a load
+balancer distributes — so the numbers above prove
+*per-node ceiling* but **don't** measure:
+
+- single-endpoint throughput,
+- mid-burst failover budget when a node dies under load,
+- sticky-session / source-hash behaviour,
+- LB-to-WAF connection-pool reuse,
+- upstream pool sharing across cluster.
+
+Full analysis + three concrete options (DNS round-robin,
+HAProxy in front, `SO_REUSEPORT`) live in
+[`tests/cluster/HA-TEST-METHODOLOGY.md`](../../cluster/HA-TEST-METHODOLOGY.md).
+Recommended next step: drop an `aegis-lb` HAProxy
+container into `deploy/docker-compose.dev.yml`, add
+`tests/cluster/05-single-vip-baseline.sh` +
+`06-mid-burst-failover.sh`, and re-publish the cluster
+perf table from a *single* k6 target. Tracked as the next
+gating task ahead of B6-T1 — see `Implement-Progress.md`.
 
 The single 1.5 s `allow_latency_ms` max on node B is worth
 a tracing capture if it recurs in CI; one outlier on a

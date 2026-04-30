@@ -39,6 +39,7 @@ rows are reference material, not work to do.
 | State | Track | Plan file | Task ID prefix | Notes |
 |---|---|---|---|---|
 | **Active** | Phase B — production-readiness | [`phase-b/README.md`](./phase-b/README.md) | `B<n>-T<x>` | Six milestones B1..B6 close every "Partial" / "Designed-only" doc banner |
+| **Active** | Cluster ingress / load-balancer | [`cluster-ingress-lb.md`](./cluster-ingress-lb.md) | `HA-T<n>` | HAProxy reference deploy + single-VIP perf tests + membership. Closes carry-over 6 (HA test methodology). Runs in parallel with Phase B. |
 | **Queued** | Dashboard redesign | [`dashboard-redesign/README.md`](./dashboard-redesign/README.md) | `R-M<n>-T<x>` | Eleven milestones M0..M10. Runs after Phase B closes |
 | **Open intake** | Phase B advanced features | [`../docs/future/advanced-features.md`](../docs/future/advanced-features.md) | — | For proposals NOT covered by Phase B (multi-tenancy, RBAC/SSO, etc.) |
 | Closed | Proxy core (M1) | [`proxy.md`](./proxy.md) | `M{n}-T{x}.{y}` | Reference only — full data plane shipped |

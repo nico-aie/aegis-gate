@@ -1,19 +1,75 @@
 # HA Clustering & Distributed State (v2, enterprise)
 
-> **Status:** Implemented (single-node + Redis primary + local-fallback) — `StateBackend` trait, `InMemoryBackend`, `RedisBackend` (`deadpool-redis` + Lua), `LeaseStore` (`InProcessLease` + `RedisLease` + heartbeat + `run_with_lease` runner gating ACME), `state::rehydrate` warm-up gating `/healthz/ready`, and `ReconcilingBackend` (block-list union + fallback on partition). **Not yet implemented:** `redis_cluster` slot-hashed shards, `raft` (`openraft`-based), `foca_swim` gossip — these are queued as Phase B candidates beyond B1. The current Redis primary is single-replica.
+> **Status:** Implemented (single-node + Redis primary +
+> local-fallback). Two cluster nodes against one Redis primary
+> share rate-limit counters (named buckets via
+> `StateBackend`), block lists, challenge nonces, leader
+> identity, and risk scores. Split-brain safe via
+> `ReconcilingBackend` (block lists strictly additive on heal,
+> counters fall through to local on `WafError::State`).
+> Singleton `leader:cluster` lease elects exactly one node;
+> `/api/cluster` reports `is_leader`.
 >
-> See [`../../plans/implementation-matrix.md`](../../plans/implementation-matrix.md) for the full matrix.
+> **Not yet implemented:** `redis_cluster` slot-hashing,
+> `raft` (`openraft`-based), `foca_swim` gossip, the front-of-cluster
+> load balancer (today's deploy still expects an *external*
+> L4/L7 LB; see "Cluster topology" below for the recommended
+> shape).
+>
+> **Open carry-over:** the cluster perf harness routes traffic
+> per-node (see [`tests/cluster/HA-TEST-METHODOLOGY.md`](../../tests/cluster/HA-TEST-METHODOLOGY.md)).
+> Recommended fix: HAProxy in front. Plan is in §"Roadmap" below.
 
-> **Enterprise addendum.** Multiple WAF nodes share rate-limit counters,
-> DDoS block lists, challenge nonces, risk scores, device fingerprints,
-> and session state so an attack mitigated on one node is mitigated
+> **Enterprise addendum.** Multiple WAF nodes share security
+> state so an attack mitigated on one node is mitigated
 > everywhere. Split-brain safety is non-negotiable.
 
 ## Purpose
 
-Let the WAF scale horizontally behind an L4 load balancer without
-weakening any security guarantee. A rate limit of 10 rps/IP must mean
-10 rps/IP across the fleet, not 10 rps/IP times N nodes.
+Let the WAF scale horizontally behind a load balancer without
+weakening any security guarantee. A rate limit of 10 rps/IP must
+mean 10 rps/IP across the fleet, not 10 rps/IP × N nodes.
+
+## Cluster topology
+
+```text
+            ┌───────────────────────┐
+   clients  │  L4 / L7 load balancer│   ← terminates client TLS
+       ────▶│  (HAProxy / Envoy /   │     (or end-to-end TLS to backends)
+            │   Nginx / k8s ingress)│   ← health-checks each backend
+            └──────────┬────────────┘   ← pulls dead nodes within `inter`
+                       │
+            ┌──────────┼──────────┐
+            ▼          ▼          ▼
+     ┌────────┐  ┌────────┐  ┌────────┐
+     │ WAF n0 │  │ WAF n1 │  │ WAF n2 │      ← each node identical
+     └────┬───┘  └────┬───┘  └────┬───┘     ← same `WafConfig`,
+          │           │           │            different node_id
+          └───────────┼───────────┘
+                      ▼
+            ┌────────────────────┐
+            │  Redis primary     │  ← shared state: rate-limit counters,
+            │  (+ optional       │     leader lease, block lists,
+            │   replica for HA)  │     challenge nonces
+            └────────────────────┘
+                      │
+                      ▼
+            ┌─────────────────────┐
+            │  upstream pools     │  ← real backends the WAF protects
+            │  (services, APIs)   │
+            └─────────────────────┘
+```
+
+Operators are responsible for:
+
+- Standing up the LB. The WAF does not embed one. Patterns
+  for the three common deployment shapes are spelled out in
+  §"Load balancer patterns" below.
+- Standing up Redis (or one of the future backends). Single
+  primary + replica is the published HA recipe today.
+- Stamping every node with a stable `node_id` (today derived
+  from hostname + PID; future versions will accept a
+  `node.id` config knob).
 
 ## State backends
 
@@ -31,94 +87,320 @@ pub trait StateBackend: Send + Sync {
 }
 ```
 
-| Backend | Latency | Consistency | Notes |
+| Backend | Latency | Consistency | Status |
 |---|---|---|---|
-| `in_memory` | ns | local only | Single-node dev/test |
-| `redis` | sub-ms | strong within primary, eventual cross-AZ | Shipped default for clusters |
-| `redis_cluster` | sub-ms | slot-hashed | Horizontal scale |
-| `raft` | ms | linearizable | Built-in, `openraft`-based |
-| `foca_swim` | ms | eventual | Gossip for soft state only |
+| `in_memory` | ns | local only | **shipped** — single-node dev/test |
+| `redis` | sub-ms | strong within primary, eventual cross-AZ | **shipped** — production default |
+| `redis_cluster` | sub-ms | slot-hashed | not yet — Phase B follow-up |
+| `raft` | ms | linearizable | not yet — Phase B follow-up |
+| `foca_swim` | ms | eventual | not yet — Phase B follow-up |
 
-## Identity reconciliation
+## Two limiter contracts (read this before configuring rate limits)
 
-On restart, nodes rehydrate from the state backend before serving
-traffic. Readiness probe (`/healthz/ready`) returns 503 until the
-essential keyspaces (rate limits, block lists, challenge nonces) have
-been warmed.
+Aegis-Gate ships **two distinct rate-limit surfaces** with
+deliberately different semantics. The `2026-04-29` cluster
+smoke surfaced confusion about this; documenting the split
+explicitly:
 
-## Split-brain safety
+- **Per-IP volumetric guard** — `IpRateLimiter` runs first
+  in `handle_data_request`. Per-node, local-only,
+  `DashMap`-backed. Designed to drop a flooding source
+  *fast* without a state-backend round-trip — under DDoS
+  every node should reject locally, not contend on Redis.
+  With N nodes and budget B, the fleet admits up to N×B
+  per-IP-per-window worst case — that's the contract.
+- **Named-bucket limiter** — `rate_limit::sliding::check`
+  takes a `&dyn StateBackend`. Configured via
+  `rate_limit.buckets[*]` in YAML. **This** is the cluster-
+  shared surface — one counter per `(key, bucket)` for the
+  whole fleet. Use this when you want strictly cluster-wide
+  rate limits.
 
-Rate-limit counters use `max(local_fallback, remote)` on reconciliation
-so a network partition that forces local-only mode never **lowers** a
-counter when the partition heals. Block lists are strictly additive;
-delist requires an explicit admin action.
+See [`docs/security/rate-limiting.md`](../security/rate-limiting.md)
+for the full schema.
 
-## Gossip layer (optional)
-
-For soft state (device-fingerprint cache, bot-confidence hints), a
-SWIM gossip layer (`foca` crate) spreads updates without blocking the
-hot path:
-
-```yaml
-state:
-  gossip:
-    enabled: true
-    bind: "0.0.0.0:7946"
-    seeds: ["waf-0.internal:7946", "waf-1.internal:7946"]
-```
-
-Gossip is advisory only — never the source of truth for a security
-decision.
-
-## Leader tasks
+## Leader-only tasks
 
 Some tasks must run on exactly one node:
 
-- Threat-intel feed fetcher
-- ACME cert issuance / renewal
-- GitOps repo sync
-- Hash-chain witness export
+| Lease key | Task | Today |
+|---|---|---|
+| `leader:cluster` | Singleton "I am the cluster leader" — drives `/api/cluster` `is_leader` field. No-op factory; just holds the lease. | shipped |
+| `leader:acme` | ACME cert issuance + renewal scheduler. | shipped |
+| `leader:gitops` | GitOps poll-and-pull driver wrap (per `B3-T1` carry-over). | code lives, wrap not yet wired at boot site |
+| `leader:taxii` | STIX/TAXII fetcher loop wrap (per `B3-T2` carry-over). | code lives, wrap not yet wired at boot site |
+| `leader:witness` | Audit-chain witness export. | shipped behind feature flag |
 
-Leader election uses a lease key in the state backend
-(`SET NX EX` with heartbeat renewal). Losing the lease → stop the task.
+Lease election uses Redis `SET NX PX` with heartbeat renewal
+(half-TTL) and a fence counter (monotonic per acquire).
+Losing the lease → the wrapped task receives a
+`tokio::Notify` and exits cleanly. The runner re-acquires
+after a half-TTL backoff.
+
+## Identity reconciliation
+
+On restart, nodes rehydrate from the state backend before
+serving traffic. `/healthz/ready` returns 503 until either
+the essential keyspaces have warmed OR
+`state.reconcile.readiness_warm_ms` elapses, whichever comes
+first. After the deadline readiness flips to ready
+regardless — we never return permanent 503.
+
+## Split-brain safety
+
+`ReconcilingBackend` wraps the primary with an in-memory
+fallback. On `WafError::State` from the primary:
+
+- **Counters** fall through to local. On heal, `max(local,
+  remote)` reconciliation: a partition that forced
+  local-only mode never *lowers* a counter when the
+  partition heals.
+- **Block lists** are strictly additive: a block written
+  during the partition is replayed to the primary on heal.
+  Delist requires an explicit admin action.
+- **Leader lease** expires on the partitioned side
+  (heartbeat fails); a node on the surviving side acquires.
+  When the partition heals, the previous leader notices the
+  lost lease via the next renewal CAS and exits its task.
 
 ## Configuration
 
+The actual YAML schema (matching the implementation, not the
+old design-doc placeholder):
+
 ```yaml
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"
+      tls: false
+    # …or HTTPS:
+    # - bind: "0.0.0.0:8443"
+    #   tls: true
+  admin:
+    bind: "127.0.0.1:9443"
+
+# State backend — single block, not a list.
 state:
-  backends:
-    - name: primary
-      type: redis
-      endpoints: ["redis://waf-redis-0:6379", "redis://waf-redis-1:6379"]
-      tls: true
-      password: "${secret:env:REDIS_PASSWORD}"
-      pool_size: 32
-    - name: local_fallback
-      type: in_memory
-  routing:
-    rate_limit: primary
-    ddos:       primary
-    challenge:  primary
-    risk:       primary
+  backend: redis
+  redis:
+    urls: ["redis://waf-redis-0:6379"]
+    cluster: false           # set true for `redis_cluster`
+                             # (not yet implemented)
+    pool_size: 8
+    timeout: "1s"
   reconcile:
-    mode: max    # max | latest | fail_safe
-    readiness_warm_ms: 5000
-  leader_election:
-    lease_key: "waf:leader"
-    ttl_s: 15
+    readiness_warm_ms: "5s"
+    mode: max                # only `max` honored today
+
+# Optional TLS data plane (carry-over 5, post 2026-04-29).
+tls:
+  certificates:
+    - cert_path: "/etc/aegis/certs/cluster.crt"
+      key_ref:   "/etc/aegis/certs/cluster.key"
+      hosts:     ["edge.example.com"]
+  min_version: "1.2"
 ```
 
-## Implementation
+`config/waf.cluster-{a,b}.yaml` are the test fixtures both
+nodes use; `config/waf.tls.yaml` is the HTTPS fixture.
 
-- `src/state/backend.rs` — `StateBackend` trait
-- `src/state/{in_memory,redis,redis_cluster,raft,foca_swim}.rs`
-- `src/state/reconcile.rs` — partition-safe merge
-- `src/state/leader.rs` — lease-based election
-- `src/state/rehydrate.rs` — warm-up on startup
+## Load balancer patterns
+
+The WAF doesn't embed an LB. These are the three patterns
+operators ship with today; Aegis-Gate is wire-compatible
+with all of them.
+
+### Pattern A — k8s Ingress
+
+```yaml
+# values.yaml — your ingress controller of choice (nginx,
+# traefik, contour). Reverse-proxy paths through to
+# aegis-gate Service which fronts the StatefulSet.
+controller:
+  config:
+    use-forwarded-headers: "true"
+    forwarded-for-header: X-Forwarded-For
+    use-proxy-protocol: "false"   # or true if you terminate at L4
+
+# Service in front of WAF pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-gate
+spec:
+  type: ClusterIP
+  selector: { app: aegis-gate }
+  ports:
+    - { name: http,  port: 80,  targetPort: 8080 }
+    - { name: https, port: 443, targetPort: 8443 }
+    - { name: admin, port: 9443, targetPort: 9443 }   # internal-only
+```
+
+The ingress controller terminates TLS (or hands off via SNI
+to the WAF for end-to-end TLS) and round-robins / least-conn
+across pods. WAF replicas read `X-Forwarded-For` to recover
+the original client IP — same chain Nginx + the WAF use today.
+
+Health checks: hit `GET /healthz/ready` on each pod's admin
+port. Readiness drives Pod readiness drives endpoint removal.
+
+### Pattern B — Nginx upstream block
+
+```nginx
+upstream aegis_cluster {
+    least_conn;
+    server waf-0.internal:8080 max_fails=3 fail_timeout=10s;
+    server waf-1.internal:8080 max_fails=3 fail_timeout=10s;
+    server waf-2.internal:8080 max_fails=3 fail_timeout=10s;
+    keepalive 32;             # reuse connections — cuts handshake cost
+}
+
+server {
+    listen 443 ssl http2;
+    server_name edge.example.com;
+
+    ssl_certificate     /etc/nginx/certs/cluster.pem;
+    ssl_certificate_key /etc/nginx/certs/cluster.key;
+
+    location / {
+        proxy_pass         http://aegis_cluster;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   X-Forwarded-Host  $host;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+    }
+}
+```
+
+Why `least_conn` over `round_robin`: under bursts, longer-lived
+connections (e.g., one client with a large upload) skew
+round-robin's per-connection fairness. `least_conn` keeps
+the per-backend load even.
+
+`keepalive 32` is the number Nginx reuses to reach each
+WAF backend. Without it Nginx opens a fresh TCP per request
+and the WAF spends most cycles on handshakes — the same
+trap the run-04 perf table fell into when k6 fired one
+short-lived conn per VU iteration.
+
+### Pattern C — HAProxy (recommended for the local test rig)
+
+```text
+defaults
+  mode http
+  timeout connect 5s
+  timeout client  60s
+  timeout server  60s
+
+frontend in
+  bind *:80
+  bind *:443 ssl crt /certs/cluster.pem alpn h2,http/1.1
+  default_backend cluster
+
+backend cluster
+  balance roundrobin
+  option httpchk GET /healthz/ready
+  http-check expect status 200
+  default-server check inter 2s fall 2 rise 1
+  server waf0 waf-0.internal:8080
+  server waf1 waf-1.internal:8080
+  server waf2 waf-2.internal:8080
+```
+
+`fall 2 rise 1` is the failover budget — two failed health
+checks pull a node out, one success puts it back. With
+`inter 2s` that bounds detection at ~4 s.
+
+This is the pattern the recommended local test rig
+(carry-over 6) will adopt — see "Roadmap" below.
+
+## Observability
+
+Every node exposes the same surfaces, scrape every node:
+
+| Endpoint | What it tells you |
+|---|---|
+| `GET /healthz/live` | Process alive — used by Pod liveness. |
+| `GET /healthz/ready` | Ready to serve — used by Pod readiness + LB health checks. 503 during state-backend rehydrate. |
+| `GET /healthz/startup` | Boot complete — used by k8s `startupProbe`. |
+| `GET /metrics` | Prometheus counters + histograms. Scrape every node and aggregate fleet-wide via `sum(...)` / `histogram_quantile(...)`. |
+| `GET /api/cluster` | `is_leader`, `leader_node`, `our_node` (carry-over 3 wired this). Use to drive a "current leader" badge in dashboards. |
+
+## Roadmap
+
+Open work, in priority order. Each item links to the carry-over
+or B-track milestone that owns it.
+
+| # | Item | Status | Owner |
+|---|---|---|---|
+| 1 | **HA load-balancer reference deploy** — drop an `aegis-lb` HAProxy container into `deploy/docker-compose.dev.yml` per pattern C; add `tests/cluster/05-single-vip-baseline.sh` + `06-mid-burst-failover.sh`. Closes the test-methodology gap surfaced 2026-04-29. | open (carry-over 6) | — |
+| 2 | **Boot-site lease wraps for GitOps + TAXII** — code drivers exist (B3-T1 + B3-T2); wire `cluster_lease::spawn_with_lease("leader:gitops" / "leader:taxii", …)` in `aegis-bin::main`. | open (B3 carry-over) | — |
+| 3 | **`node.id` config knob** — today it's hostname + PID; long-running clusters want a stable identity that survives restart. Surfaces in `/api/cluster.our_node`, audit logs, lease holder strings. | open | — |
+| 4 | **Redis Sentinel / replica failover** — current single-Redis primary is a SPOF. Document the Sentinel topology + verify the WAF reconnects on primary swap. | open | — |
+| 5 | **`redis_cluster` backend** — slot-hashed shards for fleets > ~50 k req/s where one Redis primary becomes the bottleneck. Pulls the existing Lua scripts onto a cluster-aware connection pool. | open | — |
+| 6 | **`raft` backend** — embed `openraft` so the WAF cluster doesn't depend on an external state store at all. Targets sites where running Redis isn't acceptable (regulated air-gapped envs). | open | — |
+| 7 | **`foca_swim` gossip layer** — for soft state (device fingerprints, bot confidence). Out-of-band of the security path. | open | — |
+| 8 | **Per-member health surfacing on `/api/cluster.peers`** — today the field is always `[]`. Needs a membership registry; could piggyback on the gossip layer in (7) or be a separate small lease-watch loop. | open | — |
+
+## Implementation map
+
+```
+crates/aegis-core/src/
+  cluster.rs              ← LeaseStore trait, NodeId
+  state/                  ← StateBackend trait
+
+crates/aegis-proxy/src/
+  state/
+    redis.rs              ← deadpool-redis + Lua, with timeout
+    rehydrate.rs          ← warm-up gating /healthz/ready
+    reconcile.rs          ← max-on-heal counters + additive blocks
+  cluster_lease/
+    in_process.rs         ← single-node InProcessLease (default)
+    redis.rs              ← RedisLease (CAS Lua scripts + heartbeat)
+    runner.rs             ← run_with_lease / spawn_with_lease wrapper
+    heartbeat.rs          ← TTL/2 renewal + lost-lease Notify
+
+crates/aegis-control/src/api/
+  tracking.rs             ← LeaderView + /api/cluster shape
+
+config/
+  waf.cluster-a.yaml      ← node A test fixture
+  waf.cluster-b.yaml      ← node B test fixture
+  waf.tls.yaml            ← HTTPS data-plane fixture (carry-over 5)
+```
 
 ## Performance notes
 
-- Redis ops are pipelined; typical hot-path RTT ≤ 500 µs on same AZ
-- Lua scripts for atomic sliding-window rate limits (one RTT per check)
-- `raft` is slower but removes Redis as a separate tier
-- Fallback to local is wait-free — an atomic bool flip per op
+Numbers from `tests/results/run-04-2026-04-29-cluster-https/`:
+
+- Single-node baseline (real upstream): 31.5 k RPS, 504 µs
+  median allow path, 1.04 ms p95.
+- Two-node cluster (k6 against each node separately):
+  identical per-node — ~31.7 k RPS, ~510 µs median, ~1.10 ms
+  p95.
+- HTTPS (TLS 1.3 + AES-256-GCM-SHA384, ALPN forced to
+  http/1.1): 31.8 k RPS, handshake p95 2.12 ms,
+  request p95 1.03 ms.
+
+The numbers above are per-port; cluster-wide RPS through a
+single VIP is **not yet measured** (carry-over 6). Expect
+~1.8× single-node on a healthy LB with `keepalive` /
+upstream connection pooling tuned, modulo the rate-limit
+ceiling each node honours independently for the per-IP
+volumetric guard.
+
+## See also
+
+- [`tests/cluster/HA-TEST-METHODOLOGY.md`](../../tests/cluster/HA-TEST-METHODOLOGY.md)
+  — the test-side companion that names the harness gap
+  this doc's "Roadmap §1" closes.
+- [`tests/cluster/README.md`](../../tests/cluster/README.md)
+  — per-script contracts the smoke harness exercises today.
+- [`docs/security/rate-limiting.md`](../security/rate-limiting.md)
+  — the dual-surface rate-limit contract referenced above.
+- [`Implement-Progress.md`](../../Implement-Progress.md)
+  — current carry-over slate + which items in §"Roadmap"
+  are gating B6 vs deferred.

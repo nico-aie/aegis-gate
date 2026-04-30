@@ -134,6 +134,23 @@ pub trait LeaseStore: Send + Sync + 'static {
     fn self_id(&self) -> NodeId {
         NodeId::new("unknown")
     }
+
+    /// Enumerate every key under `prefix` that's currently
+    /// alive (i.e. not expired). Used by the membership
+    /// view (HA-T4) to discover live cluster nodes via
+    /// `aegis:members:*` heartbeat records.
+    ///
+    /// Default impl returns an empty list; concrete stores
+    /// override (Redis uses SCAN; in-process iterates the
+    /// internal map). Callers must treat an empty result as
+    /// "membership view unavailable", **not** "the cluster is
+    /// empty".
+    async fn list_keys_with_prefix(
+        &self,
+        _prefix: &str,
+    ) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]

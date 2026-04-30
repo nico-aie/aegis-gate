@@ -4,6 +4,10 @@
 # differ; both nodes target the same Redis primary so per-IP
 # rate-limit counters + block lists are shared.
 
+# HA-T3 — stable node identity, see waf.cluster-a.yaml.
+node:
+  id: "waf-b"
+
 listeners:
   data:
     - bind: "0.0.0.0:8090"
