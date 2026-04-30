@@ -1,74 +1,117 @@
 # Aegis-Gate — Developer Quick Start
 
-Get the WAF running locally in five steps. For production setup
-see [`deploy/GUIDE.md`](deploy/GUIDE.md). For the full YAML
-reference see [`config/README.md`](config/README.md).
+Get the WAF running locally. Two paths: **fast** (one make command)
+and **manual** (every step explicit). For production deployment see
+[`deploy/GUIDE.md`](deploy/GUIDE.md). For the full YAML reference see
+[`config/README.md`](config/README.md).
 
 ## Prerequisites
 
 | Tool | Version | Check |
 |------|---------|-------|
 | Rust | 1.82+ | `rustc --version` |
-| Docker + Compose | v2.20+ | `docker compose version` |
+| `openssl` | 1.1+ | `openssl version` (used by the dev-cert script) |
+| `make` | any | `make --version` |
+| Docker + Compose | v2.20+ (optional) | `docker compose version` |
 | `curl` | any | `curl --version` |
 
-Docker must be running for the optional services (etcd,
-Prometheus, Jaeger, Redis, httpbin). The WAF *can* boot without
-them — `state.backend: in_memory` and a local YAML config are
-enough for first-light.
+Docker is only needed for the optional dev infra (etcd, Prometheus,
+Jaeger, Redis, httpbin). The WAF boots standalone with
+`state.backend: in_memory` and a local YAML config — no Docker
+required.
 
-## 1. Build
+---
+
+## Fast path
+
+```sh
+make setup    # generate dev cert + release build (~2 min cold, ~10 s warm)
+make run      # boot against config/prod.yaml
+make smoke    # in another terminal: curl data + admin endpoints
+```
+
+Run `make help` to see every available target. Override defaults via env:
+
+```sh
+CONFIG=config/dev.yaml make run                          # boot dev config
+FEATURES="redis alerts geoip taxii http3" make build     # custom feature set
+```
+
+That's enough to get a green health probe and serve TLS on `:8443`
+with a self-signed dev cert. The 502s on `:8080` / `:8443` you'll see
+in `make smoke` are expected — the placeholder upstreams in
+`prod.yaml` (ports 3001-3004) aren't running. Replace them with
+your real backends when wiring an app.
+
+---
+
+## Manual path
+
+If you'd rather drive every step yourself:
+
+### 1. Generate a self-signed dev cert
+
+```sh
+bash config/gen-cert.sh
+# Output: config/certs/dev.crt + config/certs/dev.key
+```
+
+The cert has SANs for `localhost`, `127.0.0.1`, `::1`, and
+`aegis-gate.local`. **Self-signed — not for production.** Replace
+the `tls.certificates:` block in `prod.yaml` with real certs (or
+wire `tls.acme:`) before exposing the WAF to the internet.
+
+### 2. Build
 
 ```sh
 # Debug — fast compile, slower runtime
 cargo build --workspace
 
-# Release with cluster support — for benchmarking or HA fixtures
+# Release with cluster support — for benchmarking / HA fixtures
 cargo build -p aegis-bin --release --features redis
 
-# Release with CPU pinning enabled too — for runtime-tuning experiments
+# Release with CPU pinning — for runtime-tuning experiments
 cargo build -p aegis-bin --release --features "redis affinity"
 ```
 
-## 2. (Optional) Start infrastructure
+### 3. (Optional) Start dev infrastructure
 
 ```sh
 docker compose -f deploy/docker-compose.dev.yml up -d
 ```
 
-Spins up etcd, Prometheus, Jaeger, Redis, httpbin. Skip this
-step if you just want a single-node in-memory WAF — point the
-config at `state.backend: in_memory` and the gateway runs
-standalone. Service catalogue + ports:
+Spins up etcd, Prometheus, Jaeger, Redis, httpbin. Skip for a
+single-node in-memory WAF. Service catalogue + ports:
 [`deploy/README.md`](deploy/README.md).
 
-## 3. Validate the config
+### 4. Validate the config
 
 ```sh
-./target/debug/waf validate --config config/prod.yaml
+./target/release/waf validate --config config/prod.yaml
 ```
 
-Expected: `config OK: config/prod.yaml`. The YAML reference
-([`config/README.md`](config/README.md)) walks every section
-including the new `runtime:` block (Layer-1 worker scaling).
+Expected: `config OK: config/prod.yaml`.
 
-## 4. Run the gateway
+### 5. Run the gateway
 
 ```sh
 # Debug
 cargo run -p aegis-bin -- run --config config/prod.yaml
 
-# Release (with redis features compiled in)
+# Release
 ./target/release/waf run --config config/prod.yaml
 ```
 
-The boot log shows the runtime sizing it picked up:
+Boot log shows the runtime sizing it picked up:
 
 ```
 tokio runtime workers=12 blocking_threads=512 stack_size_kb=2048 cpu_affinity=false
+data-plane listening on 0.0.0.0:8443 (tls=true)
+data-plane listening on 0.0.0.0:8080 (tls=false)
+admin-plane listening on 127.0.0.1:9443
 ```
 
-## 5. Verify
+### 6. Verify
 
 ```sh
 # Health probes (admin port)
@@ -78,14 +121,12 @@ curl -sf http://localhost:9443/healthz/ready
 # Runtime sizing the binary picked up at boot
 curl -s http://localhost:9443/api/runtime
 
-# Cluster + leader info (only meaningful in HA fixtures)
-curl -s http://localhost:9443/api/cluster
-
 # Prometheus metrics
-curl -sf http://localhost:9100/metrics | head
+curl -sf http://localhost:9443/metrics | head
 
-# Smoke through the data plane (plaintext)
-curl -i http://localhost:8080/
+# Smoke through the data plane
+curl -k https://localhost:8443/        # TLS (self-signed cert → -k)
+curl -i  http://localhost:8080/        # plaintext
 ```
 
 Stop with **Ctrl-C** or `kill -TERM <pid>` — both trigger the
@@ -113,13 +154,13 @@ verification, and OS-specific affinity notes live in
 
 ---
 
-## Admin auth (optional)
+## Admin auth
 
 Skip for first-light dev. Set up when you're ready to expose the
 admin dashboard:
 
 ```sh
-# Argon2id password hash — paste into admin.password_hash
+# Argon2id password hash — paste into admin.password_hash_ref
 ./target/release/waf admin set-password
 
 # TOTP secret + recovery codes
@@ -139,28 +180,37 @@ unprotected and the dashboard login screen rejects all attempts.
 ## CLI cheat sheet
 
 ```sh
-waf run       --config <path>         # Start gateway
-waf validate  --config <path>         # Validate config (no listeners)
-waf audit     verify --from <path>    # Verify audit chain
-waf admin     set-password            # Hash admin password (argon2id)
-waf admin     enroll-totp             # Generate TOTP secret + recovery codes
-waf snapshot  --out <path>            # Export config + rules + integrity envelope
-waf restore   --from <path>           # Restore an exported snapshot
-waf version                           # Build info
-waf help                              # Help
+make help                              # List every make target
+make setup                             # Cert + release build
+make run                               # Boot against $(CONFIG)
+make validate                          # Config dry-run
+make smoke                             # Curl data + admin endpoints
+make test                              # cargo test --workspace
+make clippy                            # cargo clippy -- -D warnings
+
+waf run       --config <path>          # Start gateway
+waf validate  --config <path>          # Validate config (no listeners)
+waf audit     verify --from <path>     # Verify audit chain
+waf admin     set-password             # Hash admin password (argon2id)
+waf admin     enroll-totp              # Generate TOTP secret + recovery codes
+waf snapshot  --out <path>             # Export config + rules + integrity envelope
+waf restore   --from <path>            # Restore an exported snapshot
+waf version                            # Build info
+waf help                               # Built-in help
 ```
 
 ## Tests
 
 ```sh
-cargo test --workspace                                    # full suite
+make test                                                 # full workspace
 cargo test --workspace --features aegis-proxy/redis       # with redis feature
-cargo clippy --workspace -- -D warnings                   # lint (zero warnings)
+make clippy                                               # lint (zero warnings)
 ```
 
 The cluster smoke + LB tests live under
 [`tests/cluster/`](tests/cluster/); load tests under
-[`tests/load/`](tests/load/).
+[`tests/load/`](tests/load/); dashboard acceptance under
+[`tests/dashboard/`](tests/dashboard/).
 
 ---
 
@@ -168,13 +218,16 @@ The cluster smoke + LB tests live under
 
 | Problem | Fix |
 |---------|-----|
-| `Cannot connect to Docker daemon` | Start Docker Desktop, retry |
-| Config validation fails | Run `waf validate --config ...` — error shows file + field |
-| Port already in use | `lsof -i :8443` (or relevant port), kill the conflict |
+| `make: cargo: command not found` | The Makefile auto-adds `~/.cargo/bin` to PATH; if rustup is installed elsewhere, override `CARGO=/path/to/cargo make build` |
+| `make: openssl: command not found` | Install via `brew install openssl` (macOS) or your distro's package manager |
+| TLS handshake fails with self-signed cert | Use `curl -k` (or your client's "ignore cert" flag) — replace with a real cert before going live |
+| Config validation fails | Run `make validate` — error shows file + field with line number |
+| Port already in use | `lsof -i :8443` (or :8080 / :9443), kill the conflict |
 | `etcd connection refused` | Optional dep — either start it (`docker compose up -d`) or set `state.backend: in_memory` |
 | `/api/runtime` shows fewer workers than CPUs | The host is reporting CPU quota (k8s, cgroups). `num_cpus::get()` honours that — pin `runtime.workers: <int>` to override |
 | Tests fail on a clean checkout | `cargo test -p <crate>` for the failing crate; full suite output is in `target/debug/deps/<crate>*.log` |
 | Clippy warnings | CI enforces `-D warnings`. Fix locally with `cargo clippy --fix`. |
+| Cert expired (after 1 year) | `make reset-cert` to regenerate |
 
 ---
 
@@ -182,7 +235,8 @@ The cluster smoke + LB tests live under
 
 | Doc | What |
 |-----|------|
-| [`config/README.md`](config/README.md) | Full YAML reference, section by section |
+| [`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md) | SOC team cheat sheet (config → deploy → monitor + incident playbooks) |
+| [`config/README.md`](config/README.md) | Pick-one config + fork-prod recipe |
 | [`deploy/GUIDE.md`](deploy/GUIDE.md) | Production deployment (image, systemd, cluster) |
 | [`deploy/README.md`](deploy/README.md) | Dev infra catalogue + HA-cluster fixture |
 | [`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md) | Layer-1 worker sizing |
