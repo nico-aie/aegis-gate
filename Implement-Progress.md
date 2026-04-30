@@ -24,46 +24,139 @@
 ## Status (snapshot)
 
 - **As of:** 2026-04-30
-- **Workspace tests:** 2,228 default-feature (was 2,210;
-  +11 RuntimeConfig + +5 RuntimeView + +2 net).
+- **Workspace tests:** 2,234 default-feature (was 2,228;
+  +4 ConnectionPoolConfig + +2 forward.rs pool reuse).
 - **Clippy:** clean across the workspace on
   `--features aegis-proxy/redis` and on `aegis-bin --features
   "redis affinity"`. No warnings on lib / bin / tests.
 - **Active tracks:** Phase B — production-readiness
   ([`plans/phase-b/`](./plans/phase-b/README.md), B5
-  CLOSED). **Cluster ingress / LB**
-  ([`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md))
-  CLOSED with HA-T1..HA-T5 in run-05. **Workers / Layer-1**
-  CLOSED 2026-04-30 (this turn).
-- **Next task:** B6-T1 was deferred per user direction.
-  Open candidates: an upstream connection pool (would lift
-  the 4–5 k RPS forwarded-traffic ceiling that run-05
-  exposed), a multi-process `SO_REUSEPORT` workers mode
-  (Phase 5 of the workers plan, deferred), or a clean-host
-  TLS handshake re-measure to clear the run-05 noise
-  warning. No active blocker right now.
-- **Latest activity:** **Workers / Layer-1 in-node scaling
-  shipped 2026-04-30.** New `runtime:` config block
-  (`workers: auto | <int>`, `blocking_threads`,
-  `cpu_affinity`, `stack_size_kb`) drives
-  `tokio::runtime::Builder` at boot. Read-only
-  `/api/runtime` admin endpoint + dashboard panel surfaces
-  the effective values. CPU affinity behind the new
-  `affinity` Cargo feature on `aegis-bin`. Restart-only.
-  Deploy + dev docs simplified (`README.md`, `QUICKSTART.md`,
-  `deploy/README.md`, `deploy/GUIDE.md` rewritten to remove
-  duplication; new "Three-layer scaling" pointer). Perf
-  sweep
-  ([`tests/results/run-06-2026-04-30-workers-perf/`](./tests/results/run-06-2026-04-30-workers-perf/README.md))
-  confirms the knob is correctly wired but worker count
-  above 2 doesn't move RPS/latency on the current code base
-  — bottleneck is the upstream pool (proxied path) or
-  accept loop (pure path). B6 upstream connection pool is
-  now the top open perf item.
+  CLOSED). **Cluster ingress / LB** CLOSED with HA-T1..HA-T5
+  in run-05. **Workers / Layer-1** CLOSED in run-06.
+  **Upstream Connection Pool (UP-T1)** CLOSED 2026-04-30
+  (this turn).
+- **Next task:** All highest-leverage perf items are now
+  closed. Open queue (no active blocker):
+  1. Linux re-measure on NUMA host (laptop tops out ~8 k
+     RPS regardless of workers — likely listener accept loop
+     or hyper service-fn dispatch above the pool).
+  2. B6-T1 production Dockerfile (deferred).
+  3. Multi-process workers (`SO_REUSEPORT`, Phase 5 deferred).
+  4. Upstream HTTPS pool — wire `tls.rs` through the same
+     hyper-util `Client` (currently HTTP-only).
+- **Latest activity:** **Upstream Connection Pool (UP-T1)
+  shipped 2026-04-30.** Per-pool `connection:` config block
+  in `PoolConfig` (`max_idle_per_host`, `idle_timeout`,
+  `keep_alive`). `forward.rs` rewritten to use a process-
+  wide cached `hyper_util::client::legacy::Client` keyed
+  on pool config signature. Validated by run-07
+  ([`tests/results/run-07-2026-04-30-upstream-pool/`](./tests/results/run-07-2026-04-30-upstream-pool/README.md)):
+  pooled holds **1 000 RPS / 100 % / sub-1 ms p95** vs
+  unpooled 525 RPS / 96 % / 3 ms p95. **Throughput
+  ceiling 525 → 7 964 RPS (15× lift)** on the same host.
+  Two new integration tests prove TCP reuse semantics
+  (5 reqs / 1 TCP for keep-alive; 3 reqs / 3 TCPs for
+  `keep_alive: false`).
 
 ---
 
 ## Last Completed
+
+**Task:** **UP-T1 — Upstream Connection Pool.** Replaces the
+per-request `TcpStream::connect + http1::handshake` in
+`forward.rs` with a per-pool keep-alive
+`hyper_util::client::legacy::Client`. Closes the throughput
+ceiling that run-05 surfaced and run-06 quantified.
+
+**Outcome.** A new `connection:` block under each upstream
+pool drives the pooling:
+
+```yaml
+upstreams:
+  api:
+    members: [{ addr: "10.0.0.1:8080" }]
+    connection:
+      max_idle_per_host: 32   # 0 disables pooling
+      idle_timeout: 30s
+      keep_alive: true        # false implies pool size 0
+```
+
+Internally a process-wide `OnceLock<RwLock<HashMap<PoolKey,
+Arc<Client>>>>` caches one client per distinct config
+signature; the cache lookup is a read-lock + `Arc::clone` on
+the hot path. `keep_alive: false` injects a request-side
+`Connection: close` header *and* sets `pool_max_idle_per_host:
+0` in the client builder so neither side keeps the socket
+around — that's the pre-UP-T1 baseline operators can flip back
+to for diagnostics without rebuilding.
+
+**Decision recap (cache scope).** Process-wide rather than
+per-`ProxyContext` because (a) hyper-util's `Client` is
+internally `Arc`-shared, (b) hot-reload of the upstream block
+should keep using the existing pool when the signature is
+unchanged, and (c) two pools that share a backend with the
+same tuning *should* share the connection cache. The cache
+keys on `(max_idle_per_host, idle_timeout_ms, keep_alive)`,
+not on member address — addresses are per-request.
+
+**Decision recap (HTTP-only).** UP-T1 covers HTTP upstreams
+only. HTTPS upstreams continue through the older
+`upstream::tls.rs` code path, which was added in carry-over 5
+for data-plane HTTPS termination. Wiring the pooled `Client`
+to a rustls-backed connector is the next pool expansion;
+keeping it out of scope here keeps the diff small and the perf
+result clean.
+
+**Decision recap (timeout cap).** Added a 30-s per-request
+`tokio::time::timeout` around the `client.request()` call. The
+hyper-util `Client` has its own connect-side default but a
+stuck upstream after handshake can hang us indefinitely. The
+30 s ceiling is conservative; a follow-up should wire the
+route's `total_deadline` here.
+
+**Files changed.**
+- `crates/aegis-core/src/config.rs` — new `ConnectionPoolConfig`
+  on `PoolConfig`. +4 unit tests.
+- `crates/aegis-proxy/src/upstream/forward.rs` —
+  `pooled_client()` cache + builder; `forward()` signature
+  takes `&ConnectionPoolConfig`; URI rewritten to absolute
+  form for hyper-util's `Client`. +2 integration tests
+  (5 reqs / 1 TCP keep-alive; 3 reqs / 3 TCPs `keep_alive=false`).
+- `crates/aegis-proxy/src/upstream/mod.rs` — `Pool` struct
+  carries the resolved `ConnectionPoolConfig`.
+- `crates/aegis-proxy/src/proxy.rs` — pass `&pool.connection`
+  through to `forward::forward()`.
+- `crates/aegis-proxy/src/lib.rs` — same threading at the
+  data-plane Allow callsite (`forward_allow_to_upstream`).
+- `Cargo.toml` workspace — `hyper-util` now compiles with
+  `client` + `client-legacy` features.
+- `config/README.md` upstream section — new "Connection
+  pooling" subsection with knob reference + run-07 link.
+- `Architecture.md` §7 — pool subsection added with the same
+  knob table + run-07 link.
+
+**Verification.**
+- **Workspace tests** (`cargo test --workspace --features
+  aegis-proxy/redis`) — **2,234 passed** parallel (was 2,228;
+  +4 config tests + +2 forward.rs pool reuse tests).
+- **Clippy** — clean.
+- **Live perf** ([run-07](./tests/results/run-07-2026-04-30-upstream-pool/README.md)):
+  - **1 000 RPS offered**: pooled holds 999.9 RPS / 100 % /
+    sub-1 ms p95. Unpooled 525.8 RPS / 96.31 % / 3 ms p95.
+  - **2 000 RPS offered**: pooled 1 999.8 RPS / 100 % /
+    700 µs p95. Unpooled 496 RPS / 95 % / 3.83 s p95
+    (timeout-bound).
+  - **4 000 RPS offered**: pooled 3 979 RPS / 100 % / 740 µs
+    p95. Unpooled 510 RPS hard ceiling.
+  - **8 000 RPS offered**: pooled 7 964 RPS / 100 % /
+    1.56 ms p95. Approaching new pooled ceiling.
+  - **15 000 RPS offered**: pooled saturates at 7 057 RPS /
+    64 % / 55 ms p95.
+  - **Throughput ceiling lift: 525 → 7 964 RPS (15×).**
+
+---
+
+## Earlier Last Completed (Workers / Layer-1)
 
 **Task:** **Workers — Layer-1 in-node scaling.** Configurable
 tokio worker threads, blocking-pool ceiling, CPU affinity (opt-in
@@ -593,6 +686,7 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-04-30 | **UP-T1** Upstream connection pool | `forward.rs` rewritten on `hyper_util::client::legacy::Client`; per-pool `connection:` config; cached per signature. **15× throughput lift** (525 → 7 964 RPS, 100 % success, sub-1 ms p95) validated by run-07. +6 tests, 2,234 total. |
 | 2026-04-30 | **Workers / Layer-1** in-node scaling | New `runtime:` config block + `tokio::runtime::Builder` wiring + `/api/runtime` admin endpoint + dashboard panel + `affinity` Cargo feature for CPU pinning. +18 tests, 2,228 total. Restart-only. Live verified on 12-core (auto) and 4-thread fixed configs. |
 | 2026-04-30 | **HA-T1..T5** Cluster ingress / LB track CLOSED | `deploy/haproxy/haproxy.cfg` (HA-T1) + `tests/cluster/05/06` + `tests/load/failover-burst.js` (HA-T2) + `WafConfig.node.id` (HA-T3) + `LeaderView::set_members` + `/api/cluster.peers[]` (HA-T4) + `POST /admin/drain` + `?strict=1` + SIGTERM drain (HA-T5). 99.93 % hard / 100 % graceful failover budget. |
 | 2026-04-29 | **Carry-over B** — rate-limit response code | Gateway already returns 429 with Retry-After; test script recalibrated (BURST_RPS 200 → 2000, threshold 0.95 → 0.30). 50 status_429 observed live. |
@@ -604,26 +698,26 @@ Last five tasks, compressed. For full detail see git history.
 
 ## Next Task
 
-**Task:** **Open — operator pick.** B6-T1 (production
-Dockerfile) is deferred per user direction. Open candidates,
-in rough priority order:
+**Task:** **Open — operator pick.** UP-T1 closed the
+highest-leverage perf gap. Open queue:
 
-1. **Upstream connection pool.** Run-05 measured 4–5 k RPS for
-   fully-forwarded cluster traffic (vs 31 k RPS when most
-   responses are 429s) — bottleneck is the upstream forwarder
-   opening a fresh TCP per request. A pool would close that
-   gap and is a prerequisite for meaningful prod RPS budgets.
-2. **Multi-process workers (`SO_REUSEPORT`).** Phase 5 of the
-   workers plan, deferred. Worth doing only if profiling shows
-   the multi-thread runtime can't saturate cores. Layer-1
-   threads + Layer-2 cluster cover most workloads.
-3. **Clean-host TLS handshake re-measure.** Run-05 saw
-   `tls_handshake_ms` p95 9.08 ms vs run-04's 2.12 ms. Same
-   code path, suspicious — needs a measure on a fresh host
-   before we treat it as a regression.
-4. **B6-T1 production Dockerfile** (deferred).
+1. **Linux re-measure on a NUMA host.** Run-07 saw the laptop
+   plateau at ~8 k RPS regardless of worker count even with
+   the pool on. Strongly suggests a bottleneck above the
+   pool — listener accept loop, hyper service-fn dispatch,
+   single-threaded route lookup. NUMA + more cores may
+   unmask it.
+2. **B6-T1 production Dockerfile** (deferred).
+3. **Multi-process workers (`SO_REUSEPORT`).** Phase 5 of
+   the workers plan. Becomes interesting if #1 confirms a
+   non-NUMA-related bottleneck.
+4. **Upstream HTTPS pool.** UP-T1 covers HTTP only;
+   `upstream::tls.rs` still does per-request connect for
+   HTTPS upstreams. Wire the pooled `Client` to a rustls
+   connector.
+5. **Clean-host TLS handshake re-measure** (run-05 noise).
 
-No active blocker right now.
+No active blocker.
 
 **Outline.**
 

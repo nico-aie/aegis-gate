@@ -74,6 +74,7 @@ impl ProxyContext {
                     name: name.clone(),
                     members,
                     strategy,
+                    connection: pool_cfg.connection.clone(),
                 },
             );
         }
@@ -183,6 +184,7 @@ where
     let upstream_start = ctx.benchmark.is_on().then(Instant::now);
     let result = forward::forward(
         member,
+        &pool.connection,
         parts.method,
         parts.uri,
         parts.headers,

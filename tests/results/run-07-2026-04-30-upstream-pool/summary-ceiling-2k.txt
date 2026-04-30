@@ -1,0 +1,6 @@
+pool      | workers    | RPS          | p50       | p95       | allow_success
+----------+------------+--------------+-----------+-----------+--------------
+==> pooled / workers=auto
+pooled    | auto       | 1999.785234  | 467.29µs | 699.02µs | 100.00%
+==> unpooled / workers=auto
+unpooled  | auto       | 496.28186    | 697.2µs  | 3.83s     | 94.81%

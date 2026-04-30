@@ -40,4 +40,8 @@ pub struct Pool {
     pub name: String,
     pub members: Vec<Arc<Member>>,
     pub strategy: lb::LbStrategy,
+    /// UP-T1 — per-pool connection-pool tuning. Threaded into
+    /// [`forward::forward`] so each call uses the same pooled
+    /// `Client` for that signature.
+    pub connection: aegis_core::config::ConnectionPoolConfig,
 }

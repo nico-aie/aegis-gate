@@ -2386,6 +2386,7 @@ async fn forward_allow_to_upstream(
     member.inflight.fetch_add(1, Ordering::Relaxed);
     let result = crate::upstream::forward::forward(
         member,
+        &pool.connection,
         parts.method,
         parts.uri,
         parts.headers,

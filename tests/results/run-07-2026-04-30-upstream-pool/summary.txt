@@ -1,0 +1,22 @@
+pool      | workers    | RPS          | p50       | p95       | allow_success
+----------+------------+--------------+-----------+-----------+--------------
+==> pooled / workers=2
+pooled    | 2          | 999.942262   | 810.66µs | 1.46ms    | 100.00%
+==> pooled / workers=4
+pooled    | 4          | 999.984056   | 635.16µs | 1.28ms    | 100.00%
+==> pooled / workers=8
+pooled    | 8          | 999.953308   | 646.75µs | 1.21ms    | 100.00%
+==> pooled / workers=12
+pooled    | 12         | 999.981818   | 619.12µs | 1.18ms    | 100.00%
+==> pooled / workers=auto
+pooled    | auto       | 999.958795   | 572.14µs | 1.03ms    | 100.00%
+==> unpooled / workers=2
+unpooled  | 2          | 526.029738   | 988.41µs | 5.69ms    | 96.31%
+==> unpooled / workers=4
+unpooled  | 4          | 526.108525   | 949.62µs | 3.58ms    | 96.32%
+==> unpooled / workers=8
+unpooled  | 8          | 525.946015   | 827.85µs | 2.74ms    | 96.31%
+==> unpooled / workers=12
+unpooled  | 12         | 526.098119   | 737.45µs | 2.56ms    | 96.31%
+==> unpooled / workers=auto
+unpooled  | auto       | 525.814572   | 814.81µs | 5.99ms    | 96.31%

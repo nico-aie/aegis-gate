@@ -432,6 +432,25 @@ pub struct Member {
 Each pool owns its own `hyper` client so keepalive pools are scoped —
 unrelated backends cannot cause head-of-line blocking.
 
+**Connection pooling (UP-T1, post run-06).** Implemented:
+`upstream::forward::forward()` resolves a `hyper_util::client::
+legacy::Client` keyed on the pool's `ConnectionPoolConfig`
+signature. The cache (`OnceLock<RwLock<HashMap>>`) means two
+pools with the same tuning share a single client and therefore
+a single idle-conn pool. Per-pool knobs:
+
+| Field | Default | Notes |
+|---|---|---|
+| `max_idle_per_host` | 32 | `0` disables pooling (pre-UP-T1 baseline) |
+| `idle_timeout` | 30 s | Should be shorter than upstream's keep-alive timeout |
+| `keep_alive` | true | `false` injects `Connection: close` + sets pool size to 0 |
+
+Measured 15× throughput lift (525 → 7 964 RPS at 100 % success
+on a 12-core laptop) — see
+[`tests/results/run-07-2026-04-30-upstream-pool/`](./tests/results/run-07-2026-04-30-upstream-pool/README.md).
+HTTPS upstreams still go through the older `upstream::tls.rs`
+code path; wiring them through the pooled `Client` is a follow-up.
+
 ---
 
 ## 8. TLS Subsystem

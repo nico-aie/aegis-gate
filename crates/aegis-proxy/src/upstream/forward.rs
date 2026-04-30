@@ -1,4 +1,4 @@
-//! Real upstream HTTP/1.1 forwarding (B4-T3).
+//! Real upstream HTTP/1.1 forwarding (B4-T3 + UP-T1 pooling).
 //!
 //! Replaces the earlier stub that opened a TCP connection,
 //! sent a hard-coded `GET /` with no body, and returned the
@@ -16,15 +16,32 @@
 //!   the proxy is currently `Full<Bytes>`-shaped; streaming
 //!   is a separate refactor).
 //!
+//! UP-T1 — connection pooling. Replaces per-request
+//! `TcpStream::connect + http1::handshake` with a per-pool
+//! [`hyper_util::client::legacy::Client`] that keeps idle
+//! HTTP/1.1 keep-alive connections around. The pool is keyed
+//! on the `(host, port)` of each [`Member`], so multiple
+//! pools sharing a target reuse the same connection cache.
+//! Pre-UP-T1 behaviour (one TCP per request) is preserved by
+//! `ConnectionPoolConfig::max_idle_per_host = 0`.
+//!
 //! Pure helpers (`is_hop_by_hop_header`,
 //! `build_upstream_headers`, `path_and_query`,
 //! `replay_response_status_and_headers`) live here so the
 //! framing edges are unit-tested without sockets.
 
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
+
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response};
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_util::rt::TokioExecutor;
+
+use aegis_core::config::ConnectionPoolConfig;
 
 use super::Member;
 
@@ -170,35 +187,137 @@ pub fn replay_response_status_and_headers<B>(
     builder.body(Full::default()).unwrap()
 }
 
+/// Pooled HTTP/1.1 client built from a [`ConnectionPoolConfig`].
+///
+/// `Client` is `Clone` (internally `Arc`-shared); cheap to share
+/// across hot-path tasks. We hold one per distinct upstream
+/// configuration (different `max_idle_per_host` / `idle_timeout`
+/// / `keep_alive` settings) — the cache below keys on the config
+/// signature, not the member address, so two pools that point at
+/// the same backend with the same tuning share the connection
+/// cache.
+type PooledClient = Client<HttpConnector, Full<Bytes>>;
+
+/// Build a pooled HTTP/1.1 client honouring `cfg`.
+///
+/// `max_idle_per_host = 0` OR `keep_alive = false` disables
+/// pooling at the connector layer (pre-UP-T1 behaviour). The
+/// `keep_alive = false` path *also* injects a request-side
+/// `Connection: close` header so the upstream sees the intent;
+/// the actual reuse decision lives in the pool ceiling.
+fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
+    let mut connector = HttpConnector::new();
+    connector.set_nodelay(true);
+    let effective_pool_size = if cfg.keep_alive {
+        cfg.max_idle_per_host
+    } else {
+        0
+    };
+    Client::builder(TokioExecutor::new())
+        .pool_max_idle_per_host(effective_pool_size)
+        .pool_idle_timeout(cfg.idle_timeout)
+        .pool_timer(hyper_util::rt::TokioTimer::new())
+        .http1_preserve_header_case(true)
+        .http1_title_case_headers(false)
+        .build(connector)
+}
+
+/// Stable signature of a [`ConnectionPoolConfig`] used to dedupe
+/// clients in the cache. Two pools with the same tuning share a
+/// single client (and therefore a single idle-conn cache).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PoolKey {
+    max_idle_per_host: usize,
+    idle_timeout_ms: u64,
+    keep_alive: bool,
+}
+
+impl From<&ConnectionPoolConfig> for PoolKey {
+    fn from(c: &ConnectionPoolConfig) -> Self {
+        Self {
+            max_idle_per_host: c.max_idle_per_host,
+            idle_timeout_ms: c.idle_timeout.as_millis().min(u64::MAX as u128) as u64,
+            keep_alive: c.keep_alive,
+        }
+    }
+}
+
+fn client_cache() -> &'static RwLock<HashMap<PoolKey, Arc<PooledClient>>> {
+    static CACHE: OnceLock<RwLock<HashMap<PoolKey, Arc<PooledClient>>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Resolve to a shared, pooled [`PooledClient`] for `cfg`.
+///
+/// Cheap on cache-hit (read lock + `Arc::clone`); on the first
+/// request for a given config signature we pay one client build
+/// under the write lock, then reuse forever.
+fn pooled_client(cfg: &ConnectionPoolConfig) -> Arc<PooledClient> {
+    let key = PoolKey::from(cfg);
+    {
+        let r = client_cache().read().expect("client cache poisoned");
+        if let Some(c) = r.get(&key) {
+            return c.clone();
+        }
+    }
+    let mut w = client_cache().write().expect("client cache poisoned");
+    w.entry(key)
+        .or_insert_with(|| Arc::new(build_client(cfg)))
+        .clone()
+}
+
+/// Test-only helper: drop every pooled client. Lets tests that
+/// exercise pool semantics start from a clean slate. Production
+/// code never calls this; the cache is intentionally process-wide.
+#[doc(hidden)]
+pub fn _reset_client_cache() {
+    let mut w = client_cache().write().expect("client cache poisoned");
+    w.clear();
+}
+
 /// Forward a request to `member` and return the upstream's
 /// response. Body is collected (not streamed) — matches the
 /// rest of the proxy's `Full<Bytes>` shape.
+///
+/// UP-T1 path: requests reuse pooled HTTP/1.1 keep-alive
+/// connections via `hyper-util`'s legacy [`Client`]. The pool's
+/// idle-conn ceiling and idle-timeout come from
+/// [`ConnectionPoolConfig`]; `keep_alive: false` injects
+/// `Connection: close` to disable reuse on a per-pool basis
+/// (e.g. for diagnosing keep-alive interactions).
 pub async fn forward(
     member: &Member,
+    cfg: &ConnectionPoolConfig,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response<Full<Bytes>>, ForwardError> {
-    let stream = tokio::net::TcpStream::connect(member.addr)
-        .await
-        .map_err(|e| ForwardError::Connect(e.to_string()))?;
-    let io = hyper_util::rt::TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| ForwardError::Handshake(e.to_string()))?;
-    tokio::spawn(async move {
-        // Drive the connection. If it errors there's nothing
-        // useful to log here — the request future will see
-        // the failure.
-        let _ = conn.await;
-    });
+    let client = pooled_client(cfg);
 
     let upstream_host_header = member.addr.to_string();
     let pq = path_and_query(&uri);
-    let fwd_headers = build_upstream_headers(&headers, &upstream_host_header);
+    let mut fwd_headers = build_upstream_headers(&headers, &upstream_host_header);
 
-    let mut builder = Request::builder().method(method).uri(pq);
+    // `keep_alive: false` means we want every request to use a
+    // fresh socket. Hyper's pool decides reuse off the response's
+    // `Connection: close` (set by the server) OR the request's
+    // — set it on the request so the upstream knows not to keep
+    // the connection around.
+    if !cfg.keep_alive {
+        fwd_headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("close"),
+        );
+    }
+
+    let target_uri: Uri = format!("http://{}{}", member.addr, pq)
+        .parse()
+        .map_err(|e: http::uri::InvalidUri| {
+            ForwardError::BadRequest(e.to_string())
+        })?;
+
+    let mut builder = Request::builder().method(method).uri(target_uri);
     if let Some(h) = builder.headers_mut() {
         *h = fwd_headers;
     }
@@ -206,10 +325,28 @@ pub async fn forward(
         .body(Full::new(body))
         .map_err(|e| ForwardError::BadRequest(e.to_string()))?;
 
-    let resp = sender
-        .send_request(fwd_req)
-        .await
-        .map_err(|e| ForwardError::Send(e.to_string()))?;
+    // Single-shot per-request timeout — the connector itself has
+    // an internal connect timeout (default 30 s) but a stuck
+    // upstream after handshake can still hang us indefinitely.
+    // Cap at 30 s for now; later we'll wire the route's
+    // `total_deadline` here.
+    let send_fut = client.request(fwd_req);
+    let resp = match tokio::time::timeout(Duration::from_secs(30), send_fut).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            // hyper-util surfaces connect failures as `is_connect()`.
+            return Err(if e.is_connect() {
+                ForwardError::Connect(e.to_string())
+            } else {
+                ForwardError::Send(e.to_string())
+            });
+        }
+        Err(_) => {
+            return Err(ForwardError::Send(
+                "upstream send timed out (30 s)".to_string(),
+            ));
+        }
+    };
 
     let status = resp.status();
     let resp_headers = resp.headers().clone();
@@ -458,5 +595,127 @@ mod tests {
         assert!(ForwardError::BadRequest("x".into()).to_string().contains("request"));
         assert!(ForwardError::Send("x".into()).to_string().contains("send"));
         assert!(ForwardError::ReadBody("x".into()).to_string().contains("body"));
+    }
+
+    // ---- UP-T1 — connection pool reuse ------------------------------
+
+    /// Spin up a counting HTTP/1.1 echo server. Returns the
+    /// bound address and a counter incremented on every accepted
+    /// TCP connection (NOT every request). Used to assert that
+    /// keep-alive pooled requests share TCP connections.
+    async fn spawn_counting_server() -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let conns = std::sync::Arc::new(AtomicUsize::new(0));
+        let conns_for_loop = conns.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _peer) = match listener.accept().await {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                conns_for_loop.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    // HTTP/1.1 lets us serve multiple requests on
+                    // one TCP. Loop until the peer drops.
+                    loop {
+                        let n = match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => n,
+                        };
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        if !req.contains("\r\n\r\n") {
+                            // Partial frame; bail.
+                            return;
+                        }
+                        let body = b"ok";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\nok",
+                            body.len()
+                        );
+                        if sock.write_all(resp.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (addr, conns)
+    }
+
+    #[tokio::test]
+    async fn pooled_keep_alive_reuses_tcp_connection() {
+        // Reset cache so a previous test's client doesn't leak in.
+        super::_reset_client_cache();
+        let (addr, conns) = spawn_counting_server().await;
+        let member = Member::new(addr, 1, None);
+        let cfg = ConnectionPoolConfig {
+            max_idle_per_host: 32,
+            idle_timeout: Duration::from_secs(30),
+            keep_alive: true,
+        };
+
+        for _ in 0..5 {
+            let resp = forward(
+                &member,
+                &cfg,
+                Method::GET,
+                "/healthz".parse().unwrap(),
+                hm(&[("host", "ignored.example.com")]),
+                Bytes::new(),
+            )
+            .await
+            .expect("forward must succeed");
+            assert_eq!(resp.status(), 200);
+        }
+
+        // 5 requests, exactly 1 TCP connection accepted.
+        let observed = conns.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            observed, 1,
+            "keep-alive pool must reuse one TCP across 5 requests; \
+             observed {observed} accept()s",
+        );
+    }
+
+    #[tokio::test]
+    async fn keep_alive_disabled_opens_a_connection_per_request() {
+        super::_reset_client_cache();
+        let (addr, conns) = spawn_counting_server().await;
+        let member = Member::new(addr, 1, None);
+        let cfg = ConnectionPoolConfig {
+            max_idle_per_host: 32,
+            idle_timeout: Duration::from_secs(30),
+            keep_alive: false, // request-side `Connection: close`
+        };
+
+        for _ in 0..3 {
+            let resp = forward(
+                &member,
+                &cfg,
+                Method::GET,
+                "/healthz".parse().unwrap(),
+                HeaderMap::new(),
+                Bytes::new(),
+            )
+            .await
+            .expect("forward must succeed");
+            assert_eq!(resp.status(), 200);
+        }
+
+        // 3 requests, 3 TCPs — pre-pool baseline.
+        let observed = conns.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            observed, 3,
+            "keep_alive=false must open one TCP per request; observed {observed}",
+        );
     }
 }

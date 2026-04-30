@@ -1,0 +1,14 @@
+pool      | workers    | RPS          | p50       | p95       | allow_success
+----------+------------+--------------+-----------+-----------+--------------
+==> pooled / workers=2
+pooled    | 2          | 3995.327019  | 340.29µs | 635.48µs | 100.00%
+==> pooled / workers=4
+pooled    | 4          | 3982.874396  | 349.95µs | 701.55µs | 100.00%
+==> pooled / workers=12
+pooled    | 12         | 3979.499261  | 346.91µs | 736.33µs | 100.00%
+==> unpooled / workers=2
+unpooled  | 2          | 516.403291   | 687.91µs | 4.99s     | 93.03%
+==> unpooled / workers=4
+unpooled  | 4          | 513.728742   | 748.77µs | 4.99s     | 93.07%
+==> unpooled / workers=12
+unpooled  | 12         | 500.176702   | 751.29µs | 4.99s     | 93.63%

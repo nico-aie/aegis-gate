@@ -519,6 +519,56 @@ pub struct PoolConfig {
     pub health: Option<HealthCheckConfig>,
     #[serde(default)]
     pub circuit_breaker: Option<CircuitBreakerConfig>,
+    /// UP-T1 — per-upstream connection pooling. Closed run-06's
+    /// "WAF can't saturate cores" gap by keeping idle TCP +
+    /// HTTP/1.1 keep-alive connections to each member around
+    /// instead of opening a new TCP per request.
+    #[serde(default)]
+    pub connection: ConnectionPoolConfig,
+}
+
+/// Per-pool keep-alive / idle-pool tuning. All optional;
+/// defaults match hyper-util's defaults closely.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConnectionPoolConfig {
+    /// Maximum idle connections kept per host:port. `0` disables
+    /// pooling (every request gets a fresh connection — restores
+    /// pre-UP-T1 behaviour, useful for debugging).
+    #[serde(default = "default_pool_max_idle_per_host")]
+    pub max_idle_per_host: usize,
+    /// How long an idle connection may stay in the pool before
+    /// it's closed proactively. Should be shorter than the
+    /// upstream's keep-alive timeout to avoid racing the
+    /// remote close.
+    #[serde(default = "default_pool_idle_timeout", with = "humantime_serde")]
+    pub idle_timeout: Duration,
+    /// HTTP/1.1 keep-alive on the request side. Off = always
+    /// `Connection: close`, no pooling regardless of
+    /// `max_idle_per_host`. Defaults to true.
+    #[serde(default = "default_keep_alive")]
+    pub keep_alive: bool,
+}
+
+impl Default for ConnectionPoolConfig {
+    fn default() -> Self {
+        Self {
+            max_idle_per_host: default_pool_max_idle_per_host(),
+            idle_timeout: default_pool_idle_timeout(),
+            keep_alive: default_keep_alive(),
+        }
+    }
+}
+
+fn default_pool_max_idle_per_host() -> usize {
+    32
+}
+
+fn default_pool_idle_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_keep_alive() -> bool {
+    true
 }
 
 fn default_lb() -> LbStrategy {
@@ -1982,6 +2032,81 @@ state:
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must have at least one member"));
+    }
+
+    // ---------- Connection pool config (UP-T1) -------------------------
+
+    #[test]
+    fn connection_pool_default_pools_idle_conns() {
+        let c = ConnectionPoolConfig::default();
+        assert_eq!(c.max_idle_per_host, 32);
+        assert_eq!(c.idle_timeout.as_secs(), 30);
+        assert!(c.keep_alive);
+    }
+
+    #[test]
+    fn pool_config_yaml_defaults_present() {
+        // No `connection:` block → defaults populated.
+        let yaml = r#"
+listeners:
+  data: [{ bind: "127.0.0.1:8080" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: default }
+upstreams:
+  default:
+    members: [{ addr: "127.0.0.1:8081" }]
+state: { backend: in_memory }
+"#;
+        let cfg = load_config_str(yaml).unwrap();
+        let pool = cfg.upstreams.get("default").unwrap();
+        assert_eq!(pool.connection.max_idle_per_host, 32);
+        assert!(pool.connection.keep_alive);
+    }
+
+    #[test]
+    fn pool_config_yaml_accepts_explicit_block() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "127.0.0.1:8080" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: default }
+upstreams:
+  default:
+    members: [{ addr: "127.0.0.1:8081" }]
+    connection:
+      max_idle_per_host: 64
+      idle_timeout: 90s
+      keep_alive: false
+state: { backend: in_memory }
+"#;
+        let cfg = load_config_str(yaml).unwrap();
+        let pool = cfg.upstreams.get("default").unwrap();
+        assert_eq!(pool.connection.max_idle_per_host, 64);
+        assert_eq!(pool.connection.idle_timeout.as_secs(), 90);
+        assert!(!pool.connection.keep_alive);
+    }
+
+    #[test]
+    fn pool_config_zero_max_idle_disables_pooling() {
+        // 0 = pre-UP-T1 behaviour, useful for debugging perf.
+        let yaml = r#"
+listeners:
+  data: [{ bind: "127.0.0.1:8080" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: default }
+upstreams:
+  default:
+    members: [{ addr: "127.0.0.1:8081" }]
+    connection:
+      max_idle_per_host: 0
+state: { backend: in_memory }
+"#;
+        let cfg = load_config_str(yaml).unwrap();
+        let pool = cfg.upstreams.get("default").unwrap();
+        assert_eq!(pool.connection.max_idle_per_host, 0);
     }
 
     // ---------- Runtime / workers config (Layer-1 scaling) -------------

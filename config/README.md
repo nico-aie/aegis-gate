@@ -115,7 +115,27 @@ upstreams:
       - addr: "127.0.0.1:3003"
         weight: 1                # Gets 25% of traffic
     lb: weighted_round_robin
+    connection:                  # UP-T1 connection pooling (optional)
+      max_idle_per_host: 32      #   idle conns kept around per host
+      idle_timeout: "30s"        #   idle conn TTL before close
+      keep_alive: true           #   request-side `Connection: keep-alive`
 ```
+
+**Connection pooling (`connection:`):** Each pool keeps a
+hyper-util keep-alive client per `(max_idle_per_host,
+idle_timeout, keep_alive)` signature. Defaults are sane for
+most workloads. Knobs:
+
+| Field | Default | Effect |
+|---|---|---|
+| `max_idle_per_host` | `32` | Idle TCP + HTTP/1.1 connections kept per host:port. `0` disables pooling — every request opens a fresh TCP. |
+| `idle_timeout` | `30s` | How long an idle connection stays in the pool before being closed proactively. Set shorter than the upstream's keep-alive timeout to avoid races. |
+| `keep_alive` | `true` | Request-side `Connection: keep-alive`. Set `false` to inject `Connection: close` and force a new socket per request. Implies `max_idle_per_host: 0`. |
+
+The pool was added in run-07 to lift the per-IP TCP TIME_WAIT
+ceiling. Measured 15× throughput improvement vs the per-request
+`connect + handshake` baseline:
+[`tests/results/run-07-2026-04-30-upstream-pool/`](../tests/results/run-07-2026-04-30-upstream-pool/README.md).
 
 **Load balancing strategies:**
 

@@ -1,0 +1,1153 @@
+openapi: 3.0.3
+info:
+  title: WAF Hackathon Target Application - Public API
+  description: |
+    Public API contract for the WAF Hackathon target application.
+
+    Participants deploy a WAF in front of this application and should allow
+    legitimate application traffic while applying their own security policy.
+
+    ## Authentication Flow
+    1. **Login**: `POST /login` with username/password to get a `login_token`
+    2. **OTP Verification**: `POST /otp` with the `login_token` and `otp_code` to establish a session
+    3. **Session Cookie**: a `sid` cookie is set on successful OTP verification
+    4. **Authenticated Requests**: include the `sid` cookie in subsequent requests
+
+    ## Test Credentials
+    | Username | Password     | OTP Code |
+    |----------|--------------|----------|
+    | alice    | P@ssw0rd1    | 123456   |
+    | bob      | S3cureP@ss   | 654321   |
+    | charlie  | Ch@rlie99    | 111222   |
+
+    ## Notes
+    This document describes the public application API surface only. It does not
+    describe internal implementation details or non-public administrative interfaces.
+  version: "1.0.0-public"
+  contact:
+    name: WAF Hackathon Organizers
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://{host}
+    description: Deployed instance
+    variables:
+      host:
+        default: waf-target.example.com
+
+tags:
+  - name: Authentication
+    description: Login and session establishment
+  - name: Financial
+    description: Account funding, withdrawal, reward, and report operations
+  - name: Profile
+    description: User profile operations
+  - name: Transactions
+    description: Transaction history
+  - name: Settings
+    description: User preferences
+  - name: Games
+    description: Game listing and gameplay
+  - name: Feedback
+    description: User feedback submission
+  - name: Admin
+    description: Administrative application endpoints
+  - name: Pages
+    description: HTML pages and sitemap
+  - name: Static
+    description: Static and public assets
+  - name: Health
+    description: Health check
+  - name: Real-time
+    description: WebSocket and streaming application channels
+  - name: KYC
+    description: User document submission
+  - name: Analytics
+    description: Client analytics event ingestion
+  - name: Public
+    description: Public read-only APIs
+
+paths:
+  /login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate with username and password
+      description: Returns a short-lived login token used to complete OTP verification.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  example: alice
+                password:
+                  type: string
+                  example: P@ssw0rd1
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  login_token:
+                    type: string
+                    description: One-time token for OTP verification
+                  user_id:
+                    type: integer
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /otp:
+    post:
+      tags: [Authentication]
+      summary: Verify OTP and establish session
+      description: Completes the authentication flow and sets a session cookie on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_token, otp_code]
+              properties:
+                login_token:
+                  type: string
+                  description: Token returned by the login endpoint
+                otp_code:
+                  type: string
+                  example: "123456"
+      responses:
+        "200":
+          description: OTP verified, session established
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: sid=abc123; HttpOnly; SameSite=Strict; Path=/
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified:
+                    type: boolean
+                    example: true
+                  session_id:
+                    type: string
+        "401":
+          description: Invalid or expired OTP/token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /deposit:
+    post:
+      tags: [Financial]
+      summary: Deposit funds
+      description: Adds funds to the authenticated user's account.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, currency]
+              properties:
+                amount:
+                  type: number
+                  format: double
+                  minimum: 0.01
+                  maximum: 1000000
+                  example: 500.0
+                currency:
+                  type: string
+                  example: USD
+      responses:
+        "200":
+          description: Deposit successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tx_id:
+                    type: string
+                  balance:
+                    type: number
+                    format: double
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /withdrawal:
+    post:
+      tags: [Financial]
+      summary: Withdraw funds
+      description: Initiates a withdrawal for the authenticated user.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, bank_account]
+              properties:
+                amount:
+                  type: number
+                  format: double
+                  minimum: 0.01
+                  example: 100.0
+                bank_account:
+                  type: string
+                  example: "1234567890"
+      responses:
+        "200":
+          description: Withdrawal initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tx_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [pending]
+                  balance:
+                    type: number
+                    format: double
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/profile:
+    get:
+      tags: [Profile]
+      summary: Get user profile
+      description: Returns profile information for the authenticated user.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [Profile]
+      summary: Update user profile
+      description: Updates editable profile fields for the authenticated user.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: alice@example.com
+                display_name:
+                  type: string
+                  example: Alice W.
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: boolean
+                    example: true
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/transactions:
+    get:
+      tags: [Transactions]
+      summary: List transactions
+      description: Returns paginated transaction history for the authenticated user.
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Transaction"
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /user/settings:
+    get:
+      tags: [Settings]
+      summary: Get user settings
+      description: Returns settings for the authenticated user.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: User settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preferences:
+                    $ref: "#/components/schemas/Preferences"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [Settings]
+      summary: Update user settings
+      description: Updates settings for the authenticated user.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                preferences:
+                  $ref: "#/components/schemas/Preferences"
+      responses:
+        "200":
+          description: Settings updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: boolean
+                    example: true
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /game/list:
+    get:
+      tags: [Games]
+      summary: List available games
+      description: Returns available game entries.
+      responses:
+        "200":
+          description: Game list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GameSummary"
+
+  /game/{id}:
+    get:
+      tags: [Games]
+      summary: Get game details
+      description: Returns details for a game entry.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: name
+          in: query
+          description: Optional display name used by the application response
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Game details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/GameDetail"
+                  - type: object
+                    properties:
+                      welcome:
+                        type: string
+                        description: Optional display text
+        "404":
+          description: Game not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /game/{id}/play:
+    post:
+      tags: [Games]
+      summary: Play a game
+      description: Places a bet on a game for an authenticated user.
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bet]
+              properties:
+                bet:
+                  type: number
+                  format: double
+                  minimum: 0.01
+                  example: 50.0
+                callback_url:
+                  type: string
+                  format: uri
+                  description: Optional callback URL parameter used by the application workflow
+      responses:
+        "200":
+          description: Game result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: string
+                    enum: [win, lose]
+                  payout:
+                    type: number
+                    format: double
+                  balance:
+                    type: number
+                    format: double
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/feedback:
+    post:
+      tags: [Feedback]
+      summary: Submit user feedback
+      description: Submits user feedback to the application.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [comment]
+              properties:
+                comment:
+                  type: string
+                  example: "Great platform, love the games!"
+      responses:
+        "200":
+          description: Feedback received
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: received
+                  comment:
+                    type: string
+        "400":
+          description: Missing or invalid comment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/bet-reports/export:
+    post:
+      tags: [Financial]
+      summary: Export bet history report
+      description: Generates a report for the authenticated user.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [format]
+              properties:
+                format:
+                  type: string
+                  enum: [pdf, csv, xlsx]
+                  example: pdf
+      responses:
+        "200":
+          description: Report generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: complete
+                  report_id:
+                    type: string
+                  format:
+                    type: string
+                  size_bytes:
+                    type: integer
+                  data:
+                    type: string
+                    description: Report content
+        "400":
+          description: Invalid format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /admin/dashboard:
+    get:
+      tags: [Admin]
+      summary: Admin dashboard
+      description: Returns dashboard data for authorized sessions.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  admin_panel:
+                    type: boolean
+                  users_count:
+                    type: integer
+                  total_balance:
+                    type: number
+                    format: double
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List users
+      description: Returns user data for authorized sessions.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        user_id:
+                          type: integer
+                        username:
+                          type: string
+                        email:
+                          type: string
+                        balance:
+                          type: number
+                          format: double
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/rewards/claim:
+    post:
+      tags: [Financial]
+      summary: Claim signup reward
+      description: Claims an application reward for the authenticated user.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Reward claimed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  claimed:
+                    type: boolean
+                    example: true
+                  amount:
+                    type: number
+                    example: 100
+                  tx_id:
+                    type: string
+                  balance:
+                    type: number
+                    format: double
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Reward already claimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /:
+    get:
+      tags: [Pages]
+      summary: Homepage
+      description: Returns the application homepage.
+      responses:
+        "200":
+          description: HTML homepage
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /about:
+    get:
+      tags: [Pages]
+      summary: About page
+      description: Returns an informational HTML page.
+      responses:
+        "200":
+          description: HTML about page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /sitemap.xml:
+    get:
+      tags: [Pages]
+      summary: XML sitemap
+      description: Returns the application sitemap.
+      responses:
+        "200":
+          description: Sitemap
+          content:
+            application/xml:
+              schema:
+                type: string
+
+  /static/{path}:
+    get:
+      tags: [Static]
+      summary: Serve static assets
+      description: Serves static application assets.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          examples:
+            javascript:
+              value: js/app.js
+            stylesheet:
+              value: css/style.css
+      responses:
+        "200":
+          description: Static file content
+          headers:
+            ETag:
+              schema:
+                type: string
+        "304":
+          description: Not Modified
+        "404":
+          description: File not found
+
+  /public/{file}:
+    get:
+      tags: [Static]
+      summary: Serve public files
+      description: Serves public application files.
+      parameters:
+        - name: file
+          in: path
+          required: true
+          schema:
+            type: string
+          examples:
+            terms:
+              value: terms.html
+            faq:
+              value: faq.html
+      responses:
+        "200":
+          description: Public file content
+          content:
+            text/html:
+              schema:
+                type: string
+        "404":
+          description: File not found
+
+  /assets/{path}:
+    get:
+      tags: [Static]
+      summary: Serve asset files
+      description: Serves public asset files.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          examples:
+            logo:
+              value: logo.png
+      responses:
+        "200":
+          description: Asset file
+        "404":
+          description: File not found
+
+  /ws/live:
+    get:
+      tags: [Real-time]
+      summary: Live updates WebSocket channel
+      description: Opens a WebSocket channel for authenticated live application updates.
+      parameters:
+        - name: Upgrade
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [websocket]
+        - name: Connection
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [Upgrade]
+        - name: Sec-WebSocket-Version
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: ["13"]
+        - name: Sec-WebSocket-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            description: Base64-encoded 16-byte nonce
+      responses:
+        "101":
+          description: Protocol upgrade successful
+          headers:
+            Upgrade:
+              schema:
+                type: string
+                enum: [websocket]
+            Connection:
+              schema:
+                type: string
+                enum: [Upgrade]
+            Sec-WebSocket-Accept:
+              schema:
+                type: string
+        "400":
+          description: Missing or malformed upgrade headers
+
+  /api/notifications/stream:
+    get:
+      tags: [Real-time]
+      summary: User notification feed
+      description: Opens a long-lived notification stream for application events.
+      responses:
+        "200":
+          description: Notification stream
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                enum: ["text/event-stream"]
+            Cache-Control:
+              schema:
+                type: string
+                enum: ["no-cache"]
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: message
+                  data: {"type":"notification","seq":1}
+
+  /api/kyc/document:
+    post:
+      tags: [KYC]
+      summary: Submit KYC verification document
+      description: Submits a user document through multipart form data.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [document]
+              properties:
+                document:
+                  type: string
+                  format: binary
+                  description: Uploaded document file
+                document_type:
+                  type: string
+                  enum: [id_card, passport, drivers_license]
+                  default: id_card
+      responses:
+        "200":
+          description: Document accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted:
+                    type: boolean
+                    example: true
+                  document_id:
+                    type: string
+                  document_type:
+                    type: string
+                  filename:
+                    type: string
+                  size:
+                    type: integer
+                  sha256:
+                    type: string
+                  status:
+                    type: string
+                    enum: [pending_review, verified, rejected]
+        "400":
+          description: Malformed request or missing document field
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/analytics/events:
+    post:
+      tags: [Analytics]
+      summary: Ingest client analytics batch
+      description: Accepts client analytics events.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    events:
+                      type: array
+                      items:
+                        $ref: "#/components/schemas/AnalyticsEvent"
+                - type: array
+                  items:
+                    $ref: "#/components/schemas/AnalyticsEvent"
+                - $ref: "#/components/schemas/AnalyticsEvent"
+      responses:
+        "200":
+          description: Batch accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted:
+                    type: integer
+                    example: 2
+                  batch_id:
+                    type: string
+                  first_event:
+                    type: string
+                  received_ts:
+                    type: string
+                    format: date-time
+        "400":
+          description: Unreadable body
+
+  /api/public/stats:
+    get:
+      tags: [Public]
+      summary: Public platform statistics
+      description: Returns public platform statistics.
+      responses:
+        "200":
+          description: Platform stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicStats"
+    options:
+      tags: [Public]
+      summary: CORS preflight
+      description: Handles preflight requests for this public API.
+      parameters:
+        - name: Origin
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: Access-Control-Request-Method
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Preflight OK
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+            Access-Control-Max-Age:
+              schema:
+                type: string
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns application health status.
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: sid
+      description: Session cookie obtained through the login and OTP flow
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid session
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      example:
+        error: unauthorized
+
+    UserProfile:
+      type: object
+      properties:
+        user_id:
+          type: integer
+        username:
+          type: string
+        email:
+          type: string
+        display_name:
+          type: string
+        balance:
+          type: number
+          format: double
+        card_number:
+          type: string
+        bank_account:
+          type: string
+        ssn:
+          type: string
+
+    Transaction:
+      type: object
+      properties:
+        tx_id:
+          type: string
+        type:
+          type: string
+        amount:
+          type: number
+          format: double
+        ts:
+          type: string
+          format: date-time
+
+    Preferences:
+      type: object
+      properties:
+        withdrawal_limit:
+          type: number
+          format: double
+        notifications:
+          type: boolean
+
+    GameSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        status:
+          type: string
+
+    GameDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        status:
+          type: string
+        description:
+          type: string
+
+    AnalyticsEvent:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: page_view
+        ts:
+          type: integer
+          format: int64
+          description: Client-side millisecond timestamp
+        props:
+          type: object
+          additionalProperties: true
+          example:
+            path: /game/1
+
+    PublicStats:
+      type: object
+      properties:
+        platform:
+          type: string
+          example: NovaBet
+        api_version:
+          type: string
+          example: "1.0"
+        total_games:
+          type: integer
+          example: 5
+        total_users:
+          type: integer
+          example: 103
+        embed_policy:
+          type: string
+          example: open
+        max_update_seconds:
+          type: integer
+          example: 60
