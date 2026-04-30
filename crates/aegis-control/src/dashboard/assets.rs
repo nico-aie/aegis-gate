@@ -95,8 +95,7 @@ fn build_table() -> HashMap<&'static str, EmbeddedAsset> {
 /// embedded inventory is still consulted first (to gate the request
 /// to known paths and to source `content_type`); if the disk read
 /// fails for any reason the embedded bytes are returned as a safe
-/// fallback. Release builds skip this branch entirely. See
-/// `plans/dashboard-enterprise/milestone-1-shell.md` task D-M1-T1.7.
+/// fallback. Release builds skip this branch entirely.
 pub fn lookup(path: &str) -> Option<EmbeddedAsset> {
     let embedded = ASSETS.get_or_init(build_table).get(path).copied()?;
 

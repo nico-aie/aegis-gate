@@ -1,13 +1,18 @@
 # Dashboard Redesign — Aegis WAF Console
 
+> **Status:** Closed — DD-T0..T8 shipped in run-10. Reference only.
+>
+> See [`README.md`](./README.md) for the track status board and
+> [`../tests/results/run-10-2026-04-30-dashboard-redesign/README.md`](../tests/results/run-10-2026-04-30-dashboard-redesign/README.md)
+> for the closing run.
+
 Replaces the existing 11-page vanilla-JS SPA at
 `crates/aegis-control/assets/dashboard/` with the
 **Aegis WAF Console** design from
-`Hackathon_Doc/.../qP2YNdKy5OaYBiZgh3mTiw` (extracted to
-`/tmp/aegis-design/waf/`). Lands as **pre-compiled** JS into the
-existing `aegis-control` embedded-assets registry — single
-binary, no new deployment surface, no runtime CDN dependency,
-no `'unsafe-eval'` in the dashboard CSP.
+`Hackathon_Doc/.../qP2YNdKy5OaYBiZgh3mTiw`. Lands as
+**pre-compiled** JS into the existing `aegis-control` embedded-assets
+registry — single binary, no new deployment surface, no runtime CDN
+dependency, no `'unsafe-eval'` in the dashboard CSP.
 
 ## Decision: stay embedded, do not split into a separate app
 
@@ -109,7 +114,7 @@ The redesign deliberately **excludes**:
 | **DD-T7** | Hot-reload status + version toast | 1 hr | `GET /api/config/version` returning `{version, applied_at_ms, applied_on_node}`. Every mutating call returns post-version. Dashboard polls every 500 ms (max 10 s) until proxy reports it; toast: "Applied in X.Xs · waf-a / waf-b". |
 | **DD-T8** | Round-1 Pass/Fail acceptance script | 1 hr | New `tests/dashboard/round1-acceptance.sh`: (a) fires synthetic request, asserts Live Feed shows it in < 5 s; (b) opens Rule Manager via Playwright/headless, counts clicks for create-rule (must be ≤ 5); (c) issues mutation, polls `/api/config/version`, asserts hot-reload < 10 s. |
 | **DD-T4** | Smoke + screenshot regression | 1 hr | Live: navigate every page; capture one screenshot per page into `tests/results/run-10-2026-04-30-dashboard-redesign/screenshots/`. Pin them as the visual regression reference for future PRs. |
-| **DD-T5** | Doc + plan housekeeping | 30 min | Update `docs/control-plane/enterprise/README.md`; archive the old `dashboard-enterprise/` plan; add run-10 README; update `Implement-Progress.md`. |
+| **DD-T5** | Doc + plan housekeeping | 30 min | Update `docs/control-plane/enterprise/README.md`; archive `plans/dashboard-enterprise/` → `plans/archive/dashboard-enterprise/`; add run-10 README; update `Implement-Progress.md`. ✅ Closed. |
 
 **Total ~11 hr** (was 9; +30 min DD-T0, +1 hr DD-T8, ~+30 min for screenshot regression). Workspace tests grow by ~6 unit tests (Rule CRUD endpoints).
 

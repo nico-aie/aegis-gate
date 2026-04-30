@@ -189,6 +189,50 @@
   function SectionHeader({ title, sub, actions }) {
     return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 600 } }, title), sub && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "var(--ink-dim)" } }, sub)), actions);
   }
+  function ToastContainer() {
+    const [toasts, setToasts] = useStateW([]);
+    useEffectW(() => {
+      const onAdd = (e) => {
+        const id = Math.random().toString(36).slice(2);
+        const t = { id, ts: Date.now(), ...e.detail };
+        setToasts((prev) => [...prev.slice(-4), t]);
+        const ttl = t.kind === "err" ? 8e3 : t.kind === "ok" ? 2500 : 5e3;
+        setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), ttl);
+      };
+      window.addEventListener("aegis:toast", onAdd);
+      return () => window.removeEventListener("aegis:toast", onAdd);
+    }, []);
+    return /* @__PURE__ */ React.createElement("div", { style: {
+      position: "fixed",
+      bottom: 32,
+      right: 16,
+      zIndex: 9999,
+      display: "flex",
+      flexDirection: "column",
+      gap: 6,
+      pointerEvents: "none"
+    } }, toasts.map((t) => /* @__PURE__ */ React.createElement("div", { key: t.id, style: {
+      minWidth: 240,
+      maxWidth: 360,
+      padding: "8px 12px",
+      background: "var(--surface-2)",
+      border: "1px solid " + (t.kind === "ok" ? "var(--up)" : t.kind === "warn" ? "var(--warn)" : t.kind === "err" ? "var(--down)" : "var(--hairline-strong)"),
+      borderLeft: "3px solid " + (t.kind === "ok" ? "var(--up)" : t.kind === "warn" ? "var(--warn)" : t.kind === "err" ? "var(--down)" : "var(--brand-yellow)"),
+      borderRadius: "var(--radius)",
+      color: "var(--ink)",
+      fontSize: 12,
+      boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      pointerEvents: "auto"
+    } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, t.message), t.detail && /* @__PURE__ */ React.createElement("span", { className: "dim mono", style: { fontSize: 10 } }, t.detail))));
+  }
+  function aegisToast(message, kind = "info", detail = null) {
+    window.dispatchEvent(new CustomEvent("aegis:toast", {
+      detail: { message, kind, detail }
+    }));
+  }
   Object.assign(window, {
     I,
     Sparkline,
@@ -203,7 +247,9 @@
     Drawer,
     StackedBar,
     BarList,
-    SectionHeader
+    SectionHeader,
+    ToastContainer,
+    aegisToast
   });
 })();
 ;
@@ -819,16 +865,171 @@ X-Forwarded-For: ${data.ip}
   function PageAuditLog() {
     return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "page-title" }, "Audit Log"), /* @__PURE__ */ React.createElement("p", { className: "page-subtitle" }, "Searchable hash chain \xB7 1.4M events", /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 8 } }, /* @__PURE__ */ React.createElement("span", { className: "pill ok" }, "verified")), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 6 } }, /* @__PURE__ */ React.createElement("span", { className: "pill info" }, "witness 12s ago")))), /* @__PURE__ */ React.createElement("div", { className: "page-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn" }, /* @__PURE__ */ React.createElement(window.I.Refresh, null), " Verify chain"), /* @__PURE__ */ React.createElement("button", { className: "btn" }, /* @__PURE__ */ React.createElement(window.I.Download, null), " NDJSON"))), /* @__PURE__ */ React.createElement("div", { className: "card flat", style: { padding: 12, marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("select", { className: "input select", style: { width: 120 } }, /* @__PURE__ */ React.createElement("option", null, "Last 24h"), /* @__PURE__ */ React.createElement("option", null, "Last 7d"), /* @__PURE__ */ React.createElement("option", null, "Custom range")), /* @__PURE__ */ React.createElement("select", { className: "input select", style: { width: 120 } }, /* @__PURE__ */ React.createElement("option", null, "All classes"), /* @__PURE__ */ React.createElement("option", null, "Admin"), /* @__PURE__ */ React.createElement("option", null, "System"), /* @__PURE__ */ React.createElement("option", null, "Detection")), /* @__PURE__ */ React.createElement("select", { className: "input select", style: { width: 120 } }, /* @__PURE__ */ React.createElement("option", null, "All actors"), /* @__PURE__ */ React.createElement("option", null, "admin"), /* @__PURE__ */ React.createElement("option", null, "gitops"), /* @__PURE__ */ React.createElement("option", null, "system")), /* @__PURE__ */ React.createElement("input", { className: "input", style: { flex: 1, maxWidth: 280 }, placeholder: "Search request_id, target, hash\u2026" }))), /* @__PURE__ */ React.createElement("div", { className: "card", style: { padding: 0 } }, /* @__PURE__ */ React.createElement("table", { className: "tbl tbl-compact" }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: { width: 90 } }, "Time"), /* @__PURE__ */ React.createElement("th", { style: { width: 90 } }, "Class"), /* @__PURE__ */ React.createElement("th", { style: { width: 110 } }, "Actor"), /* @__PURE__ */ React.createElement("th", { style: { width: 150 } }, "Action"), /* @__PURE__ */ React.createElement("th", null, "Target"), /* @__PURE__ */ React.createElement("th", null, "Reason"), /* @__PURE__ */ React.createElement("th", { style: { width: 130 } }, "Hash"))), /* @__PURE__ */ React.createElement("tbody", null, [...window.ADMIN_LOG, ...window.ADMIN_LOG.map((l) => ({ ...l, ts: "15:" + l.ts.slice(3), hash: l.hash.slice(0, 11) + "a" }))].slice(0, 14).map((l, i) => /* @__PURE__ */ React.createElement("tr", { key: i }, /* @__PURE__ */ React.createElement("td", { className: "num dim" }, l.ts), /* @__PURE__ */ React.createElement("td", null, /* @__PURE__ */ React.createElement("span", { className: `pill ${l.class === "admin" ? "warn" : l.class === "system" ? "info" : "allow"}` }, l.class)), /* @__PURE__ */ React.createElement("td", { className: "mono" }, l.actor), /* @__PURE__ */ React.createElement("td", { className: "mono", style: { color: "var(--ink)" } }, l.action), /* @__PURE__ */ React.createElement("td", { className: "mono dim" }, l.target), /* @__PURE__ */ React.createElement("td", { className: "dim" }, l.reason), /* @__PURE__ */ React.createElement("td", { className: "mono", style: { fontSize: 10, color: "var(--brand-yellow)" } }, l.hash)))))));
   }
+  function defaultRuleBody(id) {
+    return `rule "${id}" {
+  priority   = 100
+  field      = "any"
+  operator   = "regex"
+  pattern    = r"example"
+  action     = "block"
+  risk_delta = 50
+  scope      = ["global"]
+  tags       = ["custom"]
+}
+`;
+  }
+  function ruleRowToBody(r) {
+    if (r.body) return r.body;
+    return [
+      `rule "${r.id}" {`,
+      `  // ${r.name || r.id}`,
+      `  priority   = ${r.pri ?? 100}`,
+      `  field      = "${r.field || "any"}"`,
+      `  operator   = "${r.op || "regex"}"`,
+      `  pattern    = r"${r.pattern || ""}"`,
+      `  action     = "${r.action || "block"}"`,
+      `  risk_delta = ${r.risk ?? 50}`,
+      `  scope      = ["global"]`,
+      `  tags       = ["${r.cat || "custom"}"]`,
+      `}`,
+      ""
+    ].join("\n");
+  }
+  async function fetchCurrentVersion() {
+    try {
+      const r = await fetch("/api/config/version", { credentials: "same-origin", cache: "no-store" });
+      if (!r.ok) return 0;
+      const j = await r.json();
+      return Number(j.version) || 0;
+    } catch (_) {
+      return 0;
+    }
+  }
   function PageRuleManager() {
-    const [selected, setSelected] = useStateP(window.RULES[0]);
+    const rulesApi = window.useRulesApi();
+    const apiRules = rulesApi.data && Array.isArray(rulesApi.data.rules) && rulesApi.data.rules.length > 0 ? rulesApi.data.rules : window.RULES;
+    const mockById = useMemoP(() => {
+      const m = /* @__PURE__ */ new Map();
+      window.RULES.forEach((r) => {
+        if (!m.has(r.id)) m.set(r.id, r);
+      });
+      return m;
+    }, []);
+    const merged = apiRules.map((r) => {
+      const mock = mockById.get(r.id) || {};
+      return {
+        id: r.id,
+        name: mock.name || r.id,
+        kind: mock.kind || "custom",
+        pri: mock.pri ?? 100,
+        field: mock.field || "any",
+        op: mock.op || "regex",
+        pattern: mock.pattern || "",
+        action: mock.action || "block",
+        risk: mock.risk ?? 50,
+        enabled: r.enabled !== void 0 ? r.enabled : mock.enabled ?? true,
+        cat: mock.cat || "custom",
+        hits1h: mock.hits1h ?? 0,
+        body: r.body || mock.body || ruleRowToBody(mock.id ? mock : { id: r.id })
+      };
+    });
+    const [selectedId, setSelectedId] = useStateP(merged[0]?.id || null);
     const [tab, setTab] = useStateP("dsl");
     const [search, setSearch] = useStateP("");
-    const filtered = window.RULES.filter((r) => !search || r.id.includes(search) || r.name.toLowerCase().includes(search.toLowerCase()));
-    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "page-title" }, "Rule Manager"), /* @__PURE__ */ React.createElement("p", { className: "page-subtitle" }, window.RULES.length, " total \xB7 45 builtin / 44 custom \xB7 validate before apply")), /* @__PURE__ */ React.createElement("div", { className: "page-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn" }, /* @__PURE__ */ React.createElement(window.I.Refresh, null), " Reload"), /* @__PURE__ */ React.createElement("button", { className: "btn" }, "Update Built-in"), /* @__PURE__ */ React.createElement("button", { className: "btn primary" }, /* @__PURE__ */ React.createElement(window.I.Plus, null), " New rule"))), /* @__PURE__ */ React.createElement("div", { className: "split-list" }, /* @__PURE__ */ React.createElement("div", { className: "left" }, /* @__PURE__ */ React.createElement("div", { style: { padding: 10, borderBottom: "1px solid var(--hairline)" } }, /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", left: 8, top: 7, color: "var(--ink-faint)" } }, /* @__PURE__ */ React.createElement(window.I.Search, null)), /* @__PURE__ */ React.createElement("input", { className: "input", style: { paddingLeft: 28 }, placeholder: "Search rule\u2026", value: search, onChange: (e) => setSearch(e.target.value) }))), /* @__PURE__ */ React.createElement("div", { style: { overflow: "auto", flex: 1 } }, filtered.map((r, i) => /* @__PURE__ */ React.createElement(
+    const [editing, setEditing] = useStateP(false);
+    const [editBody, setEditBody] = useStateP("");
+    const [busy, setBusy] = useStateP(false);
+    const [showNew, setShowNew] = useStateP(false);
+    const [newId, setNewId] = useStateP("");
+    const [newBody, setNewBody] = useStateP(defaultRuleBody("my-rule-001"));
+    const [newEnabled, setNewEnabled] = useStateP(true);
+    useEffectP(() => {
+      if (merged.length === 0) {
+        setSelectedId(null);
+        return;
+      }
+      if (!selectedId || !merged.find((r) => r.id === selectedId)) {
+        setSelectedId(merged[0].id);
+      }
+    }, [merged.length, selectedId]);
+    const filtered = merged.filter((r) => !search || r.id.includes(search) || r.name.toLowerCase().includes(search.toLowerCase()));
+    const selected = merged.find((r) => r.id === selectedId) || merged[0] || null;
+    async function runMutation(label, fn) {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const before = await fetchCurrentVersion();
+        const result = await fn();
+        if (result && result.ok) {
+          const v = await window.waitForVersion(before + 1, 1e4);
+          if (v.applied) {
+            window.aegisToast(`${label} \xB7 applied in ${v.latencyMs} ms`, "ok");
+          } else {
+            window.aegisToast(`${label} \xB7 pending after 10 s`, "warn");
+          }
+          rulesApi.reload && rulesApi.reload();
+        } else {
+          const msg = result && (result.message || result.error || result.reason) || "unknown error";
+          window.aegisToast(`${label} failed: ${msg}`, "err");
+        }
+      } catch (err) {
+        window.aegisToast(`${label} error: ${err.message || err}`, "err");
+      } finally {
+        setBusy(false);
+      }
+    }
+    function startEdit() {
+      if (!selected) return;
+      setEditBody(selected.body || ruleRowToBody(selected));
+      setEditing(true);
+      setTab("dsl");
+    }
+    function cancelEdit() {
+      setEditing(false);
+      setEditBody("");
+    }
+    async function saveEdit() {
+      if (!selected) return;
+      await runMutation(
+        `Rule ${selected.id} updated`,
+        () => window.rulesPut(selected.id, { body: editBody, enabled: selected.enabled })
+      );
+      setEditing(false);
+    }
+    async function toggleSelected() {
+      if (!selected) return;
+      const label = selected.enabled ? `Rule ${selected.id} disabled` : `Rule ${selected.id} enabled`;
+      await runMutation(label, () => window.rulesToggle(selected.id));
+    }
+    async function deleteSelected() {
+      if (!selected) return;
+      if (!window.confirm(`Delete rule ${selected.id}? This is audit-mutated and cannot be undone.`)) return;
+      await runMutation(`Rule ${selected.id} deleted`, () => window.rulesDelete(selected.id));
+    }
+    async function createNew() {
+      const id = newId.trim();
+      if (!id) {
+        window.aegisToast("Rule id is required", "err");
+        return;
+      }
+      await runMutation(
+        `Rule ${id} created`,
+        () => window.rulesPost({ id, body: newBody, enabled: newEnabled })
+      );
+      setShowNew(false);
+      setNewId("");
+      setNewBody(defaultRuleBody("my-rule-001"));
+      setNewEnabled(true);
+      setSelectedId(id);
+    }
+    return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "page-head" }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("h1", { className: "page-title" }, "Rule Manager"), /* @__PURE__ */ React.createElement("p", { className: "page-subtitle" }, merged.length, " total \xB7 validate before apply \xB7 audit-chained")), /* @__PURE__ */ React.createElement("div", { className: "page-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: () => rulesApi.reload && rulesApi.reload(), disabled: busy }, /* @__PURE__ */ React.createElement(window.I.Refresh, null), " Reload"), /* @__PURE__ */ React.createElement("button", { className: "btn primary", onClick: () => setShowNew(true), disabled: busy }, /* @__PURE__ */ React.createElement(window.I.Plus, null), " New rule"))), /* @__PURE__ */ React.createElement("div", { className: "split-list" }, /* @__PURE__ */ React.createElement("div", { className: "left" }, /* @__PURE__ */ React.createElement("div", { style: { padding: 10, borderBottom: "1px solid var(--hairline)" } }, /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", left: 8, top: 7, color: "var(--ink-faint)" } }, /* @__PURE__ */ React.createElement(window.I.Search, null)), /* @__PURE__ */ React.createElement("input", { className: "input", style: { paddingLeft: 28 }, placeholder: "Search rule\u2026", value: search, onChange: (e) => setSearch(e.target.value) }))), /* @__PURE__ */ React.createElement("div", { style: { overflow: "auto", flex: 1 } }, filtered.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { padding: 20, fontSize: 12, color: "var(--ink-dim)", textAlign: "center" } }, "No rules match."), filtered.map((r, i) => /* @__PURE__ */ React.createElement(
       "button",
       {
-        key: i,
-        onClick: () => setSelected(r),
+        key: `${r.id}-${i}`,
+        onClick: () => {
+          setSelectedId(r.id);
+          setEditing(false);
+        },
         style: {
           display: "block",
           width: "100%",
@@ -836,15 +1037,15 @@ X-Forwarded-For: ${data.ip}
           padding: "8px 12px",
           border: "none",
           borderBottom: "1px solid var(--hairline)",
-          background: selected === r ? "var(--surface-active)" : "transparent",
-          borderLeft: selected === r ? "3px solid var(--brand-yellow)" : "3px solid transparent",
+          background: selected && selected.id === r.id ? "var(--surface-active)" : "transparent",
+          borderLeft: selected && selected.id === r.id ? "3px solid var(--brand-yellow)" : "3px solid transparent",
           cursor: "pointer",
           color: "inherit"
         }
       },
       /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 2 } }, /* @__PURE__ */ React.createElement("span", { className: "num dim", style: { width: 36, fontSize: 10 } }, r.pri), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, fontWeight: 500, color: "var(--ink)" } }, r.name), /* @__PURE__ */ React.createElement("span", { className: `pill ${r.kind}`, style: { marginLeft: "auto" } }, r.kind)),
-      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", fontSize: 10, color: "var(--ink-dim)" } }, /* @__PURE__ */ React.createElement("span", { className: "mono" }, r.id), /* @__PURE__ */ React.createElement("span", null, "\xB7"), /* @__PURE__ */ React.createElement(window.ActionPill, { value: r.action }), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto" }, className: "num" }, "+", r.risk))
-    )))), /* @__PURE__ */ React.createElement("div", { className: "right" }, /* @__PURE__ */ React.createElement("div", { style: { padding: 14, borderBottom: "1px solid var(--hairline)", display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600 } }, selected.name), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "var(--ink-dim)" }, className: "mono" }, selected.id, " \xB7 priority ", selected.pri, " \xB7 ", selected.hits1h.toLocaleString(), " hits/1h")), /* @__PURE__ */ React.createElement("div", { style: { marginLeft: "auto", display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement("button", { className: "btn" }, /* @__PURE__ */ React.createElement(window.I.Edit, null), " Edit"), /* @__PURE__ */ React.createElement("button", { className: "btn" }, "Disable"), /* @__PURE__ */ React.createElement("button", { className: "btn danger" }, /* @__PURE__ */ React.createElement(window.I.Trash, null)))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", borderBottom: "1px solid var(--hairline)" } }, ["general", "dsl", "diff", "stats"].map((t) => /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setTab(t), style: {
+      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, alignItems: "center", fontSize: 10, color: "var(--ink-dim)" } }, /* @__PURE__ */ React.createElement("span", { className: "mono" }, r.id), /* @__PURE__ */ React.createElement("span", null, "\xB7"), /* @__PURE__ */ React.createElement(window.ActionPill, { value: r.action }), r.enabled ? null : /* @__PURE__ */ React.createElement("span", { className: "pill warn", style: { marginLeft: 4 } }, "off"), /* @__PURE__ */ React.createElement("span", { style: { marginLeft: "auto" }, className: "num" }, "+", r.risk))
+    )))), /* @__PURE__ */ React.createElement("div", { className: "right" }, selected ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { padding: 14, borderBottom: "1px solid var(--hairline)", display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600 } }, selected.name), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "var(--ink-dim)" }, className: "mono" }, selected.id, " \xB7 priority ", selected.pri, " \xB7 ", (selected.hits1h || 0).toLocaleString(), " hits/1h")), /* @__PURE__ */ React.createElement("div", { style: { marginLeft: "auto", display: "flex", gap: 6 } }, !editing && /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: startEdit, disabled: busy }, /* @__PURE__ */ React.createElement(window.I.Edit, null), " Edit"), /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: toggleSelected, disabled: busy }, selected.enabled ? "Disable" : "Enable"), /* @__PURE__ */ React.createElement("button", { className: "btn danger", onClick: deleteSelected, disabled: busy, title: "Delete rule" }, /* @__PURE__ */ React.createElement(window.I.Trash, null)))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", borderBottom: "1px solid var(--hairline)" } }, ["general", "dsl", "stats"].map((t) => /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setTab(t), style: {
       flex: "unset",
       padding: "10px 16px",
       background: "transparent",
@@ -855,26 +1056,53 @@ X-Forwarded-For: ${data.ip}
       fontWeight: 600,
       textTransform: "capitalize",
       cursor: "pointer"
-    } }, t))), /* @__PURE__ */ React.createElement("div", { style: { padding: 16 } }, tab === "general" && /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: 12 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "ID"), /* @__PURE__ */ React.createElement("div", { className: "mono" }, selected.id)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Kind"), /* @__PURE__ */ React.createElement("span", { className: `pill ${selected.kind}` }, selected.kind)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Field"), /* @__PURE__ */ React.createElement("div", null, selected.field)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Operator"), /* @__PURE__ */ React.createElement("div", null, selected.op)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Action"), /* @__PURE__ */ React.createElement(window.ActionPill, { value: selected.action })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Risk \u0394"), /* @__PURE__ */ React.createElement("span", { className: "num" }, "+", selected.risk)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Priority"), /* @__PURE__ */ React.createElement("span", { className: "num" }, selected.pri)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Enabled"), /* @__PURE__ */ React.createElement("div", { className: `toggle ${selected.enabled ? "on" : ""}` })), /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1" } }, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Description"), /* @__PURE__ */ React.createElement("div", { className: "dim" }, "Detects ", selected.cat, " attempts using regex pattern matching against ", selected.field, " of incoming requests."))), tab === "dsl" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { className: "pill ok" }, "validate ok"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: "var(--ink-dim)" } }, "0 errors \xB7 1 warning \xB7 dry-run: 1,247 matches in last 1h")), /* @__PURE__ */ React.createElement("pre", { style: { background: "var(--canvas)", border: "1px solid var(--hairline)", borderRadius: 6, padding: 14, fontSize: 12, fontFamily: "var(--font-mono)", margin: 0, overflow: "auto", lineHeight: 1.6 } }, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--violet)" } }, "rule"), " ", /* @__PURE__ */ React.createElement("span", { style: { color: "var(--brand-yellow)" } }, '"', selected.id, '"'), " ", `{
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--ink-dim)" } }, "// ", selected.name), `
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--info)" } }, "priority"), `   = `, /* @__PURE__ */ React.createElement("span", { className: "num" }, selected.pri), `
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--info)" } }, "field"), `      = "${selected.field}"
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--info)" } }, "operator"), `   = "${selected.op}"
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--info)" } }, "pattern"), `    = `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--up)" } }, 'r"', selected.pattern, '"'), `
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--info)" } }, "action"), `     = "${selected.action}"
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--info)" } }, "risk_delta"), ` = `, /* @__PURE__ */ React.createElement("span", { className: "num" }, selected.risk), `
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--info)" } }, "scope"), `      = `, "[", /* @__PURE__ */ React.createElement("span", { style: { color: "var(--up)" } }, '"global"'), "]", `
-  `, /* @__PURE__ */ React.createElement("span", { style: { color: "var(--info)" } }, "tags"), `       = `, "[", /* @__PURE__ */ React.createElement("span", { style: { color: "var(--up)" } }, '"owasp"'), ", ", /* @__PURE__ */ React.createElement("span", { style: { color: "var(--up)" } }, '"', selected.cat, '"'), "]", `}`)), tab === "diff" && /* @__PURE__ */ React.createElement("pre", { style: { background: "var(--canvas)", border: "1px solid var(--hairline)", borderRadius: 6, padding: 14, fontSize: 12, fontFamily: "var(--font-mono)", margin: 0, lineHeight: 1.6 } }, `@@ -3,3 +3,3 @@
-   priority   = 100
-- `, /* @__PURE__ */ React.createElement("span", { style: { background: "rgba(246,70,93,0.18)", color: "#FF8896" } }, "  risk_delta = 75"), `
-+ `, /* @__PURE__ */ React.createElement("span", { style: { background: "rgba(14,203,129,0.18)", color: "#5BD9A2" } }, "  risk_delta = ", selected.risk), `
-   action     = "{selected.action}"`), tab === "stats" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "var(--ink-dim)", marginBottom: 6 } }, "Match count \xB7 last 1h"), /* @__PURE__ */ React.createElement(window.Sparkline, { data: Array.from({ length: 60 }, () => 100 + Math.random() * 200), w: 600, h: 80, color: "#FCD535", fill: true })), /* @__PURE__ */ React.createElement(window.BarList, { items: [
+    } }, t))), /* @__PURE__ */ React.createElement("div", { style: { padding: 16 } }, tab === "general" && /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: 12 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "ID"), /* @__PURE__ */ React.createElement("div", { className: "mono" }, selected.id)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Kind"), /* @__PURE__ */ React.createElement("span", { className: `pill ${selected.kind}` }, selected.kind)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Field"), /* @__PURE__ */ React.createElement("div", null, selected.field)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Operator"), /* @__PURE__ */ React.createElement("div", null, selected.op)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Action"), /* @__PURE__ */ React.createElement(window.ActionPill, { value: selected.action })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Risk \u0394"), /* @__PURE__ */ React.createElement("span", { className: "num" }, "+", selected.risk)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Priority"), /* @__PURE__ */ React.createElement("span", { className: "num" }, selected.pri)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "field-label" }, "Enabled"), /* @__PURE__ */ React.createElement("div", { className: `toggle ${selected.enabled ? "on" : ""}` }))), tab === "dsl" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } }, /* @__PURE__ */ React.createElement("span", { className: `pill ${editing ? "warn" : "ok"}` }, editing ? "editing" : "view"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: "var(--ink-dim)" } }, editing ? "Save & deploy will PUT /api/rules/{id} and toast on apply" : "Click Edit to modify")), editing ? /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        className: "input",
+        style: { width: "100%", minHeight: 240, fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5, padding: 12 },
+        value: editBody,
+        onChange: (e) => setEditBody(e.target.value)
+      }
+    ) : /* @__PURE__ */ React.createElement("pre", { style: { background: "var(--canvas)", border: "1px solid var(--hairline)", borderRadius: 6, padding: 14, fontSize: 12, fontFamily: "var(--font-mono)", margin: 0, overflow: "auto", lineHeight: 1.6, whiteSpace: "pre-wrap" } }, selected.body || ruleRowToBody(selected))), tab === "stats" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "var(--ink-dim)", marginBottom: 6 } }, "Match count \xB7 last 1h"), /* @__PURE__ */ React.createElement(window.Sparkline, { data: Array.from({ length: 60 }, () => 100 + Math.random() * 200), w: 600, h: 80, color: "#FCD535", fill: true })), /* @__PURE__ */ React.createElement(window.BarList, { items: [
       { label: "/api/login", value: 412 },
       { label: "/api/users", value: 318 },
       { label: "/api/orders", value: 217 },
       { label: "/api/admin/*", value: 145 },
       { label: "/api/products", value: 96 }
-    ] }))), /* @__PURE__ */ React.createElement("div", { style: { padding: 12, borderTop: "1px solid var(--hairline)", display: "flex", gap: 8, justifyContent: "flex-end" } }, /* @__PURE__ */ React.createElement("button", { className: "btn" }, "Validate"), /* @__PURE__ */ React.createElement("button", { className: "btn" }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn primary" }, "Save & deploy")))));
+    ] }))), /* @__PURE__ */ React.createElement("div", { style: { padding: 12, borderTop: "1px solid var(--hairline)", display: "flex", gap: 8, justifyContent: "flex-end" } }, editing && /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: cancelEdit, disabled: busy }, "Cancel"), editing && /* @__PURE__ */ React.createElement("button", { className: "btn primary", onClick: saveEdit, disabled: busy }, "Save & deploy"))) : /* @__PURE__ */ React.createElement("div", { style: { padding: 24, fontSize: 12, color: "var(--ink-dim)" } }, "No rule selected. Use \u201C+ New rule\u201D to create one."))), showNew && /* @__PURE__ */ React.createElement(
+      NewRuleModal,
+      {
+        newId,
+        setNewId,
+        newBody,
+        setNewBody,
+        newEnabled,
+        setNewEnabled,
+        onCancel: () => setShowNew(false),
+        onSave: createNew,
+        busy
+      }
+    ));
+  }
+  function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNewEnabled, onCancel, onSave, busy }) {
+    return /* @__PURE__ */ React.createElement("div", { style: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.5)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 1e3
+    }, onClick: onCancel }, /* @__PURE__ */ React.createElement("div", { className: "card", style: { width: 560, maxWidth: "90vw", padding: 0 }, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", borderBottom: "1px solid var(--hairline)", display: "flex", alignItems: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14, fontWeight: 600 } }, "New rule"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: "var(--ink-dim)", marginLeft: 8 } }, "POST /api/rules \xB7 audit-mutated \xB7 CSRF-gated"), /* @__PURE__ */ React.createElement("button", { className: "btn", style: { marginLeft: "auto" }, onClick: onCancel, disabled: busy }, "\xD7")), /* @__PURE__ */ React.createElement("div", { style: { padding: 16, display: "flex", flexDirection: "column", gap: 12 } }, /* @__PURE__ */ React.createElement("label", { style: { display: "flex", flexDirection: "column", gap: 4 } }, /* @__PURE__ */ React.createElement("span", { className: "field-label" }, "Rule ID"), /* @__PURE__ */ React.createElement("input", { className: "input", value: newId, onChange: (e) => setNewId(e.target.value), placeholder: "custom-xss-001", autoFocus: true })), /* @__PURE__ */ React.createElement("label", { style: { display: "flex", flexDirection: "column", gap: 4 } }, /* @__PURE__ */ React.createElement("span", { className: "field-label" }, "DSL body"), /* @__PURE__ */ React.createElement(
+      "textarea",
+      {
+        className: "input",
+        style: { minHeight: 220, fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5, padding: 12 },
+        value: newBody,
+        onChange: (e) => setNewBody(e.target.value)
+      }
+    )), /* @__PURE__ */ React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12 } }, /* @__PURE__ */ React.createElement("input", { type: "checkbox", checked: newEnabled, onChange: (e) => setNewEnabled(e.target.checked) }), /* @__PURE__ */ React.createElement("span", null, "Enabled on save"))), /* @__PURE__ */ React.createElement("div", { style: { padding: 12, borderTop: "1px solid var(--hairline)", display: "flex", gap: 8, justifyContent: "flex-end" } }, /* @__PURE__ */ React.createElement("button", { className: "btn", onClick: onCancel, disabled: busy }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn primary", onClick: onSave, disabled: busy || !newId.trim() }, "Save"))));
   }
   function PageTierConfig() {
     const [selected, setSelected] = useStateP(window.TIERS[1]);
@@ -1122,7 +1350,7 @@ X-Forwarded-For: ${data.ip}
       default:
         page = /* @__PURE__ */ React.createElement(window.PageOverview, null);
     }
-    return /* @__PURE__ */ React.createElement("div", { className: "app density-compact" }, /* @__PURE__ */ React.createElement(TopBar, { env: "prod" }), /* @__PURE__ */ React.createElement(Sidebar, { active: route, onNav: nav }), /* @__PURE__ */ React.createElement("main", { className: "content" }, page), /* @__PURE__ */ React.createElement(StatusBar, { tick }));
+    return /* @__PURE__ */ React.createElement("div", { className: "app density-compact" }, /* @__PURE__ */ React.createElement(TopBar, { env: "prod" }), /* @__PURE__ */ React.createElement(Sidebar, { active: route, onNav: nav }), /* @__PURE__ */ React.createElement("main", { className: "content" }, page), /* @__PURE__ */ React.createElement(StatusBar, { tick }), /* @__PURE__ */ React.createElement(window.ToastContainer, null));
   }
   ReactDOM.createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(App, null));
 })();

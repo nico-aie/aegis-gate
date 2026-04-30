@@ -154,6 +154,7 @@ function App() {
       <Sidebar active={route} onNav={nav} />
       <main className="content">{page}</main>
       <StatusBar tick={tick} />
+      <window.ToastContainer />
     </div>
   );
 }

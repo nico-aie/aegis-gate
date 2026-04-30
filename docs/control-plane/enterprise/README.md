@@ -1,8 +1,13 @@
 # Enterprise Dashboard — Design Spec
 
-> **Status.** Design phase. No implementation yet — see
-> [`../../plans/dashboard-enterprise/README.md`](../../plans/dashboard-enterprise/README.md)
-> for the task breakdown that turns this spec into code.
+> **Status.** Shipped. The Aegis WAF Console (DD-T0..T8) bundles
+> this design into `crates/aegis-control/assets/dashboard/app.js`.
+> See [`../../../plans/dashboard-redesign.md`](../../../plans/dashboard-redesign.md)
+> for the redesign plan and
+> [`../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md`](../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md)
+> for the closing run. The earlier milestone-paced execution plan
+> (D-M1..D-M6) is archived under
+> [`../../../plans/archive/dashboard-enterprise/README.md`](../../../plans/archive/dashboard-enterprise/README.md).
 
 > **Reference.** This work upgrades the existing v1 dashboard
 > (single-page event tail at `/dashboard/`, see

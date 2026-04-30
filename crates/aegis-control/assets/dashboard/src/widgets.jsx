@@ -374,7 +374,73 @@ function SectionHeader({ title, sub, actions }) {
   );
 }
 
+// ============= DD-T7 — Toast container =============
+//
+// Single global queue, emitted via custom event so any page can
+// fire one without prop-drilling. Pages call:
+//
+//   window.aegisToast('Applied in 1.2s', 'ok');
+//
+// Kinds: 'ok' (green), 'warn' (yellow), 'err' (red), 'info' (default).
+function ToastContainer() {
+  const [toasts, setToasts] = useStateW([]);
+  useEffectW(() => {
+    const onAdd = (e) => {
+      const id = Math.random().toString(36).slice(2);
+      const t = { id, ts: Date.now(), ...e.detail };
+      setToasts(prev => [...prev.slice(-4), t]);
+      const ttl = t.kind === 'err' ? 8000 : t.kind === 'ok' ? 2500 : 5000;
+      setTimeout(() => setToasts(prev => prev.filter(x => x.id !== id)), ttl);
+    };
+    window.addEventListener('aegis:toast', onAdd);
+    return () => window.removeEventListener('aegis:toast', onAdd);
+  }, []);
+  return (
+    <div style={{
+      position: 'fixed', bottom: 32, right: 16, zIndex: 9999,
+      display: 'flex', flexDirection: 'column', gap: 6,
+      pointerEvents: 'none',
+    }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{
+          minWidth: 240, maxWidth: 360, padding: '8px 12px',
+          background: 'var(--surface-2)',
+          border: '1px solid ' + (
+            t.kind === 'ok' ? 'var(--up)' :
+            t.kind === 'warn' ? 'var(--warn)' :
+            t.kind === 'err' ? 'var(--down)' :
+            'var(--hairline-strong)'
+          ),
+          borderLeft: '3px solid ' + (
+            t.kind === 'ok' ? 'var(--up)' :
+            t.kind === 'warn' ? 'var(--warn)' :
+            t.kind === 'err' ? 'var(--down)' :
+            'var(--brand-yellow)'
+          ),
+          borderRadius: 'var(--radius)',
+          color: 'var(--ink)',
+          fontSize: 12,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', gap: 8,
+          pointerEvents: 'auto',
+        }}>
+          <div style={{ flex: 1 }}>{t.message}</div>
+          {t.detail && <span className="dim mono" style={{ fontSize: 10 }}>{t.detail}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Pages call `window.aegisToast(message, kind, detail)`.
+function aegisToast(message, kind = 'info', detail = null) {
+  window.dispatchEvent(new CustomEvent('aegis:toast', {
+    detail: { message, kind, detail },
+  }));
+}
+
 Object.assign(window, {
   I, Sparkline, StatTile, TrafficChart, Donut, WorldMap, RiskHeatmap,
   RiskMeter, ActionPill, TierPill, Drawer, StackedBar, BarList, SectionHeader,
+  ToastContainer, aegisToast,
 });

@@ -1,6 +1,10 @@
 # Cluster Ingress / Load-Balancer Plan
 
-> **Status:** Open. Tracks carry-over 6 (HA test methodology
+> **Status:** Closed — HA-T1..T5 shipped in run-05. Reference only.
+>
+> See [`README.md`](./README.md) for the track status board.
+>
+> **Original scope.** Tracked carry-over 6 (HA test methodology
 > gap surfaced 2026-04-29) plus the rest of the HA roadmap
 > from
 > [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).

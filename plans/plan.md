@@ -32,8 +32,8 @@ Before implementing anything, load context in this exact order:
 4. [`plans/plan.md`](./plan.md) — this assistant guide (rules +
    protocol).
 5. The active track's plan file:
-   - **Phase B (active):** [`plans/phase-b/README.md`](./phase-b/README.md)
-   - **Dashboard redesign (queued):** [`plans/dashboard-redesign/README.md`](./dashboard-redesign/README.md)
+   - **Phase B (active):** [`plans/phase-b/README.md`](./phase-b/README.md) — only B6 packaging remains
+   - Closed reference: [`plans/dashboard-redesign.md`](./dashboard-redesign.md) (DD-T0..T8 — Aegis WAF Console)
 6. (When relevant) the matching doc under `docs/<category>/...`
    that the task touches — its `> **Status:**` banner is the fast
    read on what already works.
@@ -56,8 +56,7 @@ Context files to read first (in order):
 4. plans/plan.md (this assistant guide)
 5. Active track's plan file:
    - Phase B (active):       plans/phase-b/README.md
-   - Dashboard redesign:     plans/dashboard-redesign/README.md
-                             + plans/dashboard-redesign/milestone-<N>-*.md
+   - Dashboard redesign:     plans/dashboard-redesign.md (closed reference)
                              + docs/control-plane/enterprise/README.md (design spec)
 6. Per-doc status:           plans/implementation-matrix.md
 
@@ -115,7 +114,7 @@ that header intact.
 | **Next Task** | The immediate next item, or a list of open tracks if no task is in flight | Every closed task — overwrite |
 | **Tracks in flight** | Long-running tracks + their open/closed state | Only when a track opens or closes |
 | **Carry-overs / known limitations** | Durable list of things that work but aren't fully shipped | Only when a carry-over graduates to "shipped" |
-| **Future phases** | Pointers to `plans/dashboard-redesign/` + `docs/future/advanced-features.md` | Rarely |
+| **Future phases** | Pointers to `docs/future/advanced-features.md` (multi-tenancy, RBAC/SSO intake) | Rarely |
 | **Verification (last full run)** | `cargo test` count + clippy state | Every closed task |
 | **Completed Tasks Log** | One row per closed task | **Append only** — never edit older rows |
 

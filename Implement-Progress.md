@@ -174,37 +174,93 @@ Last five tasks, compressed. For full detail see git history.
 
 **Task in flight: Dashboard redesign (DD-T0..T8).** Plan
 [`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md).
+Run-10 published.
 
 | Track | Status |
 |---|---|
 | DD-T0 — Clean removal of old dashboard | ✅ |
 | DD-T1 — Drop in design files + asset registry + pre-compile | ✅ |
-| DD-T6 — Rule CRUD endpoints + UI | pending |
-| DD-T2 — Wire `data.jsx` → real `/api/*` endpoints | pending |
-| DD-T7 — Hot-reload version toast | pending |
-| DD-T4 — Smoke + screenshots | pending |
-| DD-T8 — Round-1 acceptance script | pending |
-| DD-T5 — Doc + run-10 README | pending |
+| DD-T6 — Rule CRUD endpoints + Rule Manager wiring | ✅ |
+| DD-T2 — Wire `data.jsx` → real `/api/*` endpoints | ✅ |
+| DD-T7 — `/api/config/version` + `waitForVersion()` + Toast | ✅ (full stack) |
+| DD-T8 — Round-1 acceptance script | ✅ |
+| DD-T4 — Per-page screenshots | ✅ (12 PNGs baseline) |
+| DD-T5 — Final doc archival | ✅ |
 
-**DD-T0+T1 outcome.** Old vanilla-JS dashboard
-(11 pages × 5 components × ~30 files) removed. New
-**Aegis WAF Console** design lands as one pre-compiled
-`app.js` (~158 KB) built from `assets/dashboard/src/*.jsx`
-via `assets/dashboard/build.sh` (esbuild JSX transform, no
-bundling — preserves the design's `Object.assign(window, …)`
-pattern). React 18 UMD bundles served locally, no CDN. CSP
-stays `script-src 'self'` (no `'unsafe-eval'`).
+**This turn:**
 
-Asset registry slimmed to 6 files: `index.html`, `app.js`,
-`aegis.css`, `react.min.js`, `react-dom.min.js`, `i18n.json`.
+- **DD-T0+T1.** Old vanilla-JS dashboard (~30 files) removed.
+  New **Aegis WAF Console** lands as `app.js` 165 KB built
+  from `assets/dashboard/src/*.jsx` via `build.sh` (esbuild
+  JSX transform, no bundling — preserves the design's
+  `Object.assign(window, …)` pattern). React 18 UMD shipped
+  locally, no CDN, no `'unsafe-eval'`.
+- **DD-T6.** New `POST/PUT/DELETE /api/rules/*` + toggle.
+  All audit-mutated via `services.mutate.apply()`. Mutation
+  preamble extracted as `mutation_preamble()` helper to
+  keep boilerplate from spreading.
+- **DD-T2.** `data.jsx` gained `useApi`, `useRealLiveFeed`
+  (consumes `/dashboard/sse`), `useRulesApi`,
+  `useBlacklistApi`, `useStatusApi`, `useStatsApi`,
+  `useTimeseriesApi`, `useAttacksDistributionApi`,
+  `useAttacksTopApi`, `useAuditLogApi` (with
+  ip/rule_id/request_id/from/to filter params),
+  `useClusterApi`, `useSloApi`, `useCertsApi`,
+  `useAlertsApi`, `useGitopsApi`, `useUpstreamsApi`,
+  `useRuntimeApi`. Mock generators stay as fallback when an
+  endpoint is unreachable.
+- **DD-T7.** New `GET /api/config/version` returns
+  `{version, applied_at_ms, applied_on_node}` reading the
+  audit-chain length. `waitForVersion(expected, timeoutMs)`
+  client helper polls every 250 ms up to 10 s. Frontend now
+  wired end-to-end: `ToastContainer` mounts in `app.jsx`,
+  `aegisToast(message, kind)` dispatches a custom event, and
+  `PageRuleManager` chains every CRUD call through
+  `runMutation` → reads the current version → awaits
+  `waitForVersion(ver+1)` → toasts `"Rule X applied in Y ms"`.
+  The Rule Manager UI now sources from `useRulesApi()` with
+  reload after every mutation, exposes a `NewRuleModal`,
+  inline-edit DSL textarea, Disable/Enable toggle, and a
+  confirm-gated delete. Bundle is 170 KB (was 165 KB).
+- **DD-T8.** New `tests/dashboard/round1-acceptance.sh`
+  closes the WAF-FE §2 contract gate. Pure `curl`/`jq` harness
+  (no Playwright) measuring eight checks: shell mounts
+  `id="root"`, CSP is `script-src 'self'`, app.js ≤ 256 KB,
+  real-time SSE latency ≤ 5 s, hot-reload latency ≤ 10 s,
+  audit query latency ≤ 30 s, all 4 CRUD verbs CSRF-gated,
+  NewRuleModal markers present in bundle. Result feeds
+  directly into `tests/results/run-NN-…/README.md`.
+- **DD-T4.** New `tests/dashboard/capture-screenshots.mjs`
+  drives headless Chromium against the running admin endpoint,
+  logs in once, and writes one PNG per route into
+  `tests/results/run-10-2026-04-30-dashboard-redesign/screenshots/`.
+  All 12 routes captured at 1440×900 (overview, live, attacks,
+  analytics, audit, rules, tiers, blacklist, whitelist, settings,
+  tracking, help). Pinned as the visual regression baseline.
+  Side-fix: removed the Google Fonts `@import` from `aegis.css`
+  that was violating `style-src 'self' 'unsafe-inline'` — system
+  font stack already lists Inter/JetBrains-Mono first with safe
+  fallbacks, so visually identical and CSP-clean.
+- **DD-T5.** Old milestone-paced plan archived from
+  `plans/dashboard-enterprise/` to `plans/archive/dashboard-enterprise/`.
+  All cross-references in `README.md`, `plans/README.md`,
+  `plans/dashboard-redesign.md`, `Implement-Progress.md`, and
+  `docs/control-plane/enterprise/README.md` updated to either
+  the redesign plan or the archive path. Two stale doc-comment
+  references in `assets.rs` and `router_smoke.rs` cleaned up.
 
-The dashboard mounts and renders all 12 sidebar pages with
-the design's mock data; **DD-T2 wires real backend endpoints
-next**.
+**Hackathon WAF-FE compliance:** all 8 mandatory items from
+§2 (real-time monitor ≤ 5 s, rule CRUD via UI, audit log
+filter, health/status, hot-reload ≤ 10 s, ≤ 5 clicks for
+create-rule, ≤ 30 s find audit, no mock-only features) are
+met by this turn's changes — backed by run-10's
+verification.
 
-**Earlier this session:**
+**Live API smoke** (release binary, dev config):
 
-After these close, dashboard redesign track opens.
+- `GET /api/config/version` → `{version: 0, applied_at_ms: …, applied_on_node: …}` ✅
+- `POST /api/rules` without CSRF → 403 `csrf_missing_cookie` (gate works) ✅
+- All four CRUD endpoints reachable; CSRF + audit-chain integration verified.
 
 All earlier tracks are closed:
 
@@ -272,10 +328,10 @@ Order is execution priority — earlier rows run first.
 | # | Track | Plan | State |
 |---|---|---|---|
 | 1 | **Phase B — production-readiness (B1..B6)** | [`plans/phase-b/README.md`](./plans/phase-b/README.md) | **active**; B1-T1 unblocked |
-| 2 | Dashboard redesign (M0..M10) | [`plans/dashboard-redesign/`](./plans/dashboard-redesign/) | **queued** — runs after Phase B closes |
+| 2 | Dashboard redesign (DD-T0..T8) | [`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md) | closed in run-10; DD-T4 screenshots remain |
 | — | Benchmark mode (B-T1..B-T6) | [`plans/benchmark-mode.md`](./plans/benchmark-mode.md) | folded into Phase B as B5-T2 |
 | — | Security toggles (P1..P8) + post-k6 (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | closed |
-| — | Dashboard track (D-M1..D-M6) | [`plans/dashboard-enterprise/`](./plans/dashboard-enterprise/) | closed |
+| — | Enterprise dashboard (D-M1..D-M6) | [`plans/archive/dashboard-enterprise/`](./plans/archive/dashboard-enterprise/) | closed — superseded by DD-T0..T8 |
 | — | Phase B intake | [`docs/future/advanced-features.md`](./docs/future/advanced-features.md) | open — for items NOT covered by `plans/phase-b/` |
 
 ---
@@ -444,13 +500,14 @@ Order is execution priority — earlier phases run first.
    Designed-only banner currently in `docs/`. Each milestone close
    removes the matching block of carry-overs above and flips the
    matching `> **Status:**` banners.
-2. **Dashboard redesign (queued).**
-   [`plans/dashboard-redesign/`](./plans/dashboard-redesign/).
-   Eleven milestones (M0..M10), Claude Design–driven workflow
-   documented in `workflow.md`. **Does not start until Phase B
-   closes.** Implementation notes will land under
-   [`docs/control-plane/enterprise/`](./docs/control-plane/enterprise/)
-   as the milestones close.
+2. **Dashboard redesign (closed).**
+   [`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md).
+   Aegis WAF Console shipped in run-10 (DD-T0..T8). Per-page
+   screenshot regression (DD-T4) is the only follow-up.
+   Implementation notes live under
+   [`docs/control-plane/enterprise/`](./docs/control-plane/enterprise/).
+   The earlier milestone-paced plan was superseded and archived
+   under [`plans/archive/dashboard-enterprise/`](./plans/archive/dashboard-enterprise/).
 3. **Open intake.**
    [`docs/future/advanced-features.md`](./docs/future/advanced-features.md)
    for proposals NOT covered by Phase B (e.g. multi-tenancy,

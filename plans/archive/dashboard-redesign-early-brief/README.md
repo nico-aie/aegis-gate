@@ -1,23 +1,17 @@
-# Dashboard Redesign Track
+# Dashboard Redesign Track — early brief (ARCHIVED)
 
-> **Status:** Queued — Eleven milestones (M0..M10). Runs **after** Phase B closes.
+> **Status:** Superseded — never executed in this shape.
 >
-> See [`README.md`](../README.md) for the track status board.
-
-> **Status.** Planning. The current dashboard SPA at
-> `crates/aegis-control/assets/dashboard/` ships an MVP that
-> covers the data wiring (P1–P8 endpoints) but the
-> presentation, density, and operator workflows do not meet
-> the bar. **Goal of this track**: ship a redesigned UI page
-> by page, using Claude as a structured design + frontend
-> collaborator at every stage.
-
-This track is **independent** of the data layer (already
-delivered through P1–P8) and the post-k6 follow-up
-([`../post-k6-followup.md`](../post-k6-followup.md)). It can
-proceed in parallel as long as
-[`F-T1`](../post-k6-followup.md) (admin login) lands first
-so the SPA can actually authenticate.
+> The eleven-milestone (M0..M10) breakdown in this folder was
+> the early planning artefact for a Claude Design–driven dashboard
+> redesign. It was replaced before execution by the simpler
+> DD-T0..T8 plan that actually shipped — see
+> [`../../dashboard-redesign.md`](../../dashboard-redesign.md) and
+> the closing run-10 README under
+> [`../../../tests/results/run-10-2026-04-30-dashboard-redesign/`](../../../tests/results/run-10-2026-04-30-dashboard-redesign/).
+>
+> Kept here for historical reference only. Do not link to this
+> tree from new work.
 
 ## Inputs the track depends on
 

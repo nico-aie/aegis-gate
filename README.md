@@ -8,23 +8,29 @@ Targeted at enterprise environments (fintech, healthcare, public sector) with hi
 
 ## Status
 
-**Core M1–M3 milestones complete.** The full **enterprise dashboard
-track (D-M1..D-M6)** has also shipped — multi-page operator console
-with 27 read-only `/api/*` endpoints. **Workspace test count: 1,752.**
-Workspace `cargo clippy -- -D warnings` clean.
+**Core M1–M3, the Aegis WAF Console redesign, HA cluster, and the
+external interop contract are all shipped.** Phase B is the only
+active track, and within Phase B only **B6 (production packaging)**
+remains — `B6-T1` (production Dockerfile) is the in-flight task.
+
+**Workspace test count: 2,197.** Workspace `cargo clippy -- -D warnings`
+clean (modulo two pre-existing rust 1.94 lints in untouched files).
 
 | Milestone | Crate | Description |
 |-----------|-------|-------------|
-| **M1** Data Plane | `aegis-proxy` | TLS, HTTP/2, WebSocket, gRPC, routing, upstream pools, circuit breakers, rate-limiting quotas, canary, retries, caching, state backends, service discovery, hot reload |
-| **M2** Security Pipeline | `aegis-security` | Rule engine (AST + evaluator), OWASP detectors (SQLi, XSS, path traversal, SSRF, etc.), risk scoring, JA4/JA3 fingerprinting, bot classification, challenge ladder, DLP, JWT/OAuth, OpenAPI enforcement, GraphQL guard, FPE |
-| **M3** Control Plane | `aegis-control` | Prometheus metrics, health probes, dashboard + SSE, tracing, access logs, audit hash chain, 8 SIEM sinks, admin auth (argon2id + HMAC + CSRF + TOTP + mTLS), compliance (FIPS/PCI/SOC2/GDPR/HIPAA), GitOps loader, SLO alerting |
-| **D-M1..D-M6** Enterprise Dashboard | `aegis-control` (assets + api modules) | Vanilla-JS SPA shell + router + i18n + 11 sidebar pages (Overview, Live Feed, Attack Events, Analytics, Audit Log, Rule Manager, Tier Config, Blacklist, Whitelist, Settings, Tracking) + 27 `/api/*` endpoints + a11y/contrast/header/budget polish tests. See [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) for the design spec and [`plans/dashboard-enterprise/`](plans/dashboard-enterprise/) for the task plans. |
+| **M1** Data Plane | `aegis-proxy` | TLS (rustls), HTTP/1.1, HTTP/2, HTTP/3 (`http3` feature), WebSocket, gRPC, routing trie, upstream pools (5 LB strategies + pooled keep-alive HTTP/1.1 + rustls connector for HTTPS), circuit breakers, rate-limiting quotas, canary, retries, caching, state backends (in-memory + Redis), service discovery (Consul / etcd / k8s), hot reload, ACME, OCSP stapling |
+| **M2** Security Pipeline | `aegis-security` | Rule engine (AST + evaluator + hot reload), OWASP detectors, risk scoring, JA4/JA3 fingerprinting, HTTP/2 fingerprint, bot classification, challenge ladder, DLP + FPE, JWT/OAuth, OpenAPI enforcement, GraphQL guard, STIX/TAXII threat intel (`taxii` feature), GeoIP MaxMind reader (`geoip` feature), ICAP RFC 3507 client |
+| **M3** Control Plane | `aegis-control` | Prometheus metrics, health probes, audit hash chain (SHA-256), 8 SIEM sinks, admin auth (argon2id + HMAC session + CSRF + TOTP + mTLS), compliance (FIPS/PCI/SOC2/GDPR/HIPAA), GitOps loader (built-in `git` poll-and-pull), SLO alerting + multi-burn windows + VipTalk delivery (`alerts` feature), audit-mutation pipeline (rule CRUD lands here), `/api/config/version` for hot-reload visibility |
+| **HA cluster** | `aegis-proxy` + `aegis-control` | Redis-backed cluster shared rate-limits + leader lease; `/admin/drain` + `?strict=1` readiness; HAProxy reference deploy in `deploy/haproxy/`. Run-05 measured 9.5 k RPS via VIP and 99.93 % hard / 100 % graceful failover. (Plan: [`plans/cluster-ingress-lb.md`](plans/cluster-ingress-lb.md), `HA-T<n>`.) |
+| **Interop contract** | `aegis-control::interop` + `aegis-proxy` | Always-on `X-WAF-*` response headers + `/__waf_control/*` (capabilities, mode, reset_state, rule_id_present), audit-chained mode toggles, JSONL audit sink. Run-08 self-gate: 27/27 contract checks green at ~30 µs p95 overhead. (Plan: [`plans/interop-contract.md`](plans/interop-contract.md), `IT-T<n>`.) |
+| **Aegis WAF Console (DD-T0..T8)** | `aegis-control` (assets + api) | Pre-compiled React 18 SPA (`crates/aegis-control/assets/dashboard/app.js`, ~170 KB) + 12 sidebar pages + 17 real `/api/*` hooks + Rule CRUD with hot-reload toast. CSP `script-src 'self'` (no CDN, no `unsafe-eval`). Closes the Hackathon WAF-FE §2 contract — real-time monitor ≤ 5 s, hot-reload ≤ 10 s, ≤ 5 clicks for create-rule, audit search ≤ 30 s. See [`plans/dashboard-redesign.md`](plans/dashboard-redesign.md). |
 
-**Deferred** (carried in `Implement-Progress.md`): mutating
-endpoints (writes are gated on the M3 audit-mutation pipeline);
-real cluster / cert / alert state (handlers return placeholder
-shapes); Chart.js vendoring + SRI test; full SSE streaming; full
-upstream proxying; benchmark mode track (`plans/benchmark-mode.md`).
+**Open carry-overs** (tracked in `Implement-Progress.md`):
+
+- `B6-T1` production Dockerfile (multi-stage distroless, signed image).
+- `B6-T2..T5` Helm chart, GitHub Actions CI, HSM resolver, fd-pass binary handover.
+- Auto-stamping `Alt-Svc` on every TLS response (helper exists, listener wire-up pending).
+- Full benchmark-mode plan (B-T1..B-T6) — IP allowlist, HMAC tokens, per-detector timing, dashboard panel — beyond the core slice that landed as B5-T2.
 
 ## Quick Start
 
@@ -74,13 +80,23 @@ aegis-gate/
 ├── Architecture.md          # System architecture and design decisions
 ├── Implement-Progress.md    # Implementation progress log
 ├── plans/                   # Implementation plans per track
-│   ├── plan.md              # AI assistant guide + tracks-in-flight table
-│   ├── proxy.md             # M1: aegis-proxy tasks
-│   ├── security.md          # M2: aegis-security tasks
-│   ├── control.md           # M3: aegis-control tasks
-│   ├── dashboard-enterprise/   # D-M1..D-M6 dashboard track (complete)
-│   │   └── milestone-1..6-*.md
-│   └── benchmark-mode.md    # B-T1..B-T6 benchmark track (planning)
+│   ├── README.md            # Status board for every track
+│   ├── plan.md              # AI assistant guide + protocol
+│   ├── implementation-matrix.md  # doc-by-doc Implemented/Partial/Designed
+│   ├── phase-b/             # ACTIVE — B1..B6 (B6 only remains)
+│   ├── proxy.md             # M1 (closed)
+│   ├── security.md          # M2 (closed)
+│   ├── control.md           # M3 (closed)
+│   ├── dashboard-redesign.md       # DD-T0..T8 (closed) — Aegis WAF Console
+│   ├── cluster-ingress-lb.md       # HA-T1..T5 (closed)
+│   ├── interop-contract.md         # IT-T1..T6 (closed)
+│   ├── interop-dry-run.md          # DR-T1..T7 (closed)
+│   ├── post-run-08.md              # AF-T1, HP-T1, TLS-T1 (closed)
+│   ├── post-k6-followup.md         # P1..P8 + F-T1..F-T10 (closed)
+│   ├── benchmark-mode.md           # folded into B5-T2
+│   └── archive/            # superseded plans, kept for history
+│       ├── dashboard-enterprise/        # D-M1..D-M6 superseded by DD
+│       └── dashboard-redesign-early-brief/  # M0..M10 brief superseded by DD
 ├── docs/                    # Per-feature specifications (~60 files, foldered)
 │   ├── README.md            # Taxonomy index + ownership map
 │   ├── operator/            # usage.md, cli.md, benchmark-mode.md
@@ -142,7 +158,7 @@ aegis-gate/
 |-------|-------|
 | **aegis-proxy** | TLS termination, HTTP/2, WebSocket, gRPC, routing trie, upstream pools (5 LB strategies), circuit breakers, per-route quotas, canary/shadow, retries, caching, state backends (in-memory + Redis), service discovery, hot reload, ACME, OCSP stapling |
 | **aegis-security** | Rule engine (AST + parser + evaluator + hot reload), rate limiters (sliding window + token bucket), DDoS detection, 7 OWASP detectors, JA4/JA3 fingerprinting, HTTP/2 fingerprint, composite device ID, risk scoring with decay, challenge ladder (JS + CAPTCHA + block), bot classifier, threat intel feeds, DLP (patterns + FPE), OpenAPI/GraphQL enforcement, JWT/OAuth validation, HMAC signing, ForwardAuth |
-| **aegis-control** | Prometheus metrics, health probes (live/ready/startup), enterprise SPA dashboard (11 sidebar pages — D-M1..D-M6) + SSE, W3C Trace Context, access logs (combined/JSON/template), audit hash chain (SHA-256), chain verification, 8 SIEM sinks (JSONL/syslog/CEF/LEEF/OCSF/Splunk HEC/ECS/Kafka), witness export, admin auth (argon2id/HMAC sessions/CSRF/rate limit/lockout/TOTP/mTLS), compliance profiles (FIPS/PCI-DSS/SOC2/GDPR/HIPAA), data residency + retention + erasure, GitOps loader, SLO/SLI engine with multi-burn alerting, 27 read-only `/api/*` endpoints (stats / timeseries / upstreams / attacks / audit / about / analytics / rules / tiers / blacklist / whitelist / admin / tracking / filters / witness / bots / threat-intel) |
+| **aegis-control** | Prometheus metrics, health probes (live/ready/startup with `?strict=1` leader gate + `/admin/drain` for graceful failover), Aegis WAF Console (12-page React 18 SPA — DD-T0..T8) + real `/dashboard/sse` streaming, W3C Trace Context, access logs (combined/JSON/template), audit hash chain (SHA-256) with mutation pipeline (rule CRUD), chain verification, 8 SIEM sinks (JSONL/syslog/CEF/LEEF/OCSF/Splunk HEC/ECS/Kafka), witness export, admin auth (argon2id/HMAC sessions/CSRF/rate limit/lockout/TOTP/mTLS), compliance profiles (FIPS/PCI-DSS/SOC2/GDPR/HIPAA), data residency + retention + erasure, GitOps loader (`B3-T1` built-in git driver), SLO/SLI engine with multi-burn alerting + VipTalk delivery, `/api/config/version` for hot-reload visibility, interop contract surface (`X-WAF-*` headers + `/__waf_control/*`), 17 real `/api/*` data hooks consumed by the dashboard (stats / timeseries / upstreams / attacks / audit / about / analytics / rules / tiers / blacklist / whitelist / cluster / slo / certs / alerts / gitops / runtime) |
 | **aegis-core** | Shared types (`WafConfig`, `AuditEvent`, `ReadinessSignal`), traits (`SecurityPipeline`, `StateBackend`), config loading, error types, tier classification |
 | **aegis-bin** | `waf` binary — CLI dispatch, crate wiring, `run`/`validate`/`audit verify`/`admin set-password`/`admin enroll-totp` |
 
@@ -185,9 +201,10 @@ cargo clippy --workspace -- -D warnings
 
 | Document | Purpose |
 |----------|---------|
+| [`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md) | **SOC team operations runbook** — config → build → deploy → login → test → monitor, plus incident playbooks |
 | [`docs/operator/cli.md`](docs/operator/cli.md) | Authoritative CLI reference |
-| [`docs/operator/usage.md`](docs/operator/usage.md) | Operations and usage guide |
-| [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) | Enterprise dashboard design spec (layout, pages, API, accessibility, security) |
+| [`docs/operator/usage.md`](docs/operator/usage.md) | Day-1 bring-up + day-2 operations guide |
+| [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) | Aegis WAF Console design spec (layout, pages, API, accessibility, security) |
 | [`docs/operator/benchmark-mode.md`](docs/operator/benchmark-mode.md) | Benchmark mode design (gated, opt-in `X-Aegis-*` diagnostics) |
 | [`deploy/GUIDE.md`](deploy/GUIDE.md) | Deployment guide (dev → staging → production) |
 | [`deploy/README.md`](deploy/README.md) | Dev infrastructure quick start |

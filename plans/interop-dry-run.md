@@ -1,5 +1,9 @@
 # Interop Contract — Self-Driven Dry-Run
 
+> **Status:** Closed — DR-T1..T7 shipped in run-08 (27/27 contract
+> checks green, ~30 µs p95 overhead at 4 k RPS, 100 % success in
+> both modes). Reference only. See [`README.md`](./README.md).
+
 Round-2 gate verification before the OC's automated benchmarker
 sees us. The goal is to catch contract-shape bugs (wrong header
 case, wrong JSON field, premature `reset_state` success, etc.)

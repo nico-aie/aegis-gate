@@ -190,11 +190,12 @@ each category.
 
 ## Future phases
 
-Two upcoming phases will land here:
+Tracks landing here:
 
-1. **Dashboard redesign** — see [`../plans/dashboard-redesign/`](../plans/dashboard-redesign/).
-   Implementation notes will land under `control-plane/enterprise/` as
-   the milestones complete.
+1. **Dashboard redesign** — closed (DD-T0..T8 shipped in run-10).
+   See [`../plans/dashboard-redesign.md`](../plans/dashboard-redesign.md)
+   and [`control-plane/enterprise/`](./control-plane/enterprise/) for
+   the design spec.
 2. **Phase B (advanced features)** — open intake. Use
    [`future/advanced-features.md`](./future/advanced-features.md) to
    propose, score, and triage requests. Once a feature is accepted it

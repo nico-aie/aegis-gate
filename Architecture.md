@@ -630,8 +630,13 @@ spec in [`docs/control-plane/dashboard-auth.md`](docs/control-plane/dashboard-au
 
 - **Listener**: separate address, loopback by default, IP allowlist
   enforced at accept time.
-- **Axum router**: `/dashboard`, `/api/*`, `/metrics`, `/healthz/*`,
-  `/admin/login`, `/admin/logout`.
+- **Router**: `/dashboard/*` (Aegis WAF Console SPA — DD-T0..T8
+  redesign, see [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/)),
+  `/api/*` (17 read hooks + 4 rule CRUD verbs through the
+  audit-mutation pipeline, plus `/api/config/version` for
+  hot-reload visibility), `/__waf_control/*` (interop contract),
+  `/dashboard/sse`, `/metrics`, `/healthz/*`, `/admin/login`,
+  `/admin/logout`, `/admin/drain`.
 - **Password**: `argon2id` PHC hash stored in etcd at
   `/aegis/secrets/admin_password`, resolved via the `etcd` secret
   provider.
@@ -1145,7 +1150,7 @@ with a meaningful subset of the requirements.
 
 ---
 
-## 33. Deliverables (maps to Requirement §34)
+## 33. Deliverables (maps to Requirement §35)
 
 - `./waf run` single static binary.
 - Hot reload of config, rules, secrets, and certificates.

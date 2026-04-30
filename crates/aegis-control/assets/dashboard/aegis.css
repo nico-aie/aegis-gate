@@ -1,5 +1,8 @@
 /* Aegis WAF Console — theme tokens (compact density, Binance-inspired) */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+/* No webfont @import: CSP for /dashboard/* is `script-src 'self'`
+   and `style-src 'self' 'unsafe-inline'`. Loading Inter / JetBrains
+   Mono from fonts.googleapis.com would violate the policy. We rely
+   on the system stack defined in --font-base / --font-mono below. */
 
 :root {
   /* Brand */

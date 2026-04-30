@@ -1,8 +1,13 @@
-# Post run-08 — Three short tracks before dashboard redesign
+# Post run-08 — Three short tracks (closed)
+
+> **Status:** Closed — AF-T1, HP-T1, TLS-T1 all shipped before
+> the dashboard redesign track. Reference only.
+>
+> See [`README.md`](./README.md) for the track status board.
 
 After run-08 closed the Round-2 self-gate, three small items
-remain before pivoting to the dashboard redesign track. None
-overlap; all three can land in one working session.
+remained before pivoting to the dashboard redesign track. None
+overlap; all three landed in one working session.
 
 | ID | Track | Effort | Why |
 |---|---|---|---|

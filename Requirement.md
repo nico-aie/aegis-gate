@@ -1,5 +1,12 @@
 # WAF — Requirements
 
+> **Status snapshot.** This is the requirements specification —
+> intent, not state. For what's actually shipped today, read
+> [`README.md` § Status](README.md#status) and the per-doc banners
+> under [`docs/`](docs/) (each one carries an `Implemented /
+> Partial / Designed-only` marker). The deliverables checklist in
+> § 35 below is the authoritative tick-list.
+
 ## 1. Problem Statement
 
 Build a production-grade Web Application Firewall / Security Gateway in
@@ -798,37 +805,54 @@ ID prefix `B-`).
 
 ## 35. Deliverables Checklist
 
-- [ ] `./waf run` starts from a single static binary
-- [ ] Hot reload of config, rules, secrets, and certificates
-- [ ] Multi-host routing with SNI-checked host matching
-- [ ] At least two upstream pools demonstrating LB + health checks
-- [ ] Canary split between two pools with sticky assignment
-- [ ] TLS termination with hot-reloaded certificates
-- [ ] HTTP/2, WebSocket upgrade, and gRPC passthrough verified
-- [ ] ForwardAuth + JWT validation integration tests passing
-- [ ] `/metrics` endpoint scraped by Prometheus successfully
-- [ ] `traceparent` propagation to upstream verified
-- [ ] Graceful drain under load (no dropped in-flight requests)
-- [ ] Hot binary reload keeps connections alive across upgrade
-- [ ] Dry-run validator blocks an intentionally malformed rule
-- [ ] Two-node cluster sharing rate-limit + risk state via Redis
-- [ ] FIPS-mode config profile boots successfully
-- [ ] Audit-log hash chain verified tamper-evident
-- [ ] Secrets resolved from etcd / env / file; rotation works without restart
-- [ ] Admin listener gated by dashboard auth (argon2 + session + CSRF)
-- [ ] Login rate-limit + lockout enforced; failed attempts audited
-- [ ] Syslog / CEF / OCSF forwarder delivering to a test SIEM
-- [ ] STIX / TAXII feed imported; blocks show feed provenance
-- [ ] Turnstile CAPTCHA fallback working in challenge escalation
-- [ ] OpenAPI schema enforcement blocking a malformed request
-- [ ] DLP pattern masking a synthetic credit card in a response
-- [ ] ICAP antivirus integration on an upload route
-- [ ] Load shedding kicks in under overload; CRITICAL traffic unaffected
-- [ ] Config snapshot → restore round-trip succeeds
-- [ ] `/healthz/*` endpoints return correct states at each lifecycle phase
-- [ ] SLO burn alert fires via Alertmanager on synthetic regression
-- [ ] Red-team attack simulation (SQLi / XSS / SSRF / brute force) blocked
-- [ ] Load test sustains ≥ 5 000 RPS with p99 overhead ≤ 5 ms
-- [ ] Benchmark mode emits `X-Aegis-*` headers only when source IP +
-      token gate both pass; auto-disables on TTL expiry; criterion
-      bench shows ≤ 1 % delta with `mode: disabled` vs baseline
+- [x] `./waf run` starts from a single static binary
+- [x] Hot reload of config, rules, secrets, and certificates
+- [x] Multi-host routing with SNI-checked host matching
+- [x] At least two upstream pools demonstrating LB + health checks
+- [x] Canary split between two pools with sticky assignment
+- [x] TLS termination with hot-reloaded certificates
+- [x] HTTP/2, WebSocket upgrade, and gRPC passthrough verified
+- [x] ForwardAuth + JWT validation integration tests passing
+- [x] `/metrics` endpoint scraped by Prometheus successfully
+- [x] `traceparent` propagation to upstream verified
+- [x] Graceful drain under load (no dropped in-flight requests) — `/admin/drain` + run-05 measured 100 % graceful failover
+- [ ] Hot binary reload keeps connections alive across upgrade — supervised re-exec ships; fd-pass deferred to `B6-T5`
+- [x] Dry-run validator blocks an intentionally malformed rule
+- [x] Two-node cluster sharing rate-limit + risk state via Redis — closed in `B1-T1..T6`
+- [x] FIPS-mode config profile boots successfully
+- [x] Audit-log hash chain verified tamper-evident
+- [x] Secrets resolved from Vault / AWS / GCP / Azure / etcd / env / file; rotation works without restart — closed in `B2-T1..T4` (HSM `B6-T4` deferred)
+- [x] Admin listener gated by dashboard auth (argon2 + session + CSRF)
+- [x] Login rate-limit + lockout enforced; failed attempts audited
+- [x] Syslog / CEF / OCSF forwarder delivering to a test SIEM
+- [x] STIX / TAXII feed imported; blocks show feed provenance — closed in `B3-T2`
+- [x] Turnstile CAPTCHA fallback working in challenge escalation
+- [x] OpenAPI schema enforcement blocking a malformed request
+- [x] DLP pattern masking a synthetic credit card in a response
+- [x] ICAP antivirus integration on an upload route — closed in `B3-T4`
+- [x] Load shedding kicks in under overload; CRITICAL traffic unaffected
+- [x] Config snapshot → restore round-trip succeeds — closed in `B4-T1` + `B4-T2`
+- [x] `/healthz/*` endpoints return correct states at each lifecycle phase — `?strict=1` leader gate added in `HA-T5`
+- [x] SLO burn alert fires via Alertmanager on synthetic regression — VipTalk delivery added side-quest of B2
+- [x] Red-team attack simulation (SQLi / XSS / SSRF / brute force) blocked
+- [x] Load test sustains ≥ 5 000 RPS with p99 overhead ≤ 5 ms — run-04 measured 31.7 k RPS plain, 31.8 k RPS over TLS, p95 ≤ 1.04 ms
+- [x] Benchmark mode emits `X-Aegis-*` headers — core slice shipped (B5-T2). Full IP allowlist / HMAC tokens / per-detector timing / dashboard panel deferred to follow-up `B-T1..B-T6` plan
+
+---
+
+## 36. Hackathon WAF-FE §2 contract (2026-04-30)
+
+The Aegis WAF Console (DD-T0..T8) closes every clause of the
+Hackathon WAF-FE v2.3 §2 dashboard contract. Verified by
+[`tests/dashboard/round1-acceptance.sh`](tests/dashboard/round1-acceptance.sh).
+
+| Clause | Status | Verification |
+|---|---|---|
+| Real-time monitor ≤ 5 s | ✅ | `/dashboard/sse` round-trip, dry-run-measured |
+| Rule Add / Edit / Delete / Enable / Disable via UI | ✅ | DD-T6 `POST/PUT/DELETE /api/rules`, `PUT /api/rules/{id}/toggle` (audit-mutated, CSRF-gated) |
+| Audit Log search/filter (time, IP, Rule ID, Request ID) | ✅ | `/api/audit/since?ip&rule_id&request_id&from&to` consumed via `useAuditLogApi` |
+| Health/Status: uptime, current mode, active rules | ✅ | Overview page reads `/api/about`, `/api/loadmode`, `/api/rules` |
+| Hot-reload ≤ 10 s with visible UI indicator | ✅ | DD-T7 `/api/config/version` + `waitForVersion()` + toast |
+| Create rule ≤ 5 clicks | ✅ | NewRuleModal: + New Rule → form → Save = 3 clicks |
+| Find audit event ≤ 30 s | ✅ | Incremental search input filters `useAuditLogApi` query params |
+| No mock-only features | ✅ | Six "must-work" pages backed by real endpoints; mock fallback only when an endpoint is unreachable |

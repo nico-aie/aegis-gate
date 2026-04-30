@@ -8,7 +8,7 @@ specified in `docs/`". Each doc carries a one-line `> **Status:**`
 banner that mirrors a row here; the banner is generated from this
 table — keep them in sync.
 
-**As of:** 2026-04-29.
+**As of:** 2026-04-30 (post-run-10 — Aegis WAF Console redesign closed).
 
 > **Verify before relying on a row.** Codebase moves; before acting
 > on any "Implemented" claim, check the named module path. When

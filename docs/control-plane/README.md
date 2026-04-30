@@ -23,7 +23,7 @@ That folder defines the design system, component library, page-by-page
 layouts, accessibility, security, and the REST/SSE contract the SPA
 consumes from the admin listener.
 
-The next phase of work is **Dashboard redesign** — see
-[`../../plans/dashboard-redesign/`](../../plans/dashboard-redesign/).
-Each milestone in that track lands implementation notes inside
-[`enterprise/`](./enterprise/) as it completes.
+The dashboard redesign closed in run-10 — see
+[`../../plans/dashboard-redesign.md`](../../plans/dashboard-redesign.md)
+for the DD-T0..T8 plan and [`enterprise/`](./enterprise/) for the
+implemented design spec.

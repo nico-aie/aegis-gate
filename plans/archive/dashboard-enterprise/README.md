@@ -1,22 +1,28 @@
-# Enterprise Dashboard — Task Plan
+# Enterprise Dashboard — Task Plan (ARCHIVED)
 
-> **Status:** Closed — D-M1..D-M6 shipped — enterprise SPA bundled into the binary. Reference only.
+> **Status:** Closed and superseded.
 >
-> See [`README.md`](../README.md) for the track status board.
+> The enterprise SPA shipped under D-M1..D-M6 and was then **replaced**
+> by the redesign delivered in run-10 (DD-T0..T8). The redesign drops
+> the milestone-paced vanilla-JS shell and ships a pre-compiled React
+> 18 single bundle (`crates/aegis-control/assets/dashboard/app.js`).
+> See [`../../dashboard-redesign.md`](../../dashboard-redesign.md) for
+> the active plan and
+> [`../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md`](../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md)
+> for the closing run.
+>
+> This file is kept for historical reference only. Path is
+> `plans/archive/dashboard-enterprise/`. Do not link to it from new
+> work — link the redesign plan instead.
 
-> **Read first:**
-> 1. [`../../README.md`](../../README.md)
-> 2. [`../../Implement-Progress.md`](../../Implement-Progress.md)
-> 3. [`../plan.md`](../plan.md) — assistant guide (session startup,
->    progress protocol, execution rules)
-> 4. [`../control.md`](../control.md) — current control-plane plan
->    (this track only touches `aegis-control`)
-> 5. [`../../docs/control-plane/enterprise/README.md`](../../docs/control-plane/enterprise/README.md)
->    — design spec for this work
->
-> This plan is the **execution** companion to the design under
-> `docs/control-plane/enterprise/`. The design tells us *what* to build;
-> this plan slices the work into shippable milestones.
+> **Read first** (when reading this archive in context):
+> 1. [`../../../README.md`](../../../README.md)
+> 2. [`../../../Implement-Progress.md`](../../../Implement-Progress.md)
+> 3. [`../../plan.md`](../../plan.md) — assistant guide
+> 4. [`../../control.md`](../../control.md) — current control-plane plan
+> 5. [`../../../docs/control-plane/enterprise/README.md`](../../../docs/control-plane/enterprise/README.md)
+>    — original design spec; the redesign supersedes the shell layer
+>    but the page-level behaviour spec still applies.
 
 ## Mission
 

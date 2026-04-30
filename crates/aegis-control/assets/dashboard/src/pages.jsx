@@ -643,22 +643,180 @@ function PageAuditLog() {
 }
 
 // ============== RULE MANAGER ==============
+// DSL body templates used when the API doesn't supply one.
+function defaultRuleBody(id) {
+  return `rule "${id}" {\n  priority   = 100\n  field      = "any"\n  operator   = "regex"\n  pattern    = r"example"\n  action     = "block"\n  risk_delta = 50\n  scope      = ["global"]\n  tags       = ["custom"]\n}\n`;
+}
+
+// Synthesise a rule body from a mock-style row so we have something
+// to PUT when an operator clicks Save & deploy on a builtin entry.
+function ruleRowToBody(r) {
+  if (r.body) return r.body;
+  return [
+    `rule "${r.id}" {`,
+    `  // ${r.name || r.id}`,
+    `  priority   = ${r.pri ?? 100}`,
+    `  field      = "${r.field || 'any'}"`,
+    `  operator   = "${r.op || 'regex'}"`,
+    `  pattern    = r"${r.pattern || ''}"`,
+    `  action     = "${r.action || 'block'}"`,
+    `  risk_delta = ${r.risk ?? 50}`,
+    `  scope      = ["global"]`,
+    `  tags       = ["${r.cat || 'custom'}"]`,
+    `}`,
+    '',
+  ].join('\n');
+}
+
+// Read the current /api/config/version. Returns the numeric version
+// or 0 on failure so the caller can still wait for `ver + 1`.
+async function fetchCurrentVersion() {
+  try {
+    const r = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' });
+    if (!r.ok) return 0;
+    const j = await r.json();
+    return Number(j.version) || 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
 function PageRuleManager() {
-  const [selected, setSelected] = useStateP(window.RULES[0]);
+  const rulesApi = window.useRulesApi();
+  // Prefer API rules when the array is non-empty; fall back to the
+  // demo set so the page still renders before any rule is created.
+  const apiRules = (rulesApi.data && Array.isArray(rulesApi.data.rules) && rulesApi.data.rules.length > 0)
+    ? rulesApi.data.rules
+    : window.RULES;
+
+  // Display-merge: if the API returned a row whose id matches a mock
+  // entry, overlay the mock display fields (name, kind, hits1h, etc.)
+  // so the UI stays rich while ID/body/enabled stay authoritative.
+  const mockById = useMemoP(() => {
+    const m = new Map();
+    window.RULES.forEach(r => { if (!m.has(r.id)) m.set(r.id, r); });
+    return m;
+  }, []);
+  const merged = apiRules.map(r => {
+    const mock = mockById.get(r.id) || {};
+    return {
+      id: r.id,
+      name: mock.name || r.id,
+      kind: mock.kind || 'custom',
+      pri: mock.pri ?? 100,
+      field: mock.field || 'any',
+      op: mock.op || 'regex',
+      pattern: mock.pattern || '',
+      action: mock.action || 'block',
+      risk: mock.risk ?? 50,
+      enabled: r.enabled !== undefined ? r.enabled : (mock.enabled ?? true),
+      cat: mock.cat || 'custom',
+      hits1h: mock.hits1h ?? 0,
+      body: r.body || mock.body || ruleRowToBody(mock.id ? mock : { id: r.id }),
+    };
+  });
+
+  const [selectedId, setSelectedId] = useStateP(merged[0]?.id || null);
   const [tab, setTab] = useStateP('dsl');
   const [search, setSearch] = useStateP('');
-  const filtered = window.RULES.filter(r => !search || r.id.includes(search) || r.name.toLowerCase().includes(search.toLowerCase()));
+  const [editing, setEditing] = useStateP(false);
+  const [editBody, setEditBody] = useStateP('');
+  const [busy, setBusy] = useStateP(false);
+  const [showNew, setShowNew] = useStateP(false);
+  const [newId, setNewId] = useStateP('');
+  const [newBody, setNewBody] = useStateP(defaultRuleBody('my-rule-001'));
+  const [newEnabled, setNewEnabled] = useStateP(true);
+
+  // Re-anchor selected when the list changes (e.g., after delete).
+  useEffectP(() => {
+    if (merged.length === 0) { setSelectedId(null); return; }
+    if (!selectedId || !merged.find(r => r.id === selectedId)) {
+      setSelectedId(merged[0].id);
+    }
+  }, [merged.length, selectedId]);
+
+  const filtered = merged.filter(r => !search || r.id.includes(search) || r.name.toLowerCase().includes(search.toLowerCase()));
+  const selected = merged.find(r => r.id === selectedId) || merged[0] || null;
+
+  // Run a mutation, wait for /api/config/version to advance, then toast.
+  async function runMutation(label, fn) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const before = await fetchCurrentVersion();
+      const result = await fn();
+      if (result && result.ok) {
+        const v = await window.waitForVersion(before + 1, 10000);
+        if (v.applied) {
+          window.aegisToast(`${label} · applied in ${v.latencyMs} ms`, 'ok');
+        } else {
+          window.aegisToast(`${label} · pending after 10 s`, 'warn');
+        }
+        rulesApi.reload && rulesApi.reload();
+      } else {
+        const msg = (result && (result.message || result.error || result.reason)) || 'unknown error';
+        window.aegisToast(`${label} failed: ${msg}`, 'err');
+      }
+    } catch (err) {
+      window.aegisToast(`${label} error: ${err.message || err}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEdit() {
+    if (!selected) return;
+    setEditBody(selected.body || ruleRowToBody(selected));
+    setEditing(true);
+    setTab('dsl');
+  }
+  function cancelEdit() { setEditing(false); setEditBody(''); }
+
+  async function saveEdit() {
+    if (!selected) return;
+    await runMutation(`Rule ${selected.id} updated`,
+      () => window.rulesPut(selected.id, { body: editBody, enabled: selected.enabled }));
+    setEditing(false);
+  }
+
+  async function toggleSelected() {
+    if (!selected) return;
+    const label = selected.enabled ? `Rule ${selected.id} disabled` : `Rule ${selected.id} enabled`;
+    await runMutation(label, () => window.rulesToggle(selected.id));
+  }
+
+  async function deleteSelected() {
+    if (!selected) return;
+    if (!window.confirm(`Delete rule ${selected.id}? This is audit-mutated and cannot be undone.`)) return;
+    await runMutation(`Rule ${selected.id} deleted`, () => window.rulesDelete(selected.id));
+  }
+
+  async function createNew() {
+    const id = newId.trim();
+    if (!id) { window.aegisToast('Rule id is required', 'err'); return; }
+    await runMutation(`Rule ${id} created`,
+      () => window.rulesPost({ id, body: newBody, enabled: newEnabled }));
+    setShowNew(false);
+    setNewId('');
+    setNewBody(defaultRuleBody('my-rule-001'));
+    setNewEnabled(true);
+    setSelectedId(id);
+  }
+
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Rule Manager</h1>
-          <p className="page-subtitle">{window.RULES.length} total · 45 builtin / 44 custom · validate before apply</p>
+          <p className="page-subtitle">{merged.length} total · validate before apply · audit-chained</p>
         </div>
         <div className="page-actions">
-          <button className="btn"><window.I.Refresh /> Reload</button>
-          <button className="btn">Update Built-in</button>
-          <button className="btn primary"><window.I.Plus /> New rule</button>
+          <button className="btn" onClick={() => rulesApi.reload && rulesApi.reload()} disabled={busy}>
+            <window.I.Refresh /> Reload
+          </button>
+          <button className="btn primary" onClick={() => setShowNew(true)} disabled={busy}>
+            <window.I.Plus /> New rule
+          </button>
         </div>
       </div>
 
@@ -671,11 +829,16 @@ function PageRuleManager() {
             </div>
           </div>
           <div style={{ overflow: 'auto', flex: 1 }}>
+            {filtered.length === 0 && (
+              <div style={{ padding: 20, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                No rules match.
+              </div>
+            )}
             {filtered.map((r, i) => (
-              <button key={i} onClick={() => setSelected(r)}
+              <button key={`${r.id}-${i}`} onClick={() => { setSelectedId(r.id); setEditing(false); }}
                 style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', border: 'none', borderBottom: '1px solid var(--hairline)',
-                  background: selected === r ? 'var(--surface-active)' : 'transparent',
-                  borderLeft: selected === r ? '3px solid var(--brand-yellow)' : '3px solid transparent',
+                  background: selected && selected.id === r.id ? 'var(--surface-active)' : 'transparent',
+                  borderLeft: selected && selected.id === r.id ? '3px solid var(--brand-yellow)' : '3px solid transparent',
                   cursor: 'pointer', color: 'inherit' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
                   <span className="num dim" style={{ width: 36, fontSize: 10 }}>{r.pri}</span>
@@ -686,6 +849,7 @@ function PageRuleManager() {
                   <span className="mono">{r.id}</span>
                   <span>·</span>
                   <window.ActionPill value={r.action} />
+                  {r.enabled ? null : <span className="pill warn" style={{ marginLeft: 4 }}>off</span>}
                   <span style={{ marginLeft: 'auto' }} className="num">+{r.risk}</span>
                 </div>
               </button>
@@ -693,94 +857,149 @@ function PageRuleManager() {
           </div>
         </div>
         <div className="right">
-          <div style={{ padding: 14, borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</div>
-              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }} className="mono">{selected.id} · priority {selected.pri} · {selected.hits1h.toLocaleString()} hits/1h</div>
-            </div>
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button className="btn"><window.I.Edit /> Edit</button>
-              <button className="btn">Disable</button>
-              <button className="btn danger"><window.I.Trash /></button>
-            </div>
-          </div>
-          <div style={{ display: 'flex', borderBottom: '1px solid var(--hairline)' }}>
-            {['general','dsl','diff','stats'].map(t => (
-              <button key={t} onClick={() => setTab(t)} style={{
-                flex: 'unset', padding: '10px 16px', background: 'transparent', border: 'none',
-                color: tab === t ? 'var(--brand-yellow)' : 'var(--ink-mute)',
-                borderBottom: tab === t ? '2px solid var(--brand-yellow)' : '2px solid transparent',
-                fontSize: 12, fontWeight: 600, textTransform: 'capitalize', cursor: 'pointer' }}>{t}</button>
-            ))}
-          </div>
-          <div style={{ padding: 16 }}>
-            {tab === 'general' && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 12 }}>
-                <div><div className="field-label">ID</div><div className="mono">{selected.id}</div></div>
-                <div><div className="field-label">Kind</div><span className={`pill ${selected.kind}`}>{selected.kind}</span></div>
-                <div><div className="field-label">Field</div><div>{selected.field}</div></div>
-                <div><div className="field-label">Operator</div><div>{selected.op}</div></div>
-                <div><div className="field-label">Action</div><window.ActionPill value={selected.action} /></div>
-                <div><div className="field-label">Risk Δ</div><span className="num">+{selected.risk}</span></div>
-                <div><div className="field-label">Priority</div><span className="num">{selected.pri}</span></div>
-                <div><div className="field-label">Enabled</div><div className={`toggle ${selected.enabled ? 'on' : ''}`}></div></div>
-                <div style={{ gridColumn: '1 / -1' }}><div className="field-label">Description</div><div className="dim">Detects {selected.cat} attempts using regex pattern matching against {selected.field} of incoming requests.</div></div>
-              </div>
-            )}
-            {tab === 'dsl' && (
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <span className="pill ok">validate ok</span>
-                  <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>0 errors · 1 warning · dry-run: 1,247 matches in last 1h</span>
+          {selected ? (
+            <>
+              <div style={{ padding: 14, borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-dim)' }} className="mono">{selected.id} · priority {selected.pri} · {(selected.hits1h || 0).toLocaleString()} hits/1h</div>
                 </div>
-                <pre style={{ background: 'var(--canvas)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 14, fontSize: 12, fontFamily: 'var(--font-mono)', margin: 0, overflow: 'auto', lineHeight: 1.6 }}>
-<span style={{ color: 'var(--violet)' }}>rule</span> <span style={{ color: 'var(--brand-yellow)' }}>"{selected.id}"</span> {`{
-  `}<span style={{ color: 'var(--ink-dim)' }}>// {selected.name}</span>{`
-  `}<span style={{ color: 'var(--info)' }}>priority</span>{`   = `}<span className="num">{selected.pri}</span>{`
-  `}<span style={{ color: 'var(--info)' }}>field</span>{`      = "${selected.field}"
-  `}<span style={{ color: 'var(--info)' }}>operator</span>{`   = "${selected.op}"
-  `}<span style={{ color: 'var(--info)' }}>pattern</span>{`    = `}<span style={{ color: 'var(--up)' }}>r"{selected.pattern}"</span>{`
-  `}<span style={{ color: 'var(--info)' }}>action</span>{`     = "${selected.action}"
-  `}<span style={{ color: 'var(--info)' }}>risk_delta</span>{` = `}<span className="num">{selected.risk}</span>{`
-  `}<span style={{ color: 'var(--info)' }}>scope</span>{`      = `}[<span style={{ color: 'var(--up)' }}>"global"</span>]{`
-  `}<span style={{ color: 'var(--info)' }}>tags</span>{`       = `}[<span style={{ color: 'var(--up)' }}>"owasp"</span>, <span style={{ color: 'var(--up)' }}>"{selected.cat}"</span>]
-{`}`}
-                </pre>
-              </div>
-            )}
-            {tab === 'diff' && (
-              <pre style={{ background: 'var(--canvas)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 14, fontSize: 12, fontFamily: 'var(--font-mono)', margin: 0, lineHeight: 1.6 }}>
-{`@@ -3,3 +3,3 @@
-   priority   = 100
-- `}<span style={{ background: 'rgba(246,70,93,0.18)', color: '#FF8896' }}>  risk_delta = 75</span>{`
-+ `}<span style={{ background: 'rgba(14,203,129,0.18)', color: '#5BD9A2' }}>  risk_delta = {selected.risk}</span>{`
-   action     = "{selected.action}"`}
-              </pre>
-            )}
-            {tab === 'stats' && (
-              <div>
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>Match count · last 1h</div>
-                  <window.Sparkline data={Array.from({length: 60}, () => 100 + Math.random()*200)} w={600} h={80} color="#FCD535" fill />
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                  {!editing && (
+                    <button className="btn" onClick={startEdit} disabled={busy}><window.I.Edit /> Edit</button>
+                  )}
+                  <button className="btn" onClick={toggleSelected} disabled={busy}>
+                    {selected.enabled ? 'Disable' : 'Enable'}
+                  </button>
+                  <button className="btn danger" onClick={deleteSelected} disabled={busy} title="Delete rule">
+                    <window.I.Trash />
+                  </button>
                 </div>
-                <window.BarList items={[
-                  { label: '/api/login', value: 412 },
-                  { label: '/api/users', value: 318 },
-                  { label: '/api/orders', value: 217 },
-                  { label: '/api/admin/*', value: 145 },
-                  { label: '/api/products', value: 96 },
-                ]} />
               </div>
-            )}
-          </div>
-          <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button className="btn">Validate</button>
-            <button className="btn">Cancel</button>
-            <button className="btn primary">Save & deploy</button>
-          </div>
+              <div style={{ display: 'flex', borderBottom: '1px solid var(--hairline)' }}>
+                {['general','dsl','stats'].map(t => (
+                  <button key={t} onClick={() => setTab(t)} style={{
+                    flex: 'unset', padding: '10px 16px', background: 'transparent', border: 'none',
+                    color: tab === t ? 'var(--brand-yellow)' : 'var(--ink-mute)',
+                    borderBottom: tab === t ? '2px solid var(--brand-yellow)' : '2px solid transparent',
+                    fontSize: 12, fontWeight: 600, textTransform: 'capitalize', cursor: 'pointer' }}>{t}</button>
+                ))}
+              </div>
+              <div style={{ padding: 16 }}>
+                {tab === 'general' && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 12 }}>
+                    <div><div className="field-label">ID</div><div className="mono">{selected.id}</div></div>
+                    <div><div className="field-label">Kind</div><span className={`pill ${selected.kind}`}>{selected.kind}</span></div>
+                    <div><div className="field-label">Field</div><div>{selected.field}</div></div>
+                    <div><div className="field-label">Operator</div><div>{selected.op}</div></div>
+                    <div><div className="field-label">Action</div><window.ActionPill value={selected.action} /></div>
+                    <div><div className="field-label">Risk Δ</div><span className="num">+{selected.risk}</span></div>
+                    <div><div className="field-label">Priority</div><span className="num">{selected.pri}</span></div>
+                    <div><div className="field-label">Enabled</div><div className={`toggle ${selected.enabled ? 'on' : ''}`}></div></div>
+                  </div>
+                )}
+                {tab === 'dsl' && (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <span className={`pill ${editing ? 'warn' : 'ok'}`}>{editing ? 'editing' : 'view'}</span>
+                      <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                        {editing ? 'Save & deploy will PUT /api/rules/{id} and toast on apply' : 'Click Edit to modify'}
+                      </span>
+                    </div>
+                    {editing ? (
+                      <textarea
+                        className="input"
+                        style={{ width: '100%', minHeight: 240, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, padding: 12 }}
+                        value={editBody}
+                        onChange={e => setEditBody(e.target.value)}
+                      />
+                    ) : (
+                      <pre style={{ background: 'var(--canvas)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 14, fontSize: 12, fontFamily: 'var(--font-mono)', margin: 0, overflow: 'auto', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                        {selected.body || ruleRowToBody(selected)}
+                      </pre>
+                    )}
+                  </div>
+                )}
+                {tab === 'stats' && (
+                  <div>
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>Match count · last 1h</div>
+                      <window.Sparkline data={Array.from({length: 60}, () => 100 + Math.random()*200)} w={600} h={80} color="#FCD535" fill />
+                    </div>
+                    <window.BarList items={[
+                      { label: '/api/login', value: 412 },
+                      { label: '/api/users', value: 318 },
+                      { label: '/api/orders', value: 217 },
+                      { label: '/api/admin/*', value: 145 },
+                      { label: '/api/products', value: 96 },
+                    ]} />
+                  </div>
+                )}
+              </div>
+              <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                {editing && <button className="btn" onClick={cancelEdit} disabled={busy}>Cancel</button>}
+                {editing && <button className="btn primary" onClick={saveEdit} disabled={busy}>Save & deploy</button>}
+              </div>
+            </>
+          ) : (
+            <div style={{ padding: 24, fontSize: 12, color: 'var(--ink-dim)' }}>
+              No rule selected. Use “+ New rule” to create one.
+            </div>
+          )}
         </div>
       </div>
+
+      {showNew && (
+        <NewRuleModal
+          newId={newId} setNewId={setNewId}
+          newBody={newBody} setNewBody={setNewBody}
+          newEnabled={newEnabled} setNewEnabled={setNewEnabled}
+          onCancel={() => setShowNew(false)}
+          onSave={createNew}
+          busy={busy}
+        />
+      )}
     </>
+  );
+}
+
+function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNewEnabled, onCancel, onSave, busy }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }} onClick={onCancel}>
+      <div className="card" style={{ width: 560, maxWidth: '90vw', padding: 0 }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center' }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>New rule</div>
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 8 }}>POST /api/rules · audit-mutated · CSRF-gated</span>
+          <button className="btn" style={{ marginLeft: 'auto' }} onClick={onCancel} disabled={busy}>×</button>
+        </div>
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="field-label">Rule ID</span>
+            <input className="input" value={newId} onChange={e => setNewId(e.target.value)} placeholder="custom-xss-001" autoFocus />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="field-label">DSL body</span>
+            <textarea
+              className="input"
+              style={{ minHeight: 220, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, padding: 12 }}
+              value={newBody}
+              onChange={e => setNewBody(e.target.value)}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <input type="checkbox" checked={newEnabled} onChange={e => setNewEnabled(e.target.checked)} />
+            <span>Enabled on save</span>
+          </label>
+        </div>
+        <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={onSave} disabled={busy || !newId.trim()}>Save</button>
+        </div>
+      </div>
+    </div>
   );
 }
 

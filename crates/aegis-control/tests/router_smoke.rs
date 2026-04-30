@@ -10,8 +10,6 @@ use aegis_control::dashboard::dispatch::{dispatch, spa_shell, DashboardResponse}
 
 #[test]
 fn deep_link_returns_spa_shell() {
-    // Mirrors the `tests/dashboard/router_smoke.rs` example in
-    // plans/dashboard-enterprise/milestone-1-shell.md.
     let r = dispatch("/dashboard/foo").expect("dashboard path must dispatch");
     assert!(matches!(r, DashboardResponse::Shell));
 }
