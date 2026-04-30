@@ -189,8 +189,8 @@ impl RiskTracker {
     }
 
     /// Drop every tracked IP — score, strikes, last-seen.
-    /// Used by the hackathon control plane (HK-T3) to wipe
-    /// runtime state between benchmark phases.
+    /// Used by the external control plane's `reset_state` to
+    /// wipe runtime state between phases.
     pub fn reset_all(&self) {
         self.inner.map.clear();
     }

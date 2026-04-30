@@ -191,9 +191,9 @@ impl IpRateLimiter {
         self.inner.map.remove(&ip);
     }
 
-    /// Drop every tracked IP. Used by the hackathon control
-    /// plane's `reset_state` (HK-T3) so a benchmark phase
-    /// transition starts from a clean limiter.
+    /// Drop every tracked IP. Used by the external control
+    /// plane's `reset_state` so a phase transition starts from
+    /// a clean limiter.
     pub fn reset_all(&self) {
         self.inner.map.clear();
     }

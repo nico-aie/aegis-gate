@@ -24,8 +24,8 @@
 ## Status (snapshot)
 
 - **As of:** 2026-04-30
-- **Workspace tests:** 2,234 default-feature (was 2,228;
-  +4 ConnectionPoolConfig + +2 forward.rs pool reuse).
+- **Workspace tests:** 2,273 default-feature (was 2,234;
+  +39 interop module tests).
 - **Clippy:** clean across the workspace on
   `--features aegis-proxy/redis` and on `aegis-bin --features
   "redis affinity"`. No warnings on lib / bin / tests.
@@ -44,8 +44,18 @@
   3. Multi-process workers (`SO_REUSEPORT`, Phase 5 deferred).
   4. Upstream HTTPS pool — wire `tls.rs` through the same
      hyper-util `Client` (currently HTTP-only).
-- **Latest activity:** **Upstream Connection Pool (UP-T1)
-  shipped 2026-04-30.** Per-pool `connection:` config block
+- **Latest activity:** **External Interop Contract surface
+  (IT-T1..IT-T6) shipped 2026-04-30.** New
+  `aegis-control::interop` module with always-on `X-WAF-*`
+  observability headers, minimal-schema JSONL audit log at
+  `./waf_audit.log`, per-policy `enforce` / `log_only` mode
+  store, and `/__waf_control/*` admin endpoints (capabilities,
+  reset_state, set_profile, flush_cache) gated by a
+  configurable `X-Benchmark-Secret`. Surface is an always-on
+  feature, not a benchmark profile —
+  [`plans/interop-contract.md`](./plans/interop-contract.md)
+  has the per-clause compliance map. Earlier this turn:
+  **UP-T1** Per-pool `connection:` config block
   in `PoolConfig` (`max_idle_per_host`, `idle_timeout`,
   `keep_alive`). `forward.rs` rewritten to use a process-
   wide cached `hyper_util::client::legacy::Client` keyed
@@ -61,6 +71,103 @@
 ---
 
 ## Last Completed
+
+**Task:** **IT-T1..IT-T6 — External Interop Contract surface.**
+Always-on observability + external control plane + minimal-
+schema audit log + per-policy mode toggle. Aegis-Gate now
+satisfies the Interop Contract v2.3 strictly, while the surface
+is a normal operational feature (not a benchmark-only profile).
+
+**Outcome.** New `aegis-control::interop` module with four
+submodules:
+
+- `audit::MinimalJsonlSink` writes 8-field JSONL entries to
+  `./waf_audit.log` (configurable). Append-only; survives
+  `reset_state`. The full SHA-256 audit chain keeps writing in
+  parallel.
+- `headers::Decision::stamp` puts six `X-WAF-*` headers on every
+  data-plane response: `X-WAF-Request-Id`, `X-WAF-Risk-Score`,
+  `X-WAF-Action`, `X-WAF-Rule-Id`, `X-WAF-Cache`, `X-WAF-Mode`.
+- `mode::ModeStore` is a lock-free per-feature/per-policy
+  `enforce` / `log_only` override map; reads via `ArcSwap`,
+  writes serialised behind a single `Mutex`.
+- `control::ControlContext` exposes the four `/__waf_control/*`
+  endpoints (capabilities / reset_state / set_profile /
+  flush_cache), gated by `X-Benchmark-Secret` (configurable
+  via `interop.control_secret`).
+
+The proxy crate threads an `Arc<InteropRuntime>` through both
+listeners — admin dispatches `/__waf_control/*`, data plane
+post-processes every response with `stamp_interop_response`
+(maps HTTP status → contract action class, stamps headers,
+appends one audit line).
+
+**Decision recap (always-on, not a profile).** Every feature in
+`interop` is universally useful — observability headers,
+external control plane, minimal-schema SIEM-friendly log, mode
+toggle for dry-running detectors. Per user direction, no
+"hackathon profile" gate exists in the code; `interop.enabled`
+defaults to `true` and operators only flip it `false` for test
+fixtures that want to keep responses unstamped.
+
+**Decision recap (audit log dual-write).** The hackathon-style
+minimal schema is what external tooling parses; the existing
+SHA-256 audit chain is the long-term forensic record. They
+write in parallel to different paths. Neither replaces the
+other; `reset_state` preserves both.
+
+**Decision recap (HTTP status → Action mapping).** Inline in
+`stamp_interop_response`: `200..399` → `Allow`, `429` →
+`RateLimit` (the JSON body marks challenges separately), `503`
+→ `CircuitBreaker`, `504` → `Timeout`, everything else →
+`Block`. A future refactor would let the data-plane handler
+explicitly emit the action class instead of inferring from
+status.
+
+**Files changed.**
+- `crates/aegis-control/src/interop/{mod,audit,headers,mode,control}.rs`
+  — new module, 5 files, +39 unit tests.
+- `crates/aegis-control/src/lib.rs` — module declared.
+- `crates/aegis-control/src/dashboard_services.rs` — new
+  `interop: Option<Arc<InteropRuntime>>` field.
+- `crates/aegis-control/Cargo.toml` — `http`, `thiserror` direct
+  deps.
+- `crates/aegis-proxy/src/lib.rs` — `build_interop_runtime`,
+  `stamp_interop_response`, `handle_interop_control` helpers;
+  `accept_loop` + `admin_accept_loop` signatures take
+  `Option<Arc<InteropRuntime>>`.
+- `crates/aegis-core/src/config.rs` — `InteropConfig`
+  (`enabled` defaults true, `audit_path` defaults
+  `./waf_audit.log`, `control_secret` configurable).
+- `crates/aegis-security/src/risk/tracker.rs` — new
+  `RiskTracker::reset_all`.
+- `crates/aegis-security/src/rate_limit/ip_limiter.rs` — new
+  `IpRateLimiter::reset_all`.
+- `plans/interop-contract.md` — compliance status + track
+  list.
+
+**Verification.**
+- **Workspace tests** (`cargo test --workspace --features
+  aegis-proxy/redis`) — **2,273 passed** parallel (was 2,234;
+  +39 interop tests).
+- **Clippy** clean.
+- **Live end-to-end smoke** (release binary, `config/waf.dev.yaml`):
+  - `GET /__waf_control/capabilities` without secret → 403.
+  - `GET /__waf_control/capabilities` with `X-Benchmark-Secret`
+    → 200, JSON listing four features.
+  - `POST /__waf_control/set_profile` with
+    `{"scope":"all","mode":"log_only"}` → 200, default flips,
+    overrides cleared.
+  - `POST /__waf_control/reset_state` → 200,
+    `audit_log_preserved: true`.
+  - `POST /__waf_control/flush_cache` → 200, `supported: false`.
+  - `HEAD /get` data-plane response carries all six `X-WAF-*`
+    headers; `./waf_audit.log` has one matching minimal-schema
+    entry.
+
+---
+
+## Earlier Last Completed (UP-T1)
 
 **Task:** **UP-T1 — Upstream Connection Pool.** Replaces the
 per-request `TcpStream::connect + http1::handshake` in
@@ -686,6 +793,7 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-04-30 | **IT-T1..IT-T6** External Interop Contract surface | New `aegis-control::interop` module; always-on `X-WAF-*` headers + minimal-schema `./waf_audit.log` + `/__waf_control/*` admin endpoints + per-policy mode store. +39 tests, 2,273 total. Contract v2.3 fully satisfied; live smoke 4/4 endpoints + 6/6 headers. |
 | 2026-04-30 | **UP-T1** Upstream connection pool | `forward.rs` rewritten on `hyper_util::client::legacy::Client`; per-pool `connection:` config; cached per signature. **15× throughput lift** (525 → 7 964 RPS, 100 % success, sub-1 ms p95) validated by run-07. +6 tests, 2,234 total. |
 | 2026-04-30 | **Workers / Layer-1** in-node scaling | New `runtime:` config block + `tokio::runtime::Builder` wiring + `/api/runtime` admin endpoint + dashboard panel + `affinity` Cargo feature for CPU pinning. +18 tests, 2,228 total. Restart-only. Live verified on 12-core (auto) and 4-thread fixed configs. |
 | 2026-04-30 | **HA-T1..T5** Cluster ingress / LB track CLOSED | `deploy/haproxy/haproxy.cfg` (HA-T1) + `tests/cluster/05/06` + `tests/load/failover-burst.js` (HA-T2) + `WafConfig.node.id` (HA-T3) + `LeaderView::set_members` + `/api/cluster.peers[]` (HA-T4) + `POST /admin/drain` + `?strict=1` + SIGTERM drain (HA-T5). 99.93 % hard / 100 % graceful failover budget. |

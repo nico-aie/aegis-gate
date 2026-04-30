@@ -195,7 +195,7 @@ pub struct ControlContext {
     pub flush_callback: Option<ResetCallback>,
     /// Expected value of the `X-Benchmark-Secret` header. Set
     /// from `interop.control_secret` config; defaults to
-    /// [`super::DEFAULT_CONTROL_SECRET`].
+    /// [`crate::interop::DEFAULT_CONTROL_SECRET`].
     pub secret: String,
 }
 
@@ -415,7 +415,7 @@ mod tests {
             features,
             reset_callbacks: Vec::new(),
             flush_callback: None,
-            secret: super::DEFAULT_CONTROL_SECRET.to_string(),
+            secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
         }
     }
 
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn auth_accepts_correct_secret() {
         let c = ctx();
-        c.check_auth(Some(super::DEFAULT_CONTROL_SECRET)).unwrap();
+        c.check_auth(Some(crate::interop::DEFAULT_CONTROL_SECRET)).unwrap();
     }
 
     #[test]

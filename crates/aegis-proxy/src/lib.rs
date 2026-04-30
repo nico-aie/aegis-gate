@@ -2940,6 +2940,7 @@ state:
             bus,
             upstream_ctx,
             None, // no tls_acceptor in this plain-http test
+            None, // no interop runtime in this plain-http test
         ));
 
         // Give the accept loop a moment to start.
