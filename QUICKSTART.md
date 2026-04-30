@@ -1,207 +1,166 @@
 # Aegis-Gate — Developer Quick Start
 
-Step-by-step guide to get Aegis-Gate running locally for development.
-
----
+Get the WAF running locally in five steps. For production setup
+see [`deploy/GUIDE.md`](deploy/GUIDE.md). For the full YAML
+reference see [`config/README.md`](config/README.md).
 
 ## Prerequisites
 
 | Tool | Version | Check |
 |------|---------|-------|
-| Rust | 1.75+ | `rustc --version` |
+| Rust | 1.82+ | `rustc --version` |
 | Docker + Compose | v2.20+ | `docker compose version` |
-| curl | any | `curl --version` |
+| `curl` | any | `curl --version` |
 
-> **Docker must be running.** On macOS, open Docker Desktop before running compose commands. If you see `Cannot connect to the Docker daemon`, start Docker Desktop first.
+Docker must be running for the optional services (etcd,
+Prometheus, Jaeger, Redis, httpbin). The WAF *can* boot without
+them — `state.backend: in_memory` and a local YAML config are
+enough for first-light.
 
----
-
-## Step 1: Build
+## 1. Build
 
 ```sh
-cd /path/to/aegis-gate
-
-# Debug build (fast compile, slower runtime — use for dev)
+# Debug — fast compile, slower runtime
 cargo build --workspace
 
-# Release build (slow compile, optimized — use for benchmarks/staging)
-cargo build --workspace --release
+# Release with cluster support — for benchmarking or HA fixtures
+cargo build -p aegis-bin --release --features redis
+
+# Release with CPU pinning enabled too — for runtime-tuning experiments
+cargo build -p aegis-bin --release --features "redis affinity"
 ```
 
-## Step 2: Start Infrastructure
+## 2. (Optional) Start infrastructure
 
 ```sh
 docker compose -f deploy/docker-compose.dev.yml up -d
 ```
 
-This starts:
+Spins up etcd, Prometheus, Jaeger, Redis, httpbin. Skip this
+step if you just want a single-node in-memory WAF — point the
+config at `state.backend: in_memory` and the gateway runs
+standalone. Service catalogue + ports:
+[`deploy/README.md`](deploy/README.md).
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| etcd | 2379 | Config store |
-| Prometheus | 9090 | Metrics + alerting |
-| Jaeger | 16686 | Distributed tracing |
-| Redis | 6379 | Optional counter store |
-| httpbin | 8081 | Mock upstream for testing |
-
-Verify services are healthy:
-
-```sh
-docker exec aegis-etcd etcdctl endpoint health
-curl -sf http://localhost:9090/-/ready
-curl -sf http://localhost:16686/
-```
-
-> **No Docker?** You can skip this step entirely. The WAF will run with `state: { backend: in_memory }` and local config files. You just won't have Prometheus, Jaeger, or Redis.
-
-## Step 3: Seed Config (Optional)
-
-```sh
-# Seed etcd with dev config
-./deploy/etcd/bootstrap.sh
-```
-
-Or just use a local YAML config file (Step 4).
-
-## Step 4: Validate Config
+## 3. Validate the config
 
 ```sh
 ./target/debug/waf validate --config config/waf.yaml
 ```
 
-Expected output:
-```
-config OK: config/waf.yaml
-```
+Expected: `config OK: config/waf.yaml`. The YAML reference
+([`config/README.md`](config/README.md)) walks every section
+including the new `runtime:` block (Layer-1 worker scaling).
 
-If compliance profiles are set, you'll also see:
-```
-compliance profiles applied: [Pci, Soc2]
-```
-
-## Step 5: Run the Gateway
+## 4. Run the gateway
 
 ```sh
-# From debug build
+# Debug
 cargo run -p aegis-bin -- run --config config/waf.yaml
 
-# Or from release build
+# Release (with redis features compiled in)
 ./target/release/waf run --config config/waf.yaml
 ```
 
-## Step 6: Verify
+The boot log shows the runtime sizing it picked up:
+
+```
+tokio runtime workers=12 blocking_threads=512 stack_size_kb=2048 cpu_affinity=false
+```
+
+## 5. Verify
 
 ```sh
-# Health probes
-curl -sf http://localhost:9443/healthz/live     # → 200
-curl -sf http://localhost:9443/healthz/ready     # → 200
+# Health probes (admin port)
+curl -sf http://localhost:9443/healthz/live
+curl -sf http://localhost:9443/healthz/ready
+
+# Runtime sizing the binary picked up at boot
+curl -s http://localhost:9443/api/runtime
+
+# Cluster + leader info (only meaningful in HA fixtures)
+curl -s http://localhost:9443/api/cluster
 
 # Prometheus metrics
 curl -sf http://localhost:9100/metrics | head
 
-# Test traffic through the WAF
-curl -k https://localhost:8443/ -H "Host: example.com"
-
-# Jaeger UI (if Docker is running)
-open http://localhost:16686
+# Smoke through the data plane (plaintext)
+curl -i http://localhost:8080/
 ```
 
-## Step 7: Teardown
+Stop with **Ctrl-C** or `kill -TERM <pid>` — both trigger the
+graceful drain (HA-T5): readiness flips to 503, then the listeners
+abort after `AEGIS_DRAIN_GRACE_MS` (default 5 s).
+
+---
+
+## Tuning Layer-1 workers
+
+The `runtime:` block in [`config/waf.yaml`](config/waf.yaml) is
+the in-process scaling knob:
+
+```yaml
+runtime:
+  workers: auto             # or integer in [2, 512]
+  blocking_threads: 512
+  cpu_affinity: false       # only honoured with `--features affinity`
+  stack_size_kb: 2048
+```
+
+Restart-only — change YAML, restart the process. Sizing recipes,
+verification, and OS-specific affinity notes live in
+[`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md).
+
+---
+
+## Admin auth (optional)
+
+Skip for first-light dev. Set up when you're ready to expose the
+admin dashboard:
 
 ```sh
-# Stop infrastructure
-docker compose -f deploy/docker-compose.dev.yml down -v
+# Argon2id password hash — paste into admin.password_hash
+./target/release/waf admin set-password
 
-# Stop the WAF
-# Ctrl+C (graceful drain) or kill -TERM <pid>
+# TOTP secret + recovery codes
+./target/release/waf admin enroll-totp \
+    --issuer "Aegis-Gate" --account "you@company.com"
+
+# Audit-chain integrity check
+./target/release/waf audit verify --from /var/log/aegis/audit.ndjson
 ```
 
----
-
-## Admin Setup (Optional)
-
-Admin setup is **not required** for development. Here's what happens with and without it:
-
-### Without Admin Setup
-
-| Feature | Behavior |
-|---------|----------|
-| **Data plane** (port 8443) | Fully functional — routes traffic, applies security rules |
-| **Health probes** | Fully functional — `/healthz/live`, `/healthz/ready`, `/healthz/startup` |
-| **Prometheus metrics** (port 9100) | Fully functional — all metrics exported |
-| **Security pipeline** | Fully functional — all OWASP detectors, rules, risk scoring active |
-| **Dashboard** (port 9443) | HTML shell loads, SSE streams events |
-| **Audit chain** | Writes and verifies normally |
-| **Compliance profiles** | Applied at startup via `waf validate` |
-| **Dashboard login** | No password set → cannot authenticate to protected admin endpoints |
-| **TOTP 2FA** | Not enrolled → skipped |
-| **Admin API mutations** | Unprotected unless password + TOTP configured |
-
-**In short:** the WAF runs fully without admin auth. Admin auth only protects the dashboard and admin API — the data plane, security pipeline, metrics, and health probes all work without it.
-
-### Setting Up Admin Auth (When Ready)
-
-```sh
-# 1. Hash a password (argon2id)
-./target/debug/waf admin set-password
-# Type password → get PHC hash string
-# Store it in config: admin.password_hash
-
-# 2. Enroll TOTP (optional, recommended for production)
-./target/debug/waf admin enroll-totp --issuer "Aegis-Gate" --account "you@company.com"
-# Get: base32 secret, QR provisioning URI, 8 recovery codes
-# Add secret to your authenticator app (Google Authenticator, Authy, etc.)
-
-# 3. Verify audit chain integrity (anytime)
-./target/debug/waf audit verify --from /path/to/audit.ndjson
-```
+Without admin auth: data plane, security pipeline, metrics, and
+health probes all work — only the admin API mutations are
+unprotected and the dashboard login screen rejects all attempts.
 
 ---
 
-## Ports Reference
-
-| Port | Plane | What |
-|------|-------|------|
-| 8443 | Data | TLS data plane (client traffic) |
-| 8080 | Data | Plaintext data plane (dev only) |
-| 9443 | Control | Admin dashboard + API |
-| 9100 | Data | Prometheus `/metrics` |
-| 2379 | Control | etcd |
-| 6379 | Data | Redis (optional) |
-| 9090 | Control | Prometheus UI |
-| 16686 | Control | Jaeger UI |
-| 8081 | Data | httpbin (mock upstream) |
-
----
-
-## CLI Cheat Sheet
+## CLI cheat sheet
 
 ```sh
 waf run       --config <path>         # Start gateway
 waf validate  --config <path>         # Validate config (no listeners)
 waf audit     verify --from <path>    # Verify audit chain
-waf admin     set-password            # Hash admin password
-waf admin     enroll-totp             # Generate TOTP secret
+waf admin     set-password            # Hash admin password (argon2id)
+waf admin     enroll-totp             # Generate TOTP secret + recovery codes
+waf snapshot  --out <path>            # Export config + rules + integrity envelope
+waf restore   --from <path>           # Restore an exported snapshot
 waf version                           # Build info
 waf help                              # Help
 ```
 
----
-
-## Running Tests
+## Tests
 
 ```sh
-# All tests (813 tests across all crates)
-cargo test --workspace
-
-# Single crate
-cargo test -p aegis-control
-cargo test -p aegis-security
-cargo test -p aegis-proxy
-
-# Clippy (must be zero warnings)
-cargo clippy --workspace -- -D warnings
+cargo test --workspace                                    # full suite
+cargo test --workspace --features aegis-proxy/redis       # with redis feature
+cargo clippy --workspace -- -D warnings                   # lint (zero warnings)
 ```
+
+The cluster smoke + LB tests live under
+[`tests/cluster/`](tests/cluster/); load tests under
+[`tests/load/`](tests/load/).
 
 ---
 
@@ -209,21 +168,24 @@ cargo clippy --workspace -- -D warnings
 
 | Problem | Fix |
 |---------|-----|
-| `Cannot connect to Docker daemon` | Start Docker Desktop, then retry |
-| `config error: ...` | Run `waf validate --config ...` to see the specific error |
-| Port already in use | Check `lsof -i :8443` and kill conflicting process |
-| etcd connection refused | Ensure Docker is running: `docker ps \| grep etcd` |
-| Tests fail after changes | Run `cargo test -p <crate>` for the crate you changed |
-| Clippy warnings | Fix all warnings — CI enforces `-D warnings` |
+| `Cannot connect to Docker daemon` | Start Docker Desktop, retry |
+| Config validation fails | Run `waf validate --config ...` — error shows file + field |
+| Port already in use | `lsof -i :8443` (or relevant port), kill the conflict |
+| `etcd connection refused` | Optional dep — either start it (`docker compose up -d`) or set `state.backend: in_memory` |
+| `/api/runtime` shows fewer workers than CPUs | The host is reporting CPU quota (k8s, cgroups). `num_cpus::get()` honours that — pin `runtime.workers: <int>` to override |
+| Tests fail on a clean checkout | `cargo test -p <crate>` for the failing crate; full suite output is in `target/debug/deps/<crate>*.log` |
+| Clippy warnings | CI enforces `-D warnings`. Fix locally with `cargo clippy --fix`. |
 
 ---
 
-## Further Reading
+## Further reading
 
 | Doc | What |
 |-----|------|
-| [deploy/GUIDE.md](../deploy/GUIDE.md) | Full deployment guide (dev → staging → production) |
-| [docs/USAGE.md](USAGE.md) | Operations & usage guide |
-| [docs/cli.md](cli.md) | Full CLI reference |
-| [Architecture.md](../Architecture.md) | System architecture |
-| [Implement-Progress.md](../Implement-Progress.md) | Implementation log |
+| [`config/README.md`](config/README.md) | Full YAML reference, section by section |
+| [`deploy/GUIDE.md`](deploy/GUIDE.md) | Production deployment (image, systemd, cluster) |
+| [`deploy/README.md`](deploy/README.md) | Dev infra catalogue + HA-cluster fixture |
+| [`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md) | Layer-1 worker sizing |
+| [`docs/operations/ha-clustering.md`](docs/operations/ha-clustering.md) | Layer-2 cross-node HA |
+| [`Architecture.md`](Architecture.md) | System design + three-layer scaling model |
+| [`Implement-Progress.md`](Implement-Progress.md) | Implementation log |

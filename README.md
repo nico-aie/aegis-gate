@@ -29,20 +29,29 @@ upstream proxying; benchmark mode track (`plans/benchmark-mode.md`).
 ## Quick Start
 
 ```sh
-# 1. Build
-cargo build --workspace --release
+# 1. Build (release, with cluster support)
+cargo build -p aegis-bin --release --features redis
 
-# 2. Start infrastructure (etcd, Prometheus, Jaeger, Redis, httpbin)
+# 2. (Optional) Start dev infra — etcd, Prometheus, Jaeger, Redis, httpbin
 docker compose -f deploy/docker-compose.dev.yml up -d
 
-# 3. Validate config
+# 3. Validate, then run
 ./target/release/waf validate --config config/waf.yaml
-
-# 4. Run the gateway
-./target/release/waf run --config config/waf.yaml
+./target/release/waf run      --config config/waf.yaml
 ```
 
-See [`docs/operator/cli.md`](docs/operator/cli.md) for the full CLI reference, [`docs/operator/usage.md`](docs/operator/usage.md) for the operator runbook, and [`deploy/GUIDE.md`](deploy/GUIDE.md) for deployment instructions.
+That's the full first-light path. Full step-by-step + tuning + admin
+auth: [`QUICKSTART.md`](QUICKSTART.md). Production deployment:
+[`deploy/GUIDE.md`](deploy/GUIDE.md). YAML reference:
+[`config/README.md`](config/README.md).
+
+### Three-layer scaling
+
+| Layer | Knob | Doc |
+|---|---|---|
+| 1 — In-node | `runtime.workers`, `cpu_affinity` (tokio worker threads) | [`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md) |
+| 2 — Across nodes | `node.id` + an LB in front of N peers | [`docs/operations/ha-clustering.md`](docs/operations/ha-clustering.md) |
+| 3 — State | `state.backend: redis` (counters, leases, block lists) | [`Architecture.md` §12](Architecture.md) |
 
 ## CLI Overview
 

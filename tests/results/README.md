@@ -19,6 +19,7 @@ read-back is reproducible.
 
 | # | Dir | Date | Focus | Headline | Status |
 |---|---|---|---|---|---|
+| 06 | [`run-06-2026-04-30-workers-perf/`](./run-06-2026-04-30-workers-perf/) | 2026-04-30 | Single-node sweep across `runtime.workers` ∈ {2, 4, 8, 12, auto} on a 12-core host. Proxied path + pure /healthz/ready path. | Worker count above 2 doesn't move RPS/latency on the current code base — bottleneck is upstream pool (proxied) or accept loop (pure). `auto` correctly = 12. | ℹ️ feature wiring verified; B6 upstream pool now top open perf item |
 | 05 | [`run-05-2026-04-30-ha-implementation/`](./run-05-2026-04-30-ha-implementation/) | 2026-04-30 | Full HA-T1..HA-T5 track landed: HAProxy reference deploy, single-VIP load tests, mid-burst failover (hard + graceful), peers visibility, drain endpoint | 9.5 k RPS via VIP, **99.93 % hard / 100 % graceful** failover budget, peers converge in 12 s | ✅ carry-over 6 closed |
 | 04 | [`run-04-2026-04-29-cluster-https/`](./run-04-2026-04-29-cluster-https/) | 2026-04-29 | Cluster smoke + HTTPS data-plane perf, post carry-over 3/4/5 closure | 31.7 k RPS plain (cluster), 31.8 k RPS over TLS, p95 ≤ 1.04 ms | ✅ all carry-overs closed |
 | 03 | [`run-03-2026-04-29-carryovers/`](./run-03-2026-04-29-carryovers/) | 2026-04-29 | Carry-over A (data-plane Allow forward) + B (rate-limit 429) closures + first cluster smoke | 31.5 k RPS w/ real upstream, 429 wire confirmed | A + B closed; 3/4/5 still open at run end |

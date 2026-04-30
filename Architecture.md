@@ -95,6 +95,28 @@ Side channels:
 other than the `ArcSwap<WafConfig>` and the state-backend handle. A
 compromise of one plane does not trivially reach the other.
 
+### Three-layer scaling model
+
+| Layer | Mechanism | Knob |
+|---|---|---|
+| **1 — In-node** | Tokio worker threads (multi-thread runtime, optional CPU affinity) | `runtime.workers` / `cpu_affinity` |
+| **2 — Across nodes** | HA cluster — N peers behind a single VIP (`waf-a`, `waf-b`, …) | `node.id`, `state.redis`, an LB in front |
+| **3 — State** | Redis-backed shared state (counters, leases, block lists) | `state.backend: redis` |
+
+Layer 1 is the focus of `runtime:` config (in-process scaling); the
+"Worker Supervisor" box at the top of the diagram corresponds to
+the tokio runtime built at boot from that block. Restart-only —
+tokio's worker_threads count is fixed once the runtime is built.
+Layer 2 ships as the HA cluster (HA-T1..HA-T5,
+[`docs/operations/ha-clustering.md`](./docs/operations/ha-clustering.md)).
+Layer 3 is the Redis state backend documented in §12 below.
+
+The supervisor also handles graceful drain: `POST /admin/drain`
+flips `readiness.draining` so external LBs see `/healthz/ready`
+return 503 within their next probe; SIGTERM does the same and
+holds the process up for `AEGIS_DRAIN_GRACE_MS` (default 5 s)
+before aborting listeners.
+
 ---
 
 ## 2. Module Layout

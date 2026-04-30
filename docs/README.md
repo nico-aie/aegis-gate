@@ -144,7 +144,8 @@ each category.
 
 | Doc | Summary |
 |---|---|
-| [ha-clustering.md](./operations/ha-clustering.md) | etcd (config) + optional Redis (counters), split-brain safety |
+| [runtime-tuning.md](./operations/runtime-tuning.md) | Layer-1 scaling — tokio worker threads, blocking pool, CPU affinity |
+| [ha-clustering.md](./operations/ha-clustering.md) | Layer-2 scaling — etcd (config) + optional Redis (counters), split-brain safety |
 | [compliance.md](./operations/compliance.md) | FIPS, PCI, HIPAA, SOC 2, GDPR modes |
 | [data-residency-retention.md](./operations/data-residency-retention.md) | Region pin + retention + GDPR erasure |
 | [dr-backup.md](./operations/dr-backup.md) | RPO/RTO, snapshots, restore drills |

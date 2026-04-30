@@ -30,6 +30,18 @@ Let the WAF scale horizontally behind a load balancer without
 weakening any security guarantee. A rate limit of 10 rps/IP must
 mean 10 rps/IP across the fleet, not 10 rps/IP × N nodes.
 
+This document covers **Layer 2** of Aegis-Gate's three-layer
+scaling model:
+
+| Layer | Mechanism | Doc |
+|---|---|---|
+| 1 — In-node | Tokio worker threads, optional CPU pin | [`runtime-tuning.md`](./runtime-tuning.md) |
+| 2 — Across nodes | This document — HA cluster behind a VIP | here |
+| 3 — State | Redis-backed shared state | [`Architecture.md` §12](../../Architecture.md) |
+
+Per-node scaling (Layer 1) and cluster scaling (Layer 2) are
+orthogonal: tune workers per pod, then add more pods.
+
 ## Cluster topology
 
 ```text

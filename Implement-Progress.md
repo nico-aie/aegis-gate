@@ -24,34 +24,156 @@
 ## Status (snapshot)
 
 - **As of:** 2026-04-30
-- **Workspace tests:** 2,210 default-feature (was 2,178;
-  +4 strict-readiness tests + +3 lease_select cfg tests
-  + +25 from elsewhere across HA-T track work).
+- **Workspace tests:** 2,228 default-feature (was 2,210;
+  +11 RuntimeConfig + +5 RuntimeView + +2 net).
 - **Clippy:** clean across the workspace on
-  `--features aegis-proxy/redis`, no warnings on lib /
-  bin / tests.
+  `--features aegis-proxy/redis` and on `aegis-bin --features
+  "redis affinity"`. No warnings on lib / bin / tests.
 - **Active tracks:** Phase B — production-readiness
   ([`plans/phase-b/`](./plans/phase-b/README.md), B5
-  CLOSED, B6 next). The **Cluster ingress / LB** track
+  CLOSED). **Cluster ingress / LB**
   ([`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md))
-  is **CLOSED** with HA-T1..HA-T5 all landed in run-05.
-- **Next task:** **B6-T1** (production Dockerfile, ~3-4 hr).
-  All six perf-surfaced carry-overs are now closed.
-- **Latest activity:** **Full HA-T1..HA-T5 track landed
-  2026-04-30**, validated by the run-05 perf re-run
-  ([`tests/results/run-05-2026-04-30-ha-implementation/`](./tests/results/run-05-2026-04-30-ha-implementation/README.md)).
-  Single-VIP throughput 9.5 k RPS at the LB; mid-burst
-  failover budget = **99.93 %** (hard `SIGKILL`) /
-  **100 %** (graceful drain via `POST /admin/drain` →
-  5 s wait → `SIGTERM`). Cluster smoke is 4/4 with the
-  new HA-T4 peers-convergence assertion baked into
-  `01-shared-counter.sh` (both nodes see `waf-a` + `waf-b`
-  in `/api/cluster.peers[]` within 12 s). HTTPS plane
-  unchanged at 31.2 k RPS / post-handshake p95 1.07 ms.
+  CLOSED with HA-T1..HA-T5 in run-05. **Workers / Layer-1**
+  CLOSED 2026-04-30 (this turn).
+- **Next task:** B6-T1 was deferred per user direction.
+  Open candidates: an upstream connection pool (would lift
+  the 4–5 k RPS forwarded-traffic ceiling that run-05
+  exposed), a multi-process `SO_REUSEPORT` workers mode
+  (Phase 5 of the workers plan, deferred), or a clean-host
+  TLS handshake re-measure to clear the run-05 noise
+  warning. No active blocker right now.
+- **Latest activity:** **Workers / Layer-1 in-node scaling
+  shipped 2026-04-30.** New `runtime:` config block
+  (`workers: auto | <int>`, `blocking_threads`,
+  `cpu_affinity`, `stack_size_kb`) drives
+  `tokio::runtime::Builder` at boot. Read-only
+  `/api/runtime` admin endpoint + dashboard panel surfaces
+  the effective values. CPU affinity behind the new
+  `affinity` Cargo feature on `aegis-bin`. Restart-only.
+  Deploy + dev docs simplified (`README.md`, `QUICKSTART.md`,
+  `deploy/README.md`, `deploy/GUIDE.md` rewritten to remove
+  duplication; new "Three-layer scaling" pointer). Perf
+  sweep
+  ([`tests/results/run-06-2026-04-30-workers-perf/`](./tests/results/run-06-2026-04-30-workers-perf/README.md))
+  confirms the knob is correctly wired but worker count
+  above 2 doesn't move RPS/latency on the current code base
+  — bottleneck is the upstream pool (proxied path) or
+  accept loop (pure path). B6 upstream connection pool is
+  now the top open perf item.
 
 ---
 
 ## Last Completed
+
+**Task:** **Workers — Layer-1 in-node scaling.** Configurable
+tokio worker threads, blocking-pool ceiling, CPU affinity (opt-in
+via Cargo feature), and stack size — the third layer of the
+three-layer scaling model now has explicit operator surface.
+
+**Outcome.** Operators can size in-process scaling without
+rebuilding:
+
+```yaml
+runtime:
+  workers: auto             # or integer in [2, 512]
+  blocking_threads: 512
+  cpu_affinity: false
+  stack_size_kb: 2048
+```
+
+The bin entry point now constructs the tokio runtime from this
+block via `tokio::runtime::Builder` instead of `#[tokio::main]`.
+`workers: auto` resolves to `num_cpus::get()` lifted to a
+floor of 2 (so the heartbeat + roster pollers from HA-T4 always
+have a thread of headroom). Validation rejects `workers: 1`,
+`workers > 512`, `blocking_threads: 0`, `blocking_threads > 4096`,
+and `stack_size_kb < 64`.
+
+**Decision recap (restart-only).** Tokio's `worker_threads` count
+is fixed at builder time; there's no runtime-resize API. Hot
+reload of every other config block remains supported — only the
+`runtime:` block requires a process restart. The admin endpoint
+`/api/runtime` (read-only) surfaces the current values so
+operators can confirm the boot picked up their YAML; the
+"Settings → Runtime (Layer-1)" dashboard panel renders the same
+view.
+
+**Decision recap (CPU affinity behind a Cargo feature).**
+`core_affinity::set_for_current` semantics differ across OSes
+(Linux hard-pins via `sched_setaffinity`; macOS is advisory; k8s
+schedulers prefer to own affinity themselves). Shipping it on by
+default would cost dependency footprint everyone pays. Compromise:
+`runtime.cpu_affinity: true` is honoured only when the binary is
+built with `--features affinity`; without that feature the
+request is logged and ignored, so prod configs don't fail boot
+when promoted across hosts.
+
+**Decision recap (no multi-process / `SO_REUSEPORT` yet).** The
+plan listed multi-process workers (true Nginx model) as Phase 5,
+gated by a feature flag. Skipped for now per user direction —
+Phase 1 + 2 + 3 + 4 + 6 ship together and Phase 5 can land later
+if profiling proves crash-isolation between workers is needed.
+
+**Files changed.**
+- `crates/aegis-core/src/config.rs` — `RuntimeConfig` +
+  `Workers::{Auto, Fixed}` enum + custom serde (accepts `"auto"`
+  or integer) + `validate()`. +11 unit tests.
+- `crates/aegis-core/Cargo.toml` — `num_cpus` direct dep.
+- `crates/aegis-bin/src/main.rs` — `build_runtime()` constructs
+  `tokio::runtime::Builder::new_multi_thread()` from the
+  validated `RuntimeConfig`; `apply_cpu_affinity()` cfg-gated
+  on the `affinity` feature.
+- `crates/aegis-bin/Cargo.toml` — new `affinity` feature wiring
+  `core_affinity` 0.8 (optional dep) + `aegis-proxy/affinity`.
+- `crates/aegis-proxy/Cargo.toml` — `affinity` feature placeholder
+  (so `cfg!(feature = "affinity")` lookups in `lib.rs` don't warn).
+- `crates/aegis-proxy/src/lib.rs` — `/api/runtime` read-only
+  admin handler returns the `RuntimeView` JSON.
+- `crates/aegis-control/src/api/runtime.rs` — new
+  `RuntimeView::render(cfg, cpu_affinity_active)`. +5 tests.
+- `crates/aegis-control/Cargo.toml` — `num_cpus` dep.
+- `crates/aegis-control/assets/dashboard/pages/settings.js` —
+  new "Runtime (Layer-1)" card; renders worker count, blocking
+  pool, stack size, host CPUs, affinity status.
+- `config/waf.yaml` — `runtime:` block commented in with the
+  defaults shown for discoverability.
+- `Architecture.md` — new §"Three-layer scaling model" subsection
+  in §1; cross-links runtime-tuning + ha-clustering docs.
+- `docs/operations/runtime-tuning.md` — new ~150-line operator
+  guide: knob reference, sizing recipes, verification commands,
+  hot-reload posture.
+- `docs/operations/ha-clustering.md` — three-layer-model table
+  added at top of §"Purpose"; cross-links runtime-tuning.
+- `docs/README.md` — `runtime-tuning.md` row added to the
+  Operations table.
+
+**Verification.**
+- **Workspace tests** (`cargo test --workspace --features
+  aegis-proxy/redis`) — **2,228 passed** parallel (was 2,210;
+  +11 RuntimeConfig + +5 RuntimeView + +2 net elsewhere).
+- **Clippy** (default + `affinity` feature combo) — clean.
+- **Live boot smoke** (cluster-a config, default `workers:
+  auto`):
+  ```
+  tokio runtime workers=12 blocking_threads=512 stack_size_kb=2048 cpu_affinity=false
+  $ curl http://127.0.0.1:9443/api/runtime
+  {"workers":12,"workers_mode":"auto","blocking_threads":512,
+   "stack_size_kb":2048,"cpu_affinity_requested":false,
+   "cpu_affinity_active":false,"host_logical_cpus":12}
+  ```
+- **Live boot smoke** (fixed `workers: 4`, `blocking: 128`,
+  `stack: 4096`):
+  ```
+  tokio runtime workers=4 blocking_threads=128 stack_size_kb=4096
+  $ curl http://127.0.0.1:19443/api/runtime
+  {"workers":4,"workers_mode":"fixed",...}
+  ```
+- All three production YAMLs (`waf.yaml`, `waf.cluster-a.yaml`,
+  `waf.tls.yaml`) `validate` cleanly with the new block.
+
+---
+
+## Earlier Last Completed (HA-T5)
 
 **Task:** **HA-T5 — LB-friendly readiness semantics.** Closes
 the [`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md)
@@ -471,29 +593,37 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-04-30 | **Workers / Layer-1** in-node scaling | New `runtime:` config block + `tokio::runtime::Builder` wiring + `/api/runtime` admin endpoint + dashboard panel + `affinity` Cargo feature for CPU pinning. +18 tests, 2,228 total. Restart-only. Live verified on 12-core (auto) and 4-thread fixed configs. |
 | 2026-04-30 | **HA-T1..T5** Cluster ingress / LB track CLOSED | `deploy/haproxy/haproxy.cfg` (HA-T1) + `tests/cluster/05/06` + `tests/load/failover-burst.js` (HA-T2) + `WafConfig.node.id` (HA-T3) + `LeaderView::set_members` + `/api/cluster.peers[]` (HA-T4) + `POST /admin/drain` + `?strict=1` + SIGTERM drain (HA-T5). 99.93 % hard / 100 % graceful failover budget. |
 | 2026-04-29 | **Carry-over B** — rate-limit response code | Gateway already returns 429 with Retry-After; test script recalibrated (BURST_RPS 200 → 2000, threshold 0.95 → 0.30). 50 status_429 observed live. |
 | 2026-04-29 | **Carry-over A** — data-plane Allow forwarding | `lib.rs::handle_data_request` now async, takes `Arc<ProxyContext>`, Allow branch goes through `forward::forward()`. Live: 31.5 k RPS / 504 µs median / 3.66 ms full-hop p95 vs httpbin. |
 | 2026-04-29 | **B5-T2** Benchmark mode core slice — closes B5 | `aegis-proxy::benchmark`: `BenchmarkConfig` + `StageTimings` + `X-Aegis-*` header serialiser; `proxy::handle_request` captures total/route/upstream timings + tier + decision when enabled. +21 unit + 2 proxy end-to-end tests. |
 | 2026-04-29 | **B5-T1** HTTP/3 listener | `aegis-proxy/http3` Cargo feature ships `listener::http3` on quinn 0.11 + h3 0.0.8 + h3-quinn 0.0.10. +15 tests. |
-| 2026-04-29 | **B4-T4** Full SSE streaming on `/dashboard/sse` — closes B4 | `admin_sse` widens admin pipeline to `UnsyncBoxBody`; `sse_response` streams `BroadcastStream` events with 15s heartbeat. +8 tests. |
 
 ---
 
 ## Next Task
 
-**Task:** **B6-T1 — production Dockerfile.** Start of
-milestone B6 — production packaging.
+**Task:** **Open — operator pick.** B6-T1 (production
+Dockerfile) is deferred per user direction. Open candidates,
+in rough priority order:
 
-**Plan:** [`plans/phase-b/README.md` § B6](./plans/phase-b/README.md#b6--production-packaging).
+1. **Upstream connection pool.** Run-05 measured 4–5 k RPS for
+   fully-forwarded cluster traffic (vs 31 k RPS when most
+   responses are 429s) — bottleneck is the upstream forwarder
+   opening a fresh TCP per request. A pool would close that
+   gap and is a prerequisite for meaningful prod RPS budgets.
+2. **Multi-process workers (`SO_REUSEPORT`).** Phase 5 of the
+   workers plan, deferred. Worth doing only if profiling shows
+   the multi-thread runtime can't saturate cores. Layer-1
+   threads + Layer-2 cluster cover most workloads.
+3. **Clean-host TLS handshake re-measure.** Run-05 saw
+   `tls_handshake_ms` p95 9.08 ms vs run-04's 2.12 ms. Same
+   code path, suspicious — needs a measure on a fresh host
+   before we treat it as a regression.
+4. **B6-T1 production Dockerfile** (deferred).
 
-**Why this next.** All six perf-surfaced carry-overs are
-now closed: A + B in the previous turn; 3 + 4 + 5 in the
-turn that ended with run-04; 6 (HA test methodology) closed
-2026-04-30 with the full HA-T1..HA-T5 track shipping.
-The slate is empty, the binary is functionally complete for
-production, and B6 turns the working binary into a shippable
-artefact.
+No active blocker right now.
 
 **Outline.**
 

@@ -1,280 +1,146 @@
 # Aegis-Gate Deployment Guide
 
-This guide covers deploying Aegis-Gate from local development through staging to production.
+Production deployment guide. Local dev is in
+[`../QUICKSTART.md`](../QUICKSTART.md); the dev-infra catalogue is
+in [`./README.md`](./README.md). This guide covers what changes
+when you move from `cargo run` on a laptop to a multi-node
+deployment behind a load balancer.
 
 ---
 
-## Prerequisites
+## Production checklist
 
-- **Rust toolchain**: 1.75+ (`rustup update stable`)
-- **Docker & Docker Compose**: v2.20+
-- **OS**: Linux (production), macOS (development)
+Run through this before the first prod deploy.
 
-## 1. Local Development
-
-### 1.1 Build
-
-```sh
-# Debug build (fast compile, slow runtime)
-cargo build --workspace
-
-# Release build (slow compile, optimized)
-cargo build --workspace --release
-```
-
-### 1.2 Start Infrastructure
-
-```sh
-# Start control plane (etcd, Prometheus, Jaeger) + data plane (Redis, httpbin)
-docker compose -f deploy/docker-compose.dev.yml up -d
-
-# Verify services are healthy
-docker exec aegis-etcd etcdctl endpoint health
-curl -sf http://localhost:9090/-/ready         # Prometheus
-curl -sf http://localhost:16686/               # Jaeger UI
-```
-
-### 1.3 Seed Config
-
-```sh
-# Bootstrap etcd with dev config (idempotent)
-./deploy/etcd/bootstrap.sh
-
-# Or use a local YAML file
-./target/debug/waf validate --config config/waf.yaml
-```
-
-### 1.4 Run the Gateway
-
-```sh
-# From source (dev)
-cargo run -p aegis-bin -- run --config config/waf.yaml
-
-# From binary
-./target/release/waf run --config config/waf.yaml
-```
-
-### 1.5 Verify
-
-```sh
-# Health checks
-curl -sf http://localhost:9443/healthz/ready   # Admin ready probe
-curl -sf http://localhost:9443/healthz/live     # Admin live probe
-curl -sf http://localhost:9100/metrics          # Prometheus metrics
-
-# Send test traffic through the WAF
-curl -k https://localhost:8443/ -H "Host: example.com"
-```
-
-### 1.6 Tear Down
-
-```sh
-docker compose -f deploy/docker-compose.dev.yml down -v
-```
+- [ ] **Build** — release binary with the features you need:
+      `cargo build -p aegis-bin --release --features "redis affinity"`.
+- [ ] **TLS certificates** provisioned (ACME or manual). Point
+      `tls.certificates[]` at the PEM paths.
+- [ ] **Admin password** hashed with `waf admin set-password`;
+      hash placed in `admin.password_hash` (or via secret ref).
+- [ ] **TOTP enrolled** with `waf admin enroll-totp`. Recovery
+      codes stored offline.
+- [ ] **Compliance profiles** set if applicable
+      (`compliance.modes: [pci, soc2, ...]`).
+- [ ] **Audit sinks** configured — JSONL on disk **plus** at least
+      one SIEM sink.
+- [ ] **IP allowlist** set on the admin listener.
+- [ ] **Redis** deployed with TLS + auth if `state.backend: redis`.
+- [ ] **Prometheus** scraping both planes; SLO objectives wired
+      to alert receivers.
+- [ ] **Runtime sizing** picked deliberately — see
+      [`../docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md).
+      `workers: auto` is fine on bare metal; under k8s CPU quotas,
+      pin a fixed integer.
+- [ ] **Cluster identity** stable — set `node.id` to a
+      durable per-pod name (e.g. `${POD_NAME}` from k8s downward
+      API), not the hostname-pid fallback.
+- [ ] **`waf validate --config <path>`** prints `config OK` for
+      the *exact* file the prod binary will read.
 
 ---
 
-## 2. Admin Setup
+## 1. Container image
 
-### 2.1 Set Admin Password
-
-```sh
-# Interactive
-./target/release/waf admin set-password
-# Enter password, receive argon2id hash
-
-# Scripted (pipe from stdin)
-echo "my-strong-password" | ./target/release/waf admin set-password
-```
-
-Store the printed PHC hash in your config's `admin.password_hash` field or in etcd.
-
-### 2.2 Enroll TOTP
-
-```sh
-./target/release/waf admin enroll-totp --issuer "Aegis-Gate" --account "admin@corp.com"
-```
-
-This outputs:
-1. **Base32 secret** — enter into your authenticator app
-2. **Provisioning URI** — scan as QR code
-3. **Recovery codes** — store securely offline (each usable once)
-
-### 2.3 Verify Audit Chain
-
-```sh
-# Verify integrity of an exported audit chain
-./target/release/waf audit verify --from /var/log/aegis/audit.ndjson
-
-# Exit code 0 = clean, 1 = tampered/parse error
-```
-
----
-
-## 3. Configuration
-
-### 3.1 Config File
-
-The primary config is YAML. Minimal example:
-
-```yaml
-listeners:
-  data:
-    - bind: "0.0.0.0:8443"
-      tls:
-        cert: /etc/aegis/tls/server.crt
-        key: /etc/aegis/tls/server.key
-  admin:
-    bind: "127.0.0.1:9443"
-
-routes:
-  - id: api
-    host: "api.example.com"
-    path: "/v1/*"
-    upstream: api-pool
-  - id: catch-all
-    path: "/"
-    upstream: default
-
-upstreams:
-  api-pool:
-    members:
-      - addr: "10.0.1.10:8080"
-      - addr: "10.0.1.11:8080"
-    lb: round_robin
-    health_check:
-      interval: 10s
-      path: /healthz
-  default:
-    members:
-      - addr: "10.0.2.10:3000"
-
-state:
-  backend: in_memory    # or "redis" with redis.url
-
-audit:
-  chain:
-    enabled: true
-  retention: 90d
-  sinks:
-    - type: jsonl
-      path: /var/log/aegis/audit.ndjson
-    - type: syslog
-      target: udp://siem.corp.com:514
-
-# Optional compliance profiles
-compliance:
-  modes: [pci, soc2]
-```
-
-### 3.2 Validate Before Deploy
-
-```sh
-./target/release/waf validate --config config/waf.yaml
-# Outputs: config OK + compliance profiles applied
-```
-
-### 3.3 Compliance Profiles
-
-| Profile | Effect |
-|---------|--------|
-| `fips` | Force aws-lc-rs TLS provider; reject RC4/DES/3DES/MD5; TLS ≥ 1.2 |
-| `pci` | TLS ≥ 1.2; PAN masking in DLP; audit retention ≥ 90 days |
-| `soc2` | Require audit hash chain + admin trail + SLO alerts |
-| `gdpr` | PII pseudonymization; data residency pin required |
-| `hipaa` | PHI-safe log mode (PHI fields masked before sink write) |
-
----
-
-## 4. Staging Deployment
-
-### 4.1 Docker Image
+Multi-stage Dockerfile is the recommended packaging path. Until
+the official `deploy/Dockerfile` lands (B6-T1, deferred), this
+template is what we run against:
 
 ```dockerfile
-FROM rust:1.75-slim AS builder
+# Build stage
+FROM rust:1.82-slim AS builder
 WORKDIR /src
 COPY . .
-RUN cargo build --workspace --release
+RUN cargo build -p aegis-bin --release --features "redis affinity"
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+# Runtime stage — distroless nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /src/target/release/waf /usr/local/bin/waf
 EXPOSE 8443 9443 9100
-ENTRYPOINT ["waf"]
+USER nonroot
+ENTRYPOINT ["/usr/local/bin/waf"]
 CMD ["run", "--config", "/etc/aegis/waf.yaml"]
 ```
 
-### 4.2 Docker Compose (Staging)
-
-```yaml
-services:
-  waf:
-    build: .
-    ports:
-      - "8443:8443"
-      - "9443:9443"
-      - "9100:9100"
-    volumes:
-      - ./config:/etc/aegis:ro
-      - ./tls:/etc/aegis/tls:ro
-    depends_on:
-      etcd:
-        condition: service_healthy
-    environment:
-      WAF_LOG_FORMAT: json
-      WAF_LOG_LEVEL: info
-```
+Pin Rust + base-image versions to digests in CI.
 
 ---
 
-## 5. Production Deployment
-
-### 5.1 Checklist
-
-- [ ] **TLS certificates** provisioned (ACME or manual)
-- [ ] **Admin password** hashed with `waf admin set-password`
-- [ ] **TOTP enrolled** with `waf admin enroll-totp`
-- [ ] **Config validated** with `waf validate --config ...`
-- [ ] **Compliance profiles** set (e.g., `modes: [pci, soc2, hipaa]`)
-- [ ] **Audit sinks** configured (JSONL + at least one SIEM sink)
-- [ ] **IP allowlist** set for admin dashboard
-- [ ] **etcd** deployed with TLS + RBAC (not `ALLOW_NONE_AUTHENTICATION`)
-- [ ] **Prometheus** scraping both planes
-- [ ] **SLO objectives** configured with alerting receivers
-
-### 5.2 Systemd Service
+## 2. Single-node systemd
 
 ```ini
 [Unit]
 Description=Aegis-Gate WAF
-After=network-online.target etcd.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/waf run --config /etc/aegis/waf.yaml --ready-fd 3
-ExecReload=/bin/kill -USR2 $MAINPID
+ExecStart=/usr/local/bin/waf run --config /etc/aegis/waf.yaml
+ExecStop=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=65536
 NotifyAccess=main
+Environment=AEGIS_DRAIN_GRACE_MS=10000
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-### 5.3 Health Monitoring
+`SIGTERM` triggers the graceful drain (HA-T5): readiness flips
+to 503, external LBs notice within their probe interval, then
+the listeners abort after `AEGIS_DRAIN_GRACE_MS`.
+
+---
+
+## 3. Multi-node cluster behind a load balancer
+
+This is the production topology — one VIP, N WAF nodes, Redis
+for shared state, an LB doing health-checked round-robin (or
+leastconn for keep-alive workloads).
+
+Topology + LB recipes (HAProxy / Nginx / k8s Ingress):
+[`../docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
+
+The reference HAProxy config lives at
+[`./haproxy/haproxy.cfg`](./haproxy/haproxy.cfg). Copy it as a
+starting point — production setups want PROXY-protocol, stricter
+timeouts, and (probably) frontend-side rate limiting of their own.
+
+Operationally:
+
+1. Each node runs the same binary against a per-node config (or
+   the same etcd path with `node.id` overridden via env).
+2. Health probes hit the **admin** port (`/healthz/ready`),
+   while traffic flows to the **data** port. HAProxy expresses
+   this via `port 9443` on each `server` line.
+3. Drain pattern (per node):
+   ```sh
+   curl -X POST http://<node>:9443/admin/drain   # readiness flips to 503
+   sleep 5                                        # LB notices via probe
+   systemctl stop aegis-gate                      # SIGTERM, grace, abort
+   ```
+
+---
+
+## 4. Health monitoring
 
 | Endpoint | Purpose | Expected |
-|----------|---------|----------|
-| `GET /healthz/live` | Liveness probe | `200 OK` |
-| `GET /healthz/ready` | Readiness probe | `200 OK` when config loaded + upstreams healthy |
-| `GET /healthz/startup` | Startup probe | `200 OK` after initial boot |
-| `GET /metrics` | Prometheus metrics | Prometheus text format |
+|---|---|---|
+| `GET /healthz/live` | Liveness probe | `200 OK` (only 503 when draining) |
+| `GET /healthz/ready` | LB health check | `200 OK` when ready and not draining |
+| `GET /healthz/ready?strict=1` | Active/standby — only the cluster leader returns 200 | 503 on followers |
+| `GET /healthz/startup` | k8s startup probe | `200 OK` after first config load |
+| `GET /metrics` | Prometheus metrics (data-plane port) | Prometheus text format |
+| `GET /api/cluster` | Peers + leader info | JSON with `peers[]`, `is_leader`, `our_node` |
+| `GET /api/runtime` | Runtime sizing snapshot | JSON with effective worker count |
 
-### 5.4 Log Rotation
+---
 
-Aegis writes audit logs as NDJSON. Use logrotate or a similar tool:
+## 5. Log rotation
+
+Audit logs are NDJSON. Use logrotate or a sidecar shipper:
 
 ```
 /var/log/aegis/audit.ndjson {
@@ -288,33 +154,48 @@ Aegis writes audit logs as NDJSON. Use logrotate or a similar tool:
 }
 ```
 
-### 5.5 Graceful Shutdown
-
-- `SIGTERM` → graceful drain (connections finish, then exit 0)
-- `SIGUSR2` → hot binary reload (new process, drain old)
+Compliance profiles override the rotation window: `pci` requires
+≥ 90 days, `hipaa` requires ≥ 6 years (provision your sink
+accordingly — the WAF doesn't enforce sink-side retention).
 
 ---
 
-## 6. Ports Reference
+## 6. Compliance profiles
 
-| Port | Plane | Purpose |
-|------|-------|---------|
-| 8443 | Data | TLS data plane (client traffic) |
-| 8080 | Data | Plaintext data plane (dev only) |
-| 9443 | Control | Admin dashboard + API |
-| 9100 | Data | Prometheus `/metrics` |
-| 2379 | Control | etcd (config source of truth) |
-| 6379 | Data | Redis (optional counter store) |
+Set `compliance.modes` to layer policy bundles on top of the
+config. Validation runs at startup; conflicts (e.g. weak cipher
+under `fips`) fail fast with a precise error.
+
+| Profile | Effect |
+|---------|--------|
+| `fips` | Force aws-lc-rs TLS provider; reject RC4/DES/3DES/MD5; TLS ≥ 1.2 |
+| `pci` | TLS ≥ 1.2; PAN masking in DLP; audit retention ≥ 90 days |
+| `soc2` | Require audit hash chain + admin trail + SLO alerts |
+| `gdpr` | PII pseudonymization; data residency pin required |
+| `hipaa` | PHI-safe log mode (PHI fields masked before sink write) |
 
 ---
 
 ## 7. Troubleshooting
 
 | Symptom | Check |
-|---------|-------|
-| Config validation fails | Run `waf validate --config ...` and fix reported errors |
-| Compliance conflict | Check if `min_tls_version` or `disallow_algorithms` conflicts with profile requirements |
-| Audit chain tampered | Run `waf audit verify --from <path>` — reports exact tampered line |
-| Admin login locked out | Wait for lockout TTL (default 15min) or restart to clear in-memory state |
-| TOTP rejected | Check clock sync (NTP); TOTP allows ±1 time step (30s) |
-| Health probe failing | Check `/healthz/ready` — requires config loaded + at least one healthy upstream |
+|---|---|
+| Config validation fails | `waf validate --config <path>` — exact line + field reported |
+| Compliance conflict at boot | A `min_tls_version` / cipher / retention setting violates a profile in `compliance.modes` |
+| Audit chain tampered | `waf audit verify --from <path>` — reports the broken line |
+| Admin login locked out | Wait for the lockout TTL (default 15 min) or restart to clear in-memory state |
+| TOTP rejected | Check NTP — TOTP allows ±1 step (30 s) |
+| Health probe failing | `/healthz/ready` requires config loaded + state backend up + ≥ 1 healthy upstream + not draining |
+| LB sees node down right after drain | That's the expected path. Drain flips readiness, LB pulls within `inter × fall`, then `systemctl stop` aborts after grace. See `docs/operations/ha-clustering.md`. |
+
+---
+
+## Cross-references
+
+- [`../QUICKSTART.md`](../QUICKSTART.md) — local dev path.
+- [`./README.md`](./README.md) — what's in this folder.
+- [`../config/README.md`](../config/README.md) — full YAML reference.
+- [`../docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) — Layer-2 cluster topology.
+- [`../docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md) — Layer-1 worker sizing.
+- [`../docs/operations/dr-backup.md`](../docs/operations/dr-backup.md) — snapshots, restore drills.
+- [`../docs/operations/compliance.md`](../docs/operations/compliance.md) — what each profile actually changes.

@@ -403,7 +403,54 @@ waf admin enroll-totp --issuer "Aegis" --account "admin"
 
 ---
 
-### 13. Benchmark mode (optional)
+### 13. Runtime sizing (Layer-1 in-node scaling)
+
+Tunes the tokio runtime at boot. **Restart-only** — tokio's
+worker thread count is fixed once the runtime is built; the
+admin surface rejects hot-reload requests for this block.
+Full sizing recipes + OS-specific affinity notes:
+[`../docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md).
+
+```yaml
+runtime:
+  workers: auto             # default; "auto" or integer in [2, 512]
+  blocking_threads: 512     # tokio default
+  cpu_affinity: false       # honoured only with `--features affinity`
+  stack_size_kb: 2048       # 2 MiB per thread
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `workers` | `auto` | `auto` resolves to `num_cpus::get()`, lifted to ≥ 2. Integer values must be in `[2, 512]`. The cluster heartbeat + roster pollers need a thread of headroom, so `1` is rejected. |
+| `blocking_threads` | `512` | Ceiling on tokio's blocking-thread pool. Lower on memory-constrained hosts. |
+| `cpu_affinity` | `false` | Pin worker threads to distinct CPU cores (Linux: hard pin via `sched_setaffinity`; macOS: advisory). Only honoured when the binary is built with `--features affinity` — without that feature, the request is logged and ignored. |
+| `stack_size_kb` | `2048` | Per-thread stack. Validation enforces a 64-KiB floor. |
+
+**Where to look at the live values.** Three signals confirm
+your `runtime:` block landed:
+
+```sh
+# 1. Boot log line
+"tokio runtime workers=12 blocking_threads=512 stack_size_kb=2048 cpu_affinity=false"
+
+# 2. Read-only admin endpoint
+curl http://localhost:9443/api/runtime
+# {"workers":12,"workers_mode":"auto","blocking_threads":512,...}
+
+# 3. Dashboard panel: Settings → Runtime (Layer-1)
+```
+
+**Three-layer scaling model.**
+
+| Layer | This block | Doc |
+|---|---|---|
+| 1 — In-node | `runtime:` (here) | [`runtime-tuning.md`](../docs/operations/runtime-tuning.md) |
+| 2 — Across nodes | `node.id` + LB | [`ha-clustering.md`](../docs/operations/ha-clustering.md) |
+| 3 — State | `state:` (§4 above) | [`Architecture.md` §12](../Architecture.md) |
+
+---
+
+### 14. Benchmark mode (optional)
 
 Off by default. When enabled, exposes per-request WAF diagnostics
 on `X-Aegis-*` response headers and adds two dashboard panels for

@@ -1,0 +1,12 @@
+config     | effective | RPS          | p50       | p95       | ready_success
+-----------+-----------+--------------+-----------+-----------+--------------
+==> workers=2 (pure /healthz/ready)
+2          | 2         | 47516.401323 | 3.91ms    | 6.72ms    | 100.00%
+==> workers=4 (pure /healthz/ready)
+4          | 4         | 47978.406251 | 3.91ms    | 6.42ms    | 100.00%
+==> workers=8 (pure /healthz/ready)
+8          | 8         | 46027.186469 | 4.08ms    | 6.64ms    | 100.00%
+==> workers=12 (pure /healthz/ready)
+12         | 12        | 46367.58446  | 4.05ms    | 6.61ms    | 100.00%
+==> workers=auto (pure /healthz/ready)
+auto       | 12        | 43376.097238 | 4.34ms    | 7.11ms    | 100.00%

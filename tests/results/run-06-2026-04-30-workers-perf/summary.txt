@@ -1,0 +1,17 @@
+config     | effective | RPS       | p50       | p95       | allow_success
+-----------+-----------+-----------+-----------+-----------+--------------
+==> workers=2
+    effective workers = 2
+2          | 2         | 199.992659 | 2ms       | 3.85ms    | 100.00%
+==> workers=4
+    effective workers = 4
+4          | 4         | 199.976552 | 1.97ms    | 3.9ms     | 100.00%
+==> workers=8
+    effective workers = 8
+8          | 8         | 200.009676 | 1.94ms    | 3.77ms    | 100.00%
+==> workers=12
+    effective workers = 12
+12         | 12        | 200.003903 | 1.98ms    | 3.81ms    | 100.00%
+==> workers=auto
+    effective workers = 12
+auto       | 12        | 200.005578 | 2.13ms    | 3.65ms    | 100.00%
