@@ -22,6 +22,7 @@ tokio-stream.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+num_cpus.workspace = true
 prometheus.workspace = true
 sha2.workspace = true
 blake3.workspace = true

@@ -15,6 +15,11 @@ path = "src/main.rs"
 #   cargo build -p aegis-bin --features redis
 default = []
 redis = ["aegis-proxy/redis"]
+# `affinity` enables CPU-pinning of tokio worker threads. Honours
+# `runtime.cpu_affinity: true`. Off by default — the dependency
+# only links on Linux/BSD/macOS/Windows hosts, but enforcement
+# semantics differ.
+affinity = ["dep:core_affinity", "aegis-proxy/affinity"]
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
@@ -27,6 +32,7 @@ tracing-subscriber.workspace = true
 blake3.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+core_affinity = { version = "0.8", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

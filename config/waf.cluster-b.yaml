@@ -70,7 +70,10 @@ rate_limit:
       scope: global
       key: ip
       algo: sliding_window
-      limit: 10000
+      # Set high so HA load tests can measure failover budget
+      # without the rate-limit dominating the result. Production
+      # operators with real DDoS budgets set this much lower.
+      limit: 10000000
       window: "1m"
 
 rules:

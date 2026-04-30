@@ -19,6 +19,7 @@ read-back is reproducible.
 
 | # | Dir | Date | Focus | Headline | Status |
 |---|---|---|---|---|---|
+| 05 | [`run-05-2026-04-30-ha-implementation/`](./run-05-2026-04-30-ha-implementation/) | 2026-04-30 | Full HA-T1..HA-T5 track landed: HAProxy reference deploy, single-VIP load tests, mid-burst failover (hard + graceful), peers visibility, drain endpoint | 9.5 k RPS via VIP, **99.93 % hard / 100 % graceful** failover budget, peers converge in 12 s | ✅ carry-over 6 closed |
 | 04 | [`run-04-2026-04-29-cluster-https/`](./run-04-2026-04-29-cluster-https/) | 2026-04-29 | Cluster smoke + HTTPS data-plane perf, post carry-over 3/4/5 closure | 31.7 k RPS plain (cluster), 31.8 k RPS over TLS, p95 ≤ 1.04 ms | ✅ all carry-overs closed |
 | 03 | [`run-03-2026-04-29-carryovers/`](./run-03-2026-04-29-carryovers/) | 2026-04-29 | Carry-over A (data-plane Allow forward) + B (rate-limit 429) closures + first cluster smoke | 31.5 k RPS w/ real upstream, 429 wire confirmed | A + B closed; 3/4/5 still open at run end |
 | 02 | [`run-02-2026-04-29-phase-b/`](./run-02-2026-04-29-phase-b/) | 2026-04-29 | First whole-system run after Phase B B3 + B4 + B5 closed | 42.3 k RPS, allow-path p95 877 µs (was 7.21 ms) | surfaced 5 carry-overs |
@@ -42,7 +43,7 @@ content the same way:
 Carry-overs are real gaps the perf benchmarks expose. Each
 one is tracked in
 [`Implement-Progress.md`](../../Implement-Progress.md). Their
-state at run-04 (the latest run):
+state at run-05 (the latest run):
 
 | ID | Topic | State | Closing run |
 |---|---|---|---|
@@ -51,17 +52,26 @@ state at run-04 (the latest run):
 | 3 | leader-state admin endpoint missing | ✅ closed | run-04 |
 | 4 | per-node rate-limit bucket vs cluster-shared | ✅ closed (doc clarification) | run-04 |
 | 5 | data-plane TLS loader missing | ✅ closed | run-04 |
-| 6 | HA perf test routes per-port, no LB / single VIP | **open** — see [`tests/cluster/HA-TEST-METHODOLOGY.md`](../cluster/HA-TEST-METHODOLOGY.md) | — |
+| 6 | HA perf test routes per-port, no LB / single VIP | ✅ closed | **run-05** |
 
-After run-04, carry-overs A / B / 3 / 4 / 5 are all closed.
-A **new** carry-over (#6) was surfaced *by* run-04 —
-the cluster perf harness drives traffic per-port instead
-of through a single LB. That's a test-infra gap, not a
-runtime bug; the recommended fix is HAProxy in front of
-the cluster (option 2 in `HA-TEST-METHODOLOGY.md`).
-Treat carry-over 6 as the gating task for the *next*
-cluster perf publication; B6-T1 (production Dockerfile)
-can land in parallel.
+After run-05, **all six carry-overs surfaced by perf are closed**.
+The recommended fix from `HA-TEST-METHODOLOGY.md` (option 2 —
+HAProxy in front of the cluster) shipped as
+[`deploy/haproxy/haproxy.cfg`](../../deploy/haproxy/haproxy.cfg)
+plus the new `aegis-lb` compose service. The cluster smoke
+expanded from 4 scripts to 6 (single-VIP baseline + mid-burst
+failover); both `tests/cluster/05-single-vip-baseline.sh` and
+`06-mid-burst-failover.sh` are green on the current branch.
+Run-05 also wired HA-T5 (LB-friendly readiness): `POST
+/admin/drain` flips `readiness.draining`, `?strict=1` on
+`/healthz/ready` returns 503 unless the node holds the cluster
+leader lease, and SIGTERM auto-drains for 5 s before aborting
+listeners. The graceful-drain failover path produces zero 5xx.
+
+The next gating tracks are **B6-T1** (production Dockerfile)
+and an upstream connection pool (the 4–5 k RPS measured for
+fully-forwarded cluster traffic comes from new TCP per request
+on the upstream side; both can land independently).
 
 ## Adding a new run
 

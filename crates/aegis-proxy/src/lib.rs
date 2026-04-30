@@ -417,8 +417,49 @@ pub async fn run(
     }
 
     // Hold alive until shutdown signal.
-    tokio::signal::ctrl_c().await.ok();
-    tracing::info!("shutting down");
+    //
+    // HA-T5 — drain-on-SIGTERM. The signal handler flips
+    // `readiness.draining` first, holds for `drain_grace_ms`
+    // (default 5 s) so external LBs notice via /healthz/ready
+    // and stop sending us new traffic, then aborts the listeners.
+    // In-flight requests have until the grace period to complete.
+    let shutdown = async {
+        let ctrl_c = tokio::signal::ctrl_c();
+        #[cfg(unix)]
+        {
+            let mut term = match tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            ) {
+                Ok(s) => s,
+                Err(_) => {
+                    ctrl_c.await.ok();
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = ctrl_c => {}
+                _ = term.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            ctrl_c.await.ok();
+        }
+    };
+    shutdown.await;
+    tracing::info!("shutdown signal received; flipping draining");
+    readiness
+        .draining
+        .store(true, std::sync::atomic::Ordering::Release);
+    let grace = std::time::Duration::from_millis(
+        std::env::var("AEGIS_DRAIN_GRACE_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(5_000),
+    );
+    tracing::info!(grace_ms = grace.as_millis() as u64, "draining; awaiting grace");
+    tokio::time::sleep(grace).await;
+    tracing::info!("grace expired; aborting listeners");
 
     for h in handles {
         h.abort();
@@ -548,7 +589,7 @@ async fn admin_accept_loop(
             // The `acquire` semantics work here because each
             // node uses its OWN node-id-suffixed key — no
             // contention.
-            &format!("members:{}", our_node.as_str()),
+            format!("members:{}", our_node.as_str()),
             std::time::Duration::from_secs(15),
             move |_holder, lost| async move {
                 lost.notified().await;
@@ -690,6 +731,15 @@ async fn handle_admin_request(
     }
     if method == hyper::Method::POST && path == "/admin/logout" {
         return handle_admin_logout(req, services);
+    }
+
+    // HA-T5 — operator-initiated drain. Flips
+    // `readiness.draining` so subsequent `/healthz/ready` probes
+    // return 503; LBs (HAProxy / Nginx / k8s endpoints) stop
+    // routing new traffic to this node within the next health
+    // check interval. In-flight requests continue.
+    if method == hyper::Method::POST && path == "/admin/drain" {
+        return handle_admin_drain(req, readiness, services).await;
     }
 
     // P2 mutating endpoint: PUT /api/detectors. Reads body
@@ -1254,6 +1304,73 @@ fn process_admin_logout(
         .unwrap()
 }
 
+/// HA-T5 — operator drain handler. Authenticated POST endpoint
+/// that flips `readiness.draining` to true. Subsequent
+/// `/healthz/ready` probes return 503 so external load
+/// balancers stop routing new traffic. In-flight requests
+/// continue. Idempotent — calling twice is a no-op.
+async fn handle_admin_drain(
+    req: hyper::Request<hyper::body::Incoming>,
+    readiness: &ReadinessSignal,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use std::sync::atomic::Ordering;
+
+    // Auth: require a valid admin session cookie. We don't gate
+    // on CSRF the way mutating dashboard endpoints do — drain is
+    // a server-local op that doesn't touch persisted config.
+    let session_cookie = req
+        .headers()
+        .get_all(hyper::header::COOKIE)
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
+        .map(|s| s.to_string());
+    let session_ok = match session_cookie.as_deref() {
+        Some(sid) => services.auth_sessions.validate(sid).is_some(),
+        None => false,
+    };
+    // Allow unauthenticated drain when the admin password
+    // hash is the empty default (test/dev builds with no real
+    // admin configured) OR when the operator has set
+    // `AEGIS_DRAIN_TOKEN` and the request carries it as a
+    // matching `X-Aegis-Drain-Token` header. The token path
+    // exists so that ops automation (k8s preStop hooks,
+    // systemd ExecStop scripts, etc.) can call `/admin/drain`
+    // without managing a session cookie.
+    let no_admin_configured = services.admin_identity.password_hash.is_empty();
+    let token_ok = match std::env::var("AEGIS_DRAIN_TOKEN").ok() {
+        Some(expected) if !expected.is_empty() => {
+            req.headers()
+                .get("x-aegis-drain-token")
+                .and_then(|h| h.to_str().ok())
+                .map(|h| h == expected)
+                .unwrap_or(false)
+        }
+        _ => false,
+    };
+    if !session_ok && !no_admin_configured && !token_ok {
+        return json_response(
+            401,
+            &serde_json::json!({"error": "auth_required"}),
+        );
+    }
+
+    let already = readiness.draining.swap(true, Ordering::Release);
+    json_response(
+        202,
+        &serde_json::json!({
+            "status": "draining",
+            "already": already,
+            "node": services
+                .leader_view
+                .as_ref()
+                .map(|lv| lv.our_node.clone())
+                .unwrap_or_default(),
+        }),
+    )
+}
+
 /// Render a [`MaskState`] as a JSON object with `base` and
 /// `overrides` keys. Used as the `before`/`after` payload of the
 /// audit-chain diff so reviewers can see exactly which tier (and
@@ -1332,7 +1449,19 @@ fn admin_router(
             json_response(code, &serde_json::json!({"status": msg}))
         }
         "/healthz/ready" => {
-            let (code, resp) = aegis_control::health::check_ready(readiness);
+            // HA-T5 — `?strict=1` returns 503 unless this node also
+            // holds the cluster lease. Lets active/standby LB
+            // topologies route singleton traffic to one node only.
+            let strict = matches!(parse_query_str(query, "strict"), Some("1"));
+            let (code, resp) = if strict {
+                let is_leader = services
+                    .leader_view
+                    .as_ref()
+                    .map(|lv| lv.is_leader());
+                aegis_control::health::check_ready_strict(readiness, is_leader)
+            } else {
+                aegis_control::health::check_ready(readiness)
+            };
             json_response(code, &serde_json::json!(resp))
         }
         "/healthz/startup" => {
@@ -1543,6 +1672,17 @@ fn admin_router(
         // D-M5: tracking
         "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
         "/api/cluster" => json_body_response(200, services.tracking.render_cluster(), "private, max-age=2"),
+        "/api/runtime" => {
+            // Layer-1 — in-node runtime sizing snapshot. Stable
+            // across the process lifetime (tokio runtime is fixed
+            // at boot), so cache aggressively.
+            let view = aegis_control::api::runtime::RuntimeView::render(
+                &cfg.runtime,
+                cfg!(feature = "affinity"),
+            );
+            let body = serde_json::to_string(&view).unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "private, max-age=60")
+        }
         "/api/certs" => json_body_response(200, services.tracking.render_certs(), "private, max-age=10"),
         "/api/gitops/status" => json_body_response(200, services.tracking.render_gitops(), "private, max-age=5"),
         "/api/alerts" => json_body_response(200, services.tracking.render_alerts(), "private, max-age=2"),

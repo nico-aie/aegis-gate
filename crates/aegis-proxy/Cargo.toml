@@ -9,6 +9,11 @@ rust-version.workspace = true
 # default so single-node builds don't pull the Redis dep tree.
 default = []
 redis = ["dep:redis", "dep:deadpool-redis"]
+# `affinity` enables CPU-pinning of tokio worker threads at boot.
+# Linux-first; macOS/Windows accept the request but kernel
+# enforcement is advisory. Off by default — the runtime config
+# `cpu_affinity: true` is honoured only if this feature is on.
+affinity = []
 # `vault` enables resolution of `${secret:vault:<path>#<field>}`
 # config references against a HashiCorp Vault server. Off by
 # default so single-node + non-Vault deployments stay slim.

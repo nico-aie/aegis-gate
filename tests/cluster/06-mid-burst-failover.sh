@@ -67,14 +67,29 @@ start_lb
 # node B at t≈10s so the LB has 20s to absorb the failure
 # and recover.
 echo "==> starting 30 s k6 burst at $LB_VIP_PLAINTEXT"
+# Use rate-controlled (`failover-burst.js`) instead of VU-driven.
+# At 200 RPS × 30 s = 6 000 reqs we stay well under the host's
+# ephemeral-port budget (mac default ~16 k ports × 60 s TIME_WAIT)
+# while still seeing the failover transient.
 docker exec -d aegis-k6 sh -c \
-  "k6 run -e DURATION=30s -e VUS=10 \
+  "k6 run -e DURATION=30s -e RPS=200 \
           -e WAF_TARGET=http://host.docker.internal:9180 \
-          /scripts/baseline.js > /tmp/k6-failover.log 2>&1"
+          /scripts/failover-burst.js > /tmp/k6-failover.log 2>&1"
 
 sleep 10
 
 if [[ "$GRACEFUL" == "1" ]]; then
+  # HA-T5 — proper graceful drain pattern:
+  #   1. POST /admin/drain on node B → readiness flips to 503.
+  #   2. Wait `inter × fall = 4s` for HAProxy to stop routing.
+  #   3. SIGTERM the process — by then no new traffic is hitting it.
+  echo "==> graceful drain of node B via /admin/drain"
+  drain_resp=$(curl --silent --max-time 2 -X POST \
+                    "$NODE_B_ADMIN/admin/drain" 2>/dev/null \
+               || echo "{}")
+  echo "drain response: $drain_resp"
+  echo "==> waiting 5s for HAProxy to pull node B from rotation"
+  sleep 5
   echo "==> graceful kill of node B (SIGTERM)"
   kill -TERM "$NODE_B_PID" 2>/dev/null || true
 else
@@ -83,8 +98,11 @@ else
 fi
 NODE_B_PID=""
 
-# Wait for k6 to finish (it runs 30s total).
-sleep 22
+# Wait for k6 to finish (it runs 30s total + summary print).
+# The detached k6 inside aegis-k6 needs ~5s after the burst
+# completes to flush its summary, otherwise the awk parse below
+# returns empty.
+sleep 25
 
 # Pull k6 results.
 docker exec aegis-k6 cat /tmp/k6-failover.log \
@@ -123,11 +141,17 @@ if [[ "$ok_check" != "1" ]]; then
 fi
 ok "allow_success ${allow_pct}% ≥ ${floor}% floor"
 
-# Confirm HAProxy noticed B failed.
+# Confirm HAProxy noticed B failed. CSV column 22 is `chkfail`
+# (count of failed L7 health checks). For both hard kill and
+# graceful drain, this must be > 0 — otherwise the LB never
+# rotated traffic away.
 chkfail_b=$(curl --silent "$LB_STATS/;csv" 2>/dev/null \
-            | awk -F',' '$1=="cluster_http" && $2=="waf-b"{print $14}' \
+            | awk -F',' '$1=="cluster_http" && $2=="waf-b"{print $22}' \
             || echo "0")
-echo "haproxy chkfail for waf-b: ${chkfail_b:-0}"
+status_b=$(curl --silent "$LB_STATS/;csv" 2>/dev/null \
+            | awk -F',' '$1=="cluster_http" && $2=="waf-b"{print $18}' \
+            || echo "")
+echo "haproxy waf-b status=${status_b:-?} chkfail=${chkfail_b:-0}"
 if [[ -z "$chkfail_b" || "$chkfail_b" == "0" ]]; then
   echo "FAIL: HAProxy never observed waf-b health check fail"
   exit 1

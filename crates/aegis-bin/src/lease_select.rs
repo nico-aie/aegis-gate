@@ -217,21 +217,69 @@ upstreams:
         );
     }
 
+    fn minimal_cfg() -> WafConfig {
+        // Smallest YAML that passes WafConfig::validate(). Keeps
+        // these tests independent of the rest of the workspace.
+        let yaml = r#"
+listeners:
+  admin:
+    bind: "127.0.0.1:0"
+  data:
+    - bind: "127.0.0.1:0"
+routes:
+  - id: "default"
+    path: "/"
+    upstream: "default"
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:8080"
+state:
+  backend: "in_memory"
+"#;
+        aegis_core::config::load_config_str(yaml)
+            .expect("minimal config must parse")
+    }
+
+    // The three tests below mutate `AEGIS_NODE_ID`, which is
+    // process-global. Cargo runs unit tests in parallel by
+    // default, so we serialize them under a single mutex.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn explicit_node_id_env_var_wins() {
-        // Test isolation note: this mutates a process-wide env
-        // var; safe because this is the only test that touches
-        // it and we restore on exit.
+        let _g = env_lock();
         std::env::set_var("AEGIS_NODE_ID", "explicit-node");
-        let derived = derive_node_id();
+        let cfg = minimal_cfg();
+        let derived = derive_node_id(&cfg);
         std::env::remove_var("AEGIS_NODE_ID");
         assert_eq!(derived.as_str(), "explicit-node");
     }
 
     #[test]
     fn derived_node_id_is_non_empty() {
+        let _g = env_lock();
         std::env::remove_var("AEGIS_NODE_ID");
-        let derived = derive_node_id();
+        let cfg = minimal_cfg();
+        let derived = derive_node_id(&cfg);
         assert!(!derived.as_str().is_empty());
+    }
+
+    #[test]
+    fn cfg_node_id_overrides_env() {
+        // HA-T3 — explicit YAML config wins over env var.
+        let _g = env_lock();
+        std::env::set_var("AEGIS_NODE_ID", "from-env");
+        let mut cfg = minimal_cfg();
+        cfg.node.id = Some("from-cfg".to_string());
+        let derived = derive_node_id(&cfg);
+        std::env::remove_var("AEGIS_NODE_ID");
+        assert_eq!(derived.as_str(), "from-cfg");
     }
 }

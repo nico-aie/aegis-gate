@@ -86,15 +86,22 @@ pub struct WafConfig {
     pub load_mode: crate::load_mode::LoadModeConfig,
     #[serde(default)]
     pub logging: crate::verbosity::LoggingConfig,
-    /// Node identity for cluster mode (HA-T3). When set, this
-    /// is the value the lease layer + admin observability use
-    /// for "who am I". When unset, derived from hostname + PID
-    /// + nanos at boot, which is sufficient for single-node and
-    /// short-lived test rigs but unstable across restarts. For
-    /// long-running production clusters, set this to a stable
-    /// per-pod identifier (k8s `${POD_NAME}`, hostname, etc.).
+    /// Node identity for cluster mode (HA-T3).
+    ///
+    /// When set, this is the value the lease layer + admin
+    /// observability use for "who am I". When unset, it is derived
+    /// from hostname + PID + nanos at boot, which is sufficient for
+    /// single-node and short-lived test rigs but unstable across
+    /// restarts. For long-running production clusters, set this to
+    /// a stable per-pod identifier (k8s `${POD_NAME}`, hostname).
     #[serde(default)]
     pub node: NodeConfig,
+    /// Tokio runtime tuning (Layer-1 worker scaling, post-HA).
+    /// Surfaces the in-process knobs operators need to size the
+    /// gateway against host CPU. Restart-only — tokio runtimes
+    /// can't resize once built.
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
 }
 
 /// Node identity for cluster mode. Optional — `id: None` means
@@ -106,6 +113,108 @@ pub struct NodeConfig {
     /// audit log entries, lease holder strings.
     #[serde(default)]
     pub id: Option<String>,
+}
+
+/// In-process runtime sizing — Layer-1 of the three-layer scaling
+/// model (Layer-2 is the HA cluster, Layer-3 is Redis state).
+///
+/// Maps onto `tokio::runtime::Builder` knobs at boot. Restart-only:
+/// tokio runtimes can't resize once built. Hot-reload requests
+/// against these fields are rejected by the admin surface.
+#[derive(Clone, Debug, Deserialize)]
+pub struct RuntimeConfig {
+    /// Async worker threads. `Workers::Auto` (the default) resolves
+    /// to `num_cpus::get()` at boot. An explicit count must be
+    /// `>= 2` to leave headroom for the cluster heartbeat + roster
+    /// poller (validation enforces this).
+    #[serde(default)]
+    pub workers: Workers,
+    /// Blocking-thread pool size. Tokio default is 512; lower it
+    /// on memory-constrained hosts.
+    #[serde(default = "default_blocking_threads")]
+    pub blocking_threads: usize,
+    /// Pin worker threads to distinct CPU cores when feasible.
+    /// Requires the `affinity` Cargo feature on `aegis-bin`; on
+    /// hosts/OSes without support, the request is logged and
+    /// ignored (no failure).
+    #[serde(default)]
+    pub cpu_affinity: bool,
+    /// Per-thread stack size in KiB. Tokio default is 2 MiB.
+    /// Most workloads never touch this; deep recursive evaluators
+    /// or large stack-allocated buffers may need it.
+    #[serde(default = "default_stack_size_kb")]
+    pub stack_size_kb: usize,
+}
+
+/// `runtime.workers` — auto-detect or fixed.
+#[derive(Clone, Debug, Default)]
+pub enum Workers {
+    /// `num_cpus::get()` resolved at boot.
+    #[default]
+    Auto,
+    /// Explicit thread count. Must be `>= 2` (validated at boot).
+    Fixed(usize),
+}
+
+impl Workers {
+    /// Resolve to a concrete worker count. `Auto` calls
+    /// `num_cpus::get()`, which is at minimum 1 — we lift it to 2
+    /// so the heartbeat and roster pollers have a thread of
+    /// headroom on tiny VMs.
+    pub fn resolve(&self) -> usize {
+        match self {
+            Workers::Auto => std::cmp::max(num_cpus::get(), 2),
+            Workers::Fixed(n) => *n,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Workers {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Accept either `"auto"` (string) or a positive integer.
+        // `serde_yaml::Value` lets us branch without two passes.
+        use serde::de::Error;
+        let v = serde_yaml::Value::deserialize(deserializer)?;
+        match v {
+            serde_yaml::Value::String(s) if s.eq_ignore_ascii_case("auto") => {
+                Ok(Workers::Auto)
+            }
+            serde_yaml::Value::Number(n) => {
+                let raw = n
+                    .as_u64()
+                    .ok_or_else(|| D::Error::custom("workers must be a positive integer"))?;
+                if raw == 0 {
+                    return Err(D::Error::custom("workers must be >= 1"));
+                }
+                Ok(Workers::Fixed(raw as usize))
+            }
+            other => Err(D::Error::custom(format!(
+                "expected \"auto\" or a positive integer, got {other:?}"
+            ))),
+        }
+    }
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            workers: Workers::default(),
+            blocking_threads: default_blocking_threads(),
+            cpu_affinity: false,
+            stack_size_kb: default_stack_size_kb(),
+        }
+    }
+}
+
+fn default_blocking_threads() -> usize {
+    512
+}
+
+fn default_stack_size_kb() -> usize {
+    2048
 }
 
 impl WafConfig {
@@ -158,6 +267,47 @@ impl WafConfig {
         }
         // P7: load_mode thresholds + hysteresis must be coherent.
         self.load_mode.validate()?;
+        // Layer-1: runtime sizing constraints (workers >= 2, sane
+        // blocking-pool size, sane stack).
+        self.runtime.validate()?;
+        Ok(())
+    }
+}
+
+impl RuntimeConfig {
+    /// Reject configs that would starve the runtime.
+    pub fn validate(&self) -> crate::Result<()> {
+        if let Workers::Fixed(n) = &self.workers {
+            if *n < 2 {
+                return Err(crate::error::WafError::Config(format!(
+                    "runtime.workers must be >= 2 (got {n}); the cluster heartbeat \
+                     + roster pollers reserve a thread of headroom",
+                )));
+            }
+            if *n > 512 {
+                return Err(crate::error::WafError::Config(format!(
+                    "runtime.workers must be <= 512 (got {n}); higher values \
+                     waste memory without measurable throughput gain",
+                )));
+            }
+        }
+        if self.blocking_threads == 0 {
+            return Err(crate::error::WafError::Config(
+                "runtime.blocking_threads must be > 0".into(),
+            ));
+        }
+        if self.blocking_threads > 4096 {
+            return Err(crate::error::WafError::Config(format!(
+                "runtime.blocking_threads must be <= 4096 (got {})",
+                self.blocking_threads,
+            )));
+        }
+        if self.stack_size_kb < 64 {
+            return Err(crate::error::WafError::Config(format!(
+                "runtime.stack_size_kb must be >= 64 (got {})",
+                self.stack_size_kb,
+            )));
+        }
         Ok(())
     }
 }
@@ -1832,6 +1982,141 @@ state:
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("must have at least one member"));
+    }
+
+    // ---------- Runtime / workers config (Layer-1 scaling) -------------
+
+    fn good_cfg_with_runtime(runtime_yaml: &str) -> String {
+        format!(
+            r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:8080" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: default }}
+upstreams:
+  default: {{ members: [{{ addr: "127.0.0.1:8081" }}] }}
+state: {{ backend: in_memory }}
+runtime:
+{runtime_yaml}
+"#
+        )
+    }
+
+    #[test]
+    fn runtime_default_is_auto_workers() {
+        let cfg = RuntimeConfig::default();
+        assert!(matches!(cfg.workers, Workers::Auto));
+        assert_eq!(cfg.blocking_threads, 512);
+        assert_eq!(cfg.stack_size_kb, 2048);
+        assert!(!cfg.cpu_affinity);
+    }
+
+    #[test]
+    fn workers_auto_resolves_to_at_least_two() {
+        let n = Workers::Auto.resolve();
+        assert!(n >= 2, "Auto must lift to >= 2 even on single-core hosts");
+    }
+
+    #[test]
+    fn workers_fixed_resolves_to_value() {
+        assert_eq!(Workers::Fixed(8).resolve(), 8);
+    }
+
+    #[test]
+    fn runtime_yaml_accepts_auto_string() {
+        let yaml = "  workers: auto";
+        let cfg = load_config_str(&good_cfg_with_runtime(yaml)).unwrap();
+        assert!(matches!(cfg.runtime.workers, Workers::Auto));
+    }
+
+    #[test]
+    fn runtime_yaml_accepts_integer() {
+        let yaml = "  workers: 4";
+        let cfg = load_config_str(&good_cfg_with_runtime(yaml)).unwrap();
+        match cfg.runtime.workers {
+            Workers::Fixed(n) => assert_eq!(n, 4),
+            other => panic!("expected Fixed(4), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_yaml_rejects_zero() {
+        let yaml = "  workers: 0";
+        let err = load_config_str(&good_cfg_with_runtime(yaml)).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("workers"), "got {msg}");
+    }
+
+    #[test]
+    fn runtime_validate_rejects_workers_below_two() {
+        let cfg = RuntimeConfig {
+            workers: Workers::Fixed(1),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(format!("{err}").contains("workers must be >= 2"));
+    }
+
+    #[test]
+    fn runtime_validate_rejects_huge_workers() {
+        let cfg = RuntimeConfig {
+            workers: Workers::Fixed(513),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(format!("{err}").contains("<= 512"));
+    }
+
+    #[test]
+    fn runtime_validate_rejects_zero_blocking() {
+        let cfg = RuntimeConfig {
+            blocking_threads: 0,
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(format!("{err}").contains("blocking_threads must be > 0"));
+    }
+
+    #[test]
+    fn runtime_validate_rejects_huge_blocking() {
+        let cfg = RuntimeConfig {
+            blocking_threads: 5000,
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(format!("{err}").contains("<= 4096"));
+    }
+
+    #[test]
+    fn runtime_validate_rejects_tiny_stack() {
+        let cfg = RuntimeConfig {
+            stack_size_kb: 32,
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(format!("{err}").contains("stack_size_kb"));
+    }
+
+    #[test]
+    fn runtime_validate_accepts_default() {
+        RuntimeConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn runtime_full_yaml_round_trip() {
+        let yaml = r#"  workers: 16
+  blocking_threads: 256
+  cpu_affinity: true
+  stack_size_kb: 4096"#;
+        let cfg = load_config_str(&good_cfg_with_runtime(yaml)).unwrap();
+        match cfg.runtime.workers {
+            Workers::Fixed(16) => {}
+            other => panic!("expected Fixed(16), got {other:?}"),
+        }
+        assert_eq!(cfg.runtime.blocking_threads, 256);
+        assert!(cfg.runtime.cpu_affinity);
+        assert_eq!(cfg.runtime.stack_size_kb, 4096);
     }
 
     // ---------- P4 TLS hardening + force-https + HSTS validation -------

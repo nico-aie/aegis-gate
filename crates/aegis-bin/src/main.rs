@@ -96,7 +96,11 @@ fn run_gateway(config_path: &std::path::Path) -> aegis_core::Result<()> {
     let bus = AuditBus::new(4096);
     let readiness = ReadinessSignal::default();
 
-    let rt = tokio::runtime::Runtime::new().map_err(aegis_core::WafError::Io)?;
+    // Layer-1 — build the tokio runtime from `runtime:` config.
+    // Restart-only by design: tokio's worker_threads is fixed at
+    // builder time. The admin surface rejects hot-reload requests
+    // for these fields.
+    let rt = build_runtime(&cfg.runtime)?;
     rt.block_on(aegis_proxy::run(
         cfg,
         pipeline,
@@ -105,6 +109,87 @@ fn run_gateway(config_path: &std::path::Path) -> aegis_core::Result<()> {
         bus,
         readiness,
     ))
+}
+
+/// Construct the tokio runtime from the validated [`RuntimeConfig`].
+fn build_runtime(
+    cfg: &aegis_core::config::RuntimeConfig,
+) -> aegis_core::Result<tokio::runtime::Runtime> {
+    let workers = cfg.workers.resolve();
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder
+        .enable_all()
+        .worker_threads(workers)
+        .max_blocking_threads(cfg.blocking_threads)
+        .thread_stack_size(cfg.stack_size_kb * 1024)
+        .thread_name("aegis-worker");
+
+    tracing::info!(
+        workers = workers,
+        blocking_threads = cfg.blocking_threads,
+        stack_size_kb = cfg.stack_size_kb,
+        cpu_affinity = cfg.cpu_affinity,
+        "tokio runtime",
+    );
+
+    if cfg.cpu_affinity {
+        #[cfg(feature = "affinity")]
+        {
+            apply_cpu_affinity(&mut builder, workers);
+        }
+        #[cfg(not(feature = "affinity"))]
+        {
+            tracing::warn!(
+                "runtime.cpu_affinity = true but the `affinity` build \
+                 feature is not enabled in this binary; ignoring",
+            );
+        }
+    }
+
+    builder.build().map_err(aegis_core::WafError::Io)
+}
+
+/// Pin each tokio worker thread to a distinct CPU core. The
+/// `core_affinity` crate's enforcement is OS-dependent: Linux uses
+/// `sched_setaffinity` (hard pin), macOS uses thread policy hints
+/// (advisory), Windows uses `SetThreadAffinityMask`. On any host
+/// where the call returns false we log + continue — the worker
+/// just runs on whatever core the scheduler picks.
+#[cfg(feature = "affinity")]
+fn apply_cpu_affinity(
+    builder: &mut tokio::runtime::Builder,
+    workers: usize,
+) {
+    let cores = match core_affinity::get_core_ids() {
+        Some(ids) if !ids.is_empty() => ids,
+        _ => {
+            tracing::warn!(
+                "runtime.cpu_affinity = true but the OS reported no \
+                 core IDs; threads will float across cores",
+            );
+            return;
+        }
+    };
+    let cores: Vec<core_affinity::CoreId> =
+        cores.into_iter().take(workers).collect();
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cores_for_callback = cores.clone();
+    builder.on_thread_start(move || {
+        let idx = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(core) = cores_for_callback.get(idx % cores_for_callback.len()) {
+            if !core_affinity::set_for_current(*core) {
+                tracing::warn!(
+                    core = ?core,
+                    "core_affinity::set_for_current returned false; \
+                     thread will not be pinned",
+                );
+            }
+        }
+    });
+    tracing::info!(
+        cores = cores.len(),
+        "cpu affinity active — workers pinned round-robin to cores",
+    );
 }
 
 // ---------------------------------------------------------------------------

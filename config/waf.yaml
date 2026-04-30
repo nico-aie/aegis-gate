@@ -216,3 +216,25 @@ admin:
 #   expose_rule_ids: false           # verbose mode only when true
 #   detectors_header: true
 #   pipeline_header: true
+
+
+# ---------------------------------------------------------------------------
+# Runtime sizing (Layer-1 of the three-layer scaling model)
+# ---------------------------------------------------------------------------
+# Tunes the tokio runtime at boot. Restart-only — changes here require
+# a process restart (the runtime is fixed once the binary boots).
+#
+# - workers: "auto" (= num_cpus, lifted to >= 2) OR a fixed integer
+#   in [2, 512]. The cluster heartbeat + roster pollers reserve a
+#   thread, so 1 is rejected.
+# - blocking_threads: tokio's blocking-pool ceiling. Default 512.
+# - cpu_affinity: pin worker threads to distinct CPU cores. Honoured
+#   only when the binary is built with `--features affinity`; ignored
+#   with a log line otherwise.
+# - stack_size_kb: per-thread stack. Tokio default is 2048 (2 MiB).
+#
+# runtime:
+#   workers: auto
+#   blocking_threads: 512
+#   cpu_affinity: false
+#   stack_size_kb: 2048

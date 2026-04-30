@@ -23,6 +23,21 @@ async function refresh(){
   if(integ){const ul=mountEl.querySelector('[data-slot="integrations"]');if(ul){ul.replaceChildren();for(const k of ["grafana_url","alertmanager_url","gitops_repo","prometheus_url"]){const li=document.createElement("li");li.textContent=`${k}: ${integ[k]||"not configured"}`;ul.appendChild(li);}}}
   const dets=(await fetchJson("/api/detectors")).body;
   if(dets)renderDetectors(dets);
+  const rt=(await fetchJson("/api/runtime")).body;
+  if(rt)renderRuntime(rt);
+}
+
+function renderRuntime(rt){
+  setText("rt-workers",`${rt.workers} (${rt.workers_mode})`);
+  setText("rt-blocking",String(rt.blocking_threads));
+  setText("rt-stack",`${rt.stack_size_kb} KiB`);
+  setText("rt-host-cpus",String(rt.host_logical_cpus));
+  const aff=mountEl.querySelector('[data-slot="rt-affinity"]');
+  if(aff){
+    if(rt.cpu_affinity_active){aff.textContent="active";aff.dataset.state="ok";}
+    else if(rt.cpu_affinity_requested){aff.textContent="requested but feature off";aff.dataset.state="warn";}
+    else{aff.textContent="off";aff.dataset.state="ok";}
+  }
 }
 
 function renderDetectors(state){
@@ -107,6 +122,20 @@ function renderShell(){
       <h2>Detection classes</h2>
       <p data-slot="detector-status" class="aegis-banner" role="status">Loading…</p>
       <div data-slot="detector-classes" class="aegis-toggle-grid"></div>
+    </section>
+    <section class="aegis-card" aria-label="Runtime sizing">
+      <h2>Runtime (Layer-1)</h2>
+      <p class="aegis-banner" role="note">
+        In-process worker thread sizing. Restart-only — change
+        <code>runtime:</code> in your YAML config and re-deploy.
+      </p>
+      <dl class="aegis-kv">
+        <dt>Worker threads</dt><dd data-slot="rt-workers">—</dd>
+        <dt>Blocking pool</dt><dd data-slot="rt-blocking">—</dd>
+        <dt>Stack size</dt><dd data-slot="rt-stack">—</dd>
+        <dt>Host logical CPUs</dt><dd data-slot="rt-host-cpus">—</dd>
+        <dt>CPU affinity</dt><dd><span class="aegis-pill" data-slot="rt-affinity" data-state="ok">—</span></dd>
+      </dl>
     </section>
     <section class="aegis-card" aria-label="Danger zone">
       <h2>Danger zone</h2>
