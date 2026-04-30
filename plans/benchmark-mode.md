@@ -110,7 +110,7 @@ dashboard's `D-M{n}-T{x}.{y}`.
 
 | ID | File | Outcome |
 |----|------|---------|
-| B-T6.1 | `config/waf.yaml` (modify) | Add commented `benchmark:` block (mode disabled). |
+| B-T6.1 | `config/prod.yaml` (modify) | Add commented `benchmark:` block (mode disabled). |
 | B-T6.2 | `config/README.md` (modify) | Document the new section. |
 | B-T6.3 | `tests/load/bench-headers.js` | k6 script reading `X-Aegis-Overhead-Us`, producing CSV for the SLO harness. |
 | B-T6.4 | CI gate | Run B-T2.7 criterion bench in CI nightly; fail if regression > 1 %. |

@@ -66,7 +66,7 @@ Out of scope (deferred, separate plans):
   use already-pulled crates or live in `deploy/` /
   `tests/`.
 - **Backwards compatible.** Existing single-node configs
-  (`waf.dev.yaml`, `waf.test.yaml`) keep working. Cluster
+  (`dev.yaml`, `prod.yaml`) keep working. Cluster
   features are opt-in.
 - **Audit-first.** Membership joins / leaves emit audit
   events with `class: system`.

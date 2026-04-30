@@ -104,7 +104,7 @@ services:
   # ---------- HA cluster reference LB (HA-T1) ----------
   #
   # Health-checked round-robin in front of two WAF nodes that
-  # the operator runs on the host (`config/waf.cluster-{a,b}.yaml`).
+  # the operator runs on the host (`config/cluster-{a,b}.yaml`).
   # Pulled by `tests/cluster/05-single-vip-baseline.sh` and
   # `06-mid-burst-failover.sh` to measure cluster SLOs through
   # a single VIP. Optional — if you don't pass

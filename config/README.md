@@ -1,602 +1,202 @@
-# Configuration Guide
+# `config/` — WAF configuration files
 
-This folder contains the WAF configuration files. The main config is `waf.yaml` and custom rules live in `rules/`.
+Four YAML configs cover every supported deployment shape. Pick one,
+run `waf validate`, then run `waf run`.
 
 ```
 config/
-├── README.md          # This guide
-├── waf.yaml           # Main WAF configuration
+├── README.md           # This guide
+├── prod.yaml           # Production template — secrets via ${secret:…} resolvers
+├── dev.yaml            # Single-node dev / CI — passwords inline, no Redis
+├── cluster-a.yaml      # HA fixture node A — Redis-backed shared state
+├── cluster-b.yaml      # HA fixture node B — pairs with cluster-a.yaml
 └── rules/
-    └── example.yaml   # Example custom rules
+    └── example.yaml    # Custom rule examples
 ```
 
 ---
 
-## Quick Reference
+## Pick one — which config?
+
+| Use case | File | Run command |
+|---|---|---|
+| Production single node | `prod.yaml` | `waf run --config config/prod.yaml` |
+| Local development | `dev.yaml` | `waf run --config config/dev.yaml` |
+| k6 / integration tests | `dev.yaml` | (same as dev — load_mode thresholds match the k6 scripts) |
+| Two-node HA cluster | `cluster-a.yaml` + `cluster-b.yaml` | one `waf run` per node + Redis + HAProxy |
+| Anything else | fork `prod.yaml` | edit, then `waf validate` to catch drift |
+
+The default config path when no `--config` is passed is `config/prod.yaml`.
+
+---
+
+## Quick validate + run
 
 ```sh
-# Validate config (catches errors before starting)
-waf validate --config config/waf.yaml
+# Validate before booting — exit 0 means the config is loadable
+# AND the compliance profile (FIPS / PCI / SOC2 / GDPR / HIPAA)
+# accepts it.
+waf validate --config config/prod.yaml
 
-# Start the WAF with this config
-waf run --config config/waf.yaml
+# Boot the WAF
+waf run --config config/prod.yaml
 ```
 
 ---
 
-## waf.yaml — Section by Section
+## Production setup — fork `prod.yaml`
 
-### 1. Listeners
+The shipped `prod.yaml` is a template. Three things every operator
+must edit before production use:
 
-Controls which ports the WAF binds to.
+### 1. Replace inline secrets with resolver references
 
-```yaml
-listeners:
-  data:                          # Data plane — client traffic enters here
-    - bind: "0.0.0.0:8443"      # Public TLS port
-      tls: true
-    - bind: "0.0.0.0:8080"      # Plaintext (dev only — disable in production)
-      tls: false
-  admin:
-    bind: "127.0.0.1:9443"      # Admin dashboard + API (localhost only)
-```
-
-| Field | Description |
-|-------|-------------|
-| `data[].bind` | IP:port for client traffic. Use `0.0.0.0` for all interfaces. |
-| `data[].tls` | `true` = TLS termination, `false` = plaintext. |
-| `admin.bind` | IP:port for the admin dashboard. **Keep on localhost in production.** |
-
-**Tip:** In production, remove the plaintext `:8080` listener and only expose `:8443` with TLS.
-
----
-
-### 2. Routes
-
-Routes map incoming requests to upstream pools. Matched in priority order: **exact > prefix**, then first-match wins.
-
-```yaml
-routes:
-  - id: login                    # Unique identifier
-    host: "api.example.com"      # Optional — match Host header
-    path: "/login"               # Path to match
-    match_type: exact            # exact | prefix
-    methods: [POST]              # Optional — restrict HTTP methods
-    upstream: auth-pool          # Which upstream pool handles this
-    tier_override: critical      # Optional — override security tier
-
-  - id: catch-all                # Always have a catch-all as the last route
-    path: "/"
-    match_type: prefix
-    upstream: backend-pool
-```
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `id` | Yes | Unique route identifier (used in logs and metrics) |
-| `host` | No | Match requests with this `Host` header |
-| `path` | Yes | URL path to match |
-| `match_type` | Yes | `exact` = exact match, `prefix` = path prefix |
-| `methods` | No | List of allowed HTTP methods (default: all) |
-| `upstream` | Yes | Name of the upstream pool to forward to |
-| `tier_override` | No | Security tier: `critical`, `high`, `medium`, `low` |
-
-**Security tiers** control how aggressively the security pipeline inspects traffic:
-- **critical** — full inspection, strictest rate limits (login, auth, payments)
-- **high** — full inspection (API endpoints)
-- **medium** — standard inspection (user-facing pages)
-- **low** — minimal inspection (static assets, health checks)
-
----
-
-### 3. Upstreams
-
-Upstream pools define the backend servers the WAF proxies to.
-
-```yaml
-upstreams:
-  auth-pool:
-    members:
-      - addr: "127.0.0.1:3001"  # Backend server address
-        weight: 1                # Load balancing weight
-    lb: round_robin              # Load balancing strategy
-    health:                      # Health checking (optional)
-      path: "/healthz"
-      interval: "10s"
-      timeout: "3s"
-    circuit_breaker:             # Circuit breaker (optional)
-      error_rate_threshold: 0.5  # Open circuit at 50% error rate
-      open_duration: "30s"       # Stay open for 30s before retrying
-
-  backend-pool:
-    members:
-      - addr: "127.0.0.1:3002"
-        weight: 3                # Gets 75% of traffic
-      - addr: "127.0.0.1:3003"
-        weight: 1                # Gets 25% of traffic
-    lb: weighted_round_robin
-    connection:                  # UP-T1 connection pooling (optional)
-      max_idle_per_host: 32      #   idle conns kept around per host
-      idle_timeout: "30s"        #   idle conn TTL before close
-      keep_alive: true           #   request-side `Connection: keep-alive`
-```
-
-**Connection pooling (`connection:`):** Each pool keeps a
-hyper-util keep-alive client per `(max_idle_per_host,
-idle_timeout, keep_alive)` signature. Defaults are sane for
-most workloads. Knobs:
-
-| Field | Default | Effect |
-|---|---|---|
-| `max_idle_per_host` | `32` | Idle TCP + HTTP/1.1 connections kept per host:port. `0` disables pooling — every request opens a fresh TCP. |
-| `idle_timeout` | `30s` | How long an idle connection stays in the pool before being closed proactively. Set shorter than the upstream's keep-alive timeout to avoid races. |
-| `keep_alive` | `true` | Request-side `Connection: keep-alive`. Set `false` to inject `Connection: close` and force a new socket per request. Implies `max_idle_per_host: 0`. |
-
-The pool was added in run-07 to lift the per-IP TCP TIME_WAIT
-ceiling. Measured 15× throughput improvement vs the per-request
-`connect + handshake` baseline:
-[`tests/results/run-07-2026-04-30-upstream-pool/`](../tests/results/run-07-2026-04-30-upstream-pool/README.md).
-
-**Load balancing strategies:**
-
-| Strategy | Description |
-|----------|-------------|
-| `round_robin` | Rotate evenly across all members |
-| `weighted_round_robin` | Rotate proportional to weight |
-| `random` | Random selection |
-| `least_conn` | Fewest active connections |
-| `ip_hash` | Consistent hashing by client IP (sticky sessions) |
-
----
-
-### 4. State Backend
-
-Where the WAF stores runtime state (rate-limit counters, risk scores, etc.).
-
-```yaml
-state:
-  backend: in_memory             # in_memory | redis
-  # redis:                       # Uncomment for multi-node deployments
-  #   url: "redis://localhost:6379"
-```
-
-| Backend | When to use |
-|---------|-------------|
-| `in_memory` | Single node, dev, or when Redis is unavailable. Fast but lost on restart. |
-| `redis` | Multi-node clusters. Shared rate-limit counters and risk scores. |
-
----
-
-### 5. Rules
-
-Custom security rules evaluated by the rule engine.
-
-```yaml
-rules:
-  paths:                         # Directories to load rule files from
-    - "config/rules/"
-  max_rule_count: 10000          # Safety limit
-  strict_compile: false          # true = fail on any lint warning
-```
-
-Rule files are YAML arrays. See `config/rules/example.yaml`:
-
-```yaml
-- id: "sqli-strict-1"           # Unique rule ID
-  priority: 100                  # Higher = evaluated first
-  scope:
-    tier: critical               # Only apply to critical-tier routes
-  when: "method == 'POST' && path matches '^/api/' && body contains_any sqli_signatures"
-  then:
-    action: block                # allow | block | challenge | rate_limit | log
-    status: 403
-    reason: "sqli detected"
-  tags: ["owasp:a03"]           # For metrics and audit
-```
-
-**Rule actions:**
-
-| Action | Effect |
-|--------|--------|
-| `allow` | Immediately allow (skip remaining rules) |
-| `block` | Return error response (default 403) |
-| `challenge` | JS challenge or CAPTCHA |
-| `rate_limit` | Apply a rate-limit bucket |
-| `log` | Log and continue (non-terminal) |
-
----
-
-### 6. Rate Limiting
-
-Per-IP or per-key rate limits.
-
-```yaml
-rate_limit:
-  buckets:
-    - id: global-ip              # Unique bucket ID
-      scope: global              # global | route
-      key: ip                    # What to rate-limit by (ip, header, etc.)
-      algo: sliding_window       # sliding_window | token_bucket
-      limit: 100                 # Max requests
-      window: "1m"               # Time window
-
-    - id: login-ip               # Stricter limit for login route
-      scope: route
-      key: ip
-      algo: sliding_window
-      limit: 5
-      window: "1m"
-```
-
-**Algorithms:**
-
-| Algorithm | Description |
-|-----------|-------------|
-| `sliding_window` | Smooth sliding window counter. Best for most use cases. |
-| `token_bucket` | Burst-friendly. Allows short bursts then rate-limits. |
-
----
-
-### 7. Risk Scoring
-
-Accumulates risk signals per request. Higher score = more suspicious.
-
-```yaml
-risk:
-  weights:                       # Points added per signal type
-    bad_asn: 15                  # Known-bad ASN
-    bad_ja4: 10                  # Suspicious TLS fingerprint
-    failed_auth: 20              # Failed authentication
-    detector_hit: 25             # OWASP detector triggered
-    bot_unknown: 10              # Unknown bot classification
-    repeat_offender: 15          # IP with recent blocks
-  decay_half_life: "5m"          # Risk score decays over time
-  thresholds:
-    challenge_at: 40             # Score ≥ 40 → JS challenge
-    block_at: 80                 # Score ≥ 80 → block
-    max: 100                     # Cap
-```
-
-The **challenge ladder** escalates based on risk score:
-1. Score 0–39: **Allow**
-2. Score 40–79: **Challenge** (JS or CAPTCHA)
-3. Score 80+: **Block**
-
----
-
-### 8. Detectors
-
-OWASP security detectors. Enable/disable individually.
-
-```yaml
-detectors:
-  sqli:             { enabled: true }   # SQL injection
-  xss:              { enabled: true }   # Cross-site scripting
-  path_traversal:   { enabled: true }   # Directory traversal (../)
-  ssrf:             { enabled: true }   # Server-side request forgery
-  header_injection: { enabled: true }   # CRLF / response splitting
-  body_abuse:       { enabled: true }   # Oversized body / deep JSON
-  recon:            { enabled: true }   # Scanner probes / admin paths
-  brute_force:      { enabled: true }   # Repeated failed auth
-```
-
-**Tip:** Keep all detectors enabled. To suppress false positives, create an `allow` rule targeting the specific path/IP rather than disabling the whole detector.
-
----
-
-### 9. DLP (Data Loss Prevention)
-
-Scan response bodies for sensitive data.
-
-```yaml
-dlp:
-  patterns: []                   # Add patterns here (see below)
-  max_scan_bytes: 2097152        # Max bytes to scan (2 MB)
-```
-
-Example patterns:
-
-```yaml
-dlp:
-  patterns:
-    - name: credit-card
-      regex: '\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b'
-      action: mask               # mask | block | alert | fpe
-    - name: ssn
-      regex: '\b\d{3}-\d{2}-\d{4}\b'
-      action: fpe                # Format-Preserving Encryption
-  max_scan_bytes: 2097152
-```
-
-| Action | Effect |
-|--------|--------|
-| `mask` | Replace with `****` |
-| `block` | Block the response entirely |
-| `alert` | Log alert but pass through |
-| `fpe` | Format-Preserving Encryption (AES-FF1) — preserves data format |
-
----
-
-### 10. Observability
-
-Prometheus metrics and access logging.
-
-```yaml
-observability:
-  prometheus:
-    path: "/metrics"             # Metrics endpoint path on admin listener
-  access_log:
-    format: json                 # combined | json | template
-    sink: stdout                 # stdout | file path
-```
-
-**Access log formats:**
-
-| Format | Description |
-|--------|-------------|
-| `combined` | Apache combined log format |
-| `json` | Structured JSON (recommended for SIEM) |
-| `template` | Custom template string |
-
----
-
-### 11. Audit
-
-Tamper-evident audit logging.
-
-```yaml
-audit:
-  sinks: []                      # SIEM sinks (see below)
-  chain:
-    enabled: true                # SHA-256 hash chain for tamper detection
-  retention: "90d"               # How long to keep audit events
-  pseudonymize_ip: false         # true = hash client IPs in audit logs
-```
-
-**Adding SIEM sinks:**
-
-```yaml
-audit:
-  sinks:
-    - type: jsonl
-      path: /var/log/aegis/audit.ndjson
-    - type: syslog
-      target: udp://siem.corp.com:514
-    - type: splunk_hec
-      url: https://splunk.corp.com:8088
-      token: "${secret:env:SPLUNK_TOKEN}"
-      index: waf
-      source_type: aegis
-```
-
-Available sink types: `jsonl`, `syslog`, `cef`, `leef`, `ocsf`, `splunk_hec`, `ecs`, `kafka`.
-
----
-
-### 12. Admin Dashboard Authentication
-
-Protects the admin dashboard at `:9443`.
+Production secrets must come from a real secret manager, never
+plain YAML. Supported resolvers (the trailing `#field` selects a
+sub-field of a JSON secret):
 
 ```yaml
 admin:
-  bind: "127.0.0.1:9443"
   dashboard_auth:
-    password_hash_ref: "${secret:env:AEGIS_ADMIN_PASSWORD_HASH}"
-    csrf_secret_ref: "${secret:env:AEGIS_CSRF_SECRET}"
-    session_ttl_idle: "30m"          # Idle timeout
-    session_ttl_absolute: "8h"       # Max session lifetime
-    ip_allowlist:                     # Only these IPs can access admin
-      - "127.0.0.1/32"
-      - "::1/128"
-    totp_enabled: false               # Set true + enroll TOTP for 2FA
-    login_rate_limit:
-      per_ip:
-        limit: 5
-        window: "1m"
-      per_user:
-        limit: 10
-        window: "15m"
-    lockout:
-      threshold: 10                   # Lock after 10 failed attempts
-      window: "15m"
-      duration: "15m"                 # Lock duration
-```
+    password_hash_ref: "${secret:vault:secret/aegis/admin#hash}"
+    csrf_secret_ref:   "${secret:aws:arn:aws:secretsmanager:…:aegis/csrf#value}"
 
-**Setting up admin credentials:**
-
-```sh
-# 1. Generate password hash
-waf admin set-password
-# Enter password → get PHC hash string
-# Set as environment variable:
-export AEGIS_ADMIN_PASSWORD_HASH='$argon2id$v=19$m=...'
-
-# 2. Generate CSRF secret (any random string)
-export AEGIS_CSRF_SECRET=$(openssl rand -hex 32)
-
-# 3. Optional: enable TOTP
-waf admin enroll-totp --issuer "Aegis" --account "admin"
-# Then set totp_enabled: true in config
-```
-
-**Secret references** (`${secret:env:NAME}`) are never resolved in config exports or API responses — they stay as references for security.
-
----
-
-### 13. Runtime sizing (Layer-1 in-node scaling)
-
-Tunes the tokio runtime at boot. **Restart-only** — tokio's
-worker thread count is fixed once the runtime is built; the
-admin surface rejects hot-reload requests for this block.
-Full sizing recipes + OS-specific affinity notes:
-[`../docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md).
-
-```yaml
-runtime:
-  workers: auto             # default; "auto" or integer in [2, 512]
-  blocking_threads: 512     # tokio default
-  cpu_affinity: false       # honoured only with `--features affinity`
-  stack_size_kb: 2048       # 2 MiB per thread
-```
-
-| Field | Default | Notes |
-|---|---|---|
-| `workers` | `auto` | `auto` resolves to `num_cpus::get()`, lifted to ≥ 2. Integer values must be in `[2, 512]`. The cluster heartbeat + roster pollers need a thread of headroom, so `1` is rejected. |
-| `blocking_threads` | `512` | Ceiling on tokio's blocking-thread pool. Lower on memory-constrained hosts. |
-| `cpu_affinity` | `false` | Pin worker threads to distinct CPU cores (Linux: hard pin via `sched_setaffinity`; macOS: advisory). Only honoured when the binary is built with `--features affinity` — without that feature, the request is logged and ignored. |
-| `stack_size_kb` | `2048` | Per-thread stack. Validation enforces a 64-KiB floor. |
-
-**Where to look at the live values.** Three signals confirm
-your `runtime:` block landed:
-
-```sh
-# 1. Boot log line
-"tokio runtime workers=12 blocking_threads=512 stack_size_kb=2048 cpu_affinity=false"
-
-# 2. Read-only admin endpoint
-curl http://localhost:9443/api/runtime
-# {"workers":12,"workers_mode":"auto","blocking_threads":512,...}
-
-# 3. Dashboard panel: Settings → Runtime (Layer-1)
-```
-
-**Three-layer scaling model.**
-
-| Layer | This block | Doc |
-|---|---|---|
-| 1 — In-node | `runtime:` (here) | [`runtime-tuning.md`](../docs/operations/runtime-tuning.md) |
-| 2 — Across nodes | `node.id` + LB | [`ha-clustering.md`](../docs/operations/ha-clustering.md) |
-| 3 — State | `state:` (§4 above) | [`Architecture.md` §12](../Architecture.md) |
-
----
-
-### 14. Benchmark mode (optional)
-
-Off by default. When enabled, exposes per-request WAF diagnostics
-on `X-Aegis-*` response headers and adds two dashboard panels for
-measuring overhead under load. **Production-tolerable for short
-runs; never leave on indefinitely.** Full design at
-[`../docs/benchmark-mode.md`](../docs/benchmark-mode.md).
-
-```yaml
-benchmark:
-  mode: disabled                   # disabled | headers | verbose
-  source_allowlist:
-    - "127.0.0.1/32"
-    - "10.0.0.0/8"
-  required_header:
-    name: "X-Aegis-Bench-Token"
-    secret_ref: "${secret:env:AEGIS_BENCH_TOKEN}"
-    signing_window: "60s"
-  ttl: "1h"                        # auto-disable after this duration
-  max_ttl: "24h"                   # config validator rejects ttl > max_ttl
-  expose_rule_ids: false           # opt-in; verbose mode only
-  detectors_header: true           # emit X-Aegis-Detectors
-  pipeline_header: true            # emit X-Aegis-Pipeline
-```
-
-**Activation gate.** A request gets `X-Aegis-*` benchmark headers
-iff (a) `mode != disabled`, (b) the source IP is in
-`source_allowlist`, and (c) the request carries a valid
-HMAC-signed token in the configured header (≤60 s old). Failing
-any of the three keeps the response clean.
-
-**Toggling at runtime.** The dashboard's Tracking page exposes
-enable / disable buttons; the CLI offers `waf bench enable
-[--ttl 1h] [--mode headers|verbose]`, `waf bench disable`,
-`waf bench status`. Every transition is audit-logged.
-
-**Always-on `X-Aegis-Request-Id`.** This header rides on every
-WAF response regardless of the `benchmark` block. It mirrors the
-internal `request_id` for support correlation.
-
----
-
-## Common Configuration Patterns
-
-### Development (minimal)
-
-```yaml
-listeners:
-  data:
-    - bind: "0.0.0.0:8080"
-      tls: false
-  admin:
-    bind: "127.0.0.1:9443"
-routes:
-  - id: catch-all
-    path: "/"
-    match_type: prefix
-    upstream: dev
-upstreams:
-  dev:
-    members:
-      - addr: "127.0.0.1:3000"
-    lb: round_robin
 state:
-  backend: in_memory
+  redis:
+    url: "${secret:gcp:projects/p/secrets/aegis-redis-url#latest}"
 ```
 
-### Production (hardened)
+| Resolver | URI shape |
+|---|---|
+| Vault | `${secret:vault:<path>#<field>}` (AppRole or k8s auth) |
+| AWS Secrets Manager | `${secret:aws:<arn>#<field>}` |
+| GCP Secret Manager | `${secret:gcp:<resource>#<field>}` |
+| Azure Key Vault | `${secret:azure:<vault>:<secret>#<field>}` |
+| etcd | `${secret:etcd:<key>#<field>}` |
+| Environment | `${secret:env:VAR_NAME}` |
+| File | `${secret:file:/path}` |
+
+Build the binary with the matching Cargo feature (`vault`, `aws`,
+`gcp`, `azure`, `consul`, `etcd`, `k8s`) — see [`docs/control-plane/secrets-management.md`](../docs/control-plane/secrets-management.md).
+
+### 2. Bind admin to operator network only
 
 ```yaml
-listeners:
-  data:
-    - bind: "0.0.0.0:8443"
-      tls: true
-  admin:
-    bind: "127.0.0.1:9443"
-
-# No plaintext listener!
-# All detectors enabled
-# SIEM sinks configured
-# Compliance profiles set
-# Admin auth with TOTP
-
-compliance:
-  modes: [pci, soc2]
-
-audit:
-  chain: { enabled: true }
-  retention: "365d"
-  sinks:
-    - type: jsonl
-      path: /var/log/aegis/audit.ndjson
-    - type: syslog
-      target: tls://siem.corp.com:6514
+admin:
+  bind: "10.0.0.5:9443"          # internal address, NOT 0.0.0.0
+  dashboard_auth:
+    ip_allowlist:
+      - "10.0.0.0/8"             # operator subnet
+      - "172.16.0.0/12"          # bastion subnet
 ```
 
-### Adding a new backend service
+### 3. Pick a state backend
 
-1. Add members to `upstreams`:
-   ```yaml
-   upstreams:
-     my-new-service:
-       members:
-         - addr: "10.0.1.50:8080"
-       lb: round_robin
-   ```
+| Backend | When | Config |
+|---|---|---|
+| `in_memory` | single node, ephemeral counters OK | default — nothing to set |
+| `redis` | HA cluster, shared rate limits, leader lease | `state.backend: redis` + `state.redis.url` |
 
-2. Add a route:
-   ```yaml
-   routes:
-     - id: my-new-service
-       path: "/my-service/"
-       match_type: prefix
-       upstream: my-new-service
-       tier_override: high
-   ```
-
-3. Validate: `waf validate --config config/waf.yaml`
+```yaml
+state:
+  backend: redis
+  redis:
+    url: "redis://aegis-redis:6379"
+    pool_size: 16
+```
 
 ---
 
-## Environment Variables
+## HA cluster setup
 
-| Variable | Used In | Purpose |
-|----------|---------|---------|
-| `AEGIS_ADMIN_PASSWORD_HASH` | `admin.dashboard_auth.password_hash_ref` | argon2id password hash |
-| `AEGIS_CSRF_SECRET` | `admin.dashboard_auth.csrf_secret_ref` | CSRF double-submit secret |
-| `SPLUNK_TOKEN` | `audit.sinks` | Splunk HEC token |
+`cluster-a.yaml` + `cluster-b.yaml` boot two WAF nodes against a
+shared Redis. They differ only in:
 
-Secret references use the format `${secret:env:VARIABLE_NAME}` and are never exposed in API responses or config exports.
+| Field | `cluster-a.yaml` | `cluster-b.yaml` |
+|---|---|---|
+| `node.id` | `waf-a` | `waf-b` |
+| Data listener | `:8080` | `:8090` |
+| Admin listener | `:9443` | `:9543` |
+
+Both share `state.backend: redis` + `state.redis.url`, so rate
+limits, block lists, and leader leases are cluster-shared.
+
+```sh
+# 1. Bring up Redis.
+docker run -d --name aegis-redis -p 6379:6379 redis:7-alpine \
+  redis-server --save "" --appendonly no
+
+# 2. Boot two WAF nodes.
+target/release/waf run --config config/cluster-a.yaml &
+target/release/waf run --config config/cluster-b.yaml &
+
+# 3. Front them with HAProxy (reference deploy at deploy/haproxy/).
+haproxy -f deploy/haproxy/haproxy.cfg
+```
+
+Cluster smoke tests live at `tests/cluster/`. Run with
+`bash tests/cluster/run-all.sh`.
+
+---
+
+## Hot-reload — change config without restart
+
+The WAF watches the config file and reloads on change. Or trigger
+explicitly:
+
+```sh
+curl -XPOST -H "x-csrf-token: $CSRF" -b cookies.txt \
+     http://localhost:9443/admin/reload
+```
+
+The dashboard's status bar shows "Last config sync 14s" so you
+know reload took effect. SLA: ≤ 10 s (Hackathon WAF-FE §2 #5).
+
+---
+
+## Section reference (what's in each YAML)
+
+| Section | Purpose | Spec |
+|---|---|---|
+| `listeners` | Bind ports for data + admin planes | [`docs/architecture/protocols.md`](../docs/architecture/protocols.md) |
+| `routes` | Host + path → upstream mapping | [`docs/data-plane/routing.md`](../docs/data-plane/routing.md) |
+| `upstreams` | Backend pools + LB strategy + circuit breakers | [`docs/data-plane/upstreams.md`](../docs/data-plane/upstreams.md) |
+| `tls` | Cert sources, ACME, OCSP stapling | [`docs/data-plane/tls.md`](../docs/data-plane/tls.md) |
+| `security` | Rule files, detector toggles | [`docs/security/rule-engine.md`](../docs/security/rule-engine.md) |
+| `risk` | Scoring weights, strike thresholds, decay | [`docs/security/risk-engine.md`](../docs/security/risk-engine.md) |
+| `load_mode` | Auto-degradation thresholds (elevated / critical RPS) | [`docs/operations/load-modes.md`](../docs/operations/load-modes.md) |
+| `state` | In-memory or Redis-backed counters / leases | [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) |
+| `admin` | Auth (argon2 / TOTP / mTLS / IP allowlist), CSRF, sessions | [`docs/control-plane/dashboard-auth.md`](../docs/control-plane/dashboard-auth.md) |
+| `audit` | Hash chain + SIEM sinks (8 formats) | [`docs/observability/siem-export.md`](../docs/observability/siem-export.md) |
+| `slo` | SLO definitions + multi-burn alert receivers | [`docs/observability/slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) |
+| `compliance` | Profile clamp (FIPS / PCI / SOC2 / GDPR / HIPAA) | [`docs/operations/compliance.md`](../docs/operations/compliance.md) |
+| `gitops` | Config-as-code git poll-and-pull | [`docs/control-plane/gitops-change-management.md`](../docs/control-plane/gitops-change-management.md) |
+| `runtime` | Worker count + CPU pinning | [`docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md) |
+| `node` | Stable cluster node identity | [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) |
+| `interop` | External interop contract surface (always on) | [`plans/interop-contract.md`](../plans/interop-contract.md) |
+
+For full schema details with every field, fork `prod.yaml` and
+read its inline comments — every block carries an explanation.
+
+---
+
+## Validation invariants
+
+The validator runs a compliance check on every load. These trip
+common mistakes:
+
+| Error | Likely cause | Fix |
+|---|---|---|
+| `missing field admin.bind` | YAML key drift | Compare against `config/prod.yaml` template |
+| `tls enabled but no cert source` | Listener has `tls: true` without `tls.acme` or `tls.cert_files` | Add cert source or set `tls: false` |
+| `state.backend = redis but no state.redis.url` | Cluster config without resolver | Set `state.redis.url` (literal or `${secret:…}`) |
+| `compliance.fips conflicts with tls.min_version: 1.1` | FIPS forbids TLS < 1.2 | Bump min_version or drop FIPS clamp |
+
+---
+
+## Custom rules
+
+Drop additional `.yaml` files into `rules/` and point
+`security.rules.path` at the directory. The example rule lives at
+[`rules/example.yaml`](./rules/example.yaml). Rule DSL grammar:
+[`docs/security/rule-engine.md`](../docs/security/rule-engine.md).

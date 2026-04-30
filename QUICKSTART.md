@@ -45,10 +45,10 @@ standalone. Service catalogue + ports:
 ## 3. Validate the config
 
 ```sh
-./target/debug/waf validate --config config/waf.yaml
+./target/debug/waf validate --config config/prod.yaml
 ```
 
-Expected: `config OK: config/waf.yaml`. The YAML reference
+Expected: `config OK: config/prod.yaml`. The YAML reference
 ([`config/README.md`](config/README.md)) walks every section
 including the new `runtime:` block (Layer-1 worker scaling).
 
@@ -56,10 +56,10 @@ including the new `runtime:` block (Layer-1 worker scaling).
 
 ```sh
 # Debug
-cargo run -p aegis-bin -- run --config config/waf.yaml
+cargo run -p aegis-bin -- run --config config/prod.yaml
 
 # Release (with redis features compiled in)
-./target/release/waf run --config config/waf.yaml
+./target/release/waf run --config config/prod.yaml
 ```
 
 The boot log shows the runtime sizing it picked up:
@@ -96,7 +96,7 @@ abort after `AEGIS_DRAIN_GRACE_MS` (default 5 s).
 
 ## Tuning Layer-1 workers
 
-The `runtime:` block in [`config/waf.yaml`](config/waf.yaml) is
+The `runtime:` block in [`config/prod.yaml`](config/prod.yaml) is
 the in-process scaling knob:
 
 ```yaml

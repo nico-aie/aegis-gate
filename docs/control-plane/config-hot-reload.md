@@ -61,9 +61,9 @@ untouched, an error event goes to the dashboard + audit log.
 Operators can validate locally before pushing:
 
 ```
-waf config check ./config/waf.yaml
-waf config diff  ./config/waf.yaml       # shows changes vs live
-waf config apply ./config/waf.yaml       # sends to admin API
+waf config check ./config/prod.yaml
+waf config diff  ./config/prod.yaml       # shows changes vs live
+waf config apply ./config/prod.yaml       # sends to admin API
 ```
 
 ## Atomic swap

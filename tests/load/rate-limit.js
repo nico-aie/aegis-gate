@@ -17,7 +17,7 @@
 // `BURST_SECS` window or the limiter will never fire and
 // the threshold below will fail (it's not a gateway bug —
 // it means the test under-shot). The default config
-// (`config/waf.test.yaml`) sets the budget at
+// (`config/dev.yaml`) sets the budget at
 // `10 000 / 60 s`; the defaults here drive 2 000 RPS × 8 s
 // = 16 000 reqs which clears the budget by 60 % even after
 // the sliding window absorbs the first second.

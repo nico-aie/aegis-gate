@@ -50,8 +50,8 @@ cargo build -p aegis-bin --release --features redis
 docker compose -f deploy/docker-compose.dev.yml --profile ha up -d aegis-lb
 
 # 3. Start two WAF nodes against the cluster fixtures
-target/release/waf run --config config/waf.cluster-a.yaml &  # :8080 / admin :9443
-target/release/waf run --config config/waf.cluster-b.yaml &  # :8090 / admin :9543
+target/release/waf run --config config/cluster-a.yaml &  # :8080 / admin :9443
+target/release/waf run --config config/cluster-b.yaml &  # :8090 / admin :9543
 
 # 4. Hit the VIP — HAProxy load-balances to both
 curl -sI http://127.0.0.1:9180/

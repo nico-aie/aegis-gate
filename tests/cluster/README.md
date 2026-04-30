@@ -28,8 +28,8 @@ configs:
 
 ```
 config/
-├── waf.cluster-a.yaml   data :8080  admin :9443  redis://127.0.0.1:6379
-└── waf.cluster-b.yaml   data :8090  admin :9543  redis://127.0.0.1:6379
+├── cluster-a.yaml   data :8080  admin :9443  redis://127.0.0.1:6379
+└── cluster-b.yaml   data :8090  admin :9543  redis://127.0.0.1:6379
 ```
 
 Both nodes are the **same** binary — distinguished only by bind

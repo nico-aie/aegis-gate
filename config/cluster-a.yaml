@@ -1,6 +1,6 @@
 # Aegis-Gate — Cluster Node A (HA test fixture)
 #
-# Pairs with `waf.cluster-b.yaml` to drive the `tests/cluster/`
+# Pairs with `cluster-b.yaml` to drive the `tests/cluster/`
 # scripts. Both nodes share the same Redis backend so they form a
 # real two-node cluster on a single host.
 #
@@ -13,8 +13,8 @@
 #   docker run -d --name aegis-cluster-redis \
 #     -p 6379:6379 redis:7-alpine \
 #     redis-server --save "" --appendonly no
-#   target/release/waf run --config config/waf.cluster-a.yaml &
-#   target/release/waf run --config config/waf.cluster-b.yaml &
+#   target/release/waf run --config config/cluster-a.yaml &
+#   target/release/waf run --config config/cluster-b.yaml &
 #
 # Tear-down:
 #   pkill -f 'waf run --config config/waf.cluster-' ; \

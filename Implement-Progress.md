@@ -304,7 +304,7 @@ No active blocker.
 6. Tests:
    - `tests/api/dockerfile.sh` — builds the image
      locally, runs `docker run aegis-gate validate
-     --config /tmp/waf.dev.yaml`, asserts exit 0.
+     --config /tmp/dev.yaml`, asserts exit 0.
    - Image size budget: < 100 MiB compressed.
 7. Doc — flip the production-Dockerfile carry-over in
    `docs/operations/zero-downtime-ops.md`.
@@ -456,7 +456,7 @@ exposed five real gaps the milestones above didn't catch):
   every `listeners.data[*]` whose `tls: true` is set.
   ALPN forced to `http/1.1` for now (HTTP/2 over TLS is a
   separate task). New
-  [`config/waf.tls.yaml`](./config/waf.tls.yaml) +
+  [`config/prod.yaml`](./config/prod.yaml) +
   [`tests/fixtures/tls/`](./tests/fixtures/tls/) self-signed
   cert pair drive `tests/load/tls-baseline.js` end-to-end
   (run-04 measured 31.8 k RPS / handshake p95 2.12 ms /

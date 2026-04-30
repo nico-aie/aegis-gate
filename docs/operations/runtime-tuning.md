@@ -170,5 +170,5 @@ the standard graceful pattern:
   scaling.
 - [`zero-downtime-ops.md`](./zero-downtime-ops.md) — drain pattern,
   SIGTERM grace period.
-- [`config/waf.yaml`](../../config/waf.yaml) — example YAML with
+- [`config/prod.yaml`](../../config/prod.yaml) — example YAML with
   the `runtime:` block commented out.

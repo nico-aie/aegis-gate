@@ -6,7 +6,7 @@
 //   stage B: mid RPS  → mode = "elevated"
 //   stage C: high RPS → mode = "critical"
 //
-// **REQUIRES** `config/waf.test.yaml` (or any config with
+// **REQUIRES** `config/dev.yaml` (or any config with
 // `load_mode.elevated_rps <= 500` and
 // `load_mode.critical_rps <= 2000`). Stages are sized for
 // those numbers — running against the dev config (which
@@ -16,7 +16,7 @@
 // thresholds don't match.
 //
 // Run with:
-//   target/release/waf run --config config/waf.test.yaml &
+//   target/release/waf run --config config/dev.yaml &
 //   docker exec aegis-k6 k6 run /scripts/loadmode-degradation.js
 //
 // Environment:
@@ -32,7 +32,7 @@ const admin = __ENV.WAF_ADMIN || "https://host.docker.internal:9443";
 const sawElevated = new Rate("auto_elevated_observed");
 const sawCritical = new Rate("auto_critical_observed");
 
-// Stages target the waf.test.yaml thresholds (500 / 2000 RPS).
+// Stages target the dev.yaml thresholds (500 / 2000 RPS).
 // Anything 1.5× the boundary is enough to put the auto-mode
 // solidly in that band over the 8 s sample window — without
 // melting the laptop.
@@ -42,7 +42,7 @@ const STAGE_HIGH_RPS = 3000;   // 1.5× critical_rps=2000
 
 export function setup() {
   // Cross-check the running config so a mis-bring-up
-  // (running against waf.dev.yaml) surfaces immediately
+  // (running against dev.yaml) surfaces immediately
   // instead of as a "rate>0" threshold breach 32 s later.
   const r = http.get(`${admin}/api/loadmode`, {
     headers: { accept: "application/json" },
@@ -52,7 +52,7 @@ export function setup() {
     const body = JSON.parse(r.body);
     if (body.elevated_rps > 1000 || body.critical_rps > 5000) {
       console.warn(
-        `loadmode-degradation expects waf.test.yaml thresholds ` +
+        `loadmode-degradation expects dev.yaml thresholds ` +
         `(<=500 / <=2000), got elevated=${body.elevated_rps}, ` +
         `critical=${body.critical_rps}. Stages won't reach Critical.`
       );

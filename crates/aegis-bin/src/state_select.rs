@@ -129,7 +129,7 @@ mod tests {
     use super::*;
 
     /// Build a minimum-viable config YAML with the given `state:` block.
-    /// Schema mirrors `config/waf.dev.yaml` — listeners + one route + one
+    /// Schema mirrors `config/dev.yaml` — listeners + one route + one
     /// upstream pool are mandatory.
     fn yaml_with_state(state_block: &str) -> String {
         format!(

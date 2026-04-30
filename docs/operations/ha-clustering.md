@@ -213,8 +213,8 @@ tls:
   min_version: "1.2"
 ```
 
-`config/waf.cluster-{a,b}.yaml` are the test fixtures both
-nodes use; `config/waf.tls.yaml` is the HTTPS fixture.
+`config/cluster-{a,b}.yaml` are the test fixtures both
+nodes use; `config/prod.yaml` is the HTTPS fixture.
 
 ## Load balancer patterns
 
@@ -379,9 +379,9 @@ crates/aegis-control/src/api/
   tracking.rs             ← LeaderView + /api/cluster shape
 
 config/
-  waf.cluster-a.yaml      ← node A test fixture
-  waf.cluster-b.yaml      ← node B test fixture
-  waf.tls.yaml            ← HTTPS data-plane fixture (carry-over 5)
+  cluster-a.yaml      ← node A test fixture
+  cluster-b.yaml      ← node B test fixture
+  prod.yaml            ← HTTPS data-plane fixture (carry-over 5)
 ```
 
 ## Performance notes

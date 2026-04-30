@@ -16,10 +16,10 @@ hand. For deeper specs, each section links to its canonical doc.
 
 | Need | Command / file |
 |---|---|
-| Config file | `config/waf.yaml` (production), `config/waf.dev.yaml` (dev) |
-| Validate config without booting | `waf validate --config config/waf.yaml` |
+| Config file | `config/prod.yaml` (production), `config/dev.yaml` (dev) |
+| Validate config without booting | `waf validate --config config/prod.yaml` |
 | Build release binary | `cargo build -p aegis-bin --release --features redis` |
-| Run gateway | `target/release/waf run --config config/waf.yaml` |
+| Run gateway | `target/release/waf run --config config/prod.yaml` |
 | Dashboard URL | `http://<admin-host>:9443/dashboard/` |
 | Default dev login | user `admin` / pass `aegis-test-1234` (DEV ONLY) |
 | Health probe | `curl http://<admin>:9443/healthz/ready` |
@@ -36,7 +36,7 @@ hand. For deeper specs, each section links to its canonical doc.
 
 ### Goal
 
-Get a working `config/waf.yaml` before doing anything else. The
+Get a working `config/prod.yaml` before doing anything else. The
 WAF refuses to boot if the config doesn't validate.
 
 ### Steps
@@ -45,9 +45,9 @@ WAF refuses to boot if the config doesn't validate.
 
    | File | When to use |
    |---|---|
-   | `config/waf.dev.yaml` | local development; loopback only; password `aegis-test-1234` |
-   | `config/waf.yaml` | production template; secrets via `${secret:…}` resolvers |
-   | `config/waf.cluster-{a,b}.yaml` | two-node HA fixture for benchmark / test |
+   | `config/dev.yaml` | local development; loopback only; password `aegis-test-1234` |
+   | `config/prod.yaml` | production template; secrets via `${secret:…}` resolvers |
+   | `config/cluster-{a,b}.yaml` | two-node HA fixture for benchmark / test |
 
 2. **Edit safely.** Three rules:
 
@@ -65,7 +65,7 @@ WAF refuses to boot if the config doesn't validate.
 3. **Validate.**
 
    ```sh
-   target/release/waf validate --config config/waf.yaml
+   target/release/waf validate --config config/prod.yaml
    ```
 
    Exit code 0 = config is loadable. The validator also runs a
@@ -97,7 +97,7 @@ docs/operations/ha-clustering.md           # state.backend choices
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `validate` fails: "missing field admin.bind" | YAML key drift | Compare against `config/waf.yaml` template |
+| `validate` fails: "missing field admin.bind" | YAML key drift | Compare against `config/prod.yaml` template |
 | Boot OK, but rules don't match | rule file path wrong | Check `security.rules.path` resolves; `waf validate` will warn |
 | `${secret:…}` returns empty | resolver auth missing | Set `VAULT_ADDR` / `AWS_PROFILE` / etc. before `waf run` |
 
@@ -163,7 +163,7 @@ and an admin plane gated by your operator IPs.
 ```sh
 # Drop the binary on the host
 scp target/release/waf user@host:/usr/local/bin/waf
-scp config/waf.yaml    user@host:/etc/aegis/waf.yaml
+scp config/prod.yaml    user@host:/etc/aegis/waf.yaml
 
 # Boot under systemd (or supervisord / runit / launchd)
 sudo systemctl edit --full --force aegis-gate
@@ -175,7 +175,7 @@ sudo systemctl enable --now aegis-gate
 #### B. Two-node HA cluster (recommended)
 
 Reference deploy lives at [`deploy/haproxy/`](../../deploy/haproxy/)
-and [`config/waf.cluster-{a,b}.yaml`](../../config/).
+and [`config/cluster-{a,b}.yaml`](../../config/).
 
 ```sh
 # 1. Bring up Redis (shared state backend).
@@ -183,8 +183,8 @@ docker run -d --name aegis-redis -p 6379:6379 redis:7-alpine \
   redis-server --save "" --appendonly no
 
 # 2. Boot two WAF nodes.
-target/release/waf run --config config/waf.cluster-a.yaml &
-target/release/waf run --config config/waf.cluster-b.yaml &
+target/release/waf run --config config/cluster-a.yaml &
+target/release/waf run --config config/cluster-b.yaml &
 
 # 3. Front them with HAProxy.
 haproxy -f deploy/haproxy/haproxy.cfg
@@ -203,7 +203,7 @@ and the `tests/cluster/06-mid-burst-failover.sh` reproducer.
 docker compose -f deploy/docker-compose.dev.yml up -d
 # Brings up: etcd, Prometheus, Jaeger, Redis, httpbin
 # Then point waf at this stack:
-target/release/waf run --config config/waf.dev.yaml
+target/release/waf run --config config/dev.yaml
 ```
 
 Production Dockerfile (`B6-T1`) is the only remaining Phase B item;

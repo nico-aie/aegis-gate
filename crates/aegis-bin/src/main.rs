@@ -60,7 +60,7 @@ fn main() {
 fn parse_config_flag(args: &[String]) -> PathBuf {
     parse_flag(args, "--config")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("config/waf.yaml"))
+        .unwrap_or_else(|| PathBuf::from("config/prod.yaml"))
 }
 
 fn parse_flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {

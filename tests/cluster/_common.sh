@@ -2,7 +2,7 @@
 # Common helpers for the HA cluster tests.
 #
 # Two-node fixture. Both nodes are the *same* binary started
-# against `config/waf.cluster-{a,b}.yaml`. They share a Redis
+# against `config/cluster-{a,b}.yaml`. They share a Redis
 # primary on `127.0.0.1:6379` (the `aegis-cluster-redis`
 # container the runner brings up).
 #
@@ -21,7 +21,7 @@ AEGIS_BIN="${AEGIS_BIN:-$AEGIS_REPO/target/release/waf}"
 AEGIS_REDIS_NAME="${AEGIS_REDIS_NAME:-aegis-cluster-redis}"
 
 NODE_A_DATA="${NODE_A_DATA:-http://127.0.0.1:8080}"
-# Admin is plain HTTP in the cluster fixture (waf.cluster-{a,b}.yaml
+# Admin is plain HTTP in the cluster fixture (cluster-{a,b}.yaml
 # don't bind a TLS resolver). Override with `https://...` if you
 # extend the fixture to terminate TLS on the admin plane.
 NODE_A_ADMIN="${NODE_A_ADMIN:-http://127.0.0.1:9443}"
@@ -70,7 +70,7 @@ stop_redis() {
   fi
 }
 
-# `start_node A` boots node A from `config/waf.cluster-a.yaml`.
+# `start_node A` boots node A from `config/cluster-a.yaml`.
 # Sets $LAST_NODE_PID. Caller is responsible for calling
 # `stop_node "$LAST_NODE_PID"` later.
 start_node() {

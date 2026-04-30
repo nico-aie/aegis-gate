@@ -221,7 +221,7 @@ pub fn write_to_disk(
 pub fn cmd_snapshot(args: &[String]) -> i32 {
     let config_path = parse_flag(args, "--config")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("config/waf.yaml"));
+        .unwrap_or_else(|| PathBuf::from("config/prod.yaml"));
     let output = match parse_flag(args, "--output") {
         Some(p) => PathBuf::from(p),
         None => {

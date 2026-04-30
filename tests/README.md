@@ -100,7 +100,7 @@ The project follows a four-layer pyramid:
   - `8090`, `9543` for the second cluster node — see [`tests/cluster/README.md`](./cluster/README.md)
   - `6379` (Redis) for both the cluster fixture and the optional shared-state work
   - `4443` (Pebble) for ACME
-- An `ADMIN_USER` / `ADMIN_PASS` pair — `config/waf.dev.yaml` ships with
+- An `ADMIN_USER` / `ADMIN_PASS` pair — `config/dev.yaml` ships with
   a baked-in `admin` / `aegis-test-1234` already hashed inline. To use a
   different password, generate a hash with
   `echo "<new-pw>" | cargo run -p aegis-bin -- admin set-password` and
@@ -109,12 +109,12 @@ The project follows a four-layer pyramid:
 ## 3. Bring-up
 
 The test harness ships a self-contained dev config at
-[`../config/waf.dev.yaml`](../config/waf.dev.yaml) — it has no
+[`../config/dev.yaml`](../config/dev.yaml) — it has no
 `${secret:env:...}` references, runs against the in-memory state
 backend, and pre-loads a fixed admin credential pair so the test layers
 can authenticate without a bootstrap step.
 
-> **Test admin credentials** (declared inline in `config/waf.dev.yaml`
+> **Test admin credentials** (declared inline in `config/dev.yaml`
 > — *do not use in production*):
 > - user: `admin`
 > - password: `aegis-test-1234`
@@ -125,7 +125,7 @@ To rotate the password, regenerate the argon2id hash and replace the
 
 ```sh
 echo "<new-password>" | cargo run -p aegis-bin -- admin set-password
-# → paste the printed hash into config/waf.dev.yaml
+# → paste the printed hash into config/dev.yaml
 ```
 
 ### Standard bring-up
@@ -151,11 +151,11 @@ docker compose \
   up -d
 
 # 3. Validate the dev config first (catches schema drift fast)
-cargo run -p aegis-bin -- validate --config config/waf.dev.yaml
-# → expected: "config OK: config/waf.dev.yaml"
+cargo run -p aegis-bin -- validate --config config/dev.yaml
+# → expected: "config OK: config/dev.yaml"
 
 # 4. Run the gateway pointed at the dev config.
-cargo run -p aegis-bin -- run --config config/waf.dev.yaml &
+cargo run -p aegis-bin -- run --config config/dev.yaml &
 WAF_PID=$!
 
 # 5. Wait for readiness
@@ -175,9 +175,9 @@ kill $WAF_PID
 docker compose -f deploy/docker-compose.dev.yml -f deploy/docker-compose.test.yml down
 ```
 
-### What's in `waf.dev.yaml` vs `waf.yaml`
+### What's in `dev.yaml` vs `waf.yaml`
 
-| Field | `waf.yaml` (production-shape) | `waf.dev.yaml` (test) |
+| Field | `waf.yaml` (production-shape) | `dev.yaml` (test) |
 |---|---|---|
 | Listeners | TLS `:8443` + plain `:8080` + admin `:9443` | plain `:8080` + admin `:9443` |
 | Routes | 4 named routes, tier overrides | one catch-all |
@@ -259,9 +259,9 @@ preconditions on exit so re-runs are deterministic.
 |---|---|---|
 | `FAIL: expected '200' got '403'` on a GET | session cookie missing | re-login: `aegis_login` in the script handles this; check `ADMIN_USER`/`ADMIN_PASS` |
 | `FAIL: aegis_csrf cookie not set` | login returned 401/403 | wrong creds, or admin listener isn't reachable |
-| Detectors PUT returns 400 | compliance clamp | check `cfg.compliance.modes`; the test config (`config/waf.dev.yaml`) has compliance off |
+| Detectors PUT returns 400 | compliance clamp | check `cfg.compliance.modes`; the test config (`config/dev.yaml`) has compliance off |
 | `cold-tier.sh` complains about `secret:` substring | regression — token leaked | open issue tagged `security/audit-redaction` |
-| `auth.sh` lockout not reached | `admin.rate_limit.lockout` lowered to 5 in test config | check `config/waf.dev.yaml` |
+| `auth.sh` lockout not reached | `admin.rate_limit.lockout` lowered to 5 in test config | check `config/dev.yaml` |
 | `tls.sh` reports TLS 1.1 accepted | regression in `listener::tls_policy` | re-run with `RUST_LOG=debug` and inspect handshake |
 
 ## 6. Layer 3 — k6 load tests
@@ -439,14 +439,14 @@ signal.
 
 | Problem | Where to look |
 |---|---|
-| Gateway won't start | `cargo run -p aegis-bin -- validate --config config/waf.dev.yaml` (subcommand is `validate`, not `check`) |
+| Gateway won't start | `cargo run -p aegis-bin -- validate --config config/dev.yaml` (subcommand is `validate`, not `check`) |
 | `target/release/aegis-bin: no such file` | The binary is named `waf` — use `target/release/waf` or `cargo run -p aegis-bin -- run` |
 | Port 9443 already in use | `lsof -i :9443` — usually a stale gateway process |
 | k6 can't reach the gateway | `host.docker.internal:8080` requires Docker Desktop or `--add-host` |
 | `tests/api` returns 401 | session cookie missing; check `ADMIN_USER` / `ADMIN_PASS` |
 | Audit chain integrity fails | every chain entry must hash from the previous; re-run `cargo run -p aegis-bin -- audit verify` |
 | ACME tests fail with "tls handshake" | the rustls feature flag is off-by-one; `instant-acme` must be built with `aws-lc-rs`, not `ring` (see `Cargo.toml`) |
-| Strike test clean-block-fails | `risk.strikes.block_at` in `config/waf.dev.yaml` must match `STRIKE_LIMIT` env in the k6 run |
+| Strike test clean-block-fails | `risk.strikes.block_at` in `config/dev.yaml` must match `STRIKE_LIMIT` env in the k6 run |
 
 ## 12. Reference: documentation map
 

@@ -91,7 +91,7 @@ from k6, not from curl, not from the Settings UI.
 3. The login handler:
    - Reads JSON body `{user, password}`.
    - Honours `cfg.admin.dashboard_auth.login_rate_limit` and
-     `lockout` (already configured in `config/waf.dev.yaml`).
+     `lockout` (already configured in `config/dev.yaml`).
    - Validates against
      `cfg.admin.dashboard_auth.password_hash_ref` via
      `password::verify`.
@@ -257,14 +257,14 @@ the gauge into Critical.
 
 Two complementary changes:
 
-1. Ship a separate `config/waf.test.yaml` (sibling to
-   `waf.dev.yaml`) with lower thresholds:
+1. Ship a separate `config/dev.yaml` (sibling to
+   `dev.yaml`) with lower thresholds:
    ```yaml
    load_mode:
      elevated_rps: 500
      critical_rps: 2000
    ```
-   `waf.dev.yaml` keeps realistic numbers so dev work isn't
+   `dev.yaml` keeps realistic numbers so dev work isn't
    misled.
 2. Have `loadmode-degradation.js` read its own thresholds from
    `/api/loadmode` at startup and target 1.5× whatever it sees,

@@ -42,8 +42,8 @@ cargo build -p aegis-bin --release --features redis
 docker compose -f deploy/docker-compose.dev.yml up -d
 
 # 3. Validate, then run
-./target/release/waf validate --config config/waf.yaml
-./target/release/waf run      --config config/waf.yaml
+./target/release/waf validate --config config/prod.yaml
+./target/release/waf run      --config config/prod.yaml
 ```
 
 That's the full first-light path. Full step-by-step + tuning + admin

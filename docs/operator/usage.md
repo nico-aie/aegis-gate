@@ -50,14 +50,14 @@ All three are compiled into a single `waf` binary via `aegis-bin`.
 # With a local config file
 waf run --config /etc/aegis/waf.yaml
 
-# With defaults (looks for config/waf.yaml)
+# With defaults (looks for config/prod.yaml)
 waf run
 ```
 
 ### Validate Config Without Starting
 
 ```sh
-waf validate --config config/waf.yaml
+waf validate --config config/prod.yaml
 ```
 
 This parses, resolves secrets, applies compliance profiles, and reports errors — without binding any listeners.

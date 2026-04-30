@@ -1830,7 +1830,7 @@ path: /var/log/waf/audit.jsonl
 
     #[test]
     fn load_config_round_trip_waf_yaml() {
-        let path = std::path::Path::new("../../config/waf.yaml");
+        let path = std::path::Path::new("../../config/prod.yaml");
         if path.exists() {
             let cfg = super::load_config(path).unwrap();
             assert!(!cfg.routes.is_empty());
@@ -1841,20 +1841,19 @@ path: /var/log/waf/audit.jsonl
     }
 
     #[test]
-    fn load_config_round_trip_test_yaml() {
-        // The test config is the one referenced by F-T4 +
-        // `tests/TESTING.md` for k6 runs that need lower
-        // load-mode thresholds. Schema drift here breaks the
-        // whole load-test layer.
-        let path = std::path::Path::new("../../config/waf.test.yaml");
+    fn load_config_round_trip_dev_yaml() {
+        // The dev config covers both day-to-day development AND the
+        // k6 load-test layer (tests/load/*.js). Schema drift here
+        // breaks the whole test harness.
+        let path = std::path::Path::new("../../config/dev.yaml");
         if path.exists() {
             let cfg = super::load_config(path)
-                .unwrap_or_else(|e| panic!("waf.test.yaml must parse: {e}"));
+                .unwrap_or_else(|e| panic!("dev.yaml must parse: {e}"));
             cfg.validate()
-                .unwrap_or_else(|e| panic!("waf.test.yaml must validate: {e}"));
+                .unwrap_or_else(|e| panic!("dev.yaml must validate: {e}"));
 
-            // Test-harness invariants — must match the
-            // hardcoded targets in tests/load/*.js.
+            // k6 load-test invariants — `loadmode-degradation.js`
+            // stages assert these exact values.
             assert_eq!(
                 cfg.load_mode.elevated_rps, 500,
                 "loadmode-degradation.js stage B expects elevated_rps=500",
@@ -1863,32 +1862,7 @@ path: /var/log/waf/audit.jsonl
                 cfg.load_mode.critical_rps, 2_000,
                 "loadmode-degradation.js stage C expects critical_rps=2000",
             );
-            assert_eq!(
-                cfg.state.backend,
-                StateBackendKind::InMemory,
-                "test config must be self-contained (no Redis)",
-            );
-            assert!(
-                cfg.compliance.is_none(),
-                "test config must not pin compliance modes",
-            );
-        }
-    }
-
-    #[test]
-    fn load_config_round_trip_dev_yaml() {
-        // The dev config is the one referenced by tests/TESTING.md
-        // and the CI bring-up; this test catches schema drift that
-        // would silently break the test harness.
-        let path = std::path::Path::new("../../config/waf.dev.yaml");
-        if path.exists() {
-            let cfg = super::load_config(path)
-                .unwrap_or_else(|e| panic!("waf.dev.yaml must parse: {e}"));
-            cfg.validate()
-                .unwrap_or_else(|e| panic!("waf.dev.yaml must validate: {e}"));
-
-            // Sanity-check the test-harness invariants — these are
-            // what the k6 + tests/api scripts rely on.
+            // Self-contained config — no Redis, no compliance clamp.
             assert_eq!(
                 cfg.state.backend,
                 StateBackendKind::InMemory,

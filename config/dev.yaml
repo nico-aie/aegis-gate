@@ -2,7 +2,7 @@
 #
 # Self-contained config used by `tests/`:
 #   - no `${secret:env:…}` references — every credential is inline
-#     so `cargo run -p aegis-bin -- run --config config/waf.dev.yaml`
+#     so `cargo run -p aegis-bin -- run --config config/dev.yaml`
 #     works without bootstrapping anything else
 #   - `state.backend: in_memory` — no Redis dependency
 #   - tuned thresholds for single-host k6 / curl smoke runs
@@ -88,13 +88,13 @@ risk:
     block_at: 50          # matches STRIKE_LIMIT default in risk-strikes.js
 
 # ---------------------------------------------------------------------------
-# Load mode — thresholds tuned for laptop k6 runs.
-# `loadmode-degradation.js` ramps to ~12 000 RPS in stage C, so
-# `critical_rps: 8000` puts us solidly in Critical at peak.
+# Load mode — thresholds tuned so a laptop k6 runner can drive the
+# WAF past `critical_rps` within 8 s. `loadmode-degradation.js`
+# stages B + C assert these exact values (500 / 2 000).
 # ---------------------------------------------------------------------------
 load_mode:
-  elevated_rps:    2000
-  critical_rps:    8000
+  elevated_rps:    500
+  critical_rps:    2000
   sample_interval: 1s
   hysteresis:      0.10
 

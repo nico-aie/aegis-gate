@@ -8,10 +8,10 @@ because every requirement that matters is observable on the wire.
 ## Running
 
 Boot a release `aegis-bin` against any config that exposes the admin
-plane (the dev config in `config/waf.dev.yaml` is fine):
+plane (the dev config in `config/dev.yaml` is fine):
 
 ```sh
-target/release/waf run --config config/waf.dev.yaml &
+target/release/waf run --config config/dev.yaml &
 AEGIS_ADMIN=http://localhost:9443 \
 AEGIS_DATA=http://localhost:8080 \
     bash tests/dashboard/round1-acceptance.sh

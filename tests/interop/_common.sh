@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 WAF_BIN="${WAF_BIN:-$REPO/target/release/waf}"
-CONFIG="${CONFIG:-$REPO/config/waf.dev.yaml}"
+CONFIG="${CONFIG:-$REPO/config/dev.yaml}"
 DATA="${DATA:-http://127.0.0.1:8080}"
 ADMIN="${ADMIN:-http://127.0.0.1:9443}"
 SECRET="${SECRET:-waf-hackathon-2026-ctrl}"

@@ -84,7 +84,7 @@ conn pool nor TLS session cache.
 ## TLS-T1 — Clean-host TLS re-measure
 
 **Approach.** Reboot-fresh re-run of `tests/load/tls-baseline.js`
-against `config/waf.tls.yaml`. Compare:
+against `config/prod.yaml`. Compare:
 
 - run-04: handshake p95 2.12 ms (good baseline)
 - run-05: handshake p95 9.08 ms (suspicious)

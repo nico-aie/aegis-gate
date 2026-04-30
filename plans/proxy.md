@@ -105,12 +105,12 @@ waf_shadow_total{pool,outcome}
 **M1-T1.1** Workspace + `./waf run` skeleton
 - Files: `Cargo.toml` (workspace), `crates/aegis-bin/src/main.rs`, `crates/aegis-proxy/src/lib.rs`
 - `pub async fn run(cfg, pipeline, state, bus, metrics) -> Result<()>` — parse `--config <path>`, load YAML, bind `listeners.http :8080`, serve 200 OK.
-- Test: `cargo run -- --config config/waf.yaml` responds to `curl localhost:8080`.
+- Test: `cargo run -- --config config/prod.yaml` responds to `curl localhost:8080`.
 
 **M1-T1.2** Config loader
 - Files: `aegis-proxy/src/config.rs`, `aegis-core/src/config.rs`
 - `pub fn load(path: &Path) -> Result<WafConfig>` via `figment` + `serde_yaml`.
-- Test: round-trip parse `config/waf.yaml`; reject missing required fields.
+- Test: round-trip parse `config/prod.yaml`; reject missing required fields.
 
 **M1-T1.3** Hot reload (`notify` + `ArcSwap`)
 - File: `aegis-proxy/src/supervisor.rs`

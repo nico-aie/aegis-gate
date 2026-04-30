@@ -50,7 +50,7 @@ new config on their next read — no external I/O on the hot path.
 # One-liner: start etcd, seed the dev config, run the WAF
 docker compose -f deploy/docker-compose.dev.yml up -d
 ./deploy/etcd/bootstrap.sh
-cargo run -p aegis-bin -- run --config config/waf.dev.yaml
+cargo run -p aegis-bin -- run --config config/dev.yaml
 ```
 
 `bootstrap.sh` is idempotent — it only writes `/aegis/config/waf`

@@ -19,7 +19,7 @@ waf [GLOBAL OPTIONS] <SUBCOMMAND> [ARGS]
 
 | Flag                 | Default            | Purpose |
 |----------------------|--------------------|---------|
-| `--config <PATH>`    | `./config/waf.yaml`| Path to the root config file. |
+| `--config <PATH>`    | `./config/prod.yaml`| Path to the root config file. |
 | `--log-format <FMT>` | `text`             | `text` or `json`. |
 | `--log-level <LVL>`  | `info`             | `error|warn|info|debug|trace`. |
 | `--no-color`         | off                | Disable ANSI colors. |

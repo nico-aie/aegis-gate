@@ -55,7 +55,7 @@ matches the "dedicated" row:
 
 ```sh
 # On a fresh single-tenant VM with the binary already built
-target/release/waf run --config config/waf.test.yaml &
+target/release/waf run --config config/dev.yaml &
 WAF_PID=$!
 until curl -sf http://127.0.0.1:9443/healthz/ready >/dev/null; do
   sleep 0.5
@@ -84,7 +84,7 @@ Every other threshold in `tests/load/*.js` works on any host:
 | `baseline.js` | `RPS > 5 000`, `allow_success > 99.9 %` | No |
 | `mixed-tiers.js` | `critical_fail_open == 0` | No |
 | `ddos-burst.js` | `auto_block_count > 0`, `p95 autoblock_latency < 2 s` | No |
-| `loadmode-degradation.js` | `auto_elevated`, `auto_critical observed` | Sensitive to RPS ceiling — laptop must use `config/waf.test.yaml` |
+| `loadmode-degradation.js` | `auto_elevated`, `auto_critical observed` | Sensitive to RPS ceiling — laptop must use `config/dev.yaml` |
 | `security-toggle-flips.js` | mask flip rates | No |
 | `risk-strikes.js` | strike-block reaches | No |
 | `verbosity-pin.js` | audit silent count | No |
