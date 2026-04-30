@@ -188,24 +188,24 @@ pub async fn run(
             _ => None,
         };
 
-    // Hackathon-2026 v2.3 contract surface (HK-T1..T6). Built
+    // external interop contract surface . Built
     // here so it's available to the data-plane accept_loop and
     // later threaded into `DashboardServices` for the admin
-    // control plane. Opted in via `cfg.hackathon.enabled`.
-    let hackathon_runtime = build_hackathon_runtime(
+    // control plane. Opted in via `cfg.interop.enabled`.
+    let interop_runtime = build_interop_runtime(
         &cfg,
         &risk,
         &ip_rate_limiter,
     );
-    if let Some(rt) = hackathon_runtime.as_ref() {
+    if let Some(rt) = interop_runtime.as_ref() {
         if let Some(sink) = rt.audit.as_ref() {
             tracing::info!(
                 audit_path = %sink.path().display(),
-                "hackathon contract enabled — control plane on /__waf_control",
+                "external interop contract enabled — control plane on /__waf_control",
             );
         } else {
             tracing::info!(
-                "hackathon contract enabled (audit log path not configured)",
+                "external interop contract enabled (audit log path not configured)",
             );
         }
     }
@@ -235,7 +235,7 @@ pub async fn run(
         let bus = bus.clone();
         let upstream_ctx_l = upstream_ctx.clone();
         let acceptor = if listener_tls { tls_acceptor.clone() } else { None };
-        let hackathon_l = hackathon_runtime.clone();
+        let interop_l = interop_runtime.clone();
         handles.push(tokio::spawn(accept_loop(
             tcp,
             detectors,
@@ -248,7 +248,7 @@ pub async fn run(
             bus,
             upstream_ctx_l,
             acceptor,
-            hackathon_l,
+            interop_l,
         )));
     }
 
@@ -383,6 +383,7 @@ pub async fn run(
     let admin_verbosity = verbosity.clone();
     let admin_metrics = metrics.clone();
     let admin_lease_store = lease_store.clone();
+    let admin_interop = interop_runtime.clone();
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -395,6 +396,7 @@ pub async fn run(
         admin_verbosity,
         admin_metrics,
         admin_lease_store,
+        admin_interop,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);
@@ -505,6 +507,7 @@ async fn admin_accept_loop(
     verbosity: aegis_core::SharedVerbosity,
     metrics: aegis_control::metrics::MetricsRegistry,
     lease_store: Arc<dyn aegis_core::cluster::LeaseStore>,
+    interop: Option<Arc<aegis_control::interop::InteropRuntime>>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -678,12 +681,12 @@ async fn admin_accept_loop(
         session_idle_seconds,
         Some(Arc::clone(&leader_view)),
     );
-    // Hand the hackathon Runtime to the admin control plane via
-    // `services.hackathon`. Same Arc that the data-plane
+    // Hand the interop Runtime to the admin control plane via
+    // `services.interop`. Same Arc that the data-plane
     // accept_loop already holds, so all surfaces see one shared
     // ModeStore + audit sink.
     let mut services = services;
-    services.hackathon = hackathon_runtime.clone();
+    services.interop = interop.clone();
     let services = Arc::new(services);
 
     loop {
@@ -772,12 +775,12 @@ async fn handle_admin_request(
         return handle_admin_drain(req, readiness, services).await;
     }
 
-    // Hackathon-2026 v2.3 contract control plane (HK-T3).
+    // external interop contract control plane .
     // Always under `/__waf_control/*`; auth via `X-Benchmark-Secret`.
     // No-op (404) when the binary was built without the
-    // hackathon profile.
+    // interop surface.
     if path.starts_with("/__waf_control/") {
-        return handle_hackathon_control(req, services).await;
+        return handle_interop_control(req, services).await;
     }
 
     // P2 mutating endpoint: PUT /api/detectors. Reads body
@@ -1411,25 +1414,25 @@ async fn handle_admin_drain(
 
 /// HK-T3 — `/__waf_control/*` dispatch.
 ///
-/// Routes to `aegis_control::hackathon::control::ControlContext`
+/// Routes to `aegis_control::interop::control::ControlContext`
 /// for the four contract endpoints. Authenticates via
 /// `X-Benchmark-Secret` per §2.2; missing/wrong secret returns
 /// 403 before any side effect runs.
 ///
-/// When `services.hackathon` is `None` (binary built without the
-/// hackathon profile), returns 404 — the contract surface is
+/// When `services.interop` is `None` (binary built without the
+/// interop surface), returns 404 — the contract surface is
 /// opted in via config, not always-on.
-async fn handle_hackathon_control(
+async fn handle_interop_control(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
-    use aegis_control::hackathon::{control, BENCHMARK_SECRET_HEADER};
+    use aegis_control::interop::{control, CONTROL_SECRET_HEADER};
     use http_body_util::BodyExt;
 
-    let Some(rt) = services.hackathon.as_ref() else {
+    let Some(rt) = services.interop.as_ref() else {
         return json_response(
             404,
-            &serde_json::json!({"error": "hackathon profile disabled"}),
+            &serde_json::json!({"error": "interop surface disabled"}),
         );
     };
 
@@ -1438,7 +1441,7 @@ async fn handle_hackathon_control(
 
     let secret = req
         .headers()
-        .get(BENCHMARK_SECRET_HEADER)
+        .get(CONTROL_SECRET_HEADER)
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
     if let Err(e) = rt.control.check_auth(secret.as_deref()) {
@@ -2076,6 +2079,213 @@ fn handle_force_https_request(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// HK-T1 + HK-T3 + HK-T4 — assemble the interop Runtime from
+/// config. `None` when `cfg.interop.enabled = false`.
+fn build_interop_runtime(
+    cfg: &WafConfig,
+    risk: &aegis_security::risk::RiskTracker,
+    ip_rate_limiter: &Arc<aegis_security::rate_limit::IpRateLimiter>,
+) -> Option<Arc<aegis_control::interop::InteropRuntime>> {
+    use aegis_control::interop::{
+        audit::MinimalJsonlSink,
+        control::{CapabilityFeature, ControlContext},
+        headers::Mode,
+        mode::ModeStore,
+        InteropRuntime,
+    };
+    use std::collections::BTreeMap;
+
+    if !cfg.interop.enabled {
+        return None;
+    }
+    let modes = Arc::new(ModeStore::new(Mode::Enforce));
+
+    // The contract feature list. Names match the dashboard
+    // surface so `set_profile` can target them. Stable for the
+    // duration of a benchmark run.
+    let mut features = BTreeMap::new();
+    features.insert(
+        "access_control".into(),
+        CapabilityFeature {
+            supported: true,
+            toggleable: true,
+            policies: vec!["blacklist".into(), "whitelist".into()],
+        },
+    );
+    features.insert(
+        "rules_engine".into(),
+        CapabilityFeature {
+            supported: true,
+            toggleable: true,
+            policies: vec![
+                "sqli".into(),
+                "xss".into(),
+                "path_traversal".into(),
+                "ssrf".into(),
+                "header_injection".into(),
+                "body_abuse".into(),
+                "recon".into(),
+                "brute_force".into(),
+            ],
+        },
+    );
+    features.insert(
+        "rate_limit".into(),
+        CapabilityFeature {
+            supported: true,
+            toggleable: true,
+            policies: vec!["per_ip".into()],
+        },
+    );
+    features.insert(
+        "risk_engine".into(),
+        CapabilityFeature {
+            supported: true,
+            toggleable: true,
+            policies: vec!["score".into(), "strikes".into()],
+        },
+    );
+
+    // `reset_state` must clear: rate-limit counters, risk
+    // state, challenge sessions. Audit log is preserved.
+    let mut reset_callbacks: Vec<aegis_control::interop::control::ResetCallback> =
+        Vec::new();
+    let risk_for_reset = risk.clone();
+    reset_callbacks.push(Arc::new(move || {
+        risk_for_reset.reset_all();
+    }));
+    let limiter_for_reset = Arc::clone(ip_rate_limiter);
+    reset_callbacks.push(Arc::new(move || {
+        limiter_for_reset.reset_all();
+    }));
+
+    let audit_sink = match MinimalJsonlSink::open(&cfg.interop.audit_path) {
+        Ok(s) => Some(Arc::new(s)),
+        Err(e) => {
+            tracing::warn!(
+                path = %cfg.interop.audit_path.display(),
+                error = %e,
+                "interop audit sink failed to open; continuing without contract audit log",
+            );
+            None
+        }
+    };
+
+    let control = ControlContext {
+        modes: Arc::clone(&modes),
+        features,
+        reset_callbacks,
+        flush_callback: None,
+        secret: cfg
+            .interop
+            .control_secret
+            .clone()
+            .unwrap_or_else(|| {
+                aegis_control::interop::DEFAULT_CONTROL_SECRET.to_string()
+            }),
+    };
+
+    Some(Arc::new(InteropRuntime {
+        audit: audit_sink,
+        modes,
+        control,
+    }))
+}
+
+/// HK-T2 + HK-T1 — stamp `X-WAF-*` headers + write minimal-
+/// schema audit on every data-plane response.
+///
+/// Maps the existing response status to a contract decision
+/// class. When the interop surface is off (`interop = None`)
+/// the response is returned unchanged.
+fn stamp_interop_response(
+    mut resp: Response<Full<Bytes>>,
+    interop: Option<&Arc<aegis_control::interop::InteropRuntime>>,
+    peer: std::net::SocketAddr,
+    method: &hyper::Method,
+    path: &str,
+    risk_score: u32,
+) -> Response<Full<Bytes>> {
+    use aegis_control::interop::audit::MinimalAuditEntry;
+    use aegis_control::interop::headers::{Action, CacheState, Decision};
+
+    let Some(rt) = interop else {
+        return resp;
+    };
+
+    // Map HTTP status → contract action. Status 200..399 = allow
+    // (the upstream replied OK or near-OK); other codes map onto
+    // the WAF's denial classes.
+    let status = resp.status().as_u16();
+    let action = match status {
+        200..=399 => Action::Allow,
+        429 => {
+            // Could be challenge or rate_limit; we set both for the
+            // same status code. Default to rate_limit; the body
+            // contains "challenge" in the challenge case but we
+            // don't peek the body here. Bonus headers from the
+            // emitter would clarify; the contract accepts either.
+            Action::RateLimit
+        }
+        503 => Action::CircuitBreaker,
+        504 => Action::Timeout,
+        _ => Action::Block,
+    };
+
+    // Generate a request id. UUID v4 isn't on our crate list yet,
+    // so build a 36-char hyphenated hex from blake3 (still
+    // RFC-4122-shaped, deterministic per request, distinct enough
+    // to satisfy the OC's "MUST match audit log" constraint).
+    let raw = blake3::hash(
+        format!(
+            "{peer}:{}:{path}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        )
+        .as_bytes(),
+    );
+    let h = raw.to_hex();
+    let h = h.as_str();
+    let request_id = format!(
+        "{}-{}-4{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[13..16],
+        &h[16..20],
+        &h[20..32],
+    );
+
+    let mode = rt.modes.resolve("rules_engine", None);
+    let decision = Decision {
+        request_id: request_id.clone(),
+        risk_score,
+        action,
+        rule_id: None,
+        cache: CacheState::Bypass,
+        mode,
+    };
+    decision.stamp(resp.headers_mut());
+
+    if let Some(sink) = rt.audit.as_ref() {
+        let entry = MinimalAuditEntry {
+            request_id,
+            ts_ms: chrono::Utc::now().timestamp_millis(),
+            ip: peer.ip().to_string(),
+            method: method.as_str().to_string(),
+            path: path.to_string(),
+            action: action.as_str().to_string(),
+            risk_score,
+            mode: mode.as_str().to_string(),
+            rule_id: None,
+        };
+        if let Err(e) = sink.append(&entry) {
+            tracing::warn!(error = %e, "interop audit write failed");
+        }
+    }
+
+    resp
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     tcp: tokio::net::TcpListener,
     detectors: Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>,
@@ -2088,7 +2298,7 @@ async fn accept_loop(
     bus: AuditBus,
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
     tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
-    hackathon: Option<Arc<aegis_control::hackathon::Runtime>>,
+    interop: Option<Arc<aegis_control::interop::InteropRuntime>>,
 ) {
     loop {
         let (stream, peer) = match tcp.accept().await {
@@ -2108,7 +2318,7 @@ async fn accept_loop(
         let request_stage_hist = request_stage_hist.clone();
         let bus = bus.clone();
         let upstream_ctx = upstream_ctx.clone();
-        let hackathon = hackathon.clone();
+        let interop = interop.clone();
         let acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
@@ -2121,7 +2331,7 @@ async fn accept_loop(
                 let request_stage_hist = request_stage_hist.clone();
                 let bus = bus.clone();
                 let upstream_ctx = upstream_ctx.clone();
-                let hackathon = hackathon.clone();
+                let interop = interop.clone();
                 async move {
                     let method = req.method().clone();
                     let path = req.uri().path().to_string();
@@ -2138,9 +2348,9 @@ async fn accept_loop(
                         &bus,
                         &upstream_ctx,
                     ).await;
-                    let resp = stamp_hackathon_response(
+                    let resp = stamp_interop_response(
                         resp,
-                        hackathon.as_ref(),
+                        interop.as_ref(),
                         peer,
                         &method,
                         &path,

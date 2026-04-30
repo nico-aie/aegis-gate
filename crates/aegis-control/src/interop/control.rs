@@ -1,14 +1,14 @@
-//! HK-T3 — `/__waf_control/*` endpoints.
+//! `/__waf_control/*` endpoints.
 //!
 //! Pure response builders + request validators. The proxy
 //! crate plugs the actual reset-state callbacks into a
 //! [`ControlContext`] so the data plane keeps owning its
 //! own state — no `aegis-control` → `aegis-proxy` upcall.
 //!
-//! Authentication: every endpoint requires the
-//! `X-Benchmark-Secret` header (see [`super::BENCHMARK_SECRET`]).
-//! Missing or wrong secret returns `403 Forbidden`. Auth check
-//! happens before any side effect.
+//! Authentication: every endpoint requires the configured
+//! control secret in the [`super::CONTROL_SECRET_HEADER`]
+//! header. Missing or wrong secret returns `403 Forbidden`.
+//! Auth check happens before any side effect.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 
 use super::headers::Mode;
 use super::mode::ModeStore;
-use super::BENCHMARK_SECRET;
 
 // ---------------------------------------------------------------------------
 // Capabilities
@@ -189,11 +188,15 @@ pub struct ControlContext {
     /// runtime state surface (rate limit, risk, sessions, etc.).
     /// Run synchronously in registration order; failures are
     /// logged but don't block the success response — `reset_state`
-    /// MUST appear atomic to the benchmarker (§2.4).
+    /// MUST appear atomic to the caller.
     pub reset_callbacks: Vec<ResetCallback>,
     /// `flush_cache` callback. `None` = no cache implemented;
     /// the endpoint returns `supported: false`.
     pub flush_callback: Option<ResetCallback>,
+    /// Expected value of the `X-Benchmark-Secret` header. Set
+    /// from `interop.control_secret` config; defaults to
+    /// [`super::DEFAULT_CONTROL_SECRET`].
+    pub secret: String,
 }
 
 /// Type alias for a reset callback. Wrapped in `Arc<dyn Fn>` so
@@ -209,7 +212,7 @@ impl ControlContext {
         header_value: Option<&str>,
     ) -> Result<(), ControlError> {
         match header_value {
-            Some(v) if v == BENCHMARK_SECRET => Ok(()),
+            Some(v) if v == self.secret => Ok(()),
             _ => Err(ControlError::Forbidden),
         }
     }
@@ -238,10 +241,12 @@ impl ControlContext {
         }
     }
 
-    /// Apply a `set_profile` request. Returns the applied diff
-    /// + new active state. Validates the request body shape per
-    /// §2.5 — empty `features`, missing `feature` for policy
-    /// scope, etc. all surface as `BadRequest`.
+    /// Apply a `set_profile` request.
+    ///
+    /// Returns the applied diff + new active state. Validates
+    /// the request body shape per §2.5 — empty `features`,
+    /// missing `feature` for policy scope, etc. all surface as
+    /// `BadRequest`.
     pub fn set_profile(
         &self,
         req: &SetProfileRequest,
@@ -410,6 +415,7 @@ mod tests {
             features,
             reset_callbacks: Vec::new(),
             flush_callback: None,
+            secret: super::DEFAULT_CONTROL_SECRET.to_string(),
         }
     }
 
@@ -431,7 +437,7 @@ mod tests {
     #[test]
     fn auth_accepts_correct_secret() {
         let c = ctx();
-        c.check_auth(Some(BENCHMARK_SECRET)).unwrap();
+        c.check_auth(Some(super::DEFAULT_CONTROL_SECRET)).unwrap();
     }
 
     #[test]

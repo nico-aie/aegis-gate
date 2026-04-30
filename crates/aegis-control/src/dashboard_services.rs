@@ -102,12 +102,10 @@ pub struct DashboardServices {
     /// [`crate::api::tracking::LeaderView`] (carry-over 3,
     /// post 2026-04-29 cluster smoke).
     pub leader_view: Option<Arc<crate::api::tracking::LeaderView>>,
-    /// Hackathon-2026 v2.3 contract surface.
-    /// `None` when the binary was built without the hackathon
-    /// profile; `Some` enables `/__waf_control/*` dispatch +
-    /// `X-WAF-*` response stamping + `./waf_audit.log` writes.
-    /// See [`plans/hackathon-2026.md`].
-    pub hackathon: Option<Arc<crate::hackathon::Runtime>>,
+    /// External interop surface — `/__waf_control/*` dispatch,
+    /// `X-WAF-*` response stamping, minimal-schema audit log.
+    /// See [`plans/interop-contract.md`].
+    pub interop: Option<Arc<crate::interop::InteropRuntime>>,
 }
 
 impl DashboardServices {
@@ -313,10 +311,10 @@ impl DashboardServices {
                 environment,
                 bus: bus_handle,
                 leader_view,
-                // Hackathon contract is opted in by the bin
+                // Interop contract is opted in by the bin
                 // crate after construction (see
                 // `aegis-bin/src/main.rs`).
-                hackathon: None,
+                interop: None,
             },
             drain,
         )

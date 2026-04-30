@@ -188,6 +188,13 @@ impl RiskTracker {
         self.inner.map.remove(&ip).is_some()
     }
 
+    /// Drop every tracked IP — score, strikes, last-seen.
+    /// Used by the hackathon control plane (HK-T3) to wipe
+    /// runtime state between benchmark phases.
+    pub fn reset_all(&self) {
+        self.inner.map.clear();
+    }
+
     /// Top-N riskiest IPs sorted by `(strikes desc, score desc)`.
     /// `level` is recomputed inline so callers can render the
     /// snapshot without a follow-up `level()` call per row.

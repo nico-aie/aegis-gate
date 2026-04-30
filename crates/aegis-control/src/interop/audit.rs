@@ -1,11 +1,14 @@
-//! HK-T1 — minimal-schema audit log writing to `./waf_audit.log`.
+//! Minimal-schema JSONL audit sink.
 //!
-//! The hackathon contract (§6) mandates a JSONL file with eight
-//! fields per entry, append-only, never truncated even by
-//! `reset_state`. The existing tamper-evident SHA-256 audit
-//! chain (in `aegis-control::audit`) keeps writing to its own
-//! configured path; this is a *parallel* sink with the minimal
-//! shape the OC's benchmarker reads.
+//! Writes one JSON line per request with a small fixed schema
+//! (8 fields by default; one optional `rule_id`) to a
+//! configurable file path (default `./waf_audit.log`). Append-
+//! only; the control plane's `reset_state` MUST NOT truncate it.
+//!
+//! Distinct from the tamper-evident SHA-256 audit chain in
+//! `aegis-control::audit`. Both run in parallel — the chain is
+//! the long-term forensic record; this sink is the SIEM-friendly
+//! request log.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -17,7 +20,7 @@ use serde::Serialize;
 /// One audit entry, in the exact contract schema. Field names
 /// MUST match the spec — renaming is a benchmark-breaking change.
 #[derive(Clone, Debug, Serialize)]
-pub struct HackathonAuditEntry {
+pub struct MinimalAuditEntry {
     /// UUID v4 — same value as the `X-WAF-Request-Id` header.
     pub request_id: String,
     /// Unix epoch milliseconds.
@@ -41,15 +44,14 @@ pub struct HackathonAuditEntry {
     pub rule_id: Option<String>,
 }
 
-/// Write target for hackathon audit entries. Append-only; never
-/// truncated — `reset_state` in the control plane MUST NOT touch
-/// this file.
-pub struct HackathonAuditSink {
+/// Append-only file sink for [`MinimalAuditEntry`].
+/// `reset_state` in the control plane MUST NOT truncate it.
+pub struct MinimalJsonlSink {
     path: PathBuf,
     writer: Mutex<BufWriter<File>>,
 }
 
-impl HackathonAuditSink {
+impl MinimalJsonlSink {
     /// Open the file in append mode, creating it if missing.
     /// Returns an error only when the path is unwritable — the
     /// caller should fail-fast at boot in that case so the OC's
@@ -73,7 +75,7 @@ impl HackathonAuditSink {
     /// Append one entry. Each call writes a single newline-
     /// terminated JSON object and flushes the buffer so the OC
     /// sees the entry within the contract's correlation window.
-    pub fn append(&self, entry: &HackathonAuditEntry) -> std::io::Result<()> {
+    pub fn append(&self, entry: &MinimalAuditEntry) -> std::io::Result<()> {
         let mut line = serde_json::to_vec(entry).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, e)
         })?;
@@ -87,7 +89,7 @@ impl HackathonAuditSink {
 
 /// Format a single entry as the JSONL line that would be written.
 /// Useful for unit tests + benchmark dry-runs without touching disk.
-pub fn format_line(entry: &HackathonAuditEntry) -> String {
+pub fn format_line(entry: &MinimalAuditEntry) -> String {
     serde_json::to_string(entry).unwrap_or_else(|_| "{}".into())
 }
 
@@ -96,8 +98,8 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
 
-    fn entry_template() -> HackathonAuditEntry {
-        HackathonAuditEntry {
+    fn entry_template() -> MinimalAuditEntry {
+        MinimalAuditEntry {
             request_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             ts_ms: 1_777_363_200_123,
             ip: "127.0.0.1".into(),
@@ -152,7 +154,7 @@ mod tests {
     fn sink_appends_two_entries_with_newline() {
         let dir = tempdir();
         let path = dir.join("waf_audit.log");
-        let sink = HackathonAuditSink::open(&path).unwrap();
+        let sink = MinimalJsonlSink::open(&path).unwrap();
         sink.append(&entry_template()).unwrap();
         sink.append(&entry_template()).unwrap();
         drop(sink);
@@ -177,11 +179,11 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("waf_audit.log");
         {
-            let s = HackathonAuditSink::open(&path).unwrap();
+            let s = MinimalJsonlSink::open(&path).unwrap();
             s.append(&entry_template()).unwrap();
         }
         {
-            let s = HackathonAuditSink::open(&path).unwrap();
+            let s = MinimalJsonlSink::open(&path).unwrap();
             s.append(&entry_template()).unwrap();
         }
         let content = std::fs::read_to_string(&path).unwrap();

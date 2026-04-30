@@ -1,12 +1,13 @@
-//! HK-T2 — mandatory `X-WAF-*` response headers.
+//! Always-on `X-WAF-*` response observability headers.
 //!
-//! The hackathon contract (§5) lists six headers that MUST
-//! appear on every WAF response (allow / block / challenge /
-//! rate_limit / timeout / circuit_breaker). Names + values must
-//! match the spec exactly — typos here fail the benchmark.
+//! Six headers stamped on every WAF response (allow / block /
+//! challenge / rate_limit / timeout / circuit_breaker). External
+//! tooling (benchmark harnesses, dashboards, SIEMs) reads them
+//! to classify decisions in real time without parsing audit logs.
 //!
-//! These are **always-on**, distinct from the existing gated
-//! `X-Aegis-*` benchmark-mode headers in `aegis-proxy`.
+//! Distinct from the gated, diagnostic `X-Aegis-*` headers in
+//! `aegis-proxy::benchmark` — those are opt-in per-request
+//! tracing; these are always-on operational metadata.
 
 use http::{HeaderMap, HeaderName, HeaderValue};
 
@@ -152,8 +153,8 @@ mod tests {
 
     #[test]
     fn action_strings_match_spec() {
-        // The hackathon contract enumerates these six exact
-        // lowercase strings — typos here fail the benchmark.
+        // The contract enumerates these six exact lowercase
+        // strings — typos here fail the integration.
         assert_eq!(Action::Allow.as_str(), "allow");
         assert_eq!(Action::Block.as_str(), "block");
         assert_eq!(Action::Challenge.as_str(), "challenge");

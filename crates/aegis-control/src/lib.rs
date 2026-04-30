@@ -16,6 +16,6 @@ pub mod tracing_init;
 pub mod admin_auth;
 pub mod compliance;
 pub mod gitops;
-pub mod hackathon;
+pub mod interop;
 pub mod residency;
 pub mod slo;

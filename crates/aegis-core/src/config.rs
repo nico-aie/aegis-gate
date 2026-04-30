@@ -102,6 +102,52 @@ pub struct WafConfig {
     /// can't resize once built.
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    /// External interop surface. Always-on by default — exposes
+    /// `/__waf_control/*` (capability discovery, runtime-state
+    /// reset, mode toggle, cache flush), the always-on `X-WAF-*`
+    /// response headers, and the minimal-schema JSONL audit log.
+    /// Set `interop.enabled: false` to disable the surface
+    /// entirely (e.g. in test fixtures).
+    #[serde(default)]
+    pub interop: InteropConfig,
+}
+
+/// External interop surface configuration. Always-on by default.
+#[derive(Clone, Debug, Deserialize)]
+pub struct InteropConfig {
+    /// Master toggle. Default `true`. Set `false` to disable the
+    /// `/__waf_control/*` endpoints, the always-on `X-WAF-*`
+    /// response headers, and the minimal-schema audit sink.
+    #[serde(default = "default_interop_enabled")]
+    pub enabled: bool,
+    /// Path the minimal-schema audit log writes to. Default
+    /// `./waf_audit.log` (cwd at boot).
+    #[serde(default = "default_interop_audit_path")]
+    pub audit_path: std::path::PathBuf,
+    /// Secret expected on the `X-Benchmark-Secret` header for
+    /// every `/__waf_control/*` request. `None` falls back to
+    /// the documented default; production deployments SHOULD
+    /// override via secret-ref.
+    #[serde(default)]
+    pub control_secret: Option<String>,
+}
+
+impl Default for InteropConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_interop_enabled(),
+            audit_path: default_interop_audit_path(),
+            control_secret: None,
+        }
+    }
+}
+
+fn default_interop_enabled() -> bool {
+    true
+}
+
+fn default_interop_audit_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("./waf_audit.log")
 }
 
 /// Node identity for cluster mode. Optional — `id: None` means
