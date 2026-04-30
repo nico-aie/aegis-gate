@@ -119,14 +119,20 @@ mod tests {
 
     #[test]
     fn dispatch_known_asset_returns_asset() {
-        let r = dispatch("/dashboard/assets/index.html").expect("must resolve");
-        assert!(matches!(r, DashboardResponse::Asset(_)));
-        let r = dispatch("/dashboard/assets/app.js").expect("must resolve");
-        assert!(matches!(r, DashboardResponse::Asset(_)));
-        let r = dispatch("/dashboard/assets/pages/overview.js").expect("must resolve");
-        assert!(matches!(r, DashboardResponse::Asset(_)));
-        let r = dispatch("/dashboard/assets/components/stat-card.js").expect("must resolve");
-        assert!(matches!(r, DashboardResponse::Asset(_)));
+        // DD-T1: the redesign ships index.html + app.js + aegis.css
+        // + react UMD bundles + i18n.json. Per-page splits and the
+        // per-component module folder were removed.
+        for asset in [
+            "/dashboard/assets/index.html",
+            "/dashboard/assets/app.js",
+            "/dashboard/assets/aegis.css",
+            "/dashboard/assets/react.min.js",
+            "/dashboard/assets/react-dom.min.js",
+            "/dashboard/assets/i18n.json",
+        ] {
+            let r = dispatch(asset).expect("must resolve");
+            assert!(matches!(r, DashboardResponse::Asset(_)), "missing {asset}");
+        }
     }
 
     #[test]
@@ -176,36 +182,26 @@ mod tests {
         let shell = spa_shell();
         assert!(!shell.bytes.is_empty());
         assert_eq!(shell.content_type, "text/html; charset=utf-8");
-        assert!(std::str::from_utf8(shell.bytes).unwrap().contains(r#"id="aegis-app""#));
+        // DD-T1: the new shell mounts at #root via React 18.
+        assert!(std::str::from_utf8(shell.bytes).unwrap().contains(r#"id="root""#));
     }
 
     #[test]
-    fn shell_for_false_returns_spa_shell() {
-        // D-M1-T1.6: legacy flag off -> new enterprise SPA shell.
-        let shell = shell_for(false);
-        let html = std::str::from_utf8(shell.bytes).unwrap();
-        assert!(html.contains(r#"id="aegis-app""#));
-    }
-
-    #[test]
-    fn shell_for_true_now_returns_spa_after_legacy_removal() {
-        // D-M6-T6.9 removed the legacy shell. `shell_for(true)` is
-        // a no-op for back-compat — it still returns the SPA.
-        let shell = shell_for(true);
-        let html = std::str::from_utf8(shell.bytes).unwrap();
-        assert!(html.contains(r#"id="aegis-app""#));
-    }
-
-    #[test]
-    fn shell_for_branches_now_match() {
-        // After D-M6-T6.9 there is one canonical shell — both
-        // branches return identical bytes / ETag.
+    fn shell_for_returns_index_html_regardless_of_legacy_flag() {
+        // The legacy-shell branch was retired in D-M6-T6.9 and the
+        // dashboard was rebuilt in DD-T1. `shell_for(true|false)`
+        // both return the new React 18 shell.
+        for flag in [true, false] {
+            let shell = shell_for(flag);
+            let html = std::str::from_utf8(shell.bytes).unwrap();
+            assert!(html.contains(r#"id="root""#));
+        }
         let a = shell_for(true);
         let b = shell_for(false);
         assert_eq!(a.etag, b.etag);
     }
 
-    // ---------- app.js structural tests (D-M1-T1.3 router) ----------
+    // ---------- app.js structural tests (DD-T1 bundle) ---------------
 
     fn app_js() -> &'static str {
         let bytes = lookup("app.js").expect("app.js must resolve").bytes;
@@ -213,69 +209,47 @@ mod tests {
     }
 
     #[test]
-    fn app_js_declares_route_table_for_all_pages() {
+    fn app_js_references_all_pages() {
+        // DD-T1: the bundle declares every page component as a global
+        // (window.PageOverview, window.PageLiveFeed, …).
         let js = app_js();
-        for route in [
-            "overview", "live", "attacks", "analytics", "audit",
-            "rules", "tiers", "blacklist", "whitelist", "settings", "tracking",
+        for page in [
+            "PageOverview", "PageLiveFeed", "PageAttackEvents",
+            "PageAnalytics", "PageAuditLog", "PageRuleManager",
+            "PageTierConfig", "ListPage", "PageSettings",
+            "PageTracking", "PageHelp",
         ] {
-            // Each route key appears as a property and as a dynamic
-            // import of the matching page module.
-            assert!(
-                js.contains(&format!("/dashboard/assets/pages/{route}.js")),
-                "router must dynamically import pages/{route}.js"
-            );
+            assert!(js.contains(page), "bundle missing global {page}");
         }
     }
 
     #[test]
-    fn app_js_uses_dynamic_import_per_route() {
-        // ES dynamic import keeps the initial bundle tiny and lets
-        // pages load on demand — design call in milestone-1-shell.md
-        // task T1.3.
+    fn app_js_mounts_react_18() {
         let js = app_js();
         assert!(
-            js.contains("import("),
-            "router must use dynamic import() for code splitting"
+            js.contains("createRoot"),
+            "bundle must call ReactDOM.createRoot (React 18)"
         );
     }
 
     #[test]
-    fn app_js_has_mount_destroy_lifecycle() {
-        let js = app_js();
-        assert!(js.contains(".mount("), "expected page.mount() call");
-        assert!(js.contains("destroy"), "expected destroy() lifecycle");
-    }
-
-    #[test]
-    fn app_js_uses_history_api() {
+    fn app_js_uses_hash_routing() {
+        // The DD-T1 redesign uses hash routing inside the SPA so
+        // server-side fall-through is a no-op (any
+        // /dashboard/<anything> serves the same HTML).
         let js = app_js();
         assert!(
-            js.contains("history.pushState") || js.contains("pushState("),
-            "router must use history.pushState"
-        );
-        assert!(
-            js.contains("popstate"),
-            "router must subscribe to popstate for back/forward"
+            js.contains("location.hash") || js.contains("hashchange"),
+            "bundle must use hash-based routing"
         );
     }
 
     #[test]
-    fn app_js_has_default_route_overview() {
-        // layout.md: /dashboard/ redirects to /dashboard/overview.
+    fn app_js_default_route_is_overview() {
         let js = app_js();
         assert!(
             js.contains(r#""overview""#) || js.contains(r#"'overview'"#),
-            "expected DEFAULT_ROUTE = overview"
-        );
-    }
-
-    #[test]
-    fn app_js_highlights_active_link() {
-        let js = app_js();
-        assert!(
-            js.contains("data-route") || js.contains("aegis-nav-active"),
-            "expected active-link highlighting via data-route attribute"
+            "expected default route = overview"
         );
     }
 }

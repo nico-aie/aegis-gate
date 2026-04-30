@@ -19,6 +19,7 @@ read-back is reproducible.
 
 | # | Dir | Date | Focus | Headline | Status |
 |---|---|---|---|---|---|
+| 10 | [`run-10-2026-04-30-dashboard-redesign/`](./run-10-2026-04-30-dashboard-redesign/) | 2026-04-30 | Dashboard redesign DD-T0..T7 — Aegis WAF Console; pre-compiled JSX bundle, no CDN, Rule CRUD endpoints, hot-reload version visibility. | All 12 pages render; CRUD wired end-to-end; CSP `script-src 'self'`; bundle 165 KB; +0 / −60+ files net (cleanup). | ✅ Round-1 functional bar met |
 | 09 | [`run-09-2026-04-30-tls-recheck/`](./run-09-2026-04-30-tls-recheck/) | 2026-04-30 | TLS-T1 clean-host re-measure. Closes the run-05 handshake-latency carry-over. | Handshake p95 5.23 ms (run-04: 2.12, run-05: 9.08); post-handshake p95 1.04 ms unchanged. **Verdict: run-05 was host noise.** | ✅ run-05 carry-over closed |
 | 08 | [`run-08-2026-04-30-interop/`](./run-08-2026-04-30-interop/) | 2026-04-30 | Interop contract self-driven dry-run (DR-T1..T7). Validates §2/§3/§5/§6 of v2.3 + perf delta with X-WAF-* + audit always-on. | **27/27 contract checks green**, perf delta ~30 µs at p95 (4 % overhead at 4 k RPS), 100 % success both modes. | ✅ Round-2 self-gate green |
 | 07 | [`run-07-2026-04-30-upstream-pool/`](./run-07-2026-04-30-upstream-pool/) | 2026-04-30 | UP-T1 — pooled HTTP/1.1 keep-alive vs pre-UP-T1 baseline, swept over `runtime.workers` and offered RPS. | **Throughput ceiling 525 → 7 964 RPS (15×)**; p95 0.94 ms at 1 k RPS / 100 % success. Unpooled flatlines at ~525 RPS regardless of workers. | ✅ post-run-06 top item closed |

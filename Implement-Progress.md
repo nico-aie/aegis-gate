@@ -172,7 +172,39 @@ Last five tasks, compressed. For full detail see git history.
 
 ## Next Task
 
-**Task:** **Dashboard redesign** — opens next.
+**Task in flight: Dashboard redesign (DD-T0..T8).** Plan
+[`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md).
+
+| Track | Status |
+|---|---|
+| DD-T0 — Clean removal of old dashboard | ✅ |
+| DD-T1 — Drop in design files + asset registry + pre-compile | ✅ |
+| DD-T6 — Rule CRUD endpoints + UI | pending |
+| DD-T2 — Wire `data.jsx` → real `/api/*` endpoints | pending |
+| DD-T7 — Hot-reload version toast | pending |
+| DD-T4 — Smoke + screenshots | pending |
+| DD-T8 — Round-1 acceptance script | pending |
+| DD-T5 — Doc + run-10 README | pending |
+
+**DD-T0+T1 outcome.** Old vanilla-JS dashboard
+(11 pages × 5 components × ~30 files) removed. New
+**Aegis WAF Console** design lands as one pre-compiled
+`app.js` (~158 KB) built from `assets/dashboard/src/*.jsx`
+via `assets/dashboard/build.sh` (esbuild JSX transform, no
+bundling — preserves the design's `Object.assign(window, …)`
+pattern). React 18 UMD bundles served locally, no CDN. CSP
+stays `script-src 'self'` (no `'unsafe-eval'`).
+
+Asset registry slimmed to 6 files: `index.html`, `app.js`,
+`aegis.css`, `react.min.js`, `react-dom.min.js`, `i18n.json`.
+
+The dashboard mounts and renders all 12 sidebar pages with
+the design's mock data; **DD-T2 wires real backend endpoints
+next**.
+
+**Earlier this session:**
+
+After these close, dashboard redesign track opens.
 
 All earlier tracks are closed:
 

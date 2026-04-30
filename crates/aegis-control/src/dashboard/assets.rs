@@ -45,46 +45,19 @@ macro_rules! embed {
     };
 }
 
-/// Master inventory of embedded assets. Adding/removing an asset here
-/// must be matched in the M1 design spec
-/// (`docs/control-plane/enterprise/assets.md`) and the test inventory
-/// (`EXPECTED_ASSETS` in this module).
+/// Master inventory of embedded assets. The dashboard SPA was
+/// rebuilt as the **Aegis WAF Console** in DD-T1 (see
+/// `plans/dashboard-redesign.md`). The new bundle is a single
+/// pre-compiled `app.js` produced by
+/// `crates/aegis-control/assets/dashboard/build.sh`; the source
+/// JSX lives under `assets/dashboard/src/`.
 const RAW: &[(&str, &[u8], &str)] = &[
-    // Top-level shell
     embed!("index.html", HTML),
     embed!("app.js", JS),
     embed!("aegis.css", CSS),
-    embed!("theme.js", JS),
-    embed!("icons.svg", SVG),
-    // i18n
-    embed!("i18n/en.json", JSON),
-    // Pages (11)
-    embed!("pages/overview.js", JS),
-    embed!("pages/live.js", JS),
-    embed!("pages/attacks.js", JS),
-    embed!("pages/analytics.js", JS),
-    embed!("pages/audit.js", JS),
-    embed!("pages/rules.js", JS),
-    embed!("pages/tiers.js", JS),
-    embed!("pages/blacklist.js", JS),
-    embed!("pages/whitelist.js", JS),
-    embed!("pages/settings.js", JS),
-    embed!("pages/tracking.js", JS),
-    // Components (14)
-    embed!("components/stat-card.js", JS),
-    embed!("components/line-chart.js", JS),
-    embed!("components/donut.js", JS),
-    embed!("components/sparkline.js", JS),
-    embed!("components/table.js", JS),
-    embed!("components/badge.js", JS),
-    embed!("components/drawer.js", JS),
-    embed!("components/modal.js", JS),
-    embed!("components/toast.js", JS),
-    embed!("components/confirm.js", JS),
-    embed!("components/diff.js", JS),
-    embed!("components/cmdk.js", JS),
-    embed!("components/banner.js", JS),
-    embed!("components/skeleton.js", JS),
+    embed!("react.min.js", JS),
+    embed!("react-dom.min.js", JS),
+    embed!("i18n.json", JSON),
 ];
 
 static ASSETS: OnceLock<HashMap<&'static str, EmbeddedAsset>> = OnceLock::new();
@@ -174,91 +147,49 @@ fn read_asset_from_disk(
 mod tests {
     use super::*;
 
-    /// Every asset listed in the M1 directory tree must resolve. This
-    /// is the canonical inventory; if the manifest changes, update both
-    /// this list and the embedded table together.
+    /// The DD-T1 redesign ships a single pre-compiled `app.js`
+    /// alongside React UMD + a CSS file + an i18n strings JSON.
+    /// Keep RAW and this list aligned.
     const EXPECTED_ASSETS: &[&str] = &[
-        // top-level
         "index.html",
         "app.js",
         "aegis.css",
-        "theme.js",
-        "icons.svg",
-        // i18n
-        "i18n/en.json",
-        // pages
-        "pages/overview.js",
-        "pages/live.js",
-        "pages/attacks.js",
-        "pages/analytics.js",
-        "pages/audit.js",
-        "pages/rules.js",
-        "pages/tiers.js",
-        "pages/blacklist.js",
-        "pages/whitelist.js",
-        "pages/settings.js",
-        "pages/tracking.js",
-        // components
-        "components/stat-card.js",
-        "components/line-chart.js",
-        "components/donut.js",
-        "components/sparkline.js",
-        "components/table.js",
-        "components/badge.js",
-        "components/drawer.js",
-        "components/modal.js",
-        "components/toast.js",
-        "components/confirm.js",
-        "components/diff.js",
-        "components/cmdk.js",
-        "components/banner.js",
-        "components/skeleton.js",
+        "react.min.js",
+        "react-dom.min.js",
+        "i18n.json",
     ];
 
     #[test]
-    fn lookup_resolves_every_known_asset() {
+    fn inventory_size_matches_manifest() {
+        assert_eq!(RAW.len(), EXPECTED_ASSETS.len());
+    }
+
+    #[test]
+    fn lookup_known_returns_asset() {
         for path in EXPECTED_ASSETS {
-            assert!(
-                lookup(path).is_some(),
-                "expected asset {path:?} to resolve via lookup()",
-            );
+            assert!(lookup(path).is_some(), "missing asset {path:?}");
         }
     }
 
     #[test]
-    fn lookup_unknown_path_returns_none() {
-        assert!(lookup("does-not-exist.txt").is_none());
-        assert!(lookup("../etc/passwd").is_none());
-        assert!(lookup("").is_none());
-        assert!(lookup("pages/nope.js").is_none());
-    }
-
-    #[test]
-    fn etag_is_deterministic_across_calls() {
-        for path in EXPECTED_ASSETS {
-            let first = lookup(path).expect("known asset must resolve").etag;
-            let second = lookup(path).expect("known asset must resolve").etag;
-            assert_eq!(first, second, "etag for {path:?} must be deterministic");
+    fn lookup_unknown_returns_none() {
+        for path in ["does-not-exist.js", "../etc/passwd", "pages/old.js"] {
+            assert!(lookup(path).is_none(), "unexpected asset for {path:?}");
         }
     }
 
     #[test]
-    fn etag_is_lowercase_hex_of_expected_length() {
-        // BLAKE3 default digest is 32 bytes -> 64 lowercase hex chars.
+    fn bytes_are_non_empty() {
         for path in EXPECTED_ASSETS {
-            let etag = lookup(path).expect("known asset must resolve").etag;
-            assert_eq!(etag.len(), 64, "etag for {path:?} should be 64 hex chars");
-            assert!(
-                etag.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-                "etag for {path:?} must be lowercase hex, got {etag:?}",
-            );
+            let asset = lookup(path).unwrap();
+            assert!(!asset.bytes.is_empty(), "{path:?} bytes empty");
         }
     }
 
     #[test]
     fn etag_matches_blake3_of_bytes() {
         for path in EXPECTED_ASSETS {
-            let asset = lookup(path).expect("known asset must resolve");
+            let asset = lookup(path).unwrap();
             let expected = blake3::hash(asset.bytes).to_hex().to_string();
             assert_eq!(asset.etag, expected, "etag mismatch for {path:?}");
         }
@@ -270,914 +201,51 @@ mod tests {
             ("index.html", "text/html; charset=utf-8"),
             ("app.js", "application/javascript; charset=utf-8"),
             ("aegis.css", "text/css; charset=utf-8"),
-            ("icons.svg", "image/svg+xml"),
-            ("i18n/en.json", "application/json; charset=utf-8"),
-            ("pages/overview.js", "application/javascript; charset=utf-8"),
-            (
-                "components/stat-card.js",
-                "application/javascript; charset=utf-8",
-            ),
+            ("react.min.js", "application/javascript; charset=utf-8"),
+            ("i18n.json", "application/json; charset=utf-8"),
         ];
         for (path, expected_ct) in cases {
-            let asset = lookup(path).expect("known asset must resolve");
-            assert_eq!(asset.content_type, *expected_ct, "content_type for {path:?}");
+            let asset = lookup(path).unwrap();
+            assert_eq!(asset.content_type, *expected_ct, "ct for {path:?}");
         }
     }
-
-    #[test]
-    fn inventory_size_matches_manifest() {
-        // Guard against accidental drift between RAW and EXPECTED_ASSETS.
-        assert_eq!(RAW.len(), EXPECTED_ASSETS.len());
-    }
-
-    #[test]
-    fn bytes_are_non_empty() {
-        for path in EXPECTED_ASSETS {
-            let asset = lookup(path).expect("known asset must resolve");
-            assert!(!asset.bytes.is_empty(), "asset {path:?} has empty bytes");
-        }
-    }
-
-    // ---------- D-M1-T1.2: SPA shell HTML structure ---------------------
 
     fn index_html() -> &'static str {
-        let bytes = lookup("index.html").expect("index.html must resolve").bytes;
-        std::str::from_utf8(bytes).expect("index.html must be valid utf-8")
+        let bytes = lookup("index.html").unwrap().bytes;
+        std::str::from_utf8(bytes).expect("index.html utf-8")
     }
 
     #[test]
     fn index_html_starts_with_doctype() {
-        let html = index_html();
-        let head = html.trim_start();
-        // Match either casing; HTML5 is case-insensitive for the DOCTYPE.
-        assert!(
-            head.to_ascii_lowercase().starts_with("<!doctype html>"),
-            "index.html must start with HTML5 doctype, got: {:?}",
-            &head[..head.len().min(40)]
-        );
+        let head = index_html().trim_start();
+        assert!(head.to_ascii_lowercase().starts_with("<!doctype html>"));
     }
 
     #[test]
-    fn index_html_declares_lang_and_charset() {
-        let html = index_html();
-        assert!(html.contains(r#"<html lang="en">"#), "missing lang attribute");
-        assert!(
-            html.contains(r#"<meta charset="utf-8">"#),
-            "missing utf-8 charset meta"
-        );
-        assert!(
-            html.contains(r#"name="viewport""#),
-            "missing viewport meta"
-        );
-    }
-
-    #[test]
-    fn index_html_has_app_and_toasts_sentinels() {
-        // Canonical sentinel ids for the SPA mount points.
+    fn index_html_mounts_react_app() {
+        // The new design mounts at #root via React 18 createRoot.
         let html = index_html();
         assert!(
-            html.contains(r#"id="aegis-app""#),
-            "missing #aegis-app sentinel"
+            html.contains(r#"id="root""#),
+            "index.html missing #root mount point"
         );
         assert!(
-            html.contains(r#"id="aegis-toasts""#),
-            "missing #aegis-toasts sentinel"
+            html.contains(r#"app.js"#),
+            "index.html must reference app.js"
         );
     }
 
     #[test]
-    fn index_html_has_landmark_chrome() {
-        // Top bar + sidebar + content + status bar per layout.md frame.
-        let html = index_html();
-        for (tag, role) in [
-            ("header", "banner"),
-            ("nav", "navigation"),
-            ("main", "main"),
-            ("footer", "contentinfo"),
-        ] {
-            assert!(
-                html.contains(&format!(r#"<{tag} "#))
-                    || html.contains(&format!(r#"<{tag}>"#)),
-                "missing <{tag}> landmark"
-            );
-            assert!(
-                html.contains(&format!(r#"role="{role}""#)),
-                "missing role={role} on {tag}"
-            );
-        }
-    }
-
-    #[test]
-    fn index_html_lists_all_sidebar_routes() {
-        // Every route in layout.md must have a sidebar link in the shell.
-        let html = index_html();
-        const ROUTES: &[&str] = &[
-            "/dashboard/overview",
-            "/dashboard/live",
-            "/dashboard/attacks",
-            "/dashboard/analytics",
-            "/dashboard/audit",
-            "/dashboard/rules",
-            "/dashboard/tiers",
-            "/dashboard/blacklist",
-            "/dashboard/whitelist",
-            "/dashboard/settings",
-            "/dashboard/tracking",
-        ];
-        for route in ROUTES {
-            assert!(
-                html.contains(&format!(r#"href="{route}""#)),
-                "missing sidebar link for {route}"
-            );
-        }
-    }
-
-    #[test]
-    fn index_html_inlines_svg_sprite() {
-        // Sprite is inlined so first paint has icons without a separate fetch.
+    fn index_html_loads_local_react_only() {
+        // Hard requirement: no unpkg / cdn dependency in production.
         let html = index_html();
         assert!(
-            html.contains("<svg") && html.contains("</svg>"),
-            "expected at least one inlined <svg> block"
+            !html.to_ascii_lowercase().contains("unpkg.com"),
+            "index.html must not load from unpkg.com (DD-T1)"
         );
         assert!(
-            html.contains(r#"<symbol id="icon-shield""#),
-            "expected logo shield symbol in inlined sprite"
-        );
-        assert!(
-            html.contains(r#"<symbol id="icon-overview""#),
-            "expected overview nav icon in inlined sprite"
-        );
-    }
-
-    #[test]
-    fn index_html_loads_app_module() {
-        // app.js is a real ES module, served from the assets route.
-        let html = index_html();
-        assert!(
-            html.contains(r#"type="module""#)
-                && html.contains(r#"src="/dashboard/assets/app.js""#),
-            "expected module script for /dashboard/assets/app.js"
-        );
-    }
-
-    #[test]
-    fn index_html_links_stylesheet() {
-        let html = index_html();
-        assert!(
-            html.contains(r#"href="/dashboard/assets/aegis.css""#),
-            "expected link to aegis.css"
-        );
-    }
-
-    #[test]
-    fn index_html_has_skip_link_for_a11y() {
-        // Skip-to-content link is required for keyboard a11y per
-        // docs/control-plane/enterprise/accessibility.md.
-        let html = index_html();
-        assert!(
-            html.contains(r##"href="#aegis-content""##),
-            "expected skip-to-content link"
-        );
-    }
-
-    #[test]
-    fn icons_svg_is_a_real_sprite() {
-        // The editable source mirrors the inlined sprite shape.
-        let bytes = lookup("icons.svg").expect("icons.svg must resolve").bytes;
-        let svg = std::str::from_utf8(bytes).expect("icons.svg must be utf-8");
-        assert!(svg.starts_with("<svg") || svg.contains("<svg"));
-        assert!(svg.contains(r#"id="icon-shield""#));
-        assert!(svg.contains(r#"id="icon-overview""#));
-    }
-
-    // ---------- D-M1-T1.4: chrome stylesheet + theme bootstrap ---------
-
-    fn aegis_css() -> &'static str {
-        let bytes = lookup("aegis.css").expect("aegis.css must resolve").bytes;
-        std::str::from_utf8(bytes).expect("aegis.css must be utf-8")
-    }
-
-    fn theme_js() -> &'static str {
-        let bytes = lookup("theme.js").expect("theme.js must resolve").bytes;
-        std::str::from_utf8(bytes).expect("theme.js must be utf-8")
-    }
-
-    #[test]
-    fn aegis_css_is_non_trivial() {
-        // The placeholder is ~70 bytes; the real chrome sheet is
-        // several thousand. Guard against the placeholder leaking
-        // into a release.
-        let css = aegis_css();
-        assert!(
-            css.len() > 1500,
-            "aegis.css too small to be the real chrome stylesheet ({} bytes)",
-            css.len()
-        );
-    }
-
-    #[test]
-    fn aegis_css_defines_core_design_tokens() {
-        // Every token from docs/control-plane/enterprise/theme.md that a
-        // page module is allowed to reference. If a page reaches for
-        // a token, the page test will reasonably expect this list.
-        let css = aegis_css();
-        for token in [
-            "--surface-0",
-            "--surface-1",
-            "--surface-2",
-            "--surface-active",
-            "--surface-hover",
-            "--border-subtle",
-            "--border-default",
-            "--text-primary",
-            "--text-secondary",
-            "--text-muted",
-            "--color-accent",
-            "--color-ok",
-            "--color-warn",
-            "--color-err",
-            "--font-sans",
-            "--font-mono",
-            "--space-4",
-            "--radius-md",
-            "--radius-pill",
-            "--shadow-md",
-            "--duration-base",
-            "--ease",
-        ] {
-            assert!(
-                css.contains(token),
-                "aegis.css missing design token {token}"
-            );
-        }
-    }
-
-    #[test]
-    fn aegis_css_styles_chrome_landmarks() {
-        let css = aegis_css();
-        for selector in [
-            ".aegis-app",
-            ".aegis-topbar",
-            ".aegis-sidebar",
-            ".aegis-content",
-            ".aegis-statusbar",
-            ".aegis-skip-link",
-            ".aegis-nav-active",
-            ".aegis-toasts",
-        ] {
-            assert!(
-                css.contains(selector),
-                "aegis.css missing chrome selector {selector}"
-            );
-        }
-    }
-
-    #[test]
-    fn aegis_css_has_visible_focus_ring() {
-        // a11y requirement from docs/control-plane/enterprise/accessibility.md
-        let css = aegis_css();
-        assert!(
-            css.contains(":focus-visible") || css.contains(":focus "),
-            "aegis.css must define a visible focus ring"
-        );
-    }
-
-    #[test]
-    fn aegis_css_respects_reduced_motion() {
-        // a11y requirement: prefers-reduced-motion collapses transitions.
-        let css = aegis_css();
-        assert!(
-            css.contains("prefers-reduced-motion"),
-            "aegis.css must respect prefers-reduced-motion"
-        );
-    }
-
-    #[test]
-    fn aegis_css_has_light_theme_override() {
-        // theme.md: light theme overrides via [data-theme="light"].
-        let css = aegis_css();
-        assert!(
-            css.contains(r#"[data-theme="light"]"#),
-            "aegis.css must override tokens under [data-theme=\"light\"]"
-        );
-    }
-
-    #[test]
-    fn theme_js_is_not_an_es_module() {
-        // theme.js is loaded synchronously in <head> so the data-theme
-        // attribute is set before first paint. ES `import`/`export`
-        // would force `type=module` (deferred) and reintroduce
-        // flash-of-wrong-theme.
-        let js = theme_js();
-        assert!(
-            !js.contains("export ") && !js.contains("export{"),
-            "theme.js must not use `export` — needs to load as a classic script"
-        );
-        assert!(
-            !js.contains("import "),
-            "theme.js must not use `import` — needs to load as a classic script"
-        );
-    }
-
-    #[test]
-    fn theme_js_reads_the_documented_localstorage_key() {
-        // theme.md: "persisted in localStorage under aegis.dashboard.theme"
-        let js = theme_js();
-        assert!(
-            js.contains("aegis.dashboard.theme"),
-            "theme.js must use the documented localStorage key"
-        );
-    }
-
-    #[test]
-    fn theme_js_sets_data_theme_attribute() {
-        let js = theme_js();
-        assert!(
-            js.contains("data-theme") || js.contains(r#""data-theme""#),
-            "theme.js must set the data-theme attribute"
-        );
-        assert!(
-            js.contains("documentElement"),
-            "theme.js must apply data-theme to documentElement (avoid FOUC)"
-        );
-    }
-
-    #[test]
-    fn theme_js_exports_chart_palette() {
-        // Pages later read window.AegisTheme.chart for the palette
-        // from docs/control-plane/enterprise/theme.md §charts.
-        let js = theme_js();
-        assert!(
-            js.contains("AegisTheme") && js.contains("chart"),
-            "theme.js must publish window.AegisTheme.chart"
-        );
-    }
-
-    #[test]
-    fn app_js_handles_theme_toggle() {
-        // Wired to the data-action="toggle-theme" button in index.html.
-        let js = lookup("app.js").expect("app.js must resolve").bytes;
-        let s = std::str::from_utf8(js).expect("utf-8");
-        assert!(
-            s.contains("toggle-theme"),
-            "app.js must intercept clicks on data-action=toggle-theme"
-        );
-        assert!(
-            s.contains("AegisTheme"),
-            "app.js must call window.AegisTheme to flip the theme"
-        );
-    }
-
-    // ---------- D-M1-T1.7: dev-only hot reload --------------------------
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn dev_assets_directory_exists() {
-        // The hot-reload path joins env!("CARGO_MANIFEST_DIR") with
-        // assets/dashboard. If the layout drifts, every dev lookup
-        // silently falls back to the embedded copy and devs lose
-        // hot-reload without noticing — fail loudly instead.
-        let assets_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("assets")
-            .join("dashboard");
-        assert!(
-            assets_root.is_dir(),
-            "dev hot-reload expects {assets_root:?} to be a directory"
-        );
-        // Spot-check one well-known asset is on disk.
-        assert!(assets_root.join("aegis.css").is_file());
-        assert!(assets_root.join("pages/overview.js").is_file());
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn dev_lookup_returns_disk_bytes_for_known_asset() {
-        // Indirectly verifies the cfg(debug_assertions) branch took
-        // effect: the bytes returned by lookup() match `std::fs::read`
-        // of the same path on disk, byte-for-byte.
-        let on_disk = std::fs::read(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/dashboard/aegis.css"),
-        )
-        .expect("aegis.css must be on disk");
-        let asset = lookup("aegis.css").expect("must resolve");
-        assert_eq!(asset.bytes, on_disk.as_slice());
-    }
-
-    // ---------- D-M1-T1.8: i18n loader -----------------------------------
-
-    fn en_json_value() -> serde_json::Value {
-        let bytes = lookup("i18n/en.json")
-            .expect("en.json must resolve")
-            .bytes;
-        serde_json::from_slice(bytes).expect("en.json must be valid JSON")
-    }
-
-    /// Crude attribute-scanner — walks `data-i18n="…"` occurrences and
-    /// returns the unique keys. Good enough for HTML the WAF authors,
-    /// avoids pulling in a parser dep just for tests.
-    fn extract_data_i18n_keys(haystack: &str) -> Vec<String> {
-        let mut keys = Vec::new();
-        let mut rest = haystack;
-        while let Some(idx) = rest.find("data-i18n=\"") {
-            let after = &rest[idx + "data-i18n=\"".len()..];
-            if let Some(end) = after.find('"') {
-                keys.push(after[..end].to_string());
-                rest = &after[end..];
-            } else {
-                break;
-            }
-        }
-        keys.sort();
-        keys.dedup();
-        keys
-    }
-
-    /// `app.js` writes data-i18n via `dataset.i18n = "..."`.
-    /// Pattern: `dataset.i18n = "key"` or `dataset.i18n = 'key'`.
-    fn extract_dataset_i18n_keys(js: &str) -> Vec<String> {
-        let mut keys = Vec::new();
-        let needle = "dataset.i18n";
-        let mut rest = js;
-        while let Some(idx) = rest.find(needle) {
-            let after = &rest[idx + needle.len()..];
-            // Skip whitespace + '=' + whitespace.
-            let after = after.trim_start();
-            let after = after.strip_prefix('=').map(str::trim_start).unwrap_or(after);
-            // Now we expect a string literal.
-            if let Some(stripped) = after.strip_prefix('"').or_else(|| after.strip_prefix('\'')) {
-                let quote = if after.starts_with('"') { '"' } else { '\'' };
-                if let Some(end) = stripped.find(quote) {
-                    keys.push(stripped[..end].to_string());
-                    rest = &stripped[end..];
-                    continue;
-                }
-            }
-            rest = after;
-        }
-        keys.sort();
-        keys.dedup();
-        keys
-    }
-
-    #[test]
-    fn en_json_parses_as_object() {
-        let v = en_json_value();
-        assert!(v.is_object(), "en.json must be a JSON object");
-    }
-
-    #[test]
-    fn every_index_html_data_i18n_key_exists_in_en_json() {
-        let html = index_html();
-        let json = en_json_value();
-        let keys = extract_data_i18n_keys(html);
-        assert!(!keys.is_empty(), "index.html should have data-i18n attributes");
-        for key in &keys {
-            assert!(
-                json.get(key).is_some(),
-                "en.json missing key {key:?} (referenced from index.html)"
-            );
-        }
-    }
-
-    #[test]
-    fn every_app_js_dataset_i18n_key_exists_in_en_json() {
-        let js = lookup("app.js").expect("app.js must resolve").bytes;
-        let s = std::str::from_utf8(js).expect("utf-8");
-        let json = en_json_value();
-        for key in extract_dataset_i18n_keys(s) {
-            assert!(
-                json.get(&key).is_some(),
-                "en.json missing key {key:?} (referenced from app.js)"
-            );
-        }
-    }
-
-    #[test]
-    fn app_js_loads_i18n_synchronously_before_render() {
-        // Loader contract: fetch en.json + await before the first
-        // route mount, so first paint isn't a flash of un-translated
-        // text.
-        let bytes = lookup("app.js").expect("app.js must resolve").bytes;
-        let js = std::str::from_utf8(bytes).expect("utf-8");
-        assert!(
-            js.contains("/dashboard/assets/i18n/en.json"),
-            "app.js must fetch /dashboard/assets/i18n/en.json"
-        );
-        assert!(
-            js.contains("await ") || js.contains("async function"),
-            "app.js must await the i18n payload before mounting"
-        );
-    }
-
-    #[test]
-    fn app_js_exposes_t_function() {
-        let bytes = lookup("app.js").expect("app.js must resolve").bytes;
-        let js = std::str::from_utf8(bytes).expect("utf-8");
-        // Either a top-level `function t(` or an exported `export function t(`.
-        let has_t = js.contains("function t(")
-            || js.contains("export function t(")
-            || js.contains("export const t");
-        assert!(has_t, "app.js must define a translation helper t()");
-    }
-
-    #[test]
-    fn app_js_walks_data_i18n_to_apply_translations() {
-        let bytes = lookup("app.js").expect("app.js must resolve").bytes;
-        let js = std::str::from_utf8(bytes).expect("utf-8");
-        assert!(
-            js.contains("[data-i18n]") || js.contains(r#"data-i18n""#),
-            "app.js must querySelectorAll('[data-i18n]')"
-        );
-        assert!(
-            js.contains("textContent"),
-            "app.js must apply translations via textContent"
-        );
-    }
-
-    #[test]
-    fn en_json_has_no_orphan_keys() {
-        // An i18n bundle that grows past what the UI references is a
-        // smell — refactors leave dead strings behind. This is a
-        // hard guard during M1; loosen if a future feature ships
-        // strings ahead of the UI that uses them.
-        let json = en_json_value();
-        let object = json.as_object().expect("object");
-        let html_keys: std::collections::HashSet<_> =
-            extract_data_i18n_keys(index_html()).into_iter().collect();
-        let js_bytes = lookup("app.js").expect("app.js").bytes;
-        let js = std::str::from_utf8(js_bytes).unwrap();
-        let js_keys: std::collections::HashSet<_> =
-            extract_dataset_i18n_keys(js).into_iter().collect();
-        for key in object.keys() {
-            if key.starts_with('_') {
-                // Keys prefixed with `_` are metadata (e.g. _meta).
-                continue;
-            }
-            assert!(
-                html_keys.contains(key) || js_keys.contains(key),
-                "en.json key {key:?} is not referenced from any UI surface"
-            );
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn dev_lookup_rejects_traversal_attempts() {
-        // The release-mode inventory already returns None for unknown
-        // keys; verify the dev branch doesn't unintentionally widen
-        // that surface by walking the file system.
-        assert!(lookup("../Cargo.toml").is_none());
-        assert!(lookup("pages/../../Cargo.toml").is_none());
-    }
-
-    // ---------- D-M2-T2.9: real components ------------------------------
-
-    fn component_js(name: &str) -> &'static str {
-        let path = format!("components/{name}.js");
-        let bytes = lookup(&path).unwrap_or_else(|| panic!("{path} must resolve")).bytes;
-        std::str::from_utf8(bytes).expect("utf-8")
-    }
-
-    #[test]
-    fn line_chart_is_real_svg_implementation() {
-        let js = component_js("line-chart");
-        assert!(
-            js.len() > 2000,
-            "line-chart.js too small to be the real implementation ({} bytes)",
-            js.len()
-        );
-        assert!(
-            js.contains("createElementNS") && js.contains("svg"),
-            "line-chart should render via SVG"
-        );
-        assert!(
-            js.contains("export default") && js.contains("mount"),
-            "line-chart must export default with mount()"
-        );
-        assert!(js.contains("destroy"), "line-chart must export destroy()");
-    }
-
-    #[test]
-    fn donut_is_real_svg_implementation() {
-        let js = component_js("donut");
-        assert!(
-            js.len() > 2000,
-            "donut.js too small to be real ({} bytes)",
-            js.len()
-        );
-        assert!(
-            js.contains("createElementNS") && js.contains("path"),
-            "donut should draw arc paths"
-        );
-        assert!(
-            js.contains("aegis:slice-click"),
-            "donut should dispatch aegis:slice-click events"
-        );
-    }
-
-    #[test]
-    fn table_is_real_implementation() {
-        let js = component_js("table");
-        assert!(js.len() > 2000, "table.js too small ({} bytes)", js.len());
-        assert!(
-            js.contains("aegis:row-click") && js.contains("aegis:sort"),
-            "table should dispatch aegis:row-click and aegis:sort events"
-        );
-        assert!(
-            js.contains("aria-sort"),
-            "table headers should expose aria-sort"
-        );
-    }
-
-    #[test]
-    fn stat_card_is_real_implementation() {
-        let js = component_js("stat-card");
-        assert!(js.len() > 800, "stat-card.js too small ({} bytes)", js.len());
-        assert!(
-            js.contains("aegis-stat__value"),
-            "stat-card should render the documented value class"
-        );
-        assert!(js.contains("update"), "stat-card should expose update()");
-    }
-
-    #[test]
-    fn sparkline_is_real_implementation() {
-        let js = component_js("sparkline");
-        assert!(js.len() > 600, "sparkline.js too small ({} bytes)", js.len());
-        assert!(js.contains("svg"), "sparkline should be SVG-based");
-        assert!(
-            js.contains("aegis-sparkline"),
-            "sparkline should set the documented class"
-        );
-    }
-
-    // ---------- D-M5 tracking page --------------------------------------
-
-    #[test]
-    fn tracking_page_polls_snapshot() {
-        let js = component_js_path_str("pages/tracking.js");
-        assert!(js.len() > 1500, "tracking.js too small ({} bytes)", js.len());
-        assert!(js.contains("/api/tracking/snapshot"));
-        for slot in [
-            "slo-rows",
-            "alerts-summary",
-            "upstream-summary",
-            "cluster-summary",
-            "certs-summary",
-            "gitops-summary",
-        ] {
-            assert!(js.contains(slot), "tracking.js missing slot {slot}");
-        }
-        assert!(js.contains("renew-cert"), "tracking.js must have a cert renew control");
-    }
-
-    // ---------- D-M4 pages ----------------------------------------------
-
-    #[test]
-    fn dm4_pages_call_their_endpoints() {
-        for (page, endpoint) in [
-            ("pages/rules.js",      "/api/rules"),
-            ("pages/tiers.js",      "/api/tiers"),
-            ("pages/blacklist.js",  "/api/blacklist"),
-            ("pages/whitelist.js",  "/api/whitelist"),
-            ("pages/settings.js",   "/api/admin/sessions"),
-        ] {
-            let js = component_js_path_str(page);
-            assert!(
-                js.len() > 600,
-                "{page} too small to be real ({} bytes)",
-                js.len()
-            );
-            assert!(js.contains(endpoint), "{page} must call {endpoint}");
-        }
-    }
-
-    // ---------- D-M3-T3.10: analytics page ------------------------------
-
-    #[test]
-    fn analytics_page_calls_analytics_endpoint() {
-        let js = component_js_path_str("pages/analytics.js");
-        assert!(
-            js.len() > 2000,
-            "analytics.js too small ({} bytes)",
-            js.len()
-        );
-        assert!(js.contains("/api/analytics/query"));
-        // Allow-list keys the page actually polls.
-        for key in [
-            "requests_rate",
-            "block_ratio",
-            "latency_p99",
-            "errors_by_route",
-            "slo_budget_remaining",
-            "cert_days_to_expiry",
-        ] {
-            assert!(
-                js.contains(key),
-                "analytics.js must include allow-list key {key}"
-            );
-        }
-        // Time-range selector + 503 fallback handling are documented
-        // requirements.
-        assert!(js.contains("range"), "analytics.js must offer a range selector");
-        assert!(
-            js.contains("no_history_backend") || js.contains("backend-banner"),
-            "analytics.js must surface the no_history_backend case"
-        );
-    }
-
-    // ---------- D-M3-T3.7: audit page -----------------------------------
-
-    #[test]
-    fn audit_page_has_pills_and_endpoints() {
-        let js = component_js_path_str("pages/audit.js");
-        assert!(js.len() > 2000, "audit.js too small ({} bytes)", js.len());
-        for path in [
-            "/api/audit/since",
-            "/api/audit/witness",
-            "/api/filters",
-        ] {
-            assert!(js.contains(path), "audit.js must poll {path}");
-        }
-        for slot in ["witness-pill", "chain-pill"] {
-            assert!(
-                js.contains(slot),
-                "audit.js must render {slot} status pill"
-            );
-        }
-        assert!(
-            js.contains("application/x-ndjson") || js.contains("ndjson"),
-            "audit.js must export NDJSON"
-        );
-    }
-
-    // ---------- D-M3-T3.3: attacks page ---------------------------------
-
-    #[test]
-    fn attacks_page_polls_four_endpoints() {
-        let js = component_js_path_str("pages/attacks.js");
-        assert!(
-            js.len() > 2000,
-            "attacks.js too small to be real ({} bytes)",
-            js.len()
-        );
-        for path in [
-            "/api/attacks/by-detector",
-            "/api/attacks/top",
-            "/api/threat-intel/hits",
-            "/api/bots/mix",
-        ] {
-            assert!(
-                js.contains(path),
-                "attacks.js must poll {path}"
-            );
-        }
-        for component in [
-            "/dashboard/assets/components/donut.js",
-            "/dashboard/assets/components/table.js",
-        ] {
-            assert!(
-                js.contains(component),
-                "attacks.js must lazy-import {component}"
-            );
-        }
-    }
-
-    // ---------- D-M3-T3.1: drawer + live page ---------------------------
-
-    #[test]
-    fn drawer_is_real_implementation() {
-        let js = component_js("drawer");
-        assert!(
-            js.len() > 1500,
-            "drawer.js too small to be real ({} bytes)",
-            js.len()
-        );
-        assert!(
-            js.contains(r#"role", "dialog""#) || js.contains(r#"setAttribute("role", "dialog")"#),
-            "drawer should mark itself with role=dialog"
-        );
-        assert!(
-            js.contains("aria-modal"),
-            "drawer should be aria-modal=true"
-        );
-        assert!(
-            js.contains("Escape"),
-            "drawer should close on Escape"
-        );
-    }
-
-    #[test]
-    fn live_page_uses_eventsource_with_filter() {
-        let js = component_js_path_str("pages/live.js");
-        assert!(
-            js.len() > 2000,
-            "live.js too small to be real ({} bytes)",
-            js.len()
-        );
-        assert!(js.contains("EventSource"), "live page must consume SSE");
-        assert!(
-            js.contains("/dashboard/sse"),
-            "live page must connect to /dashboard/sse"
-        );
-        assert!(
-            js.contains("class=") && js.contains("action=") && js.contains("route="),
-            "live page must compose class/action/route filter query"
-        );
-        assert!(
-            js.contains("requestAnimationFrame"),
-            "live page must batch row appends to RAF"
-        );
-        assert!(
-            js.contains("/dashboard/assets/components/drawer.js"),
-            "live page must lazy-import the drawer for row detail"
-        );
-    }
-
-    #[test]
-    fn overview_page_uses_chart_components() {
-        // The Overview page lazy-imports the line-chart, donut, and
-        // table components instead of rendering plain HTML stubs.
-        let js = component_js_path_str("pages/overview.js");
-        assert!(js.contains("/dashboard/assets/components/line-chart.js"));
-        assert!(js.contains("/dashboard/assets/components/donut.js"));
-        assert!(js.contains("/dashboard/assets/components/table.js"));
-    }
-
-    fn component_js_path_str(path: &str) -> &'static str {
-        let bytes = lookup(path).unwrap_or_else(|| panic!("{path} must resolve")).bytes;
-        std::str::from_utf8(bytes).expect("utf-8")
-    }
-
-    // ---------- D-M2-T2.8: SSE status pill ------------------------------
-
-    #[test]
-    fn app_js_opens_eventsource_for_dashboard_sse() {
-        let bytes = lookup("app.js").expect("app.js must resolve").bytes;
-        let js = std::str::from_utf8(bytes).expect("utf-8");
-        assert!(
-            js.contains("EventSource"),
-            "app.js must use EventSource for the status pill"
-        );
-        assert!(
-            js.contains("/dashboard/sse"),
-            "app.js must connect to /dashboard/sse"
-        );
-    }
-
-    #[test]
-    fn app_js_updates_connection_state_data_attribute() {
-        // The status-bar dot uses data-state to colour itself
-        // (`connected`/`disconnected`/`degraded` per aegis.css).
-        // app.js must reach in and update that attribute.
-        let bytes = lookup("app.js").expect("app.js must resolve").bytes;
-        let js = std::str::from_utf8(bytes).expect("utf-8");
-        assert!(
-            js.contains("dataset.state") || js.contains(r#""data-state""#),
-            "app.js must update the connection-dot data-state"
-        );
-        // Three states must be writable.
-        for state in ["connected", "reconnecting", "disconnected"] {
-            assert!(
-                js.contains(&format!("\"{state}\"")) || js.contains(&format!("'{state}'")),
-                "app.js must drive the {state} state"
-            );
-        }
-    }
-
-    #[test]
-    fn en_json_has_three_connection_state_keys() {
-        let v = en_json_value();
-        for key in [
-            "status.connected",
-            "status.reconnecting",
-            "status.disconnected",
-        ] {
-            assert!(
-                v.get(key).and_then(|x| x.as_str()).is_some(),
-                "en.json missing {key}"
-            );
-        }
-    }
-
-    #[test]
-    fn index_html_loads_theme_js_before_stylesheet() {
-        // Order matters: theme.js must run before the stylesheet
-        // resolves variables, otherwise the dark-by-default render
-        // flashes through before the user's preference applies.
-        let html = index_html();
-        let theme_pos = html
-            .find(r#"src="/dashboard/assets/theme.js""#)
-            .expect("theme.js must be referenced");
-        let css_pos = html
-            .find(r#"href="/dashboard/assets/aegis.css""#)
-            .expect("aegis.css link must be present");
-        assert!(
-            theme_pos < css_pos,
-            "theme.js must be loaded before aegis.css to avoid FOUC \
-             (theme.js at {theme_pos}, css at {css_pos})"
+            !html.to_ascii_lowercase().contains("cdn.jsdelivr.net"),
+            "index.html must not load from jsdelivr CDN"
         );
     }
 }

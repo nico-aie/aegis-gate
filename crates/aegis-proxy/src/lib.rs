@@ -812,6 +812,27 @@ async fn handle_admin_request(
         return handle_logging_put(req, services).await;
     }
 
+    // DD-T6 — rule CRUD. Audit-mutated; CSRF-gated; writes the
+    // before / after state into the audit chain.
+    if method == hyper::Method::POST && path == "/api/rules" {
+        return handle_rules_post(req, services).await;
+    }
+    if method == hyper::Method::PUT && path.starts_with("/api/rules/") {
+        let suffix = &path["/api/rules/".len()..];
+        if let Some(rule_id) = suffix.strip_suffix("/toggle") {
+            return handle_rules_toggle(req, rule_id, services).await;
+        }
+        if !suffix.is_empty() && !suffix.contains('/') {
+            return handle_rules_put(req, suffix, services).await;
+        }
+    }
+    if method == hyper::Method::DELETE && path.starts_with("/api/rules/") {
+        let id = &path["/api/rules/".len()..];
+        if !id.is_empty() && !id.contains('/') {
+            return handle_rules_delete(req, id, services).await;
+        }
+    }
+
     admin_router(req, cfg, readiness, startup, metrics, services)
 }
 
@@ -992,6 +1013,348 @@ async fn handle_loadmode_put(
             200,
             aegis_control::api::load_mode::render_get(&services.load_gauge),
             "private, no-store",
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+// ---------- DD-T6 — rule CRUD handlers --------------------------------
+
+#[derive(serde::Deserialize)]
+struct RulePostBody {
+    id: String,
+    body: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RulePutBody {
+    body: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Helper: read the standard mutation preamble (CSRF cookie +
+/// header, actor, request_id) into one struct so the four CRUD
+/// handlers don't repeat boilerplate.
+struct MutationPreamble {
+    csrf_cookie: Option<String>,
+    csrf_header: Option<String>,
+    actor: String,
+    request_id: String,
+}
+
+fn mutation_preamble(req: &hyper::Request<hyper::body::Incoming>, prefix: &str) -> MutationPreamble {
+    let csrf_cookie = req
+        .headers()
+        .get_all(hyper::header::COOKIE)
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .find_map(|raw| extract_named_cookie(raw, "aegis_csrf"))
+        .map(|s| s.to_string());
+    let csrf_header = req
+        .headers()
+        .get("x-csrf-token")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+    let actor = req
+        .headers()
+        .get("x-actor")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("admin")
+        .to_string();
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            blake3::hash(
+                format!(
+                    "{prefix}:{}",
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                )
+                .as_bytes(),
+            )
+            .to_hex()
+            .to_string()
+        });
+    MutationPreamble { csrf_cookie, csrf_header, actor, request_id }
+}
+
+async fn handle_rules_post(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "rules-post");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+        ),
+    };
+    let parsed: RulePostBody = match serde_json::from_slice(&body_bytes) {
+        Ok(p) => p,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+        ),
+    };
+
+    if services.rules.get(&parsed.id).is_some() {
+        return json_response(
+            409,
+            &serde_json::json!({"error": "rule_exists", "id": parsed.id}),
+        );
+    }
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/rules",
+        action: "rule_create",
+        reason: "operator creates rule",
+    };
+    let rules_store = services.rules.clone();
+    let rule_id = parsed.id.clone();
+    let rule_body = parsed.body.clone();
+    let rule_enabled = parsed.enabled;
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        serde_json::Value::Null,
+        serde_json::json!({"id": parsed.id, "body": parsed.body, "enabled": parsed.enabled}),
+        || {
+            let v = rules_store.upsert(&rule_id, &rule_body, rule_enabled);
+            if v.ok {
+                Ok(())
+            } else {
+                Err(aegis_control::api::mutation::MutationError::Validation(
+                    v.errors
+                        .first()
+                        .map(|m| format!("line {}: {}", m.line, m.message))
+                        .unwrap_or_else(|| "rule body invalid".into()),
+                ))
+            }
+        },
+    );
+
+    match outcome {
+        Ok(_) => json_response(
+            201,
+            &serde_json::json!({
+                "ok": true,
+                "id": parsed.id,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_rules_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    rule_id: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "rules-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+        ),
+    };
+    let parsed: RulePutBody = match serde_json::from_slice(&body_bytes) {
+        Ok(p) => p,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+        ),
+    };
+
+    let before = services
+        .rules
+        .get(rule_id)
+        .map(|r| serde_json::json!({"id": r.id, "body": r.body, "enabled": r.enabled}))
+        .unwrap_or(serde_json::Value::Null);
+    if before.is_null() {
+        return json_response(
+            404,
+            &serde_json::json!({"error": "rule_not_found", "id": rule_id}),
+        );
+    }
+
+    let resource = format!("/api/rules/{rule_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "rule_update",
+        reason: "operator updates rule",
+    };
+    let rules_store = services.rules.clone();
+    let rule_id_owned = rule_id.to_string();
+    let rule_body = parsed.body.clone();
+    let rule_enabled = parsed.enabled;
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        serde_json::json!({"id": rule_id, "body": parsed.body, "enabled": parsed.enabled}),
+        || {
+            let v = rules_store.upsert(&rule_id_owned, &rule_body, rule_enabled);
+            if v.ok {
+                Ok(())
+            } else {
+                Err(aegis_control::api::mutation::MutationError::Validation(
+                    v.errors
+                        .first()
+                        .map(|m| format!("line {}: {}", m.line, m.message))
+                        .unwrap_or_else(|| "rule body invalid".into()),
+                ))
+            }
+        },
+    );
+
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "id": rule_id,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_rules_delete(
+    req: hyper::Request<hyper::body::Incoming>,
+    rule_id: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "rules-delete");
+
+    let before = services
+        .rules
+        .get(rule_id)
+        .map(|r| serde_json::json!({"id": r.id, "body": r.body, "enabled": r.enabled}))
+        .unwrap_or(serde_json::Value::Null);
+    if before.is_null() {
+        return json_response(
+            404,
+            &serde_json::json!({"error": "rule_not_found", "id": rule_id}),
+        );
+    }
+
+    let resource = format!("/api/rules/{rule_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "DELETE",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "rule_delete",
+        reason: "operator deletes rule",
+    };
+    let rules_store = services.rules.clone();
+    let rule_id_owned = rule_id.to_string();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        serde_json::Value::Null,
+        || {
+            if rules_store.delete(&rule_id_owned) {
+                Ok(())
+            } else {
+                Err(aegis_control::api::mutation::MutationError::Internal(
+                    "rule disappeared concurrently".into(),
+                ))
+            }
+        },
+    );
+
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "id": rule_id,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_rules_toggle(
+    req: hyper::Request<hyper::body::Incoming>,
+    rule_id: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "rules-toggle");
+
+    let current = match services.rules.get(rule_id) {
+        Some(r) => r,
+        None => return json_response(
+            404,
+            &serde_json::json!({"error": "rule_not_found", "id": rule_id}),
+        ),
+    };
+
+    let next_enabled = !current.enabled;
+    let resource = format!("/api/rules/{rule_id}/toggle");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "rule_toggle",
+        reason: "operator toggles rule",
+    };
+    let rules_store = services.rules.clone();
+    let rule_id_owned = rule_id.to_string();
+    let rule_body = current.body.clone();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        serde_json::json!({"id": current.id, "enabled": current.enabled}),
+        serde_json::json!({"id": current.id, "enabled": next_enabled}),
+        || {
+            let v = rules_store.upsert(&rule_id_owned, &rule_body, next_enabled);
+            if v.ok {
+                Ok(())
+            } else {
+                Err(aegis_control::api::mutation::MutationError::Internal(
+                    "toggle revalidation failed".into(),
+                ))
+            }
+        },
+    );
+
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "id": rule_id,
+                "enabled": next_enabled,
+                "request_id": pre.request_id,
+            }),
         ),
         Err(e) => mutation_error_response(e),
     }
@@ -1629,6 +1992,28 @@ fn admin_router(
                 "routes": cfg.routes.len(),
                 "upstreams": cfg.upstreams.len(),
             }))
+        }
+
+        // DD-T7 — config-version visibility for hot-reload UI.
+        // Returns the current rules-store revision so the dashboard
+        // can poll after a mutation and surface "Applied in X.Xs".
+        // The version increments on every successful audit-mutation
+        // (rule CRUD, detector toggle, loadmode pin, etc.) — every
+        // surface that flows through `services.mutate.apply()` is
+        // counted automatically, so adding a new mutating endpoint
+        // doesn't need a parallel version bump.
+        "/api/config/version" => {
+            let v = services.mutate.chain_len();
+            let body = serde_json::json!({
+                "version": v,
+                "applied_at_ms": chrono::Utc::now().timestamp_millis(),
+                "applied_on_node": services
+                    .leader_view
+                    .as_ref()
+                    .map(|lv| lv.our_node.clone())
+                    .unwrap_or_default(),
+            });
+            json_body_response(200, body.to_string(), "private, no-store")
         }
 
         // Dashboard data endpoints (D-M2). All read-only, JSON,
@@ -3332,13 +3717,12 @@ state:
 
     #[tokio::test]
     async fn dashboard_shell_response_default_serves_spa_shell() {
-        // legacy flag off (default) -> new SPA shell, identified by
-        // the #aegis-app sentinel.
+        // DD-T1: the redesign mounts at #root via React 18.
         let resp = dashboard_shell_response(false);
         assert_eq!(resp.status(), 200);
         let body = body_string(resp).await;
         assert!(
-            body.contains(r#"id="aegis-app""#),
+            body.contains(r#"id="root""#),
             "default shell must be the new SPA"
         );
     }
@@ -3351,7 +3735,7 @@ state:
         assert_eq!(resp.status(), 200);
         let body = body_string(resp).await;
         assert!(
-            body.contains(r#"id="aegis-app""#),
+            body.contains(r#"id="root""#),
             "legacy flag must now return the SPA shell"
         );
     }

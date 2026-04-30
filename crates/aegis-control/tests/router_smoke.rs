@@ -18,10 +18,10 @@ fn deep_link_returns_spa_shell() {
 
 #[test]
 fn shell_bytes_match_index_html() {
+    // DD-T1: the new design mounts at #root via React 18.
     let shell = spa_shell();
     let html = std::str::from_utf8(shell.bytes).expect("utf-8");
-    assert!(html.contains(r#"id="aegis-app""#));
-    assert!(html.contains(r#"id="aegis-toasts""#));
+    assert!(html.contains(r#"id="root""#));
 }
 
 #[test]

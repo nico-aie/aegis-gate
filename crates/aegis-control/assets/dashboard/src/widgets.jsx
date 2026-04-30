@@ -1,0 +1,380 @@
+/* global React */
+const { useState: useStateW, useEffect: useEffectW, useRef: useRefW, useMemo: useMemoW } = React;
+
+// ============= Icons (Lucide-style inline SVG) =============
+const I = {
+  Shield: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+  Activity: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
+  Siren: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M7 18v-6a5 5 0 0 1 10 0v6"/><path d="M5 21h14"/><path d="M21 12h1"/><path d="M2 12h1"/><path d="m4.93 4.93.7.7"/><path d="m18.36 4.93-.7.7"/></svg>,
+  BarChart: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>,
+  Book: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>,
+  Layers: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>,
+  Ban: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>,
+  Check: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><polyline points="20 6 9 17 4 12"/></svg>,
+  Server: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>,
+  Settings: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+  Gauge: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>,
+  Globe: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
+  Search: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+  X: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+  Plus: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+  Pause: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>,
+  Play: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><polygon points="6 4 20 12 6 20 6 4"/></svg>,
+  Download: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
+  Refresh: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>,
+  Edit: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+  Trash: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>,
+  Bell: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+  Sparkles: (p) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>,
+  External: (p) => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>,
+  ArrowUp: (p) => <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" {...p}><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>,
+  ArrowDown: (p) => <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" {...p}><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>,
+  Cluster: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="12" cy="12" r="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="18" x2="16" y2="18"/><line x1="6" y1="8" x2="6" y2="16"/><line x1="18" y1="8" x2="18" y2="16"/></svg>,
+};
+
+// ============= Sparkline =============
+function Sparkline({ data, w = 80, h = 22, color = 'var(--brand-yellow)', fill = false, strokeWidth = 1.5 }) {
+  if (!data || !data.length) return null;
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  const step = w / Math.max(1, data.length - 1);
+  const points = data.map((v, i) => {
+    const x = i * step;
+    const y = h - ((v - min) / range) * (h - 2) - 1;
+    return [x, y];
+  });
+  const d = points.map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`)).join(' ');
+  const dFill = `${d} L${w},${h} L0,${h} Z`;
+  return (
+    <svg width={w} height={h} className="spark">
+      {fill && <path d={dFill} fill={color} opacity="0.18" />}
+      <path d={d} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// ============= Stat tile =============
+function StatTile({ title, value, sub, icon, tone, sparkData, sparkColor }) {
+  return (
+    <div className={`stat ${tone || ''}`}>
+      <div className="stat-head">
+        <span>{title}</span>
+        <span className="stat-icon">{icon}</span>
+      </div>
+      <div className="stat-value">{value}</div>
+      <div className="stat-sub">{sub}</div>
+      {sparkData && (
+        <div className="stat-spark">
+          <Sparkline data={sparkData} color={sparkColor || 'var(--brand-yellow)'} fill w={120} h={36} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============= Line/Area chart (traffic vs blocked) =============
+function TrafficChart({ series, w = 800, h = 220 }) {
+  if (!series || series.length < 2) return null;
+  const padL = 36, padR = 12, padT = 12, padB = 22;
+  const innerW = w - padL - padR;
+  const innerH = h - padT - padB;
+  const max = Math.max(...series.map(s => s.total), 10);
+  const xs = i => padL + (i / (series.length - 1)) * innerW;
+  const ys = v => padT + innerH - (v / max) * innerH;
+
+  const totalPath = series.map((s, i) => `${i === 0 ? 'M' : 'L'}${xs(i)},${ys(s.total)}`).join(' ');
+  const blockPath = series.map((s, i) => `${i === 0 ? 'M' : 'L'}${xs(i)},${ys(s.blocked)}`).join(' ');
+  const totalFill = `${totalPath} L${xs(series.length - 1)},${ys(0)} L${xs(0)},${ys(0)} Z`;
+
+  const yTicks = [0, max * 0.5, max].map(v => Math.round(v));
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none">
+      {yTicks.map((t, i) => (
+        <g key={i}>
+          <line x1={padL} x2={w - padR} y1={ys(t)} y2={ys(t)} className="gridline" strokeDasharray="2 4" />
+          <text x={padL - 6} y={ys(t) + 3} textAnchor="end" className="axis-label">{t}</text>
+        </g>
+      ))}
+      <path d={totalFill} fill="#3B82F6" opacity="0.12" />
+      <path d={totalPath} fill="none" stroke="#3B82F6" strokeWidth="1.6" />
+      <path d={blockPath} fill="none" stroke="#F6465D" strokeWidth="1.6" />
+      {series.length > 0 && (
+        <circle cx={xs(series.length - 1)} cy={ys(series[series.length - 1].total)} r="3" fill="#3B82F6" stroke="#0B0E11" strokeWidth="1.5">
+          <animate attributeName="r" values="3;5;3" dur="1.6s" repeatCount="indefinite" />
+        </circle>
+      )}
+      {/* legend */}
+      <g transform={`translate(${padL},${padT - 2})`}>
+        <circle cx="4" cy="6" r="3" fill="#3B82F6" />
+        <text x="12" y="9" className="axis-label" fill="#B7BDC6">Total req/s</text>
+        <circle cx="80" cy="6" r="3" fill="#F6465D" />
+        <text x="88" y="9" className="axis-label" fill="#B7BDC6">Blocked</text>
+      </g>
+    </svg>
+  );
+}
+
+// ============= Donut =============
+function Donut({ slices, size = 180 }) {
+  const total = slices.reduce((s, x) => s + x.value, 0) || 1;
+  const r = size / 2 - 8;
+  const inner = r * 0.6;
+  const cx = size / 2, cy = size / 2;
+  let acc = 0;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {slices.map((s, i) => {
+        const a0 = (acc / total) * Math.PI * 2 - Math.PI / 2;
+        acc += s.value;
+        const a1 = (acc / total) * Math.PI * 2 - Math.PI / 2;
+        const large = a1 - a0 > Math.PI ? 1 : 0;
+        const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+        const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+        const xi0 = cx + inner * Math.cos(a0), yi0 = cy + inner * Math.sin(a0);
+        const xi1 = cx + inner * Math.cos(a1), yi1 = cy + inner * Math.sin(a1);
+        const d = `M${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1} L${xi1},${yi1} A${inner},${inner} 0 ${large} 0 ${xi0},${yi0} Z`;
+        return <path key={i} d={d} fill={s.color} />;
+      })}
+      <text x={cx} y={cy - 4} textAnchor="middle" fill="#EAECEF" fontSize="22" fontWeight="700" fontFamily="JetBrains Mono">{total.toLocaleString()}</text>
+      <text x={cx} y={cy + 12} textAnchor="middle" fill="#707A8A" fontSize="9" letterSpacing="1.4" style={{ textTransform: 'uppercase' }}>DETECTIONS · 15m</text>
+    </svg>
+  );
+}
+
+// ============= World Map (rough simplified continents) =============
+// Equirectangular projection: lon -180..180 -> 0..w; lat 90..-90 -> 0..h
+function project(lat, lon, w, h) {
+  return [(lon + 180) * (w / 360), (90 - lat) * (h / 180)];
+}
+
+function WorldMap({ blips = [], h = 320 }) {
+  const w = 720;
+  const [tick, setTick] = useStateW(0);
+  useEffectW(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1500);
+    return () => clearInterval(id);
+  }, []);
+
+  // Simple continent paths approximated as polygons
+  const continents = [
+    // North America
+    "M85,68 L155,55 L195,68 L210,95 L195,120 L165,140 L130,158 L100,150 L85,125 Z",
+    // Central / South America
+    "M170,165 L195,160 L210,180 L210,225 L190,260 L170,275 L160,255 L155,210 L160,180 Z",
+    // Europe
+    "M345,68 L395,62 L420,80 L410,105 L375,115 L345,105 Z",
+    // Africa
+    "M345,125 L405,115 L435,150 L425,210 L385,245 L355,235 L340,195 Z",
+    // Asia (broad)
+    "M420,55 L555,50 L605,75 L620,110 L585,140 L515,145 L455,135 L420,110 Z",
+    // South-east Asia / Indonesia
+    "M540,150 L620,150 L640,170 L605,185 L555,180 Z",
+    // Australia
+    "M580,210 L645,205 L660,230 L630,255 L585,250 Z",
+  ];
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} style={{ display: 'block' }}>
+      <defs>
+        <radialGradient id="bg-glow" cx="50%" cy="50%" r="60%">
+          <stop offset="0%" stopColor="#161A20" />
+          <stop offset="100%" stopColor="#0B0E11" />
+        </radialGradient>
+        <radialGradient id="blip-gradient">
+          <stop offset="0%" stopColor="#F6465D" stopOpacity="1" />
+          <stop offset="100%" stopColor="#F6465D" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+
+      <rect x="0" y="0" width={w} height={h} fill="url(#bg-glow)" />
+      {/* lat/lon graticule */}
+      <g stroke="#1B2026" strokeWidth="0.5" fill="none">
+        {[-60, -30, 0, 30, 60].map(l => {
+          const [, y] = project(l, 0, w, h);
+          return <line key={`la${l}`} x1="0" x2={w} y1={y} y2={y} />;
+        })}
+        {[-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150].map(l => {
+          const [x] = project(0, l, w, h);
+          return <line key={`lo${l}`} x1={x} x2={x} y1="0" y2={h} />;
+        })}
+      </g>
+
+      {/* continents */}
+      <g fill="#1E2329" stroke="#2B3139" strokeWidth="0.6">
+        {continents.map((d, i) => <path key={i} d={d} />)}
+      </g>
+
+      {/* origin (datacenter) */}
+      <g>
+        {(() => {
+          const [ox, oy] = project(window.ORIGIN.lat, window.ORIGIN.lon, w, h);
+          return (
+            <g transform={`translate(${ox},${oy})`}>
+              <circle r="14" fill="none" stroke="#FCD535" strokeWidth="0.8" opacity="0.4" />
+              <circle r="6" fill="#FCD535" opacity="0.95" />
+              <text y="-12" textAnchor="middle" fill="#FCD535" fontSize="9" fontWeight="700">SG-1 EDGE</text>
+            </g>
+          );
+        })()}
+      </g>
+
+      {/* arcs from attacker to origin */}
+      <g>
+        {blips.map((b, i) => {
+          const [sx, sy] = project(b.lat, b.lon, w, h);
+          const [tx, ty] = project(window.ORIGIN.lat, window.ORIGIN.lon, w, h);
+          const mx = (sx + tx) / 2;
+          const my = (sy + ty) / 2 - 60;
+          const animKey = (tick + i) % 4 === 0;
+          return (
+            <g key={i}>
+              <path
+                d={`M${sx},${sy} Q${mx},${my} ${tx},${ty}`}
+                className="attack-arc"
+                strokeDasharray="3 4"
+                strokeDashoffset={(tick * 6) % 100}
+              />
+              <circle cx={sx} cy={sy} r="14" fill="url(#blip-gradient)" opacity={animKey ? 0.7 : 0.3} />
+              <circle cx={sx} cy={sy} r="3" fill="#F6465D" />
+              {b.show && <text x={sx + 6} y={sy - 4} fill="#FF8896" fontSize="9" fontFamily="JetBrains Mono">{b.label}</text>}
+            </g>
+          );
+        })}
+      </g>
+    </svg>
+  );
+}
+
+// ============= Risk Heatmap (route × time) =============
+function RiskHeatmap({ rows, cols = 30, h = 220 }) {
+  const w = 760;
+  const padL = 140, padT = 16, padB = 22;
+  const cellW = (w - padL - 8) / cols;
+  const cellH = (h - padT - padB) / rows.length;
+
+  const data = useMemoW(() => rows.map(r => {
+    const arr = [];
+    let seed = r.path.length;
+    for (let c = 0; c < cols; c++) {
+      seed = (seed * 9301 + 49297) % 233280;
+      let v = (seed / 233280) * (r.intensity || 1);
+      if (Math.random() < 0.04) v += 0.6;
+      arr.push(Math.min(1, v));
+    }
+    return arr;
+  }), [rows, cols]);
+
+  const colorFor = v => {
+    if (v < 0.18) return '#1E2329';
+    if (v < 0.35) return '#3B2A1A';
+    if (v < 0.55) return '#6B4710';
+    if (v < 0.75) return '#A87715';
+    if (v < 0.9)  return '#E0A415';
+    return '#FCD535';
+  };
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none">
+      {rows.map((r, ri) => (
+        <g key={ri}>
+          <text x={padL - 8} y={padT + ri * cellH + cellH * 0.7} textAnchor="end" fontSize="10" fill="#B7BDC6" fontFamily="JetBrains Mono">{r.path}</text>
+          {data[ri].map((v, ci) => (
+            <rect key={ci} x={padL + ci * cellW} y={padT + ri * cellH} width={cellW - 1} height={cellH - 1} fill={colorFor(v)} className="heat-cell" />
+          ))}
+        </g>
+      ))}
+      {/* x axis (time) */}
+      {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
+        const ago = Math.round(60 * (1 - p));
+        const x = padL + p * (cols * cellW);
+        return <text key={i} x={x} y={h - 6} textAnchor="middle" fontSize="9" fill="#5E6673" fontFamily="JetBrains Mono">-{ago}m</text>;
+      })}
+    </svg>
+  );
+}
+
+// ============= Risk meter (small bar in cells) =============
+function RiskMeter({ value }) {
+  const v = Math.max(0, Math.min(100, value));
+  const color = v >= 75 ? 'var(--down)' : v >= 50 ? 'var(--warn)' : v >= 25 ? 'var(--info)' : 'var(--up)';
+  return (
+    <span className="risk-meter">
+      <span className="risk-bar"><span style={{ width: `${v}%`, background: color }} /></span>
+      <span className="num" style={{ fontSize: 11, color: 'var(--ink-mute)' }}>{v}</span>
+    </span>
+  );
+}
+
+// ============= Action / Tier pills =============
+function ActionPill({ value }) { return <span className={`pill ${value}`}>{value}</span>; }
+function TierPill({ value }) { return <span className={`pill tier-${value}`}>{value}</span>; }
+
+// ============= Drawer =============
+function Drawer({ open, onClose, title, children, footer }) {
+  if (!open) return null;
+  return (
+    <>
+      <div className="drawer-backdrop" onClick={onClose} />
+      <aside className="drawer">
+        <div className="drawer-head">
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>Request detail</div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{title}</div>
+          </div>
+          <button className="icon-btn" onClick={onClose}><I.X /></button>
+        </div>
+        <div className="drawer-body">{children}</div>
+        {footer && <div className="drawer-foot">{footer}</div>}
+      </aside>
+    </>
+  );
+}
+
+// ============= Stacked bar (bot mix) =============
+function StackedBar({ segments, h = 24 }) {
+  const total = segments.reduce((s, x) => s + x.value, 0) || 1;
+  return (
+    <div style={{ display: 'flex', height: h, borderRadius: 4, overflow: 'hidden', background: 'var(--surface-3)' }}>
+      {segments.map((s, i) => (
+        <div key={i} style={{ width: `${(s.value / total) * 100}%`, background: s.color }} title={`${s.name}: ${s.value}`} />
+      ))}
+    </div>
+  );
+}
+
+// ============= Horizontal bar list =============
+function BarList({ items, fmt = v => v.toLocaleString() }) {
+  const max = Math.max(...items.map(i => i.value), 1);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {items.map((it, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+          <span style={{ width: 110, color: 'var(--ink-mute)', fontSize: 11 }}>{it.label}</span>
+          <div style={{ flex: 1, height: 14, background: 'var(--surface-2)', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${(it.value / max) * 100}%`, height: '100%', background: it.color || 'var(--brand-yellow)' }} />
+          </div>
+          <span className="num" style={{ width: 70, textAlign: 'right', color: 'var(--ink)' }}>{fmt(it.value)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ============= Section Header =============
+function SectionHeader({ title, sub, actions }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>{title}</div>
+        {sub && <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{sub}</div>}
+      </div>
+      {actions}
+    </div>
+  );
+}
+
+Object.assign(window, {
+  I, Sparkline, StatTile, TrafficChart, Donut, WorldMap, RiskHeatmap,
+  RiskMeter, ActionPill, TierPill, Drawer, StackedBar, BarList, SectionHeader,
+});
