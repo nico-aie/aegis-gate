@@ -188,6 +188,28 @@ pub async fn run(
             _ => None,
         };
 
+    // Hackathon-2026 v2.3 contract surface (HK-T1..T6). Built
+    // here so it's available to the data-plane accept_loop and
+    // later threaded into `DashboardServices` for the admin
+    // control plane. Opted in via `cfg.hackathon.enabled`.
+    let hackathon_runtime = build_hackathon_runtime(
+        &cfg,
+        &risk,
+        &ip_rate_limiter,
+    );
+    if let Some(rt) = hackathon_runtime.as_ref() {
+        if let Some(sink) = rt.audit.as_ref() {
+            tracing::info!(
+                audit_path = %sink.path().display(),
+                "hackathon contract enabled — control plane on /__waf_control",
+            );
+        } else {
+            tracing::info!(
+                "hackathon contract enabled (audit log path not configured)",
+            );
+        }
+    }
+
     // Data-plane listeners.
     for listener_cfg in &cfg.listeners.data {
         let addr = listener_cfg.bind;
@@ -213,6 +235,7 @@ pub async fn run(
         let bus = bus.clone();
         let upstream_ctx_l = upstream_ctx.clone();
         let acceptor = if listener_tls { tls_acceptor.clone() } else { None };
+        let hackathon_l = hackathon_runtime.clone();
         handles.push(tokio::spawn(accept_loop(
             tcp,
             detectors,
@@ -225,6 +248,7 @@ pub async fn run(
             bus,
             upstream_ctx_l,
             acceptor,
+            hackathon_l,
         )));
     }
 
@@ -654,6 +678,12 @@ async fn admin_accept_loop(
         session_idle_seconds,
         Some(Arc::clone(&leader_view)),
     );
+    // Hand the hackathon Runtime to the admin control plane via
+    // `services.hackathon`. Same Arc that the data-plane
+    // accept_loop already holds, so all surfaces see one shared
+    // ModeStore + audit sink.
+    let mut services = services;
+    services.hackathon = hackathon_runtime.clone();
     let services = Arc::new(services);
 
     loop {
@@ -740,6 +770,14 @@ async fn handle_admin_request(
     // check interval. In-flight requests continue.
     if method == hyper::Method::POST && path == "/admin/drain" {
         return handle_admin_drain(req, readiness, services).await;
+    }
+
+    // Hackathon-2026 v2.3 contract control plane (HK-T3).
+    // Always under `/__waf_control/*`; auth via `X-Benchmark-Secret`.
+    // No-op (404) when the binary was built without the
+    // hackathon profile.
+    if path.starts_with("/__waf_control/") {
+        return handle_hackathon_control(req, services).await;
     }
 
     // P2 mutating endpoint: PUT /api/detectors. Reads body
@@ -1371,6 +1409,106 @@ async fn handle_admin_drain(
     )
 }
 
+/// HK-T3 — `/__waf_control/*` dispatch.
+///
+/// Routes to `aegis_control::hackathon::control::ControlContext`
+/// for the four contract endpoints. Authenticates via
+/// `X-Benchmark-Secret` per §2.2; missing/wrong secret returns
+/// 403 before any side effect runs.
+///
+/// When `services.hackathon` is `None` (binary built without the
+/// hackathon profile), returns 404 — the contract surface is
+/// opted in via config, not always-on.
+async fn handle_hackathon_control(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::hackathon::{control, BENCHMARK_SECRET_HEADER};
+    use http_body_util::BodyExt;
+
+    let Some(rt) = services.hackathon.as_ref() else {
+        return json_response(
+            404,
+            &serde_json::json!({"error": "hackathon profile disabled"}),
+        );
+    };
+
+    let method = req.method().clone();
+    let path = req.uri().path().to_owned();
+
+    let secret = req
+        .headers()
+        .get(BENCHMARK_SECRET_HEADER)
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+    if let Err(e) = rt.control.check_auth(secret.as_deref()) {
+        return json_response(
+            e.status(),
+            &serde_json::json!({"ok": false, "error": e.to_string()}),
+        );
+    }
+
+    match (method, path.as_str()) {
+        (hyper::Method::GET, "/__waf_control/capabilities") => {
+            let body = serde_json::to_string(&rt.control.capabilities())
+                .unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "no-store")
+        }
+        (hyper::Method::POST, "/__waf_control/reset_state") => {
+            let body = serde_json::to_string(&rt.control.reset_state())
+                .unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "no-store")
+        }
+        (hyper::Method::POST, "/__waf_control/set_profile") => {
+            let bytes = match req.into_body().collect().await {
+                Ok(c) => c.to_bytes(),
+                Err(_) => {
+                    return json_response(
+                        400,
+                        &serde_json::json!({"ok": false, "error": "body read error"}),
+                    );
+                }
+            };
+            let parsed: control::SetProfileRequest =
+                match serde_json::from_slice(&bytes) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return json_response(
+                            400,
+                            &serde_json::json!({
+                                "ok": false,
+                                "error": format!("invalid body: {e}"),
+                            }),
+                        );
+                    }
+                };
+            match rt.control.set_profile(&parsed) {
+                Ok(resp) => {
+                    let body = serde_json::to_string(&resp)
+                        .unwrap_or_else(|_| "{}".into());
+                    json_body_response(200, body, "no-store")
+                }
+                Err(e) => json_response(
+                    e.status(),
+                    &serde_json::json!({"ok": false, "error": e.to_string()}),
+                ),
+            }
+        }
+        (hyper::Method::POST, "/__waf_control/flush_cache") => {
+            let body = serde_json::to_string(&rt.control.flush_cache())
+                .unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "no-store")
+        }
+        _ => json_response(
+            404,
+            &serde_json::json!({
+                "ok": false,
+                "error": "unknown control endpoint",
+            }),
+        ),
+    }
+}
+
 /// Render a [`MaskState`] as a JSON object with `base` and
 /// `overrides` keys. Used as the `before`/`after` payload of the
 /// audit-chain diff so reviewers can see exactly which tier (and
@@ -1950,6 +2088,7 @@ async fn accept_loop(
     bus: AuditBus,
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
     tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
+    hackathon: Option<Arc<aegis_control::hackathon::Runtime>>,
 ) {
     loop {
         let (stream, peer) = match tcp.accept().await {
@@ -1969,6 +2108,7 @@ async fn accept_loop(
         let request_stage_hist = request_stage_hist.clone();
         let bus = bus.clone();
         let upstream_ctx = upstream_ctx.clone();
+        let hackathon = hackathon.clone();
         let acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
@@ -1981,8 +2121,11 @@ async fn accept_loop(
                 let request_stage_hist = request_stage_hist.clone();
                 let bus = bus.clone();
                 let upstream_ctx = upstream_ctx.clone();
+                let hackathon = hackathon.clone();
                 async move {
-                    Ok::<_, Infallible>(handle_data_request(
+                    let method = req.method().clone();
+                    let path = req.uri().path().to_string();
+                    let resp = handle_data_request(
                         req,
                         peer,
                         &detectors,
@@ -1994,7 +2137,16 @@ async fn accept_loop(
                         &request_stage_hist,
                         &bus,
                         &upstream_ctx,
-                    ).await)
+                    ).await;
+                    let resp = stamp_hackathon_response(
+                        resp,
+                        hackathon.as_ref(),
+                        peer,
+                        &method,
+                        &path,
+                        risk.snapshot(peer.ip()).map(|s| s.score).unwrap_or(0),
+                    );
+                    Ok::<_, Infallible>(resp)
                 }
             });
 

@@ -23,6 +23,20 @@ pub mod control;
 pub mod headers;
 pub mod mode;
 
+use std::sync::Arc;
+
+/// Live hackathon-contract runtime. One per process (or `None`
+/// when the contract surface is opted out via config). Holds the
+/// audit sink, the mode store, and the control-plane context;
+/// the proxy crate threads this through every request that needs
+/// to stamp `X-WAF-*` headers, write `./waf_audit.log`, or honour
+/// a per-policy mode override.
+pub struct Runtime {
+    pub audit: Option<Arc<audit::HackathonAuditSink>>,
+    pub modes: Arc<mode::ModeStore>,
+    pub control: control::ControlContext,
+}
+
 /// Required `X-Benchmark-Secret` header value. Hard-coded per
 /// the contract — operators MUST NOT change it for the hackathon
 /// run, though future versions might thread it through config.

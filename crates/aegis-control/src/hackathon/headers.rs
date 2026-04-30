@@ -139,11 +139,9 @@ impl Decision {
 }
 
 fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) {
-    if let (Ok(name), Ok(value)) = (
-        HeaderName::from_static(name).into(),
-        HeaderValue::from_str(value),
-    ) {
-        headers.insert::<HeaderName>(name, value);
+    let name = HeaderName::from_static(name);
+    if let Ok(value) = HeaderValue::from_str(value) {
+        headers.insert(name, value);
     }
 }
 

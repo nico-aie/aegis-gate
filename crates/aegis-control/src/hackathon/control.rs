@@ -1,0 +1,658 @@
+//! HK-T3 — `/__waf_control/*` endpoints.
+//!
+//! Pure response builders + request validators. The proxy
+//! crate plugs the actual reset-state callbacks into a
+//! [`ControlContext`] so the data plane keeps owning its
+//! own state — no `aegis-control` → `aegis-proxy` upcall.
+//!
+//! Authentication: every endpoint requires the
+//! `X-Benchmark-Secret` header (see [`super::BENCHMARK_SECRET`]).
+//! Missing or wrong secret returns `403 Forbidden`. Auth check
+//! happens before any side effect.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use super::headers::Mode;
+use super::mode::ModeStore;
+use super::BENCHMARK_SECRET;
+
+// ---------------------------------------------------------------------------
+// Capabilities
+// ---------------------------------------------------------------------------
+
+/// One feature exposed by the WAF, with its toggleable policies.
+/// Names MUST be stable for the duration of a benchmark run.
+#[derive(Clone, Debug, Serialize)]
+pub struct CapabilityFeature {
+    pub supported: bool,
+    pub toggleable: bool,
+    pub policies: Vec<String>,
+}
+
+/// Snapshot of `default_mode` + active overrides. Mirrors the
+/// shape the contract's example response uses.
+#[derive(Clone, Debug, Serialize)]
+pub struct CapabilityActive {
+    pub default_mode: String,
+    /// Flat key → mode map. Feature-level entries use the bare
+    /// feature name; policy-level entries use `feature.policy`.
+    pub overrides: BTreeMap<String, String>,
+}
+
+/// `GET /__waf_control/capabilities` body shape.
+#[derive(Clone, Debug, Serialize)]
+pub struct CapabilityResponse {
+    pub ok: bool,
+    pub features: BTreeMap<String, CapabilityFeature>,
+    pub active: CapabilityActive,
+}
+
+// ---------------------------------------------------------------------------
+// reset_state
+// ---------------------------------------------------------------------------
+
+/// Returned to the OC after a successful `reset_state`.
+#[derive(Clone, Debug, Serialize)]
+pub struct ResetResponse {
+    pub ok: bool,
+    pub action: &'static str,
+    pub audit_log_preserved: bool,
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// set_profile
+// ---------------------------------------------------------------------------
+
+/// JSON body shape accepted by `POST /__waf_control/set_profile`.
+/// The contract enumerates exactly these field combinations
+/// (§2.5); anything else returns `400 Bad Request`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetProfileRequest {
+    pub scope: SetProfileScope,
+    pub mode: ModeRepr,
+    /// Required for `scope: "features"`.
+    #[serde(default)]
+    pub features: Option<Vec<String>>,
+    /// Required for `scope: "policies"`.
+    #[serde(default)]
+    pub feature: Option<String>,
+    /// Required for `scope: "policies"`.
+    #[serde(default)]
+    pub policies: Option<Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SetProfileScope {
+    All,
+    Features,
+    Policies,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeRepr {
+    Enforce,
+    LogOnly,
+}
+
+impl From<ModeRepr> for Mode {
+    fn from(value: ModeRepr) -> Self {
+        match value {
+            ModeRepr::Enforce => Mode::Enforce,
+            ModeRepr::LogOnly => Mode::LogOnly,
+        }
+    }
+}
+
+/// One half of a `set_profile` round-trip — the diff that was
+/// applied. Matches the example response in §2.5.
+#[derive(Clone, Debug, Serialize)]
+pub struct SetProfileApplied {
+    pub scope: String,
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SetProfileResponse {
+    pub ok: bool,
+    pub action: &'static str,
+    pub applied: SetProfileApplied,
+    pub active: CapabilityActive,
+    pub unsupported: Vec<String>,
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// flush_cache
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FlushCacheResponse {
+    pub ok: bool,
+    pub action: &'static str,
+    pub supported: bool,
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum ControlError {
+    #[error("missing or invalid X-Benchmark-Secret header")]
+    Forbidden,
+    #[error("invalid request body: {0}")]
+    BadRequest(String),
+    #[error("unsupported feature/policy: {0}")]
+    Unsupported(String),
+}
+
+impl ControlError {
+    /// HTTP status code per the contract.
+    pub fn status(&self) -> u16 {
+        match self {
+            ControlError::Forbidden => 403,
+            ControlError::BadRequest(_) => 400,
+            ControlError::Unsupported(_) => 422,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context
+// ---------------------------------------------------------------------------
+
+/// Wires the control plane to the live runtime. The proxy crate
+/// constructs this once, hooks the reset callbacks into its
+/// `RiskTracker` / `IpRateLimiter` / etc., and dispatches all
+/// `/__waf_control/*` requests through it.
+pub struct ControlContext {
+    pub modes: Arc<ModeStore>,
+    /// Stable list of features + policies the WAF supports. Used
+    /// by `capabilities` and to validate `set_profile` payloads.
+    /// Order is irrelevant; the response uses the BTreeMap order.
+    pub features: BTreeMap<String, CapabilityFeature>,
+    /// `reset_state` callback chain. Each closure clears one
+    /// runtime state surface (rate limit, risk, sessions, etc.).
+    /// Run synchronously in registration order; failures are
+    /// logged but don't block the success response — `reset_state`
+    /// MUST appear atomic to the benchmarker (§2.4).
+    pub reset_callbacks: Vec<ResetCallback>,
+    /// `flush_cache` callback. `None` = no cache implemented;
+    /// the endpoint returns `supported: false`.
+    pub flush_callback: Option<ResetCallback>,
+}
+
+/// Type alias for a reset callback. Wrapped in `Arc<dyn Fn>` so
+/// `ControlContext` itself is cheap to clone.
+pub type ResetCallback = Arc<dyn Fn() + Send + Sync>;
+
+impl ControlContext {
+    /// Authenticate a request against the contract secret.
+    /// Comparison is case-insensitive on the header name and
+    /// case-sensitive on the value (the contract pins both).
+    pub fn check_auth(
+        &self,
+        header_value: Option<&str>,
+    ) -> Result<(), ControlError> {
+        match header_value {
+            Some(v) if v == BENCHMARK_SECRET => Ok(()),
+            _ => Err(ControlError::Forbidden),
+        }
+    }
+
+    /// Build the `capabilities` response from the registered
+    /// feature list + the live mode store.
+    pub fn capabilities(&self) -> CapabilityResponse {
+        CapabilityResponse {
+            ok: true,
+            features: self.features.clone(),
+            active: render_active(&self.modes),
+        }
+    }
+
+    /// Run every reset callback, return the response. The
+    /// audit log is always preserved.
+    pub fn reset_state(&self) -> ResetResponse {
+        for cb in &self.reset_callbacks {
+            cb();
+        }
+        ResetResponse {
+            ok: true,
+            action: "reset_state",
+            audit_log_preserved: true,
+            ts_ms: now_ms(),
+        }
+    }
+
+    /// Apply a `set_profile` request. Returns the applied diff
+    /// + new active state. Validates the request body shape per
+    /// §2.5 — empty `features`, missing `feature` for policy
+    /// scope, etc. all surface as `BadRequest`.
+    pub fn set_profile(
+        &self,
+        req: &SetProfileRequest,
+    ) -> Result<SetProfileResponse, ControlError> {
+        let unsupported = self.validate_and_apply(req)?;
+        Ok(SetProfileResponse {
+            ok: true,
+            action: "set_profile",
+            applied: applied_from(req),
+            active: render_active(&self.modes),
+            unsupported,
+            ts_ms: now_ms(),
+        })
+    }
+
+    /// `POST /__waf_control/flush_cache`. When no cache is wired,
+    /// this still returns 200 with `supported: false` so the
+    /// benchmarker can detect the no-op gracefully.
+    pub fn flush_cache(&self) -> FlushCacheResponse {
+        let supported = self.flush_callback.is_some();
+        if let Some(cb) = self.flush_callback.as_ref() {
+            cb();
+        }
+        FlushCacheResponse {
+            ok: true,
+            action: "flush_cache",
+            supported,
+            ts_ms: now_ms(),
+        }
+    }
+
+    fn validate_and_apply(
+        &self,
+        req: &SetProfileRequest,
+    ) -> Result<Vec<String>, ControlError> {
+        let mode: Mode = req.mode.into();
+        let mut unsupported = Vec::new();
+
+        match req.scope {
+            SetProfileScope::All => {
+                if req.features.is_some()
+                    || req.feature.is_some()
+                    || req.policies.is_some()
+                {
+                    return Err(ControlError::BadRequest(
+                        "scope=all must not include features/feature/policies".into(),
+                    ));
+                }
+                self.modes.set_all(mode);
+            }
+            SetProfileScope::Features => {
+                let features = req.features.as_ref().ok_or_else(|| {
+                    ControlError::BadRequest(
+                        "scope=features requires `features: [...]`".into(),
+                    )
+                })?;
+                if features.is_empty() {
+                    return Err(ControlError::BadRequest(
+                        "features list must not be empty".into(),
+                    ));
+                }
+                for f in features {
+                    if !self.features.contains_key(f) {
+                        unsupported.push(f.clone());
+                        continue;
+                    }
+                    self.modes.set_feature(f, mode);
+                }
+            }
+            SetProfileScope::Policies => {
+                let feature = req.feature.as_ref().ok_or_else(|| {
+                    ControlError::BadRequest(
+                        "scope=policies requires `feature: \"...\"`".into(),
+                    )
+                })?;
+                let policies = req.policies.as_ref().ok_or_else(|| {
+                    ControlError::BadRequest(
+                        "scope=policies requires `policies: [...]`".into(),
+                    )
+                })?;
+                if policies.is_empty() {
+                    return Err(ControlError::BadRequest(
+                        "policies list must not be empty".into(),
+                    ));
+                }
+                let known = self.features.get(feature).ok_or_else(|| {
+                    ControlError::Unsupported(format!("feature {feature}"))
+                })?;
+                for p in policies {
+                    if !known.policies.contains(p) {
+                        unsupported.push(format!("{feature}.{p}"));
+                        continue;
+                    }
+                    self.modes.set_policy(feature, p, mode);
+                }
+            }
+        }
+
+        Ok(unsupported)
+    }
+}
+
+fn render_active(store: &ModeStore) -> CapabilityActive {
+    let snap = store.current();
+    let mut overrides = BTreeMap::new();
+    for (k, v) in &snap.feature_overrides {
+        overrides.insert(k.clone(), v.as_str().to_string());
+    }
+    for ((feature, policy), v) in &snap.policy_overrides {
+        overrides.insert(format!("{feature}.{policy}"), v.as_str().to_string());
+    }
+    CapabilityActive {
+        default_mode: snap.default.as_str().to_string(),
+        overrides,
+    }
+}
+
+fn applied_from(req: &SetProfileRequest) -> SetProfileApplied {
+    let scope = match req.scope {
+        SetProfileScope::All => "all",
+        SetProfileScope::Features => "features",
+        SetProfileScope::Policies => "policies",
+    };
+    let mode: Mode = req.mode.into();
+    SetProfileApplied {
+        scope: scope.to_string(),
+        mode: mode.as_str().to_string(),
+        features: req.features.clone(),
+        feature: req.feature.clone(),
+        policies: req.policies.clone(),
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn ctx() -> ControlContext {
+        let mut features = BTreeMap::new();
+        features.insert(
+            "access_control".into(),
+            CapabilityFeature {
+                supported: true,
+                toggleable: true,
+                policies: vec!["blacklist".into(), "whitelist".into()],
+            },
+        );
+        features.insert(
+            "rules_name".into(),
+            CapabilityFeature {
+                supported: true,
+                toggleable: true,
+                policies: vec!["sqli".into(), "xss".into()],
+            },
+        );
+        ControlContext {
+            modes: Arc::new(ModeStore::new(Mode::Enforce)),
+            features,
+            reset_callbacks: Vec::new(),
+            flush_callback: None,
+        }
+    }
+
+    #[test]
+    fn auth_rejects_missing_header() {
+        let c = ctx();
+        let err = c.check_auth(None).unwrap_err();
+        matches!(err, ControlError::Forbidden);
+        assert_eq!(err.status(), 403);
+    }
+
+    #[test]
+    fn auth_rejects_wrong_secret() {
+        let c = ctx();
+        let err = c.check_auth(Some("wrong-secret")).unwrap_err();
+        assert_eq!(err.status(), 403);
+    }
+
+    #[test]
+    fn auth_accepts_correct_secret() {
+        let c = ctx();
+        c.check_auth(Some(BENCHMARK_SECRET)).unwrap();
+    }
+
+    #[test]
+    fn capabilities_lists_features_and_active_state() {
+        let c = ctx();
+        let r = c.capabilities();
+        assert!(r.ok);
+        assert!(r.features.contains_key("access_control"));
+        assert_eq!(r.active.default_mode, "enforce");
+        assert!(r.active.overrides.is_empty());
+    }
+
+    #[test]
+    fn capabilities_renders_overrides_correctly() {
+        let c = ctx();
+        c.modes.set_feature("access_control", Mode::LogOnly);
+        c.modes.set_policy("rules_name", "sqli", Mode::LogOnly);
+        let r = c.capabilities();
+        assert_eq!(
+            r.active.overrides.get("access_control"),
+            Some(&"log_only".to_string()),
+        );
+        assert_eq!(
+            r.active.overrides.get("rules_name.sqli"),
+            Some(&"log_only".to_string()),
+        );
+    }
+
+    #[test]
+    fn reset_state_runs_callbacks_in_order() {
+        let mut c = ctx();
+        let log: Arc<std::sync::Mutex<Vec<&'static str>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let l1 = log.clone();
+        c.reset_callbacks.push(Arc::new(move || {
+            l1.lock().unwrap().push("first");
+        }));
+        let l2 = log.clone();
+        c.reset_callbacks.push(Arc::new(move || {
+            l2.lock().unwrap().push("second");
+        }));
+        let r = c.reset_state();
+        assert!(r.ok);
+        assert!(r.audit_log_preserved);
+        assert_eq!(*log.lock().unwrap(), vec!["first", "second"]);
+    }
+
+    #[test]
+    fn flush_cache_reports_unsupported_when_no_callback() {
+        let c = ctx();
+        let r = c.flush_cache();
+        assert!(r.ok);
+        assert!(!r.supported);
+    }
+
+    #[test]
+    fn flush_cache_runs_callback_when_present() {
+        let mut c = ctx();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_for_cb = counter.clone();
+        c.flush_callback = Some(Arc::new(move || {
+            counter_for_cb.fetch_add(1, Ordering::Relaxed);
+        }));
+        let r = c.flush_cache();
+        assert!(r.supported);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn set_profile_scope_all_clears_overrides() {
+        let c = ctx();
+        c.modes.set_feature("access_control", Mode::LogOnly);
+        let req = SetProfileRequest {
+            scope: SetProfileScope::All,
+            mode: ModeRepr::Enforce,
+            features: None,
+            feature: None,
+            policies: None,
+        };
+        let r = c.set_profile(&req).unwrap();
+        assert!(r.ok);
+        assert_eq!(r.active.default_mode, "enforce");
+        assert!(r.active.overrides.is_empty(), "overrides leaked");
+    }
+
+    #[test]
+    fn set_profile_scope_features_overrides_listed_only() {
+        let c = ctx();
+        let req = SetProfileRequest {
+            scope: SetProfileScope::Features,
+            mode: ModeRepr::LogOnly,
+            features: Some(vec!["access_control".into()]),
+            feature: None,
+            policies: None,
+        };
+        let r = c.set_profile(&req).unwrap();
+        assert!(r.ok);
+        assert_eq!(
+            r.active.overrides.get("access_control"),
+            Some(&"log_only".to_string()),
+        );
+        // rules_name unchanged
+        assert!(!r.active.overrides.contains_key("rules_name"));
+    }
+
+    #[test]
+    fn set_profile_scope_policies_overrides_named_policy() {
+        let c = ctx();
+        let req = SetProfileRequest {
+            scope: SetProfileScope::Policies,
+            mode: ModeRepr::LogOnly,
+            features: None,
+            feature: Some("access_control".into()),
+            policies: Some(vec!["blacklist".into()]),
+        };
+        let r = c.set_profile(&req).unwrap();
+        assert_eq!(
+            r.active.overrides.get("access_control.blacklist"),
+            Some(&"log_only".to_string()),
+        );
+        // whitelist NOT overridden
+        assert!(
+            !r.active.overrides.contains_key("access_control.whitelist"),
+            "whitelist must remain enforce",
+        );
+    }
+
+    #[test]
+    fn set_profile_unknown_feature_in_features_is_listed_unsupported() {
+        let c = ctx();
+        let req = SetProfileRequest {
+            scope: SetProfileScope::Features,
+            mode: ModeRepr::LogOnly,
+            features: Some(vec!["does-not-exist".into()]),
+            feature: None,
+            policies: None,
+        };
+        let r = c.set_profile(&req).unwrap();
+        assert_eq!(r.unsupported, vec!["does-not-exist"]);
+    }
+
+    #[test]
+    fn set_profile_unknown_feature_in_policies_scope_returns_422() {
+        let c = ctx();
+        let req = SetProfileRequest {
+            scope: SetProfileScope::Policies,
+            mode: ModeRepr::LogOnly,
+            features: None,
+            feature: Some("nope".into()),
+            policies: Some(vec!["x".into()]),
+        };
+        let err = c.set_profile(&req).unwrap_err();
+        assert_eq!(err.status(), 422);
+    }
+
+    #[test]
+    fn set_profile_unknown_policy_under_known_feature_is_listed_unsupported() {
+        let c = ctx();
+        let req = SetProfileRequest {
+            scope: SetProfileScope::Policies,
+            mode: ModeRepr::LogOnly,
+            features: None,
+            feature: Some("access_control".into()),
+            policies: Some(vec!["unknown-policy".into()]),
+        };
+        let r = c.set_profile(&req).unwrap();
+        assert_eq!(r.unsupported, vec!["access_control.unknown-policy"]);
+    }
+
+    #[test]
+    fn set_profile_scope_all_rejects_extra_fields() {
+        let c = ctx();
+        let req = SetProfileRequest {
+            scope: SetProfileScope::All,
+            mode: ModeRepr::Enforce,
+            features: Some(vec!["access_control".into()]),
+            feature: None,
+            policies: None,
+        };
+        let err = c.set_profile(&req).unwrap_err();
+        assert_eq!(err.status(), 400);
+    }
+
+    #[test]
+    fn set_profile_scope_features_rejects_empty_list() {
+        let c = ctx();
+        let req = SetProfileRequest {
+            scope: SetProfileScope::Features,
+            mode: ModeRepr::Enforce,
+            features: Some(vec![]),
+            feature: None,
+            policies: None,
+        };
+        let err = c.set_profile(&req).unwrap_err();
+        assert_eq!(err.status(), 400);
+    }
+
+    #[test]
+    fn json_set_profile_round_trip() {
+        // The example in §2.5 of the contract — must parse.
+        let json = r#"{
+            "scope": "policies",
+            "mode": "log_only",
+            "feature": "access_control",
+            "policies": ["blacklist"]
+        }"#;
+        let req: SetProfileRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.scope, SetProfileScope::Policies);
+        assert_eq!(req.mode, ModeRepr::LogOnly);
+    }
+
+    #[test]
+    fn json_unknown_field_is_rejected() {
+        // `deny_unknown_fields` keeps the contract strict —
+        // typos in field names must surface as bad request.
+        let json = r#"{
+            "scope": "all",
+            "mode": "enforce",
+            "extra": "x"
+        }"#;
+        let r: Result<SetProfileRequest, _> = serde_json::from_str(json);
+        assert!(r.is_err());
+    }
+}
