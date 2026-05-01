@@ -1,9 +1,9 @@
 # Hackathon-Readiness — `HACK-T*`
 
-> **Status:** Active. **HACK-T1 ✅ shipped 2026-05-01** —
-> Round-1 elimination risk closed (run-14). T2..T5 next.
-> Track ID prefix `HACK-T<n>`. Targets the v2.3 contract
-> requirements documented in
+> **Status:** Active. **HACK-T1 + T2 ✅ shipped 2026-05-01.**
+> T3..T5 (Tier A/B/C bonus features) next. Track ID prefix
+> `HACK-T<n>`. Targets the v2.3 contract requirements
+> documented in
 > [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md)
 > + [`../Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](../Hackathon_Doc/EN_waf_interop_contract_v2.3.md).
 
@@ -139,7 +139,7 @@ shows real WAF data; no `Math.random` or static-fixture rows.
 - `#/attacks` + `#/analytics` screenshots show no warning pills
 - run-13.5 acceptance pack re-run passes 32/32 + 8/8
 
-### HACK-T2 — Automated v2.3 contract regression (~2 h)
+### HACK-T2 — Automated v2.3 contract regression — ✅ shipped 2026-05-01
 
 **Goal:** CI fails the moment any v2.3 contract requirement
 breaks (header missing, JSON shape drift, `reset_state` not

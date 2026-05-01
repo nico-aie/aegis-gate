@@ -72,7 +72,48 @@
   **CC-T3** (i18n / OpenAPI / docs / acceptance round-trip).
   **Phase B B6 packaging** still has B6-T4 (HSM) + B6-T5
   (fd-pass) deferred. **Scaling config (SC-T\*)** parked.
-- **Latest activity:** **HACK-T1 (retire dashboard mock
+- **Latest activity:** **HACK-T2 (v2.3 contract regression
+  check) closed 2026-05-01.** New
+  `tests/contract/v2.3_compliance.sh` runs **40 numbered
+  checks** mapped directly to sections of the v2.3
+  interop-contract doc. CI fails on first violation with a
+  `FAIL: [NNN] v2.3 §X.Y — <description>` line so the
+  offending clause surfaces immediately in CI logs.
+  - **Coverage**:
+    §2.1 control-endpoint dispatch ·
+    §2.2 `X-Benchmark-Secret` auth (missing/wrong → 403) ·
+    §2.3 capabilities response shape (`ok`, `features`,
+    `active.default_mode`, `active.overrides`) ·
+    §2.4 atomic `reset_state` + audit-log preservation ·
+    §2.5 `set_profile` semantics with response echo ·
+    §2.6 `flush_cache` not-5xx ·
+    §5.1 every required `X-WAF-*` header on allowed
+    responses with exact value-set matches ·
+    §5.3 every required header on blocked responses too ·
+    §6 audit-log JSONL minimal schema (every mandatory
+    field with valid types + value sets) ·
+    §6 IP semantics — `audit.ip` is TCP peer, NOT XFF
+    (drives a request with a forged XFF and asserts the
+    log carries the loopback peer instead) ·
+    §6 `X-WAF-Request-Id` ↔ `audit.request_id` correlation ·
+    §3.1 high-confidence injection blocked or challenged ·
+    §8 startup contract (binary exists + `/healthz/ready`).
+  - **Boot harness**: reuses `tests/interop/_common.sh` —
+    `start_waf` / `trap_cleanup` / `count_audit_lines` /
+    `header_value` plumbing already there since DR-T*.
+  - **Wired into CI**: `tests/README.md` § 9 promotes it to
+    a dedicated stage 4 (the existing k6 scenarios become
+    stage 5; nightly scanners stage 6) so contract drift is
+    caught before perf testing burns runner time.
+  - **Negative test**: running the script with a wrong
+    `SECRET=` env exits 1 with `FAIL: [001] v2.3 §2.1 —
+    GET /__waf_control/capabilities returns 200` —
+    confirming the gate catches drift, not just success.
+  - **Live (positive sweep)**: 40/40 PASS against the
+    current binary. Full workspace tests still green;
+    production build clean.
+
+- **Earlier activity:** **HACK-T1 (retire dashboard mock
   data) closed 2026-05-01.** First slice of the hackathon-
   readiness track. Removes the Round-1 elimination risk
   identified in the v2.3 docs §2.2 — "Dashboard uses mock
@@ -710,10 +751,8 @@ OpenAPI shape + 8/8 round-1 acceptance).
 - **HACK-T1** ✅ shipped today — Round-1 elimination risk
   closed. Live verification in
   `tests/results/run-14-2026-05-01-hackt1/`.
-- **HACK-T2** — `tests/contract/v2.3_compliance.sh`
-  regression check (~2 h). CI fails on any v2.3 contract
-  drift (header missing, JSON shape change,
-  `reset_state` not atomic).
+- **HACK-T2** ✅ shipped today — 40/40 v2.3 contract
+  checks pass; CI gate added at stage 4.
 - **HACK-T3** — Tier-A bonus: rule simulator (~6-8 h).
   POST `/api/rules/simulate { request_id }` runs the
   pipeline in `dry_run` mode against an audit event;
@@ -756,6 +795,7 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-05-01 | **HACK-T2 (v2.3 contract regression CI gate)** | New `tests/contract/v2.3_compliance.sh` runs 40 numbered checks mapped directly to v2.3 §X.Y citations. Coverage: §2.1 control-endpoint dispatch, §2.2 `X-Benchmark-Secret` auth (missing/wrong → 403), §2.3 capabilities shape, §2.4 atomic `reset_state` + audit preservation, §2.5 `set_profile` echo, §2.6 `flush_cache` not-5xx, §5.1 + §5.3 every required `X-WAF-*` header on allow + block responses with exact value-set matches, §6 audit-log JSONL schema with valid types + TCP-peer IP semantics + request_id correlation, §3.1 injection blocked/challenged, §8 startup contract. **Negative test**: wrong `SECRET=` exits 1 with `FAIL: [001] v2.3 §2.1` line proving the gate catches drift. **Wired into CI**: `tests/README.md` §9 stage 4. Reuses `tests/interop/_common.sh` boot/header plumbing. 40/40 PASS against current binary; full workspace + production build still green. HACK-T3 (Tier-A rule simulator) next. |
 | 2026-05-01 | **HACK-T1 (retire dashboard mock data)** First slice of hackathon-readiness track | Removes Round-1 elimination risk per v2.3 §2.2 ("UI must not use mock/local-state data"). Zero `Math.random` calls remain in `pages.jsx` (was 7). **PageAttackEvents** wired to live `/api/attacks/by-detector` + `/api/bots/mix` + `/api/threat-intel/hits` (3 new hooks added to `data.jsx`); the synthetic-data pill is gone; honest empty states render when the window has no events. **PageAnalytics** wired to `/api/stats/timeseries` (req-over-time + block-ratio), `/api/slo` (live SLI rows), `/api/certs` (cert freshness); latency-percentile + per-route widgets show explanatory "ships via Prometheus / aggregator follow-up" messages instead of fake numbers. **All static-fixture fallbacks** (CERTS / RULES / TIERS / BLACKLIST / WHITELIST / UPSTREAMS / CLUSTER / ALERTS) swapped for empty arrays — the live API is the only data source. Live verification (run-14): `data_plane_availability` SLI 83.33%/99.90% target renders from live engine; "0 certificates · No certificates configured" honest empty state for dev config; detector breakdown shows actual counts from 3 attack probes. Screenshots in `tests/results/run-14-2026-05-01-hackt1/`. Bundle 192 KB. Workspace tests all pass; binary rebuilt to re-embed bundle. HACK-T2 (v2.3 contract regression check) next. |
 | 2026-05-01 | **MTLS-T5 (CA-bundle hot-reload)** Operators rotate trust anchors by editing waf.yaml | New `apply_cfg_change_to_client_auth(new_cfg, trust_store)` helper in `config_source/reload.rs` returns `NoStore` / `Applied { cert_count, mode }` / `SkippedDisabled` / `MissingCaBundle` / `Failed { reason }`. **Skip-not-clear**: live trust stays when new cfg disables client_auth (clearing would crash Required-mode handshakes). `supervisor::watch_loop` gains a `client_trust:` parameter, calls the helper after the existing `tls_reloaded` step, emits `mtls_reloaded` (with cert_count + mode in fields) on Applied or `mtls_reload_failed` (with reason) on MissingCaBundle / Failed — both `AuditClass::Admin`. `run.rs` TLS bootstrap now returns the parsed `ClientTrustStore` alongside acceptor + resolver (3-tuple) and threads it into `spawn_config_watcher`. **Tests** (+4 in `config_source::reload`): no-store short-circuit when caller passes None; skipped-disabled when `mode: disabled` (live unchanged); applied-swaps-to-new-CA on valid reload; failed-keeps-live-store when path doesn't exist. Each test uses an rcgen-generated CA written to tempdir then re-read by the helper. 8 spawn_config_watcher test call sites updated for the new param. aegis-proxy 492 → **496 etcd**; production build clean. MTLS-T7 (Console SAN allowlist) next. |
 | 2026-05-01 | **MTLS-T4 (route-scoped policy gate)** Routes can declare `auth_required` to reject anonymous clients with 403 | New `RouteConfig.auth_required: Vec<String>` (empty default = open). `RouteCtx.auth_required` threads through `CompiledRoute` from YAML to the resolver. `forward_allow_to_upstream` now takes `&ClientIdentity` and gates the request before circuit-breaker + upstream pick: mismatch → 403 with `mtls_required` rule_id (contract action `block`); a `tracing::debug` line records route_id + required + actual_kind + principal. `handle_data_request` + `_inner` both gain the `&ClientIdentity` parameter; accept_loop passes its per-connection `conn_identity`. Three pre-existing test-construction sites (`aegis-security/{noop,pipeline,rules/eval}` + `aegis-core::context` test) updated with `auth_required: Vec::new()`. **Tests** (+3): two route-table unit tests (default open; YAML round-trip with mtls+spiffe) + one end-to-end `anonymous_request_to_mtls_required_route_returns_403` driving `accept_loop` against a mock upstream confirms the 403 lands BEFORE the upstream is touched. **Deferred** (split slices): /admin/login mTLS bypass; AuditEvent `actor` field (bundle with MTLS-T11 schema bump); identity-rate-limit fan-out (no concrete policy yet). aegis-proxy 489 → **492 etcd**; production build clean. MTLS-T5 (hot-reload) next. |

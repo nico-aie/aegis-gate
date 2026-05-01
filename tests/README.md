@@ -413,14 +413,31 @@ Recommended stage layout:
 stage 1  cargo fmt --check + cargo clippy --workspace -- -D warnings
 stage 2  cargo test --workspace
 stage 3  bring up dev gateway + tests/api/run-all.sh
-stage 4  k6 baseline.js + ddos-burst.js + the four P-track scenarios
+stage 4  tests/contract/v2.3_compliance.sh         <- HACK-T2 gate
+stage 5  k6 baseline.js + ddos-burst.js + the four P-track scenarios
          + audit-since.js + cold-tier.js + rate-limit.js
-stage 5  (nightly) corpus/{benign,malicious} + Nuclei + ZAP
+stage 6  (nightly) corpus/{benign,malicious} + Nuclei + ZAP
 ```
 
-Stages 1–4 should land within ~5 minutes on a moderately-sized runner.
-Stage 5 runs nightly because the scanners are slow and add no PR-level
+Stages 1–5 should land within ~5 minutes on a moderately-sized runner.
+Stage 6 runs nightly because the scanners are slow and add no PR-level
 signal.
+
+**Stage 4 (`tests/contract/v2.3_compliance.sh`)** is the
+hackathon-readiness regression gate. It runs 40 numbered checks
+mapped directly to sections of
+[`Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](../Hackathon_Doc/EN_waf_interop_contract_v2.3.md):
+control-endpoint dispatch (§2.1), `X-Benchmark-Secret` auth
+(§2.2), capabilities response shape (§2.3), atomic
+`reset_state` (§2.4), `set_profile` semantics (§2.5),
+`flush_cache` not-5xx (§2.6), every required `X-WAF-*` header
+on both allowed + blocked responses with exact value-set
+matches (§5.1, §5.3), audit-log JSONL minimal schema + TCP-peer
+IP semantics + request_id correlation (§6), decision-class
+enforcement smoke (§3.1), and the startup contract (§8). The
+script aborts on first failure with a `FAIL: [NNN] v2.3 §X.Y
+— <description>` line so CI logs surface the offending
+contract clause directly.
 
 ## 10. Notes
 
