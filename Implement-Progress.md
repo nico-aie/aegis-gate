@@ -33,9 +33,13 @@
   **Dashboard bundle 182,090 B** (178 KB).
   Workspace total ~2,434 default-feature.
   **`aegis-proxy/src/lib.rs`: 5569 → 5484 (PRE-T1) → 4900
-  (PRE-T2)** lines, cumulative −669. Submodules:
-  `responses.rs` 213, `data_plane.rs` 616. Both under the
-  800-line guideline. PRE-T3 next: `admin/sse.rs`.
+  (PRE-T2) → 4762 (PRE-T4)** lines, **cumulative −807**.
+  Submodules: `responses.rs` 231, `data_plane.rs` 616,
+  `admin_login.rs` 151, `admin_sse.rs` 385 (pre-existing).
+  All 5 under the 800-line guideline. **PRE-T3 was a no-op**
+  — `admin_sse.rs` was already extracted earlier (B4-T4
+  era). PRE-T5 next: `admin_get_handlers.rs` (~1200 lines,
+  the big chunk).
 - **Clippy:** `aegis-control` + `aegis-proxy` libs both clean
   under `-D warnings` after OTEL-T3's lint sweep
   (`RESERVED_RULE_IDS.contains`, `WafError::Io` redundant
@@ -53,19 +57,23 @@
   **CC-T3** (i18n / OpenAPI / docs / acceptance round-trip).
   **Phase B B6 packaging** still has B6-T4 (HSM) + B6-T5
   (fd-pass) deferred. **Scaling config (SC-T\*)** parked.
-- **Latest activity:** **PRE-T2 (extract `data_plane.rs`)
-  closed 2026-05-01.** Second slice of the proxy refactor.
-  Four data-plane functions moved out of
-  `aegis-proxy/src/lib.rs` into a new `data_plane.rs`
-  submodule (616 lines): `handle_data_request` (the
-  `#[tracing::instrument]` wrapper), `handle_data_request_inner`
-  (rate-limit → tier → detectors → risk → forward/block),
-  `forward_allow_to_upstream` (route resolve + CB +
-  upstream forward), and `blocked_response` (block-path
-  helper). All `pub(crate)` for entry points; private
-  helper kept private. **`lib.rs` 5484 → 4900 lines** (−584
-  in this slice; cumulative −669 from the 5569 baseline).
-  Test counts unchanged (424 default / 461 etcd).
+- **Latest activity:** **PRE-T3 (no-op) + PRE-T4 (extract
+  `admin_login.rs`) closed 2026-05-01.** PRE-T3 was a no-op —
+  `admin_sse.rs` was already extracted in the B4-T4 era
+  (385 lines). PRE-T4 moved 4 login/logout functions
+  (`handle_admin_login`, `process_admin_login`,
+  `handle_admin_logout`, `process_admin_logout`) +
+  `extract_named_cookie` (12-line shared helper, 7 call sites)
+  out of `lib.rs` into `admin_login.rs` (151 lines) +
+  `responses.rs` (+18 lines). **`lib.rs` 4900 → 4762 lines**
+  (−138 this slice; cumulative −807 from the 5569 baseline).
+  Test fixup: lib.rs's `tests` module gains a small
+  `use crate::admin_login::{...};` so the 5 login/logout unit
+  tests still compile. **All 5 submodules under 800 lines.**
+  - **PRE-T2 (2026-05-01)** — Extracted `data_plane.rs`
+    (616 lines): `handle_data_request` + inner +
+    `forward_allow_to_upstream` + `blocked_response`.
+    `lib.rs` −584.
   - **PRE-T1 (2026-05-01)** — Extracted `responses.rs`
     (~213 lines, 6 helpers + 4 tests).
   - **MTLS-T6 (2026-05-01)** — Read-only mTLS observability
@@ -130,43 +138,60 @@
 
 ## Last Completed
 
-**Task:** **PRE-T2 (extract `data_plane.rs`)** — Second slice
-of the proxy refactor (`plans/proxy-refactor.md`). Pure
-structural extraction, **zero behaviour change**.
+**Task:** **PRE-T3 (skip — already extracted) + PRE-T4
+(extract `admin_login.rs`)** — Two slices in one turn. Pure
+structural moves, **zero behaviour change**.
 
-### What landed
+### PRE-T3 — already done
+
+`admin_sse.rs` (the `/dashboard/sse` streaming module) was
+already extracted earlier (B4-T4 era; 385 lines). The
+`plans/proxy-refactor.md` plan listed it as a slice; it
+turned out to be a no-op. Plan annotated.
+
+### PRE-T4 — login extraction
 
 Four functions moved out of `aegis-proxy/src/lib.rs` into a
-new `data_plane.rs` submodule:
+new `admin_login.rs` submodule (151 lines):
 
-- `handle_data_request` — `pub(crate) async fn`. The
-  `#[tracing::instrument]` wrapper that owns the OTEL-T3
-  root span and records the resolved `action` after the
-  inner returns.
-- `handle_data_request_inner` — `pub(crate) async fn`. The
-  per-request logic: rate-limit → tier classification →
-  detector run → risk eval → forward / block.
-- `forward_allow_to_upstream` — `pub(crate) async fn`.
-  Route resolve + circuit-breaker gate + pool member pick
-  + body forward via `upstream::forward::forward()`.
-- `blocked_response` — private `fn`. Helper every block
-  path uses to build the 403 + emit the audit-chain entry.
+- `handle_admin_login` — `pub(crate) async fn`. The hyper
+  wrapper invoked from `admin_router` for
+  `POST /admin/login`.
+- `process_admin_login` — `pub(crate) fn`. Pure body driven
+  by 3 unit tests in `lib.rs::tests::login_handler_*`
+  without faking an `Incoming` body.
+- `handle_admin_logout` — `pub(crate) fn`. Same pattern for
+  logout.
+- `process_admin_logout` — `pub(crate) fn`. Pure body
+  driven by 2 unit tests.
 
-Call site in `lib.rs::accept_loop` rebound via
-`use data_plane::handle_data_request;` — byte-identical.
-No tests moved (the data-plane tests live in
-`lib.rs::tests::run_binds_and_serves_200` and exercise full
-proxy boot rather than data-plane internals; they stay
-attached to `aegis_proxy::run` until PRE-T7 lifts run).
+### Bonus — `extract_named_cookie` extraction
 
-### File sizes
+12-line shared cookie-parsing helper moved from `lib.rs` to
+`responses.rs` so it lives next to the other shared response
+helpers. **7 call sites** (login, logout, CSRF-gated
+mutations, SSE auth) all rebound via the existing
+`use responses::{..., extract_named_cookie};` line.
 
-- `aegis-proxy/src/lib.rs`: **5484 → 4900 lines** (−584 in
-  this slice; cumulative −669 from the 5569 baseline).
-- `aegis-proxy/src/data_plane.rs` (new): **616 lines**
-  (under the 800-line guideline).
-- `aegis-proxy/src/responses.rs` (PRE-T1): 213 lines
-  unchanged.
+### File sizes (cumulative across PRE-T1..T4)
+
+| File | Lines |
+|---|---|
+| `aegis-proxy/src/lib.rs` | **5569 → 4762** (−807, −14.5%) |
+| `responses.rs` | 213 → **231** (+18 for `extract_named_cookie`) |
+| `data_plane.rs` | 616 (unchanged from PRE-T2) |
+| `admin_login.rs` (new) | **151** |
+| `admin_sse.rs` (pre-existing) | 385 |
+
+**All 5 modules under the 800-line guideline.** `lib.rs`
+still over (heading the right direction; PRE-T5..T7 will
+finish the job).
+
+### Tests
+
+lib.rs's `tests` module gains
+`use crate::admin_login::{process_admin_login, process_admin_logout};`
+so the 5 login/logout unit tests still compile and run.
 
 ### Verification
 
@@ -174,7 +199,8 @@ attached to `aegis_proxy::run` until PRE-T7 lifts run).
 - `cargo clippy -p aegis-proxy --features etcd --lib --
   -D warnings` → clean.
 - `cargo test -p aegis-proxy --lib` → **424 / 0 / 0**
-  default / **461** etcd. **3/3 stable parallel runs.**
+  default / **461** with `--features etcd`. 3/3 stable
+  parallel runs.
 - All other crates unchanged: aegis-control 855,
   aegis-core 163, aegis-bin 41, aegis-security 888.
 
@@ -182,20 +208,19 @@ attached to `aegis_proxy::run` until PRE-T7 lifts run).
 
 Per `plans/proxy-refactor.md`:
 
-- **PRE-T3** — extract `admin/sse.rs` (~30 min, ~300
-  lines). `/dashboard/sse` streaming endpoint, well-isolated.
-- **PRE-T4** — extract `admin/login.rs` (~30 min, ~400
-  lines).
-- **PRE-T5** — extract `admin/get_handlers.rs` (~1.5 h,
-  ~1200 lines). Big chunk.
-- **PRE-T6** — extract `admin/mutation_handlers.rs` (~1.5 h,
-  ~1500 lines). Bigger chunk.
+- **PRE-T5** — extract `admin_get_handlers.rs` (~1.5 h,
+  ~1200 lines). The big chunk: every `GET /api/*` arm.
+- **PRE-T6** — extract `admin_mutation_handlers.rs` (~1.5 h,
+  ~1500 lines). The bigger chunk: every audit-mutated
+  PUT/POST/DELETE.
 - **PRE-T7** — extract `run.rs` (~1 h, ~700 lines), leave
   `lib.rs` as a thin facade.
-- **PRE-T8** — verify (no file > 800 lines, all tests pass).
+- **PRE-T8** — verify (no file > 800 lines, all tests
+  pass).
 
-After PRE-T8: resume MTLS-T track with the deferred
-MTLS-T6 frontend, then MTLS-T2's rustls wiring.
+After PRE-T8: resume MTLS-T track + queue the
+"PageAttackEvents + PageAnalytics → Prometheus" follow-up
+identified in run-12.
 
 ---
 
@@ -215,6 +240,7 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-05-01 | **PRE-T3 (no-op) + PRE-T4 (extract `admin_login.rs`)** Two slices in one turn | PRE-T3 no-op (`admin_sse.rs` was already extracted in B4-T4 era, 385 lines). PRE-T4: 4 login/logout fns + `extract_named_cookie` shared helper moved out of `lib.rs`. New `admin_login.rs` (151 lines) + `extract_named_cookie` lifted into `responses.rs` (213 → 231). **`lib.rs` 4900 → 4762** (−138 this slice; cumulative **−807** from 5569 baseline across PRE-T1+T2+T4). All 5 submodules under 800-line guideline. lib.rs `tests` import-fixup; 424 default / 461 etcd unchanged. 3/3 stable parallel runs. PRE-T5 (admin_get_handlers, ~1200 lines) next. |
 | 2026-05-01 | **PRE-T2 (extract `data_plane.rs`)** Second slice of proxy refactor | Pure structural extraction, zero behaviour change. Four functions moved out of `aegis-proxy/src/lib.rs` (5484 → **4900 lines**) into new `data_plane.rs` (616 lines): `handle_data_request` + `handle_data_request_inner` + `forward_allow_to_upstream` + `blocked_response`. `pub(crate)` entry points + by-name `use` keep call site byte-identical. No test additions (data-plane tests live in `lib.rs::tests::run_binds_and_serves_200`, stay attached to `aegis_proxy::run` until PRE-T7). 424 default / 461 etcd unchanged. 3/3 stable parallel runs. PRE-T3 (admin/sse.rs, ~300 lines) next. |
 | 2026-05-01 | **PRE-T1 (extract `responses.rs`)** First slice of proxy refactor | Pure structural extraction, zero behaviour change. 6 response-builder helpers moved out of `aegis-proxy/src/lib.rs` (5569 → **5484 lines**) into new `responses.rs` (213 lines) — all `pub(crate)`, by-name `use` keeps the 166 call sites byte-identical. +4 unit tests (json round-trip, cache-control threading, fallback contract, security-headers application). aegis-proxy 420 → 424 default / 457 → 461 etcd. 3/3 stable parallel runs. PRE-T2 (extract `data_plane.rs`, ~700 lines) next. |
 | 2026-05-01 | **MTLS-T6 (read-only console observability — backend)** Tier-1 mTLS observability + CA bundle pre-flight | New `aegis-control::identity_tracker` (sliding-window per-principal counter + `parse_ca_bundle` via rustls_pemfile + x509_parser). New `aegis-control::api::mtls` (4 render fns + 9 tests). DashboardServices gains `identity_tracker: Option<Arc<...>>`. 4 GET dispatch arms in aegis-proxy/lib.rs (`/api/mtls`, `/connections`, `/failures`, `/ca-summary`). Empty-state until MTLS-T2/T3 fire `record_request` / `record_failure`; CA summary works immediately. +21 aegis-control tests (834 → 855). aegis-proxy unchanged. **Operator-flagged:** `aegis-proxy/src/lib.rs` 5569 lines — `plans/proxy-refactor.md` (PRE-T1..T8) queued next. |
