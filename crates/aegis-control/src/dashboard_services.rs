@@ -162,6 +162,13 @@ pub struct DashboardServices {
     /// `state_select` produced.
     pub state_backend:
         Option<std::sync::Arc<dyn aegis_core::state::StateBackend>>,
+    /// HACK-T3 — shared detector list for the `/api/rules/simulate`
+    /// preview endpoint (Tier-A bonus). Same `Vec<Box<dyn Detector>>`
+    /// the data-plane `accept_loop` runs, so the simulator and live
+    /// proxy can't drift. `None` for test bundles → simulator
+    /// returns 404.
+    pub detectors:
+        Option<std::sync::Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>>,
 }
 
 impl DashboardServices {
@@ -390,6 +397,9 @@ impl DashboardServices {
                 // SC-T1 — wired by the proxy boot path. Until then
                 // `/api/state` reports `BackendHealth::unknown()`.
                 state_backend: None,
+                // HACK-T3 — wired by the proxy boot path. Until then
+                // `/api/rules/simulate` returns 503.
+                detectors: None,
             },
             drain,
         )

@@ -213,7 +213,70 @@ pub(crate) async fn handle_admin_request(
         return handle_state_get(services).await;
     }
 
+    // HACK-T3 — Tier-A bonus: rule simulator. POST
+    // `/api/rules/simulate { method, path, headers, body }`
+    // runs the supplied request through the live detector
+    // chain (and live mask) and returns the decision +
+    // matched detector ids without any side effect.
+    if method == hyper::Method::POST && path == "/api/rules/simulate" {
+        return handle_simulate(req, services).await;
+    }
+
     admin_router(req, cfg, readiness, startup, metrics, services)
+}
+
+/// HACK-T3 — body for `POST /api/rules/simulate`.
+async fn handle_simulate(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let Some(detectors) = services.detectors.as_ref() else {
+        return json_response(
+            503,
+            &serde_json::json!({
+                "error": "simulator unavailable — detector list not wired (test bundle?)",
+            }),
+        );
+    };
+
+    // Read body — capped at 64 KiB to keep the simulator from
+    // becoming a body-buffering DoS surface.
+    let body_bytes = match req.into_body().collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("body read failed: {e}") }),
+            );
+        }
+    };
+    if body_bytes.len() > 64 * 1024 {
+        return json_response(
+            413,
+            &serde_json::json!({ "error": "request body too large (max 64 KiB)" }),
+        );
+    }
+
+    let parsed: aegis_control::api::simulator::SimulateRequest =
+        match serde_json::from_slice(&body_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                return json_response(
+                    400,
+                    &serde_json::json!({ "error": format!("invalid simulate body: {e}") }),
+                );
+            }
+        };
+
+    let resp = aegis_control::api::simulator::simulate(
+        &parsed,
+        detectors.as_ref(),
+        &services.detector_mask,
+    );
+    let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
+    json_body_response(200, body, "private, no-store")
 }
 
 /// SC-T1 — render the live state-backend health snapshot as

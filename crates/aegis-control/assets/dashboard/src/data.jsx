@@ -377,6 +377,30 @@ function useAttacksDistributionApi(window = 900) {
 function useAttacksTopApi(window = 900, limit = 10) {
   return useApi(`/api/attacks/top?window=${window}&limit=${limit}`, { intervalMs: 5000, fallback: null });
 }
+// HACK-T4 — Tier-B bonus: config-change timeline. Filters
+// the audit ring to `class = Admin` events and returns them
+// newest-first. Cheap server-side; we poll on a 5 s cadence
+// so the timeline picks up new mutations within one tick.
+function useConfigVersionsApi(limit = 50) {
+  return useApi(`/api/config/versions?limit=${limit}`, { intervalMs: 5000, fallback: null });
+}
+
+// HACK-T3 — Tier-A bonus: rule simulator. POST a synthetic
+// request and get back the live decision tree. CSRF cookie+
+// header same as other audit-mutated POSTs (the simulator
+// itself is read-only but reuses the dashboard's gated POST
+// path).
+async function rulesSimulate(body) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/rules/simulate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
+
 // HACK-T1 — live hooks for PageAttackEvents. Each one is
 // already wired server-side; this is just the dashboard
 // adapter so the page can stop using `Math.random`.
@@ -639,6 +663,10 @@ Object.assign(window, {
   useAttacksDistributionApi, useAttacksTopApi,
   // HACK-T1 — live hooks retiring `Math.random` on Attack Events
   useAttacksByDetectorApi, useBotMixApi, useThreatIntelApi,
+  // HACK-T3 — Tier-A rule simulator
+  rulesSimulate,
+  // HACK-T4 — Tier-B config-change timeline
+  useConfigVersionsApi,
   useAuditLogApi,
   useClusterApi, useSloApi, useCertsApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
   // SC-T2 — Scaling page hooks + drain mutation

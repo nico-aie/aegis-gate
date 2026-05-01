@@ -739,6 +739,7 @@ pub async fn run(
         Arc::new(upstream_ctx.pools.clone());
     let admin_state_backend = state.clone();
     let admin_identity_tracker = identity_tracker.clone();
+    let admin_detectors = detectors.clone();
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -755,6 +756,7 @@ pub async fn run(
         admin_upstream_writer,
         admin_state_backend,
         admin_identity_tracker,
+        admin_detectors,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

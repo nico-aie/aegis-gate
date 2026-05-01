@@ -1,5 +1,5 @@
 /* global React */
-const { useState: useStateP, useEffect: useEffectP, useMemo: useMemoP, useRef: useRefP } = React;
+const { useState: useStateP, useEffect: useEffectP, useMemo: useMemoP, useRef: useRefP, Fragment } = React;
 
 // ============== OVERVIEW ==============
 // Color palette for OWASP categories — used to overlay a colour on
@@ -934,40 +934,163 @@ async function fetchCurrentVersion() {
   }
 }
 
+// HACK-T3 — Tier-A bonus: rule simulator UI on the Rule
+// Manager page. Operators type a method + path + body and click
+// Simulate to preview the decision against the **live**
+// detector chain — no real traffic, no audit emit.
+function RuleSimulator() {
+  const [method, setMethod] = useStateP('GET');
+  const [path, setPath] = useStateP("/api/users?id=1' OR '1'='1");
+  const [body, setBody] = useStateP('');
+  const [result, setResult] = useStateP(null);
+  const [busy, setBusy] = useStateP(false);
+
+  const onSimulate = async () => {
+    if (busy) return;
+    setBusy(true);
+    setResult({ pending: true });
+    try {
+      const payload = { method, path };
+      if (body && body.length > 0) payload.body = body;
+      const r = await window.rulesSimulate(payload);
+      setResult(r);
+    } catch (err) {
+      setResult({ status: 0, error: String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ok = result && !result.pending && result.status === 200;
+  const decision = ok ? result.decision_action : null;
+  const tone = decision === 'block' ? 'down' : decision === 'allow' ? 'up' : decision === 'challenge' ? 'warn' : 'neutral';
+  const fired = (ok && Array.isArray(result.detectors_fired)) ? result.detectors_fired : [];
+  const muted = (ok && Array.isArray(result.muted_detectors)) ? result.muted_detectors : [];
+  const signals = (ok && Array.isArray(result.signals)) ? result.signals : [];
+
+  return (
+    <div className="card" style={{ marginBottom: 12, padding: 0 }}>
+      <div className="card-head" style={{ padding: '10px 14px', borderBottom: '1px solid var(--hairline)' }}>
+        <div>
+          <div className="card-title">Rule simulator</div>
+          <div className="card-sub">
+            Replay a hypothetical request against the live detector chain — no traffic, no audit emit.
+          </div>
+        </div>
+        <span className="pill neutral">Tier A</span>
+      </div>
+      <div style={{ padding: 14, display: 'grid', gridTemplateColumns: '110px 1fr 1fr', gap: 8, alignItems: 'start' }}>
+        <select className="input select" value={method} onChange={e => setMethod(e.target.value)}>
+          {['GET','POST','PUT','DELETE','PATCH','HEAD'].map(m => <option key={m}>{m}</option>)}
+        </select>
+        <input
+          className="input mono"
+          value={path}
+          onChange={e => setPath(e.target.value)}
+          placeholder="/api/users?id=1"
+        />
+        <input
+          className="input mono"
+          value={body}
+          onChange={e => setBody(e.target.value)}
+          placeholder="optional request body (e.g. <script>alert(1)</script>)"
+        />
+      </div>
+      <div style={{ padding: '0 14px 14px', display: 'flex', gap: 10, alignItems: 'center' }}>
+        <button className="btn primary" onClick={onSimulate} disabled={busy || !path}>
+          {busy ? 'Simulating…' : 'Simulate'}
+        </button>
+        {result && !result.pending && result.status !== 200 && (
+          <span className="pill down">
+            HTTP {result.status || '—'} {result.error ? `· ${result.error}` : ''}
+          </span>
+        )}
+        {ok && (
+          <>
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>verdict:</span>
+            <span className={`pill ${tone}`}>{decision}</span>
+            {result.rule_id && (
+              <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+                rule: <code>{result.rule_id}</code>
+              </span>
+            )}
+            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+              risk: <span className="num">{result.risk_score}</span>
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+              tier: <code>{result.tier}</code>
+            </span>
+          </>
+        )}
+      </div>
+      {ok && (fired.length > 0 || muted.length > 0 || signals.length > 0) && (
+        <div style={{ padding: '10px 14px 14px', borderTop: '1px solid var(--hairline)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>Detectors fired</div>
+            {fired.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {fired.map(d => <span key={d} className="pill down">{d}</span>)}
+              </div>
+            )}
+            {muted.length > 0 && (
+              <>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.6, margin: '10px 0 6px' }}>Muted (disabled by mask)</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {muted.map(d => <span key={d} className="pill neutral">{d}</span>)}
+                </div>
+              </>
+            )}
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>Signals</div>
+            {signals.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
+            ) : (
+              <table className="tbl tbl-compact">
+                <thead><tr><th>Class</th><th>Detail</th></tr></thead>
+                <tbody>
+                  {signals.map((s, i) => (
+                    <tr key={i}>
+                      <td className="mono"><span className="pill down">{s.class}</span></td>
+                      <td className="dim">{s.detail}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PageRuleManager() {
   const rulesApi = window.useRulesApi();
-  // Prefer API rules when the array is non-empty; fall back to the
-  // demo set so the page still renders before any rule is created.
-  const apiRules = (rulesApi.data && Array.isArray(rulesApi.data.rules) && rulesApi.data.rules.length > 0)
+  // HACK-T1 — only show what the live API returns. The page
+  // renders an empty state when no user rules are configured
+  // rather than seeding curated demo entries.
+  const apiRules = (rulesApi.data && Array.isArray(rulesApi.data.rules))
     ? rulesApi.data.rules
-    : window.RULES;
+    : [];
 
-  // Display-merge: if the API returned a row whose id matches a mock
-  // entry, overlay the mock display fields (name, kind, hits1h, etc.)
-  // so the UI stays rich while ID/body/enabled stay authoritative.
-  const mockById = useMemoP(() => {
-    const m = new Map();
-    window.RULES.forEach(r => { if (!m.has(r.id)) m.set(r.id, r); });
-    return m;
-  }, []);
-  const merged = apiRules.map(r => {
-    const mock = mockById.get(r.id) || {};
-    return {
-      id: r.id,
-      name: mock.name || r.id,
-      kind: mock.kind || 'custom',
-      pri: mock.pri ?? 100,
-      field: mock.field || 'any',
-      op: mock.op || 'regex',
-      pattern: mock.pattern || '',
-      action: mock.action || 'block',
-      risk: mock.risk ?? 50,
-      enabled: r.enabled !== undefined ? r.enabled : (mock.enabled ?? true),
-      cat: mock.cat || 'custom',
-      hits1h: mock.hits1h ?? 0,
-      body: r.body || mock.body || ruleRowToBody(mock.id ? mock : { id: r.id }),
-    };
-  });
+  const merged = apiRules.map(r => ({
+    id: r.id,
+    name: r.id,
+    kind: 'custom',
+    pri: 100,
+    field: 'any',
+    op: 'regex',
+    pattern: '',
+    action: 'block',
+    risk: 50,
+    enabled: r.enabled !== undefined ? r.enabled : true,
+    cat: 'custom',
+    hits1h: 0,
+    body: r.body || ruleRowToBody({ id: r.id }),
+  }));
 
   const [selectedId, setSelectedId] = useStateP(merged[0]?.id || null);
   const [tab, setTab] = useStateP('dsl');
@@ -1072,6 +1195,8 @@ function PageRuleManager() {
           </button>
         </div>
       </div>
+
+      <RuleSimulator />
 
       <div className="split-list">
         <div className="left">
@@ -1455,6 +1580,119 @@ function ListPage({ kind }) {
 }
 
 // ============== SETTINGS ==============
+// HACK-T4 — Tier-B bonus: config-change timeline. One row
+// per audit-mutated change, newest first; click expands the
+// full event payload (the "before/after" diff fields each
+// mutation handler stamps). No rollback button — that ships
+// in a follow-up; this card is the operator-visible Tier-B
+// browser per v2.3 §2.4.
+function ConfigVersionsCard() {
+  const api = window.useConfigVersionsApi(50);
+  const [expanded, setExpanded] = useStateP(null);
+  const versions = api.data?.versions ?? [];
+  const bounded = !!api.data?.bounded;
+
+  const toneFor = (action) => {
+    if (action.includes('failed') || action.includes('reload_failed')) return 'down';
+    if (action.includes('reloaded') || action.includes('rotated')) return 'up';
+    return 'neutral';
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 12, padding: 0 }}>
+      <div className="card-head" style={{ padding: '10px 14px', borderBottom: '1px solid var(--hairline)' }}>
+        <div>
+          <div className="card-title">Config history</div>
+          <div className="card-sub">
+            Every audit-mutated change · {versions.length} {versions.length === 1 ? 'entry' : 'entries'} · newest first
+            {bounded && (
+              <span style={{ marginLeft: 8 }}>
+                <span className="pill warn">truncated</span>
+              </span>
+            )}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span className="pill neutral">Tier B</span>
+          <button className="btn sm" onClick={() => api.reload && api.reload()}>
+            <window.I.Refresh />
+          </button>
+        </div>
+      </div>
+      {versions.length === 0 ? (
+        <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          No config changes recorded yet — every audit-mutated PUT/POST/DELETE will land here.
+        </div>
+      ) : (
+        <table className="tbl tbl-compact">
+          <thead>
+            <tr>
+              <th style={{ width: 60 }}>Version</th>
+              <th style={{ width: 140 }}>Time</th>
+              <th>Action</th>
+              <th>Reason</th>
+              <th style={{ width: 100 }}>Actor</th>
+              <th style={{ width: 80 }}>Source</th>
+              <th style={{ width: 40 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {versions.map(v => {
+              const isOpen = expanded === v.seq;
+              const ts = v.ts ? new Date(v.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' }) : '—';
+              return (
+                <Fragment key={`${v.seq}-${v.request_id}`}>
+                  <tr style={{ cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : v.seq)}>
+                    <td className="num mono">#{v.seq}</td>
+                    <td className="dim mono">{ts}</td>
+                    <td>
+                      <span className={`pill ${toneFor(v.action)}`}>{v.action}</span>
+                    </td>
+                    <td className="dim" style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v.reason}>
+                      {v.reason}
+                    </td>
+                    <td className="mono">{v.actor}</td>
+                    <td>
+                      <span className="pill neutral">{v.source}</span>
+                    </td>
+                    <td className="dim" style={{ textAlign: 'center' }}>{isOpen ? '▼' : '▶'}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={7} style={{ background: 'var(--canvas-2)', padding: '12px 14px' }}>
+                        <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>
+                          Request id
+                        </div>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 10 }}>
+                          {v.request_id || <span className="dim">—</span>}{' '}
+                          {v.request_id && (
+                            <a
+                              href={`#/audit?request_id=${encodeURIComponent(v.request_id)}`}
+                              style={{ color: 'var(--accent)', marginLeft: 8 }}
+                            >
+                              View in Audit Log →
+                            </a>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>
+                          Fields
+                        </div>
+                        <pre style={{ background: 'var(--canvas)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 10, fontSize: 11, fontFamily: 'var(--font-mono)', margin: 0, overflow: 'auto', maxHeight: 240, color: 'var(--ink-mute)' }}>
+                          {JSON.stringify(v.fields, null, 2)}
+                        </pre>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function PageSettings() {
   const modeApi = window.useModeApi();
   const mode = modeApi.data?.mode || 'enforce';
@@ -1547,6 +1785,8 @@ function PageSettings() {
           </a>
         </div>
       )}
+
+      <ConfigVersionsCard />
 
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-head">

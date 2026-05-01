@@ -228,10 +228,23 @@ mod siem_multi_sink {
         jsonl_sink.write(&ev).await.unwrap();
         assert_eq!(jsonl_sink.lines().len(), 1);
 
-        // Sink 2: Syslog.
-        let syslog_sink = syslog::SyslogSink::new(syslog::SyslogConfig::default());
-        syslog_sink.write(&ev).await.unwrap();
-        assert_eq!(syslog_sink.messages().len(), 1);
+        // Sink 2: Syslog (HACK-T5 — now sends to a real
+        // UDP socket; bind a loopback receiver and route the
+        // forwarder at it).
+        let recv = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let recv_addr = recv.local_addr().unwrap();
+        let syslog_sink = syslog::SyslogSink::connect(syslog::SyslogConfig {
+            address: recv_addr.to_string(),
+            ..syslog::SyslogConfig::default()
+        }).await.unwrap();
+        AuditSink::write(&syslog_sink, &ev).await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let (n, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            recv.recv_from(&mut buf),
+        ).await.expect("syslog receiver timeout").unwrap();
+        let msg = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(msg.starts_with("<84>1 "));
 
         // Sink 3: Kafka.
         let kafka_sink = kafka::KafkaSink::new(kafka::KafkaConfig::default());
@@ -268,7 +281,11 @@ mod siem_multi_sink {
     #[tokio::test]
     async fn all_sinks_have_unique_ids() {
         let s1 = jsonl::JsonlSink::new_in_memory(jsonl::JsonlConfig::default());
-        let s2 = syslog::SyslogSink::new(syslog::SyslogConfig::default());
+        let recv = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let s2 = syslog::SyslogSink::connect(syslog::SyslogConfig {
+            address: recv.local_addr().unwrap().to_string(),
+            ..syslog::SyslogConfig::default()
+        }).await.unwrap();
         let s3 = kafka::KafkaSink::new(kafka::KafkaConfig::default());
         let s4 = splunk_hec::HecSink::new(splunk_hec::HecConfig {
             url: "".into(), token: "".into(), index: "".into(), source_type: "".into(),

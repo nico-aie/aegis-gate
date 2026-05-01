@@ -63,6 +63,11 @@ pub(crate) async fn admin_accept_loop(
     // listener stashes it on `services.identity_tracker` for
     // `/api/mtls/*` reads.
     identity_tracker: Arc<aegis_control::identity_tracker::IdentityTracker>,
+    // HACK-T3 — same detector list the data-plane runs;
+    // stashed on `services.detectors` so
+    // `POST /api/rules/simulate` evaluates against an
+    // identical chain.
+    detectors: Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -403,6 +408,10 @@ pub(crate) async fn admin_accept_loop(
     // every other consumer reads, so the dashboard sees the same
     // round-trip latency the data plane does.
     services.state_backend = Some(state_backend);
+    // HACK-T3 — wire the same detector list the data plane
+    // runs so `/api/rules/simulate` can evaluate against an
+    // identical chain.
+    services.detectors = Some(detectors);
 
     // DURABLE-T1 — audit chain durability. For each Jsonl sink the
     // operator configured under `cfg.audit.sinks`, open a real
@@ -477,6 +486,59 @@ pub(crate) async fn admin_accept_loop(
                     std::time::Duration::from_secs(3600),
                 ).await;
             });
+        }
+    }
+
+    // HACK-T5 — Tier-C bonus: stream the audit bus to a remote
+    // syslog / CEF receiver. Each `AuditSinkConfig::Syslog`
+    // entry spawns a dedicated forwarder task. Failures (UDP
+    // send error, TCP reconnect) log + drop from this sink
+    // only — JSONL persistence is unaffected.
+    {
+        use aegis_core::config::AuditSinkConfig;
+        use aegis_control::audit::sinks::syslog::{
+            run_forward_task, SyslogConfig, SyslogSink,
+        };
+
+        for entry in &cfg.audit.sinks {
+            if let AuditSinkConfig::Syslog {
+                address,
+                transport,
+                format,
+                facility,
+                app_name,
+            } = entry
+            {
+                let cfg_syslog = SyslogConfig {
+                    address: address.clone(),
+                    transport: *transport,
+                    format: *format,
+                    facility: *facility,
+                    app_name: app_name.clone(),
+                };
+                match SyslogSink::connect(cfg_syslog.clone()).await {
+                    Ok(sink) => {
+                        tracing::info!(
+                            address = %address,
+                            transport = ?transport,
+                            format = ?format,
+                            "audit syslog forwarder wired",
+                        );
+                        let sink_arc = Arc::new(sink);
+                        let bus = services.bus.clone();
+                        tokio::spawn(async move {
+                            run_forward_task(bus, sink_arc).await;
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            address = %address,
+                            error = %e,
+                            "audit syslog forwarder connect failed; sink disabled",
+                        );
+                    }
+                }
+            }
         }
     }
 

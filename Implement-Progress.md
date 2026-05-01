@@ -72,7 +72,183 @@
   **CC-T3** (i18n / OpenAPI / docs / acceptance round-trip).
   **Phase B B6 packaging** still has B6-T4 (HSM) + B6-T5
   (fd-pass) deferred. **Scaling config (SC-T\*)** parked.
-- **Latest activity:** **HACK-T2 (v2.3 contract regression
+- **Latest activity:** **HACK-T5 (Tier-C bonus: Syslog/CEF
+  audit forwarder) closed 2026-05-02.** **Hackathon-
+  readiness track is now complete** — all five slices
+  (HACK-T1..T5) shipped; one feature claimed in each of
+  Tier A / B / C per v2.3 §2.4 diminishing-returns rule.
+  - **Module rewrite**: `aegis-control/src/audit/sinks/syslog.rs`
+    (~440 LOC + 11 unit tests) was a stub; now actually
+    sends to a remote endpoint. `SyslogSink::connect(cfg)`
+    async constructor binds a UDP socket OR opens a TCP
+    stream; `send(&self, ev)` per-event method; lazy
+    reconnect on TCP send failure (drops the stream and
+    rebuilds on next call). Failures are logged + dropped
+    from this sink only — JSONL persistence is unaffected.
+  - **Schema extension**: `AuditSinkConfig::Syslog` gained
+    `transport` (Udp / Tcp) + `format` (Rfc5424 / Cef) +
+    `facility` + `app_name` fields. Defaults preserve the
+    minimal `address`-only YAML for backwards
+    compatibility.
+  - **RFC 5424 framing**: `<PRI>1 TS HOST APP PROCID
+    MSGID STRUCTURED MSG` with the AuditEvent JSON in
+    the MSG slot. PRI computed as `facility * 8 +
+    severity`; severity per audit class (Detection=4,
+    Admin/Access=6, System=5).
+  - **CEF framing**: `CEF:0|Aegis|aegis-waf|0.1.0|<class>|<action>|<sev>|<ext>`
+    with `act=`, `src=`, `request_id=`, `mode=`, `cs1=`
+    (rule_id), `cn1=` (risk_score). Pipe / equals /
+    backslash / newline are escaped per spec.
+  - **Boot wiring**: `aegis-proxy::accept::admin_accept_loop`
+    spawns one `run_forward_task` per
+    `AuditSinkConfig::Syslog` entry alongside the existing
+    JSONL persist task. Each forwarder task subscribes to
+    the audit broadcast bus independently — backpressure
+    is per-sink (lagged events log warn but never block
+    the data plane).
+  - **Live verified (run-17)**: WAF booted with
+    `audit.sinks: [{ jsonl, syslog: { address, transport:
+    udp, format: rfc5424 } }]`; benign request streamed
+    `<86>` (Access class) RFC 5424 message to a Python
+    UDP receiver; SQLi probe streamed `<84>` (Detection
+    class) message with `detectors: ["sqli"]`,
+    `risk_score: 40`, `action: block`. Receiver log in
+    `tests/results/run-17-2026-05-02-hackt5/syslog-receiver.log`.
+  - **Tests** (+6 net in aegis-control: 11 new syslog tests,
+    minus 5 stub-tests that no longer apply): RFC 5424
+    PRI / app_name / event-JSON / Admin-class severity;
+    CEF canonical header / extension fields / rule_id +
+    risk_score / pipe-equals-escape / per-class severity;
+    UDP loopback round-trip (binds receiver, sends event,
+    asserts framed line); TCP loopback round-trip with
+    CEF format (newline-terminated); TCP reconnect-after-
+    initial-failure does not panic.
+  - aegis-control 883 → **889** lib tests (+6 net);
+    workspace clean; production build clean.
+
+  **HACK-T track summary**:
+  - HACK-T1 ✅ retire dashboard mock data (Round 1
+    elimination de-risk)
+  - HACK-T2 ✅ v2.3 contract regression CI gate
+    (40/40 PASS, Round 2 guard)
+  - HACK-T3 ✅ Tier-A: rule simulator
+  - HACK-T4 ✅ Tier-B: config history timeline
+  - HACK-T5 ✅ Tier-C: Syslog/CEF audit forwarder
+
+  Total **20-26 h** plan budget delivered as ~24 h
+  actual across the five slices. v2.3 contract green
+  end-to-end; hackathon Round 1 / 2 / 3 risks all
+  addressed.
+
+- **Earlier activity:** **HACK-T4 (Tier-B bonus: config
+  history timeline) closed 2026-05-01.** Operators can
+  now browse every audit-mutated configuration change via
+  a timeline card on the Settings page — answers
+  "who changed what when?" without grepping the JSONL
+  audit sink.
+  - **New endpoint:** `GET /api/config/versions?limit=50`
+    in `aegis-control/src/api/config_versions.rs` (~310
+    LOC + 11 unit tests). Filters the existing
+    `AuditRing` to `class = Admin` events, returns
+    newest-first with `seq` (monotonic version), `ts`,
+    `action`, `reason`, `actor` (extracted from
+    `fields.user` or `fields.actor`, falls back to
+    `system`), `source` (explicit `fields.source` →
+    heuristic: `path` field → `file`, else `dashboard`),
+    `request_id` (for cross-linking to Audit Log), and
+    the full `fields` payload (so the dashboard can show
+    before/after diffs each handler stamps). `bounded:
+    true` flag mirrors `/api/audit/since` so operators
+    know to consult the JSONL sink for full history when
+    the in-memory ring evicted older entries.
+  - **Dispatch:** new arm in `admin_get.rs` next to
+    `/api/audit/witness` (cached `private, max-age=2`).
+  - **Dashboard hook:** `useConfigVersionsApi(limit)`
+    polling at 5 s.
+  - **Dashboard UI:** new `ConfigVersionsCard` component
+    rendered on `#/settings` between the runtime hint
+    banner and Shadow Mode card. TIER B pill, refresh
+    button, table with version / time / action / reason
+    / actor / source columns. Click a row to expand and
+    see the full `fields` JSON (with mutation handlers'
+    `before`/`after` diff payloads) plus a "View in
+    Audit Log →" deep-link with the request_id.
+    Empty-state copy when no mutations recorded yet.
+  - **Live verified (run-16)**: drove two `PUT /api/mode`
+    toggles → `/api/config/versions` returns both
+    events newest-first with full diff:
+    `{ before: { mode: "log_only" }, after: { mode: "enforce" } }`.
+    Browser screenshot at
+    `tests/results/run-16-2026-05-01-hackt4/screenshots/config-history-expanded.png`
+    shows the row-expanded JSON view with the request_id
+    + Audit-Log cross-link.
+  - **Rollback deliberately deferred** to a follow-up
+    (per the plan): each mutation type has its own
+    inverse-apply path (re-applying old detector mask vs
+    old blacklist vs old upstream config), and the
+    audit-event payload doesn't always carry the full
+    pre-state. The browse-able timeline is the visible
+    Tier-B operator value per v2.3 §2.4; rollback would
+    be a separate slice with per-handler undo logic.
+  - aegis-control 872 → **883** lib tests (+11
+    config_versions); bundle 201 KB (within budget);
+    production build clean.
+
+- **Earlier activity:** **HACK-T3 (Tier-A bonus: rule
+  simulator) closed 2026-05-01.** Operators can now replay
+  a hypothetical request through the live detector chain
+  via `POST /api/rules/simulate` — no traffic, no risk
+  increment, no rate-limit consumption, no audit emit.
+  - **New module:** `aegis-control/src/api/simulator.rs`
+    (~370 LOC + 10 unit tests). Pure
+    `simulate(req, detectors, mask) -> SimulateResponse`
+    function — deterministic, no side effects. Builds a
+    `RequestView` from JSON, runs
+    `aegis_security::detectors::run_all_filtered_observed`
+    (same call site the data plane uses), returns
+    `decision_action` / `rule_id` / `risk_score` /
+    `detectors_fired` / `signals` (class + detail) /
+    `tier` / `muted_detectors` (so operators see why a
+    SQLi probe didn't fire when the SQLi class is
+    disabled by the mask).
+  - **URL-encoding helper**: `percent_encode_path` lets
+    operators paste pre-decoded paths from the audit log
+    (e.g. `/api/users?id=1' OR '1'='1`) without
+    `http::Uri::parse` rejecting unencoded quotes /
+    spaces. Detectors URL-decode internally so the
+    simulator's verdict matches the live data-plane
+    behaviour byte-for-byte.
+  - **Wiring**: `DashboardServices.detectors:
+    Option<Arc<Vec<Box<dyn Detector>>>>` (None for test
+    bundles → simulator returns 503).
+    `aegis-proxy::run` lifts the detector list above
+    `admin_accept_loop` and passes a clone to both data-
+    and admin-plane loops; the admin loop stamps it on
+    `services.detectors`.
+    `admin_dispatch::handle_simulate` is the async
+    handler — caps body at 64 KiB (anti-DoS), parses JSON,
+    invokes the pure helper, returns the JSON response.
+  - **Dashboard UI**: new `RuleSimulator` component at
+    the top of `#/rules` with a TIER A pill, method
+    dropdown, path input, body input, Simulate button.
+    Verdict pill (BLOCK / ALLOW / CHALLENGE in tone
+    colours), rule_id + risk + tier badges, fired-detector
+    chips, muted-detector chips, signals table (class +
+    detail). Pre-fills with a SQLi probe so operators see
+    a working example on first load.
+  - **Live verified (run-15)**: SQLi probe → BLOCK + sqli
+    rule_id + risk 40; XSS-in-body → BLOCK + xss; benign
+    → ALLOW. Browser screenshot of the populated verdict
+    panel in `tests/results/run-15-2026-05-01-hackt2-t3/screenshots/rule-simulator-verdict.png`.
+  - **Bonus cleanup**: `PageRuleManager` was still
+    falling back to `window.RULES` static fixture when
+    the live API returned an empty list (a HACK-T1 miss).
+    Fixed — now renders an honest "0 total" subtitle +
+    "No rules match." empty state.
+  - aegis-control 862 → **872** lib tests; bundle 197 KB
+    (within 256 KB budget); production build clean.
+
+- **Earlier activity:** **HACK-T2 (v2.3 contract regression
   check) closed 2026-05-01.** New
   `tests/contract/v2.3_compliance.sh` runs **40 numbered
   checks** mapped directly to sections of the v2.3
@@ -753,17 +929,19 @@ OpenAPI shape + 8/8 round-1 acceptance).
   `tests/results/run-14-2026-05-01-hackt1/`.
 - **HACK-T2** ✅ shipped today — 40/40 v2.3 contract
   checks pass; CI gate added at stage 4.
-- **HACK-T3** — Tier-A bonus: rule simulator (~6-8 h).
-  POST `/api/rules/simulate { request_id }` runs the
-  pipeline in `dry_run` mode against an audit event;
-  Console "Simulate" tab on Rule Manager.
-- **HACK-T4** — Tier-B bonus: config versioning + rollback
-  UI (~6-8 h). Browse audit-chain entries with
-  `class=Config`, one-click rollback (two-step confirm,
-  audit-mutated).
-- **HACK-T5** — Tier-C bonus: Syslog/CEF audit forwarder
-  (~3-4 h). New `audit::sinks::syslog` reusing the bus
-  subscriber pattern from JsonlSink.
+- **HACK-T3** ✅ shipped today — `POST /api/rules/simulate`
+  + Rule Manager "Simulate" card live. Tier A bonus.
+- **HACK-T4** ✅ shipped today — `GET /api/config/versions`
+  + Settings-page Config history card live. Tier B bonus
+  (timeline browse; rollback deferred to follow-up).
+- **HACK-T5** ✅ shipped today — `audit::sinks::syslog`
+  forwarder: UDP/TCP transports + RFC 5424/CEF formats;
+  one task per `AuditSinkConfig::Syslog` entry. **HACK-T
+  track complete.**
+- **HACK-T4 follow-up**: actual rollback action (per-
+  handler undo logic). Each mutation handler gains a
+  paired inverse-apply path; the Settings card sprouts a
+  "Rollback to #N" button (two-step confirm).
 
 **Queued (paused) tracks:**
 - **MTLS-T7..T11** — Console mutation surfaces (mode
@@ -795,6 +973,9 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-05-02 | **HACK-T5 (Tier-C bonus: Syslog/CEF audit forwarder)** Closes the hackathon-readiness track | Module rewrite of `aegis-control/src/audit/sinks/syslog.rs` (~440 LOC + 11 unit tests) — was a stub, now actually sends. New `SyslogSink::connect(cfg)` async constructor binds a UDP socket OR opens TCP; `send` per-event with lazy TCP reconnect. Schema extension on `AuditSinkConfig::Syslog`: `transport` (Udp/Tcp) + `format` (Rfc5424/Cef) + `facility` + `app_name` (defaults preserve old `address`-only YAML). RFC 5424 framing computes PRI from facility × 8 + severity (Detection=4, Admin/Access=6, System=5). CEF framing: `CEF:0\|Aegis\|aegis-waf\|0.1.0\|<class>\|<action>\|<sev>\|<ext>` with `act=` / `src=` / `request_id=` / `mode=` / `cs1=rule_id` / `cn1=risk_score`; pipe/equals/backslash/newline escaped per spec. Boot wiring: `accept::admin_accept_loop` spawns one `run_forward_task` per Syslog entry alongside existing JSONL persist task — failures log + drop from this sink only. **Live verified (run-17)**: WAF booted with both jsonl + syslog sinks; benign request streamed `<86>` RFC 5424 message to a UDP receiver; SQLi probe streamed `<84>` (Detection severity) with full event JSON; receiver log in `tests/results/run-17-2026-05-02-hackt5/`. **Tests** (+6 net): RFC 5424 PRI / app_name / event-JSON / Admin severity; CEF canonical header / extensions / pipe-equals-escape / per-class severity; UDP loopback round-trip; TCP loopback round-trip with CEF; TCP reconnect-no-panic. aegis-control 883 → **889** lib tests; production build clean. **HACK-T track complete** — all five slices (T1..T5) shipped; one feature each in Tier A/B/C per v2.3 §2.4 diminishing-returns rule. |
+| 2026-05-01 | **HACK-T4 (Tier-B bonus: config history timeline)** | New `GET /api/config/versions?limit=50` filters the audit ring to `class = Admin` events, returns newest-first with seq / ts / action / reason / actor / source / request_id / fields. New `aegis-control/src/api/config_versions.rs` (~310 LOC + 11 unit tests covering: empty ring, detection-class excluded, newest-first ordering, limit cap, actor extraction with `system` fallback, source heuristic when field absent, explicit source field wins, limit-zero treated as one, JSON validity, fields-payload preservation, interleaved Detection/Admin filtering). Dashboard hook `useConfigVersionsApi` + `ConfigVersionsCard` component on Settings page (between runtime hint banner and Shadow Mode card) with TIER B pill, table view, and click-to-expand row showing the full `fields` JSON (mutation handlers' before/after diffs) plus a "View in Audit Log →" cross-link with the request_id. Live verified (run-16): drove two `PUT /api/mode` toggles → endpoint returns both events newest-first with full `{ before, after }` diff; browser screenshot at `tests/results/run-16-2026-05-01-hackt4/screenshots/config-history-expanded.png`. **Rollback deferred** to follow-up (per-handler undo logic; the timeline browse is the visible Tier-B value per v2.3 §2.4). aegis-control 872 → **883** lib tests; bundle 201 KB; production build clean. HACK-T5 (Tier-C Syslog forwarder) next. |
+| 2026-05-01 | **HACK-T3 (Tier-A bonus: rule simulator)** | New `POST /api/rules/simulate` runs a synthetic request through the live detector chain (`default_detectors()` + live `SharedDetectorMask`) with **zero** side effects. New `aegis-control/src/api/simulator.rs` (~370 LOC + 10 unit tests): pure `simulate(req, detectors, mask) -> SimulateResponse` returning decision_action / rule_id / risk_score / detectors_fired / signals (class+detail) / tier / muted_detectors. `percent_encode_path` lets operators paste pre-decoded paths from the audit log without `http::Uri::parse` rejecting unencoded quotes. `DashboardServices.detectors: Option<Arc<Vec<Box<dyn Detector>>>>` lifted in `run.rs` and stamped by `admin_accept_loop` so simulator + data plane share the same detector instance — verdicts can't drift. `admin_dispatch::handle_simulate` async handler caps body at 64 KiB (anti-DoS). **Dashboard**: new `RuleSimulator` card on Rule Manager with TIER A pill, method/path/body inputs, Simulate button — clicking renders verdict pill (BLOCK/ALLOW/CHALLENGE) + rule_id + risk + tier + fired/muted chips + signals table. **Bonus**: also retired `window.RULES` static fallback in PageRuleManager (HACK-T1 miss). Live verified (run-15): SQLi → BLOCK+sqli+risk 40; XSS-in-body → BLOCK+xss; browser screenshot of populated verdict panel in `tests/results/run-15-2026-05-01-hackt2-t3/`. aegis-control 862 → **872** lib tests; bundle 197 KB; production build clean. HACK-T4 (Tier-B versioning) next. |
 | 2026-05-01 | **HACK-T2 (v2.3 contract regression CI gate)** | New `tests/contract/v2.3_compliance.sh` runs 40 numbered checks mapped directly to v2.3 §X.Y citations. Coverage: §2.1 control-endpoint dispatch, §2.2 `X-Benchmark-Secret` auth (missing/wrong → 403), §2.3 capabilities shape, §2.4 atomic `reset_state` + audit preservation, §2.5 `set_profile` echo, §2.6 `flush_cache` not-5xx, §5.1 + §5.3 every required `X-WAF-*` header on allow + block responses with exact value-set matches, §6 audit-log JSONL schema with valid types + TCP-peer IP semantics + request_id correlation, §3.1 injection blocked/challenged, §8 startup contract. **Negative test**: wrong `SECRET=` exits 1 with `FAIL: [001] v2.3 §2.1` line proving the gate catches drift. **Wired into CI**: `tests/README.md` §9 stage 4. Reuses `tests/interop/_common.sh` boot/header plumbing. 40/40 PASS against current binary; full workspace + production build still green. HACK-T3 (Tier-A rule simulator) next. |
 | 2026-05-01 | **HACK-T1 (retire dashboard mock data)** First slice of hackathon-readiness track | Removes Round-1 elimination risk per v2.3 §2.2 ("UI must not use mock/local-state data"). Zero `Math.random` calls remain in `pages.jsx` (was 7). **PageAttackEvents** wired to live `/api/attacks/by-detector` + `/api/bots/mix` + `/api/threat-intel/hits` (3 new hooks added to `data.jsx`); the synthetic-data pill is gone; honest empty states render when the window has no events. **PageAnalytics** wired to `/api/stats/timeseries` (req-over-time + block-ratio), `/api/slo` (live SLI rows), `/api/certs` (cert freshness); latency-percentile + per-route widgets show explanatory "ships via Prometheus / aggregator follow-up" messages instead of fake numbers. **All static-fixture fallbacks** (CERTS / RULES / TIERS / BLACKLIST / WHITELIST / UPSTREAMS / CLUSTER / ALERTS) swapped for empty arrays — the live API is the only data source. Live verification (run-14): `data_plane_availability` SLI 83.33%/99.90% target renders from live engine; "0 certificates · No certificates configured" honest empty state for dev config; detector breakdown shows actual counts from 3 attack probes. Screenshots in `tests/results/run-14-2026-05-01-hackt1/`. Bundle 192 KB. Workspace tests all pass; binary rebuilt to re-embed bundle. HACK-T2 (v2.3 contract regression check) next. |
 | 2026-05-01 | **MTLS-T5 (CA-bundle hot-reload)** Operators rotate trust anchors by editing waf.yaml | New `apply_cfg_change_to_client_auth(new_cfg, trust_store)` helper in `config_source/reload.rs` returns `NoStore` / `Applied { cert_count, mode }` / `SkippedDisabled` / `MissingCaBundle` / `Failed { reason }`. **Skip-not-clear**: live trust stays when new cfg disables client_auth (clearing would crash Required-mode handshakes). `supervisor::watch_loop` gains a `client_trust:` parameter, calls the helper after the existing `tls_reloaded` step, emits `mtls_reloaded` (with cert_count + mode in fields) on Applied or `mtls_reload_failed` (with reason) on MissingCaBundle / Failed — both `AuditClass::Admin`. `run.rs` TLS bootstrap now returns the parsed `ClientTrustStore` alongside acceptor + resolver (3-tuple) and threads it into `spawn_config_watcher`. **Tests** (+4 in `config_source::reload`): no-store short-circuit when caller passes None; skipped-disabled when `mode: disabled` (live unchanged); applied-swaps-to-new-CA on valid reload; failed-keeps-live-store when path doesn't exist. Each test uses an rcgen-generated CA written to tempdir then re-read by the helper. 8 spawn_config_watcher test call sites updated for the new param. aegis-proxy 492 → **496 etcd**; production build clean. MTLS-T7 (Console SAN allowlist) next. |

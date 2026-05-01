@@ -1517,7 +1517,29 @@ pub enum AuditSinkConfig {
         #[serde(default = "default_audit_jsonl_flush_interval", with = "humantime_serde")]
         flush_interval: Duration,
     },
-    Syslog { address: String },
+    /// HACK-T5 — RFC 5424 / CEF audit forwarder. Streams every
+    /// `AuditEvent` from the broadcast bus to a remote syslog or
+    /// CEF receiver in a fire-and-forget fashion (data-plane
+    /// hot path never blocks on network I/O — the background task
+    /// is a dedicated subscriber).
+    ///
+    /// `address` is `host:port` — UDP datagram endpoint or TCP
+    /// stream. `transport` defaults to `udp`. `format` defaults
+    /// to `rfc5424`; `cef` emits ArcSight Common Event Format
+    /// for SIEMs that prefer that envelope.
+    Syslog {
+        address: String,
+        #[serde(default)]
+        transport: SyslogTransport,
+        #[serde(default)]
+        format: SyslogFormat,
+        /// Syslog facility (RFC 5424). Defaults to 10 (security/auth).
+        #[serde(default = "default_syslog_facility")]
+        facility: u8,
+        /// Application name reported in the RFC 5424 header.
+        #[serde(default = "default_syslog_app_name")]
+        app_name: String,
+    },
     Splunk { endpoint: String, token_ref: String },
     Kafka { brokers: Vec<String>, topic: String },
 }
@@ -1532,6 +1554,39 @@ fn default_audit_jsonl_max_batch() -> usize {
 
 fn default_audit_jsonl_flush_interval() -> Duration {
     Duration::from_secs(1)
+}
+
+/// HACK-T5 — supported syslog transport. UDP is the default
+/// (RFC 5426 datagram); TCP is RFC 6587 octet-counting framing
+/// (no octet-counting prefix in this slice — newline-terminated
+/// is widely supported and simpler).
+#[derive(Copy, Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SyslogTransport {
+    #[default]
+    Udp,
+    Tcp,
+}
+
+/// HACK-T5 — supported syslog message format.
+#[derive(Copy, Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SyslogFormat {
+    /// RFC 5424 `<PRI>1 TS HOST APP PROCID MSGID STRUCTURED MSG`
+    /// with the audit event JSON in the MSG slot.
+    #[default]
+    Rfc5424,
+    /// ArcSight Common Event Format —
+    /// `CEF:0|Vendor|Product|Version|EventClassID|Name|Severity|<extension>`.
+    Cef,
+}
+
+fn default_syslog_facility() -> u8 {
+    10 // security/auth
+}
+
+fn default_syslog_app_name() -> String {
+    "aegis-waf".into()
 }
 
 #[derive(Clone, Debug, Deserialize)]

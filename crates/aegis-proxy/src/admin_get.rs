@@ -219,6 +219,23 @@ pub(crate) fn admin_router(
         "/api/audit/witness" => {
             json_body_response(200, services.witness.render(), "private, max-age=2")
         }
+        // HACK-T4 — Tier-B bonus: config-change timeline.
+        // Filters the audit ring to `class = Admin` events
+        // (every audit-mutated PUT/POST/DELETE) and returns
+        // them newest-first. The dashboard renders a
+        // browse-able history of "who changed what when?"
+        // on the Settings page.
+        "/api/config/versions" => {
+            let limit = parse_query_u32(query, "limit", 50);
+            json_body_response(
+                200,
+                aegis_control::api::config_versions::render(
+                    &services.audit_ring,
+                    limit,
+                ),
+                "private, max-age=2",
+            )
+        }
         "/api/filters" => {
             json_body_response(200, services.filters.render(), "private, max-age=30")
         }

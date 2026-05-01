@@ -1,8 +1,14 @@
 # Hackathon-Readiness — `HACK-T*`
 
-> **Status:** Active. **HACK-T1 + T2 ✅ shipped 2026-05-01.**
-> T3..T5 (Tier A/B/C bonus features) next. Track ID prefix
-> `HACK-T<n>`. Targets the v2.3 contract requirements
+> **Status:** **✅ Complete** — HACK-T1..T5 all shipped
+> (2026-05-01 / 2026-05-02). One feature each in Tier A
+> (rule simulator), Tier B (config-history timeline), and
+> Tier C (Syslog/CEF forwarder) per v2.3 §2.4 diminishing-
+> returns rule. Round 1 mock-data risk closed; Round 2
+> contract regression gate added; Round 3 Tier bonuses
+> claimed. Two follow-ups deferred: HACK-T4 actual
+> rollback action, HACK-T5 TLS syslog transport.
+> Track ID prefix `HACK-T<n>`. Targets the v2.3 contract requirements
 > documented in
 > [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md)
 > + [`../Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](../Hackathon_Doc/EN_waf_interop_contract_v2.3.md).
@@ -164,7 +170,7 @@ atomic, etc.).
   contract (e.g. drop `X-WAF-Mode` from a hand-edit).
 - Wired into CI matrix.
 
-### HACK-T3 — Tier-A: Rule simulator (~6-8 h)
+### HACK-T3 — Tier-A: Rule simulator — ✅ shipped 2026-05-01
 
 **Goal:** operators replay any historical audit event against
 the *current* ruleset and see what would happen — without
@@ -194,7 +200,7 @@ sending real traffic. High-signal Tier A bonus per v2.3 §2.4.
 - Documented in
   `docs/control-plane/enterprise/pages/rules.md`.
 
-### HACK-T4 — Tier-B: Config versioning + rollback (~6-8 h)
+### HACK-T4 — Tier-B: Config versioning timeline — ✅ shipped 2026-05-01 (rollback action deferred)
 
 **Goal:** every audit-mutated config change is browsable in
 the UI with a one-click rollback. Tier B bonus (operations
@@ -223,7 +229,7 @@ lifecycle).
 - Rollback wires through the existing audit-mutated mutation
   path, so it cannot bypass authz / CSRF / chain.
 
-### HACK-T5 — Tier-C: Syslog/CEF audit forwarder (~3-4 h)
+### HACK-T5 — Tier-C: Syslog/CEF audit forwarder — ✅ shipped 2026-05-02
 
 **Goal:** stream the existing JSONL audit log to a remote
 syslog endpoint (RFC 5424) or CEF receiver. Tier C bonus

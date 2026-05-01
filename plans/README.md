@@ -38,7 +38,7 @@ Order = execution priority. **Earlier rows run first.** The
 
 | State | Track | Plan file | Task ID prefix | Notes |
 |---|---|---|---|---|
-| **Active (Hackathon)** | Hackathon-readiness — v2.3 contract + Tier bonuses | [`hackathon-readiness.md`](./hackathon-readiness.md) | `HACK-T<n>` | Plan-only — awaiting confirmation. T1 retires Round-1 mock-data risk; T2 adds a v2.3 contract regression check; T3..T5 each claim one Tier-A/B/C bonus. |
+| Closed | Hackathon-readiness — v2.3 contract + Tier bonuses | [`hackathon-readiness.md`](./hackathon-readiness.md) | `HACK-T<n>` | ✅ HACK-T1..T5 shipped 2026-05-01 / 2026-05-02. Round 1 mock-data risk closed; Round 2 contract gate (40/40 PASS); Tier A (rule simulator), Tier B (config history), Tier C (Syslog/CEF) all claimed. Deferred: HACK-T4 rollback action, HACK-T5 TLS transport. |
 | **Queued** | mTLS — Console mutation surfaces | [`mtls.md`](./mtls.md) | `MTLS-T<n>` | T1..T5 + T6 ✅ shipped 2026-05-01 (rustls inbound, identity extraction, route-scoped policy gate, hot-reload, console observability). T7..T11 (mode toggle, SAN allowlist, break-glass, CA upload, per-route editor) deferred. |
 | **Queued** | Phase B — production packaging | [`phase-b/README.md`](./phase-b/README.md) | `B<n>-T<x>` | B1..B5 ✅ closed. B6-T1 (Dockerfile) ✅ shipped; B6-T2 (Helm) + B6-T3 (CI) pending; B6-T4 (HSM) + B6-T5 (fd-pass) deferred. |
 | **Queued** | Scaling configuration — Tier A bonus complement | [`scaling-config.md`](./scaling-config.md) | `SC-T<n>` | T1..T3 + T5 ✅ shipped 2026-05-01 (`/api/state` + Scaling page + Settings hint + docs). T4 (`tokio_unstable` Prometheus metrics) deferred — optional polish. |
@@ -64,9 +64,9 @@ in [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md):
 
 | Round | Weight | Status | Track |
 |---|---|---|---|
-| 1 — Functionality (Pass/Fail) | gate | ⚠️ Round-1 mock-data risk on `#/attacks` + `#/analytics` | **HACK-T1** |
-| 2 — Automated benchmark | 65% (≥ 70% gate) | ✅ run-12 confirmed (32/32 OpenAPI shape; 8/8 round-1 acceptance) | **HACK-T2** (regression guard) |
-| 3 — Performance + Tier bonuses | 35% + bonus | ⚠️ no Tier-A/B/C bonus claimed yet | **HACK-T3** (A) / **HACK-T4** (B) / **HACK-T5** (C) |
+| 1 — Functionality (Pass/Fail) | gate | ✅ mock-data risk closed (run-14) | **HACK-T1** ✅ |
+| 2 — Automated benchmark | 65% (≥ 70% gate) | ✅ run-12 + HACK-T2 regression gate (40/40 PASS) | **HACK-T2** ✅ |
+| 3 — Performance + Tier bonuses | 35% + bonus | ✅ Tier A + B + C all claimed (rule simulator / config history / Syslog forwarder) | **HACK-T3..T5** ✅ |
 
 ---
 
