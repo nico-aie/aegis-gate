@@ -654,29 +654,48 @@ written before the mTLS / hot-reload / etcd / OTel / Grafana
 
 ### What's next
 
-- **MTLS-T2 + T3 + T4 + T5** (rustls wiring → identity
-  extraction → route policy gate → CA hot-reload) all
-  closed today. The mTLS data-plane story is end-to-end
-  for read-side; only Console mutations remain.
-- **MTLS-T7** — Console SAN-allowlist mutation (~2 h).
-  PUT/DELETE to `cfg.tls.client_auth.allowed_sans`.
-- **MTLS-T8** — Console mode-toggle mutation (~2 h).
-  PUT to `cfg.tls.client_auth.mode` with break-glass
-  guard (T9).
-- **MTLS-T10** — CA bundle upload (~3 h). Multipart upload
-  to a configured directory, then audit-mutated PUT to
-  point `cfg.tls.client_auth.ca_bundle` at the new file.
-- **MTLS-T11** — per-route `auth_required` editor in the
-  Routes UI (~30 min). Adds the `actor` field on
-  `AuditEvent` as part of the schema bump.
-- **MTLS-T4 deferred items** (split slices):
-  - `/admin/login` mTLS-bypass (cert SAN → no password)
-  - Identity-rate-limit fan-out (defer until concrete
-    policy)
-- **SC-T4** (optional polish) — `tokio_unstable` runtime
-  metrics → Prometheus.
-- **PageAttackEvents + PageAnalytics → Prometheus**
-  follow-up identified in run-12 (~3-4 h).
+**Track promotion (2026-05-01):**
+[`plans/hackathon-readiness.md`](./plans/hackathon-readiness.md)
+is now the **Active** track per
+[`plans/README.md`](./plans/README.md). It targets the v2.3
+hackathon contract — the two real gaps are (a) Round-1
+mock-data risk on `#/attacks` + `#/analytics` and (b) Round-3
+Tier A/B/C bonus features. The v2.3 §2 control plane,
+required `X-WAF-*` headers, JSONL audit log, and
+`reset_state` atomicity are all green per run-12 (32/32
+OpenAPI shape + 8/8 round-1 acceptance).
+
+- **HACK-T1** — retire `Math.random` + static fixtures on
+  `#/attacks` and `#/analytics` (~3-4 h). Wire to live
+  `useAttacksDistributionApi` / `useTimeseriesApi` /
+  Prometheus `/metrics` data already exposed. Removes the
+  Round-1 elimination risk identified in run-12 followup.
+- **HACK-T2** — `tests/contract/v2.3_compliance.sh`
+  regression check (~2 h). CI fails on any v2.3 contract
+  drift (header missing, JSON shape change,
+  `reset_state` not atomic).
+- **HACK-T3** — Tier-A bonus: rule simulator (~6-8 h).
+  POST `/api/rules/simulate { request_id }` runs the
+  pipeline in `dry_run` mode against an audit event;
+  Console "Simulate" tab on Rule Manager.
+- **HACK-T4** — Tier-B bonus: config versioning + rollback
+  UI (~6-8 h). Browse audit-chain entries with
+  `class=Config`, one-click rollback (two-step confirm,
+  audit-mutated).
+- **HACK-T5** — Tier-C bonus: Syslog/CEF audit forwarder
+  (~3-4 h). New `audit::sinks::syslog` reusing the bus
+  subscriber pattern from JsonlSink.
+
+**Queued (paused) tracks:**
+- **MTLS-T7..T11** — Console mutation surfaces (mode
+  toggle, SAN allowlist, break-glass, CA upload, per-route
+  editor).
+- **Phase B B6-T2** (Helm) + **B6-T3** (CI). T4 (HSM) +
+  T5 (fd-pass) deferred.
+- **SC-T4** — `tokio_unstable` runtime metrics → Prometheus
+  (optional polish).
+- **MTLS-T4 deferred sub-slices** (`/admin/login` mTLS
+  bypass; identity-rate-limit fan-out).
 - Per-resource split of `admin_mutate.rs` (1714 lines).
 
 ---
