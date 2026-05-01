@@ -1,8 +1,10 @@
 # Hackathon-Readiness — `HACK-T*`
 
-> **Status:** Plan + audit — awaiting confirmation. Track ID
-> prefix `HACK-T<n>`. Targets the v2.3 contract requirements
-> documented in [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md)
+> **Status:** Active. **HACK-T1 ✅ shipped 2026-05-01** —
+> Round-1 elimination risk closed (run-14). T2..T5 next.
+> Track ID prefix `HACK-T<n>`. Targets the v2.3 contract
+> requirements documented in
+> [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md)
 > + [`../Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](../Hackathon_Doc/EN_waf_interop_contract_v2.3.md).
 
 ---
@@ -99,7 +101,7 @@ Tier scoring has diminishing returns within the same Tier
 
 ## 2 · Slices (smallest first)
 
-### HACK-T1 — Retire dashboard mock data (~3-4 h)
+### HACK-T1 — Retire dashboard mock data — ✅ shipped 2026-05-01
 
 **Goal:** every visible widget on `#/attacks` and `#/analytics`
 shows real WAF data; no `Math.random` or static-fixture rows.

@@ -453,27 +453,72 @@ function PageLiveFeed() {
 }
 
 // ============== ATTACK EVENTS ==============
+// HACK-T1 — `Math.random` retired. Detector breakdown, bot mix,
+// and threat-intel rows now read from `aegis_control::api::attacks`
+// aggregator endpoints (`/api/attacks/by-detector`,
+// `/api/bots/mix`, `/api/threat-intel/hits`) — every value
+// reflects real audit-bus events the WAF processed in the
+// configured window. Empty-state copy renders honestly when no
+// events have arrived yet rather than fabricating numbers.
+const ATTACK_WINDOWS = {
+  '5m':  300,
+  '15m': 900,
+  '1h':  3600,
+  '6h':  21600,
+  '24h': 86400,
+};
+
+// Stable per-detector colour assignment so the bar list keeps the
+// same hue across renders even when ordering shifts. Falls back to
+// a neutral grey when an unrecognised detector lands in the
+// response (forward-compatible with future detector additions).
+const DETECTOR_COLORS = {
+  sqli:        'var(--down)',
+  xss:         '#F0B90B',
+  command_injection: '#F6465D',
+  path_traversal:    '#A78BFA',
+  ssrf:        '#F472B6',
+  crlf:        '#60A5FA',
+  bot:         '#34D399',
+  scanner:     '#9CA3AF',
+};
+function detectorColor(name) {
+  return DETECTOR_COLORS[name] || 'var(--ink-mute)';
+}
+
 function PageAttackEvents() {
   const [win, setWin] = useStateP('1h');
-  // HU-T2 — Detector breakdown bars are randomised on every render
-  // (Math.random()) and threat-intel hits are a static fixture. This
-  // page is **synthetic** until Prometheus instrumentation lands the
-  // real per-detector hit counters and a TI feed wires up to
-  // `aegis-security`. Audit log + Live Feed are the live surfaces
-  // for actual detection events today.
-  const detectorBars = window.ATTACK_CATS.map(c => ({
-    label: c.label, value: 50 + Math.floor(Math.random() * 1800), color: c.color,
-  })).sort((a,b) => b.value - a.value);
+  const windowSeconds = ATTACK_WINDOWS[win] ?? 3600;
 
-  const topRules = window.RULES.slice(0, 10).sort((a,b) => b.hits1h - a.hits1h);
+  const byDetector = window.useAttacksByDetectorApi(windowSeconds);
+  const botMix = window.useBotMixApi(windowSeconds);
+  const tiApi = window.useThreatIntelApi(windowSeconds, 20);
 
-  const tiHits = [
-    { src: 'spamhaus_drop', ind: '185.220.101.0/24', cat: 'tor-exit', hits: 8421, first: '8h', last: '2s' },
-    { src: 'firehol_level1', ind: '95.214.55.10', cat: 'malware-c2', hits: 412, first: '3h', last: '1m' },
-    { src: 'tor', ind: '46.166.139.111', cat: 'tor-exit', hits: 91, first: '1h', last: '4m' },
-    { src: 'binarydefense', ind: 'AS14061', cat: 'abuse-asn', hits: 4128, first: '12h', last: '34s' },
-    { src: 'emergingthreats', ind: '177.85.34.221', cat: 'compromised', hits: 38, first: '20m', last: '12m' },
-  ];
+  const detectorBars = (byDetector.data?.detectors ?? [])
+    .map(d => ({
+      label: d.name,
+      value: d.count,
+      color: detectorColor(d.name),
+    }))
+    .sort((a, b) => b.value - a.value);
+  const totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+
+  const botCategories = botMix.data?.categories ?? [];
+  const botColorFor = name => ({
+    verified:  'var(--up)',
+    suspect:   'var(--warn)',
+    malicious: 'var(--down)',
+    unknown:   'var(--ink-faint)',
+  }[name] || 'var(--ink-mute)');
+  const botSegments = botCategories.map(c => ({
+    name: c.name,
+    value: c.count,
+    color: botColorFor(c.name),
+  }));
+  const malicious = botCategories.find(c => c.name === 'malicious');
+  const totalBots = botCategories.reduce((s, c) => s + c.count, 0);
+
+  const tiHits = tiApi.data?.hits ?? [];
 
   return (
     <>
@@ -482,99 +527,135 @@ function PageAttackEvents() {
           <h1 className="page-title">Attack Events</h1>
           <p className="page-subtitle">
             Curated detector firings · OWASP + custom rules · last {win}
-            <span style={{ marginLeft: 8 }}>
-              <span className="pill warn" title="Detector breakdown + threat-intel rows are synthetic until Prometheus instrumentation + TI feed wiring ship">
-                synthetic data
-              </span>
-            </span>
           </p>
         </div>
         <div className="page-actions">
           <select className="input select" value={win} onChange={e => setWin(e.target.value)} style={{ width: 90 }}>
-            {['5m','15m','1h','6h','24h'].map(v => <option key={v}>{v}</option>)}
+            {Object.keys(ATTACK_WINDOWS).map(v => <option key={v}>{v}</option>)}
           </select>
-          <button className="btn"><window.I.Download /> Export CSV</button>
+          <button className="btn" onClick={() => {
+            byDetector.reload && byDetector.reload();
+            botMix.reload && botMix.reload();
+            tiApi.reload && tiApi.reload();
+          }}><window.I.Refresh /></button>
         </div>
       </div>
 
       <div className="section-row">
         <div className="card">
-          <window.SectionHeader title="Detector breakdown" sub={`${detectorBars.reduce((s,x)=>s+x.value,0).toLocaleString()} detections in window`} />
-          <window.BarList items={detectorBars} />
+          <window.SectionHeader
+            title="Detector breakdown"
+            sub={`${totalDetections.toLocaleString()} detections in window`}
+          />
+          {detectorBars.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+              No detections in the last {win}. The bar list lights up as soon as a request triggers any detector.
+            </div>
+          ) : (
+            <window.BarList items={detectorBars} />
+          )}
         </div>
         <div className="card">
-          <window.SectionHeader title="Bot classification mix" sub="Live classifier signal" />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <window.StackedBar segments={[
-              { name: 'verified',  value: 4218, color: 'var(--up)' },
-              { name: 'suspect',   value: 1842, color: 'var(--warn)' },
-              { name: 'malicious', value: 3104, color: 'var(--down)' },
-              { name: 'unknown',   value: 921,  color: 'var(--ink-faint)' },
-            ]} h={28} />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, fontSize: 11 }}>
-              <div><span style={{ color: 'var(--up)' }}>● verified</span> <span className="num">4,218</span></div>
-              <div><span style={{ color: 'var(--warn)' }}>● suspect</span> <span className="num">1,842</span></div>
-              <div><span style={{ color: 'var(--down)' }}>● malicious</span> <span className="num">3,104</span></div>
-              <div><span style={{ color: 'var(--ink-faint)' }}>● unknown</span> <span className="num">921</span></div>
+          <window.SectionHeader
+            title="Bot classification mix"
+            sub={totalBots > 0 ? `${totalBots.toLocaleString()} classified requests` : 'no bot signal yet'}
+          />
+          {botSegments.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+              No bot classifications recorded in the last {win}.
             </div>
-            <div style={{ marginTop: 6, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
-              <strong style={{ color: 'var(--ink-strong)' }}>30.4%</strong> of bot traffic in this window classified as malicious — above 14d baseline of 18%.
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <window.StackedBar segments={botSegments} h={28} />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, fontSize: 11 }}>
+                {botCategories.map(c => (
+                  <div key={c.name}>
+                    <span style={{ color: botColorFor(c.name) }}>● {c.name}</span>{' '}
+                    <span className="num">{c.count.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+              {malicious && (
+                <div style={{ marginTop: 6, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
+                  <strong style={{ color: 'var(--ink-strong)' }}>{malicious.pct.toFixed(1)}%</strong> of classified bot traffic in this window flagged malicious.
+                </div>
+              )}
             </div>
-          </div>
+          )}
         </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Top firing rules" actions={<button className="btn sm">Manage rules →</button>} />
-        <table className="tbl tbl-compact">
-          <thead><tr><th>Rule ID</th><th>Scope</th><th>Action</th><th>Risk</th><th>Count (1h)</th><th>Last fired</th><th></th></tr></thead>
-          <tbody>
-            {topRules.map((r, i) => (
-              <tr key={`${r.id}-${r.kind}-${i}`}>
-                <td><span className="mono" style={{ color: 'var(--brand-yellow)' }}>{r.id}</span> <span className="pill builtin" style={{ marginLeft: 6 }}>{r.kind}</span></td>
-                <td><span className="dim">global</span></td>
-                <td><window.ActionPill value={r.action} /></td>
-                <td><window.RiskMeter value={r.risk} /></td>
-                <td className="num">{r.hits1h.toLocaleString()}</td>
-                <td className="dim">{r.last}</td>
-                <td><button className="btn sm">Disable 1h</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
 
       <div className="card">
-        <window.SectionHeader title="Threat-intel hits" sub="Indicators matched in window" />
-        <table className="tbl tbl-compact">
-          <thead><tr><th>Source</th><th>Indicator</th><th>Category</th><th>Hits</th><th>First</th><th>Last</th></tr></thead>
-          <tbody>
-            {tiHits.map((t, i) => (
-              <tr key={i}>
-                <td className="mono"><span className="pill violet">{t.src}</span></td>
-                <td className="mono">{t.ind}</td>
-                <td><span className="pill neutral">{t.cat}</span></td>
-                <td className="num">{t.hits.toLocaleString()}</td>
-                <td className="dim">{t.first} ago</td>
-                <td className="dim">{t.last} ago</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <window.SectionHeader title="Threat-intel hits" sub={`${tiHits.length} indicators matched in window`} />
+        {tiHits.length === 0 ? (
+          <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+            No threat-intel matches in the last {win}.
+          </div>
+        ) : (
+          <table className="tbl tbl-compact">
+            <thead><tr><th>Source</th><th>Indicator</th><th>Hits</th><th>Last seen</th></tr></thead>
+            <tbody>
+              {tiHits.map((t, i) => (
+                <tr key={`${t.feed}-${t.indicator}-${i}`}>
+                  <td className="mono"><span className="pill violet">{t.feed}</span></td>
+                  <td className="mono">{t.indicator}</td>
+                  <td className="num">{t.hits.toLocaleString()}</td>
+                  <td className="dim">{new Date(t.last_seen).toLocaleTimeString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </>
   );
 }
 
 // ============== ANALYTICS ==============
+// HACK-T1 — `Math.random` retired. Requests over time + block
+// ratio sparklines now read from `/api/stats/timeseries`.
+// Latency-percentile + error-rate-by-route widgets render an
+// honest empty state; their data sources land in a follow-up
+// (Prometheus histogram + per-route audit aggregator).
+const ANALYTICS_WINDOWS = {
+  '1h':  { window: 3600,    step: 60   },
+  '6h':  { window: 21600,   step: 300  },
+  '24h': { window: 86400,   step: 1200 },
+  '7d':  { window: 604800,  step: 3600 * 4 },
+  '30d': { window: 2592000, step: 3600 * 24 },
+};
+
 function PageAnalytics() {
   const [range, setRange] = useStateP('24h');
+  const cfg = ANALYTICS_WINDOWS[range] ?? ANALYTICS_WINDOWS['24h'];
+  const ts = window.useTimeseriesApi(cfg.window, cfg.step);
+  // HACK-T1 — SLO + Cert summaries also retired from static
+  // fixtures. Both endpoints already shipped (Tracking page
+  // consumes them); we just expose them on Analytics too so
+  // operators don't have to switch tabs.
+  const sloApi = window.useSloApi();
+  const certsApi = window.useCertsApi();
 
-  const reqOverTime = Array.from({ length: 60 }, (_, i) => 800 + Math.sin(i / 5) * 200 + Math.random() * 150);
-  const blockRatio = Array.from({ length: 60 }, (_, i) => 0.05 + Math.abs(Math.sin(i / 8)) * 0.12 + Math.random() * 0.04);
-  const latP50 = Array.from({ length: 60 }, () => 8 + Math.random() * 4);
-  const latP95 = Array.from({ length: 60 }, () => 24 + Math.random() * 8);
-  const latP99 = Array.from({ length: 60 }, () => 48 + Math.random() * 16);
+  const points = ts.data?.points ?? [];
+  const reqOverTime = points.map(p => p.total);
+  const blockRatioPct = points.map(p => p.total > 0 ? (p.blocked * 100) / p.total : 0);
+
+  const totalReq = points.reduce((s, p) => s + p.total, 0);
+  const totalBlocked = points.reduce((s, p) => s + p.blocked, 0);
+  const stepsPerSecond = cfg.step > 0 ? cfg.step : 1;
+  const avgReqPerSecond = points.length > 0
+    ? Math.round(totalReq / (points.length * stepsPerSecond))
+    : 0;
+  const avgBlockPct = totalReq > 0 ? (totalBlocked * 100) / totalReq : 0;
+  const peakBlockPct = blockRatioPct.length > 0
+    ? Math.max(...blockRatioPct)
+    : 0;
+  const peakIdx = blockRatioPct.indexOf(peakBlockPct);
+  const peakTs = peakIdx >= 0 && points[peakIdx]
+    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '—';
+
+  const hasSeries = points.length > 0;
 
   return (
     <>
@@ -583,97 +664,112 @@ function PageAnalytics() {
           <h1 className="page-title">Analytics</h1>
           <p className="page-subtitle">
             Historical trends · {range} window
-            <span style={{ marginLeft: 8 }}>
-              <span className="pill warn" title="Sparklines + percentile widgets are randomised client-side. Prometheus exposition only emits `waf_request_duration_ms` today; full series wiring lands as more counters get instrumented.">
-                synthetic data
-              </span>
-            </span>
           </p>
         </div>
         <div className="page-actions">
           <div style={{ display: 'flex', gap: 4 }}>
-            {['1h','6h','24h','7d','30d'].map(r => (
+            {Object.keys(ANALYTICS_WINDOWS).map(r => (
               <button key={r} className={`chip ${range === r ? 'active' : ''}`} onClick={() => setRange(r)}>{r}</button>
             ))}
           </div>
-          <button className="btn"><window.I.Refresh /></button>
-          <button className="btn"><window.I.External /> Grafana</button>
+          <button className="btn" onClick={() => ts.reload && ts.reload()}><window.I.Refresh /></button>
         </div>
       </div>
 
       <div className="grid-12" style={{ marginBottom: 12 }}>
         <div className="col-6 card">
-          <window.SectionHeader title="Requests over time" sub={`avg ${Math.round(reqOverTime.reduce((s,x)=>s+x,0)/reqOverTime.length)} req/s`} />
-          <window.Sparkline data={reqOverTime} w={460} h={120} color="#3B82F6" fill strokeWidth={1.5} />
+          <window.SectionHeader
+            title="Requests over time"
+            sub={hasSeries ? `avg ${avgReqPerSecond.toLocaleString()} req/s` : 'no data yet'}
+          />
+          {hasSeries ? (
+            <window.Sparkline data={reqOverTime} w={460} h={120} color="#3B82F6" fill strokeWidth={1.5} />
+          ) : (
+            <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+              No traffic recorded in the last {range}.
+            </div>
+          )}
         </div>
         <div className="col-6 card">
-          <window.SectionHeader title="Latency p50/p95/p99" sub="WAF + upstream end-to-end" />
-          <div style={{ position: 'relative', height: 120 }}>
-            <window.Sparkline data={latP99} w={460} h={120} color="#F6465D" />
-            <div style={{ position: 'absolute', inset: 0 }}><window.Sparkline data={latP95} w={460} h={120} color="#F0B90B" /></div>
-            <div style={{ position: 'absolute', inset: 0 }}><window.Sparkline data={latP50} w={460} h={120} color="#0ECB81" /></div>
-          </div>
-          <div style={{ display: 'flex', gap: 14, fontSize: 11, marginTop: 6 }}>
-            <span style={{ color: 'var(--up)' }}>● p50 9.2ms</span>
-            <span style={{ color: 'var(--warn)' }}>● p95 28.4ms</span>
-            <span style={{ color: 'var(--down)' }}>● p99 56.1ms</span>
+          <window.SectionHeader
+            title="Latency p50/p95/p99"
+            sub="WAF + upstream end-to-end"
+          />
+          <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
+            <span>Latency percentiles ship via Prometheus.</span>
+            <span style={{ fontSize: 11 }}>Scrape <code>/metrics</code> for <code>waf_request_duration_ms_bucket</code> or wire Grafana for live sparklines.</span>
           </div>
         </div>
         <div className="col-6 card">
-          <window.SectionHeader title="Block ratio" sub="Blocked / total · histogram" />
-          <window.Sparkline data={blockRatio.map(v => v * 100)} w={460} h={120} color="#F6465D" fill />
-          <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 4 }}>
-            avg <span className="num" style={{ color: 'var(--down)' }}>9.4%</span> · peak <span className="num">21.8%</span> at 14:32
-          </div>
+          <window.SectionHeader
+            title="Block ratio"
+            sub={hasSeries ? `avg ${avgBlockPct.toFixed(1)}% · peak ${peakBlockPct.toFixed(1)}% at ${peakTs}` : 'no data yet'}
+          />
+          {hasSeries ? (
+            <window.Sparkline data={blockRatioPct} w={460} h={120} color="#F6465D" fill />
+          ) : (
+            <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+              No block decisions in the last {range}.
+            </div>
+          )}
         </div>
         <div className="col-6 card">
-          <window.SectionHeader title="Error rate by route" sub="Top 5 routes by block volume" />
-          <window.BarList items={[
-            { label: '/api/login', value: 4218, color: 'var(--down)' },
-            { label: '/wp-admin/install.php', value: 3812, color: 'var(--down)' },
-            { label: '/.env', value: 2104, color: 'var(--down)' },
-            { label: '/api/webhooks/*', value: 1521, color: 'var(--warn)' },
-            { label: '/api/admin/*', value: 821, color: 'var(--warn)' },
-          ]} />
+          <window.SectionHeader
+            title="Error rate by route"
+            sub="Per-route block volumes"
+          />
+          <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
+            <span>Per-route aggregation ships in a follow-up.</span>
+            <span style={{ fontSize: 11 }}>For now: <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Log</a> shows every block with its <code>path</code>; <a href="#/attacks" style={{ color: 'var(--accent)' }}>Attack Events</a> shows top attackers.</span>
+          </div>
         </div>
       </div>
 
       <div className="grid-12">
         <div className="col-8 card">
-          <window.SectionHeader title="SLO budget remaining" sub="30d rolling burn" />
+          <window.SectionHeader title="SLO budget remaining" sub="live engine" />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {[
-              { name: 'availability', target: '99.95%', val: '99.972%', remain: 78, sparkColor: 'var(--up)' },
-              { name: 'latency p95 ≤ 30ms', target: '99%', val: '99.4%', remain: 62, sparkColor: 'var(--up)' },
-              { name: 'WAF overhead p99 ≤ 100µs', target: '99.5%', val: '99.1%', remain: 18, sparkColor: 'var(--down)' },
-              { name: 'audit delivery', target: '99.9%', val: '99.94%', remain: 84, sparkColor: 'var(--up)' },
-              { name: 'cert freshness ≥ 7d', target: '100%', val: '100%', remain: 100, sparkColor: 'var(--up)' },
-            ].map(s => (
-              <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 12, alignItems: 'center', fontSize: 12 }}>
-                <span>{s.name}</span>
-                <span className="dim">{s.target}</span>
-                <span className="num" style={{ color: 'var(--ink)' }}>{s.val}</span>
-                <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{ width: `${s.remain}%`, height: '100%', background: s.remain < 30 ? 'var(--down)' : s.remain < 60 ? 'var(--warn)' : 'var(--up)' }} />
-                </div>
-                <span className="num right" style={{ color: s.remain < 30 ? 'var(--down)' : 'var(--ink-mute)' }}>{s.remain}% left</span>
+            {(sloApi.data?.slis ?? []).length === 0 && (
+              <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                SLO engine warming up — no SLI data yet.
               </div>
-            ))}
-          </div>
-        </div>
-        <div className="col-4 card">
-          <window.SectionHeader title="Cert freshness" />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {window.CERTS.slice(0, 5).map(c => {
-              const tone = c.days < 7 ? 'down' : c.days < 30 ? 'warn' : 'up';
+            )}
+            {(sloApi.data?.slis ?? []).map(s => {
+              const remainPct = Math.round((s.budget_remaining ?? 0) * 100);
               return (
-                <div key={c.host} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                  <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }} className="mono">{c.host}</div>
-                  <span className={`pill ${tone}`}>{c.days}d</span>
+                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 12, alignItems: 'center', fontSize: 12 }}>
+                  <span>{s.name}</span>
+                  <span className="dim">{s.target.toFixed(2)}%</span>
+                  <span className="num" style={{ color: 'var(--ink)' }}>{s.current.toFixed(2)}%</span>
+                  <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${remainPct}%`, height: '100%', background: remainPct < 30 ? 'var(--down)' : remainPct < 60 ? 'var(--warn)' : 'var(--up)' }} />
+                  </div>
+                  <span className="num right" style={{ color: remainPct < 30 ? 'var(--down)' : 'var(--ink-mute)' }}>{remainPct}% left</span>
                 </div>
               );
             })}
           </div>
+        </div>
+        <div className="col-4 card">
+          <window.SectionHeader title="Cert freshness" sub={`${(certsApi.data?.certs ?? []).length} certificates`} />
+          {(certsApi.data?.certs ?? []).length === 0 ? (
+            <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+              No certificates configured.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {(certsApi.data?.certs ?? []).slice(0, 5).map(c => {
+                const days = c.days_to_expiry ?? c.days ?? 0;
+                const tone = days < 7 ? 'down' : days < 30 ? 'warn' : 'up';
+                return (
+                  <div key={c.host} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                    <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }} className="mono">{c.host}</div>
+                    <span className={`pill ${tone}`}>{days}d</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -1078,18 +1174,9 @@ function PageRuleManager() {
                   </div>
                 )}
                 {tab === 'stats' && (
-                  <div>
-                    <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>Match count · last 1h</div>
-                      <window.Sparkline data={Array.from({length: 60}, () => 100 + Math.random()*200)} w={600} h={80} color="#FCD535" fill />
-                    </div>
-                    <window.BarList items={[
-                      { label: '/api/login', value: 412 },
-                      { label: '/api/users', value: 318 },
-                      { label: '/api/orders', value: 217 },
-                      { label: '/api/admin/*', value: 145 },
-                      { label: '/api/products', value: 96 },
-                    ]} />
+                  <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
+                    <span>Per-rule statistics ship in a follow-up.</span>
+                    <span style={{ fontSize: 11 }}>For now: filter <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Log</a> by <code>rule_id={selected.id}</code> to see every match.</span>
                   </div>
                 )}
               </div>

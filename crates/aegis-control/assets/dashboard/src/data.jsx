@@ -340,15 +340,20 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
 // Hook: rules list. Returns the real list from /api/rules with a
 // reload function for after a mutation.
 function useRulesApi() {
-  return useApi('/api/rules', { intervalMs: 0, fallback: { rules: RULES } });
+  // HACK-T1 — fallback switched to empty list. The Rule Manager
+  // page renders an honest empty state when the live API hasn't
+  // answered yet rather than seeding curated demo rules.
+  return useApi('/api/rules', { intervalMs: 0, fallback: { rules: [] } });
 }
 
 // Hook: blacklist + whitelist
 function useBlacklistApi() {
-  return useApi('/api/blacklist', { intervalMs: 10000, fallback: { entries: BLACKLIST } });
+  // HACK-T1 — empty list rather than seeded fixture.
+  return useApi('/api/blacklist', { intervalMs: 10000, fallback: { entries: [] } });
 }
 function useWhitelistApi() {
-  return useApi('/api/whitelist', { intervalMs: 10000, fallback: { entries: WHITELIST } });
+  // HACK-T1 — empty list rather than seeded fixture.
+  return useApi('/api/whitelist', { intervalMs: 10000, fallback: { entries: [] } });
 }
 
 // Hook: WAF status (uptime, version, mode, rule count) — DD
@@ -372,6 +377,18 @@ function useAttacksDistributionApi(window = 900) {
 function useAttacksTopApi(window = 900, limit = 10) {
   return useApi(`/api/attacks/top?window=${window}&limit=${limit}`, { intervalMs: 5000, fallback: null });
 }
+// HACK-T1 — live hooks for PageAttackEvents. Each one is
+// already wired server-side; this is just the dashboard
+// adapter so the page can stop using `Math.random`.
+function useAttacksByDetectorApi(window = 3600) {
+  return useApi(`/api/attacks/by-detector?window=${window}`, { intervalMs: 5000, fallback: null });
+}
+function useBotMixApi(window = 3600) {
+  return useApi(`/api/bots/mix?window=${window}`, { intervalMs: 10000, fallback: null });
+}
+function useThreatIntelApi(window = 3600, limit = 20) {
+  return useApi(`/api/threat-intel/hits?window=${window}&limit=${limit}`, { intervalMs: 10000, fallback: null });
+}
 
 // Hook: audit log with filters
 function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
@@ -392,16 +409,23 @@ function useRoutesApi() {
   return useApi('/api/routes', { intervalMs: 30000, fallback: { routes: [] } });
 }
 function useTiersApi() {
-  return useApi('/api/tiers', { intervalMs: 30000, fallback: { tiers: TIERS } });
+  // HACK-T1 — empty list rather than seeded fixture.
+  return useApi('/api/tiers', { intervalMs: 30000, fallback: { tiers: [] } });
 }
 
 // Hook: cluster, slo, certs, alerts, gitops, upstreams (Tracking page)
-function useClusterApi()  { return useApi('/api/cluster',         { intervalMs: 5000, fallback: { peers: CLUSTER } }); }
+// HACK-T1 — fallbacks switched from static fixtures to `null`
+// per Hackathon v2.3 §2.2 ("Dashboard uses... local state, or
+// simulated responses that make the UI state inconsistent with
+// the real WAF-PROXY state"). Pages must render an honest
+// empty state when the live API returns nothing.
+function useClusterApi()  { return useApi('/api/cluster',         { intervalMs: 5000, fallback: null }); }
 function useSloApi()      { return useApi('/api/slo',             { intervalMs: 10000, fallback: null }); }
-function useCertsApi()    { return useApi('/api/certs',           { intervalMs: 30000, fallback: { certs: CERTS } }); }
-function useAlertsApi()   { return useApi('/api/alerts',          { intervalMs: 5000, fallback: { alerts: ALERTS } }); }
+function useCertsApi()    { return useApi('/api/certs',           { intervalMs: 30000, fallback: null }); }
+function useAlertsApi()   { return useApi('/api/alerts',          { intervalMs: 5000, fallback: null }); }
 function useGitopsApi()   { return useApi('/api/gitops/status',   { intervalMs: 30000, fallback: null }); }
-function useUpstreamsApi(){ return useApi('/api/upstreams',       { intervalMs: 5000, fallback: { pools: UPSTREAMS } }); }
+// HACK-T1 — empty list rather than seeded fixture.
+function useUpstreamsApi(){ return useApi('/api/upstreams',       { intervalMs: 5000, fallback: { pools: [] } }); }
 // CC-T1.1 — full upstream-pool config view (members, lb, health,
 // circuit-breaker, connection pool, referenced_by_routes).
 // CC-T1.1.b shipped the audit-mutated PUT/DELETE; helpers below.
@@ -613,6 +637,8 @@ Object.assign(window, {
   useRulesApi, useBlacklistApi, useWhitelistApi,
   useStatusApi, useStatsApi, useTimeseriesApi,
   useAttacksDistributionApi, useAttacksTopApi,
+  // HACK-T1 — live hooks retiring `Math.random` on Attack Events
+  useAttacksByDetectorApi, useBotMixApi, useThreatIntelApi,
   useAuditLogApi,
   useClusterApi, useSloApi, useCertsApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
   // SC-T2 — Scaling page hooks + drain mutation

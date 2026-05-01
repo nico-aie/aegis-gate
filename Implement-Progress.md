@@ -72,7 +72,49 @@
   **CC-T3** (i18n / OpenAPI / docs / acceptance round-trip).
   **Phase B B6 packaging** still has B6-T4 (HSM) + B6-T5
   (fd-pass) deferred. **Scaling config (SC-T\*)** parked.
-- **Latest activity:** **MTLS-T5 (CA-bundle hot-reload)
+- **Latest activity:** **HACK-T1 (retire dashboard mock
+  data) closed 2026-05-01.** First slice of the hackathon-
+  readiness track. Removes the Round-1 elimination risk
+  identified in the v2.3 docs §2.2 — "Dashboard uses mock
+  data, local state, or simulated responses that make the
+  UI state inconsistent with the real WAF-PROXY state".
+  - **Zero `Math.random` calls** remain in `pages.jsx`
+    (was 7: PageAttackEvents detector bars, rule-stats
+    sparkline, PageAnalytics req-over-time / block-ratio /
+    p50 / p95 / p99). Only comment references documenting
+    the retirement remain.
+  - **PageAttackEvents** rewritten against live data:
+    detector breakdown ← `/api/attacks/by-detector`; bot
+    classification mix ← `/api/bots/mix`; threat-intel
+    hits ← `/api/threat-intel/hits`. The `synthetic data`
+    pill is gone. Empty-state copy renders honestly when
+    the window has no events.
+  - **PageAnalytics** rewritten: requests over time +
+    block ratio ← `/api/stats/timeseries`; SLO budget ←
+    `/api/slo`; cert freshness ← `/api/certs`. Latency
+    p50/p95/p99 + error-rate-by-route show explanatory
+    "ships via Prometheus / per-route aggregator follow-up"
+    messages instead of fabricated values.
+  - **All static-fixture fallbacks** (`CERTS`, `RULES`,
+    `TIERS`, `BLACKLIST`, `WHITELIST`, `UPSTREAMS`,
+    `CLUSTER`, `ALERTS`) flipped to empty arrays in
+    `data.jsx::useApi` calls. Live API responses are now
+    the only data source — no fixture seeds the dashboard.
+  - **Three new hooks** in `data.jsx`:
+    `useAttacksByDetectorApi`, `useBotMixApi`,
+    `useThreatIntelApi`.
+  - **Live verified (run-14)**: `data_plane_availability`
+    SLI (83.33% / 99.90% target) renders from the live
+    SLO engine; cert section shows "0 certificates · No
+    certificates configured" honest empty state for the
+    dev config; detector breakdown shows the actual two
+    detector hits from 3 attack probes. Screenshots in
+    `tests/results/run-14-2026-05-01-hackt1/screenshots/`.
+  - Bundle: **192,381 B (188 KB)** — well within the 256
+    KB budget. Workspace tests all pass; release build
+    rebuilt to re-embed the new bundle.
+
+- **Earlier activity:** **MTLS-T5 (CA-bundle hot-reload)
   closed 2026-05-01.** Operators can now rotate the
   inbound-mTLS CA bundle by editing `waf.yaml` —
   `cfg.tls.client_auth.ca_bundle` is re-parsed and the
@@ -665,11 +707,9 @@ required `X-WAF-*` headers, JSONL audit log, and
 `reset_state` atomicity are all green per run-12 (32/32
 OpenAPI shape + 8/8 round-1 acceptance).
 
-- **HACK-T1** — retire `Math.random` + static fixtures on
-  `#/attacks` and `#/analytics` (~3-4 h). Wire to live
-  `useAttacksDistributionApi` / `useTimeseriesApi` /
-  Prometheus `/metrics` data already exposed. Removes the
-  Round-1 elimination risk identified in run-12 followup.
+- **HACK-T1** ✅ shipped today — Round-1 elimination risk
+  closed. Live verification in
+  `tests/results/run-14-2026-05-01-hackt1/`.
 - **HACK-T2** — `tests/contract/v2.3_compliance.sh`
   regression check (~2 h). CI fails on any v2.3 contract
   drift (header missing, JSON shape change,
@@ -716,6 +756,7 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-05-01 | **HACK-T1 (retire dashboard mock data)** First slice of hackathon-readiness track | Removes Round-1 elimination risk per v2.3 §2.2 ("UI must not use mock/local-state data"). Zero `Math.random` calls remain in `pages.jsx` (was 7). **PageAttackEvents** wired to live `/api/attacks/by-detector` + `/api/bots/mix` + `/api/threat-intel/hits` (3 new hooks added to `data.jsx`); the synthetic-data pill is gone; honest empty states render when the window has no events. **PageAnalytics** wired to `/api/stats/timeseries` (req-over-time + block-ratio), `/api/slo` (live SLI rows), `/api/certs` (cert freshness); latency-percentile + per-route widgets show explanatory "ships via Prometheus / aggregator follow-up" messages instead of fake numbers. **All static-fixture fallbacks** (CERTS / RULES / TIERS / BLACKLIST / WHITELIST / UPSTREAMS / CLUSTER / ALERTS) swapped for empty arrays — the live API is the only data source. Live verification (run-14): `data_plane_availability` SLI 83.33%/99.90% target renders from live engine; "0 certificates · No certificates configured" honest empty state for dev config; detector breakdown shows actual counts from 3 attack probes. Screenshots in `tests/results/run-14-2026-05-01-hackt1/`. Bundle 192 KB. Workspace tests all pass; binary rebuilt to re-embed bundle. HACK-T2 (v2.3 contract regression check) next. |
 | 2026-05-01 | **MTLS-T5 (CA-bundle hot-reload)** Operators rotate trust anchors by editing waf.yaml | New `apply_cfg_change_to_client_auth(new_cfg, trust_store)` helper in `config_source/reload.rs` returns `NoStore` / `Applied { cert_count, mode }` / `SkippedDisabled` / `MissingCaBundle` / `Failed { reason }`. **Skip-not-clear**: live trust stays when new cfg disables client_auth (clearing would crash Required-mode handshakes). `supervisor::watch_loop` gains a `client_trust:` parameter, calls the helper after the existing `tls_reloaded` step, emits `mtls_reloaded` (with cert_count + mode in fields) on Applied or `mtls_reload_failed` (with reason) on MissingCaBundle / Failed — both `AuditClass::Admin`. `run.rs` TLS bootstrap now returns the parsed `ClientTrustStore` alongside acceptor + resolver (3-tuple) and threads it into `spawn_config_watcher`. **Tests** (+4 in `config_source::reload`): no-store short-circuit when caller passes None; skipped-disabled when `mode: disabled` (live unchanged); applied-swaps-to-new-CA on valid reload; failed-keeps-live-store when path doesn't exist. Each test uses an rcgen-generated CA written to tempdir then re-read by the helper. 8 spawn_config_watcher test call sites updated for the new param. aegis-proxy 492 → **496 etcd**; production build clean. MTLS-T7 (Console SAN allowlist) next. |
 | 2026-05-01 | **MTLS-T4 (route-scoped policy gate)** Routes can declare `auth_required` to reject anonymous clients with 403 | New `RouteConfig.auth_required: Vec<String>` (empty default = open). `RouteCtx.auth_required` threads through `CompiledRoute` from YAML to the resolver. `forward_allow_to_upstream` now takes `&ClientIdentity` and gates the request before circuit-breaker + upstream pick: mismatch → 403 with `mtls_required` rule_id (contract action `block`); a `tracing::debug` line records route_id + required + actual_kind + principal. `handle_data_request` + `_inner` both gain the `&ClientIdentity` parameter; accept_loop passes its per-connection `conn_identity`. Three pre-existing test-construction sites (`aegis-security/{noop,pipeline,rules/eval}` + `aegis-core::context` test) updated with `auth_required: Vec::new()`. **Tests** (+3): two route-table unit tests (default open; YAML round-trip with mtls+spiffe) + one end-to-end `anonymous_request_to_mtls_required_route_returns_403` driving `accept_loop` against a mock upstream confirms the 403 lands BEFORE the upstream is touched. **Deferred** (split slices): /admin/login mTLS bypass; AuditEvent `actor` field (bundle with MTLS-T11 schema bump); identity-rate-limit fan-out (no concrete policy yet). aegis-proxy 489 → **492 etcd**; production build clean. MTLS-T5 (hot-reload) next. |
 | 2026-05-01 | **MTLS-T3 (identity extraction)** Every TLS connection now populates `ClientIdentity` + feeds the per-identity tracker | New `aegis-proxy/src/listener/identity.rs` (~430 lines incl. tests) — `extract_identity_from_peer_certs` parses the leaf via x509-parser, fingerprints the DER with SHA-256, and walks SANs in priority order: SPIFFE URI → `Spiffe`; otherwise non-SPIFFE URI / DNS / email SAN → `Mtls`; CN fallback when SAN extension absent; bogus DER → Anonymous (verifier accepted; log + continue). **`accept.rs` rewrite**: TLS handshake runs *before* the `service_fn` so the captured identity is stable for every request on the connection (new `ServedIo { Tls | Plain }` enum). Per-request: when both `IdentityTracker` is wired and identity is non-Anonymous, calls `tracker.record_request(principal, kind, decision_label)` after the audit emit — so `/api/mtls/connections` (T6) lights up with real data. **`run.rs` lift**: `IdentityTracker` created once in `run.rs` and passed to BOTH `accept_loop` (data plane) and `admin_accept_loop` (admin); CA-bundle summary load stays in admin_accept_loop. **Cargo**: `sha2.workspace = true` added to aegis-proxy. **Tests** (+16 in aegis-proxy lib): SAN parser matrix (DNS / email / URI / SPIFFE / multi-SAN with SPIFFE-wins / DNS-wins-over-email / non-SPIFFE URI keeps Mtls), CN fallback, fingerprint stability + uniqueness, `chain_ok` round-trip, malformed leaf → Anonymous, SPIFFE trust-domain parser cases, Anonymous when no peer certs / empty list. aegis-proxy 473 → **489 etcd**; production build clean. MTLS-T4 (policy integration) next. |
