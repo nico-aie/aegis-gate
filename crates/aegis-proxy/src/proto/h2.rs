@@ -141,8 +141,26 @@ mod tests {
         assert_eq!(cfg.max_resets_per_window, 1024);
     }
 
+    /// Install the rustls ring crypto provider as the
+    /// process-wide default. The first caller wins; subsequent
+    /// calls receive `Err(_)` (already installed) which we
+    /// silently ignore. Without this, `ServerConfig::builder()`
+    /// / `ClientConfig::builder()` panic when multiple tests
+    /// race on the missing default provider — a known rustls
+    /// 0.23 footgun, since the crate exposes both `ring` and
+    /// `aws-lc-rs` features and refuses to pick automatically.
+    fn ensure_crypto_provider() {
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider()
+                .install_default();
+        });
+    }
+
     #[tokio::test]
     async fn auto_builder_serves_h2_over_tls() {
+        ensure_crypto_provider();
         // Generate self-signed cert.
         let (cert_pem, key_pem) = generate_cert();
 

@@ -164,6 +164,27 @@ impl AuditedMutate {
     /// `MutationError::Validation` and skips the audit chain entirely
     /// — invariant: every chain entry corresponds to a state change
     /// that actually happened.
+    ///
+    /// OTEL-T3 — root admin-mutation span. Every audit-mutated
+    /// PUT / DELETE / POST handler nests its work under one span
+    /// in Jaeger labelled by resource + action so operators can
+    /// follow a config change from API call → chain entry → bus
+    /// emit. Closure body executes inside the span so any
+    /// `tracing::warn!` / `info!` from validators or post-apply
+    /// hooks land on this span.
+    #[tracing::instrument(
+        name = "audit.mutate.apply",
+        skip(self, before, after, mutator),
+        fields(
+            otel.kind = "internal",
+            method = req.method,
+            resource = req.resource,
+            action = req.action,
+            actor = req.actor,
+            request_id = req.request_id,
+            outcome = tracing::field::Empty,
+        ),
+    )]
     pub fn apply<F, T, E>(
         &self,
         req: &MutationRequest<'_>,

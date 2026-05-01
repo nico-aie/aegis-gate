@@ -411,6 +411,268 @@ components:
                 type: string
                 enum: [closed, half-open, open]
 
+    # ----- CC-T1.1 / CC-T1.1.b — upstream pool config (CRUD) -----
+
+    UpstreamsConfigResponse:
+      type: object
+      required: [pools]
+      properties:
+        pools:
+          type: object
+          description: Pool name → PoolView. BTreeMap-sorted.
+          additionalProperties: { $ref: '#/components/schemas/PoolView' }
+
+    PoolView:
+      type: object
+      required: [members, lb, connection, referenced_by_routes]
+      properties:
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/MemberView' }
+        lb:
+          type: string
+          enum: [round_robin, weighted_round_robin, least_conn, consistent_hash, p2c]
+        health:
+          allOf:
+            - $ref: '#/components/schemas/HealthView'
+          nullable: true
+        circuit_breaker:
+          allOf:
+            - $ref: '#/components/schemas/CircuitBreakerView'
+          nullable: true
+        connection:
+          $ref: '#/components/schemas/ConnectionView'
+        referenced_by_routes:
+          type: array
+          items: { type: string }
+          description: Route ids whose `upstream` field targets this pool.
+
+    MemberView:
+      type: object
+      required: [addr, weight]
+      properties:
+        addr:   { type: string, example: "127.0.0.1:3001" }
+        weight: { type: integer, minimum: 1 }
+        zone:   { type: string, nullable: true }
+
+    HealthView:
+      type: object
+      required: [path, interval_ms, timeout_ms]
+      properties:
+        path:        { type: string, example: "/healthz" }
+        interval_ms: { type: integer }
+        timeout_ms:  { type: integer }
+
+    CircuitBreakerView:
+      type: object
+      required: [error_rate_threshold, open_duration_ms]
+      properties:
+        error_rate_threshold:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+        open_duration_ms: { type: integer }
+
+    ConnectionView:
+      type: object
+      required: [max_idle_per_host, idle_timeout_ms, keep_alive, tls]
+      properties:
+        max_idle_per_host: { type: integer }
+        idle_timeout_ms:   { type: integer }
+        keep_alive:        { type: boolean }
+        tls:               { type: boolean }
+
+    # Wire-shape PoolConfig accepted by PUT — uses humantime
+    # strings ("10s" / "3s") not millisecond integers.
+    PoolConfig:
+      type: object
+      required: [members, lb]
+      properties:
+        members:
+          type: array
+          items:
+            type: object
+            required: [addr]
+            properties:
+              addr:   { type: string }
+              weight: { type: integer, minimum: 1, default: 1 }
+              zone:   { type: string, nullable: true }
+        lb:
+          type: string
+          enum: [round_robin, weighted_round_robin, least_conn, consistent_hash, p2c]
+        health:
+          type: object
+          nullable: true
+          properties:
+            path:     { type: string }
+            interval: { type: string, example: "10s" }
+            timeout:  { type: string, example: "3s" }
+        circuit_breaker:
+          type: object
+          nullable: true
+          properties:
+            error_rate_threshold: { type: number, minimum: 0.0, maximum: 1.0 }
+            open_duration:        { type: string, example: "30s" }
+        connection:
+          type: object
+          properties:
+            max_idle_per_host: { type: integer, default: 32 }
+            idle_timeout:      { type: string, example: "30s" }
+            keep_alive:        { type: boolean, default: true }
+            tls:               { type: boolean, default: false }
+
+    # CC-T1.1.b — DELETE 409 carries this shape so the dashboard
+    # can render the route-reference list directly.
+    PoolReferencedError:
+      type: object
+      required: [ok, reason, message, referenced_by_routes]
+      properties:
+        ok:      { type: boolean, enum: [false] }
+        reason:  { type: string,  enum: [pool_referenced] }
+        message: { type: string }
+        referenced_by_routes:
+          type: array
+          items: { type: string }
+
+    # ----- CC-T2.1 / CC-T2.1.b — alert receivers -----
+
+    AlertReceiversResponse:
+      type: object
+      required: [receivers]
+      properties:
+        receivers:
+          type: array
+          items: { $ref: '#/components/schemas/AlertReceiverEntry' }
+
+    AlertReceiverEntry:
+      type: object
+      required: [name, kind, status]
+      properties:
+        name:   { type: string, example: "vt-prod" }
+        kind:   { $ref: '#/components/schemas/RedactedKind' }
+        status: { $ref: '#/components/schemas/ReceiverStatus' }
+
+    # Redacted-secret view of ReceiverKind. Only last-4 chars of
+    # any token / webhook URL / routing key reach the wire.
+    RedactedKind:
+      oneOf:
+        - type: object
+          required: [type, url]
+          properties:
+            type: { type: string, enum: [alertmanager_webhook] }
+            url:  { type: string }
+        - type: object
+          required: [type, webhook_url_redacted]
+          properties:
+            type: { type: string, enum: [slack] }
+            webhook_url_redacted: { type: string, example: "****abcd" }
+        - type: object
+          required: [type, routing_key_redacted]
+          properties:
+            type: { type: string, enum: [pager_duty] }
+            routing_key_redacted: { type: string, example: "****abcd" }
+        - type: object
+          required: [type, instance, table]
+          properties:
+            type:     { type: string, enum: [service_now] }
+            instance: { type: string }
+            table:    { type: string }
+        - type: object
+          required: [type, base_url, project]
+          properties:
+            type:     { type: string, enum: [jira] }
+            base_url: { type: string }
+            project:  { type: string }
+        - type: object
+          required: [type, bot_token_redacted, room_ids]
+          properties:
+            type:               { type: string, enum: [vip_talk] }
+            bot_token_redacted: { type: string, example: "****abcd" }
+            room_ids:
+              type: array
+              items: { type: string }
+
+    ReceiverStatus:
+      type: object
+      properties:
+        last_delivered_at:
+          type: integer
+          format: int64
+          nullable: true
+          description: Unix seconds (UTC). Null until first delivery.
+        last_status:
+          type: string
+          nullable: true
+          description: |
+            Stable code: `ok`, `external`, `skipped_no_feature`,
+            or `failed:<reason>`.
+        consecutive_failures:
+          type: integer
+          minimum: 0
+
+    # Wire-shape AlertReceiver accepted by PUT — externally-tagged
+    # JSON for the kind variant.
+    AlertReceiver:
+      type: object
+      required: [name, kind]
+      properties:
+        name: { type: string }
+        kind:
+          oneOf:
+            - type: object
+              required: [AlertmanagerWebhook]
+              properties:
+                AlertmanagerWebhook:
+                  type: object
+                  required: [url]
+                  properties:
+                    url: { type: string }
+            - type: object
+              required: [Slack]
+              properties:
+                Slack:
+                  type: object
+                  required: [webhook_url]
+                  properties:
+                    webhook_url: { type: string }
+            - type: object
+              required: [PagerDuty]
+              properties:
+                PagerDuty:
+                  type: object
+                  required: [routing_key]
+                  properties:
+                    routing_key: { type: string }
+            - type: object
+              required: [ServiceNow]
+              properties:
+                ServiceNow:
+                  type: object
+                  required: [instance, table]
+                  properties:
+                    instance: { type: string }
+                    table:    { type: string }
+            - type: object
+              required: [Jira]
+              properties:
+                Jira:
+                  type: object
+                  required: [base_url, project]
+                  properties:
+                    base_url: { type: string }
+                    project:  { type: string }
+            - type: object
+              required: [VipTalk]
+              properties:
+                VipTalk:
+                  type: object
+                  required: [bot_token, room_ids]
+                  properties:
+                    bot_token: { type: string }
+                    room_ids:
+                      type: array
+                      items: { type: string }
+
     ClusterResponse:
       type: object
       required: [peers, is_leader]
@@ -990,6 +1252,151 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/UpstreamsResponse' }
 
+  /api/upstreams/config:
+    get:
+      tags: [Configuration]
+      summary: Full upstream-pool configuration view (CC-T1.1)
+      description: |
+        Returns every configured pool with full detail (members, lb,
+        health, circuit-breaker, connection pool) plus the
+        pre-computed `referenced_by_routes` array per pool so the
+        dashboard delete flow renders without a second fetch.
+        BTreeMap-sorted key order for stable JSON.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpstreamsConfigResponse' }
+    put:
+      tags: [Configuration]
+      summary: Whole-map replace of the upstream-pool table (CC-T1.1.b)
+      description: |
+        Audit-mutated. Validates each pool first (`empty_members`,
+        `zero_weight`, `invalid_health_timeout`,
+        `invalid_circuit_threshold`); on Err the registry is
+        untouched. On success the proxy hot-swaps the pool table —
+        in-flight requests finish on the old pools, new requests see
+        the new ones.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pools]
+              properties:
+                pools:
+                  type: object
+                  additionalProperties:
+                    $ref: '#/components/schemas/PoolConfig'
+      responses:
+        '200':
+          description: OK. Pool table replaced; audit chain advanced.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      count: { type: integer }
+                      names:
+                        type: array
+                        items: { type: string }
+        '400':
+          description: Validation failed (e.g. empty members).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: CSRF token missing or mismatched.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/upstreams/pool/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, example: "backend-pool" }
+    put:
+      tags: [Configuration]
+      summary: Single-pool upsert (CC-T1.1.b)
+      description: |
+        Audit-mutated. Read-modify-write on the cfg map: existing
+        pools are preserved, the named pool is inserted or replaced.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PoolConfig' }
+      responses:
+        '200':
+          description: OK. Pool upserted; proxy hot-swaps.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      pool: { type: string }
+        '400':
+          description: Pool config invalid.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: CSRF reject.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Configuration]
+      summary: Delete a single pool (CC-T1.1.b)
+      description: |
+        Audit-mutated. Refuses with **409** + `referenced_by_routes`
+        list when any route still targets the pool; the dashboard
+        delete-confirm modal renders this list directly. DELETE on
+        an unknown pool returns 400 validation.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: OK. Pool removed; proxy hot-swaps.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      removed: { type: string }
+        '400':
+          description: Unknown pool name.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: CSRF reject.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Pool still referenced by routes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PoolReferencedError' }
+
   /api/cluster:
     get:
       tags: [Tracking]
@@ -1033,6 +1440,165 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AlertsResponse' }
+
+  /api/alert-receivers:
+    get:
+      tags: [Configuration]
+      summary: List configured alert channels (CC-T2.1)
+      description: |
+        Every receiver kind (VipTalk / Slack / PagerDuty / ServiceNow
+        / Jira / AlertmanagerWebhook) is rendered with secrets
+        redacted to last-4 chars (`****abcd`). Per-receiver
+        delivery status comes from the dispatch outcome ring.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertReceiversResponse' }
+    put:
+      tags: [Configuration]
+      summary: Whole-list replace of alert receivers (CC-T2.1.b)
+      description: |
+        Audit-mutated. Validates the receiver list (no empty names,
+        no duplicates, kind-specific target fields non-empty); on
+        success hot-swaps the shared ArcSwap'd list and prunes the
+        dispatch ring of removed names. Secrets are written to the
+        live store as plaintext but **never appear in the audit
+        chain** — the chain `before` / `after` carry the
+        last-4-redacted projection only.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [receivers]
+              properties:
+                receivers:
+                  type: array
+                  items: { $ref: '#/components/schemas/AlertReceiver' }
+      responses:
+        '200':
+          description: OK. List replaced; chain advanced.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      count: { type: integer }
+                      names:
+                        type: array
+                        items: { type: string }
+        '400':
+          description: Validation rejected.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: CSRF reject.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/alert-receivers/{name}:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string, example: "vt-prod" }
+    delete:
+      tags: [Configuration]
+      summary: Remove a single alert receiver (CC-T2.1.b)
+      description: |
+        Audit-mutated. Returns 400 validation when the name doesn't
+        exist (no audit-chain entry — invariant: every chain entry
+        corresponds to an applied state change).
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: OK. Receiver removed; chain advanced.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      removed: { type: string }
+                      remaining:
+                        type: array
+                        items: { type: string }
+        '400':
+          description: No receiver with that name.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: CSRF reject.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/alert-receivers/{name}/test:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string, example: "vt-prod" }
+    post:
+      tags: [Configuration]
+      summary: Fire a synthetic test alert through one receiver (CC-T2.1.b)
+      description: |
+        Audit-mutated envelope (CSRF + chain entry) wraps a
+        synthetic `SloAlert` of severity `Ticket` dispatched via
+        `dispatch::send_alert`. Outcome is recorded in the
+        DispatchOutcomeRing so the GET response shows the latest
+        delivery state.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: |
+            OK. `delivered` / `external` / `failed` arrays describe
+            the outcome. Build without `--features alerts` reports
+            VipTalk receivers as `delivered` (the dispatch task is
+            a logged no-op in that mode).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      name: { type: string }
+                      delivered: { type: array, items: { type: string } }
+                      external:  { type: array, items: { type: string } }
+                      failed:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:   { type: string }
+                            reason: { type: string }
+        '400':
+          description: No receiver with that name.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: CSRF reject.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/alerts/{id}/ack:
     parameters:

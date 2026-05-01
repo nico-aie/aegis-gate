@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -13,16 +12,19 @@ use aegis_core::pipeline::SecurityPipeline;
 
 use crate::benchmark::{self, BenchmarkConfig, StageTimings};
 use crate::route::RouteTable;
-use crate::upstream::circuit::CircuitBreaker;
 use crate::upstream::forward;
-use crate::upstream::lb::LbStrategy;
-use crate::upstream::{Member, Pool};
+use crate::upstream::registry::PoolRegistry;
 
 /// Shared context carried by every connection handler.
+///
+/// CC-T1.1.b — `pools` is a [`PoolRegistry`] (ArcSwap-backed) so
+/// the audit-mutated `/api/upstreams/config` PUT/DELETE handlers
+/// can hot-swap the pool table without bouncing the proxy.
+/// In-flight requests that already grabbed an `Arc<Pool>` finish
+/// on the old map; new requests after the swap see the new one.
 pub struct ProxyContext {
     pub route_table: RouteTable,
-    pub pools: HashMap<String, Pool>,
-    pub breakers: HashMap<String, Arc<CircuitBreaker>>,
+    pub pools: PoolRegistry,
     pub pipeline: Arc<dyn SecurityPipeline>,
     /// Benchmark mode configuration. When enabled,
     /// `handle_request` captures per-stage timings and
@@ -31,58 +33,16 @@ pub struct ProxyContext {
 }
 
 impl ProxyContext {
-    /// Build from config.
+    /// Build from config. Validation runs inside
+    /// [`PoolRegistry::build_pools`] so an invalid `cfg.upstreams`
+    /// shape fails boot rather than going live.
     pub fn build(cfg: &WafConfig, pipeline: Arc<dyn SecurityPipeline>) -> aegis_core::Result<Self> {
         let route_table = RouteTable::build(cfg)?;
-
-        let mut pools = HashMap::new();
-        let mut breakers = HashMap::new();
-
-        for (name, pool_cfg) in &cfg.upstreams {
-            let members: Vec<Arc<Member>> = pool_cfg
-                .members
-                .iter()
-                .map(|mc| Arc::new(Member::new(mc.addr, mc.weight, mc.zone.clone())))
-                .collect();
-
-            let strategy = match pool_cfg.lb {
-                aegis_core::config::LbStrategy::RoundRobin => {
-                    LbStrategy::RoundRobin(AtomicUsize::new(0))
-                }
-                aegis_core::config::LbStrategy::WeightedRoundRobin => {
-                    LbStrategy::WeightedRoundRobin(AtomicUsize::new(0))
-                }
-                aegis_core::config::LbStrategy::LeastConn => LbStrategy::LeastConn,
-                aegis_core::config::LbStrategy::P2c => LbStrategy::P2c,
-                aegis_core::config::LbStrategy::ConsistentHash => LbStrategy::ConsistentHash,
-            };
-
-            if let Some(cb_cfg) = &pool_cfg.circuit_breaker {
-                breakers.insert(
-                    name.clone(),
-                    Arc::new(CircuitBreaker::new(
-                        cb_cfg.error_rate_threshold,
-                        10, // min_requests default
-                        cb_cfg.open_duration,
-                    )),
-                );
-            }
-
-            pools.insert(
-                name.clone(),
-                Pool {
-                    name: name.clone(),
-                    members,
-                    strategy,
-                    connection: pool_cfg.connection.clone(),
-                },
-            );
-        }
-
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg.upstreams)
+            .map_err(|e| aegis_core::WafError::Config(e.to_string()))?;
         Ok(Self {
             route_table,
-            pools,
-            breakers,
+            pools: PoolRegistry::from_pools(pools, breakers),
             pipeline,
             benchmark: BenchmarkConfig::off(),
         })
@@ -126,7 +86,7 @@ where
     };
 
     // 2. Check circuit breaker.
-    if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
+    if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
         if !cb.allow_request() {
             return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
@@ -135,7 +95,10 @@ where
         }
     }
 
-    // 3. Pick upstream member.
+    // 3. Pick upstream member. `pools.get` returns an owning
+    //    `Arc<Pool>` so the borrow chain (`pool.strategy`,
+    //    `pool.members`, `pool.connection` below) survives any
+    //    concurrent hot-swap of the pool table.
     let pool = match ctx.pools.get(&route_ctx.upstream) {
         Some(p) => p,
         None => {
@@ -150,7 +113,7 @@ where
         Some(m) => m,
         None => {
             // All members unhealthy.
-            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
+            if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 cb.record_failure();
             }
             return Ok(Response::builder()
@@ -196,7 +159,7 @@ where
 
     let mut response = match result {
         Ok(resp) => {
-            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
+            if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 if resp.status().is_server_error() {
                     cb.record_failure();
                 } else {
@@ -207,7 +170,7 @@ where
         }
         Err(e) => {
             tracing::warn!(error = %e, "upstream forward failed");
-            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
+            if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
                 cb.record_failure();
             }
             Response::builder()
@@ -688,7 +651,7 @@ state:
         }
 
         // Now the breaker should be open.
-        let cb = ctx.breakers.get("pool").unwrap();
+        let cb = ctx.pools.breaker("pool").unwrap();
         assert_eq!(
             cb.state(),
             crate::upstream::circuit::State::Open,

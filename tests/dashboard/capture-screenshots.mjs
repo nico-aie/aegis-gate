@@ -70,13 +70,13 @@ async function main() {
     if (m.type() === 'error') console.error(`console: ${m.text()}`);
   });
 
-  await page.goto(`${ADMIN}/dashboard/`, { waitUntil: 'networkidle' });
+  await page.goto(`${ADMIN}/dashboard/`, { waitUntil: 'domcontentloaded', timeout: 10000 });
   // Wait for the React mount to settle.
   await page.waitForSelector('main.content', { timeout: 5000 });
 
   for (const route of ROUTES) {
     const url = `${ADMIN}/dashboard/#/${route}`;
-    await page.goto(url, { waitUntil: 'networkidle' });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
     await page.waitForFunction(
       r => location.hash === `#/${r}`,
       route,

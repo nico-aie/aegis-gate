@@ -42,27 +42,79 @@ Run through this before the first prod deploy.
 
 ## 1. Container image
 
-Multi-stage Dockerfile is the recommended packaging path. Until
-the official `deploy/Dockerfile` lands (B6-T1, deferred), this
-template is what we run against:
+The official multi-stage `deploy/Dockerfile` (B6-T1) lands the
+production image — Rust 1.91-slim builder + distroless `cc`
+runtime, signed-friendly, ~51 MiB compressed for arm64
+(under the 100 MiB budget). Build with:
 
-```dockerfile
-# Build stage
-FROM rust:1.82-slim AS builder
-WORKDIR /src
-COPY . .
-RUN cargo build -p aegis-bin --release --features "redis affinity"
+```sh
+# Build for the host arch + load into the local Docker daemon
+AEGIS_TAG=1.4.2 \
+AEGIS_PLATFORMS="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
+    bash deploy/docker-build.sh
 
-# Runtime stage — distroless nonroot
-FROM gcr.io/distroless/cc-debian12:nonroot
-COPY --from=builder /src/target/release/waf /usr/local/bin/waf
-EXPOSE 8443 9443 9100
-USER nonroot
-ENTRYPOINT ["/usr/local/bin/waf"]
-CMD ["run", "--config", "/etc/aegis/waf.yaml"]
+# Or: multi-arch (manifest in buildx cache; add AEGIS_PUSH=1 to push)
+AEGIS_TAG=1.4.2 bash deploy/docker-build.sh
 ```
 
-Pin Rust + base-image versions to digests in CI.
+The image bakes in the `production` feature umbrella (redis,
+alerts, geoip, taxii, http3, vault, aws, gcp, azure, consul,
+etcd, k8s). Operators who want a slimmer image can fork the
+Dockerfile and replace `--features production` with the subset
+they actually use.
+
+### Running
+
+```sh
+# Operator config + certs bind-mounted; admin must bind 0.0.0.0
+# (see "Container networking caveat" below)
+docker run --rm \
+    -p 8080:8080 -p 8443:8443 -p 9443:9443 \
+    -v /etc/aegis:/etc/aegis:ro \
+    -v /var/lib/aegis:/var/lib/aegis \
+    aegis-gate:1.4.2
+
+# One-shot subcommands (no listener)
+docker run --rm aegis-gate:1.4.2 version
+docker run --rm -v /etc/aegis:/etc/aegis:ro \
+    aegis-gate:1.4.2 validate --config /etc/aegis/waf.yaml
+```
+
+### Container networking caveat
+
+The shipped `config/dev.yaml` and `config/prod.yaml` bind
+`admin.bind: "127.0.0.1:9443"` — that's the **container's**
+loopback inside Docker, not the host's. Two fixes:
+
+1. **Recommended** — fork your config and bind admin to the
+   container's external interface, leave the IP allowlist
+   tight:
+
+   ```yaml
+   admin:
+     bind: "0.0.0.0:9443"
+     dashboard_auth:
+       ip_allowlist:
+         - "10.0.0.0/8"
+         - "172.16.0.0/12"
+   ```
+
+2. **Quick** — `docker run --network host` so the container
+   shares the host's networking stack. Not portable to k8s, but
+   fine for single-node Linux deployments.
+
+### Image-size budget
+
+`tests/api/dockerfile.sh` builds the image and asserts size ≤
+100 MiB. Run after every Dockerfile / Cargo.toml feature change:
+
+```sh
+bash tests/api/dockerfile.sh
+```
+
+Pin Rust + base-image versions to digests in CI (the Dockerfile's
+`ARG RUST_VERSION` defaults to `1.91`; bump in lockstep with
+Cargo.toml's `rust-version`).
 
 ---
 

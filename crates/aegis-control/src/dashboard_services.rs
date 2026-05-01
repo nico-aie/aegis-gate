@@ -108,6 +108,50 @@ pub struct DashboardServices {
     /// `X-WAF-*` response stamping, minimal-schema audit log.
     /// See [`plans/interop-contract.md`].
     pub interop: Option<Arc<crate::interop::InteropRuntime>>,
+    /// Alert-channel management surface (CC-T2.1). `None` until
+    /// `aegis-proxy::run` plumbs a receiver provider closure +
+    /// the dispatch outcome ring shared with the SLO dispatch
+    /// task. The GET `/api/alert-receivers` endpoint returns
+    /// `{"receivers": []}` while this is `None` so the
+    /// dashboard renders an empty-state card without erroring.
+    pub alert_receivers:
+        Option<Arc<crate::api::alert_receivers::AlertReceiversHandler>>,
+    /// Live receiver list — the ArcSwap'd store the SLO dispatch
+    /// task and the GET handler share. Exposed so the audit-mutated
+    /// PUT / DELETE handlers (CC-T2.1.b) can `.store(Arc::new(new))`
+    /// to hot-swap the list. Wired by the proxy boot path alongside
+    /// [`Self::alert_receivers`]; both either present or absent
+    /// together.
+    pub alert_receivers_store:
+        Option<Arc<arc_swap::ArcSwap<Vec<crate::slo::AlertReceiver>>>>,
+    /// Dispatch outcome ring — the writeable handle the
+    /// PUT / DELETE / POST-test handlers update. Same instance
+    /// the SLO dispatch task feeds and the GET handler reads;
+    /// duplicating the handle here keeps the audit-mutated
+    /// handlers from having to reach through
+    /// [`Self::alert_receivers`].
+    pub alert_receivers_ring:
+        Option<crate::api::alert_receivers::DispatchOutcomeRing>,
+    /// CC-T1.1.b — writer handle for the live upstream pool
+    /// registry. The proxy boot path stashes an
+    /// `Arc<PoolRegistry>` here (via the `UpstreamWriter` trait)
+    /// so the audit-mutated `/api/upstreams/config` PUT/DELETE
+    /// handlers can hot-swap the pool table without bouncing
+    /// the proxy. `None` for test bundles that boot
+    /// `DashboardServices` standalone — handlers return Internal
+    /// in that case.
+    pub upstream_writer:
+        Option<std::sync::Arc<dyn crate::api::upstreams_config::UpstreamWriter>>,
+    /// MTLS-T6 — live per-identity sliding-window tracker. The
+    /// `/api/mtls/connections` and `/api/mtls/failures`
+    /// endpoints read snapshots from this. `None` for test
+    /// bundles that don't need mTLS observability — the
+    /// handlers serve empty-state bodies in that case.
+    /// Wired by the proxy boot path; `record_request` /
+    /// `record_failure` callers light up once MTLS-T2 / T3
+    /// land the rustls + identity-extraction stages.
+    pub identity_tracker:
+        Option<std::sync::Arc<crate::identity_tracker::IdentityTracker>>,
 }
 
 impl DashboardServices {
@@ -319,6 +363,20 @@ impl DashboardServices {
                 // crate after construction (see
                 // `aegis-bin/src/main.rs`).
                 interop: None,
+                // Alert-receivers handler + writeable handles are
+                // opted in by the proxy boot path once it has
+                // constructed the shared receiver ArcSwap +
+                // dispatch ring.
+                alert_receivers: None,
+                alert_receivers_store: None,
+                alert_receivers_ring: None,
+                // CC-T1.1.b — wired by the proxy boot path once
+                // `ProxyContext.pools` (PoolRegistry) is built.
+                upstream_writer: None,
+                // MTLS-T6 — wired by the proxy boot path. Until
+                // then `/api/mtls/connections` + `/api/mtls/failures`
+                // serve empty-state bodies.
+                identity_tracker: None,
             },
             drain,
         )

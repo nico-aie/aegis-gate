@@ -72,6 +72,47 @@ aegis_put_status() {
   fi
 }
 
+aegis_delete() {
+  local path="$1" csrf="${2-$AEGIS_CSRF}"
+  if [[ -n "$csrf" ]]; then
+    curl "${AEGIS_CURL_OPTS[@]}" -X DELETE \
+      -H "x-csrf-token: $csrf" \
+      "$AEGIS_ADMIN$path"
+  else
+    curl "${AEGIS_CURL_OPTS[@]}" -X DELETE "$AEGIS_ADMIN$path"
+  fi
+}
+
+aegis_delete_status() {
+  local path="$1" csrf="${2-$AEGIS_CSRF}"
+  if [[ -n "$csrf" ]]; then
+    curl "${AEGIS_CURL_OPTS[@]}" -X DELETE \
+      -H "x-csrf-token: $csrf" \
+      -o /dev/null -w "%{http_code}" "$AEGIS_ADMIN$path"
+  else
+    curl "${AEGIS_CURL_OPTS[@]}" -X DELETE \
+      -o /dev/null -w "%{http_code}" "$AEGIS_ADMIN$path"
+  fi
+}
+
+# Combined: status + body in one round-trip. Used by tests that
+# need to assert on the 409 + referenced_by_routes payload.
+aegis_delete_full() {
+  local path="$1" csrf="${2-$AEGIS_CSRF}"
+  curl "${AEGIS_CURL_OPTS[@]}" -X DELETE \
+    -H "x-csrf-token: $csrf" \
+    -w "\n__HTTP_STATUS__:%{http_code}" "$AEGIS_ADMIN$path"
+}
+
+aegis_put_full() {
+  local path="$1" body="$2" csrf="${3-$AEGIS_CSRF}"
+  curl "${AEGIS_CURL_OPTS[@]}" -X PUT \
+    -H "content-type: application/json" \
+    -H "x-csrf-token: $csrf" \
+    -d "$body" \
+    -w "\n__HTTP_STATUS__:%{http_code}" "$AEGIS_ADMIN$path"
+}
+
 assert_eq() {
   if [[ "$1" != "$2" ]]; then
     echo "FAIL: expected '$2' got '$1' (${3:-})" >&2

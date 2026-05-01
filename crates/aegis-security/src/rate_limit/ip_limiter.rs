@@ -33,6 +33,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use serde::Serialize;
 
@@ -78,7 +79,14 @@ pub struct IpRateLimiter {
 }
 
 struct Inner {
-    cfg: IpRateLimitConfig,
+    /// Wrapped in `ArcSwap` so config hot-reload (file or etcd
+    /// watcher) can update `limit` / `window` atomically without
+    /// rebuilding the per-IP timestamp map. Existing timestamps
+    /// stay live; the new limit applies on the next `consume_at`
+    /// call. Hot-path cost: one `ArcSwap::load` per request
+    /// (~5 ns) — strictly cheaper than the surrounding
+    /// `DashMap::entry` lookup.
+    cfg: ArcSwap<IpRateLimitConfig>,
     map: DashMap<IpAddr, VecDeque<Instant>>,
     last_sweep: parking_lot::Mutex<Instant>,
 }
@@ -87,11 +95,21 @@ impl IpRateLimiter {
     pub fn new(cfg: IpRateLimitConfig) -> Self {
         Self {
             inner: Arc::new(Inner {
-                cfg,
+                cfg: ArcSwap::from_pointee(cfg),
                 map: DashMap::new(),
                 last_sweep: parking_lot::Mutex::new(Instant::now()),
             }),
         }
+    }
+
+    /// Hot-swap the limiter config. Keeps the per-IP timestamp
+    /// map intact — operators editing `cfg.rate_limit.buckets`
+    /// don't accidentally reset every flood-source IP back to
+    /// zero counts. The new limit applies on the next
+    /// `consume_at` call; the new window changes which timestamps
+    /// the eviction loop drops on the next sweep.
+    pub fn set_config(&self, cfg: IpRateLimitConfig) {
+        self.inner.cfg.store(Arc::new(cfg));
     }
 
     /// Consume one slot for `ip`. Returns the post-state
@@ -103,7 +121,7 @@ impl IpRateLimiter {
     /// Test seam — drives the clock from the caller so unit
     /// tests can verify window-edge behaviour deterministically.
     pub fn consume_at(&self, ip: IpAddr, now: Instant) -> RateDecision {
-        let cfg = self.inner.cfg;
+        let cfg = **self.inner.cfg.load();
         let mut entry = self.inner.map.entry(ip).or_default();
         let cutoff = now.checked_sub(cfg.window).unwrap_or(now);
 
@@ -165,7 +183,7 @@ impl IpRateLimiter {
         *guard = now;
         drop(guard);
 
-        let stale_after = self.inner.cfg.window * 2;
+        let stale_after = self.inner.cfg.load().window * 2;
         self.inner.map.retain(|_, deque| {
             match deque.back() {
                 Some(&latest) => now.saturating_duration_since(latest) < stale_after,
@@ -175,7 +193,7 @@ impl IpRateLimiter {
     }
 
     pub fn config(&self) -> IpRateLimitConfig {
-        self.inner.cfg
+        **self.inner.cfg.load()
     }
 
     /// Number of IPs currently tracked. Useful for metrics.
@@ -330,6 +348,77 @@ mod tests {
         assert!(last.unwrap().allowed);
         let next = l.consume(ip("10.0.0.1"));
         assert!(!next.allowed);
+    }
+
+    #[test]
+    fn set_config_swaps_limit_atomically() {
+        // Boot with limit=3. Consume 3 → all allowed. set_config
+        // raises limit to 10 → next 7 should also be allowed
+        // (existing 3 timestamps still in the window count
+        // toward the new limit).
+        let l = limiter(3, 60);
+        let now = Instant::now();
+        for _ in 0..3 {
+            assert!(l.consume_at(ip("10.0.0.1"), now).allowed);
+        }
+        // 4th would be denied at limit=3.
+        assert!(!l.consume_at(ip("10.0.0.1"), now).allowed);
+
+        l.set_config(IpRateLimitConfig {
+            limit: 10,
+            window: Duration::from_secs(60),
+        });
+
+        // 4th-10th now allowed (count_before = 3, limit = 10).
+        for i in 0..7 {
+            let d = l.consume_at(ip("10.0.0.1"), now);
+            assert!(d.allowed, "request {} after raise should pass", i + 4);
+        }
+        // 11th denied at the new limit.
+        assert!(!l.consume_at(ip("10.0.0.1"), now).allowed);
+    }
+
+    #[test]
+    fn set_config_preserves_per_ip_timestamp_state() {
+        // Operator intent on hot-reload: editing
+        // cfg.rate_limit.buckets shouldn't reset every flooding
+        // source IP back to zero counts.
+        let l = limiter(100, 60);
+        let now = Instant::now();
+        for _ in 0..50 {
+            l.consume_at(ip("203.0.113.1"), now);
+        }
+        for _ in 0..30 {
+            l.consume_at(ip("203.0.113.2"), now);
+        }
+        let tracked_before = l.tracked();
+        assert_eq!(tracked_before, 2);
+
+        // Hot-reload to a tighter limit. Per-IP state stays.
+        l.set_config(IpRateLimitConfig {
+            limit: 10,
+            window: Duration::from_secs(60),
+        });
+        assert_eq!(l.tracked(), tracked_before);
+        assert_eq!(l.config().limit, 10);
+    }
+
+    #[test]
+    fn set_config_to_lower_limit_denies_already_over_quota_ips() {
+        // IP at 50 consumed under limit=100. Drop limit to 30 →
+        // next consume should be denied (count_before 50 >= 30).
+        let l = limiter(100, 60);
+        let now = Instant::now();
+        for _ in 0..50 {
+            l.consume_at(ip("10.0.0.99"), now);
+        }
+        l.set_config(IpRateLimitConfig {
+            limit: 30,
+            window: Duration::from_secs(60),
+        });
+        let d = l.consume_at(ip("10.0.0.99"), now);
+        assert!(!d.allowed);
+        assert_eq!(d.limit, 30);
     }
 
     #[test]

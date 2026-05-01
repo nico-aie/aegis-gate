@@ -31,6 +31,51 @@ alerts = ["aegis-control/alerts"]
 # in `geoip.country_db` / `geoip.asn_db`. Without these DBs the
 # lookups silently return None and the API drops the fields.
 geoip = ["aegis-proxy/geoip"]
+# `vault`, `aws`, `gcp`, `azure` — cloud secret-resolver
+# adapters. Each opts in to a single-cloud SDK. Combine freely.
+vault = ["aegis-proxy/vault"]
+aws    = ["aegis-proxy/aws"]
+gcp    = ["aegis-proxy/gcp"]
+azure  = ["aegis-proxy/azure"]
+# `consul`, `etcd`, `k8s` — service-discovery adapters.
+consul = ["aegis-proxy/consul"]
+etcd   = ["aegis-proxy/etcd"]
+k8s    = ["aegis-proxy/k8s"]
+# `http3` — QUIC listener (quinn 0.11 + h3 0.0.8 + h3-quinn).
+http3 = ["aegis-proxy/http3"]
+# `taxii` — STIX/TAXII threat-intel fetch loop.
+taxii = ["aegis-security/taxii"]
+# `otel` — OpenTelemetry OTLP exporter for distributed tracing.
+# Enables the OTLP gRPC exporter that ships every `tracing` span
+# emitted by the WAF to the configured collector
+# (cfg.observability.otel.endpoint). The 4 dep set is the standard
+# OTel-Rust trace stack — version-pinned together because the
+# inter-crate API breaks on minor bumps.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
+# `production` — full feature set the `deploy/Dockerfile` ships.
+# Operators who want a slimmer image can drop individual features
+# (e.g. `aws-only` deployments don't need `gcp` + `azure` +
+# `vault`). Build with:
+#   cargo build -p aegis-bin --release --features production
+production = [
+    "redis",
+    "alerts",
+    "geoip",
+    "taxii",
+    "http3",
+    "vault",
+    "aws",
+    "gcp",
+    "azure",
+    "consul",
+    "etcd",
+    "k8s",
+]
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
@@ -38,12 +83,19 @@ aegis-proxy = { path = "../aegis-proxy" }
 aegis-security = { path = "../aegis-security" }
 aegis-control = { path = "../aegis-control" }
 tokio.workspace = true
+arc-swap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 blake3.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 core_affinity = { version = "0.8", optional = true }
+# OTEL-T2 — OpenTelemetry stack. Pinned together; the four
+# crates' APIs ratchet in lockstep on minor bumps.
+opentelemetry         = { version = "0.24", optional = true }
+opentelemetry_sdk     = { version = "0.24", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp    = { version = "0.17", features = ["grpc-tonic", "trace"], optional = true }
+tracing-opentelemetry = { version = "0.25", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

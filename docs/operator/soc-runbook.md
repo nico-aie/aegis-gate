@@ -137,7 +137,7 @@ deps beyond libc + OpenSSL/aws-lc-rs.
 ```sh
 target/release/waf version
 # Should print the build hash, e.g.:
-#   waf 1.4.2-3a8f (rust 1.82, redis+alerts+geoip+taxii+http3)
+#   waf 1.4.2-3a8f (rust 1.91, redis+alerts+geoip+taxii+http3)
 ```
 
 ### Build the dashboard bundle separately
@@ -201,17 +201,34 @@ Run-05 measured: 9.5 k RPS via VIP; 99.93 % hard-failover budget;
 Detail: [`docs/operations/ha-clustering.md`](../operations/ha-clustering.md)
 and the `tests/cluster/06-mid-burst-failover.sh` reproducer.
 
-#### C. Docker / Compose (dev + integration)
+#### C. Docker (production image — B6-T1)
+
+```sh
+# Build the image (once)
+AEGIS_TAG=1.4.2 bash deploy/docker-build.sh
+
+# Run with config + cert bind-mounts. Admin port is loopback by
+# default; `--network host` gives the container the host's
+# network stack (recommended for single-node deploys).
+docker run --rm --network host \
+    -v /etc/aegis:/etc/aegis:ro \
+    -v /var/lib/aegis:/var/lib/aegis \
+    aegis-gate:1.4.2
+```
+
+Image: ~51 MiB compressed, distroless `cc` base, runs as
+`nonroot` (uid 65532). Production feature umbrella baked in
+(redis, alerts, geoip, taxii, http3, all cloud secret resolvers
++ service discovery drivers). See [`deploy/GUIDE.md` § 1](../../deploy/GUIDE.md#1-container-image)
+for slimming + multi-arch + push instructions.
+
+#### D. Dev infrastructure (etcd, Redis, etc.)
 
 ```sh
 docker compose -f deploy/docker-compose.dev.yml up -d
 # Brings up: etcd, Prometheus, Jaeger, Redis, httpbin
-# Then point waf at this stack:
 target/release/waf run --config config/dev.yaml
 ```
-
-Production Dockerfile (`B6-T1`) is the only remaining Phase B item;
-when shipped it will be at `deploy/Dockerfile`.
 
 ### Verify
 

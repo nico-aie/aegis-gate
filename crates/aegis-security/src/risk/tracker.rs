@@ -72,11 +72,13 @@ pub struct RiskTracker {
 
 struct TrackerInner {
     map: DashMap<IpAddr, Slot>,
-    thresholds: RiskThresholds,
+    /// CI-T12 — thresholds are atomically swappable so
+    /// `PUT /api/risk/thresholds` can hot-apply new values
+    /// without a restart. Reads through `Arc::clone` (free)
+    /// and the inner clone is cheap (3 u32s).
+    thresholds: arc_swap::ArcSwap<RiskThresholds>,
     trust: TrustRecoveryConfig,
     strikes: StrikeConfig,
-    /// Hard cap on per-IP score; mirrors `RiskThresholds.max`.
-    max_score: u32,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -94,12 +96,25 @@ impl RiskTracker {
         Self {
             inner: Arc::new(TrackerInner {
                 map: DashMap::new(),
-                thresholds: cfg.thresholds.clone(),
+                thresholds: arc_swap::ArcSwap::from_pointee(cfg.thresholds.clone()),
                 trust: cfg.trust_recovery.clone().unwrap_or_default(),
                 strikes: cfg.strikes.clone().unwrap_or_default(),
-                max_score: cfg.thresholds.max,
             }),
         }
+    }
+
+    /// CI-T12 — atomic threshold swap. The next `level()` /
+    /// `record_*` call sees the new values; in-flight observations
+    /// finish on whichever pointer they captured. `max` is enforced
+    /// going forward only (existing scores aren't re-clamped).
+    pub fn set_thresholds(&self, t: RiskThresholds) {
+        self.inner.thresholds.store(Arc::new(t));
+    }
+
+    /// Snapshot the current thresholds — used by `/api/risk/thresholds`
+    /// GET and tests.
+    pub fn thresholds(&self) -> RiskThresholds {
+        (**self.inner.thresholds.load()).clone()
     }
 
     /// Register a malicious event. Adds `delta` to the score
@@ -122,7 +137,7 @@ impl RiskTracker {
             strikes: 0,
             last_seen: now,
         });
-        entry.score = (entry.score + delta).min(self.inner.max_score);
+        entry.score = (entry.score + delta).min(self.inner.thresholds.load().max);
         entry.strikes = entry.strikes.saturating_add(1);
         entry.last_seen = now;
         slot_to_state(*entry)
@@ -164,9 +179,10 @@ impl RiskTracker {
         if self.is_strike_blocked(ip) {
             return RiskLevel::Block;
         }
-        if state.score >= self.inner.thresholds.block_at {
+        let t = self.inner.thresholds.load();
+        if state.score >= t.block_at {
             RiskLevel::Block
-        } else if state.score >= self.inner.thresholds.challenge_at {
+        } else if state.score >= t.challenge_at {
             RiskLevel::Challenge
         } else {
             RiskLevel::Allow
@@ -211,15 +227,17 @@ impl RiskTracker {
                 .cmp(&a.1.strikes)
                 .then_with(|| b.1.score.cmp(&a.1.score))
         });
+        let t = self.inner.thresholds.load();
+        let block_at = t.block_at;
+        let challenge_at = t.challenge_at;
+        drop(t);
         all.into_iter()
             .take(n)
             .map(|(ip, slot)| {
                 let strike_blocked = slot.strikes >= self.inner.strikes.block_at;
-                let level = if strike_blocked
-                    || slot.score >= self.inner.thresholds.block_at
-                {
+                let level = if strike_blocked || slot.score >= block_at {
                     "block"
-                } else if slot.score >= self.inner.thresholds.challenge_at {
+                } else if slot.score >= challenge_at {
                     "challenge"
                 } else {
                     "allow"
@@ -254,9 +272,10 @@ impl RiskTracker {
         let now = Instant::now();
         let state = self.snapshot(ip)?;
         let strike_blocked = self.is_strike_blocked(ip);
-        let level = if strike_blocked || state.score >= self.inner.thresholds.block_at {
+        let t = self.inner.thresholds.load();
+        let level = if strike_blocked || state.score >= t.block_at {
             "block"
-        } else if state.score >= self.inner.thresholds.challenge_at {
+        } else if state.score >= t.challenge_at {
             "challenge"
         } else {
             "allow"

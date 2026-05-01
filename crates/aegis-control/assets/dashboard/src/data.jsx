@@ -402,6 +402,52 @@ function useCertsApi()    { return useApi('/api/certs',           { intervalMs: 
 function useAlertsApi()   { return useApi('/api/alerts',          { intervalMs: 5000, fallback: { alerts: ALERTS } }); }
 function useGitopsApi()   { return useApi('/api/gitops/status',   { intervalMs: 30000, fallback: null }); }
 function useUpstreamsApi(){ return useApi('/api/upstreams',       { intervalMs: 5000, fallback: { pools: UPSTREAMS } }); }
+// CC-T1.1 — full upstream-pool config view (members, lb, health,
+// circuit-breaker, connection pool, referenced_by_routes).
+// CC-T1.1.b shipped the audit-mutated PUT/DELETE; helpers below.
+function useUpstreamsConfigApi() {
+  return useApi('/api/upstreams/config', {
+    intervalMs: 30000,
+    fallback: { pools: {} },
+  });
+}
+
+// CC-T1.1.b — upstream pool mutation helpers. CSRF cookie+header
+// pattern from rulesPut / settingsModePut.
+async function upstreamsConfigPut(pools) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/upstreams/config', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ pools }),
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
+async function poolUpsert(name, body) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/upstreams/pool/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  // Pass through the HTTP status so the caller can distinguish
+  // 409 (route-reference guard) from 400 (validation).
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
+async function poolDelete(name) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/upstreams/pool/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  // 409 with referenced_by_routes payload is normal — caller renders it.
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
 function useRuntimeApi()  { return useApi('/api/runtime',         { intervalMs: 60000, fallback: null }); }
 
 // DD-T6 — rule CRUD wrapper. Handles CSRF + error mapping.
@@ -444,6 +490,24 @@ async function rulesToggle(id) {
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
 
+// CI-T12 — risk thresholds (read + audit-mutated PUT).
+function useRiskThresholdsApi() {
+  return useApi('/api/risk/thresholds', {
+    intervalMs: 5000,
+    fallback: { challenge_at: 40, block_at: 80, max: 100 },
+  });
+}
+async function settingsRiskThresholdsPut(body) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/risk/thresholds', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
+
 // CI-T6 — settings mutation helpers. Same CSRF + JSON pattern as
 // the Rule CRUD wrappers above.
 async function settingsModePut(mode) {
@@ -458,6 +522,47 @@ async function settingsModePut(mode) {
 }
 function useModeApi() {
   return useApi('/api/mode', { intervalMs: 5000, fallback: { mode: 'enforce' } });
+}
+
+// CC-T2.* — alert-receivers (read + audit-mutated PUT/DELETE/POST-test).
+// Backend returns receivers with secrets redacted to last-4 chars
+// (`bot_token_redacted`, `webhook_url_redacted`, `routing_key_redacted`).
+// Edits MUST send the full secret value; leaving the secret field empty in
+// an edit form means "keep existing secret" — the dashboard must merge the
+// new partial with the cached redacted view client-side.
+function useAlertReceiversApi() {
+  return window.useApi('/api/alert-receivers', {
+    intervalMs: 5000,
+    fallback: { receivers: [] },
+  });
+}
+async function alertReceiversPut(receivers) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/alert-receivers', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ receivers }),
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
+async function alertReceiverDelete(name) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/alert-receivers/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+}
+async function alertReceiverTest(name) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/alert-receivers/${encodeURIComponent(name)}/test`, {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
 
 // DD-T7 — config-version polling. Returns { applied: bool, latencyMs }.
@@ -492,8 +597,14 @@ Object.assign(window, {
   useAttacksDistributionApi, useAttacksTopApi,
   useAuditLogApi,
   useClusterApi, useSloApi, useCertsApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
+  // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers
+  useUpstreamsConfigApi, upstreamsConfigPut, poolUpsert, poolDelete,
   useRoutesApi, useTiersApi,
   rulesPost, rulesPut, rulesDelete, rulesToggle, waitForVersion,
   // CI-T6 — settings mutations
   useModeApi, settingsModePut,
+  // CI-T12 — risk thresholds (read + audit-mutated PUT)
+  useRiskThresholdsApi, settingsRiskThresholdsPut,
+  // CC-T2.* — alert-receivers (read + audit-mutated PUT/DELETE/POST-test)
+  useAlertReceiversApi, alertReceiversPut, alertReceiverDelete, alertReceiverTest,
 });

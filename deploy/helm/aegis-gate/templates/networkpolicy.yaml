@@ -1,0 +1,39 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aegis-gate.fullname" . }}-admin
+  labels:
+    {{- include "aegis-gate.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "aegis-gate.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Data-plane ports — open to anywhere on the cluster network.
+    # The WAF is the front door; ingress restriction happens at
+    # the cloud LB.
+    {{- if .Values.config.listeners.dataPlaintext.enabled }}
+    - ports:
+        - port: {{ .Values.config.listeners.dataPlaintext.port }}
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.config.listeners.dataTls.enabled }}
+    - ports:
+        - port: {{ .Values.config.listeners.dataTls.port }}
+          protocol: TCP
+    {{- end }}
+    # Admin port — restricted to the namespaces the operator
+    # tools (kubectl, dashboards, CI runners) live in.
+    - ports:
+        - port: {{ .Values.config.listeners.admin.port }}
+          protocol: TCP
+      from:
+        {{- range .Values.networkPolicy.adminAllowedNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+{{- end }}

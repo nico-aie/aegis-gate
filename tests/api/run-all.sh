@@ -40,4 +40,7 @@ echo
 echo "==> tests/api/openapi-shape.sh"
 "$HERE/openapi-shape.sh"
 echo
+echo "==> tests/api/upstreams-crud.sh (CC-T1.audit)"
+"$HERE/upstreams-crud.sh"
+echo
 echo "all admin-API smoke tests passed"

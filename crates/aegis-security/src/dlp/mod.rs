@@ -181,7 +181,7 @@ fn luhn_check(cc: &str) -> bool {
             }
         })
         .sum();
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 fn ssn_validate(ssn: &str) -> bool {

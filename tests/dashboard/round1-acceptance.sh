@@ -131,29 +131,23 @@ fi
 # --------------------------------------------------------------- #
 # 1. Real-time monitor ≤ 5 s                                      #
 #                                                                  #
-# Subscribe to /dashboard/sse, then trigger an audit-emitting     #
-# admin mutation (mode toggle) and time-stamp the round-trip.     #
-#                                                                  #
-# NOTE: data-plane Allow/Block decisions don't currently broadcast #
-# to the audit bus — the bus only carries mutation events today.  #
-# Tracked as a follow-up; for the contract latency check, an      #
-# admin event proves the real-time pipe works within 5 s.         #
+# Subscribe to /dashboard/sse, fire a uniquely-pathed request     #
+# through the data plane, and time-stamp the SSE round-trip.      #
+# Post-CI-T11 the audit bus carries every data-plane decision —   #
+# the unique path lets us distinguish our probe from concurrent   #
+# traffic.                                                        #
 # --------------------------------------------------------------- #
 SSE_LOG="$TMPDIR/sse.log"
 SSE_TS_FILE="$TMPDIR/sse-first-event.ts"
 
-# Marker: include the test pid so we can disambiguate the event
-# from any concurrent traffic.
-probe_marker="round1-real-time-$$"
+probe_path="/__round1_$(date +%s)_$$"
 
 ( curl --silent --max-time 8 --no-buffer \
        --cookie "$COOKIES" \
        -H "accept: text/event-stream" \
        "$AEGIS_ADMIN/dashboard/sse" \
    | while IFS= read -r line; do
-       # mode_set audit events follow the rule_create above; the
-       # FIRST mode_set we see after subscribe is ours.
-       if echo "$line" | grep -q '"action":"mode_set"'; then
+       if echo "$line" | grep -q "\"path\":\"$probe_path\""; then
          ms_now > "$SSE_TS_FILE"
          break
        fi
@@ -163,20 +157,8 @@ SSE_PID=$!
 sleep 0.5
 PROBE_T0=$(ms_now)
 
-# Toggle mode → audit event → SSE broadcast.
 curl --silent --max-time 3 -o /dev/null \
-     --cookie "$COOKIES" \
-     -H "x-csrf-token: $CSRF" \
-     -H "content-type: application/json" \
-     -X PUT -d '{"mode":"log_only"}' \
-     "$AEGIS_ADMIN/api/mode" || true
-# Flip back so the test is idempotent.
-curl --silent --max-time 3 -o /dev/null \
-     --cookie "$COOKIES" \
-     -H "x-csrf-token: $CSRF" \
-     -H "content-type: application/json" \
-     -X PUT -d '{"mode":"enforce"}' \
-     "$AEGIS_ADMIN/api/mode" || true
+     "$AEGIS_DATA$probe_path" || true
 
 # Wait up to 5 s for the event.
 for _ in $(seq 1 50); do
@@ -195,7 +177,7 @@ if [[ -s "$SSE_TS_FILE" ]]; then
     fail "real-time SSE latency ${LATENCY_MS} ms exceeds 5000 ms"
   fi
 else
-  fail "did not observe mode_set audit event within 5 s ($probe_marker)"
+  fail "did not observe SSE event for $probe_path within 5 s"
 fi
 
 # --------------------------------------------------------------- #

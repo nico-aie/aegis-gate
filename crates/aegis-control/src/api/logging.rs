@@ -62,7 +62,7 @@ pub fn render_cold_tier(sinks: &[AuditSinkConfig]) -> String {
     let entries: Vec<SinkEntry> = sinks
         .iter()
         .map(|cfg| match cfg {
-            AuditSinkConfig::Jsonl { path } => SinkEntry {
+            AuditSinkConfig::Jsonl { path, .. } => SinkEntry {
                 id: "jsonl",
                 kind: "file",
                 destination: path.display().to_string(),
@@ -134,6 +134,9 @@ mod tests {
         let sinks = vec![
             AuditSinkConfig::Jsonl {
                 path: PathBuf::from("/var/log/aegis/audit.jsonl"),
+                retention_days: 30,
+                max_batch: 100,
+                flush_interval: std::time::Duration::from_secs(1),
             },
             AuditSinkConfig::Syslog {
                 address: "10.0.0.5:514".into(),

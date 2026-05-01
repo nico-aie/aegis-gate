@@ -78,6 +78,56 @@ services:
       - "4317:4317"     # OTLP gRPC
       - "4318:4318"     # OTLP HTTP
 
+  # Grafana — operator visualization layer over Prometheus + Jaeger.
+  # Anonymous editor access for dev convenience; locked down in
+  # production deploys (set GF_AUTH_ANONYMOUS_ENABLED=false +
+  # configure GF_SECURITY_ADMIN_PASSWORD via secret).
+  #
+  # Datasources + dashboards are file-provisioned from
+  # `deploy/grafana/provisioning/{datasources,dashboards}/` and
+  # `deploy/grafana/dashboards/` so a fresh `docker compose up`
+  # comes up with the WAF / Redis / Runtime dashboards already
+  # rendered — operators don't have to click through a wizard.
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: aegis-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health | grep -q '\"database\":\"ok\"' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Redis exporter — feeds the Redis dashboard. Optional but
+  # default-on in dev so the dashboard isn't blank. Production
+  # operators can omit by removing both this service and the
+  # `aegis-redis` Prometheus job.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.58.0
+    container_name: aegis-redis-exporter
+    command:
+      - --redis.addr=redis://redis:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+
   # ---------- DATA PLANE (optional) ----------
 
   # Optional counter store. Used by M2 for shared rate-limit
@@ -137,6 +187,7 @@ services:
 
 volumes:
   etcd-data:
+  grafana-data:
 
 networks:
   default:

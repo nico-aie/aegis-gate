@@ -40,6 +40,54 @@ pub struct ValidateResponse {
     pub warnings: Vec<ValidateMessage>,
 }
 
+/// HU-T1 — rule IDs that collide with built-in detector class
+/// names. Operators who create a rule named "sqli" or "xss"
+/// haven't *broken* anything (rules and detectors live in
+/// separate stores — see audit), but the id collision corrupts
+/// audit-log filtering and the dashboard's "rule X applied"
+/// toast becomes ambiguous. Reject up-front with a clear error.
+///
+/// The list mirrors `aegis_security::detectors::DetectorClass::as_str()`
+/// — kept hard-coded here to avoid a cross-crate dep just for
+/// eight string literals; if a new detector class lands, add
+/// its stable name here too. Tests pin the list against the
+/// real detector mask names.
+const RESERVED_RULE_IDS: &[&str] = &[
+    "sqli",
+    "xss",
+    "path_traversal",
+    "ssrf",
+    "header_injection",
+    "body_abuse",
+    "recon",
+    "brute_force",
+];
+
+/// Validate a candidate rule id. Returns `None` on accept,
+/// `Some(ValidateMessage)` on reject so the caller can fold
+/// the rejection into the same `ValidateResponse.errors` shape
+/// the body validator uses.
+pub fn validate_rule_id(id: &str) -> Option<ValidateMessage> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Some(ValidateMessage {
+            line: 1,
+            col: 1,
+            message: "rule id must not be empty".into(),
+        });
+    }
+    if RESERVED_RULE_IDS.contains(&trimmed) {
+        return Some(ValidateMessage {
+            line: 1,
+            col: 1,
+            message: format!(
+                "rule id '{trimmed}' is reserved (matches a built-in detector class); pick a different id"
+            ),
+        });
+    }
+    None
+}
+
 /// Toy validator. Real grammar lives in `aegis-security`; we
 /// surface the same shape so the page can be wired now.
 pub fn validate_rule_body(body: &str) -> ValidateResponse {
@@ -213,8 +261,15 @@ impl RuleStore {
     /// Validate, then upsert. Returns the validation response; on
     /// `ok = true` the rule is stored. Always returns the validator
     /// shape so the page can render warnings on a successful save.
+    /// HU-T1 — id collisions with built-in detector class names
+    /// are rejected before the body validator even runs (the body
+    /// might be valid; the id never will).
     pub fn upsert(&self, id: &str, body: &str, enabled: bool) -> ValidateResponse {
-        let v = validate_rule_body(body);
+        let mut v = validate_rule_body(body);
+        if let Some(id_err) = validate_rule_id(id) {
+            v.errors.push(id_err);
+            v.ok = false;
+        }
         if v.ok {
             let mut s = self.inner.lock().expect("rule store poisoned");
             s.rules.insert(
@@ -264,6 +319,96 @@ mod tests {
         let v = validate_rule_body("");
         assert!(!v.ok);
         assert_eq!(v.errors.len(), 1);
+    }
+
+    // ----- HU-T1 — id collision guard ---------------------------------
+
+    #[test]
+    fn validate_rule_id_accepts_normal_ids() {
+        assert!(validate_rule_id("custom-xss-001").is_none());
+        assert!(validate_rule_id("internal_blocklist").is_none());
+        assert!(validate_rule_id("rule-1").is_none());
+        // Suffixed forms are fine — only exact matches on the reserved
+        // list are rejected.
+        assert!(validate_rule_id("sqli-custom").is_none());
+        assert!(validate_rule_id("xss_extra").is_none());
+    }
+
+    #[test]
+    fn validate_rule_id_rejects_empty_or_whitespace() {
+        let err = validate_rule_id("").unwrap();
+        assert!(err.message.contains("must not be empty"));
+        let err = validate_rule_id("   ").unwrap();
+        assert!(err.message.contains("must not be empty"));
+    }
+
+    #[test]
+    fn validate_rule_id_rejects_every_reserved_detector_name() {
+        for reserved in RESERVED_RULE_IDS {
+            let err = validate_rule_id(reserved).unwrap_or_else(|| {
+                panic!("reserved id '{reserved}' should be rejected")
+            });
+            assert!(err.message.contains("reserved"));
+            assert!(err.message.contains(reserved));
+        }
+    }
+
+    #[test]
+    fn validate_rule_id_trims_whitespace_before_checking() {
+        // "  sqli  " is just sqli with padding; still reserved.
+        assert!(validate_rule_id("  sqli  ").is_some());
+    }
+
+    #[test]
+    fn upsert_rejects_reserved_detector_name_as_id() {
+        let store = RuleStore::new();
+        let v = store.upsert("sqli", "rule sqli { allow }", true);
+        assert!(!v.ok);
+        assert!(v.errors.iter().any(|e| e.message.contains("reserved")));
+        // Store remains empty — failed validation skips the insert.
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn upsert_accepts_normal_id_with_valid_body() {
+        let store = RuleStore::new();
+        let v = store.upsert("custom-1", "rule custom-1 { allow }", true);
+        assert!(v.ok, "got errors: {:?}", v.errors);
+        assert_eq!(store.list().len(), 1);
+    }
+
+    #[test]
+    fn upsert_aggregates_id_and_body_errors() {
+        // Both invalid: reserved id + empty body. Both errors should
+        // surface so the dashboard renders a single complete diagnostic.
+        let store = RuleStore::new();
+        let v = store.upsert("xss", "", true);
+        assert!(!v.ok);
+        let messages: Vec<&str> = v.errors.iter().map(|e| e.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("reserved")),
+            "id error missing: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("empty")),
+            "body error missing: {messages:?}"
+        );
+    }
+
+    /// Pin the hand-coded reserved list against the real
+    /// `DetectorClass` strings — drift gets caught at test time.
+    #[test]
+    fn reserved_list_matches_detector_class_names() {
+        use aegis_security::detectors::DetectorClass;
+        let mut from_enum: Vec<&str> =
+            DetectorClass::ALL.iter().map(|c| c.as_str()).collect();
+        from_enum.sort();
+        let mut from_const: Vec<&str> = RESERVED_RULE_IDS.to_vec();
+        from_const.sort();
+        assert_eq!(
+            from_enum, from_const,
+            "RESERVED_RULE_IDS drifted from DetectorClass — sync the list",
+        );
     }
 
     #[test]

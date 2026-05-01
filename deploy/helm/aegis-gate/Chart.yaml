@@ -1,0 +1,27 @@
+apiVersion: v2
+name: aegis-gate
+description: |
+  Production-grade Web Application Firewall and security gateway.
+  Provisions a two-port Aegis WAF deployment (data plane + admin
+  plane), backing ConfigMap + Secrets, optional cluster-shared
+  Redis state, HorizontalPodAutoscaler, ServiceMonitor, and
+  graceful-drain hooks.
+type: application
+version: 0.1.0
+appVersion: "1.4.2"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/example/aegis-gate
+icon: https://example.com/aegis-gate-icon.png
+sources:
+  - https://github.com/example/aegis-gate
+maintainers:
+  - name: Aegis-Gate
+    url: https://github.com/example/aegis-gate
+keywords:
+  - waf
+  - security
+  - reverse-proxy
+  - gateway
+  - rust
+annotations:
+  category: Security

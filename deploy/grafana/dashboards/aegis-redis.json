@@ -1,0 +1,165 @@
+{
+  "uid": "aegis-redis",
+  "title": "Aegis WAF — Redis (state backend)",
+  "description": "Health, throughput, memory, and latency of the Redis state backend the WAF uses for shared rate-limit counters, leader leases, blocklists, and challenge nonces. Driven by oliver006/redis_exporter scraped at redis-exporter:9121. The WAF degrades to a local in-memory ReconcilingBackend on Redis partition — split-brain safety is preserved by the ReconcilingBackend layer; this dashboard tells you when the partition happened.",
+  "tags": ["aegis", "redis", "state-backend"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "aegis-prometheus" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Redis up / down",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "redis_up", "refId": "A" }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } }
+          ],
+          "noValue": "—"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Connected clients",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "redis_connected_clients", "refId": "A" }],
+      "options": { "reduceOptions": { "values": false, "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 3,
+      "title": "Memory used",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "redis_memory_used_bytes", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "reduceOptions": { "values": false, "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 4,
+      "title": "Total keys",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum(redis_db_keys)", "refId": "A" }
+      ],
+      "options": { "reduceOptions": { "values": false, "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 5,
+      "title": "Commands processed",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum by (cmd) (rate(redis_commands_total[1m]))",
+          "legendFormat": "{{cmd}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] } }
+    },
+    {
+      "id": 6,
+      "title": "Keyspace hit ratio",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "hits / (hits + misses). Below 0.5 typically means the WAF state TTLs are too aggressive for the workload, OR there's a hot rate-limit key that's evicting itself.",
+      "targets": [
+        {
+          "expr": "rate(redis_keyspace_hits_total[1m]) / clamp_min(rate(redis_keyspace_hits_total[1m]) + rate(redis_keyspace_misses_total[1m]), 1)",
+          "legendFormat": "hit ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+    },
+    {
+      "id": 7,
+      "title": "Memory: RSS vs used",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "redis_memory_used_bytes", "legendFormat": "used", "refId": "A" },
+        { "expr": "redis_memory_used_rss_bytes", "legendFormat": "rss", "refId": "B" },
+        { "expr": "redis_memory_max_bytes", "legendFormat": "max (configured)", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "id": 8,
+      "title": "Evictions + expirations",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "WAF rate-limit and challenge-nonce keys carry TTLs (sliding window + 60-300 s). High eviction rate suggests `maxmemory` is too tight for the working set.",
+      "targets": [
+        { "expr": "rate(redis_evicted_keys_total[1m])", "legendFormat": "evictions/s", "refId": "A" },
+        { "expr": "rate(redis_expired_keys_total[1m])", "legendFormat": "expirations/s", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 9,
+      "title": "Keys per database",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 19, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "redis_db_keys",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true } } }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Replication (when wired)",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 19, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Empty in single-node dev. In production HA, `redis_connected_slaves` should match the configured replica count, and `redis_master_repl_offset` should advance steadily.",
+      "targets": [
+        { "expr": "redis_connected_slaves", "legendFormat": "connected slaves", "refId": "A" },
+        { "expr": "redis_master_repl_offset", "legendFormat": "master repl offset", "refId": "B" }
+      ],
+      "options": { "reduceOptions": { "values": false, "calcs": ["lastNotNull"] }, "colorMode": "value", "textMode": "value_and_name" }
+    }
+  ]
+}

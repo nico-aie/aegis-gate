@@ -92,7 +92,7 @@ function PageOverview() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Overview</h1>
-          <p className="page-subtitle">Realtime WAF traffic monitoring · 5-cluster deployment · last update {tick}s</p>
+          <p className="page-subtitle">Realtime WAF traffic monitoring · last update {tick}s</p>
         </div>
         <div className="page-actions">
           <button className="btn"><window.I.Refresh /> Refresh</button>
@@ -455,6 +455,12 @@ function PageLiveFeed() {
 // ============== ATTACK EVENTS ==============
 function PageAttackEvents() {
   const [win, setWin] = useStateP('1h');
+  // HU-T2 — Detector breakdown bars are randomised on every render
+  // (Math.random()) and threat-intel hits are a static fixture. This
+  // page is **synthetic** until Prometheus instrumentation lands the
+  // real per-detector hit counters and a TI feed wires up to
+  // `aegis-security`. Audit log + Live Feed are the live surfaces
+  // for actual detection events today.
   const detectorBars = window.ATTACK_CATS.map(c => ({
     label: c.label, value: 50 + Math.floor(Math.random() * 1800), color: c.color,
   })).sort((a,b) => b.value - a.value);
@@ -474,7 +480,14 @@ function PageAttackEvents() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Attack Events</h1>
-          <p className="page-subtitle">Curated detector firings · OWASP + custom rules · last {win}</p>
+          <p className="page-subtitle">
+            Curated detector firings · OWASP + custom rules · last {win}
+            <span style={{ marginLeft: 8 }}>
+              <span className="pill warn" title="Detector breakdown + threat-intel rows are synthetic until Prometheus instrumentation + TI feed wiring ship">
+                synthetic data
+              </span>
+            </span>
+          </p>
         </div>
         <div className="page-actions">
           <select className="input select" value={win} onChange={e => setWin(e.target.value)} style={{ width: 90 }}>
@@ -568,7 +581,14 @@ function PageAnalytics() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Analytics</h1>
-          <p className="page-subtitle">Historical trends · Prometheus-backed · {range} window</p>
+          <p className="page-subtitle">
+            Historical trends · {range} window
+            <span style={{ marginLeft: 8 }}>
+              <span className="pill warn" title="Sparklines + percentile widgets are randomised client-side. Prometheus exposition only emits `waf_request_duration_ms` today; full series wiring lands as more counters get instrumented.">
+                synthetic data
+              </span>
+            </span>
+          </p>
         </div>
         <div className="page-actions">
           <div style={{ display: 'flex', gap: 4 }}>
@@ -1434,7 +1454,13 @@ function PageSettings() {
       </div>
 
       <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head"><div className="card-title">Risk thresholds</div></div>
+        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="card-title">Risk thresholds</div>
+          <span
+            className="pill warn"
+            title="Sliders are local-only UI state. The backend endpoint PUT /api/risk/thresholds is shipped (CI-T12) but the slider isn't wired to it yet — moving them does NOT change live thresholds."
+          >not wired</span>
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
@@ -1453,13 +1479,19 @@ function PageSettings() {
       </div>
 
       <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head"><div className="card-title">Challenge Engine</div></div>
+        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="card-title">Challenge Engine</div>
+          <span className="pill warn" title="Selection is local-only — backend always uses JS challenge today">not wired</span>
+        </div>
         <div className="field-label">Challenge type</div>
         <select className="input select" defaultValue="JS Challenge"><option>JS Challenge</option><option>JS + CAPTCHA</option><option>Strict (PoW)</option></select>
       </div>
 
       <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head"><div className="card-title">Honeypot Paths</div></div>
+        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="card-title">Honeypot Paths</div>
+          <span className="pill warn" title="Honeypot list is local-only. Backend honeypot config is loaded from waf.yaml at boot.">not wired</span>
+        </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
           {honeypots.map(p => (
             <span key={p} className="chip active">{p} <span className="chip-x" onClick={() => setHoneypots(hp => hp.filter(x => x !== p))}><window.I.X /></span></span>
@@ -1472,7 +1504,10 @@ function PageSettings() {
       </div>
 
       <div className="card">
-        <div className="card-head"><div className="card-title">Response Filtering</div></div>
+        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="card-title">Response Filtering</div>
+          <span className="pill warn" title="Toggles are local-only. Backend uses cfg.observability + cfg.dlp from waf.yaml.">not wired</span>
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div className={`toggle ${stackTraces ? 'on' : ''}`} onClick={() => setStackTraces(s => !s)} />
@@ -1488,10 +1523,15 @@ function PageSettings() {
       <div className="card" style={{ marginTop: 12 }}>
         <div className="card-head">
           <div>
-            <div className="card-title">Cache management</div>
+            <div className="card-title">
+              Cache management
+              <span className="pill warn" style={{ marginLeft: 8 }} title="Cache sizes / ages / entry counts are static demo values. Reset button is non-functional. Real cache stats need /api/caches/stats which isn't implemented yet.">
+                demo data
+              </span>
+            </div>
             <div className="card-sub">Flush internal caches without restarting the WAF</div>
           </div>
-          <button className="btn danger"><window.I.Refresh /> Reset all caches</button>
+          <button className="btn danger" disabled><window.I.Refresh /> Reset all caches</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {[
@@ -1526,6 +1566,526 @@ function PageSettings() {
 }
 
 // ============== TRACKING ==============
+
+// CC-T2.2 — kind-tag → human label. Mirrors the serde-derived
+// `RedactedKind::tag()` strings emitted by the backend so the
+// dashboard binding stays stable.
+const RECEIVER_KIND_LABELS = {
+  vip_talk: 'VipTalk',
+  slack: 'Slack',
+  pager_duty: 'PagerDuty',
+  service_now: 'ServiceNow',
+  jira: 'Jira',
+  alertmanager_webhook: 'Alertmanager',
+};
+const RECEIVER_KIND_OPTIONS = Object.entries(RECEIVER_KIND_LABELS);
+
+// Build a one-line target preview for the list row. Always uses
+// the *redacted* fields the backend exposes — never reads raw
+// secrets (the dashboard never holds the plaintext after a save).
+function receiverTargetPreview(kind) {
+  if (!kind) return '';
+  switch (kind.type) {
+    case 'vip_talk':
+      return `${kind.bot_token_redacted} → ${(kind.room_ids || []).length} room(s)`;
+    case 'slack':
+      return kind.webhook_url_redacted;
+    case 'pager_duty':
+      return kind.routing_key_redacted;
+    case 'service_now':
+      return `${kind.instance} · ${kind.table}`;
+    case 'jira':
+      return `${kind.base_url} · ${kind.project}`;
+    case 'alertmanager_webhook':
+      return kind.url;
+    default:
+      return '';
+  }
+}
+
+// Build the per-status pill for the dispatch ring outcome.
+function deliveryStatusPill(status) {
+  if (!status || !status.last_status) {
+    return { tone: 'neutral', label: 'idle' };
+  }
+  if (status.last_status === 'ok') {
+    return { tone: 'ok', label: `delivered ${formatRelative(status.last_delivered_at)}` };
+  }
+  if (status.last_status === 'external') {
+    return { tone: 'info', label: `external · ${formatRelative(status.last_delivered_at)}` };
+  }
+  if (status.last_status === 'skipped_no_feature') {
+    return { tone: 'warn', label: 'skipped (no `alerts` feature)' };
+  }
+  if (status.last_status.startsWith('failed:')) {
+    const reason = status.last_status.slice('failed:'.length);
+    const n = status.consecutive_failures || 1;
+    return { tone: 'err', label: `failed ${n}× · ${reason.slice(0, 32)}` };
+  }
+  return { tone: 'neutral', label: status.last_status };
+}
+
+function formatRelative(unixSeconds) {
+  if (!unixSeconds) return '';
+  const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - unixSeconds));
+  if (ageSec < 60) return `${ageSec}s ago`;
+  if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`;
+  if (ageSec < 86400) return `${Math.floor(ageSec / 3600)}h ago`;
+  return `${Math.floor(ageSec / 86400)}d ago`;
+}
+
+// Empty-shape factories per ReceiverKind variant. Used by the
+// "+ Add channel" modal when the operator picks a kind from the
+// dropdown — we stamp the matching empty payload so the form
+// fields render in the right shape.
+function emptyKindBody(tag) {
+  switch (tag) {
+    case 'vip_talk':
+      return { VipTalk: { bot_token: '', room_ids: [''] } };
+    case 'slack':
+      return { Slack: { webhook_url: '' } };
+    case 'pager_duty':
+      return { PagerDuty: { routing_key: '' } };
+    case 'service_now':
+      return { ServiceNow: { instance: '', table: 'incident' } };
+    case 'jira':
+      return { Jira: { base_url: '', project: '' } };
+    case 'alertmanager_webhook':
+      return { AlertmanagerWebhook: { url: '' } };
+    default:
+      return null;
+  }
+}
+
+// Build a wire-shape AlertReceiver from the modal form draft.
+// Returns null when the kind tag isn't recognised.
+function draftToReceiver(draft) {
+  const empty = emptyKindBody(draft.kindTag);
+  if (!empty) return null;
+  const variantKey = Object.keys(empty)[0];
+  const fields = { ...empty[variantKey] };
+  // Copy form values into the variant payload, dropping empty
+  // strings that should remain empty for the validator to reject
+  // (the validator's reason_codes drive the toast text).
+  if (draft.kindTag === 'vip_talk') {
+    fields.bot_token = draft.bot_token || '';
+    fields.room_ids = (draft.room_ids || '')
+      .split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+    if (fields.room_ids.length === 0) fields.room_ids = [''];
+  } else if (draft.kindTag === 'slack') {
+    fields.webhook_url = draft.webhook_url || '';
+  } else if (draft.kindTag === 'pager_duty') {
+    fields.routing_key = draft.routing_key || '';
+  } else if (draft.kindTag === 'service_now') {
+    fields.instance = draft.instance || '';
+    fields.table = draft.table || 'incident';
+  } else if (draft.kindTag === 'jira') {
+    fields.base_url = draft.base_url || '';
+    fields.project = draft.project || '';
+  } else if (draft.kindTag === 'alertmanager_webhook') {
+    fields.url = draft.url || '';
+  }
+  return { name: (draft.name || '').trim(), kind: { [variantKey]: fields } };
+}
+
+function AlertChannelsCard({ receiversApi }) {
+  const { useState: useStateP } = React;
+  const [editing, setEditing] = useStateP(null); // null | { mode: 'add'|'edit', draft: {...} }
+  const [busy, setBusy] = useStateP(null);       // receiver-name being acted on
+  const list = receiversApi.data?.receivers ?? [];
+
+  const openAdd = () => setEditing({ mode: 'add', draft: { kindTag: 'vip_talk', name: '' } });
+  const openEdit = (entry) => setEditing({
+    mode: 'edit',
+    draft: { kindTag: entry.kind?.type, name: entry.name, ...flatFieldsFromKind(entry.kind) },
+  });
+
+  async function applyDraft(receivers, draft) {
+    const newReceiver = draftToReceiver(draft);
+    if (!newReceiver) {
+      window.aegisToast('Pick a channel kind', 'err');
+      return false;
+    }
+    const next = (() => {
+      if (editing.mode === 'edit') {
+        return receivers.map(r => r.name === draft.originalName ? newReceiver : r);
+      }
+      return [...receivers, newReceiver];
+    })();
+    const result = await window.alertReceiversPut(next);
+    if (result && result.ok) {
+      window.aegisToast(`Saved channel "${newReceiver.name}"`, 'ok');
+      receiversApi.reload && receiversApi.reload();
+      return true;
+    }
+    const msg = (result && (result.message || result.error || result.reason)) || 'unknown error';
+    window.aegisToast(`Save failed: ${msg}`, 'err');
+    return false;
+  }
+
+  async function removeReceiver(name) {
+    if (!confirm(`Remove channel "${name}"? This is audit-logged.`)) return;
+    setBusy(name);
+    try {
+      const r = await window.alertReceiverDelete(name);
+      if (r && r.ok) {
+        window.aegisToast(`Removed channel "${name}"`, 'ok');
+        receiversApi.reload && receiversApi.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Remove failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function testReceiver(name) {
+    setBusy(name);
+    try {
+      const r = await window.alertReceiverTest(name);
+      if (r && r.ok) {
+        const parts = [];
+        if (r.delivered?.length) parts.push(`delivered: ${r.delivered.length}`);
+        if (r.external?.length)  parts.push(`external: ${r.external.length}`);
+        if (r.failed?.length)    parts.push(`failed: ${r.failed.length}`);
+        window.aegisToast(`Test → ${parts.join(' · ') || 'sent'}`, 'ok');
+        receiversApi.reload && receiversApi.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Test failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="Alert channels"
+        sub={`${list.length} configured · audit-mutated`}
+        actions={(
+          <button className="btn" onClick={openAdd}>+ Add channel</button>
+        )}
+      />
+      {list.length === 0 && (
+        <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          No alert channels configured. The SLO engine will record alerts but won't deliver them.
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {list.map(entry => {
+          const pill = deliveryStatusPill(entry.status);
+          const tag = entry.kind?.type;
+          return (
+            <div
+              key={entry.name}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '120px 160px 1fr 220px auto',
+                gap: 10,
+                alignItems: 'center',
+                padding: '8px 10px',
+                background: 'var(--canvas-2)',
+                borderRadius: 6,
+                fontSize: 12,
+              }}
+            >
+              <span className="pill neutral" style={{ justifySelf: 'start' }}>
+                {RECEIVER_KIND_LABELS[tag] || tag || '—'}
+              </span>
+              <span className="mono">{entry.name}</span>
+              <span className="mono dim" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {receiverTargetPreview(entry.kind)}
+              </span>
+              <span className={`pill ${pill.tone}`}>{pill.label}</span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  className="btn"
+                  disabled={busy === entry.name}
+                  onClick={() => testReceiver(entry.name)}
+                >Test</button>
+                <button
+                  className="btn"
+                  disabled={busy === entry.name}
+                  onClick={() => openEdit(entry)}
+                >Edit</button>
+                <button
+                  className="btn"
+                  disabled={busy === entry.name}
+                  onClick={() => removeReceiver(entry.name)}
+                  style={{ color: 'var(--down)' }}
+                >Remove</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {editing && (
+        <AlertChannelModal
+          mode={editing.mode}
+          draft={editing.draft}
+          existingNames={list.map(r => r.name)}
+          onCancel={() => setEditing(null)}
+          onSave={async (draft) => {
+            const ok = await applyDraft(list, draft);
+            if (ok) setEditing(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Inverse of `draftToReceiver` — derives a flat form-friendly
+// shape from a (redacted) ReceiverEntry the GET endpoint returned.
+// Token / URL fields are LEFT BLANK on edit so the operator must
+// re-enter the secret to change it; saving with empty secrets
+// triggers the backend's `empty_target` validator (intentional —
+// "preserve existing secret" is a CC-T2.2 follow-up needing a
+// dedicated `--keep-secret` server-side path).
+function flatFieldsFromKind(kind) {
+  if (!kind) return {};
+  switch (kind.type) {
+    case 'vip_talk':
+      return { bot_token: '', room_ids: (kind.room_ids || []).join('\n') };
+    case 'slack':
+      return { webhook_url: '' };
+    case 'pager_duty':
+      return { routing_key: '' };
+    case 'service_now':
+      return { instance: kind.instance || '', table: kind.table || 'incident' };
+    case 'jira':
+      return { base_url: kind.base_url || '', project: kind.project || '' };
+    case 'alertmanager_webhook':
+      return { url: kind.url || '' };
+    default:
+      return {};
+  }
+}
+
+function AlertChannelModal({ mode, draft, existingNames, onSave, onCancel }) {
+  const { useState: useStateP } = React;
+  const [d, setD] = useStateP({
+    ...draft,
+    originalName: draft.name,
+  });
+  const set = (k, v) => setD(prev => ({ ...prev, [k]: v }));
+
+  const isEdit = mode === 'edit';
+  const nameTaken =
+    !isEdit && existingNames.includes((d.name || '').trim()) && (d.name || '').trim() !== '';
+  const canSave =
+    (d.name || '').trim() !== '' &&
+    !nameTaken &&
+    !!d.kindTag;
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      }}
+      onClick={onCancel}
+    >
+      <div
+        className="card"
+        style={{ width: 520, maxWidth: '92vw', padding: 0 }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{
+          padding: '14px 16px', borderBottom: '1px solid var(--hairline)',
+          display: 'flex', alignItems: 'center',
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>
+            {isEdit ? `Edit channel "${draft.name}"` : 'Add alert channel'}
+          </div>
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 8 }}>
+            audit-mutated · CSRF-gated
+          </span>
+          <button className="btn" style={{ marginLeft: 'auto' }} onClick={onCancel}>×</button>
+        </div>
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="field-label">Name</span>
+            <input
+              className="input mono"
+              value={d.name || ''}
+              onChange={e => set('name', e.target.value)}
+              disabled={isEdit}
+              placeholder="vt-prod"
+              autoFocus={!isEdit}
+            />
+            {nameTaken && (
+              <span style={{ color: 'var(--down)', fontSize: 11 }}>
+                Name already in use.
+              </span>
+            )}
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="field-label">Kind</span>
+            <select
+              className="input"
+              value={d.kindTag || ''}
+              onChange={e => setD(prev => ({
+                ...prev,
+                kindTag: e.target.value,
+                bot_token: '', room_ids: '', webhook_url: '',
+                routing_key: '', instance: '', table: 'incident',
+                base_url: '', project: '', url: '',
+              }))}
+              disabled={isEdit}
+            >
+              {RECEIVER_KIND_OPTIONS.map(([tag, label]) => (
+                <option key={tag} value={tag}>{label}</option>
+              ))}
+            </select>
+          </label>
+          <KindFieldset draft={d} setField={set} isEdit={isEdit} />
+          {isEdit && (
+            <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              Secrets shown only as <span className="mono">****&lt;last4&gt;</span>.
+              Re-enter the full secret to change it; leaving blank → backend
+              rejects with <span className="mono">empty_target</span>.
+            </div>
+          )}
+        </div>
+        <div style={{
+          padding: 12, borderTop: '1px solid var(--hairline)',
+          display: 'flex', gap: 8, justifyContent: 'flex-end',
+        }}>
+          <button className="btn" onClick={onCancel}>Cancel</button>
+          <button
+            className="btn primary"
+            disabled={!canSave}
+            onClick={() => onSave(d)}
+          >Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KindFieldset({ draft, setField, isEdit }) {
+  const tag = draft.kindTag;
+  if (tag === 'vip_talk') {
+    return (
+      <>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="field-label">Bot token</span>
+          <input
+            className="input mono"
+            type="password"
+            value={draft.bot_token || ''}
+            onChange={e => setField('bot_token', e.target.value)}
+            placeholder={isEdit ? '(re-enter to change)' : 'tok-...'}
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="field-label">Room IDs (one per line, or comma-separated)</span>
+          <textarea
+            className="input mono"
+            rows={3}
+            value={draft.room_ids || ''}
+            onChange={e => setField('room_ids', e.target.value)}
+            placeholder="!QNxJHzVzJBrLWIOLPo:matrix-uat.viptalk.org"
+          />
+        </label>
+      </>
+    );
+  }
+  if (tag === 'slack') {
+    return (
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span className="field-label">Webhook URL</span>
+        <input
+          className="input mono"
+          type="password"
+          value={draft.webhook_url || ''}
+          onChange={e => setField('webhook_url', e.target.value)}
+          placeholder="https://hooks.slack.com/services/..."
+        />
+      </label>
+    );
+  }
+  if (tag === 'pager_duty') {
+    return (
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span className="field-label">Routing key</span>
+        <input
+          className="input mono"
+          type="password"
+          value={draft.routing_key || ''}
+          onChange={e => setField('routing_key', e.target.value)}
+          placeholder="R0123456789..."
+        />
+      </label>
+    );
+  }
+  if (tag === 'service_now') {
+    return (
+      <>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="field-label">Instance</span>
+          <input
+            className="input mono"
+            value={draft.instance || ''}
+            onChange={e => setField('instance', e.target.value)}
+            placeholder="acme.service-now.com"
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="field-label">Table</span>
+          <input
+            className="input mono"
+            value={draft.table || 'incident'}
+            onChange={e => setField('table', e.target.value)}
+          />
+        </label>
+      </>
+    );
+  }
+  if (tag === 'jira') {
+    return (
+      <>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="field-label">Base URL</span>
+          <input
+            className="input mono"
+            value={draft.base_url || ''}
+            onChange={e => setField('base_url', e.target.value)}
+            placeholder="https://acme.atlassian.net"
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="field-label">Project key</span>
+          <input
+            className="input mono"
+            value={draft.project || ''}
+            onChange={e => setField('project', e.target.value)}
+            placeholder="OPS"
+          />
+        </label>
+      </>
+    );
+  }
+  if (tag === 'alertmanager_webhook') {
+    return (
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span className="field-label">Webhook URL</span>
+        <input
+          className="input mono"
+          value={draft.url || ''}
+          onChange={e => setField('url', e.target.value)}
+          placeholder="http://alertmanager:9093/api/v1/alerts"
+        />
+      </label>
+    );
+  }
+  return null;
+}
+
 function PageTracking() {
   // Live API hooks. SLO / certs / alerts / gitops still return
   // placeholder shapes server-side (CI-T4 will replace those);
@@ -1536,6 +2096,8 @@ function PageTracking() {
   const certs = window.useCertsApi();
   const alerts = window.useAlertsApi();
   const gitops = window.useGitopsApi();
+  // CC-T2.2 — alert channels (read + audit-mutated PUT/DELETE/POST-test)
+  const alertReceivers = window.useAlertReceiversApi();
 
   // Pool list adapter — server returns `{pools: [{...}]}`; mock
   // fallback is `[{...}]`; accept either shape.
@@ -1568,6 +2130,7 @@ function PageTracking() {
             certs.reload && certs.reload();
             alerts.reload && alerts.reload();
             gitops.reload && gitops.reload();
+            alertReceivers.reload && alertReceivers.reload();
           }}>
             <window.I.Refresh /> Refresh
           </button>
@@ -1639,6 +2202,12 @@ function PageTracking() {
           </div>
         </div>
       </div>
+
+      {/* CC-T2.2 — alert-channel management. Lives next to the
+          Active alerts panel because the two are operationally
+          paired: the alerts pane shows what fired; this pane
+          configures *where* the next firing alert is sent. */}
+      <AlertChannelsCard receiversApi={alertReceivers} />
 
       <div className="card" style={{ marginBottom: 12 }}>
         {(() => {
@@ -1793,7 +2362,887 @@ function PageTracking() {
   );
 }
 
+// ============== UPSTREAMS (CC-T1.2) ==============
+//
+// Read-only first slice. Lists every configured pool with full
+// detail (members / lb / health / circuit-breaker / connection
+// pool / referenced-by-routes). The audit-mutated PUT/DELETE
+// land in CC-T1.1.b once `ProxyContext.pools` becomes hot-
+// swappable; until then this page surfaces the YAML-loaded
+// state so operators can verify what's running without
+// shelling into the box.
+
+function fmtMs(ms) {
+  if (ms == null) return '—';
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${(ms / 60_000).toFixed(1)} m`;
+}
+
+function fmtPct(v) {
+  if (v == null || isNaN(v)) return '—';
+  return `${(v * 100).toFixed(0)}%`;
+}
+
+function lbBadgeTone(lb) {
+  // Stable visual hint per strategy — operators can scan the
+  // pool list without reading the labels.
+  switch (lb) {
+    case 'round_robin':           return 'neutral';
+    case 'weighted_round_robin':  return 'info';
+    case 'least_conn':            return 'ok';
+    case 'consistent_hash':       return 'warn';
+    case 'p2c':                   return 'ok';
+    default:                      return 'neutral';
+  }
+}
+
+function PoolListRow({ pool, name, summary, isSelected, onSelect }) {
+  const total = pool.members?.length ?? 0;
+  // Live health from /api/upstreams (not the config view) — gives
+  // the real healthy/total instead of guessing from config.
+  const live = (summary || []).find(p => p.name === name);
+  const healthy = live?.healthy ?? live?.healthy_members ?? 0;
+  const liveTotal = live?.total ?? live?.total_members ?? total;
+  const healthOk = liveTotal > 0 && healthy === liveTotal;
+  const healthDown = liveTotal > 0 && healthy === 0;
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(name)}
+      className={`nav-item ${isSelected ? 'active' : ''}`}
+      style={{
+        textAlign: 'left',
+        width: '100%',
+        gap: 6,
+        padding: '8px 10px',
+        marginBottom: 4,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+        <span className="mono" style={{ fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {name}
+        </span>
+        <span className={`pill ${lbBadgeTone(pool.lb)}`} style={{ fontSize: 10 }}>
+          {pool.lb}
+        </span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-dim)' }}>
+        <span>{total} member{total === 1 ? '' : 's'}</span>
+        <span className="dim">·</span>
+        <span className={`pill ${healthOk ? 'ok' : healthDown ? 'err' : 'warn'}`} style={{ fontSize: 10 }}>
+          {healthy}/{liveTotal} healthy
+        </span>
+        {pool.referenced_by_routes?.length > 0 && (
+          <>
+            <span className="dim">·</span>
+            <span>{pool.referenced_by_routes.length} route{pool.referenced_by_routes.length === 1 ? '' : 's'}</span>
+          </>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function PoolDetail({ name, pool, onEdit, onDelete, busy }) {
+  if (!pool) {
+    return (
+      <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 13 }}>
+        Select a pool from the list to inspect its configuration.
+      </div>
+    );
+  }
+
+  const memberRows = pool.members || [];
+  const cb = pool.circuit_breaker;
+  const health = pool.health;
+  const conn = pool.connection || {};
+  const refs = pool.referenced_by_routes || [];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="card">
+        <window.SectionHeader
+          title={name}
+          sub={`${memberRows.length} member${memberRows.length === 1 ? '' : 's'} · lb ${pool.lb}`}
+          actions={(
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span className={`pill ${refs.length === 0 ? 'warn' : 'ok'}`}>
+                {refs.length === 0 ? 'unreferenced' : `${refs.length} route${refs.length === 1 ? '' : 's'}`}
+              </span>
+              <button
+                className="btn"
+                onClick={() => onEdit && onEdit(name, pool)}
+                disabled={busy}
+              >Edit</button>
+              <button
+                className="btn"
+                style={{ color: 'var(--down)' }}
+                onClick={() => onDelete && onDelete(name, refs)}
+                disabled={busy}
+                title={refs.length > 0 ? `Will return 409 — ${refs.length} route(s) still target this pool` : 'Audit-mutated · CSRF-gated'}
+              >Delete</button>
+            </div>
+          )}
+        />
+        <table className="tbl tbl-compact">
+          <thead>
+            <tr>
+              <th>Address</th>
+              <th style={{ width: 80 }}>Weight</th>
+              <th>Zone</th>
+            </tr>
+          </thead>
+          <tbody>
+            {memberRows.length === 0 && (
+              <tr>
+                <td colSpan={3} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                  No members configured. Pool will return upstream errors for any route that targets it.
+                </td>
+              </tr>
+            )}
+            {memberRows.map((m, i) => (
+              <tr key={`${m.addr}-${i}`}>
+                <td className="mono">{m.addr}</td>
+                <td className="num">{m.weight ?? 1}</td>
+                <td className="dim">{m.zone || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="grid-12">
+        <div className="col-6 card">
+          <window.SectionHeader title="Health check" sub={health ? 'Active probe' : 'Disabled'} />
+          {health ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 6, fontSize: 12 }}>
+              <span className="dim">Path</span>      <span className="mono">{health.path}</span>
+              <span className="dim">Interval</span>  <span className="num">{fmtMs(health.interval_ms)}</span>
+              <span className="dim">Timeout</span>   <span className="num">{fmtMs(health.timeout_ms)}</span>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+              No health check — every member treated as healthy at boot.
+            </div>
+          )}
+        </div>
+
+        <div className="col-6 card">
+          <window.SectionHeader title="Circuit breaker" sub={cb ? 'Active' : 'Disabled'} />
+          {cb ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 6, fontSize: 12 }}>
+              <span className="dim">Error-rate threshold</span>
+              <span className="num">{fmtPct(cb.error_rate_threshold)}</span>
+              <span className="dim">Open duration</span>
+              <span className="num">{fmtMs(cb.open_duration_ms)}</span>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+              No circuit breaker — every request reaches the upstream regardless of recent failures.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="card">
+        <window.SectionHeader title="Connection pool" sub="Per-pool keep-alive tuning (UP-T1)" />
+        <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr 180px 1fr', gap: 6, fontSize: 12 }}>
+          <span className="dim">Max idle / host</span>
+          <span className="num">{conn.max_idle_per_host ?? '—'}</span>
+          <span className="dim">Idle timeout</span>
+          <span className="num">{fmtMs(conn.idle_timeout_ms)}</span>
+          <span className="dim">Keep-alive</span>
+          <span><span className={`pill ${conn.keep_alive ? 'ok' : 'warn'}`}>{conn.keep_alive ? 'on' : 'off'}</span></span>
+          <span className="dim">Upstream TLS</span>
+          <span><span className={`pill ${conn.tls ? 'ok' : 'neutral'}`}>{conn.tls ? 'https' : 'http'}</span></span>
+        </div>
+      </div>
+
+      <div className="card">
+        <window.SectionHeader
+          title="Referenced by routes"
+          sub={refs.length === 0
+            ? 'No routes target this pool — safe to delete'
+            : `${refs.length} route${refs.length === 1 ? '' : 's'} — DELETE will return 409 until these routes are updated`}
+        />
+        {refs.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+            DELETE this pool and the audit chain will record the removal; the proxy hot-swaps on the same request.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {refs.map(rid => (
+              <span key={rid} className="pill neutral mono" style={{ fontSize: 11 }}>{rid}</span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PageUpstreams() {
+  const cfgApi = window.useUpstreamsConfigApi();
+  const summaryApi = window.useUpstreamsApi();
+  const pools = cfgApi.data?.pools || {};
+  const names = Object.keys(pools).sort();
+  const summary = summaryApi.data?.pools || [];
+
+  const [selected, setSelected] = useStateP(null);
+  const [editor, setEditor] = useStateP(null); // null | { mode: 'add'|'edit', name?, pool? }
+  const [deleteModal, setDeleteModal] = useStateP(null); // null | { name, refs }
+  const [busy, setBusy] = useStateP(false);
+
+  // Auto-select first pool when data lands.
+  useEffectP(() => {
+    if (!selected && names.length > 0) setSelected(names[0]);
+  }, [names.length, selected]);
+
+  const totalMembers = names.reduce((s, n) => s + (pools[n].members?.length || 0), 0);
+  const orphaned = names.filter(n => (pools[n].referenced_by_routes || []).length === 0).length;
+
+  const openAdd = () => setEditor({ mode: 'add' });
+  const openEdit = (name, pool) => setEditor({ mode: 'edit', name, pool });
+
+  async function savePool({ name, body }) {
+    setBusy(true);
+    try {
+      const r = await window.poolUpsert(name, body);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Pool "${name}" saved`, 'ok');
+        cfgApi.reload && cfgApi.reload();
+        setEditor(null);
+        setSelected(name);
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Save failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openDelete(name, refs) {
+    setDeleteModal({ name, refs: refs || [] });
+  }
+
+  async function confirmDelete() {
+    if (!deleteModal) return;
+    const { name } = deleteModal;
+    setBusy(true);
+    try {
+      const r = await window.poolDelete(name);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Pool "${name}" removed`, 'ok');
+        cfgApi.reload && cfgApi.reload();
+        setDeleteModal(null);
+        // Pick a different pool, since the current selection just disappeared.
+        const remaining = names.filter(n => n !== name);
+        setSelected(remaining[0] || null);
+      } else if (r.status === 409 && Array.isArray(r.referenced_by_routes)) {
+        // Backend returned the route-reference list — surface it
+        // in the modal so the operator sees what's blocking.
+        setDeleteModal({ name, refs: r.referenced_by_routes });
+        window.aegisToast(`Pool "${name}" has ${r.referenced_by_routes.length} route reference(s)`, 'warn');
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Delete failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Upstreams</h1>
+          <p className="page-subtitle">
+            <span className="num">{names.length}</span> pool{names.length === 1 ? '' : 's'} ·
+            <span className="num"> {totalMembers}</span> total members ·
+            <span className="num"> {orphaned}</span> unreferenced
+            <span style={{ marginLeft: 8 }}>
+              <span className={`pill ${cfgApi.error ? 'warn' : 'ok'}`}>
+                {cfgApi.error ? 'fetch failed' : 'live'}
+              </span>
+            </span>
+            <span style={{ marginLeft: 8 }}>
+              <span className="pill ok" title="CC-T1.1.b shipped — PUT/DELETE land via the audit-mutated pipeline; the proxy hot-swaps without restart.">audit-mutated CRUD</span>
+            </span>
+          </p>
+        </div>
+        <div className="page-actions">
+          <button className="btn primary" onClick={openAdd}>+ Add pool</button>
+          <button className="btn" onClick={() => {
+            cfgApi.reload && cfgApi.reload();
+            summaryApi.reload && summaryApi.reload();
+          }}>
+            <window.I.Refresh /> Refresh
+          </button>
+        </div>
+      </div>
+
+      <div className="grid-12">
+        <div className="col-4">
+          <div className="card" style={{ padding: 8 }}>
+            {names.length === 0 && (
+              <div style={{ padding: 16, textAlign: 'center', fontSize: 12, color: 'var(--ink-dim)' }}>
+                No upstream pools configured. Click <strong>+ Add pool</strong> or edit <span className="mono">upstreams:</span> in waf.yaml.
+              </div>
+            )}
+            {names.map(n => (
+              <PoolListRow
+                key={n}
+                name={n}
+                pool={pools[n]}
+                summary={summary}
+                isSelected={n === selected}
+                onSelect={setSelected}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="col-8">
+          <PoolDetail
+            name={selected}
+            pool={selected ? pools[selected] : null}
+            onEdit={openEdit}
+            onDelete={openDelete}
+            busy={busy}
+          />
+        </div>
+      </div>
+
+      {editor && (
+        <PoolEditModal
+          mode={editor.mode}
+          existingNames={names}
+          initialName={editor.name}
+          initialPool={editor.pool}
+          onCancel={() => setEditor(null)}
+          onSave={savePool}
+          busy={busy}
+        />
+      )}
+
+      {deleteModal && (
+        <DeletePoolModal
+          name={deleteModal.name}
+          refs={deleteModal.refs}
+          onCancel={() => setDeleteModal(null)}
+          onConfirm={confirmDelete}
+          busy={busy}
+        />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CC-T1.2 editor — kind-aware add/edit modal for one PoolConfig
+// ---------------------------------------------------------------------------
+
+const LB_OPTIONS = [
+  ['round_robin', 'Round-robin'],
+  ['weighted_round_robin', 'Weighted round-robin'],
+  ['least_conn', 'Least connections'],
+  ['consistent_hash', 'Consistent hash'],
+  ['p2c', 'Power-of-two-choices'],
+];
+
+// Convert a PoolView (millisecond-typed display shape from
+// /api/upstreams/config) to the wire-shape PoolConfig the PUT
+// endpoint expects (humantime-style strings: "10s" / "3s" /
+// "30s"). Symmetrical with `poolViewFromConfig` below.
+function poolConfigFromForm(d) {
+  const cfg = {
+    members: (d.members || []).map(m => ({
+      addr: (m.addr || '').trim(),
+      weight: Number(m.weight) || 1,
+      ...(m.zone && m.zone.trim() ? { zone: m.zone.trim() } : {}),
+    })),
+    lb: d.lb || 'round_robin',
+    connection: {
+      max_idle_per_host: Number(d.connection?.max_idle_per_host) || 32,
+      idle_timeout: humanTimeFromMs(Number(d.connection?.idle_timeout_ms) || 30000),
+      keep_alive: !!d.connection?.keep_alive,
+      tls: !!d.connection?.tls,
+    },
+  };
+  if (d.health_enabled) {
+    cfg.health = {
+      path: (d.health?.path || '/healthz').trim() || '/healthz',
+      interval: humanTimeFromMs(Number(d.health?.interval_ms) || 10000),
+      timeout: humanTimeFromMs(Number(d.health?.timeout_ms) || 3000),
+    };
+  }
+  if (d.cb_enabled) {
+    cfg.circuit_breaker = {
+      error_rate_threshold: Number(d.circuit_breaker?.error_rate_threshold) || 0.5,
+      open_duration: humanTimeFromMs(Number(d.circuit_breaker?.open_duration_ms) || 30000),
+    };
+  }
+  return cfg;
+}
+
+// humantime-serde compat: emit the smallest sensible unit so
+// the YAML / JSON round-trips read naturally.
+function humanTimeFromMs(ms) {
+  if (ms <= 0) return '0s';
+  if (ms % 60000 === 0) return `${ms / 60000}m`;
+  if (ms % 1000 === 0)  return `${ms / 1000}s`;
+  return `${ms}ms`;
+}
+
+// Seed the modal form from an existing PoolView (the shape the
+// GET endpoint returns). For "add" mode pass null.
+function poolFormFromView(view) {
+  if (!view) {
+    return {
+      members: [{ addr: '', weight: 1, zone: '' }],
+      lb: 'round_robin',
+      health_enabled: false,
+      health: { path: '/healthz', interval_ms: 10000, timeout_ms: 3000 },
+      cb_enabled: false,
+      circuit_breaker: { error_rate_threshold: 0.5, open_duration_ms: 30000 },
+      connection: { max_idle_per_host: 32, idle_timeout_ms: 30000, keep_alive: true, tls: false },
+    };
+  }
+  return {
+    members: (view.members || []).map(m => ({
+      addr: m.addr || '',
+      weight: m.weight ?? 1,
+      zone: m.zone || '',
+    })),
+    lb: view.lb || 'round_robin',
+    health_enabled: !!view.health,
+    health: {
+      path: view.health?.path || '/healthz',
+      interval_ms: view.health?.interval_ms ?? 10000,
+      timeout_ms:  view.health?.timeout_ms  ?? 3000,
+    },
+    cb_enabled: !!view.circuit_breaker,
+    circuit_breaker: {
+      error_rate_threshold: view.circuit_breaker?.error_rate_threshold ?? 0.5,
+      open_duration_ms:     view.circuit_breaker?.open_duration_ms     ?? 30000,
+    },
+    connection: {
+      max_idle_per_host: view.connection?.max_idle_per_host ?? 32,
+      idle_timeout_ms:   view.connection?.idle_timeout_ms   ?? 30000,
+      keep_alive:        view.connection?.keep_alive ?? true,
+      tls:               view.connection?.tls       ?? false,
+    },
+  };
+}
+
+function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel, onSave, busy }) {
+  const [name, setName] = useStateP(initialName || '');
+  const [d, setD] = useStateP(() => poolFormFromView(initialPool));
+
+  const isEdit = mode === 'edit';
+  const trimmedName = (name || '').trim();
+  const nameTaken = !isEdit && existingNames.includes(trimmedName) && trimmedName !== '';
+  const hasMember = (d.members || []).some(m => (m.addr || '').trim() !== '');
+  // Client-side mirror of the backend validators in
+  // aegis-control::api::upstreams_config::validate_pool. The
+  // server is authoritative; this is just a fast UX gate so
+  // operators don't see "empty_members" as a toast.
+  const memberOk = hasMember &&
+    (d.members || []).every(m =>
+      (m.addr || '').trim() !== '' &&
+      Number.isFinite(Number(m.weight)) &&
+      Number(m.weight) >= 1
+    );
+  const healthOk = !d.health_enabled || (
+    Number(d.health?.timeout_ms) > 0 &&
+    Number(d.health?.timeout_ms) < Number(d.health?.interval_ms)
+  );
+  const cbOk = !d.cb_enabled || (
+    Number(d.circuit_breaker?.error_rate_threshold) >= 0 &&
+    Number(d.circuit_breaker?.error_rate_threshold) <= 1
+  );
+  const canSave = trimmedName !== '' && !nameTaken && memberOk && healthOk && cbOk;
+
+  function setMember(i, key, val) {
+    setD(prev => ({
+      ...prev,
+      members: prev.members.map((m, idx) => idx === i ? { ...m, [key]: val } : m),
+    }));
+  }
+  function addMember() {
+    setD(prev => ({ ...prev, members: [...prev.members, { addr: '', weight: 1, zone: '' }] }));
+  }
+  function removeMember(i) {
+    setD(prev => ({ ...prev, members: prev.members.filter((_, idx) => idx !== i) }));
+  }
+
+  async function handleSave() {
+    if (!canSave) return;
+    onSave({ name: trimmedName, body: poolConfigFromForm(d) });
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      }}
+      onClick={busy ? undefined : onCancel}
+    >
+      <div
+        className="card"
+        style={{ width: 640, maxWidth: '94vw', maxHeight: '90vh', padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{
+          padding: '14px 16px', borderBottom: '1px solid var(--hairline)',
+          display: 'flex', alignItems: 'center',
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>
+            {isEdit ? `Edit pool "${initialName}"` : 'Add upstream pool'}
+          </div>
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 8 }}>
+            audit-mutated · CSRF-gated · hot-swap (no restart)
+          </span>
+          <button className="btn" style={{ marginLeft: 'auto' }} onClick={onCancel} disabled={busy}>×</button>
+        </div>
+
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="field-label">Pool name</span>
+            <input
+              className="input mono"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              disabled={isEdit}
+              placeholder="backend-pool"
+              autoFocus={!isEdit}
+            />
+            {nameTaken && (
+              <span style={{ color: 'var(--down)', fontSize: 11 }}>Name already in use.</span>
+            )}
+          </label>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span className="field-label">Members</span>
+              <button className="btn" onClick={addMember} disabled={busy}>+ Add member</button>
+            </div>
+            <table className="tbl tbl-compact">
+              <thead>
+                <tr>
+                  <th>Address (host:port)</th>
+                  <th style={{ width: 70 }}>Weight</th>
+                  <th style={{ width: 100 }}>Zone</th>
+                  <th style={{ width: 36 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.members.map((m, i) => (
+                  <tr key={i}>
+                    <td>
+                      <input
+                        className="input mono"
+                        value={m.addr}
+                        onChange={e => setMember(i, 'addr', e.target.value)}
+                        placeholder="127.0.0.1:3001"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input num"
+                        type="number"
+                        min="1"
+                        value={m.weight}
+                        onChange={e => setMember(i, 'weight', e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input mono"
+                        value={m.zone}
+                        onChange={e => setMember(i, 'zone', e.target.value)}
+                        placeholder="optional"
+                      />
+                    </td>
+                    <td>
+                      <button
+                        className="btn"
+                        onClick={() => removeMember(i)}
+                        disabled={busy || d.members.length === 1}
+                        title={d.members.length === 1 ? 'A pool needs at least one member' : 'Remove this member'}
+                      >×</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!memberOk && (
+              <span style={{ color: 'var(--warn)', fontSize: 11 }}>
+                Each member needs an addr and weight ≥ 1.
+              </span>
+            )}
+          </div>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="field-label">Load balancing</span>
+            <select
+              className="input"
+              value={d.lb}
+              onChange={e => setD(prev => ({ ...prev, lb: e.target.value }))}
+            >
+              {LB_OPTIONS.map(([tag, label]) => (
+                <option key={tag} value={tag}>{label}</option>
+              ))}
+            </select>
+          </label>
+
+          <fieldset style={{ border: '1px solid var(--hairline)', borderRadius: 6, padding: 10 }}>
+            <legend style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 6px' }}>
+              <input
+                type="checkbox"
+                checked={d.health_enabled}
+                onChange={e => setD(prev => ({ ...prev, health_enabled: e.target.checked }))}
+              />
+              <span className="field-label" style={{ marginBottom: 0 }}>Health check</span>
+            </legend>
+            {d.health_enabled && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 120px', gap: 8 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span className="field-label">Path</span>
+                  <input
+                    className="input mono"
+                    value={d.health.path}
+                    onChange={e => setD(prev => ({ ...prev, health: { ...prev.health, path: e.target.value } }))}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span className="field-label">Interval (ms)</span>
+                  <input
+                    className="input num"
+                    type="number"
+                    min="100"
+                    value={d.health.interval_ms}
+                    onChange={e => setD(prev => ({ ...prev, health: { ...prev.health, interval_ms: e.target.value } }))}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span className="field-label">Timeout (ms)</span>
+                  <input
+                    className="input num"
+                    type="number"
+                    min="50"
+                    value={d.health.timeout_ms}
+                    onChange={e => setD(prev => ({ ...prev, health: { ...prev.health, timeout_ms: e.target.value } }))}
+                  />
+                </label>
+                {!healthOk && (
+                  <span style={{ gridColumn: '1 / -1', color: 'var(--down)', fontSize: 11 }}>
+                    Timeout must be &gt; 0 and &lt; interval.
+                  </span>
+                )}
+              </div>
+            )}
+          </fieldset>
+
+          <fieldset style={{ border: '1px solid var(--hairline)', borderRadius: 6, padding: 10 }}>
+            <legend style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 6px' }}>
+              <input
+                type="checkbox"
+                checked={d.cb_enabled}
+                onChange={e => setD(prev => ({ ...prev, cb_enabled: e.target.checked }))}
+              />
+              <span className="field-label" style={{ marginBottom: 0 }}>Circuit breaker</span>
+            </legend>
+            {d.cb_enabled && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span className="field-label">Error-rate threshold (0.0 – 1.0)</span>
+                  <input
+                    className="input num"
+                    type="number"
+                    step="0.05"
+                    min="0"
+                    max="1"
+                    value={d.circuit_breaker.error_rate_threshold}
+                    onChange={e => setD(prev => ({
+                      ...prev,
+                      circuit_breaker: { ...prev.circuit_breaker, error_rate_threshold: e.target.value },
+                    }))}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span className="field-label">Open duration (ms)</span>
+                  <input
+                    className="input num"
+                    type="number"
+                    min="100"
+                    value={d.circuit_breaker.open_duration_ms}
+                    onChange={e => setD(prev => ({
+                      ...prev,
+                      circuit_breaker: { ...prev.circuit_breaker, open_duration_ms: e.target.value },
+                    }))}
+                  />
+                </label>
+                {!cbOk && (
+                  <span style={{ gridColumn: '1 / -1', color: 'var(--down)', fontSize: 11 }}>
+                    Threshold must be in [0.0, 1.0].
+                  </span>
+                )}
+              </div>
+            )}
+          </fieldset>
+
+          <fieldset style={{ border: '1px solid var(--hairline)', borderRadius: 6, padding: 10 }}>
+            <legend style={{ padding: '0 6px' }}>
+              <span className="field-label" style={{ marginBottom: 0 }}>Connection pool</span>
+            </legend>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <span className="field-label">Max idle per host</span>
+                <input
+                  className="input num"
+                  type="number"
+                  min="0"
+                  value={d.connection.max_idle_per_host}
+                  onChange={e => setD(prev => ({
+                    ...prev,
+                    connection: { ...prev.connection, max_idle_per_host: e.target.value },
+                  }))}
+                />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <span className="field-label">Idle timeout (ms)</span>
+                <input
+                  className="input num"
+                  type="number"
+                  min="0"
+                  value={d.connection.idle_timeout_ms}
+                  onChange={e => setD(prev => ({
+                    ...prev,
+                    connection: { ...prev.connection, idle_timeout_ms: e.target.value },
+                  }))}
+                />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={d.connection.keep_alive}
+                  onChange={e => setD(prev => ({
+                    ...prev,
+                    connection: { ...prev.connection, keep_alive: e.target.checked },
+                  }))}
+                />
+                <span className="field-label" style={{ marginBottom: 0 }}>HTTP keep-alive</span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={d.connection.tls}
+                  onChange={e => setD(prev => ({
+                    ...prev,
+                    connection: { ...prev.connection, tls: e.target.checked },
+                  }))}
+                />
+                <span className="field-label" style={{ marginBottom: 0 }}>Upstream TLS (https)</span>
+              </label>
+            </div>
+          </fieldset>
+        </div>
+
+        <div style={{
+          padding: 12, borderTop: '1px solid var(--hairline)',
+          display: 'flex', gap: 8, justifyContent: 'flex-end',
+        }}>
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button
+            className="btn primary"
+            disabled={!canSave || busy}
+            onClick={handleSave}
+          >{busy ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeletePoolModal({ name, refs, onCancel, onConfirm, busy }) {
+  const blocked = refs && refs.length > 0;
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      }}
+      onClick={busy ? undefined : onCancel}
+    >
+      <div
+        className="card"
+        style={{ width: 480, maxWidth: '92vw', padding: 0 }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{
+          padding: '14px 16px', borderBottom: '1px solid var(--hairline)',
+          display: 'flex', alignItems: 'center',
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>
+            Remove pool <span className="mono">"{name}"</span>?
+          </div>
+          <button className="btn" style={{ marginLeft: 'auto' }} onClick={onCancel} disabled={busy}>×</button>
+        </div>
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
+          {blocked ? (
+            <>
+              <div style={{ color: 'var(--down)' }}>
+                <strong>Blocked.</strong> {refs.length} route{refs.length === 1 ? '' : 's'} still target this pool.
+                Update or delete the route{refs.length === 1 ? '' : 's'} first.
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {refs.map(rid => (
+                  <span key={rid} className="pill neutral mono" style={{ fontSize: 11 }}>{rid}</span>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                Backend returns <span className="mono">409 pool_referenced</span> with the list above.
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                The proxy will hot-swap the pool table on the same request.
+                In-flight requests finish on the existing pool.
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                Audit-chain entry recorded as <span className="mono">pool_delete</span>.
+              </div>
+            </>
+          )}
+        </div>
+        <div style={{
+          padding: 12, borderTop: '1px solid var(--hairline)',
+          display: 'flex', gap: 8, justifyContent: 'flex-end',
+        }}>
+          <button className="btn" onClick={onCancel} disabled={busy}>
+            {blocked ? 'Close' : 'Cancel'}
+          </button>
+          {!blocked && (
+            <button
+              className="btn"
+              style={{ color: 'var(--down)' }}
+              onClick={onConfirm}
+              disabled={busy}
+            >{busy ? 'Removing…' : 'Remove'}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 Object.assign(window, {
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
+  PageUpstreams,
 });

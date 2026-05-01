@@ -152,6 +152,15 @@ assert_get "GET /api/routes" /api/routes 200 \
 assert_get "GET /api/upstreams" /api/upstreams 200 \
   '.pools | type == "array"'
 
+# CC-T1.1 — full upstream config view (members + lb + connection
+# pool + referenced_by_routes per pool, BTreeMap-sorted).
+assert_get "GET /api/upstreams/config" /api/upstreams/config 200 \
+  '.pools | type == "object"'
+
+# CC-T2.1 — alert-channel inventory with secrets redacted.
+assert_get "GET /api/alert-receivers" /api/alert-receivers 200 \
+  '.receivers | type == "array"'
+
 assert_get "GET /api/cluster" /api/cluster 200 \
   '.peers | type == "array"' \
   '.is_leader | type == "boolean"' \
@@ -218,6 +227,50 @@ ack_code=$(curl --silent --max-time 3 -o "$ack_body" \
                 -X POST \
                 "$AEGIS_ADMIN/api/alerts/test-alert/ack")
 assert_error_envelope "POST /api/alerts/{id}/ack (no CSRF)" "$ack_code" "$ack_body"
+
+# CC-T1.1.b — upstream-config writes must reject unauthenticated
+# mutations with the same {ok:false, reason} envelope.
+upstreams_put_body="$TMPDIR/upstreams_put_body"
+upstreams_put_code=$(curl --silent --max-time 3 -o "$upstreams_put_body" \
+                        -w "%{http_code}" \
+                        -X PUT \
+                        -H "content-type: application/json" \
+                        -d '{"pools":{}}' \
+                        "$AEGIS_ADMIN/api/upstreams/config")
+assert_error_envelope "PUT /api/upstreams/config (no CSRF)" "$upstreams_put_code" "$upstreams_put_body"
+
+pool_put_body="$TMPDIR/pool_put_body"
+pool_put_code=$(curl --silent --max-time 3 -o "$pool_put_body" \
+                    -w "%{http_code}" \
+                    -X PUT \
+                    -H "content-type: application/json" \
+                    -d '{"members":[{"addr":"127.0.0.1:1"}],"lb":"round_robin"}' \
+                    "$AEGIS_ADMIN/api/upstreams/pool/cc_t3_smoke")
+assert_error_envelope "PUT /api/upstreams/pool/{id} (no CSRF)" "$pool_put_code" "$pool_put_body"
+
+pool_del_body="$TMPDIR/pool_del_body"
+pool_del_code=$(curl --silent --max-time 3 -o "$pool_del_body" \
+                    -w "%{http_code}" \
+                    -X DELETE \
+                    "$AEGIS_ADMIN/api/upstreams/pool/cc_t3_smoke")
+assert_error_envelope "DELETE /api/upstreams/pool/{id} (no CSRF)" "$pool_del_code" "$pool_del_body"
+
+# CC-T2.1.b — alert-receiver writes follow the same rejection contract.
+ar_put_body="$TMPDIR/ar_put_body"
+ar_put_code=$(curl --silent --max-time 3 -o "$ar_put_body" \
+                  -w "%{http_code}" \
+                  -X PUT \
+                  -H "content-type: application/json" \
+                  -d '{"receivers":[]}' \
+                  "$AEGIS_ADMIN/api/alert-receivers")
+assert_error_envelope "PUT /api/alert-receivers (no CSRF)" "$ar_put_code" "$ar_put_body"
+
+ar_test_body="$TMPDIR/ar_test_body"
+ar_test_code=$(curl --silent --max-time 3 -o "$ar_test_body" \
+                   -w "%{http_code}" \
+                   -X POST \
+                   "$AEGIS_ADMIN/api/alert-receivers/cc_t3_smoke/test")
+assert_error_envelope "POST /api/alert-receivers/{name}/test (no CSRF)" "$ar_test_code" "$ar_test_body"
 
 # --------------------------------------------------------------- #
 # Summary                                                         #

@@ -23,25 +23,97 @@
 
 ## Status (snapshot)
 
-- **As of:** 2026-04-30
-- **Workspace tests:** **2,199 default-feature** (post-CI-T*
-  console-API integration; net delta from 2,277 reflects the
-  dashboard redesign cleanup that retired the old vanilla-JS
-  test fixtures).
-- **Clippy:** clean across the workspace on
-  `--features aegis-proxy/redis` and on `aegis-bin --features
-  "redis affinity alerts geoip"`. Two pre-existing rust-1.94
-  lints in untouched files (`tests/dod.rs`, `src/api/risk.rs`)
-  remain.
-- **Active tracks:** **Phase B — only B6 packaging remains
-  (B6-T1 production Dockerfile is in flight).** All other
-  tracks closed in this session: dashboard redesign
-  (DD-T0..T8), Aegis WAF Console API integration
-  (CI-T1..T8), HA cluster (HA-T1..T5), interop contract
-  (IT-T1..T6 + DR-T1..T7), post-run-08 (AF-T1, HP-T1, TLS-T1).
-- **Latest activity:** **CI-T7 + CI-T8 closed 2026-04-30**
-  (SLO eval + dispatch + burn windows; geo enrichment for
-  `/api/attacks/top`).
+- **As of:** 2026-05-01
+- **Workspace tests:** **163 in `aegis-core`** + **855 in
+  `aegis-control`** + **424 in `aegis-proxy` lib** (**461 with
+  `--features etcd`**) + **888 in `aegis-security`** + **41 in
+  `aegis-bin`** (default features). aegis-proxy: +4 from
+  PRE-T1's `responses::tests` (json round-trip, cache-control
+  threading, fallback contract, security-headers application).
+  **Dashboard bundle 182,090 B** (178 KB).
+  Workspace total ~2,434 default-feature.
+  **`aegis-proxy/src/lib.rs`: 5569 → 5484 (PRE-T1) → 4900
+  (PRE-T2)** lines, cumulative −669. Submodules:
+  `responses.rs` 213, `data_plane.rs` 616. Both under the
+  800-line guideline. PRE-T3 next: `admin/sse.rs`.
+- **Clippy:** `aegis-control` + `aegis-proxy` libs both clean
+  under `-D warnings` after OTEL-T3's lint sweep
+  (`RESERVED_RULE_IDS.contains`, `WafError::Io` redundant
+  closure, `BuiltPools` type alias, two `strip_prefix` cleanups,
+  one needless borrow on `from_config`). Some pre-existing
+  rust-1.94 lints may still surface in test-only files
+  (`aegis-control/tests/dod.rs`) under non-default feature
+  combos; lib clippy is the gate.
+- **Active tracks:** **Console config pages (CC-T\*)** — CC-T1.1
+  + CC-T2.1 + CC-T2.1.b + CC-T2.2 + **CC-T1.2** closed today.
+  Alert-receivers track is fully end-to-end (backend + dashboard
+  card); upstreams track now has its read-side dashboard surface
+  (config view + per-pool detail). Remaining: **CC-T1.1.b**
+  (upstream PUT/DELETE + proxy hot-swap — heaviest item),
+  **CC-T3** (i18n / OpenAPI / docs / acceptance round-trip).
+  **Phase B B6 packaging** still has B6-T4 (HSM) + B6-T5
+  (fd-pass) deferred. **Scaling config (SC-T\*)** parked.
+- **Latest activity:** **PRE-T2 (extract `data_plane.rs`)
+  closed 2026-05-01.** Second slice of the proxy refactor.
+  Four data-plane functions moved out of
+  `aegis-proxy/src/lib.rs` into a new `data_plane.rs`
+  submodule (616 lines): `handle_data_request` (the
+  `#[tracing::instrument]` wrapper), `handle_data_request_inner`
+  (rate-limit → tier → detectors → risk → forward/block),
+  `forward_allow_to_upstream` (route resolve + CB +
+  upstream forward), and `blocked_response` (block-path
+  helper). All `pub(crate)` for entry points; private
+  helper kept private. **`lib.rs` 5484 → 4900 lines** (−584
+  in this slice; cumulative −669 from the 5569 baseline).
+  Test counts unchanged (424 default / 461 etcd).
+  - **PRE-T1 (2026-05-01)** — Extracted `responses.rs`
+    (~213 lines, 6 helpers + 4 tests).
+  - **MTLS-T6 (2026-05-01)** — Read-only mTLS observability
+    backend. New `aegis-control::identity_tracker` +
+    `api::mtls` (4 read endpoints). CA summary works
+    immediately; connections/failures empty until MTLS-T2/T3.
+  - **MTLS-T1 (2026-05-01)** — Plan + types-only first slice.
+    New `plans/mtls.md` (12-slice roadmap). `cfg.tls.client_auth`
+    schema + `aegis-core::identity::ClientIdentity` enum.
+    Until MTLS-T2 lands rustls wiring, `client_auth` is
+    parsed but ignored.
+  - **CC-T (per-handler hot-reload — TLS certs, 2026-05-01)** —
+    Closes the LAST operator-loud cfg-driven hot-reload
+    surface. New `apply_cfg_change_to_tls` helper +
+    `TlsReloadOutcome` (NoResolver / Applied / SkippedEmpty /
+    Failed). **Hot-reload now covers** routes + upstreams +
+    detector mask + compliance clamp + ip rate-limit + TLS
+    certs.
+  - **CC-T (per-handler hot-reload — rate-limit, 2026-05-01)** —
+    `IpRateLimiter` wraps `Inner.cfg: ArcSwap<IpRateLimitConfig>`
+    + `set_config` method. Per-IP timestamp state preserved.
+  - **CC-T (per-handler hot-reload — routes, 2026-05-01)** —
+    `RouteTable` wrapped in `Arc<ArcSwap<CompiledRouteTable>>`
+    + `apply` method. `apply_cfg_change_to_routes` helper
+    rebuilds + atomic-swaps `ProxyContext.route_table` on
+    reload. Validation failure emits `routes_reload_failed`
+    and keeps live table intact.
+  - **CC-T (config hot-reload plumbing, 2026-05-01)** —
+    `aegis_proxy::run` takes `Arc<ArcSwap<WafConfig>>` +
+    `ConfigReloadSource` enum. Boot-snapshots via
+    `cfg_swap.load_full()`; watchers call the shared
+    `apply_cfg_change_to_mask` helper. Activated yesterday's
+    CC-T compliance-clamp-on-reload + ETCD-T1's etcd watcher
+    in one slice.
+  - **CC-T (compliance-on-reload + boot, 2026-05-01)** — New
+    `apply_live_mask_with_compliance` in
+    `aegis-control::api::detectors_persist` runs the clamp on
+    the live `SharedDetectorMask` state.
+  - **ETCD-T1 (2026-05-01)** — Config-from-etcd loader.
+    `AEGIS_CONFIG_SOURCE=etcd` boot path under `etcd` Cargo
+    feature; `spawn_watcher` activated by today's plumbing.
+  - **OTEL-T1 + T2 + T3 (2026-05-01)** — Live OTLP exporter
+    + hot-path instrumentation (`handle_data_request`,
+    `AuditedMutate::apply`, `forward_allow_to_upstream`). Audit
+    gap "OTel tracing 0%" fully closed. Jaeger shows parent-
+    child trees with `action` / `tier` / `upstream` / `outcome`
+    attributes; Grafana → Jaeger exemplar cross-link lights up
+    on first traffic.
   - **CI-T7** — periodic `engine.evaluate()` task in
     `aegis-proxy::run` calls `slo::dispatch::send_alert`
     every 30 s; with `--features alerts` the dispatcher
@@ -56,116 +128,77 @@
     page renders blips only for IPs with real geo (was
     falling back to the mock fixture).
 
----
-
 ## Last Completed
 
-**Task:** **CI-T7 + CI-T8** — close the SLO and geo-enrichment
-items deferred during CI-T4 / CI-T1. See
-[`plans/console-api-integration.md`](./plans/console-api-integration.md).
+**Task:** **PRE-T2 (extract `data_plane.rs`)** — Second slice
+of the proxy refactor (`plans/proxy-refactor.md`). Pure
+structural extraction, **zero behaviour change**.
 
-### CI-T7 — SLO evaluation + dispatch + burn-rate windows
+### What landed
 
-The SLO engine has been fed samples since CI-T4, but
-`engine.evaluate()` was never called in production — alerts
-never fired and VipTalk delivery (built but disconnected) never
-ran. CI-T7 closes the loop.
+Four functions moved out of `aegis-proxy/src/lib.rs` into a
+new `data_plane.rs` submodule:
 
-- **Periodic eval task** spawned in `aegis-proxy::run` runs
-  `engine.evaluate()` every 30 s and pipes each newly-fired
-  alert through `aegis_control::slo::dispatch::send_alert(...)`.
-- **VipTalk delivery is now production-reachable.** With
-  `aegis-bin --features "redis alerts"` (new feature alias of
-  `aegis-control/alerts`), `dispatch::send_viptalk` POSTs to
-  `https://api.viptalk.org/v1/bot/<token>/sendMessage`. Without
-  the feature, dispatch logs the alert and counts it as
-  "external" so an off-box dispatcher (Alertmanager, sidecar)
-  can pick it up.
-- **`BudgetStatus.burn_rates: Vec<BurnRate>`** — one entry per
-  burn-rate window declared on the `SloObjective`. Computed
-  alongside the budget snapshot using the same arithmetic as
-  `evaluate()`, surfaced through `/api/slo` so the dashboard's
-  `burn_1h` / `burn_6h` / `burn_3d` fields render real numbers
-  instead of placeholder zeros.
+- `handle_data_request` — `pub(crate) async fn`. The
+  `#[tracing::instrument]` wrapper that owns the OTEL-T3
+  root span and records the resolved `action` after the
+  inner returns.
+- `handle_data_request_inner` — `pub(crate) async fn`. The
+  per-request logic: rate-limit → tier classification →
+  detector run → risk eval → forward / block.
+- `forward_allow_to_upstream` — `pub(crate) async fn`.
+  Route resolve + circuit-breaker gate + pool member pick
+  + body forward via `upstream::forward::forward()`.
+- `blocked_response` — private `fn`. Helper every block
+  path uses to build the 403 + emit the audit-chain entry.
 
-### CI-T8 — Geo enrichment for /api/attacks/top
+Call site in `lib.rs::accept_loop` rebound via
+`use data_plane::handle_data_request;` — byte-identical.
+No tests moved (the data-plane tests live in
+`lib.rs::tests::run_binds_and_serves_200` and exercise full
+proxy boot rather than data-plane internals; they stay
+attached to `aegis_proxy::run` until PRE-T7 lifts run).
 
-The MaxMind GeoIP reader has shipped since B3-T3 but only fed
-the rule engine. CI-T8 plumbs it into the dashboard.
+### File sizes
 
-- **`Attacker` row gains `country: Option<String>` + `asn:
-  Option<u32>`** with `serde(skip_serializing_if = "Option::is_none")`
-  so the API stays clean when no DB is loaded.
-- **`AttacksHandler::set_geo_lookup(Arc<dyn GeoIpLookup>)`** —
-  accepts any impl of the always-compiled trait. `enrich_attackers()`
-  parses each identifier; public IPs get country + ASN,
-  fingerprint identifiers (`fp:<ja4>`) skip the lookup.
-- **New `cfg.geoip` block** — `country_db` + `asn_db` (both
-  optional `PathBuf`). Plumbed in proxy under
-  `cfg(feature = "geoip")` so builds without `maxminddb` stay
-  slim. New cargo feature aliases:
-  `aegis-bin/geoip → aegis-proxy/geoip → aegis-security/geoip`.
-- **Dashboard Overview** drops the lying mock-fixture blips —
-  the `WorldMap` now shows only attackers with real `country`.
-  Pill toggles between `N geo-tagged` (DB loaded) and
-  `geo DB not loaded` (default state) so the operator sees
-  honest state.
+- `aegis-proxy/src/lib.rs`: **5484 → 4900 lines** (−584 in
+  this slice; cumulative −669 from the 5569 baseline).
+- `aegis-proxy/src/data_plane.rs` (new): **616 lines**
+  (under the 800-line guideline).
+- `aegis-proxy/src/responses.rs` (PRE-T1): 213 lines
+  unchanged.
 
-**Files changed (CI-T7 + CI-T8).**
+### Verification
 
-- `crates/aegis-control/src/slo.rs` — `BurnRate` struct,
-  `BudgetStatus.burn_rates`, `budget_status()` per-window
-  burn-rate computation. Test fixture updated.
-- `crates/aegis-control/src/api/tracking.rs` —
-  `SloResponse::from_budget_status` populates `burn_1h/6h/3d`.
-- `crates/aegis-control/src/api/attacks.rs` — `Attacker.country`
-  + `asn`, `AttacksHandler.geo` slot + `set_geo_lookup` setter
-  + `enrich_attackers()` invoked before caching `render_top()`.
-- `crates/aegis-proxy/src/lib.rs` — periodic SLO eval+dispatch
-  task (30 s interval, calls `dispatch::send_alert` per fired
-  alert); GeoIP reader wiring under `cfg(feature = "geoip")`.
-- `crates/aegis-proxy/Cargo.toml` — new `geoip` feature
-  (alias of `aegis-security/geoip`).
-- `crates/aegis-bin/Cargo.toml` — new `alerts` + `geoip`
-  features (aliases of `aegis-control/alerts` + `aegis-proxy/geoip`).
-- `crates/aegis-core/src/config.rs` — new `GeoIpConfig`
-  struct (`country_db` + `asn_db`), wired into `WafConfig.geoip`.
-- `crates/aegis-control/assets/dashboard/src/pages.jsx` —
-  Overview consumes real `country`/`asn`; blips render only
-  for IPs with geo; pill reflects `geo DB not loaded` /
-  `N geo-tagged` honestly.
+- `cargo build -p aegis-bin --features production` → clean.
+- `cargo clippy -p aegis-proxy --features etcd --lib --
+  -D warnings` → clean.
+- `cargo test -p aegis-proxy --lib` → **424 / 0 / 0**
+  default / **461** etcd. **3/3 stable parallel runs.**
+- All other crates unchanged: aegis-control 855,
+  aegis-core 163, aegis-bin 41, aegis-security 888.
 
-**Verification.**
+### What's next
 
-- `cargo test --workspace` → **2,199 passed** (no
-  regressions). Clippy clean.
-- `cargo build -p aegis-bin --release --features "redis alerts geoip"` → green.
-- Live smoke: `/api/slo` returns `burn_1h`/`burn_6h`/`burn_3d`
-  fields populated from the engine; `/api/attacks/top` row
-  shape includes optional `country`/`asn`. With no MaxMind DB
-  configured, rows omit the fields cleanly.
+Per `plans/proxy-refactor.md`:
 
-### Run-11 — full control-panel acceptance (2026-04-30)
+- **PRE-T3** — extract `admin/sse.rs` (~30 min, ~300
+  lines). `/dashboard/sse` streaming endpoint, well-isolated.
+- **PRE-T4** — extract `admin/login.rs` (~30 min, ~400
+  lines).
+- **PRE-T5** — extract `admin/get_handlers.rs` (~1.5 h,
+  ~1200 lines). Big chunk.
+- **PRE-T6** — extract `admin/mutation_handlers.rs` (~1.5 h,
+  ~1500 lines). Bigger chunk.
+- **PRE-T7** — extract `run.rs` (~1 h, ~700 lines), leave
+  `lib.rs` as a thin facade.
+- **PRE-T8** — verify (no file > 800 lines, all tests pass).
 
-End-to-end run-through of the dashboard after CI-T1..T10 closed.
-Full report: [`tests/results/run-11-2026-04-30-control-panel-acceptance/README.md`](./tests/results/run-11-2026-04-30-control-panel-acceptance/README.md).
-
-- 22/22 dashboard-consumed endpoints return real JSON ✅
-- `make openapi-test` → 25/25 OpenAPI shape checks ✅
-- `make protocols-test` → h1 ✅ h2 ✅ WS ✅ gRPC ✅ (h3 skip — curl-side)
-- Round-1 acceptance → 8/8 contract checks (RT 61 ms / hot-reload 52 ms / audit 30 ms) ✅
-- 12 fresh per-page screenshots committed
-- SLO engine **fired 3 real alerts** during the run (Tracking
-  page screenshot) — proves CI-T7 dispatch loop works in production
-- Test-harness fixes: round1-acceptance now logs in via /admin/login
-  (was relying on /dashboard/ setting CSRF), uses portable `ms_now()`
-  instead of `date +%s%3N`, and streams the bundle to a tempfile
-  to avoid broken-pipe under `set -o pipefail`
+After PRE-T8: resume MTLS-T track with the deferred
+MTLS-T6 frontend, then MTLS-T2's rustls wiring.
 
 ---
 
-
----
 
 ## Earlier completions
 
@@ -182,6 +215,18 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-05-01 | **PRE-T2 (extract `data_plane.rs`)** Second slice of proxy refactor | Pure structural extraction, zero behaviour change. Four functions moved out of `aegis-proxy/src/lib.rs` (5484 → **4900 lines**) into new `data_plane.rs` (616 lines): `handle_data_request` + `handle_data_request_inner` + `forward_allow_to_upstream` + `blocked_response`. `pub(crate)` entry points + by-name `use` keep call site byte-identical. No test additions (data-plane tests live in `lib.rs::tests::run_binds_and_serves_200`, stay attached to `aegis_proxy::run` until PRE-T7). 424 default / 461 etcd unchanged. 3/3 stable parallel runs. PRE-T3 (admin/sse.rs, ~300 lines) next. |
+| 2026-05-01 | **PRE-T1 (extract `responses.rs`)** First slice of proxy refactor | Pure structural extraction, zero behaviour change. 6 response-builder helpers moved out of `aegis-proxy/src/lib.rs` (5569 → **5484 lines**) into new `responses.rs` (213 lines) — all `pub(crate)`, by-name `use` keeps the 166 call sites byte-identical. +4 unit tests (json round-trip, cache-control threading, fallback contract, security-headers application). aegis-proxy 420 → 424 default / 457 → 461 etcd. 3/3 stable parallel runs. PRE-T2 (extract `data_plane.rs`, ~700 lines) next. |
+| 2026-05-01 | **MTLS-T6 (read-only console observability — backend)** Tier-1 mTLS observability + CA bundle pre-flight | New `aegis-control::identity_tracker` (sliding-window per-principal counter + `parse_ca_bundle` via rustls_pemfile + x509_parser). New `aegis-control::api::mtls` (4 render fns + 9 tests). DashboardServices gains `identity_tracker: Option<Arc<...>>`. 4 GET dispatch arms in aegis-proxy/lib.rs (`/api/mtls`, `/connections`, `/failures`, `/ca-summary`). Empty-state until MTLS-T2/T3 fire `record_request` / `record_failure`; CA summary works immediately. +21 aegis-control tests (834 → 855). aegis-proxy unchanged. **Operator-flagged:** `aegis-proxy/src/lib.rs` 5569 lines — `plans/proxy-refactor.md` (PRE-T1..T8) queued next. |
+| 2026-05-01 | **MTLS-T1 (config schema + identity types)** Server-side mTLS plan + Slice 1 | New `plans/mtls.md` (12 slices). `cfg.tls.client_auth: Option<ClientAuthConfig>` with mode (disabled/optional/required), ca_bundle, allowed_sans, apply_to (admin/data, default `[admin]`). Validation: non-disabled mode requires both ca_bundle + non-empty apply_to. New `aegis-core::identity::ClientIdentity` enum (Anonymous/Mtls/Spiffe) with kind+principal+is_authenticated helpers. **Types only — no behaviour change.** +18 tests in aegis-core (145 → 163). Ship order plans MTLS-T6 (read-only console observability) BEFORE MTLS-T2's rustls wiring so operators see the dashboard before the handshake change. |
+| 2026-05-01 | **CC-T (per-handler hot-reload — TLS certs)** Live cert rotation from file + etcd | Existing `DynamicResolver`'s `Arc<ArcSwap<CertStore>>` already supported swap; boot path lifted resolver out of the match arm so watchers can call `swap`. New `apply_cfg_change_to_tls` helper + `TlsReloadOutcome::{NoResolver, Applied { cert_count }, SkippedEmpty, Failed { reason }}`. Empty `tls.certificates` is **skip-not-clear** (clearing would crash live handshakes); failure keeps old store live + emits `tls_reload_failed`. +7 tests (5 reload + 2 supervisor end-to-end). aegis-proxy 413 → 420 default / 450 → 457 etcd. Rotate certs in waf.yaml → live in ~100 ms; in-flight handshakes complete on old store. |
+| 2026-05-01 | **CC-T (per-handler hot-reload — rate-limit)** Live IP rate-limit reload from file + etcd | `IpRateLimiter.Inner.cfg` wrapped in `ArcSwap<IpRateLimitConfig>` + new `set_config` method. Hot-path adds one ArcSwap load per request (~5 ns). Per-IP timestamp state preserved across swap. New `apply_cfg_change_to_rate_limit` helper + shared `derive_ip_rate_cfg` selector. Both watchers emit `rate_limit_reloaded` events. +9 tests (3 limiter + 5 reload + 1 supervisor end-to-end). aegis-proxy 407 → 413 default / 444 → 450 etcd. aegis-security 885 → 888. Edit `cfg.rate_limit.buckets[0]` → live in ~100 ms. |
+| 2026-05-01 | **CC-T (per-handler hot-reload — routes)** Live route table reload from file + etcd | `RouteTable` refactored to wrap `Arc<ArcSwap<CompiledRouteTable>>` + new `apply()` method (mirrors `PoolRegistry`). Hot-path: one `ArcSwap::load` per request (~5 ns). New `apply_cfg_change_to_routes` helper called by both watchers; validation failure emits `routes_reload_failed` and keeps the live table intact. +8 tests (3 route, 3 reload-helper, 2 supervisor end-to-end). aegis-proxy 399 → 407 default / 436 → 444 etcd. Edit `routes:` in waf.yaml → live in ~100 ms. |
+| 2026-05-01 | **CC-T (config hot-reload plumbing)** File + etcd watchers wired through `aegis_proxy::run` | `aegis_proxy::run` now takes `Arc<ArcSwap<WafConfig>>` + `ConfigReloadSource` (None / File / Etcd). Boot snapshot via `cfg_swap.load_full()` so existing read sites unchanged. Watchers (file `notify` debounced ~100ms, etcd REST poll ~5s) call shared `config_source::reload::apply_cfg_change_to_mask` to re-derive base mask + clamp + emit `config_reload` + `compliance_clamp_applied` events. Activates both yesterday's CC-T compliance-clamp-on-reload AND ETCD-T1's etcd watcher in one slice. +5 reload-helper unit tests. aegis-proxy 394 → 399 default / 431 → 436 etcd. Per-request route/upstream reads still boot-snapshotted (separate follow-up). |
+| 2026-05-01 | **CC-T (compliance-on-reload + boot)** Detector-mask compliance clamp on hot-reload + boot | New `apply_live_mask_with_compliance(mask, modes)` helper in `aegis-control::api::detectors_persist` mirrors the existing snapshot-rehydrate clamp but operates on live `SharedDetectorMask` state. Boot path wires it before snapshot-load — closes sibling first-boot gap where `cfg.detectors` + `compliance.modes` could silently disable a PCI-pinned class. Supervisor's `watch_loop` re-derives base mask from new cfg + clamps + emits `compliance_clamp_applied` audit event alongside existing `config_reload`. +6 unit tests (`live_apply_*`) + 1 supervisor end-to-end. aegis-control 828 → 834, aegis-proxy 393 → 394 (default) / 430 → 431 (`--features etcd`). Hot-reload wire dormant pending `Arc<ArcSwap<WafConfig>>` plumbing; boot-time wire active. |
+| 2026-05-01 | **ETCD-T1** Config-from-etcd loader | New `aegis-proxy::config_source::etcd_source` (cfg-gated under `etcd`); `AEGIS_CONFIG_SOURCE=etcd` boot path fetches `/aegis/config/waf` via etcd v3 `/v3/kv/range` and runs the same `WafConfig::validate`. Pure-lookup test pattern eliminates env-var-mutation flakes between `sd::etcd::tests` and the new module. 19 unit tests; aegis-proxy 430 / 393 (etcd / default), aegis-bin 41 (+4). Watcher dormant pending `Arc<ArcSwap<WafConfig>>` plumbing in `aegis-proxy::run`. |
+| 2026-05-01 | **OTEL-T1 + T2 + T3** Live OTLP exporter + hot-path instrumentation | T1 added `aegis-bin/otel` feature scaffold + `init_or_default(&cfg)` single-call subscriber init; T2 wired the real OTLP gRPC pipeline (4 crates: opentelemetry 0.24 + opentelemetry_sdk + opentelemetry-otlp 0.17 + tracing-opentelemetry 0.25) with service-resource + sample-ratio sampling + batch SDK; T3 added `#[tracing::instrument]` to `handle_data_request` (server kind, records action+tier), `AuditedMutate::apply` (internal kind, records actor+request_id+outcome), `forward_allow_to_upstream` (client kind, records upstream+member+outcome). Audit gap "OTel tracing 0%" fully CLOSED. Clippy `-D warnings` green on aegis-control + aegis-proxy libs. 828 + 393 tests. |
+| 2026-05-01 | **PROM-T1 + T2 + T3 + GRAFANA-T1 + DURABLE-T1 + T2 + CC-T1.1.b + CC-T1.2 + CC-T1.audit + CC-T2.\* + CC-T3 + HU-T\*** Audit-driven gap closure | Closed audit gap #3 (Prometheus instrumentation) end-to-end (`waf_requests_total`, `waf_upstream_members_*`, `waf_detector_hits_total`, `waf_state_backend_ops_total`, `waf_audit_events_total`); shipped Grafana stack with 3 file-provisioned dashboards; durable audit chain via NDJSON daily-rotation + retention TTL; persisted detector mask with compliance clamp on rehydrate; full upstreams CRUD round-trip (backend hot-swap via `PoolRegistry`, dashboard editor, end-to-end audit script); alert-receivers card on Tracking page with kind-aware modal; OpenAPI spec extended 30→37 paths / 39→52 schemas. Dashboard bundle slimmed 241→178 KB via esbuild minification. |
 | 2026-04-30 | **CI-T9 + CI-T10** OpenAPI spec + h2 wire-up | Hand-written `docs/control-plane/api.openapi.yaml` (1,217 lines, 30 endpoints, 30 schemas, 3 security schemes) + `tests/api/openapi-shape.sh` 25-check contract test. CI-T10 swapped data-plane TLS `http1::Builder` for `hyper_util::auto::Builder` so ALPN-negotiated h2 actually serves over h2; flipped explicit ALPN downgrade back to `[h2, http/1.1]`. Closed real client-compat gap (HTTP/2 + gRPC both unblocked). |
 | 2026-04-30 | **CI-T7 + CI-T8** Console API integration — SLO eval + geo enrichment | Periodic engine.evaluate task wired to slo::dispatch::send_alert (VipTalk delivery on `--features alerts`); BudgetStatus carries per-window burn rates → /api/slo populates burn_1h/6h/3d. Attacker rows gain country+ASN from MaxMindReader (`--features geoip`); Overview blips drop the mock fixture. 2,199 tests. |
 | 2026-04-30 | **CI-T1..T6** Aegis WAF Console — live API integration | All 12 dashboard pages now read live `/api/*` instead of mock JS constants. New `/api/routes`, `PUT /api/mode`, `POST /api/alerts/{id}/ack`. Real /api/slo + /api/certs + /api/gitops/status + /api/alerts (was placeholder). Plan: `plans/console-api-integration.md`. |
@@ -198,17 +243,104 @@ Last five tasks, compressed. For full detail see git history.
 
 ## Next Task
 
-**Task in flight: B6-T1 — production Dockerfile.** Plan
-[`plans/phase-b/README.md` § B6](./plans/phase-b/README.md#b6--production-packaging).
-Last remaining Phase B item; everything else (B1..B5,
-HA-T1..T5, IT-T1..T6 + DR-T1..T7, AF-T1/HP-T1/TLS-T1, DD-T0..T8,
-CI-T1..T8) is closed.
+**Operator priorities all closed today:** upstreams CRUD
+end-to-end (CC-T1.1.b + CC-T1.2 + CC-T1.audit), Grafana setup
+(GRAFANA-T1), and OTel tracing wired through hot paths
+(OTEL-T1 + T2 + T3). Audit gaps #3 (Prometheus instrumentation)
++ #4 (OTel 0%) are now fully closed.
 
-**This turn closed CI-T7 + CI-T8** (SLO eval+dispatch+burn
-windows, geo enrichment for `/api/attacks/top`). The Aegis
-WAF Console redesign + every supporting backend surface is
-now production-grade — full detail in **Last Completed**
-above.
+### Top of queue — PRE-T (proxy refactor) BEFORE more mTLS slices
+
+Operator flagged `aegis-proxy/src/lib.rs` size during MTLS-T6
+(now 5569 lines, ~7× the 800-line guideline). New plan
+`plans/proxy-refactor.md` documents PRE-T1..T8:
+
+1. **PRE-T1** — extract `responses.rs` (~120 lines).
+2. **PRE-T2** — extract `data_plane.rs` (~700 lines).
+3. **PRE-T3** — extract `admin/sse.rs` (~300 lines).
+4. **PRE-T4** — extract `admin/login.rs` (~400 lines).
+5. **PRE-T5** — extract `admin/get_handlers.rs` (~1200 lines).
+6. **PRE-T6** — extract `admin/mutation_handlers.rs` (~1500 lines).
+7. **PRE-T7** — extract `run.rs` (~700 lines), leave `lib.rs`
+   as a thin facade.
+8. **PRE-T8** — verify (no file > 800 lines, all tests pass,
+   git-stat shows file moves only).
+
+**Pure structural refactor — zero behaviour change.** ~6-8 h
+total, but every subsequent mTLS slice (T2 rustls wiring, T3
+identity extraction, T4 policy, T7 SAN allowlist mutations,
+T8 mode toggle, …) lands in a focused submodule rather than
+inflating a 5500-line file further.
+
+### After PRE-T8 — resume MTLS-T
+
+Per `plans/mtls.md` ship order, MTLS-T6 backend already
+shipped. The remaining slices land in the new module
+structure:
+
+1. **MTLS-T6 frontend** (deferred from this turn) — dashboard
+   `<PageMtls>` + `useMtlsApi()` hook + nav entry + i18n.
+   Lands AFTER PRE-T8 so the JSX changes don't coordinate
+   with a moving target on the Rust side. ~1-2 h.
+2. **MTLS-T2** — rustls inbound wiring with
+   `WebPkiClientVerifier` + `ClientTrustStore`. ~2 h.
+3. **MTLS-T3** — identity extraction from
+   `peer_certificates()`. Pure sync function. ~1.5 h.
+4. **MTLS-T4 → T11** — policy / audit / hot-reload / 5-tier
+   console UI / break-glass / per-route auth_required.
+
+### Other queued items (parked, not blocking MTLS-T)
+
+- **Redis Cluster slot-hashing** — designed-only; ~4-6 h.
+- **Hot-reload of `cfg.risk` thresholds** — `/api/risk/*`
+  PUT already provides live-control; cfg-driven gap is
+  small. ~2-3 h.
+- **Disable-TLS-at-runtime** — needs listener-loop drain
+  coordination. Operators restart today.
+
+### Broader compliance enforcement at boot (deferred)
+
+`aegis_control::compliance::apply` runs only in `cmd_validate`
+today — runtime boot doesn't enforce non-detector adjustments
+(audit retention floor, TLS provider lock-in, PII pseudonymize).
+Larger blast radius (every cfg field a PCI/FIPS profile rewrites);
+separate slice from the detector-mask clamp.
+
+### Tokio runtime metrics (deferred)
+
+`aegis_runtime_active_workers` / `aegis_runtime_blocking_queue_depth`
+need the `tokio_unstable` build flag and are gated on a
+follow-up that re-evaluates the unstable surface area against
+our supportability bar. Runtime dashboard's reserved panel
+stays a documented placeholder until that lands.
+
+### Bundle slimming (deferred — was top-of-queue, dropped)
+
+Bundle is at **178 KB** after the esbuild minification pass,
+giving 78 KB of CSP / round-1-acceptance budget headroom. No
+further slimming is needed unless a heavyweight feature lands
+that pushes back near the budget.
+
+### Recommendation
+
+**Run `PRE-T1..T8` next as one focused PR.** Zero behaviour
+change, ~6-8 h total, every subsequent mTLS / dashboard /
+control-plane slice lands cleanly afterward. The longer we
+defer the split, the more handler bodies accrete in the
+monolith — every new slice makes the eventual refactor harder.
+Once PRE-T8 lands clean, resume the mTLS track with the
+deferred MTLS-T6 frontend, then MTLS-T2's rustls wiring.
+
+---
+
+### Earlier in this session
+
+The "Outline / Acceptance" block below predates today's CC-T*
+work and is left in place as a reference for the closed Phase
+B B6-T1 production Dockerfile task. Implement-Progress is in
+mid-protocol-drift after a heavy multi-task session; the
+single source of truth for closed tasks is
+[`docs/progress/completed-tasks-log.md`](./docs/progress/completed-tasks-log.md).
 
 **Earlier turn — DD-T0+T1.** Old vanilla-JS dashboard (~30 files) removed.
   New **Aegis WAF Console** lands as `app.js` 165 KB built
@@ -349,6 +481,8 @@ Order is execution priority — earlier rows run first.
 | # | Track | Plan | State |
 |---|---|---|---|
 | 1 | **Phase B — production-packaging (B6)** | [`plans/phase-b/README.md`](./plans/phase-b/README.md) | **active**; B1..B5 closed; B6-T1 in flight |
+| 2 | **Console config pages (CC-T*)** — upstreams editor + alert-channel mgmt | [`plans/console-config-pages.md`](./plans/console-config-pages.md) | **plan-only — awaiting confirmation**. CC-T1 (upstreams CRUD) → CC-T2 (alert receivers in Tracking page) → CC-T3 (i18n / OpenAPI / docs) |
+| 3 | Scaling configuration (SC-T*) — three-layer worker/cluster/state surface | [`plans/scaling-config.md`](./plans/scaling-config.md) | **parked plan — awaiting confirmation**. Surfaces existing L1/L2/L3 model in Console; adds `/api/state` health endpoint |
 | — | Dashboard redesign (DD-T0..T8) | [`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md) | closed in run-10 |
 | — | Console API integration (CI-T1..T8) | [`plans/console-api-integration.md`](./plans/console-api-integration.md) | closed |
 | — | HA cluster (HA-T1..T5) | [`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md) | closed in run-05 |

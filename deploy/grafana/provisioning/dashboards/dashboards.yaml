@@ -1,0 +1,19 @@
+# File-provider for Grafana dashboards. Reads every
+# `*.json` in the path and registers it under the named folder
+# on Grafana boot. Edits to a JSON file refresh on the next
+# `updateIntervalSeconds` cycle without a Grafana restart.
+
+apiVersion: 1
+
+providers:
+  - name: aegis-gate
+    orgId: 1
+    folder: Aegis-Gate
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

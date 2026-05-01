@@ -35,6 +35,7 @@ tests/api/
 ├── cold-tier.sh         GET /api/cold-tier                (P8)
 ├── acme.sh              Pebble reachability + directory shape (F-T7)
 ├── openapi-shape.sh     OpenAPI 3.0.3 contract test       (CI-T9)
+├── upstreams-crud.sh    Upstream pool CRUD round-trip     (CC-T1.audit)
 └── run-all.sh           bring-up + run every script + cleanup
 ```
 
@@ -67,6 +68,7 @@ Each script exits non-zero on any assertion failure; CI greps for
 | `logging.sh` | GET ladder includes all 6 levels, PUT each level round-trips, unknown level → 400 with `validation` reason. |
 | `cold-tier.sh` | GET enumerates configured sinks, splunk token never appears in response body. |
 | `acme.sh` | Pebble directory reachable on `:14000`, advertises `newAccount` + `newOrder` + `newNonce`. |
+| `upstreams-crud.sh` | **CC-T1.audit** — full round-trip of the audit-mutated upstream-pool surface. Exercises `GET /api/upstreams/config` shape, `PUT /api/upstreams/pool/{id}` (CSRF reject + happy path + validation reject + update), `DELETE` (unreferenced 200 + referenced 409+`referenced_by_routes` + unknown 400), whole-map `PUT /api/upstreams/config`, and asserts the audit-chain version advances by ≥4 entries across the run. Uses pool ids prefixed with `cc_t1_audit_` to avoid colliding with seeded fixtures; the 409 test reads `REFERENCED_POOL` (default `backend-pool`) — set this env var if your dev config uses a different name. |
 
 ## Notes
 

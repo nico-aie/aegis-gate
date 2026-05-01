@@ -38,6 +38,8 @@ rows are reference material, not work to do.
 | State | Track | Plan file | Task ID prefix | Notes |
 |---|---|---|---|---|
 | **Active** | Phase B — production-readiness | [`phase-b/README.md`](./phase-b/README.md) | `B<n>-T<x>` | B1..B5 closed; **B6 packaging is the only remaining milestone** (B6-T1 production Dockerfile is the in-flight task) |
+| **Active** | Console config pages — upstreams editor + alert-channel mgmt | [`console-config-pages.md`](./console-config-pages.md) | `CC-T<n>` | Self-serve editing for `upstreams.*` and `slo.alert_receivers` via the dashboard. Plan-only — awaiting confirmation. |
+| **Parked** | Scaling configuration — three-layer worker/cluster/state surface | [`scaling-config.md`](./scaling-config.md) | `SC-T<n>` | Plan-only. Surfaces the existing L1/L2/L3 scaling model in the Console (read + drain). Awaiting confirmation. |
 | **Open intake** | Phase B advanced features | [`../docs/future/advanced-features.md`](../docs/future/advanced-features.md) | — | For proposals NOT covered by Phase B (multi-tenancy, RBAC/SSO, etc.) |
 | Closed | Dashboard redesign — Aegis WAF Console | [`dashboard-redesign.md`](./dashboard-redesign.md) | `DD-T<n>` | Reference only — shipped in run-10 (DD-T0..T8) |
 | Closed | Cluster ingress / load-balancer | [`cluster-ingress-lb.md`](./cluster-ingress-lb.md) | `HA-T<n>` | Reference only — HA-T1..T5 shipped in run-05; closes carry-over 6 |

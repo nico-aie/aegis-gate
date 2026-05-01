@@ -33,11 +33,22 @@ argon2.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 ipnet.workspace = true
+# MTLS-T6 — IdentityTracker per-principal sliding-window counter.
+# DashMap is wait-free per-shard, matches the RiskTracker pattern.
+dashmap.workspace = true
+parking_lot.workspace = true
+# MTLS-T6 — CA bundle parsing for `/api/mtls/ca-summary`.
+# Reuses the workspace versions already in aegis-proxy.
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+x509-parser.workspace = true
 
 # Optional — gated by the `alerts` feature.
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
-parking_lot.workspace = true
 tempfile = "3"
+# MTLS-T6 — `parse_ca_bundle` tests build a self-signed CA on
+# the fly so we can exercise the PEM parser without a fixture.
+rcgen.workspace = true

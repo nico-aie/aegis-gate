@@ -8,6 +8,7 @@ pub mod context;
 pub mod decision;
 pub mod error;
 pub mod health;
+pub mod identity;
 pub mod load_mode;
 pub mod pipeline;
 pub mod risk;
@@ -25,6 +26,7 @@ pub use context::{ClientInfo, FieldValue, RequestCtx, RouteCtx, TlsFingerprint};
 pub use decision::{Action, ChallengeLevel, Decision};
 pub use error::{Result, WafError};
 pub use health::ReadinessSignal;
+pub use identity::ClientIdentity;
 pub use load_mode::{LoadGauge, LoadMode, LoadModeConfig, LoadModeSnapshot};
 pub use verbosity::{LoggingConfig, SharedVerbosity, VerbosityLevel, VerbositySnapshot};
 pub use pipeline::{

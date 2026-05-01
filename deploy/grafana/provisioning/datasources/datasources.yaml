@@ -1,0 +1,44 @@
+# Grafana datasource provisioning for the Aegis-Gate dev stack.
+#
+# Loaded automatically on container boot from
+# /etc/grafana/provisioning/datasources/. Editing this file +
+# restarting Grafana refreshes the datasource definitions.
+#
+# Two sources today:
+#   - Prometheus (default) — scrapes both planes per
+#     deploy/prometheus/prometheus.yml
+#   - Jaeger              — OTLP-fed traces from the WAF
+#                           (once OTel exporter is wired; see
+#                           docs/observability-prometheus-otel.md)
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: aegis-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: "5s"
+      # Once `tracing-opentelemetry` ships the OTLP exporter,
+      # span-id correlation links from a metric panel into the
+      # Jaeger datasource via the trace_id/span_id labels.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: aegis-jaeger
+
+  - name: Jaeger
+    type: jaeger
+    uid: aegis-jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: true
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: aegis-prometheus
+      tracesToMetrics:
+        datasourceUid: aegis-prometheus

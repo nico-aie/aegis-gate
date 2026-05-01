@@ -434,6 +434,28 @@ fn validate_tls_hardening(tls: &TlsConfig) -> crate::Result<()> {
             }
         }
     }
+    if let Some(ca) = tls.client_auth.as_ref() {
+        // Disabled mode is a no-op so we don't require a
+        // ca_bundle — operators can stage a future enable by
+        // populating fields with mode: disabled.
+        if ca.mode != ClientAuthMode::Disabled {
+            if ca.ca_bundle.is_none() {
+                return Err(crate::error::WafError::Config(format!(
+                    "tls.client_auth.ca_bundle is required when mode is {:?} \
+                     (cannot verify client certs without a trust anchor)",
+                    ca.mode,
+                )));
+            }
+            if ca.apply_to.is_empty() {
+                return Err(crate::error::WafError::Config(
+                    "tls.client_auth.apply_to must list at least one listener \
+                     plane (admin / data) when mode is non-disabled — \
+                     otherwise no listener would enforce the policy"
+                        .into(),
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -733,6 +755,87 @@ pub struct TlsConfig {
     /// `certificates: [...]` flow.
     #[serde(default)]
     pub acme: Option<AcmeConfig>,
+    /// MTLS-T1 — server-side mutual-TLS client cert verification.
+    /// `None` (default) keeps the legacy `with_no_client_auth()`
+    /// behaviour — listeners present their server cert and never
+    /// ask the client to authenticate. Setting this opts the
+    /// listeners listed in `apply_to` into the rustls
+    /// `WebPkiClientVerifier` path; see [`ClientAuthConfig`].
+    #[serde(default)]
+    pub client_auth: Option<ClientAuthConfig>,
+}
+
+/// MTLS-T1 — server-side mTLS client-cert verification settings.
+///
+/// The presence of this struct means "request client certs from
+/// the listener planes named in [`Self::apply_to`]". The exact
+/// enforcement strictness comes from [`Self::mode`]; the trust
+/// anchors come from [`Self::ca_bundle`]. An empty
+/// [`Self::allowed_sans`] means "any SAN signed by `ca_bundle`
+/// is admitted" — non-empty adds a SAN allowlist gate on top.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ClientAuthConfig {
+    /// Strictness of the client-cert check. See
+    /// [`ClientAuthMode`]. Defaults to `Disabled` so a
+    /// half-typed cfg (`client_auth: {}`) is a no-op rather than
+    /// a footgun.
+    #[serde(default)]
+    pub mode: ClientAuthMode,
+    /// PEM bundle of trust anchors for verifying client certs.
+    /// **Required** when `mode != Disabled` — validation rejects
+    /// a non-disabled mode with no `ca_bundle` populated.
+    #[serde(default)]
+    pub ca_bundle: Option<PathBuf>,
+    /// Optional SAN allowlist — when non-empty, a client cert
+    /// must (a) chain to `ca_bundle` AND (b) carry at least one
+    /// SAN that matches an entry in this list. Empty list means
+    /// "any SAN signed by the trust anchor is admitted".
+    /// Wildcard syntax: `*.example.com` matches single-label
+    /// subdomains.
+    #[serde(default)]
+    pub allowed_sans: Vec<String>,
+    /// Which listener planes enforce client-cert verification.
+    /// Default `[admin]` — safe default that doesn't break
+    /// existing data-plane clients on a config that opts in
+    /// without specifying `apply_to`. Operators wanting full
+    /// zero-trust ingress set `apply_to: [admin, data]`.
+    #[serde(default = "default_client_auth_apply_to")]
+    pub apply_to: Vec<ClientAuthScope>,
+}
+
+/// Strictness of [`ClientAuthConfig`] enforcement.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientAuthMode {
+    /// Listener does not request a client cert. Equivalent to
+    /// `client_auth: None`.
+    #[default]
+    Disabled,
+    /// Listener requests a client cert but does not fail the
+    /// handshake when none is presented. Useful for staging a
+    /// rollout — operators flip to `Optional`, watch the
+    /// identity tracker, then flip to `Required` once every
+    /// expected client has been issued a cert.
+    Optional,
+    /// Listener requests a client cert and fails the handshake
+    /// without one. Cert must chain to `ca_bundle`; if
+    /// `allowed_sans` is non-empty the leaf SAN must also match.
+    Required,
+}
+
+/// Listener plane(s) that enforce [`ClientAuthConfig`]. Mirrors
+/// the existing `cfg.listeners.{data, admin}` split.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientAuthScope {
+    /// Admin / dashboard / `/__waf_control` listener.
+    Admin,
+    /// Data-plane listeners (per `cfg.listeners.data[*]`).
+    Data,
+}
+
+fn default_client_auth_apply_to() -> Vec<ClientAuthScope> {
+    vec![ClientAuthScope::Admin]
 }
 
 /// ACME / Let's Encrypt configuration (P5 of the security-toggle
@@ -1161,6 +1264,24 @@ pub struct DetectorsConfig {
     pub recon: DetectorToggle,
     #[serde(default = "default_detector_toggle")]
     pub brute_force: DetectorToggle,
+    /// DURABLE-T2 — optional file-backed persistence for the live
+    /// detector mask. When set, the proxy writes the mask state to
+    /// `path` after every audit-mutated PUT and reloads from it at
+    /// boot so operator toggles survive a restart. Compliance
+    /// clamps re-run on load: any class the snapshot disabled but
+    /// compliance now requires is forced back on with a warn log.
+    /// Absent → in-memory only (legacy behaviour).
+    #[serde(default)]
+    pub persistence: Option<DetectorMaskPersistenceConfig>,
+}
+
+/// File-backed persistence config for the live detector mask.
+#[derive(Clone, Debug, Deserialize)]
+pub struct DetectorMaskPersistenceConfig {
+    /// Snapshot file path. Atomic-replace via a sibling `.tmp`
+    /// file + rename, so a crash mid-write leaves the previous
+    /// snapshot intact.
+    pub path: PathBuf,
 }
 
 fn default_detector_toggle() -> DetectorToggle {
@@ -1180,6 +1301,7 @@ impl Default for DetectorsConfig {
             body_abuse: default_detector_toggle(),
             recon: default_detector_toggle(),
             brute_force: default_detector_toggle(),
+            persistence: None,
         }
     }
 }
@@ -1361,10 +1483,41 @@ impl Default for AuditConfig {
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditSinkConfig {
-    Jsonl { path: PathBuf },
+    /// File-backed NDJSON sink with daily rotation + TTL pruning.
+    /// `path` is the *directory* the writer rotates into — files are
+    /// named `audit-YYYY-MM-DD.ndjson`. Backwards-compatible: when the
+    /// configured `path` is a regular file path, the parent directory
+    /// is used and the writer rotates inside it (DURABLE-T1).
+    Jsonl {
+        path: PathBuf,
+        /// Days to retain rotated files. Older files are pruned by a
+        /// periodic background task. Default 30.
+        #[serde(default = "default_audit_jsonl_retention_days")]
+        retention_days: u32,
+        /// Max events buffered before forcing a flush. Default 100.
+        #[serde(default = "default_audit_jsonl_max_batch")]
+        max_batch: usize,
+        /// Max time between forced flushes, even if the batch isn't
+        /// full. Default 1 s. Keeps disk writes shaped — never on
+        /// the data-plane hot path.
+        #[serde(default = "default_audit_jsonl_flush_interval", with = "humantime_serde")]
+        flush_interval: Duration,
+    },
     Syslog { address: String },
     Splunk { endpoint: String, token_ref: String },
     Kafka { brokers: Vec<String>, topic: String },
+}
+
+fn default_audit_jsonl_retention_days() -> u32 {
+    30
+}
+
+fn default_audit_jsonl_max_batch() -> usize {
+    100
+}
+
+fn default_audit_jsonl_flush_interval() -> Duration {
+    Duration::from_secs(1)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2371,6 +2524,144 @@ tls:
         assert_eq!(hsts.max_age, 31_536_000);
         assert!(hsts.include_subdomains);
         assert!(!hsts.preload);
+    }
+
+    // ---------- MTLS-T1 client_auth schema --------------------------------
+
+    #[test]
+    fn client_auth_absent_keeps_default_disabled_behaviour() {
+        let yaml = good_cfg_with_tls("  certificates: []\n");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.tls.unwrap().client_auth.is_none());
+    }
+
+    #[test]
+    fn client_auth_disabled_mode_does_not_require_ca_bundle() {
+        // Operators staging a future enable can populate
+        // allowed_sans / apply_to with mode: disabled to
+        // pre-build the cfg without yet requesting client certs.
+        let yaml = good_cfg_with_tls(
+            "  client_auth:\n    mode: disabled\n    allowed_sans: [admin@aegis.local]\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let ca = cfg.tls.unwrap().client_auth.unwrap();
+        assert_eq!(ca.mode, ClientAuthMode::Disabled);
+        assert_eq!(ca.allowed_sans, vec!["admin@aegis.local".to_string()]);
+        // apply_to default kicks in even when populated by the
+        // serde default function.
+        assert_eq!(ca.apply_to, vec![ClientAuthScope::Admin]);
+    }
+
+    #[test]
+    fn client_auth_optional_mode_round_trips() {
+        let yaml = good_cfg_with_tls(
+            "  client_auth:\n    mode: optional\n    ca_bundle: /etc/aegis/admin-ca.pem\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let ca = cfg.tls.unwrap().client_auth.unwrap();
+        assert_eq!(ca.mode, ClientAuthMode::Optional);
+        assert_eq!(
+            ca.ca_bundle.as_ref().unwrap().to_string_lossy(),
+            "/etc/aegis/admin-ca.pem",
+        );
+    }
+
+    #[test]
+    fn client_auth_required_mode_round_trips() {
+        let yaml = good_cfg_with_tls(
+            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/admin-ca.pem\n    allowed_sans:\n      - admin@aegis.local\n      - ops@aegis.local\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let ca = cfg.tls.unwrap().client_auth.unwrap();
+        assert_eq!(ca.mode, ClientAuthMode::Required);
+        assert_eq!(ca.allowed_sans.len(), 2);
+    }
+
+    #[test]
+    fn client_auth_apply_to_defaults_to_admin_only() {
+        let yaml = good_cfg_with_tls(
+            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let ca = cfg.tls.unwrap().client_auth.unwrap();
+        assert_eq!(ca.apply_to, vec![ClientAuthScope::Admin]);
+    }
+
+    #[test]
+    fn client_auth_apply_to_admin_and_data() {
+        let yaml = good_cfg_with_tls(
+            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: [admin, data]\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let ca = cfg.tls.unwrap().client_auth.unwrap();
+        assert_eq!(
+            ca.apply_to,
+            vec![ClientAuthScope::Admin, ClientAuthScope::Data],
+        );
+    }
+
+    #[test]
+    fn client_auth_required_without_ca_bundle_rejected() {
+        let yaml = good_cfg_with_tls("  client_auth:\n    mode: required\n");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("ca_bundle is required"),
+            "expected ca_bundle error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn client_auth_optional_without_ca_bundle_rejected() {
+        let yaml = good_cfg_with_tls("  client_auth:\n    mode: optional\n");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("ca_bundle is required"));
+    }
+
+    #[test]
+    fn client_auth_required_with_empty_apply_to_rejected() {
+        let yaml = good_cfg_with_tls(
+            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: []\n",
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("apply_to"),
+            "expected apply_to error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn client_auth_unknown_mode_rejected_at_deserialise() {
+        let yaml = good_cfg_with_tls(
+            "  client_auth:\n    mode: paranoid\n    ca_bundle: /etc/aegis/ca.pem\n",
+        );
+        let err = serde_yaml::from_str::<WafConfig>(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("paranoid")
+                || err.to_string().contains("variant"),
+            "expected serde unknown-variant error, got: {err}",
+        );
+    }
+
+    #[test]
+    fn client_auth_unknown_scope_rejected_at_deserialise() {
+        let yaml = good_cfg_with_tls(
+            "  client_auth:\n    mode: required\n    ca_bundle: /etc/aegis/ca.pem\n    apply_to: [moon]\n",
+        );
+        let err = serde_yaml::from_str::<WafConfig>(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("moon")
+                || err.to_string().contains("variant"),
+            "expected serde unknown-variant error, got: {err}",
+        );
     }
 
     #[test]

@@ -1,0 +1,203 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aegis-gate.fullname" . }}
+  labels:
+    {{- include "aegis-gate.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "aegis-gate.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "aegis-gate.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Roll the pods on ConfigMap / Secret changes — without
+        # this, `helm upgrade` with only a values change leaves
+        # the existing pods bound to the old config.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if or .Values.admin.password.hash .Values.admin.csrf.secret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "aegis-gate.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.drain.terminationGracePeriodSeconds }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: waf
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "run"
+            - "--config"
+            - "/etc/aegis/waf.yaml"
+          ports:
+            {{- if .Values.config.listeners.dataPlaintext.enabled }}
+            - name: data-http
+              containerPort: {{ .Values.config.listeners.dataPlaintext.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.config.listeners.dataTls.enabled }}
+            - name: data-https
+              containerPort: {{ .Values.config.listeners.dataTls.port }}
+              protocol: TCP
+            {{- end }}
+            - name: admin
+              containerPort: {{ .Values.config.listeners.admin.port }}
+              protocol: TCP
+          env:
+            - name: AEGIS_DRAIN_GRACE_MS
+              value: {{ .Values.drain.graceMs | quote }}
+            # CI-T7 — VipTalk delivery (only when alerts feature is on).
+            {{- if .Values.viptalk.enabled }}
+            - name: AEGIS_VIPTALK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.viptalk.existingSecret.name }}
+                  key: {{ .Values.viptalk.existingSecret.botTokenKey }}
+            - name: AEGIS_VIPTALK_ROOM_IDS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.viptalk.existingSecret.name }}
+                  key: {{ .Values.viptalk.existingSecret.roomIdsKey }}
+            - name: AEGIS_VIPTALK_API_BASE
+              value: {{ .Values.viptalk.apiBase | quote }}
+            {{- end }}
+            # State backend secret resolution.
+            {{- if eq .Values.config.state.backend "redis" }}
+            - name: AEGIS_REDIS_URL
+              {{- if .Values.config.state.redis.urlSecretRef.name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.state.redis.urlSecretRef.name }}
+                  key: {{ .Values.config.state.redis.urlSecretRef.key }}
+              {{- else }}
+              value: {{ .Values.config.state.redis.url | quote }}
+              {{- end }}
+            {{- end }}
+            # Admin password hash + CSRF secret — from existing Secret if
+            # provided, else from the chart-templated Secret.
+            - name: AEGIS_ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.admin.password.existingSecret.name }}
+                  name: {{ .Values.admin.password.existingSecret.name }}
+                  key:  {{ .Values.admin.password.existingSecret.key }}
+                  {{- else }}
+                  name: {{ include "aegis-gate.fullname" . }}-auth
+                  key:  password_hash
+                  {{- end }}
+            - name: AEGIS_CSRF_SECRET
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.admin.csrf.existingSecret.name }}
+                  name: {{ .Values.admin.csrf.existingSecret.name }}
+                  key:  {{ .Values.admin.csrf.existingSecret.key }}
+                  {{- else }}
+                  name: {{ include "aegis-gate.fullname" . }}-auth
+                  key:  csrf_secret
+                  {{- end }}
+            # Pod identity → cluster node id (HA-T3 stable id).
+            - name: AEGIS_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          startupProbe:
+            httpGet:
+              path: /healthz/startup
+              port: admin
+            failureThreshold: 30
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: admin
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+          # HA-T5 — graceful drain on SIGTERM. POST /admin/drain
+          # flips readiness to 503; LB pulls the pod within its
+          # probe interval; in-flight requests then complete
+          # before the grace window ends.
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - >-
+                    /usr/local/bin/waf admin drain || true;
+                    sleep {{ div .Values.drain.graceMs 1000 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/aegis/waf.yaml
+              subPath: waf.yaml
+              readOnly: true
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /etc/aegis/tls
+              readOnly: true
+            {{- end }}
+            # /var/lib/aegis is for ACME storage + audit log
+            # rotations. Read-only root FS forces an emptyDir
+            # mount for any runtime-writable path.
+            - name: state
+              mountPath: /var/lib/aegis
+            # /tmp for any rustls / openssl scratch.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "aegis-gate.fullname" . }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+        {{- end }}
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

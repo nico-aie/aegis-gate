@@ -1,0 +1,58 @@
+{{- $name := include "aegis-gate.fullname" . -}}
+Aegis-Gate {{ .Chart.AppVersion }} installed as {{ $name }}.
+
+──────────────────────────────────────────────────────────────────
+Reach the dashboard
+──────────────────────────────────────────────────────────────────
+
+The admin Service is ClusterIP-only. From your operator workstation:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward \
+    svc/{{ $name }}-admin 9443:{{ .Values.config.listeners.admin.port }}
+
+Then open https://localhost:9443/dashboard/ and login with the admin
+password whose argon2id hash is mounted via
+{{- if .Values.admin.password.existingSecret.name }}
+the existing secret {{ .Values.admin.password.existingSecret.name | quote }}.
+{{- else }}
+the chart-managed secret {{ $name }}-auth.
+{{- end }}
+
+──────────────────────────────────────────────────────────────────
+Smoke the data plane
+──────────────────────────────────────────────────────────────────
+
+{{- if eq .Values.service.data.type "LoadBalancer" }}
+The data Service is type=LoadBalancer; wait for an external IP:
+
+  kubectl --namespace {{ .Release.Namespace }} get svc {{ $name }} -w
+
+Then:
+
+  curl -k https://<EXTERNAL_IP>:{{ .Values.config.listeners.dataTls.port }}/
+{{- else }}
+The data Service is ClusterIP. Front it with your own Ingress or
+load balancer; in-cluster:
+
+  curl -k https://{{ $name }}.{{ .Release.Namespace }}.svc:{{ .Values.config.listeners.dataTls.port }}/
+{{- end }}
+
+──────────────────────────────────────────────────────────────────
+Verify health
+──────────────────────────────────────────────────────────────────
+
+  kubectl --namespace {{ .Release.Namespace }} \
+    exec deployment/{{ $name }} -- /usr/local/bin/waf version
+
+  kubectl --namespace {{ .Release.Namespace }} \
+    port-forward svc/{{ $name }}-admin 9443 &
+  curl -sf http://localhost:9443/healthz/ready
+
+──────────────────────────────────────────────────────────────────
+Where to look next
+──────────────────────────────────────────────────────────────────
+
+- Operator runbook:        docs/operator/soc-runbook.md
+- VipTalk alert delivery:  docs/operator/viptalk-setup.md
+- API contract:            docs/control-plane/api.openapi.yaml
+- HA cluster details:      docs/operations/ha-clustering.md

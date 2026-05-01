@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aegis-gate.fullname" . }}
+  labels:
+    {{- include "aegis-gate.labels" . | nindent 4 }}
+  {{- with .Values.service.data.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.data.type }}
+  ports:
+    {{- if .Values.config.listeners.dataPlaintext.enabled }}
+    - name: data-http
+      port: {{ .Values.config.listeners.dataPlaintext.port }}
+      targetPort: data-http
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.config.listeners.dataTls.enabled }}
+    - name: data-https
+      port: {{ .Values.config.listeners.dataTls.port }}
+      targetPort: data-https
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "aegis-gate.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aegis-gate.fullname" . }}-admin
+  labels:
+    {{- include "aegis-gate.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+  {{- with .Values.service.admin.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # ALWAYS ClusterIP — admin is internal-only. Operators reach it
+  # via `kubectl port-forward svc/{{ include "aegis-gate.fullname" . }}-admin 9443`.
+  type: {{ .Values.service.admin.type }}
+  ports:
+    - name: admin
+      port: {{ .Values.config.listeners.admin.port }}
+      targetPort: admin
+      protocol: TCP
+  selector:
+    {{- include "aegis-gate.selectorLabels" . | nindent 4 }}

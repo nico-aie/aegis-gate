@@ -222,8 +222,9 @@ mod siem_multi_sink {
     async fn delivers_to_3_plus_sinks() {
         let ev = test_event();
 
-        // Sink 1: JSONL.
-        let jsonl_sink = jsonl::JsonlSink::new(jsonl::JsonlConfig::default());
+        // Sink 1: JSONL — in-memory mode (test path; real disk
+        // backed sink is exercised in `audit::sinks::jsonl::tests`).
+        let jsonl_sink = jsonl::JsonlSink::new_in_memory(jsonl::JsonlConfig::default());
         jsonl_sink.write(&ev).await.unwrap();
         assert_eq!(jsonl_sink.lines().len(), 1);
 
@@ -266,7 +267,7 @@ mod siem_multi_sink {
 
     #[tokio::test]
     async fn all_sinks_have_unique_ids() {
-        let s1 = jsonl::JsonlSink::new(jsonl::JsonlConfig::default());
+        let s1 = jsonl::JsonlSink::new_in_memory(jsonl::JsonlConfig::default());
         let s2 = syslog::SyslogSink::new(syslog::SyslogConfig::default());
         let s3 = kafka::KafkaSink::new(kafka::KafkaConfig::default());
         let s4 = splunk_hec::HecSink::new(splunk_hec::HecConfig {

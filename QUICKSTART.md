@@ -9,7 +9,7 @@ and **manual** (every step explicit). For production deployment see
 
 | Tool | Version | Check |
 |------|---------|-------|
-| Rust | 1.82+ | `rustc --version` |
+| Rust | 1.91+ | `rustc --version` |
 | `openssl` | 1.1+ | `openssl version` (used by the dev-cert script) |
 | `make` | any | `make --version` |
 | Docker + Compose | v2.20+ (optional) | `docker compose version` |

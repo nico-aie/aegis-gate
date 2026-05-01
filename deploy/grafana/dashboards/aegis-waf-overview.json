@@ -1,0 +1,205 @@
+{
+  "uid": "aegis-waf-overview",
+  "title": "Aegis WAF — Overview",
+  "description": "Request rate, latency percentiles, decision mix, and upstream-pool health. Driven by the metrics emitted at /metrics on the admin port. Latency panels use the live `waf_request_duration_ms` histogram (per-stage). Counter panels (request totals, detector hits, audit events) light up once the corresponding instrumentation lands in aegis-proxy — see audit findings.",
+  "tags": ["aegis", "waf"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "aegis-prometheus" },
+        "hide": 0
+      },
+      {
+        "name": "stage",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(waf_request_duration_ms_bucket, stage)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request latency p99 (per stage)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (stage, le) (rate(waf_request_duration_ms_bucket{stage=~\"$stage\"}[1m])))",
+          "legendFormat": "{{stage}} p99",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (stage, le) (rate(waf_request_duration_ms_bucket{stage=~\"$stage\"}[1m])))",
+          "legendFormat": "{{stage}} p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (stage, le) (rate(waf_request_duration_ms_bucket{stage=~\"$stage\"}[1m])))",
+          "legendFormat": "{{stage}} p50",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "spanNulls": true }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] } }
+    },
+    {
+      "id": 2,
+      "title": "Request rate (per stage)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum by (stage) (rate(waf_request_duration_ms_count{stage=~\"$stage\"}[1m]))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 3,
+      "title": "Latency heatmap — `total` stage",
+      "type": "heatmap",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum by (le) (rate(waf_request_duration_ms_bucket{stage=\"total\"}[1m]))",
+          "format": "heatmap",
+          "legendFormat": "{{le}}",
+          "refId": "A"
+        }
+      ],
+      "options": { "calculate": false, "color": { "mode": "scheme", "scheme": "Spectral", "steps": 64 } }
+    },
+    {
+      "id": 4,
+      "title": "Decision mix",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Per-decision rate from `waf_requests_total{action}` (PROM-T1). One series per Action: allow / block / challenge / rate_limit / timeout / circuit_breaker.",
+      "targets": [
+        {
+          "expr": "sum(rate(waf_requests_total{action=\"allow\"}[1m]))",
+          "legendFormat": "allow",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(waf_requests_total{action=\"block\"}[1m]))",
+          "legendFormat": "block",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(waf_requests_total{action=\"challenge\"}[1m]))",
+          "legendFormat": "challenge",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(waf_requests_total{action=\"rate_limit\"}[1m]))",
+          "legendFormat": "rate_limit",
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": { "defaults": { "unit": "reqps", "noValue": "—" } }
+    },
+    {
+      "id": 5,
+      "title": "Detector hits — by class",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 19, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Per-class detector firings from `waf_detector_hits_total{class}` (PROM-T2). One series per DetectorClass.",
+      "targets": [
+        {
+          "expr": "sum by (class) (rate(waf_detector_hits_total[1m]))",
+          "legendFormat": "{{class}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Upstream pool health",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 19, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Healthy / total members per upstream pool. Synced at boot + every 5 s by a background task off the per-request hot path (PROM-T1).",
+      "targets": [
+        {
+          "expr": "waf_upstream_members_healthy",
+          "legendFormat": "{{pool}} healthy",
+          "refId": "A"
+        },
+        {
+          "expr": "waf_upstream_members_total",
+          "legendFormat": "{{pool}} total",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "State backend ops (PROM-T3)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 26, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Per-op rate over the configured state backend (Redis / in-memory / reconciling). Stacked by op; spike on `error` outcomes typically means a Redis hiccup.",
+      "targets": [
+        {
+          "expr": "sum by (op) (rate(waf_state_backend_ops_total{outcome=\"ok\"}[1m]))",
+          "legendFormat": "{{op}} ok",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (op) (rate(waf_state_backend_ops_total{outcome=\"error\"}[1m]))",
+          "legendFormat": "{{op}} error",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 8,
+      "title": "Audit events (PROM-T3)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 26, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Per-class rate of events flowing through the AuditBus. `detection` rises with attacks; `admin` rises with operator mutations; `access` mirrors allow-traffic; `system` covers internal events (lease elections, config reloads).",
+      "targets": [
+        {
+          "expr": "sum by (class) (rate(waf_audit_events_total[1m]))",
+          "legendFormat": "{{class}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    }
+  ]
+}

@@ -31,10 +31,15 @@ scrape_configs:
         labels:
           plane: control
 
-  # ---- OPTIONAL: Redis exporter (enable when M2 wires it in) ----
-  # - job_name: aegis-redis
-  #   static_configs:
-  #     - targets: ["redis-exporter:9121"]
-  #       labels:
-  #         service: redis
-  #         plane: data
+  # Redis exporter — wired in 2026-05-01 (Grafana setup task).
+  # The exporter container connects to `redis://redis:6379` and
+  # exposes the standard Prometheus metric set
+  # (redis_commands_processed_total, redis_memory_used_bytes,
+  # redis_keyspace_hits_total, etc.). The Redis dashboard at
+  # `deploy/grafana/dashboards/aegis-redis.json` consumes them.
+  - job_name: aegis-redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          service: redis
+          plane: data

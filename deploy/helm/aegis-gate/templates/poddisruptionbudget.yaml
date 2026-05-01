@@ -1,0 +1,17 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "aegis-gate.fullname" . }}
+  labels:
+    {{- include "aegis-gate.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  # AlwaysAllow lets the kubelet evict an unhealthy pod even when
+  # the PDB would otherwise block — needed during rolling
+  # upgrades where the new pod hasn't passed readiness yet.
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "aegis-gate.selectorLabels" . | nindent 6 }}
+{{- end }}

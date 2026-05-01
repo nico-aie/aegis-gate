@@ -26,6 +26,16 @@ pub mod benchmark;
 pub mod cache;
 pub mod cluster;
 pub mod cluster_lease;
+pub mod config_source;
+mod admin_login;
+mod data_plane;
+mod responses;
+use admin_login::{handle_admin_login, handle_admin_logout};
+use data_plane::handle_data_request;
+use responses::{
+    dashboard_response, dashboard_shell_response, extract_named_cookie,
+    json_body_response, json_response, mutation_error_response,
+};
 pub mod dr;
 pub mod hotbin;
 pub mod listener;
@@ -44,6 +54,34 @@ pub mod traffic;
 pub mod transform;
 pub mod upstream;
 
+/// Source of hot-reloadable configuration. The boot snapshot is
+/// always derived from the value present at `run()` entry; this
+/// enum tells the proxy which background watcher (if any) to
+/// spawn so subsequent edits drive the detector mask + compliance
+/// clamp + audit-event flow.
+///
+/// Listener binds, runtime-thread sizing, and state-backend
+/// selection are still boot-only: tokio's accept loops bind once
+/// at startup. Hot-reload covers `cfg.detectors` (via the shared
+/// [`config_source::reload::apply_cfg_change_to_mask`]) and emits
+/// `config_reload` / `compliance_clamp_applied` audit events.
+/// Per-handler routes / upstreams / limits remain boot-snapshotted
+/// today; plumbing those through `cfg.load()` is a follow-up that
+/// builds on this scaffold.
+pub enum ConfigReloadSource {
+    /// No watcher — config is static for the lifetime of the
+    /// process. Use this from tests and one-shot CLI commands
+    /// (`waf validate`, `waf snapshot`).
+    None,
+    /// Filesystem watcher rooted at the given YAML path.
+    File(std::path::PathBuf),
+    /// etcd v3 REST gateway watcher. Available under
+    /// `--features etcd`; without the feature the variant is
+    /// inaccessible.
+    #[cfg(feature = "etcd")]
+    Etcd(crate::config_source::etcd_source::EtcdConfigSource),
+}
+
 /// Boot the data-plane proxy + admin (control-plane) listener.
 ///
 /// Binds each listener in `cfg.listeners.data`, spawns accept loops, and
@@ -55,14 +93,25 @@ pub mod upstream;
 /// witness once they're wired). For single-node deployments
 /// `aegis-bin` passes an `InProcessLease`; for multi-node it
 /// passes a `RedisLease`.
+///
+/// `reload_source` selects the config-reload watcher (file /
+/// etcd / none). The boot snapshot is taken from `cfg_swap.load_full()`;
+/// subsequent watcher events atomic-swap into `cfg_swap` and run
+/// the shared compliance clamp on the detector mask.
 pub async fn run(
-    cfg: Arc<WafConfig>,
+    cfg_swap: Arc<arc_swap::ArcSwap<WafConfig>>,
     _pipeline: Arc<dyn SecurityPipeline>,
     state: Arc<dyn StateBackend>,
     lease_store: Arc<dyn aegis_core::cluster::LeaseStore>,
     bus: AuditBus,
     readiness: ReadinessSignal,
+    reload_source: ConfigReloadSource,
 ) -> aegis_core::Result<()> {
+    // Boot snapshot — every existing read site keeps `cfg` as
+    // `Arc<WafConfig>`. Future per-handler `cfg.load()` calls
+    // can read the latest revision without churning the whole
+    // function.
+    let cfg: Arc<WafConfig> = cfg_swap.load_full();
     let mut handles = Vec::new();
 
     // Build the detector set once, shared across all data-plane listeners.
@@ -74,32 +123,107 @@ pub async fn run(
     // `/api/detectors` (P2 of the security-toggle plan).
     let mask = aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors);
 
+    // CC-T (compliance-on-boot) — `cfg.detectors.<class>.enabled:
+    // false` flipped together with `cfg.compliance.modes: [pci|...]`
+    // would silently bypass the compliance mandate without this
+    // pass: `from_config` doesn't know about modes, and the
+    // snapshot-load below only runs when a persistence file
+    // exists. Run the live clamp first so the cfg-derived mask
+    // is correct even before any snapshot is applied; the
+    // snapshot overwrite below carries its own clamp.
+    let compliance_modes: Vec<aegis_core::config::ComplianceMode> = cfg
+        .compliance
+        .as_ref()
+        .map(|c| c.modes.clone())
+        .unwrap_or_default();
+    if !compliance_modes.is_empty() {
+        use aegis_control::api::detectors_persist::ApplyOutcome;
+        match aegis_control::api::detectors_persist::apply_live_mask_with_compliance(
+            &mask,
+            &compliance_modes,
+        ) {
+            ApplyOutcome::Applied => {}
+            ApplyOutcome::AppliedWithCompliance { forced } => {
+                tracing::warn!(
+                    forced = ?forced,
+                    modes = ?compliance_modes,
+                    "cfg.detectors had classes disabled that compliance modes pin to ON; forcing them back on at boot",
+                );
+            }
+        }
+    }
+
+    // DURABLE-T2 — if the operator wired
+    // `cfg.detectors.persistence.path`, try to load the previous
+    // snapshot and overlay it onto the cfg-derived initial state.
+    // Compliance clamps re-run on load; any class disabled by the
+    // snapshot but locked-on by current compliance modes is forced
+    // back on with a warn log (operators who change compliance
+    // modes between restarts can't accidentally keep a non-
+    // compliant disable). Missing file is normal on first boot.
+    if let Some(persist_cfg) = cfg.detectors.persistence.as_ref() {
+        match aegis_control::api::detectors_persist::load_snapshot(&persist_cfg.path).await {
+            Ok(snap) => {
+                use aegis_control::api::detectors_persist::ApplyOutcome;
+                let outcome =
+                    aegis_control::api::detectors_persist::apply_snapshot_with_compliance(
+                        snap,
+                        &mask,
+                        &compliance_modes,
+                    );
+                match outcome {
+                    ApplyOutcome::Applied => {
+                        tracing::info!(
+                            path = %persist_cfg.path.display(),
+                            "detector mask snapshot rehydrated cleanly",
+                        );
+                    }
+                    ApplyOutcome::AppliedWithCompliance { forced } => {
+                        tracing::warn!(
+                            path = %persist_cfg.path.display(),
+                            forced = ?forced,
+                            "detector mask snapshot rehydrated; compliance forced classes back on",
+                        );
+                    }
+                }
+            }
+            Err(aegis_control::api::detectors_persist::LoadError::NotFound) => {
+                tracing::info!(
+                    path = %persist_cfg.path.display(),
+                    "detector mask snapshot not found (first boot or fresh install); using cfg defaults",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %persist_cfg.path.display(),
+                    error = %e,
+                    "detector mask snapshot load failed; falling back to cfg defaults",
+                );
+            }
+        }
+    }
+
+    // Watcher spawn is deferred until after `upstream_ctx` is
+    // built so the watcher can hot-swap the route table too.
+    // See the spawn block further down.
+
     // P6 risk tracker. Per-IP score + lifetime strikes shared
     // between data plane (records signals + classifies for
     // adaptive mitigation) and control plane (renders /api/risk
     // + handles operator reset).
     let risk = aegis_security::risk::RiskTracker::new(&cfg.risk);
 
-    // F-T2 — per-IP rate limiter. Built from the first
-    // `cfg.rate_limit.buckets` entry that scopes globally to
-    // the IP discriminator. Falls back to library defaults
-    // (1 000 req / 60 s) when no such bucket is configured —
-    // safer than running with no volumetric guard at all.
-    let ip_rate_cfg = cfg
-        .rate_limit
-        .buckets
-        .iter()
-        .find(|b| {
-            matches!(b.scope, aegis_core::config::RlScope::Global)
-                && matches!(b.key, aegis_core::config::RlKey::Ip)
-        })
-        .map(|b| aegis_security::rate_limit::IpRateLimitConfig {
-            limit: b.limit.min(u32::MAX as u64) as u32,
-            window: b.window,
-        })
-        .unwrap_or_default();
+    // F-T2 — per-IP rate limiter. Selection rule lives in the
+    // shared `derive_ip_rate_cfg` so the boot path and the
+    // hot-reload watchers (`apply_cfg_change_to_rate_limit`)
+    // pick the same bucket. Falls back to library defaults
+    // (1 000 req / 60 s) when no `scope: Global, key: Ip`
+    // bucket is configured — safer than running with no
+    // volumetric guard at all.
     let ip_rate_limiter = Arc::new(
-        aegis_security::rate_limit::IpRateLimiter::new(ip_rate_cfg),
+        aegis_security::rate_limit::IpRateLimiter::new(
+            crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+        ),
     );
 
     // F-T10 — per-stage latency histogram. Build the metrics
@@ -111,6 +235,71 @@ pub async fn run(
         aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
             .expect("histogram registration failed"),
     );
+    // PROM-T1 — per-decision counter `waf_requests_total{action}`.
+    // Lights up the WAF Overview "Decision mix" panel.
+    let decision_metrics = std::sync::Arc::new(
+        aegis_control::metrics::decisions::DecisionMetrics::register(&metrics)
+            .expect("decision metrics registration failed"),
+    );
+    // PROM-T1 — upstream pool health gauges
+    // `waf_upstream_members_healthy{pool}` /
+    // `waf_upstream_members_total{pool}`. Synced once at boot
+    // from the live PoolRegistry; subsequent PUTs to
+    // `/api/upstreams/config` re-sync via the admin plane.
+    let upstream_pool_metrics = std::sync::Arc::new(
+        aegis_control::metrics::upstream_pools::UpstreamPoolMetrics::register(&metrics)
+            .expect("upstream pool metrics registration failed"),
+    );
+    // PROM-T2 — per-class detector-hit counter
+    // `waf_detector_hits_total{class}`. Recorded once per fired
+    // detector per request; lights up the WAF Overview "Detector
+    // hits" panel.
+    let detector_hit_metrics = std::sync::Arc::new(
+        aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+            .expect("detector hit metrics registration failed"),
+    );
+    // PROM-T3 — per-op state-backend counter
+    // `waf_state_backend_ops_total{op,outcome}`. Wraps the
+    // resolved state backend with a delegating impl that
+    // records every dispatch — every downstream consumer of
+    // `state` is automatically instrumented.
+    let state_op_metrics =
+        aegis_control::metrics::state_ops::StateOpMetrics::register(&metrics)
+            .expect("state op metrics registration failed");
+    let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(
+        aegis_control::metrics::state_ops::MeteredStateBackend::new(
+            state,
+            state_op_metrics,
+        ),
+    );
+    // PROM-T3 — audit event counter `waf_audit_events_total{class}`.
+    // Recorded by a metrics-only AuditBus subscriber spawned
+    // alongside the existing dashboard SSE drain. Cost = one
+    // bounded broadcast Receiver + one tokio task; no per-emit
+    // call-site changes.
+    let audit_event_metrics = std::sync::Arc::new(
+        aegis_control::metrics::audit_events::AuditEventMetrics::register(&metrics)
+            .expect("audit event metrics registration failed"),
+    );
+    {
+        let bus_sub = bus.clone();
+        let m = audit_event_metrics.clone();
+        tokio::spawn(async move {
+            let mut rx = bus_sub.subscribe();
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => m.record(ev.class),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            dropped = n,
+                            "audit event metrics subscriber lagged",
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     // P7 load gauge. Hot path bumps the request counter; the
     // background sampler reads it and updates the live LoadMode.
@@ -138,6 +327,10 @@ pub async fn run(
         )?,
     );
 
+    // Watcher spawn deferred until after the TLS resolver is
+    // built so it can be threaded through. See spawn block
+    // below the TLS construction.
+
     // Carry-over 5 (post-2026-04-29 cluster smoke) — build a
     // single `TlsAcceptor` once if `cfg.tls.certificates` is
     // populated. Each data listener that flips
@@ -145,51 +338,115 @@ pub async fn run(
     // TCP. `key_ref` is treated as a file path here; secret-
     // manager resolution (`${secret:vault:...}`) for keys is a
     // separate task.
-    let tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>> =
-        match cfg.tls.as_ref() {
-            Some(tls_cfg) if !tls_cfg.certificates.is_empty() => {
-                let entries: Vec<(_, _, &[String])> = tls_cfg
-                    .certificates
-                    .iter()
-                    .map(|c| {
-                        let hosts: &[String] = &c.hosts;
-                        (c.cert_path.clone(), std::path::PathBuf::from(&c.key_ref), hosts)
-                    })
-                    .collect();
-                let store = crate::listener::tls::CertStore::load(&entries)
-                    .map_err(|e| {
-                        aegis_core::WafError::Config(format!(
-                            "tls.certificates: failed to load cert/key pairs: {e}"
-                        ))
-                    })?;
-                let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(
-                    Arc::new(arc_swap::ArcSwap::from_pointee(store)),
-                ));
-                let mut server_cfg = crate::listener::tls_policy::build_hardened_server_config(
-                    resolver,
-                    tls_cfg.min_version.as_deref(),
-                )
+    //
+    // The `DynamicResolver` returned alongside the acceptor is
+    // kept in scope so the cfg-reload watchers
+    // (`apply_cfg_change_to_tls`) can call
+    // `resolver.swap(new_store)` to rotate certs without
+    // bouncing listeners. The acceptor wraps the resolver via
+    // an `Arc`, so swapping the resolver's inner `ArcSwap`
+    // surfaces immediately on the next handshake.
+    let (tls_acceptor, tls_resolver): (
+        Option<Arc<tokio_rustls::TlsAcceptor>>,
+        Option<Arc<crate::listener::tls::DynamicResolver>>,
+    ) = match cfg.tls.as_ref() {
+        Some(tls_cfg) if !tls_cfg.certificates.is_empty() => {
+            let entries: Vec<(_, _, &[String])> = tls_cfg
+                .certificates
+                .iter()
+                .map(|c| {
+                    let hosts: &[String] = &c.hosts;
+                    (c.cert_path.clone(), std::path::PathBuf::from(&c.key_ref), hosts)
+                })
+                .collect();
+            let store = crate::listener::tls::CertStore::load(&entries)
                 .map_err(|e| {
                     aegis_core::WafError::Config(format!(
-                        "tls: rustls config build failed: {e}"
+                        "tls.certificates: failed to load cert/key pairs: {e}"
                     ))
                 })?;
-                // CI-T10 — the data-plane TLS branch in
-                // `accept_loop` now uses
-                // `hyper_util::server::conn::auto::Builder`, so
-                // ALPN can advertise both h2 and http/1.1 and
-                // the right protocol stack handles the negotiated
-                // outcome. (`build_hardened_server_config` already
-                // sets this list — keep it explicit here so a
-                // future refactor can't accidentally regress.)
-                server_cfg.alpn_protocols =
-                    vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(
+                Arc::new(arc_swap::ArcSwap::from_pointee(store)),
+            ));
+            let mut server_cfg = crate::listener::tls_policy::build_hardened_server_config(
+                resolver.clone(),
+                tls_cfg.min_version.as_deref(),
+            )
+            .map_err(|e| {
+                aegis_core::WafError::Config(format!(
+                    "tls: rustls config build failed: {e}"
+                ))
+            })?;
+            // CI-T10 — the data-plane TLS branch in
+            // `accept_loop` now uses
+            // `hyper_util::server::conn::auto::Builder`, so
+            // ALPN can advertise both h2 and http/1.1 and
+            // the right protocol stack handles the negotiated
+            // outcome. (`build_hardened_server_config` already
+            // sets this list — keep it explicit here so a
+            // future refactor can't accidentally regress.)
+            server_cfg.alpn_protocols =
+                vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            (
                 Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(
                     server_cfg,
-                ))))
-            }
-            _ => None,
-        };
+                )))),
+                Some(resolver),
+            )
+        }
+        _ => (None, None),
+    };
+
+    // Spawn the configured config-reload watcher. Both file and
+    // etcd watchers atomic-swap into `cfg_swap`, run the shared
+    // `apply_cfg_change_to_mask` (detector base + compliance
+    // clamp), rebuild `upstream_ctx.route_table` from
+    // `new_cfg.routes`, hot-swap the IP rate-limiter cfg, and
+    // (when present) rotate the TLS cert store via the live
+    // `DynamicResolver`. Per-tier detector overrides set by
+    // PUT /api/detectors are preserved.
+    // `ConfigReloadSource::None` skips the spawn entirely (used
+    // by tests + one-shot CLI commands).
+    match reload_source {
+        ConfigReloadSource::None => {
+            tracing::info!("config reload watcher: disabled (ConfigReloadSource::None)");
+        }
+        ConfigReloadSource::File(path) => {
+            tracing::info!(
+                path = %path.display(),
+                "config reload watcher: file",
+            );
+            // Drop the JoinHandle; the watcher runs for the
+            // lifetime of the proxy and tokio::spawn keeps the
+            // task alive regardless of handle ownership.
+            std::mem::drop(supervisor::spawn_config_watcher(
+                path,
+                cfg_swap.clone(),
+                bus.clone(),
+                Some(mask.clone()),
+                Some(upstream_ctx.clone()),
+                Some(ip_rate_limiter.clone()),
+                tls_resolver.clone(),
+            ));
+        }
+        #[cfg(feature = "etcd")]
+        ConfigReloadSource::Etcd(src) => {
+            tracing::info!(
+                endpoints = ?src.endpoints,
+                key = %src.key,
+                "config reload watcher: etcd",
+            );
+            std::mem::drop(config_source::etcd_source::spawn_watcher(
+                src,
+                cfg_swap.clone(),
+                bus.clone(),
+                Some(mask.clone()),
+                Some(upstream_ctx.clone()),
+                Some(ip_rate_limiter.clone()),
+                tls_resolver.clone(),
+            ));
+        }
+    }
 
     // external interop contract surface . Built
     // here so it's available to the data-plane accept_loop and
@@ -239,6 +496,8 @@ pub async fn run(
         let upstream_ctx_l = upstream_ctx.clone();
         let acceptor = if listener_tls { tls_acceptor.clone() } else { None };
         let interop_l = interop_runtime.clone();
+        let decision_metrics_l = decision_metrics.clone();
+        let detector_hit_metrics_l = detector_hit_metrics.clone();
         handles.push(tokio::spawn(accept_loop(
             tcp,
             detectors,
@@ -252,7 +511,29 @@ pub async fn run(
             upstream_ctx_l,
             acceptor,
             interop_l,
+            decision_metrics_l,
+            detector_hit_metrics_l,
         )));
+    }
+
+    // PROM-T1 — sync upstream pool gauges at boot, then keep
+    // them fresh via a 5 s tick. Off the per-request hot path:
+    // the periodic task only runs on its own tokio task, and
+    // each tick is one PoolRegistry snapshot read + a bounded
+    // walk over the (typically 2-10) pools. Resets the gauges
+    // before each set so deleted pools stop reporting cleanly.
+    {
+        let pools = upstream_ctx.pools.clone();
+        upstream_pool_metrics.sync_from_snapshot(&pools.health_counts());
+        let metrics = upstream_pool_metrics.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            tick.tick().await; // skip immediate
+            loop {
+                tick.tick().await;
+                metrics.sync_from_snapshot(&pools.health_counts());
+            }
+        });
     }
 
     // P5 ACME challenge store. Shared between the AcmeManager
@@ -387,6 +668,8 @@ pub async fn run(
     let admin_metrics = metrics.clone();
     let admin_lease_store = lease_store.clone();
     let admin_interop = interop_runtime.clone();
+    let admin_upstream_writer: Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter> =
+        Arc::new(upstream_ctx.pools.clone());
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -400,6 +683,7 @@ pub async fn run(
         admin_metrics,
         admin_lease_store,
         admin_interop,
+        admin_upstream_writer,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);
@@ -511,6 +795,11 @@ async fn admin_accept_loop(
     metrics: aegis_control::metrics::MetricsRegistry,
     lease_store: Arc<dyn aegis_core::cluster::LeaseStore>,
     interop: Option<Arc<aegis_control::interop::InteropRuntime>>,
+    // CC-T1.1.b — typed-erased writer for the proxy's `PoolRegistry`.
+    // Wired by `run()` from `upstream_ctx.pools` so the audit-mutated
+    // `/api/upstreams/config` PUT/DELETE handlers can hot-swap the
+    // pool table.
+    upstream_writer: Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -782,6 +1071,153 @@ async fn admin_accept_loop(
         }
     }
 
+    // CC-T2.1 — wire the alert-receivers handler. A shared
+    // ArcSwap'd receiver list backs both the SLO dispatch task
+    // (further below) and the GET `/api/alert-receivers` handler.
+    // CC-T2.1.b adds the audit-mutated PUT/DELETE/POST-test
+    // handlers that mutate the same ArcSwap + ring.
+    let shared_receivers: Arc<arc_swap::ArcSwap<Vec<aegis_control::slo::AlertReceiver>>> =
+        Arc::new(arc_swap::ArcSwap::from_pointee(
+            aegis_control::slo::default_receivers(),
+        ));
+    let dispatch_ring =
+        aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
+    {
+        let provider_share = Arc::clone(&shared_receivers);
+        let handler = aegis_control::api::alert_receivers::AlertReceiversHandler::new(
+            move || (**provider_share.load()).clone(),
+            dispatch_ring.clone(),
+        );
+        services.alert_receivers = Some(Arc::new(handler));
+        services.alert_receivers_store = Some(Arc::clone(&shared_receivers));
+        services.alert_receivers_ring = Some(dispatch_ring.clone());
+    }
+
+    // CC-T1.1.b — share the proxy's PoolRegistry through the
+    // typed-erased UpstreamWriter trait so the audit-mutated
+    // /api/upstreams/config PUT/DELETE handlers can hot-swap the
+    // pool table without bouncing the proxy. `upstream_writer`
+    // arrived as a parameter (wired by `run()` from
+    // `upstream_ctx.pools.clone()`) so the data plane and the
+    // control plane share the same `Arc<PoolRegistry>`. A
+    // successful PUT is visible to new requests immediately
+    // while in-flight requests finish on their already-grabbed
+    // Arc<Pool>.
+    services.upstream_writer = Some(upstream_writer);
+
+    // MTLS-T6 — wire the IdentityTracker so the read-only
+    // /api/mtls/* endpoints have a live data source. The
+    // tracker stays empty until MTLS-T2 / T3 land the rustls
+    // wiring + identity-extraction stage; what we can populate
+    // today is the CA bundle summary if the operator has
+    // already configured `cfg.tls.client_auth.ca_bundle`. That
+    // gives operators an immediate "validate my CA path +
+    // expiry" surface BEFORE flipping mode to required.
+    let identity_tracker = std::sync::Arc::new(
+        aegis_control::identity_tracker::IdentityTracker::new(),
+    );
+    if let Some(ca_path) = cfg
+        .tls
+        .as_ref()
+        .and_then(|t| t.client_auth.as_ref())
+        .and_then(|ca| ca.ca_bundle.as_ref())
+    {
+        match aegis_control::identity_tracker::parse_ca_bundle(ca_path) {
+            Ok(summary) => {
+                tracing::info!(
+                    bundle_path = %ca_path.display(),
+                    cert_count = summary.certificates.len(),
+                    "mtls ca bundle loaded for /api/mtls/ca-summary",
+                );
+                identity_tracker.set_ca_summary(Some(summary));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    bundle_path = %ca_path.display(),
+                    error = %e,
+                    "mtls ca bundle parse failed; /api/mtls/ca-summary will return empty",
+                );
+            }
+        }
+    }
+    services.identity_tracker = Some(identity_tracker);
+
+    // DURABLE-T1 — audit chain durability. For each Jsonl sink the
+    // operator configured under `cfg.audit.sinks`, open a real
+    // file-backed `JsonlSink` and spawn (1) a persist task that
+    // subscribes to the audit bus and batches events to disk with
+    // daily rotation, and (2) a TTL task that prunes files older
+    // than `retention_days` once an hour. Both run on background
+    // tokio tasks — the data-plane hot path stays untouched.
+    {
+        use aegis_core::config::AuditSinkConfig;
+        use aegis_control::audit::sinks::jsonl::{
+            run_persist_task, run_ttl_task, JsonlConfig, JsonlSink,
+        };
+
+        let mut jsonl_sinks: Vec<Arc<JsonlSink>> = Vec::new();
+        let mut max_batch_global = 100usize;
+        let mut flush_interval_global = std::time::Duration::from_secs(1);
+        for entry in &cfg.audit.sinks {
+            if let AuditSinkConfig::Jsonl {
+                path,
+                retention_days,
+                max_batch,
+                flush_interval,
+            } = entry
+            {
+                let cfg_jsonl = JsonlConfig {
+                    path: path.clone(),
+                    retention_days: *retention_days,
+                    max_batch: *max_batch,
+                    flush_interval: *flush_interval,
+                };
+                match JsonlSink::open(cfg_jsonl).await {
+                    Ok(sink) => {
+                        jsonl_sinks.push(Arc::new(sink));
+                        max_batch_global = max_batch_global.min(*max_batch).max(1);
+                        flush_interval_global =
+                            flush_interval_global.min(*flush_interval);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            path = %path.display(),
+                            error = %e,
+                            "audit jsonl sink open failed; durability disabled for this sink",
+                        );
+                    }
+                }
+            }
+        }
+        if !jsonl_sinks.is_empty() {
+            tracing::info!(
+                sinks = jsonl_sinks.len(),
+                max_batch = max_batch_global,
+                flush_interval_ms = flush_interval_global.as_millis() as u64,
+                "audit jsonl persistence wired",
+            );
+            let sinks_for_persist = jsonl_sinks.clone();
+            let bus_for_persist = services.bus.clone();
+            tokio::spawn(async move {
+                run_persist_task(
+                    bus_for_persist,
+                    sinks_for_persist,
+                    max_batch_global,
+                    flush_interval_global,
+                ).await;
+            });
+            // TTL prune every hour. The work is cheap (one stat per
+            // file) and operators don't want disk to creep.
+            let sinks_for_ttl = jsonl_sinks;
+            tokio::spawn(async move {
+                run_ttl_task(
+                    sinks_for_ttl,
+                    std::time::Duration::from_secs(3600),
+                ).await;
+            });
+        }
+    }
+
     let services = Arc::new(services);
 
     // CI-T4 — drive the SLO engine from the audit bus. Every
@@ -817,13 +1253,16 @@ async fn admin_accept_loop(
 
     // CI-T7 — periodic SLO evaluation + alert dispatch. Calls
     // `engine.evaluate()` every 30 s; every newly-fired alert is
-    // piped through `slo::dispatch::send_alert(default_receivers())`
-    // which (with `aegis-control/alerts` on) delivers to VipTalk.
-    // Without the feature flag, dispatch logs the alert and counts
-    // it as "external" (operator-side delivery).
+    // piped through `slo::dispatch::send_alert(...)` which (with
+    // `aegis-control/alerts` on) delivers to VipTalk. Without the
+    // feature flag, dispatch logs the alert and counts it as
+    // "external" (operator-side delivery). The dispatch outcome is
+    // recorded in `dispatch_ring` so /api/alert-receivers shows
+    // last-delivery state per receiver.
     {
         let engine = Arc::clone(&slo_engine);
-        let receivers = aegis_control::slo::default_receivers();
+        let shared = Arc::clone(&shared_receivers);
+        let ring = dispatch_ring.clone();
         tokio::spawn(async move {
             let mut tick =
                 tokio::time::interval(std::time::Duration::from_secs(30));
@@ -834,9 +1273,30 @@ async fn admin_accept_loop(
                 if new_alerts.is_empty() {
                     continue;
                 }
+                let receivers = (**shared.load()).clone();
                 for alert in &new_alerts {
                     let summary =
                         aegis_control::slo::dispatch::send_alert(alert, &receivers).await;
+                    let now = chrono::Utc::now().timestamp();
+                    for name in &summary.delivered {
+                        // VipTalk dispatch with the `alerts`
+                        // feature off is logged as a no-op +
+                        // counted in `delivered` — the dispatch
+                        // module currently treats both states
+                        // the same on the summary side. Until
+                        // we split that signal, mark `delivered`
+                        // as `ok`; the dashboard can layer on
+                        // `skipped_no_feature` when CC-T2.1.b
+                        // refactors `DispatchSummary` to carry
+                        // it explicitly.
+                        ring.record_delivered(name, now);
+                    }
+                    for name in &summary.external {
+                        ring.record_external(name, now);
+                    }
+                    for (name, reason) in &summary.failed {
+                        ring.record_failed(name, now, reason);
+                    }
                     tracing::info!(
                         sli = ?alert.sli,
                         severity = ?alert.severity,
@@ -962,6 +1422,13 @@ async fn handle_admin_request(
         }
     }
 
+    // CI-T12 — PUT /api/risk/thresholds — audit-mutated;
+    // hot-applies new challenge_at / block_at / max via
+    // RiskTracker::set_thresholds.
+    if method == hyper::Method::PUT && path == "/api/risk/thresholds" {
+        return handle_risk_thresholds_put(req, services).await;
+    }
+
     // P7 mutating endpoint: PUT /api/loadmode. Audit-mutated
     // operator override that pins / clears the live LoadMode.
     if method == hyper::Method::PUT && path == "/api/loadmode" {
@@ -1013,6 +1480,48 @@ async fn handle_admin_request(
     // mode plane. Audit-mutated; CSRF-gated.
     if method == hyper::Method::PUT && path == "/api/mode" {
         return handle_mode_put(req, services).await;
+    }
+
+    // CC-T2.1.b — alert-receivers writes. Audit-mutated; CSRF-
+    // gated. Three handlers:
+    //   PUT    /api/alert-receivers           whole-list replace
+    //   DELETE /api/alert-receivers/{name}    single remove
+    //   POST   /api/alert-receivers/{name}/test  synthetic delivery
+    if method == hyper::Method::PUT && path == "/api/alert-receivers" {
+        return handle_alert_receivers_put(req, services).await;
+    }
+    if let Some(suffix) = path.strip_prefix("/api/alert-receivers/") {
+        if method == hyper::Method::POST {
+            if let Some(name) = suffix.strip_suffix("/test") {
+                if !name.is_empty() && !name.contains('/') {
+                    return handle_alert_receiver_test(req, name, services).await;
+                }
+            }
+        }
+        if method == hyper::Method::DELETE
+            && !suffix.is_empty()
+            && !suffix.contains('/')
+        {
+            return handle_alert_receiver_delete(req, suffix, services).await;
+        }
+    }
+
+    // CC-T1.1.b — upstream pool writes. Audit-mutated; CSRF-gated.
+    //   PUT    /api/upstreams/config           whole-map replace
+    //   PUT    /api/upstreams/pool/{id}        single-pool upsert
+    //   DELETE /api/upstreams/pool/{id}        single-pool delete (route-ref guarded)
+    if method == hyper::Method::PUT && path == "/api/upstreams/config" {
+        return handle_upstreams_config_put(req, cfg, services).await;
+    }
+    if let Some(suffix) = path.strip_prefix("/api/upstreams/pool/") {
+        if !suffix.is_empty() && !suffix.contains('/') {
+            if method == hyper::Method::PUT {
+                return handle_pool_upsert(req, suffix, cfg, services).await;
+            }
+            if method == hyper::Method::DELETE {
+                return handle_pool_delete(req, suffix, cfg, services).await;
+            }
+        }
     }
 
     admin_router(req, cfg, readiness, startup, metrics, services)
@@ -1088,6 +1597,591 @@ async fn handle_mode_put(
         ),
         Err(e) => mutation_error_response(e),
     }
+}
+
+// ---------------------------------------------------------------------------
+// CC-T2.1.b — alert-receivers writes (PUT / DELETE / POST-test)
+// ---------------------------------------------------------------------------
+
+/// Build the redacted audit-chain projection of a receiver list.
+/// The durable audit log MUST NOT carry plaintext bot tokens or
+/// webhook URLs — every secret is squashed to `****<last4>` before
+/// serialisation.
+fn redact_receivers_for_audit(
+    receivers: &[aegis_control::slo::AlertReceiver],
+) -> serde_json::Value {
+    use aegis_control::api::alert_receivers::RedactedKind;
+    let entries: Vec<serde_json::Value> = receivers
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": r.name,
+                "kind": RedactedKind::from_kind(&r.kind),
+            })
+        })
+        .collect();
+    serde_json::json!({ "receivers": entries })
+}
+
+// ---------------------------------------------------------------------------
+// CC-T1.1.b — upstream pool writes (PUT whole-map / PUT pool / DELETE pool)
+// ---------------------------------------------------------------------------
+
+/// Build the audit-chain projection of the current upstream config.
+/// Pool configs hold no secrets so the projection is the same shape
+/// the GET handler returns — keeps the chain entry diffable against
+/// the dashboard's view of state.
+fn upstreams_audit_view(
+    cfg_snapshot: &aegis_core::config::WafConfig,
+    pools: &std::collections::HashMap<String, aegis_core::config::PoolConfig>,
+) -> serde_json::Value {
+    // Build a synthetic WafConfig with just `upstreams` swapped so
+    // we can reuse `UpstreamsConfigView::from_config`. The view
+    // pre-computes `referenced_by_routes` from the live route list,
+    // which we want for both before/after.
+    let mut cfg = cfg_snapshot.clone();
+    cfg.upstreams = pools.clone();
+    let view =
+        aegis_control::api::upstreams_config::UpstreamsConfigView::from_config(&cfg);
+    serde_json::to_value(&view).unwrap_or(serde_json::Value::Null)
+}
+
+async fn handle_upstreams_config_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    cfg: &aegis_core::config::WafConfig,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "upstreams-config-put");
+
+    let Some(writer) = services.upstream_writer.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "upstream writer not wired".into(),
+            ),
+        );
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        pools: std::collections::HashMap<String, aegis_core::config::PoolConfig>,
+    }
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() {
+        "{\"pools\":{}}"
+    } else {
+        body_str
+    }) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    let before = upstreams_audit_view(cfg, &cfg.upstreams);
+    let after = upstreams_audit_view(cfg, &parsed.pools);
+    let count = parsed.pools.len();
+    let names: Vec<String> = {
+        let mut v: Vec<String> = parsed.pools.keys().cloned().collect();
+        v.sort();
+        v
+    };
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/upstreams/config",
+        action: "upstreams_set",
+        reason: "operator replaced upstream pool table",
+    };
+    let writer_for_apply = Arc::clone(&writer);
+    let pools_for_apply = parsed.pools;
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        after,
+        move || writer_for_apply.apply(&pools_for_apply),
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "count": count,
+                "names": names,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_pool_upsert(
+    req: hyper::Request<hyper::body::Incoming>,
+    pool_id: &str,
+    cfg: &aegis_core::config::WafConfig,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "pool-upsert");
+    let Some(writer) = services.upstream_writer.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "upstream writer not wired".into(),
+            ),
+        );
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let pool_cfg: aegis_core::config::PoolConfig = match serde_json::from_str(body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    // Build the candidate map: existing minus this pool, plus the
+    // new entry. Read-modify-write under the registry's atomic
+    // swap.
+    let mut next = cfg.upstreams.clone();
+    next.insert(pool_id.to_string(), pool_cfg);
+
+    let before = upstreams_audit_view(cfg, &cfg.upstreams);
+    let after = upstreams_audit_view(cfg, &next);
+    let resource = format!("/api/upstreams/pool/{pool_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "pool_upsert",
+        reason: "operator upserted upstream pool",
+    };
+    let writer_for_apply = Arc::clone(&writer);
+    let pool_id_owned = pool_id.to_string();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        after,
+        move || writer_for_apply.apply(&next),
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "pool": pool_id_owned,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_pool_delete(
+    req: hyper::Request<hyper::body::Incoming>,
+    pool_id: &str,
+    cfg: &aegis_core::config::WafConfig,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "pool-delete");
+    let Some(writer) = services.upstream_writer.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "upstream writer not wired".into(),
+            ),
+        );
+    };
+
+    if !cfg.upstreams.contains_key(pool_id) {
+        // 400-class validation rather than 500: caller passed a
+        // name that doesn't exist. Distinct error message so the
+        // dashboard can render the "no such pool" toast directly.
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "no pool named '{pool_id}'"
+            )),
+        );
+    }
+
+    // Refuse with the route-reference list when the pool is still
+    // referenced. This is the audit-finding-driven contract: the
+    // dashboard's delete confirm modal surfaces this list so the
+    // operator knows what to fix first.
+    let refs = aegis_control::api::upstreams_config::routes_referencing(cfg, pool_id);
+    if !refs.is_empty() {
+        let body = serde_json::json!({
+            "ok": false,
+            "reason": "pool_referenced",
+            "message": format!(
+                "pool '{pool_id}' is still referenced by {} route(s); update those routes before deleting",
+                refs.len()
+            ),
+            "referenced_by_routes": refs,
+        });
+        return json_body_response(409, body.to_string(), "private, no-store");
+    }
+
+    let mut next = cfg.upstreams.clone();
+    next.remove(pool_id);
+
+    let before = upstreams_audit_view(cfg, &cfg.upstreams);
+    let after = upstreams_audit_view(cfg, &next);
+    let resource = format!("/api/upstreams/pool/{pool_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "DELETE",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "pool_delete",
+        reason: "operator removed upstream pool",
+    };
+    let writer_for_apply = Arc::clone(&writer);
+    let pool_id_owned = pool_id.to_string();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        after,
+        move || writer_for_apply.apply(&next),
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "removed": pool_id_owned,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_alert_receivers_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "alert-receivers-put");
+
+    let Some(store) = services.alert_receivers_store.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "alert receivers store not wired".into(),
+            ),
+        );
+    };
+    let ring = services.alert_receivers_ring.clone();
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        receivers: Vec<aegis_control::slo::AlertReceiver>,
+    }
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() {
+        "{\"receivers\":[]}"
+    } else {
+        body_str
+    }) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    if let Err(e) =
+        aegis_control::api::alert_receivers::validate_receivers(&parsed.receivers)
+    {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+        );
+    }
+
+    let current = (**store.load()).clone();
+    let before = redact_receivers_for_audit(&current);
+    let after = redact_receivers_for_audit(&parsed.receivers);
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/alert-receivers",
+        action: "alert_receivers_set",
+        reason: "operator updated alert channel list",
+    };
+
+    let store_for_apply = Arc::clone(&store);
+    let next_for_apply = parsed.receivers;
+    let ring_for_apply = ring.clone();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        after,
+        || {
+            // Delegate to the pure helper in aegis-control so the
+            // validate→swap→prune sequence is unit-tested in one
+            // place. Validation already ran above; this call
+            // returns Ok in all reachable paths.
+            let placeholder_ring =
+                aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
+            let r = ring_for_apply.as_ref().unwrap_or(&placeholder_ring);
+            aegis_control::api::alert_receivers::apply_replace(
+                &store_for_apply,
+                r,
+                next_for_apply,
+            )
+        },
+    );
+    match outcome {
+        Ok(out) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "count": out.value.count,
+                "names": out.value.names,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_alert_receiver_delete(
+    req: hyper::Request<hyper::body::Incoming>,
+    name: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "alert-receiver-delete");
+
+    let Some(store) = services.alert_receivers_store.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "alert receivers store not wired".into(),
+            ),
+        );
+    };
+    let ring = services.alert_receivers_ring.clone();
+
+    let current = (**store.load()).clone();
+    let next: Vec<aegis_control::slo::AlertReceiver> = current
+        .iter()
+        .filter(|r| r.name != name)
+        .cloned()
+        .collect();
+    if next.len() == current.len() {
+        // Name not found — surface a validation-class error so the
+        // dashboard can show "no such receiver" without 500-ing.
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "no receiver named '{name}'"
+            )),
+        );
+    }
+
+    let before = redact_receivers_for_audit(&current);
+    let after = redact_receivers_for_audit(&next);
+    let resource = format!("/api/alert-receivers/{name}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "DELETE",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "alert_receiver_delete",
+        reason: "operator removed alert channel",
+    };
+
+    let store_for_apply = Arc::clone(&store);
+    let ring_for_apply = ring.clone();
+    let target_name = name.to_string();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            let placeholder_ring =
+                aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
+            let r = ring_for_apply.as_ref().unwrap_or(&placeholder_ring);
+            aegis_control::api::alert_receivers::apply_delete(
+                &store_for_apply,
+                r,
+                &target_name,
+            )
+        },
+    );
+    match outcome {
+        Ok(o) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "removed": o.value.removed,
+                "remaining": o.value.remaining,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+async fn handle_alert_receiver_test(
+    req: hyper::Request<hyper::body::Incoming>,
+    name: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "alert-receiver-test");
+
+    let Some(store) = services.alert_receivers_store.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "alert receivers store not wired".into(),
+            ),
+        );
+    };
+
+    // Resolve the receiver by name. Done *before* CSRF validation
+    // would matter — `services.mutate.apply` enforces CSRF inside;
+    // the lookup itself is a read.
+    let current = (**store.load()).clone();
+    let receiver = match current.iter().find(|r| r.name == name).cloned() {
+        Some(r) => r,
+        None => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "no receiver named '{name}'"
+                )),
+            );
+        }
+    };
+
+    // Synthetic alert — fixed shape, never derived from operator
+    // input, so the test path is bounded.
+    let synthetic = aegis_control::slo::SloAlert {
+        sli: aegis_control::slo::SliKind::AuditDeliveryRate,
+        severity: aegis_control::slo::AlertSeverity::Ticket,
+        fired_at: chrono::Utc::now(),
+        resolved_at: None,
+        burn_rate: 0.0,
+        budget_consumed_pct: 0.0,
+        window_hours: 1,
+        runbook_url: "https://runbooks.aegis.local/test".into(),
+    };
+
+    // Audit-mutate envelope first (CSRF + chain entry), then run
+    // the actual delivery in a `tokio::spawn` afterwards. We can't
+    // `.await` inside the synchronous mutator closure — the
+    // existing `apply` signature takes `FnOnce() -> Result<T, E>`.
+    // The chain entry records the *intent* to test; the dispatch
+    // outcome lands in `DispatchOutcomeRing` once delivery returns.
+    let resource = format!("/api/alert-receivers/{name}/test");
+    let before = serde_json::json!({});
+    let after = serde_json::json!({
+        "test_target": name,
+        "kind": aegis_control::api::alert_receivers::RedactedKind::from_kind(&receiver.kind),
+    });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "alert_receiver_test",
+        reason: "operator fired test alert",
+    };
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        after,
+        || Ok(()),
+    );
+    if let Err(e) = outcome {
+        return mutation_error_response(e);
+    }
+
+    // Deliver the synthetic alert against the targeted receiver
+    // (length-1 slice — only this channel fires).
+    let summary = aegis_control::slo::dispatch::send_alert(
+        &synthetic,
+        std::slice::from_ref(&receiver),
+    )
+    .await;
+
+    if let Some(ring) = services.alert_receivers_ring.as_ref() {
+        let now = chrono::Utc::now().timestamp();
+        for n in &summary.delivered {
+            ring.record_delivered(n, now);
+        }
+        for n in &summary.external {
+            ring.record_external(n, now);
+        }
+        for (n, reason) in &summary.failed {
+            ring.record_failed(n, now, reason);
+        }
+    }
+
+    let body = serde_json::json!({
+        "ok": summary.failed.is_empty(),
+        "name": name,
+        "delivered": summary.delivered,
+        "external": summary.external,
+        "failed": summary.failed
+            .iter()
+            .map(|(n, r)| serde_json::json!({"name": n, "reason": r}))
+            .collect::<Vec<_>>(),
+        "request_id": pre.request_id,
+    });
+    json_response(200, &body)
 }
 
 async fn handle_alert_ack(
@@ -1655,6 +2749,103 @@ async fn handle_rules_toggle(
     }
 }
 
+async fn handle_risk_thresholds_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "risk-thresholds-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+        ),
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        challenge_at: Option<u32>,
+        block_at: Option<u32>,
+        max: Option<u32>,
+    }
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str }) {
+        Ok(b) => b,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+        ),
+    };
+
+    let current = services.risk.thresholds();
+    let next = aegis_core::config::RiskThresholds {
+        challenge_at: parsed.challenge_at.unwrap_or(current.challenge_at),
+        block_at:     parsed.block_at.unwrap_or(current.block_at),
+        max:          parsed.max.unwrap_or(current.max),
+    };
+
+    // Sanity: enforce ordering invariants the rule engine assumes.
+    if next.challenge_at >= next.block_at {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(
+                format!("challenge_at ({}) must be < block_at ({})", next.challenge_at, next.block_at),
+            ),
+        );
+    }
+    if next.block_at > next.max {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(
+                format!("block_at ({}) must be <= max ({})", next.block_at, next.max),
+            ),
+        );
+    }
+
+    let before = serde_json::json!({
+        "challenge_at": current.challenge_at,
+        "block_at":     current.block_at,
+        "max":          current.max,
+    });
+    let after = serde_json::json!({
+        "challenge_at": next.challenge_at,
+        "block_at":     next.block_at,
+        "max":          next.max,
+    });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/risk/thresholds",
+        action: "risk_thresholds_set",
+        reason: "operator updated risk thresholds",
+    };
+    let tracker = services.risk.clone();
+    let next_for_apply = next.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        after,
+        || {
+            tracker.set_thresholds(next_for_apply.clone());
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "challenge_at": next.challenge_at,
+                "block_at":     next.block_at,
+                "max":          next.max,
+                "request_id":   pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 async fn handle_risk_reset(
     req: hyper::Request<hyper::body::Incoming>,
     ip_segment: &str,
@@ -1860,6 +3051,27 @@ async fn handle_detectors_put(
 
     match outcome {
         Ok(_) => {
+            // DURABLE-T2 — best-effort persist after the in-memory
+            // swap succeeds. Disk write failure does NOT fail the
+            // PUT — the live mask is already updated, the audit
+            // chain entry committed, and next successful PUT will
+            // retry persistence. We log a warn so operators can
+            // see the durability gap.
+            if let Some(persist_cfg) = cfg.detectors.persistence.as_ref() {
+                let snap = aegis_control::api::detectors_persist::DetectorMaskSnapshot::from_state(
+                    &services.detector_mask.load_state(),
+                );
+                if let Err(e) = aegis_control::api::detectors_persist::save_snapshot(
+                    &persist_cfg.path,
+                    &snap,
+                ).await {
+                    tracing::warn!(
+                        path = %persist_cfg.path.display(),
+                        error = %e,
+                        "detector mask snapshot save failed; live state intact, retry on next PUT",
+                    );
+                }
+            }
             let body = aegis_control::api::detectors::render_get(
                 &services.detector_mask,
                 &modes,
@@ -1868,139 +3080,6 @@ async fn handle_detectors_put(
         }
         Err(e) => mutation_error_response(e),
     }
-}
-
-fn mutation_error_response(
-    err: aegis_control::api::mutation::MutationError,
-) -> Response<Full<Bytes>> {
-    json_body_response(err.http_status(), err.to_body(), "private, no-store")
-}
-
-async fn handle_admin_login(
-    req: hyper::Request<hyper::body::Incoming>,
-    peer: std::net::SocketAddr,
-    services: &aegis_control::dashboard_services::DashboardServices,
-) -> Response<Full<Bytes>> {
-    use http_body_util::BodyExt;
-
-    let user_agent = req
-        .headers()
-        .get(hyper::header::USER_AGENT)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let body_bytes = match req.into_body().collect().await {
-        Ok(c) => c.to_bytes(),
-        Err(_) => {
-            return json_body_response(
-                400,
-                serde_json::json!({"ok":false,"reason":"bad_request",
-                                   "message":"failed to read request body"})
-                    .to_string(),
-                "private, no-store",
-            );
-        }
-    };
-    process_admin_login(services, peer, &user_agent, body_bytes.as_ref())
-}
-
-/// Pure body of the login handler — no `Incoming`, so unit
-/// tests can drive it without faking a TCP body. The async
-/// wrapper above just collects the body and delegates here.
-fn process_admin_login(
-    services: &aegis_control::dashboard_services::DashboardServices,
-    peer: std::net::SocketAddr,
-    user_agent: &str,
-    body_bytes: &[u8],
-) -> Response<Full<Bytes>> {
-    let body_str = std::str::from_utf8(body_bytes).unwrap_or("");
-    let outcome = aegis_control::api::login::authenticate(
-        body_str,
-        &services.admin_identity,
-        &services.login_rate_limiter,
-        &services.auth_sessions,
-        &services.sessions,
-        &peer.ip().to_string(),
-        user_agent,
-        services.session_idle_seconds,
-    );
-
-    use aegis_control::api::login::LoginOutcome;
-    match outcome {
-        LoginOutcome::Ok {
-            session_cookie,
-            csrf_cookie,
-            body,
-        } => Response::builder()
-            .status(200)
-            .header("content-type", "application/json; charset=utf-8")
-            .header("cache-control", "no-store")
-            .header("set-cookie", session_cookie)
-            .header("set-cookie", csrf_cookie)
-            .body(Full::new(Bytes::from(body)))
-            .unwrap(),
-        LoginOutcome::Unauthorized { body } => {
-            json_body_response(401, body, "no-store")
-        }
-        LoginOutcome::RateLimited {
-            retry_after_seconds,
-            body,
-        } => Response::builder()
-            .status(429)
-            .header("content-type", "application/json; charset=utf-8")
-            .header("cache-control", "no-store")
-            .header("retry-after", retry_after_seconds.to_string())
-            .body(Full::new(Bytes::from(body)))
-            .unwrap(),
-        LoginOutcome::BadRequest { body } => {
-            json_body_response(400, body, "no-store")
-        }
-    }
-}
-
-fn handle_admin_logout(
-    req: hyper::Request<hyper::body::Incoming>,
-    services: &aegis_control::dashboard_services::DashboardServices,
-) -> Response<Full<Bytes>> {
-    let cookie_value = req
-        .headers()
-        .get_all(hyper::header::COOKIE)
-        .iter()
-        .filter_map(|h| h.to_str().ok())
-        .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
-        .map(|s| s.to_string());
-    process_admin_logout(services, cookie_value.as_deref())
-}
-
-/// Pure body of logout — same testability story as
-/// [`process_admin_login`].
-fn process_admin_logout(
-    services: &aegis_control::dashboard_services::DashboardServices,
-    session_cookie: Option<&str>,
-) -> Response<Full<Bytes>> {
-    let outcome = aegis_control::api::login::logout(
-        session_cookie,
-        &services.auth_sessions,
-        &services.sessions,
-    );
-    use aegis_control::api::login::LogoutOutcome;
-    let (clear_session, clear_csrf) = match outcome {
-        LogoutOutcome::Ok {
-            clear_session_cookie,
-            clear_csrf_cookie,
-        }
-        | LogoutOutcome::NoSession {
-            clear_session_cookie,
-            clear_csrf_cookie,
-        } => (clear_session_cookie, clear_csrf_cookie),
-    };
-    Response::builder()
-        .status(204)
-        .header("cache-control", "no-store")
-        .header("set-cookie", clear_session)
-        .header("set-cookie", clear_csrf)
-        .body(Full::new(Bytes::new()))
-        .unwrap()
 }
 
 /// HA-T5 — operator drain handler. Authenticated POST endpoint
@@ -2193,20 +3272,6 @@ fn mask_state_to_json(
         "base": base,
         "overrides": serde_json::Value::Object(overrides),
     })
-}
-
-/// Pull a single named cookie value out of a `Cookie:` header
-/// payload. Returns `None` if the cookie isn't present.
-fn extract_named_cookie<'a>(raw: &'a str, name: &str) -> Option<&'a str> {
-    for pair in raw.split(';') {
-        let trimmed = pair.trim();
-        if let Some(rest) = trimmed.strip_prefix(name) {
-            if let Some(value) = rest.strip_prefix('=') {
-                return Some(value);
-            }
-        }
-    }
-    None
 }
 
 fn admin_router(
@@ -2494,6 +3559,19 @@ fn admin_router(
             json_body_response(200, body, "private, max-age=2")
         }
 
+        // CI-T12 — current risk thresholds. Mirrors the PUT body
+        // shape so a roundtrip {GET → modify → PUT} works.
+        "/api/risk/thresholds" => {
+            let t = services.risk.thresholds();
+            let body = serde_json::json!({
+                "challenge_at": t.challenge_at,
+                "block_at":     t.block_at,
+                "max":          t.max,
+            })
+            .to_string();
+            json_body_response(200, body, "private, max-age=2")
+        }
+
         // P2: detector class mask — read returns the live mask
         // plus compliance lock-list. PUT is handled in
         // `handle_admin_request` (async — needs to read body).
@@ -2527,7 +3605,62 @@ fn admin_router(
         "/api/certs" => json_body_response(200, services.tracking.render_certs(), "private, max-age=10"),
         "/api/gitops/status" => json_body_response(200, services.tracking.render_gitops(), "private, max-age=5"),
         "/api/alerts" => json_body_response(200, services.tracking.render_alerts(), "private, max-age=2"),
+        // CC-T2.1 — alert-channel management surface. Returns
+        // every configured `slo::AlertReceiver` with secrets
+        // redacted to last-4 chars, plus per-receiver
+        // last-delivery state. Empty body when the proxy hasn't
+        // wired the handler (e.g. tests that boot DashboardServices
+        // standalone) — keeps the dashboard's empty-state path
+        // working without a 404.
+        "/api/alert-receivers" => match services.alert_receivers.as_ref() {
+            Some(h) => json_body_response(200, h.render(), "private, max-age=2"),
+            None => json_body_response(
+                200,
+                String::from("{\"receivers\":[]}"),
+                "private, max-age=2",
+            ),
+        },
+        // MTLS-T6 — read-only mTLS observability surface. Four
+        // endpoints. Each works with `identity_tracker: None`
+        // (returns empty-state body) so the dashboard renders
+        // before MTLS-T2's rustls wiring lands.
+        "/api/mtls" => json_body_response(
+            200,
+            aegis_control::api::mtls::MtlsConfigView::from_config(cfg).render(),
+            "private, max-age=2",
+        ),
+        "/api/mtls/connections" => json_body_response(
+            200,
+            aegis_control::api::mtls::render_connections(
+                services.identity_tracker.as_ref(),
+            ),
+            "private, max-age=2",
+        ),
+        "/api/mtls/failures" => json_body_response(
+            200,
+            aegis_control::api::mtls::render_failures(
+                services.identity_tracker.as_ref(),
+            ),
+            "private, max-age=2",
+        ),
+        "/api/mtls/ca-summary" => json_body_response(
+            200,
+            aegis_control::api::mtls::render_ca_summary(
+                services.identity_tracker.as_ref(),
+            ),
+            "private, max-age=2",
+        ),
         "/api/upstreams" => json_body_response(200, services.upstreams.render(), "private, max-age=2"),
+        // CC-T1.1 — full upstream-pool configuration view. Reads
+        // `cfg.upstreams` plus pre-computed route references so
+        // the dashboard's edit page renders without a second
+        // fetch. Read-only today; the audit-mutated PUT / DELETE
+        // handlers ship in CC-T1.1.b once the proxy hot-swap of
+        // `ProxyContext.pools` lands.
+        "/api/upstreams/config" => {
+            let view = aegis_control::api::upstreams_config::UpstreamsConfigView::from_config(cfg);
+            json_body_response(200, view.render(), "private, max-age=2")
+        }
         "/api/tracking/snapshot" => json_body_response(
             200,
             services.tracking.render_snapshot(),
@@ -2618,15 +3751,6 @@ fn parse_query_u64(query: &str, key: &str, default: u64) -> u64 {
     default
 }
 
-fn json_response(status: u16, value: &serde_json::Value) -> Response<Full<Bytes>> {
-    let body = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
-    Response::builder()
-        .status(status)
-        .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap()
-}
-
 /// CI-T4 — parse one configured cert into the dashboard's
 /// inventory shape. Returns `None` when the file is missing or
 /// can't be parsed as PEM (the cert provider is best-effort —
@@ -2668,81 +3792,6 @@ fn read_cert_inventory(
         expires_at,
         source: "static".into(),
     })
-}
-
-/// JSON response from a pre-rendered body. Adds `Cache-Control` per
-/// the per-endpoint TTLs documented in
-/// `docs/control-plane/enterprise/api.md` §"Caching".
-fn json_body_response(status: u16, body: String, cache_control: &str) -> Response<Full<Bytes>> {
-    Response::builder()
-        .status(status)
-        .header("content-type", "application/json; charset=utf-8")
-        .header("cache-control", cache_control)
-        .body(Full::new(Bytes::from(body)))
-        .unwrap()
-}
-
-/// Apply the documented dashboard security headers to a response
-/// builder. Single application point for the
-/// `aegis_control::dashboard::security::SECURITY_HEADERS` table — see
-/// `docs/control-plane/enterprise/security.md` §"Headers (full set …)".
-fn apply_dashboard_security_headers(
-    mut builder: hyper::http::response::Builder,
-) -> hyper::http::response::Builder {
-    for (name, value) in aegis_control::dashboard::security::SECURITY_HEADERS {
-        builder = builder.header(*name, *value);
-    }
-    builder
-}
-
-/// Convert an [`aegis_control::dashboard::dispatch::DashboardResponse`]
-/// into a hyper response. Centralises the dashboard transport rules
-/// so security headers, ETags, and cache-control all sit in one place.
-///
-/// `use_legacy` selects between the v1 single-file shell and the
-/// enterprise SPA for the [`DashboardResponse::Shell`] variant only;
-/// asset routes are independent of the toggle.
-fn dashboard_response(
-    r: aegis_control::dashboard::dispatch::DashboardResponse,
-    use_legacy: bool,
-) -> Response<Full<Bytes>> {
-    use aegis_control::dashboard::dispatch::DashboardResponse;
-    match r {
-        DashboardResponse::Shell => dashboard_shell_response(use_legacy),
-        DashboardResponse::Asset(asset) => apply_dashboard_security_headers(
-            Response::builder()
-                .status(200)
-                .header("content-type", asset.content_type)
-                .header("etag", format!("\"{}\"", asset.etag))
-                .header("cache-control", "public, max-age=3600, must-revalidate"),
-        )
-        .body(Full::new(Bytes::from_static(asset.bytes)))
-        .unwrap(),
-        DashboardResponse::AssetNotFound => apply_dashboard_security_headers(
-            Response::builder()
-                .status(404)
-                .header("content-type", "application/json"),
-        )
-        .body(Full::new(Bytes::from_static(
-            br#"{"error":"asset not found"}"#,
-        )))
-        .unwrap(),
-    }
-}
-
-/// Serve the SPA shell (`index.html`) by default, or the legacy v1
-/// shell when `use_legacy` is `true` (admin opt-in via
-/// `cfg.admin.dashboard.legacy_shell`).
-fn dashboard_shell_response(use_legacy: bool) -> Response<Full<Bytes>> {
-    let shell = aegis_control::dashboard::dispatch::shell_for(use_legacy);
-    apply_dashboard_security_headers(
-        Response::builder()
-            .status(200)
-            .header("content-type", shell.content_type)
-            .header("cache-control", "no-store"),
-    )
-    .body(Full::new(Bytes::from_static(shell.bytes)))
-    .unwrap()
 }
 
 /// Plain-HTTP listener that responds to:
@@ -3031,6 +4080,13 @@ async fn accept_loop(
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
     tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
     interop: Option<Arc<aegis_control::interop::InteropRuntime>>,
+    // PROM-T1 — per-decision counter; recorded once per request
+    // after `handle_data_request` returns its DecisionTag.
+    decision_metrics: Arc<aegis_control::metrics::decisions::DecisionMetrics>,
+    // PROM-T2 — per-class detector-hit counter; recorded inside
+    // `handle_data_request` for every detector that emits ≥ 1
+    // signal on a request.
+    detector_hit_metrics: Arc<aegis_control::metrics::detector_hits::DetectorHitMetrics>,
 ) {
     loop {
         let (stream, peer) = match tcp.accept().await {
@@ -3052,6 +4108,8 @@ async fn accept_loop(
         let upstream_ctx = upstream_ctx.clone();
         let interop = interop.clone();
         let acceptor = tls_acceptor.clone();
+        let decision_metrics = decision_metrics.clone();
+        let detector_hit_metrics = detector_hit_metrics.clone();
         tokio::spawn(async move {
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let detectors = detectors.clone();
@@ -3064,6 +4122,8 @@ async fn accept_loop(
                 let bus = bus.clone();
                 let upstream_ctx = upstream_ctx.clone();
                 let interop = interop.clone();
+                let decision_metrics = decision_metrics.clone();
+                let detector_hit_metrics = detector_hit_metrics.clone();
                 async move {
                     let method = req.method().clone();
                     let path = req.uri().path().to_string();
@@ -3079,7 +4139,64 @@ async fn accept_loop(
                         &request_stage_hist,
                         &bus,
                         &upstream_ctx,
+                        &detector_hit_metrics,
                     ).await;
+                    // PROM-T1 — record one increment of
+                    // `waf_requests_total{action}` per request.
+                    // Cost: ~30 ns (label lookup + atomic inc).
+                    decision_metrics.record(decision.action);
+                    // OTEL-T3 note: action is recorded on the
+                    // request span from inside handle_data_request
+                    // (the span is only active during that
+                    // function's body, not at this call site).
+                    let risk_score = risk
+                        .snapshot(peer.ip())
+                        .map(|s| s.score)
+                        .unwrap_or(0);
+
+                    // CI-T11 — broadcast every request decision to
+                    // the audit bus so /dashboard/sse Live Feed is
+                    // truly live. The bus subscriber count drives
+                    // whether send() actually reaches anyone; this
+                    // is a cheap fire-and-forget on the hot path.
+                    let action = decision.action.as_str();
+                    let class = match action {
+                        "allow" => aegis_core::audit::AuditClass::Access,
+                        _      => aegis_core::audit::AuditClass::Detection,
+                    };
+                    let request_id = blake3::hash(
+                        format!(
+                            "{peer}:{}:{path}",
+                            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                        )
+                        .as_bytes(),
+                    )
+                    .to_hex()
+                    .to_string();
+                    let event = aegis_core::audit::AuditEvent {
+                        schema_version: 1,
+                        ts: chrono::Utc::now(),
+                        request_id: request_id.clone(),
+                        class,
+                        tenant_id: None,
+                        tier: None,
+                        action: action.to_string(),
+                        reason: decision
+                            .rule_id
+                            .clone()
+                            .unwrap_or_else(|| action.to_string()),
+                        client_ip: peer.ip().to_string(),
+                        route_id: None,
+                        rule_id: decision.rule_id.clone(),
+                        risk_score: Some(risk_score),
+                        fields: serde_json::json!({
+                            "method": method.as_str(),
+                            "path": path,
+                            "status": resp.status().as_u16(),
+                        }),
+                    };
+                    bus.emit(event);
+
                     let resp = stamp_interop_response(
                         resp,
                         decision,
@@ -3087,7 +4204,7 @@ async fn accept_loop(
                         peer,
                         &method,
                         &path,
-                        risk.snapshot(peer.ip()).map(|s| s.score).unwrap_or(0),
+                        risk_score,
                     );
                     Ok::<_, Infallible>(resp)
                 }
@@ -3140,492 +4257,11 @@ async fn accept_loop(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_data_request(
-    req: hyper::Request<hyper::body::Incoming>,
-    peer: std::net::SocketAddr,
-    detectors: &[Box<dyn aegis_security::detectors::Detector>],
-    mask: &aegis_security::detectors::SharedDetectorMask,
-    risk: &aegis_security::risk::RiskTracker,
-    ip_rate_limiter: &aegis_security::rate_limit::IpRateLimiter,
-    load_gauge: &aegis_core::LoadGauge,
-    verbosity: &aegis_core::SharedVerbosity,
-    request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
-    bus: &AuditBus,
-    upstream_ctx: &Arc<crate::proxy::ProxyContext>,
-) -> (
-    Response<Full<Bytes>>,
-    aegis_control::interop::headers::DecisionTag,
-) {
-    use aegis_control::interop::headers::DecisionTag;
-    use aegis_control::metrics::request_duration::stage as stages;
-    // RAII guard records the total duration on every exit
-    // (early-return on rate-limit, strike-block, detector block,
-    // or the Allow / Challenge / Block bottom). One sample per
-    // request — no double-counting.
-    struct TotalGuard<'a> {
-        h: &'a aegis_control::metrics::request_duration::RequestStageHistogram,
-        t0: std::time::Instant,
-    }
-    impl<'a> Drop for TotalGuard<'a> {
-        fn drop(&mut self) {
-            self.h.record(
-                aegis_control::metrics::request_duration::stage::TOTAL,
-                self.t0.elapsed(),
-            );
-        }
-    }
-    let _total_guard = TotalGuard {
-        h: request_stage_hist,
-        t0: std::time::Instant::now(),
-    };
-    // P7: bump the request counter so the sampler can update mode.
-    load_gauge.tick();
-    let load_mode = load_gauge.current();
-    // P8: live verbosity dial. Block events are tagged at `Error`
-    // — they emit unless the operator pinned `Silent` (used during
-    // load tests where every audit write would dominate the
-    // workload).
-    let verbosity_level = verbosity.current();
-    let allow_block_emit =
-        verbosity_level.is_at_least(aegis_core::VerbosityLevel::Error);
-    let allow_verbose_fields =
-        verbosity_level.is_at_least(aegis_core::VerbosityLevel::Info);
-    use aegis_core::pipeline::{BodyPeek, RequestView};
-
-    let body_peek = BodyPeek::empty();
-    let view = RequestView {
-        method: req.method(),
-        uri: req.uri(),
-        version: req.version(),
-        headers: req.headers(),
-        peer,
-        tls: None,
-        body: &body_peek,
-    };
-
-    // Classify the request to a tier so per-tier overrides apply.
-    // Route context isn't plumbed yet (route table lookup is in
-    // aegis-proxy::route, separate work); pass `None` here and rely
-    // on the path heuristic in `classify_tier`.
-    let (tier, _failure_mode) = aegis_security::pipeline::classify_tier(None, &view);
-
-    // P6 short-circuit: if the client's lifetime strike counter
-    // has crossed the configured threshold, refuse before running
-    // any detectors. Saves CPU under DDoS from known-bad sources.
-    let peer_ip = peer.ip();
-    if risk.is_strike_blocked(peer_ip) {
-        let resp = blocked_response(
-            peer,
-            "blocked by repeat-offender strikes",
-            None,
-            risk.snapshot(peer_ip).map(|s| s.score),
-            req.uri(),
-            req.method(),
-            bus,
-        );
-        return (resp, DecisionTag::block("risk-strikes"));
-    }
-
-    // F-T2 — per-IP volumetric guard. Fires before the
-    // detector pipeline so a flooding source can't burn CPU
-    // on regex matchers. A denied request still records a
-    // strike, so repeat offenders eventually cross
-    // `risk.strikes.block_at` and get the permanent 403 path
-    // above instead of the 429 here.
-    let rate_t0 = std::time::Instant::now();
-    let rate_decision = ip_rate_limiter.consume(peer_ip);
-    request_stage_hist.record(stages::RATE_LIMIT, rate_t0.elapsed());
-    if !rate_decision.allowed {
-        let post_state = risk.record_malicious(peer_ip, 30);
-        let reason = format!(
-            "rate limit: {}/{} in last {}s",
-            rate_decision.count,
-            rate_decision.limit,
-            ip_rate_limiter.config().window.as_secs(),
-        );
-        let allow_emit = verbosity
-            .current()
-            .is_at_least(aegis_core::VerbosityLevel::Error);
-        if allow_emit {
-            let ev = aegis_core::audit::AuditEvent {
-                schema_version: 1,
-                ts: chrono::Utc::now(),
-                request_id: blake3::hash(
-                    format!(
-                        "{}:{}",
-                        peer,
-                        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-                    )
-                    .as_bytes(),
-                )
-                .to_hex()
-                .to_string(),
-                class: aegis_core::audit::AuditClass::Detection,
-                tenant_id: None,
-                tier: None,
-                action: "block".into(),
-                reason: reason.clone(),
-                client_ip: peer_ip.to_string(),
-                route_id: None,
-                rule_id: Some("ip-rate-limit".into()),
-                risk_score: Some(post_state.score),
-                fields: if load_mode.is_critical() {
-                    serde_json::Value::Null
-                } else {
-                    serde_json::json!({
-                        "path": req.uri().to_string(),
-                        "method": req.method().to_string(),
-                        "rate_count": rate_decision.count,
-                        "rate_limit": rate_decision.limit,
-                        "strikes": post_state.strikes,
-                    })
-                },
-            };
-            bus.emit(ev);
-        }
-        let resp = Response::builder()
-            .status(429)
-            .header("content-type", "application/json")
-            .header("retry-after", rate_decision.retry_after_seconds.to_string())
-            .body(Full::new(Bytes::from(
-                serde_json::json!({
-                    "error": "rate_limited",
-                    "reason": reason,
-                    "retry_after_seconds": rate_decision.retry_after_seconds,
-                    "strikes": post_state.strikes,
-                })
-                .to_string(),
-            )))
-            .unwrap();
-        return (resp, DecisionTag::rate_limit("ip-rate-limit"));
-    }
-
-    // Run security detectors filtered by the effective mask for
-    // this tier. A class turned off via PUT /api/detectors (base
-    // or per-tier override) short-circuits before the detector body
-    // runs.
-    let effective = mask.resolve(Some(tier));
-    let detect_t0 = std::time::Instant::now();
-    let signals = aegis_security::detectors::run_all_filtered(detectors, effective, &view);
-    request_stage_hist.record(stages::DETECT, detect_t0.elapsed());
-
-    if !signals.is_empty() {
-        let total_score: u32 = signals.iter().map(|s| s.score).sum();
-        let post_state = risk.record_malicious(peer_ip, total_score);
-        let tags: Vec<&str> = signals.iter().map(|s| s.tag.as_str()).collect();
-        let reason = format!("blocked by detectors: {} (score: {})", tags.join(", "), post_state.score);
-        tracing::warn!(
-            peer = %peer,
-            path = %req.uri(),
-            score = post_state.score,
-            strikes = post_state.strikes,
-            detectors = ?tags,
-            "request blocked"
-        );
-
-        // P7 degraded logging: in Critical mode strip the verbose
-        // `fields` payload to keep the bus + chain writes cheap.
-        // Block reason is preserved so operators still see "what
-        // tripped" — only the request echo is dropped.
-        // P8 verbosity: skip the request echo whenever the live
-        // verbosity is below `Info`. Combines additively with the
-        // Critical short-circuit so an operator-pinned `Warn`
-        // strips fields even at Normal load.
-        let fields = if load_mode.is_critical() || !allow_verbose_fields {
-            serde_json::Value::Null
-        } else {
-            serde_json::json!({
-                "path": req.uri().to_string(),
-                "method": req.method().to_string(),
-                "detectors": tags,
-                "strikes": post_state.strikes,
-                "load_mode": load_mode.as_str(),
-                "verbosity": verbosity_level.as_str(),
-            })
-        };
-        if allow_block_emit {
-            let ev = aegis_core::audit::AuditEvent {
-                schema_version: 1,
-                ts: chrono::Utc::now(),
-                request_id: blake3::hash(format!("{}:{}", peer, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)).as_bytes()).to_hex().to_string(),
-                class: aegis_core::audit::AuditClass::Detection,
-                tenant_id: None,
-                tier: None,
-                action: "block".into(),
-                reason: reason.clone(),
-                client_ip: peer_ip.to_string(),
-                route_id: None,
-                rule_id: None,
-                risk_score: Some(post_state.score),
-                fields,
-            };
-            bus.emit(ev);
-        }
-
-        let detector_rule = if tags.is_empty() {
-            "detectors".to_string()
-        } else {
-            format!("detector:{}", tags.join(","))
-        };
-        let resp = Response::builder()
-            .status(403)
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from(
-                serde_json::json!({
-                    "error": "forbidden",
-                    "reason": reason,
-                    "strikes": post_state.strikes,
-                })
-                .to_string(),
-            )))
-            .unwrap();
-        return (resp, DecisionTag::block(detector_rule));
-    }
-
-    // Clean request — let the trust-recovery clock claw back any
-    // accumulated score (capped at `trust_recovery.per_hour` so
-    // one benign request can't reset a flagged client). Then the
-    // adaptive-mitigation classifier decides between Allow,
-    // Challenge, and Block based on the post-state vs the
-    // configured `RiskThresholds`.
-    risk.record_clean(peer_ip);
-    match risk.level(peer_ip) {
-        aegis_security::risk::RiskLevel::Block => {
-            let resp = blocked_response(
-                peer,
-                "blocked by risk score",
-                None,
-                risk.snapshot(peer_ip).map(|s| s.score),
-                req.uri(),
-                req.method(),
-                bus,
-            );
-            (resp, DecisionTag::block("risk-score"))
-        }
-        aegis_security::risk::RiskLevel::Challenge => {
-            // AF-T1: contract-level distinction. Even though
-            // the HTTP status (429) and Retry-After header are
-            // shaped like rate-limit, the body carries
-            // "challenge" and the contract action MUST be
-            // `challenge` so the OC's challenge-solver path
-            // engages.
-            let resp = Response::builder()
-                .status(429)
-                .header("content-type", "application/json")
-                .header("retry-after", "5")
-                .body(Full::new(Bytes::from(
-                    serde_json::json!({
-                        "challenge": true,
-                        "reason": "risk score over challenge threshold",
-                        "challenge_type": "proof_of_work",
-                    })
-                    .to_string(),
-                )))
-                .unwrap();
-            (resp, DecisionTag::challenge("risk-challenge"))
-        }
-        aegis_security::risk::RiskLevel::Allow => {
-            // Forward the request to a real upstream member via
-            // `crate::upstream::forward`. The forwarder maps
-            // its outcome onto a status code; we infer the
-            // contract action from that (allow on 2xx/3xx,
-            // block / circuit_breaker / timeout otherwise).
-            forward_allow_to_upstream(req, upstream_ctx).await
-        }
-    }
-}
-
-/// Resolve a route + member from the live `ProxyContext`,
-/// collect the request body, and forward through
-/// `upstream::forward::forward()`. Returns 404 on no-route,
-/// 502 / 503 on circuit-breaker / no-healthy-member / connect
-/// failure.
-async fn forward_allow_to_upstream(
-    req: hyper::Request<hyper::body::Incoming>,
-    ctx: &Arc<crate::proxy::ProxyContext>,
-) -> (
-    Response<Full<Bytes>>,
-    aegis_control::interop::headers::DecisionTag,
-) {
-    use aegis_control::interop::headers::DecisionTag;
-    use http_body_util::BodyExt;
-    use std::sync::atomic::Ordering;
-
-    let host = req
-        .headers()
-        .get(hyper::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost")
-        .to_string();
-    let path = req.uri().path().to_string();
-    let method = req.method().clone();
-
-    let route_ctx = match ctx.route_table.resolve(&host, &path, &method) {
-        Some(r) => r,
-        None => {
-            let resp = Response::builder()
-                .status(hyper::StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from("no matching route\n")))
-                .unwrap();
-            return (resp, DecisionTag::block("no-route"));
-        }
-    };
-
-    if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
-        if !cb.allow_request() {
-            let resp = Response::builder()
-                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
-                .body(Full::new(Bytes::from("circuit open\n")))
-                .unwrap();
-            return (resp, DecisionTag::circuit_breaker("circuit-open"));
-        }
-    }
-
-    let pool = match ctx.pools.get(&route_ctx.upstream) {
-        Some(p) => p,
-        None => {
-            let resp = Response::builder()
-                .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("unknown upstream\n")))
-                .unwrap();
-            return (resp, DecisionTag::block("unknown-upstream"));
-        }
-    };
-
-    let member = match pool.strategy.pick(&pool.members, None) {
-        Some(m) => m,
-        None => {
-            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
-                cb.record_failure();
-            }
-            let resp = Response::builder()
-                .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("no healthy upstream\n")))
-                .unwrap();
-            return (resp, DecisionTag::circuit_breaker("no-healthy-upstream"));
-        }
-    };
-
-    let (parts, body) = req.into_parts();
-    let body_bytes = match body.collect().await {
-        Ok(c) => c.to_bytes(),
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to collect client body");
-            let resp = Response::builder()
-                .status(hyper::StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from("body read error\n")))
-                .unwrap();
-            return (resp, DecisionTag::block("body-read-error"));
-        }
-    };
-
-    member.inflight.fetch_add(1, Ordering::Relaxed);
-    let result = crate::upstream::forward::forward(
-        member,
-        &pool.connection,
-        parts.method,
-        parts.uri,
-        parts.headers,
-        body_bytes,
-    )
-    .await;
-    member.inflight.fetch_sub(1, Ordering::Relaxed);
-
-    match result {
-        Ok(resp) => {
-            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
-                if resp.status().is_server_error() {
-                    cb.record_failure();
-                } else {
-                    cb.record_success();
-                }
-            }
-            // 5xx from upstream is not a WAF block — we proxied
-            // faithfully; the contract action stays `allow` (the
-            // upstream's failure is what the client sees).
-            (resp, DecisionTag::allow())
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "upstream forward failed");
-            if let Some(cb) = ctx.breakers.get(&route_ctx.upstream) {
-                cb.record_failure();
-            }
-            // AF-T1: distinguish forward-failure modes for the
-            // contract. Connect/Handshake/Send timeouts → Timeout;
-            // anything else → CircuitBreaker (we refused to
-            // proxy further or the breaker tripped).
-            let action_tag = match &e {
-                crate::upstream::forward::ForwardError::Send(m)
-                    if m.contains("timed out") =>
-                {
-                    DecisionTag::timeout("upstream-timeout")
-                }
-                crate::upstream::forward::ForwardError::Connect(_)
-                | crate::upstream::forward::ForwardError::Handshake(_) => {
-                    DecisionTag::circuit_breaker("upstream-unreachable")
-                }
-                _ => DecisionTag::circuit_breaker("upstream-error"),
-            };
-            let resp = Response::builder()
-                .status(hyper::StatusCode::BAD_GATEWAY)
-                .body(Full::new(Bytes::from("upstream error\n")))
-                .unwrap();
-            (resp, action_tag)
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn blocked_response(
-    peer: std::net::SocketAddr,
-    reason: &str,
-    rule_id: Option<String>,
-    risk_score: Option<u32>,
-    uri: &hyper::Uri,
-    method: &hyper::Method,
-    bus: &AuditBus,
-) -> Response<Full<Bytes>> {
-    let ev = aegis_core::audit::AuditEvent {
-        schema_version: 1,
-        ts: chrono::Utc::now(),
-        request_id: blake3::hash(
-            format!(
-                "{}:{}",
-                peer,
-                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-            )
-            .as_bytes(),
-        )
-        .to_hex()
-        .to_string(),
-        class: aegis_core::audit::AuditClass::Detection,
-        tenant_id: None,
-        tier: None,
-        action: "block".into(),
-        reason: reason.into(),
-        client_ip: peer.ip().to_string(),
-        route_id: None,
-        rule_id,
-        risk_score,
-        fields: serde_json::json!({
-            "path": uri.to_string(),
-            "method": method.to_string(),
-        }),
-    };
-    bus.emit(ev);
-    Response::builder()
-        .status(403)
-        .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(
-            serde_json::json!({ "error": "forbidden", "reason": reason }).to_string(),
-        )))
-        .unwrap()
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admin_login::{process_admin_login, process_admin_logout};
     use aegis_core::config::WafConfig;
     use aegis_core::ReadinessSignal;
     use std::sync::Arc;
@@ -3736,6 +4372,14 @@ state:
             upstream_ctx,
             None, // no tls_acceptor in this plain-http test
             None, // no interop runtime in this plain-http test
+            std::sync::Arc::new(
+                aegis_control::metrics::decisions::DecisionMetrics::register(&metrics_reg)
+                    .unwrap(),
+            ),
+            std::sync::Arc::new(
+                aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics_reg)
+                    .unwrap(),
+            ),
         ));
 
         // Give the accept loop a moment to start.

@@ -119,6 +119,23 @@ openapi-lint: ## Lint docs/control-plane/api.openapi.yaml via redocly
 protocols-test: ## Multi-protocol smoke — h1/h2/h3/WS/gRPC (assumes `make run` is up)
 	@bash tests/protocols/run-all.sh
 
+ci-local: ## Run the same lint + test + smoke suite GitHub Actions runs
+	@$(CARGO) fmt --all -- --check
+	@$(CARGO) clippy --workspace -- -D warnings
+	@$(CARGO) test --workspace
+	@bash tests/api/openapi-shape.sh   # requires `make run` already up
+	@bash tests/protocols/run-all.sh   # requires `make run` already up
+
+helm-lint: ## helm lint + kube-linter on deploy/helm/aegis-gate
+	@helm lint deploy/helm/aegis-gate
+	@docker run --rm -v "$(PWD)/deploy/helm/aegis-gate:/chart" \
+	    stackrox/kube-linter:latest lint /chart
+
+helm-render: ## Render the chart with placeholder values (no install)
+	@helm template aegis deploy/helm/aegis-gate \
+	    --set admin.password.hash='$$argon2id$$placeholder' \
+	    --set admin.csrf.secret='deadbeef'
+
 ##@ Cleanup
 
 clean: ## cargo clean (does NOT delete dev certs)

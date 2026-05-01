@@ -1,0 +1,251 @@
+# Aegis-Gate — Helm values.
+# Every field documented inline. The shape mirrors the schema
+# in `crates/aegis-core/src/config.rs::WafConfig`.
+
+# ---------------------------------------------------------------------------
+# Image
+# ---------------------------------------------------------------------------
+image:
+  repository: aegis-gate
+  # Pin to an immutable digest in production.
+  tag: "1.4.2"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ---------------------------------------------------------------------------
+# Replicas + scaling
+# ---------------------------------------------------------------------------
+# Default 2 replicas with pod anti-affinity gives single-AZ fault
+# tolerance. For active/passive HA-T5 deploys, bump to 3 and rely
+# on the ?strict=1 readiness probe for leader-only routing.
+replicaCount: 2
+
+# Optional HPA. When enabled, the chart's manual `replicaCount`
+# becomes the floor; the HPA scales between min/max on CPU.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# ---------------------------------------------------------------------------
+# Resources — sized for ~5k RPS per pod with the tier-medium
+# pipeline. Bump for higher RPS or tier-critical with all
+# detectors on.
+# ---------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+# Pod-level config used by the operator's WafConfig. Render as a
+# ConfigMap; mounted at /etc/aegis/waf.yaml inside the container.
+config:
+  # When set to a non-null string, the chart uses this verbatim.
+  # When null, the chart synthesises a minimal config from the
+  # other `values.yaml` knobs below.
+  raw: null
+
+  # Listener bind addresses. Inside the pod the WAF listens on
+  # 0.0.0.0 — the Service translates that to the cluster IP.
+  listeners:
+    dataPlaintext:
+      enabled: true
+      port: 8080
+    dataTls:
+      enabled: true
+      port: 8443
+    admin:
+      port: 9443
+
+  # State backend. `redis` is required for HA; `in_memory` is
+  # acceptable for single-replica deploys.
+  state:
+    backend: "redis"  # in_memory | redis
+    redis:
+      # Operators typically wire this to an existing in-cluster
+      # Redis (Bitnami chart, AWS ElastiCache, etc.). The chart
+      # does NOT provision Redis itself.
+      url: "redis://aegis-redis-master.redis:6379"
+      # When set, the value is read from a Kubernetes Secret
+      # rather than literal `url:` above.
+      urlSecretRef:
+        name: ""
+        key: "url"
+
+  # Tier defaults. Operators rarely override these; the rule
+  # engine reads them at boot and passes them to the per-tier
+  # detectors.
+  load_mode:
+    elevated_rps: 2000
+    critical_rps: 8000
+
+# ---------------------------------------------------------------------------
+# TLS — operators bring their own cert via a pre-existing Secret.
+# The Secret should contain `tls.crt` and `tls.key` (k8s standard
+# `kubernetes.io/tls` shape).
+# ---------------------------------------------------------------------------
+tls:
+  enabled: true
+  # Existing Secret with `tls.crt` + `tls.key`. cert-manager,
+  # external-secrets, or a manually-created Secret all work.
+  existingSecret: "aegis-gate-tls"
+  hosts:
+    - "*.example.com"
+
+# ---------------------------------------------------------------------------
+# Admin auth — see `docs/control-plane/dashboard-auth.md`.
+# password_hash + csrf_secret MUST come from a Secret in
+# production. The chart accepts either a literal value (templated
+# into a fresh Secret) or a reference to an existing Secret.
+# ---------------------------------------------------------------------------
+admin:
+  bind: "0.0.0.0:9443"
+  ipAllowlist:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+  password:
+    # Argon2id PHC string, generated via `waf admin set-password`.
+    # When `existingSecret` is set, this field is ignored.
+    hash: ""
+    existingSecret:
+      name: ""
+      key: "password_hash"
+  csrf:
+    # 32+ random bytes hex-encoded. When `existingSecret` is set,
+    # this field is ignored.
+    secret: ""
+    existingSecret:
+      name: ""
+      key: "csrf_secret"
+  totp:
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# Service exposure
+# ---------------------------------------------------------------------------
+service:
+  data:
+    # Client traffic. ClusterIP for LB-fronted setups; LoadBalancer
+    # to expose directly (carries an external IP).
+    type: LoadBalancer
+    annotations: {}
+  admin:
+    # Admin Service is ALWAYS ClusterIP — operators reach it via
+    # `kubectl port-forward` or an internal mesh.
+    type: ClusterIP
+    annotations: {}
+
+# ---------------------------------------------------------------------------
+# Ingress for the admin dashboard. Off by default — most operators
+# use kubectl port-forward. Turn this on when admin SSO terminates
+# at the ingress.
+# ---------------------------------------------------------------------------
+adminIngress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: aegis-admin.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ---------------------------------------------------------------------------
+# Network policy — restricts admin port to operator-side namespaces.
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  adminAllowedNamespaces:
+    - "operator-tools"
+
+# ---------------------------------------------------------------------------
+# PodDisruptionBudget — keep at least 1 pod up during voluntary
+# disruptions (rolling upgrades, drain).
+# ---------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# Prometheus ServiceMonitor — opt-in. Requires the Prometheus
+# Operator CRD to be installed in the cluster.
+# ---------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false
+  interval: "30s"
+  scrapeTimeout: "10s"
+  labels: {}
+
+# ---------------------------------------------------------------------------
+# Pod-level controls
+# ---------------------------------------------------------------------------
+podLabels: {}
+podAnnotations: {}
+
+# Distroless `nonroot` user (uid/gid 65532). Don't change unless
+# the operator's PSP/PSS demands a different uid.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Pod anti-affinity — spread replicas across nodes / zones.
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: aegis-gate
+          topologyKey: kubernetes.io/hostname
+
+nodeSelector: {}
+tolerations: []
+
+# ---------------------------------------------------------------------------
+# Drain hook — gives the WAF time to finish in-flight requests
+# before the kubelet sends SIGTERM. The chart's preStop hook
+# `curl -X POST /admin/drain` flips readiness to 503 first.
+# ---------------------------------------------------------------------------
+drain:
+  graceMs: 10000
+  # `terminationGracePeriodSeconds` should exceed `drain.graceMs`
+  # by at least 5 s so the kubelet doesn't kill mid-drain.
+  terminationGracePeriodSeconds: 30
+
+# ---------------------------------------------------------------------------
+# Optional: VipTalk SLO alert delivery (CI-T7). Set the bot
+# token + room IDs via env, sourced from a Secret.
+# ---------------------------------------------------------------------------
+viptalk:
+  enabled: false
+  existingSecret:
+    name: "aegis-viptalk"
+    botTokenKey: "bot_token"
+    roomIdsKey: "room_ids"
+  apiBase: "https://api.viptalk.org"
+
+# ---------------------------------------------------------------------------
+# ServiceAccount
+# ---------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

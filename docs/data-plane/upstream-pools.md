@@ -131,3 +131,30 @@ upstreams:
 - Consistent hash: binary search on a pre-built ring
 - Least-conn: one atomic load per member, pick min
 - Zero allocation on the hot path
+
+## Editing via the Console (CC-T1.\*)
+
+Pools can be inspected, added, edited, and deleted via the
+dashboard's **Upstreams** page (`/dashboard/#/upstreams`).
+The page consumes the audit-mutated CRUD endpoints; every
+change is recorded in the audit chain and the proxy hot-swaps
+the live pool table on the same request — in-flight requests
+finish on the previous pool, new requests see the new one.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/upstreams/config` | Full pool detail incl. `referenced_by_routes` |
+| `PUT /api/upstreams/config` | Whole-map replace |
+| `PUT /api/upstreams/pool/{id}` | Single-pool upsert |
+| `DELETE /api/upstreams/pool/{id}` | Delete; refuses with **409 + `referenced_by_routes`** when any route still targets the pool |
+
+The DELETE refusal is operator-friendly: the delete-confirm
+modal renders the route-reference list directly so you know
+what to fix before retrying. Validation rejections (empty
+members, weight 0, health timeout ≥ interval, circuit-breaker
+threshold outside `[0, 1]`) return the standard
+`{ok:false, reason, message}` envelope with a stable
+`reason_code` the dashboard maps to a targeted toast.
+
+Schemas + 4xx/409 contracts: see
+[`docs/control-plane/api.openapi.yaml`](../control-plane/api.openapi.yaml).

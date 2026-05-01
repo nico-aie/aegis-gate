@@ -11,7 +11,8 @@ For production deployment see [`./GUIDE.md`](./GUIDE.md).
 
 | File | Purpose |
 |---|---|
-| `docker-compose.dev.yml` | Default dev stack — etcd, Prometheus, Jaeger, Redis, httpbin |
+| `docker-compose.dev.yml` | Default dev stack — etcd, Prometheus, Grafana, Jaeger, Redis (+exporter), httpbin |
+| `grafana/` | Grafana provisioning + dashboards (datasources auto-loaded, three dashboards file-provisioned) |
 | `docker-compose.test.yml` | Adds attacker / k6 / nuclei / etcdctl for the test pyramid |
 | `prometheus/prometheus.yml` | Scrape config — both planes labelled `plane=control|data` |
 | `etcd/bootstrap.sh` | Idempotently seeds `/aegis/config/waf` from `seed.yaml` |
@@ -19,6 +20,9 @@ For production deployment see [`./GUIDE.md`](./GUIDE.md).
 | `etcd/README.md` | etcd key layout, CAS semantics, DR |
 | `haproxy/haproxy.cfg` | Reference LB config for the HA cluster fixture (HA-T1) |
 | `pebble/` | ACME test server for cert issuance tests |
+| `Dockerfile` | **Production container image** (B6-T1) — multi-stage, distroless `cc`, runs as `nonroot` (uid 65532). Build with `bash deploy/docker-build.sh`. |
+| `docker-build.sh` | buildx wrapper for multi-arch (amd64 + arm64) production image builds |
+| `helm/aegis-gate/` | **Production Helm chart** (B6-T2) — Deployment + Services (data + admin) + ConfigMap + PDB + NetworkPolicy + optional HPA / ServiceMonitor / Ingress. See `helm/aegis-gate/README.md`. |
 
 ## Service ports (default)
 
@@ -30,12 +34,96 @@ For production deployment see [`./GUIDE.md`](./GUIDE.md).
 | etcd | control | 2379 | config source of truth |
 | Redis | data | 6379 | optional state store |
 | Prometheus | control | 9090 | UI + query API |
+| Grafana | control | 3000 | dashboards UI (anonymous editor in dev; admin / admin) |
 | Jaeger | control | 16686 | tracing UI |
+| Redis exporter | data | 9121 | Prometheus metrics for Redis |
 | httpbin | data | 8081 | mock upstream |
 | HAProxy stats | control | 8404 | LB stats (only with `--profile ha`) |
 | HAProxy VIP | data | 9180 / 9443 | plaintext / TLS VIP (only with `--profile ha`) |
 
 Override in a local `.env` (not committed).
+
+## Observability stack
+
+The dev compose ships a complete metrics + tracing surface so an
+operator can walk into the deploy with zero config.
+
+```
+WAF data plane :9100/metrics ─┐
+WAF admin     :9443/metrics ─┼─► Prometheus :9090 ──► Grafana :3000
+Redis (via exporter :9121)  ─┘                            │
+                                                          ▼
+WAF (OTel exporter — pending) ───► Jaeger :16686 ◄────────┘
+                                              (Grafana cross-links)
+```
+
+### Bring it up
+
+```sh
+docker compose -f deploy/docker-compose.dev.yml up -d \
+  prometheus grafana jaeger redis redis-exporter
+# wait ~5 s for grafana-data init
+open http://localhost:3000   # admin / admin (anonymous editor too)
+```
+
+### Dashboards (file-provisioned)
+
+| Dashboard | UID | Covers |
+|---|---|---|
+| **Aegis WAF — Overview** | `aegis-waf-overview` | Per-stage request latency (p50/p95/p99 from `waf_request_duration_ms`), heatmap on `total`, request rate, and pre-staged panels for the request/block/challenge/detector counters that light up as instrumentation lands. |
+| **Aegis WAF — Redis** | `aegis-redis` | Up/down, connected clients, memory, command rate, keyspace hit ratio, evictions, per-DB key counts, replication slot. |
+| **Aegis WAF — Runtime** | `aegis-runtime` | Process CPU / RSS / FDs / uptime from the embedded `prometheus 0.13` client, plus a reserved panel for `aegis_runtime_*` series that ship once the `tokio_unstable` build flag wires in. |
+
+Provisioning lives in `deploy/grafana/`:
+- `provisioning/datasources/datasources.yaml` — Prometheus (default) + Jaeger.
+- `provisioning/dashboards/dashboards.yaml` — file provider; auto-reloads every 30 s.
+- `dashboards/*.json` — the three dashboards above.
+
+### Honest disclosure (audit-driven)
+
+Per the 2026-04-30 storage + observability audit, with status as
+of 2026-05-01:
+
+**Prometheus instrumentation — closed (PROM-T1 + PROM-T2 + PROM-T3):**
+Every WAF-specific series the dashboards reference now emits live
+data on the next traffic event:
+- `waf_request_duration_ms{stage}` — per-stage latency histogram (F-T10)
+- `waf_requests_total{action}` — request rate by decision (PROM-T1)
+- `waf_upstream_members_{healthy,total}{pool}` — pool gauges, synced every 5 s (PROM-T1)
+- `waf_detector_hits_total{class}` — per-class firings (PROM-T2)
+- `waf_state_backend_ops_total{op,outcome}` — Redis / in-memory dispatch (PROM-T3)
+- `waf_audit_events_total{class}` — events flowing through the AuditBus (PROM-T3)
+
+**OTel tracing — exporter wired (OTEL-T2 closed 2026-05-01).**
+The OTLP gRPC exporter ships every `tracing` span the WAF
+emits to the configured collector. To enable, build with
+`cargo build -p aegis-bin --features otel` and set
+`cfg.observability.otel.endpoint` (e.g. `"http://jaeger:4317"`)
++ optional `sample_ratio` (default 1.0). On boot you'll see
+`INFO: OTLP tracing exporter wired endpoint=...` followed by
+JSON-formatted logs (the OTel-mode subscriber). Jaeger is in
+the compose so traces appear at `http://localhost:16686` on
+first traffic. Default build (no feature) keeps the stdout
+JSON layer only and warn-logs if the endpoint is set.
+
+**OTel coverage scope.** Today the exporter ships every span
+created by `tracing::info!` / `warn!` etc. — `#[instrument]`
+attributes on hot-path functions (request handler entry, audit
+emit, state-backend dispatch) is the next slice (OTEL-T3) and
+will produce richer per-request span trees in Jaeger.
+
+**Tokio runtime metrics** (`aegis_runtime_active_workers` /
+`aegis_runtime_blocking_queue_depth`) need the `tokio_unstable`
+build flag — a follow-up to the Runtime dashboard's reserved
+panel.
+
+### Production hardening
+
+In production: set `GF_SECURITY_ADMIN_PASSWORD` from a secret, set
+`GF_AUTH_ANONYMOUS_ENABLED=false`, drop the `redis-exporter` if
+your prod deploy uses managed Redis (CloudWatch / ElastiCache /
+Memorystore exposes its own metrics). The Helm chart will pick up
+a tweaked compose layout in a follow-up.
 
 ## HA-cluster fixture (opt-in)
 

@@ -48,12 +48,20 @@ TMP=$(mktemp -t aegis-dashboard.XXXXXX).jsx
 # - target=es2020: matches React 18's runtime baseline.
 # - jsx=transform + jsx-factory: classic React.createElement (we have
 #   React loaded as a UMD global, so we need the classic transform).
+# - --minify-whitespace + --minify-syntax: safe minification that
+#   drops comments / whitespace and rewrites obviously-shorter syntax
+#   (`!0` for `true`, etc.). Identifier minification is intentionally
+#   OFF because the design uses `Object.assign(window, { PageX, ... })`
+#   to hand functions to the router — renaming `PageX` would break
+#   the router lookup.
 npx --yes esbuild "$TMP" \
   --loader:.jsx=jsx \
   --target=es2020 \
   --jsx=transform \
   --jsx-factory=React.createElement \
   --jsx-fragment=React.Fragment \
+  --minify-whitespace \
+  --minify-syntax \
   --outfile="$HERE/app.js" \
   --log-level=warning
 
