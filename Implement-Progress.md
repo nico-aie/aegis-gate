@@ -24,22 +24,37 @@
 ## Status (snapshot)
 
 - **As of:** 2026-05-01
-- **Workspace tests:** **163 in `aegis-core`** + **855 in
-  `aegis-control`** + **424 in `aegis-proxy` lib** (**461 with
-  `--features etcd`**) + **888 in `aegis-security`** + **41 in
-  `aegis-bin`** (default features). aegis-proxy: +4 from
-  PRE-T1's `responses::tests` (json round-trip, cache-control
-  threading, fallback contract, security-headers application).
+- **Workspace tests:** **173 in `aegis-core`** (+10 SC-T1
+  BackendHealth/LatencyP/CircuitState tests) + **862 in
+  `aegis-control`** (+7 unit + 2 integration SC-T1 tests) +
+  **459 in `aegis-proxy` lib** (+2 in_memory health, +5
+  client_trust, +5 tls_policy mTLS handshake, +16 identity
+  extraction, +2 route auth_required, +1 e2e MTLS-T4 gate,
+  +4 MTLS-T5 client-auth-reload tests; +9 more under
+  `--features redis` for the Redis backend health helpers;
+  **496 with `--features etcd`**) + **888 in
+  `aegis-security`** + **41 in `aegis-bin`** (default
+  features).
   **Dashboard bundle 182,090 B** (178 KB).
   Workspace total ~2,434 default-feature.
   **`aegis-proxy/src/lib.rs`: 5569 → 5484 (PRE-T1) → 4900
-  (PRE-T2) → 4762 (PRE-T4)** lines, **cumulative −807**.
-  Submodules: `responses.rs` 231, `data_plane.rs` 616,
-  `admin_login.rs` 151, `admin_sse.rs` 385 (pre-existing).
-  All 5 under the 800-line guideline. **PRE-T3 was a no-op**
-  — `admin_sse.rs` was already extracted earlier (B4-T4
-  era). PRE-T5 next: `admin_get_handlers.rs` (~1200 lines,
-  the big chunk).
+  (PRE-T2) → 4762 (PRE-T4) → 4287 (PRE-T5) → 2650
+  (PRE-T6) → 559 (PRE-T7+T8)** lines,
+  **cumulative −5010 (−90%)**. `lib.rs` is now a thin
+  facade: module declarations + `pub use run::{run,
+  ConfigReloadSource};` + a 200-line `#[cfg(test)] mod
+  tests` covering the cross-cutting integration tests
+  (mock upstream, accept loops, force-https, dashboard
+  shell). Submodules: `responses.rs` 231,
+  `data_plane.rs` 616, `admin_login.rs` 151,
+  `admin_sse.rs` 385 (pre-existing), `admin_get.rs` 519,
+  `admin_mutate.rs` 1714 (over guideline; flagged for
+  per-resource split), `admin_dispatch.rs` 452,
+  `accept.rs` 808 (single line over guideline; cohesive
+  per-listener loops), `run.rs` 920 (boot orchestration —
+  large because `pub fn run` is naturally that long;
+  documented at the top). 8 of 9 new submodules under
+  900 lines.
 - **Clippy:** `aegis-control` + `aegis-proxy` libs both clean
   under `-D warnings` after OTEL-T3's lint sweep
   (`RESERVED_RULE_IDS.contains`, `WafError::Io` redundant
@@ -57,23 +72,437 @@
   **CC-T3** (i18n / OpenAPI / docs / acceptance round-trip).
   **Phase B B6 packaging** still has B6-T4 (HSM) + B6-T5
   (fd-pass) deferred. **Scaling config (SC-T\*)** parked.
-- **Latest activity:** **PRE-T3 (no-op) + PRE-T4 (extract
-  `admin_login.rs`) closed 2026-05-01.** PRE-T3 was a no-op —
-  `admin_sse.rs` was already extracted in the B4-T4 era
-  (385 lines). PRE-T4 moved 4 login/logout functions
-  (`handle_admin_login`, `process_admin_login`,
-  `handle_admin_logout`, `process_admin_logout`) +
-  `extract_named_cookie` (12-line shared helper, 7 call sites)
-  out of `lib.rs` into `admin_login.rs` (151 lines) +
-  `responses.rs` (+18 lines). **`lib.rs` 4900 → 4762 lines**
-  (−138 this slice; cumulative −807 from the 5569 baseline).
-  Test fixup: lib.rs's `tests` module gains a small
-  `use crate::admin_login::{...};` so the 5 login/logout unit
-  tests still compile. **All 5 submodules under 800 lines.**
+- **Latest activity:** **MTLS-T5 (CA-bundle hot-reload)
+  closed 2026-05-01.** Operators can now rotate the
+  inbound-mTLS CA bundle by editing `waf.yaml` —
+  `cfg.tls.client_auth.ca_bundle` is re-parsed and the
+  live `ClientTrustStore` is atomic-swapped on every
+  successful reload, alongside the existing TLS cert-store
+  reload (P5).
+  - **New helper:**
+    `apply_cfg_change_to_client_auth(new_cfg, trust_store)`
+    in `aegis-proxy/src/config_source/reload.rs`. Returns
+    one of `NoStore` / `Applied { cert_count, mode }` /
+    `SkippedDisabled` / `MissingCaBundle` / `Failed { reason }`.
+    **Skip-not-clear semantics**: if new cfg has
+    `client_auth: None` or `mode: disabled`, the live
+    trust stays — clearing it would crash every Required-
+    mode handshake. Operators disabling client-auth at
+    runtime need a restart.
+  - **Watcher integration**: `supervisor::watch_loop`
+    gains a `client_trust:
+    Option<ClientTrustStore>` parameter (8 spawn-watcher
+    test call sites updated). After the existing
+    `tls_reloaded` event, the watcher invokes the new
+    helper and emits `mtls_reloaded` (with cert_count +
+    mode in fields) on Applied or `mtls_reload_failed`
+    (with reason) on MissingCaBundle / Failed. Both events
+    land on `AuditClass::Admin` so the audit chain
+    captures the rotation.
+  - **`run.rs` lift**: the TLS bootstrap now returns the
+    parsed `ClientTrustStore` alongside the acceptor +
+    resolver (3-tuple), so the config watcher receives a
+    handle to swap into. Boot path threads
+    `client_trust.clone()` into `spawn_config_watcher`.
+  - **Tests** (+4 in `config_source::reload`): no-store
+    short-circuit when caller passes `None`;
+    skipped-disabled when `mode: disabled` in new cfg
+    (live store unchanged); applied-swaps-to-new-CA on
+    valid reload; failed-keeps-live-store when new
+    `ca_bundle` path doesn't exist. Each test uses an
+    rcgen-generated CA written to a tempdir then re-read
+    by the helper — exercises the full PEM round-trip.
+  - aegis-proxy 492 → **496 etcd**; full workspace
+    ~2,447 default-feature tests pass; production build
+    clean.
+
+  **What's left in the MTLS track:**
+  - **MTLS-T7..T11** — Console mutation surfaces (SAN
+    allowlist, mode toggle, break-glass, CA bundle
+    upload, per-route `auth_required` editor).
+  - **Sub-slices deferred from T4**: `/admin/login`
+    mTLS bypass; `AuditEvent.actor` field;
+    identity-rate-limit fan-out.
+
+- **Earlier activity:** **MTLS-T4 (route-scoped policy gate)
+  closed 2026-05-01.** Routes can now declare
+  `auth_required: ["mtls"]` (or `["spiffe"]`, or both) to
+  reject anonymous clients with a 403 + `mtls_required`
+  rule_id before any upstream is touched. Default empty
+  list keeps existing routes open — backwards-compatible.
+  - **Schema:** `RouteConfig.auth_required: Vec<String>`
+    (`#[serde(default)]`) added to
+    `aegis-core::config::RouteConfig`. Doc comment spells
+    out the allow-list semantics + the `["mtls", "spiffe"]`
+    common case.
+  - **Resolver wiring:** `RouteCtx.auth_required` added to
+    `aegis-core::context::RouteCtx`; `CompiledRoute`
+    threads it from YAML through to `RouteCtx::to_ctx()`.
+    Three pre-existing test-construction sites in
+    `aegis-security/{noop,pipeline,rules/eval}.rs` and one
+    in `aegis-core::context` test mod updated with
+    `auth_required: Vec::new()`.
+  - **Gate logic:** `forward_allow_to_upstream` now takes
+    `&ClientIdentity`. After `route_table.resolve` returns
+    a non-empty `auth_required`, the handler checks
+    `identity.kind()` against the list. Mismatch returns
+    403 (text/plain body, `rule_id = mtls_required`,
+    contract action `block`) BEFORE the circuit breaker /
+    upstream pick / forward — so authn rejection is cheap
+    and never touches the upstream. Logs a `tracing::debug`
+    line with route_id + required + actual_kind +
+    principal so audits can trace the rejection.
+  - **Plumbing:** `&ClientIdentity` threads from
+    `accept_loop`'s per-connection `conn_identity` into
+    `handle_data_request` → `handle_data_request_inner` →
+    `forward_allow_to_upstream`. Plain-HTTP connections
+    pass `&ClientIdentity::Anonymous`; mTLS connections
+    pass the extracted identity from MTLS-T3.
+  - **Tests** (+3): two route-table tests in
+    `route::tests` (default empty open behaviour;
+    YAML round-trip with `["mtls", "spiffe"]`) and one
+    end-to-end test in `lib::tests` —
+    `anonymous_request_to_mtls_required_route_returns_403`
+    drives `accept_loop` against a mock upstream with a
+    plain TCP client, confirms the 403 lands BEFORE the
+    upstream is touched (mock would have returned 200).
+    aegis-proxy 489 → **492 etcd**; full workspace
+    ~2,443 default-feature tests pass; production build
+    clean.
+
+  **What's deferred from the broader MTLS-T4 scope** (per
+  `plans/mtls.md`):
+  - `/admin/login` mTLS bypass (cert with valid SAN skips
+    password) — separate slice; needs `aegis-control::admin_auth::mtls`.
+  - `actor: ActorIdentity { kind, principal }` field on
+    `AuditEvent` — needs schema-version bump in the audit
+    chain; better to land alongside MTLS-T11 SAN-allowlist
+    audit so both fields ship together.
+  - Identity-rate-limit fan-out — wires into `IpRateLimiter`'s
+    keyer; needs an additive trait surface in
+    `aegis-security`. Defer until there's a concrete identity-
+    rate-limit policy to test against.
+
+- **Earlier activity:** **MTLS-T3 (identity extraction)
+  closed 2026-05-01.** Every accepted TLS connection now
+  populates `ClientIdentity` from the verified leaf cert
+  and feeds the per-identity sliding-window tracker — so
+  the `/api/mtls/connections` dashboard surface (T6,
+  shipped earlier) lights up with real data once an
+  operator wires `cfg.tls.client_auth`.
+  - **New module:** `aegis-proxy/src/listener/identity.rs`
+    (~430 lines incl. tests) — `extract_identity_from_peer_certs`
+    parses the leaf via `x509-parser`, fingerprints the DER
+    with SHA-256 (lowercase hex), and walks SANs in priority
+    order: SPIFFE URI (`spiffe://td/path`) → `Spiffe`
+    variant; otherwise first non-SPIFFE URI / DNS / email
+    SAN → `Mtls`; CN fallback when no SAN extension; bogus
+    DER falls back to `Anonymous` (verifier accepted the
+    chain — log + continue).
+  - **`accept.rs` rewrite:** TLS handshake now runs
+    *before* the per-connection `service_fn` is built so
+    the captured identity is stable for every request on
+    the connection. New `ServedIo { Tls | Plain }` enum
+    threads the IO through to the hyper serve step. Plain
+    HTTP connections stay `Anonymous` (no cert offered).
+  - **Per-request wiring:** when (a) the data-plane has an
+    `IdentityTracker` wired and (b) the connection
+    presented a non-Anonymous identity, every request
+    calls `tracker.record_request(principal, kind,
+    decision_label)` after the audit emit. Decision label
+    is the contract action (`allow` / `block` / etc.) so
+    the dashboard's per-identity decision breakdown gets
+    real data.
+  - **`run.rs` lift:** the `IdentityTracker` is now created
+    in `run.rs` (instead of inside `admin_accept_loop`)
+    and passed to BOTH `accept_loop` (data plane) and
+    `admin_accept_loop` (admin / dashboard). CA-bundle
+    summary loading stays in `admin_accept_loop`.
+  - **Cargo:** `sha2.workspace = true` added to
+    `aegis-proxy` so the fingerprint helper has a
+    SHA-256 implementation that matches the wire format
+    operator UIs expect (most certificate fingerprint
+    surfaces show SHA-256, not BLAKE3).
+  - **Tests** (+16 in aegis-proxy lib): SAN parser matrix
+    (DNS / email / URI / SPIFFE-URI / multi-SAN with
+    SPIFFE wins / DNS-wins-over-email / non-SPIFFE URI
+    keeps the Mtls variant), CN fallback when SAN
+    extension absent, fingerprint stability across calls,
+    fingerprint differs across distinct certs, `chain_ok`
+    propagates, malformed leaf falls back to Anonymous,
+    SPIFFE trust-domain parser (with-path / no-path /
+    nested-path), Anonymous when no peer certs / empty
+    list. aegis-proxy 473 → **489 tests with `--features
+    etcd`**; full workspace ~2,440 default-feature; production
+    build clean.
+
+  **Remaining MTLS-T track items:**
+  - **MTLS-T4** — policy integration (per-route
+    `auth_required: bool` gate; identity-rate-limit
+    fan-out; audit-event SAN field).
+  - **MTLS-T5** — hot-reload (cfg watcher swaps the
+    trust store + rebuilds the verifier).
+  - **MTLS-T7..T11** — Console mutation surfaces
+    (SAN allowlist / mode toggle / break-glass / CA
+    bundle upload / per-route editor).
+
+- **Earlier activity:** **MTLS-T2 (rustls inbound client-auth
+  wiring) closed 2026-05-01.** The data-plane TLS listener
+  now actually requests + verifies client certs when
+  `cfg.tls.client_auth` is configured with
+  `apply_to: [data]` (or `[admin, data]`). Three modes:
+  `disabled` (no-op, existing path), `optional` (verifier
+  built with `.allow_unauthenticated()` — handshake admits
+  both with-cert and without-cert), `required` (verifier
+  fails the handshake when no cert is presented or the
+  cert chains to an untrusted CA).
+  - **New module:** `aegis-proxy/src/listener/client_trust.rs`
+    (~180 lines) — `ClientTrustStore` newtype around
+    `Arc<ArcSwap<rustls::RootCertStore>>` with
+    `load_from_pem_file` / `load_from_pem_bytes` / `current`
+    / `swap` (the swap path lights up on MTLS-T5). Cheap
+    `Clone`; the verifier observes the latest swap target
+    via `current()` snapshot. Errors surface as
+    `WafError::Config` with the offending path.
+  - **New `tls_policy::build_hardened_server_config_with_client_auth`**
+    — branches on `ClientAuthMode`: Disabled delegates to
+    the existing no-client-auth shape, Optional builds a
+    `WebPkiClientVerifier::builder(roots).allow_unauthenticated()`,
+    Required builds the same without `.allow_unauthenticated()`.
+    ALPN list (`h2` + `http/1.1`) preserved across all three
+    branches so HP-T1's data-plane HTTP/2 path keeps working.
+  - **`run.rs` boot path:** when `cfg.tls.client_auth` is
+    set with `apply_to` including `Data` and a non-Disabled
+    mode, parses the configured `ca_bundle` PEM into a
+    `ClientTrustStore` and feeds the new builder. CA-bundle
+    parse failures fail the boot (operator opted in;
+    silently downgrading would be a security regression).
+    Logs `tracing::info!("mtls inbound client auth enabled")`
+    with mode + apply_to + bundle path so audits can
+    confirm the rollout. Existing no-client-auth path is
+    unchanged when `client_auth` is absent.
+  - **Tests** (+10 in aegis-proxy lib):
+    - `client_trust` (5): PEM parse round-trip on a real
+      rcgen-generated CA, empty input rejected, garbage
+      input rejected, error surfaces the offending path,
+      swap doesn't mutate the previously-snapshotted store.
+    - `tls_policy` (5): Disabled mode builds a config with
+      ALPN preserved; full handshakes against a real
+      `tokio_rustls::TlsAcceptor` cover Required-with-valid
+      (succeeds), Required-without (fails before HTTP),
+      Optional-without (succeeds — anonymous), Required-with-
+      untrusted-CA (fails on issuer mismatch). Each
+      handshake test installs the rustls ring crypto
+      provider via a shared `ensure_crypto_provider`
+      OnceLock helper.
+  - Workspace: aegis-proxy 463 → **473** with `--features
+    etcd`; total ~2,412 default-feature tests passing.
+    Production build (`aegis-bin --features production`)
+    clean.
+
+  **What's still TODO in the mTLS track:**
+  - **MTLS-T3** — identity extraction (parse leaf SAN +
+    fingerprint, populate `ClientIdentity`).
+  - **MTLS-T4** — policy integration (per-route
+    `auth_required`, identity-rate-limit fan-out).
+  - **MTLS-T5** — hot-reload (cfg watcher swaps the
+    trust store + rebuilds the verifier).
+  - **MTLS-T7..T11** — Console mutation surfaces.
+
+- **Earlier activity:** **SC-T3 (Settings hint banner) +
+  SC-T5 (doc consolidation) closed 2026-05-01.** Wraps the
+  scaling-config track to the operator-visible surface
+  except for the optional SC-T4 (tokio_unstable metrics).
+  - **SC-T3:** One-liner banner above the Settings list
+    when `useRuntimeApi()` returns a `runtime:` block —
+    "Runtime sizing (workers, blocking threads, CPU
+    affinity) is restart-only. **See the Scaling page →**"
+    (links to `#/scaling`). Conditional on the API
+    actually answering so the dashboard's loading state
+    doesn't show a misleading hint. i18n keys
+    `settings.runtimeHint` + `settings.runtimeHintLink`.
+    Verified live — screenshot at
+    `tests/results/run-13-2026-05-01-sct1-sct2/screenshots/settings-sct3-banner.png`.
+  - **SC-T5:** New
+    `docs/architecture/scaling-model.md` (3-section
+    overview cross-linking the layer-specific docs:
+    Layer 1 in-node workers → `runtime-tuning.md`,
+    Layer 2 cluster → `ha-clustering.md`, Layer 3
+    backend → in-tree state impls). Adds an "Operator
+    visibility — the Scaling page" section spelling out
+    poll cadence per card. Cross-links added to
+    `docs/operations/runtime-tuning.md` (Verifying step 3
+    rewritten to point at the Scaling page) and
+    `docs/operations/ha-clustering.md` (new "Operator
+    visibility" paragraph after the topology diagram).
+    `docs/control-plane/enterprise/api.md` gains a new
+    "Scaling page (SC-T2)" §endpoint listing for
+    `/api/runtime` + `/api/cluster` + `/api/state` +
+    `/admin/drain`.
+  - Bundle: **192,690 B (188 KB)** — within budget.
+  - All workspace tests pass.
+
+- **Earlier activity:** **SC-T2 (Console "Scaling" page)
+  closed 2026-05-01.** New `#/scaling` route under the
+  Tracking nav group renders three stacked cards
+  consuming SC-T1's `/api/state` plus the existing
+  `/api/runtime` (L1) + `/api/cluster` (L2) endpoints —
+  one focused page replacing the operator's reach-into-
+  redis-cli + grep-config-yaml workflow.
+  - **L1 card** (`ScalingL1Card`) shows workers (with
+    logical-CPU context), mode badge (auto/fixed),
+    blocking-pool size + stack, CPU affinity state
+    (active / requested-inactive / off). Footer note
+    documents that L1 is restart-only.
+  - **L2 card** (`ScalingL2Card`) shows the peers table
+    (node, healthy/down pill, last-heartbeat age,
+    leader/replica role) with our-node row highlighted.
+    **Drain this node** button is two-step gated
+    (idle → "Confirm — drain {X}?" → final POST). Posts
+    to the existing audit-mutated `/admin/drain`
+    endpoint with CSRF cookie+header. Result pill
+    (drained / failed HTTP {status}) rendered after.
+  - **L3 card** (`ScalingL3Card`) consumes the new
+    `useStateApi` hook (5 s poll matching Redis cache
+    TTL): Connection live/down pill, Circuit
+    closed/half_open/open pill (with last-open
+    timestamp), Keys count (DBSIZE), Replica lag
+    (warn pill ≥ 1 s), p50/p95/p99 latency chips
+    auto-formatted (µs / ms / s).
+  - Bundle: **192,132 B (188 KB)** — within the 256 KB
+    budget.
+  - **i18n:** 36 new `scaling.*` keys in `i18n.json`.
+  - **MeteredStateBackend `health()` forwarder** —
+    spotted live: the wrapper applied at boot was
+    masking the real backend identifier as `"unknown"`
+    because it didn't override `health()`. Added a
+    forward to `inner.health()` so the dashboard sees
+    the actual backend (`in_memory` / `redis` /
+    `reconciling`).
+  - **Live verification (run-13)**: `/api/state` returns
+    `{"backend":"in_memory","connected":true,"key_count":0,
+    "circuit":{"state":"closed"}, …}`; Scaling page
+    screenshot in `tests/results/run-13-2026-05-01-sct1-sct2/screenshots/scaling.png`
+    shows all three cards rendering with real data.
+
+- **Earlier activity:** **SC-T1 (Layer-3 backend health
+  endpoint) closed 2026-05-01.** New `/api/state` endpoint
+  returns the configured `StateBackend`'s reachability +
+  telemetry (latency p50/p95/p99 in microseconds, key count,
+  worst-case replica lag, server version, circuit-breaker
+  state) so the dashboard's Scaling page can render the L3
+  card without operators dropping into `redis-cli`.
+  - **Trait surface.** `aegis-core::state::StateBackend`
+    gains a default `health()` method returning
+    `BackendHealth::unknown()` — backwards-compatible. New
+    public types: `BackendHealth`, `LatencyP` (with
+    `from_samples()` nearest-rank percentile constructor),
+    `CircuitState { Closed, HalfOpen, Open { last_open_at_unix_ms } }`.
+  - **Backends.** `InMemoryBackend::health` reports
+    `connected: true`, live `key_count` from `DashMap::len`,
+    no latency/replica/version (in-memory doesn't measure).
+    `RedisBackend::health` runs `PING` + `INFO server` +
+    `INFO replication` + `DBSIZE` (5 s server-side cache;
+    matches dashboard cadence; busy primaries don't pay
+    every tick), with a 256-sample rolling latency ring
+    populated by the existing `with_timeout` wrapper —
+    every op contributes a sample, so the percentiles
+    reflect real traffic, not a synthetic ping. Circuit
+    state derives from "did PING succeed?" + a recent-error
+    timer (errors stamp `last_error_at`; a successful op
+    inside the cache-TTL window shows `HalfOpen`; failed
+    PING shows `Open` with the unix-ms timestamp).
+    `ReconcilingBackend::health` proxies its primary's
+    snapshot but rebrands `backend` to `"reconciling"` and
+    forces `HalfOpen` while a partition is active.
+  - **API + dispatch.** New module
+    `aegis-control/src/api/state.rs` defines `StateView`,
+    `LatencyView`, `CircuitView` (externally-tagged JSON
+    on `state`). Wired through `DashboardServices.state_backend:
+    Option<Arc<dyn StateBackend>>` (None for test bundles
+    falls back to `BackendHealth::unknown()`). Dispatched
+    in `aegis-proxy::admin_dispatch::handle_admin_request`
+    (async — the sync `admin_router` can't `.await`
+    `health()`); `aegis-proxy::run` wires the metered
+    backend into `services.state_backend` alongside the
+    existing identity-tracker hand-off.
+  - **OpenAPI.** `docs/control-plane/api.openapi.yaml`
+    gains `/api/state` path + `StateResponse` /
+    `StateLatency` / `StateCircuit` schemas.
+  - **Tests.** +10 in `aegis-core` (percentile semantics:
+    nearest-rank, single-sample collapse, uniform samples,
+    sorted/unsorted ranks, tail-percentile outlier capture,
+    empty-slice guard, `BackendHealth::unknown` defaults,
+    `CircuitState::Open { … }` tag carry, default trait
+    `health()` round-trip); +9 in `aegis-proxy` redis
+    backend (`LatencyRing` overwrite, `parse_info_field`
+    skips comments, `compute_replica_lag_ms` worst-case
+    pick, no-replicas → None, replica role → None,
+    unreachable server → Open circuit, cache TTL identity);
+    +2 in `aegis-proxy` in_memory backend (connected:true /
+    key_count tracks inserts); +7 unit + 2 integration
+    tests in `aegis-control` (StateView render preserves /
+    propagates / disconnected / serialises / open-with-ts /
+    half_open snake_case / unknown-safe; api_smoke
+    unwired-returns-unknown / wired-returns-backend-health
+    via stub `StateBackend`). All workspace tests green.
+
+- **Earlier activity:** **PRE-T7 + PRE-T8 (extract
+  `accept.rs` + `admin_dispatch.rs` + `run.rs`, verify)
+  closed 2026-05-01.** Final structural slice of the proxy
+  refactor. `lib.rs` shrunk from **2650 → 559 lines**
+  (−2091 this slice; **cumulative −5010, −90%** from the
+  5569 baseline). Three new submodules:
+  - `accept.rs` (808 lines) — `admin_accept_loop` +
+    `accept_loop` (the per-listener `tokio::TcpListener`
+    accept loops). Marked `pub(crate)`; single call sites
+    in `run.rs`.
+  - `admin_dispatch.rs` (452 lines) — `handle_admin_request`
+    (admin/dashboard router) + `handle_interop_control`
+    (`/__waf_control/*`) + `stamp_interop_response` (`X-WAF-*`
+    headers + minimal-audit append) + `handle_force_https_request`
+    (ACME-01 + 301 redirect) + the private cert-inventory
+    parser. The "what runs per request on the admin port"
+    surface, separated from "how the listener accepts
+    connections".
+  - `run.rs` (920 lines) — `pub fn run` boot orchestrator
+    + `ConfigReloadSource` enum + `force_https_loop` +
+    `build_interop_runtime`. Re-exported from `lib.rs`
+    so the public API surface is byte-identical for
+    `aegis-bin`.
+
+  **`lib.rs` is now a thin facade**: 6 lines of module
+  use, 17 module declarations, 1 `pub use`, and a 200-line
+  test module that covers the cross-cutting integration
+  tests (still owns the mock-upstream `spawn_mock_upstream`
+  helper because it's used by tests of `accept_loop` /
+  `force_https_loop` / `dashboard_*_response`).
+
+  **PRE-T8 verification.** All 461 `aegis-proxy --features
+  etcd` tests pass; `cargo build -p aegis-proxy --features
+  etcd` clean; `cargo clippy -p aegis-proxy --features
+  etcd --tests` produces zero new warnings (pre-existing
+  warnings in `proto/grpc.rs`, `upstream/lb.rs`,
+  `upstream/tls.rs`, `traffic.rs`, `supervisor.rs`,
+  `admin_sse.rs` are unrelated to the refactor and were
+  already there before PRE-T1). Workspace total still
+  ~2,434 default-feature tests passing.
+
+  Proxy refactor track **complete** — `lib.rs` is now a
+  facade, every long-running task lives in a coherent
+  submodule, and all 461 proxy tests pass. Next track:
+  **MTLS-T2** (rustls inbound wiring) per `plans/mtls.md`.
+  - **PRE-T5 (2026-05-01)** — Extracted `admin_get.rs`
+    (519 lines): `admin_router` + 3 query parsers. lib.rs
+    −475.
+  - **PRE-T3 (no-op) + PRE-T4 (2026-05-01)** — PRE-T3 no-op
+    (`admin_sse.rs` already extracted B4-T4 era). PRE-T4
+    extracted `admin_login.rs` (151 lines) + lifted
+    `extract_named_cookie` to `responses.rs`. lib.rs −138.
   - **PRE-T2 (2026-05-01)** — Extracted `data_plane.rs`
     (616 lines): `handle_data_request` + inner +
     `forward_allow_to_upstream` + `blocked_response`.
-    `lib.rs` −584.
+    lib.rs −584.
   - **PRE-T1 (2026-05-01)** — Extracted `responses.rs`
     (~213 lines, 6 helpers + 4 tests).
   - **MTLS-T6 (2026-05-01)** — Read-only mTLS observability
@@ -138,60 +567,79 @@
 
 ## Last Completed
 
-**Task:** **PRE-T3 (skip — already extracted) + PRE-T4
-(extract `admin_login.rs`)** — Two slices in one turn. Pure
-structural moves, **zero behaviour change**.
+**Task:** **PRE-T6 (extract `admin_mutate.rs`)** — Sixth slice
+of the proxy refactor + **README rewrite**. Pure structural
+extraction, **zero behaviour change**.
 
-### PRE-T3 — already done
+### What landed
 
-`admin_sse.rs` (the `/dashboard/sse` streaming module) was
-already extracted earlier (B4-T4 era; 385 lines). The
-`plans/proxy-refactor.md` plan listed it as a slice; it
-turned out to be a no-op. Plan annotated.
+**18 audit-mutated handlers + 5 supporting helpers** moved
+from `aegis-proxy/src/lib.rs` into a new `admin_mutate.rs`
+submodule (1714 lines).
 
-### PRE-T4 — login extraction
+| Handler | Path |
+|---|---|
+| `handle_mode_put` | `PUT /api/mode` |
+| `handle_upstreams_config_put` | `PUT /api/upstreams/config` |
+| `handle_pool_upsert` | `PUT /api/upstreams/pool/{id}` |
+| `handle_pool_delete` | `DELETE /api/upstreams/pool/{id}` |
+| `handle_alert_receivers_put` | `PUT /api/alert-receivers` |
+| `handle_alert_receiver_delete` | `DELETE /api/alert-receivers/{name}` |
+| `handle_alert_receiver_test` | `POST /api/alert-receivers/{name}/test` |
+| `handle_alert_ack` | `POST /api/alerts/{id}/ack` |
+| `handle_logging_put` | `PUT /api/logging` |
+| `handle_loadmode_put` | `PUT /api/loadmode` |
+| `handle_rules_post` | `POST /api/rules` |
+| `handle_rules_put` | `PUT /api/rules/{id}` |
+| `handle_rules_delete` | `DELETE /api/rules/{id}` |
+| `handle_rules_toggle` | `POST /api/rules/{id}/toggle` |
+| `handle_risk_thresholds_put` | `PUT /api/risk/thresholds` |
+| `handle_risk_reset` | `PUT /api/risk/{ip}/reset` |
+| `handle_detectors_put` | `PUT /api/detectors` |
+| `handle_admin_drain` | `POST /admin/drain` |
 
-Four functions moved out of `aegis-proxy/src/lib.rs` into a
-new `admin_login.rs` submodule (151 lines):
+Plus shared helpers: `mutation_preamble` (+ `MutationPreamble`
+struct), `redact_receivers_for_audit`, `upstreams_audit_view`,
+`default_true`, `mask_state_to_json`. All `pub(crate) async fn`
+for the 18 entry points (sed batch-rewrite); helpers private.
 
-- `handle_admin_login` — `pub(crate) async fn`. The hyper
-  wrapper invoked from `admin_router` for
-  `POST /admin/login`.
-- `process_admin_login` — `pub(crate) fn`. Pure body driven
-  by 3 unit tests in `lib.rs::tests::login_handler_*`
-  without faking an `Incoming` body.
-- `handle_admin_logout` — `pub(crate) fn`. Same pattern for
-  logout.
-- `process_admin_logout` — `pub(crate) fn`. Pure body
-  driven by 2 unit tests.
-
-### Bonus — `extract_named_cookie` extraction
-
-12-line shared cookie-parsing helper moved from `lib.rs` to
-`responses.rs` so it lives next to the other shared response
-helpers. **7 call sites** (login, logout, CSRF-gated
-mutations, SSE auth) all rebound via the existing
-`use responses::{..., extract_named_cookie};` line.
-
-### File sizes (cumulative across PRE-T1..T4)
+### File sizes (cumulative across PRE-T1..T6)
 
 | File | Lines |
 |---|---|
-| `aegis-proxy/src/lib.rs` | **5569 → 4762** (−807, −14.5%) |
-| `responses.rs` | 213 → **231** (+18 for `extract_named_cookie`) |
-| `data_plane.rs` | 616 (unchanged from PRE-T2) |
-| `admin_login.rs` (new) | **151** |
-| `admin_sse.rs` (pre-existing) | 385 |
+| `aegis-proxy/src/lib.rs` | **5569 → 2650** lines (cumulative **−2919, −52%**) |
+| `responses.rs` | 231 |
+| `data_plane.rs` | 616 |
+| `admin_login.rs` | 151 |
+| `admin_sse.rs` | 385 (pre-existing) |
+| `admin_get.rs` | 519 |
+| `admin_mutate.rs` (new) | **1714** |
 
-**All 5 modules under the 800-line guideline.** `lib.rs`
-still over (heading the right direction; PRE-T5..T7 will
-finish the job).
+`admin_mutate.rs` is over the 800-line guideline. Functionally
+cohesive (every fn is a mutation handler with the same
+audit-chain shape) so further per-resource splitting is a
+judgment call documented in the module's own doc-comment as a
+follow-up. 6 of 7 submodules under 800 lines.
 
-### Tests
+### Bonus — README rewrite
 
-lib.rs's `tests` module gains
-`use crate::admin_login::{process_admin_login, process_admin_logout};`
-so the 5 login/logout unit tests still compile and run.
+Operator-requested. Full rewrite of `README.md` to reflect
+everything we've built since the previous version (which was
+written before the mTLS / hot-reload / etcd / OTel / Grafana
+/ refactor work). New sections:
+
+- **Status** with run-12 verification results (perf + security
+  + admin console).
+- **Hot-reload story** — table of the 5 hot-reload surfaces +
+  audit events + boot-only-by-design exclusions.
+- **Config sources** — file vs etcd boot-time selection.
+- **Observability** — endpoints + Grafana + OTel/Jaeger.
+- **Repository Layout** — updated to show the new
+  `aegis-proxy/src/{responses,data_plane,admin_login,admin_get,admin_mutate,admin_sse}.rs`
+  + `config_source/` + the new plan files
+  (`mtls.md`, `proxy-refactor.md`).
+- **Crate Responsibilities** — refreshed to mention the new
+  submodules + ArcSwap-backed hot-reloadable surfaces.
 
 ### Verification
 
@@ -199,28 +647,37 @@ so the 5 login/logout unit tests still compile and run.
 - `cargo clippy -p aegis-proxy --features etcd --lib --
   -D warnings` → clean.
 - `cargo test -p aegis-proxy --lib` → **424 / 0 / 0**
-  default / **461** with `--features etcd`. 3/3 stable
-  parallel runs.
+  default / **461** with `--features etcd`. **3/3 stable
+  parallel runs.**
 - All other crates unchanged: aegis-control 855,
   aegis-core 163, aegis-bin 41, aegis-security 888.
 
 ### What's next
 
-Per `plans/proxy-refactor.md`:
-
-- **PRE-T5** — extract `admin_get_handlers.rs` (~1.5 h,
-  ~1200 lines). The big chunk: every `GET /api/*` arm.
-- **PRE-T6** — extract `admin_mutation_handlers.rs` (~1.5 h,
-  ~1500 lines). The bigger chunk: every audit-mutated
-  PUT/POST/DELETE.
-- **PRE-T7** — extract `run.rs` (~1 h, ~700 lines), leave
-  `lib.rs` as a thin facade.
-- **PRE-T8** — verify (no file > 800 lines, all tests
-  pass).
-
-After PRE-T8: resume MTLS-T track + queue the
-"PageAttackEvents + PageAnalytics → Prometheus" follow-up
-identified in run-12.
+- **MTLS-T2 + T3 + T4 + T5** (rustls wiring → identity
+  extraction → route policy gate → CA hot-reload) all
+  closed today. The mTLS data-plane story is end-to-end
+  for read-side; only Console mutations remain.
+- **MTLS-T7** — Console SAN-allowlist mutation (~2 h).
+  PUT/DELETE to `cfg.tls.client_auth.allowed_sans`.
+- **MTLS-T8** — Console mode-toggle mutation (~2 h).
+  PUT to `cfg.tls.client_auth.mode` with break-glass
+  guard (T9).
+- **MTLS-T10** — CA bundle upload (~3 h). Multipart upload
+  to a configured directory, then audit-mutated PUT to
+  point `cfg.tls.client_auth.ca_bundle` at the new file.
+- **MTLS-T11** — per-route `auth_required` editor in the
+  Routes UI (~30 min). Adds the `actor` field on
+  `AuditEvent` as part of the schema bump.
+- **MTLS-T4 deferred items** (split slices):
+  - `/admin/login` mTLS-bypass (cert SAN → no password)
+  - Identity-rate-limit fan-out (defer until concrete
+    policy)
+- **SC-T4** (optional polish) — `tokio_unstable` runtime
+  metrics → Prometheus.
+- **PageAttackEvents + PageAnalytics → Prometheus**
+  follow-up identified in run-12 (~3-4 h).
+- Per-resource split of `admin_mutate.rs` (1714 lines).
 
 ---
 
@@ -240,6 +697,16 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-05-01 | **MTLS-T5 (CA-bundle hot-reload)** Operators rotate trust anchors by editing waf.yaml | New `apply_cfg_change_to_client_auth(new_cfg, trust_store)` helper in `config_source/reload.rs` returns `NoStore` / `Applied { cert_count, mode }` / `SkippedDisabled` / `MissingCaBundle` / `Failed { reason }`. **Skip-not-clear**: live trust stays when new cfg disables client_auth (clearing would crash Required-mode handshakes). `supervisor::watch_loop` gains a `client_trust:` parameter, calls the helper after the existing `tls_reloaded` step, emits `mtls_reloaded` (with cert_count + mode in fields) on Applied or `mtls_reload_failed` (with reason) on MissingCaBundle / Failed — both `AuditClass::Admin`. `run.rs` TLS bootstrap now returns the parsed `ClientTrustStore` alongside acceptor + resolver (3-tuple) and threads it into `spawn_config_watcher`. **Tests** (+4 in `config_source::reload`): no-store short-circuit when caller passes None; skipped-disabled when `mode: disabled` (live unchanged); applied-swaps-to-new-CA on valid reload; failed-keeps-live-store when path doesn't exist. Each test uses an rcgen-generated CA written to tempdir then re-read by the helper. 8 spawn_config_watcher test call sites updated for the new param. aegis-proxy 492 → **496 etcd**; production build clean. MTLS-T7 (Console SAN allowlist) next. |
+| 2026-05-01 | **MTLS-T4 (route-scoped policy gate)** Routes can declare `auth_required` to reject anonymous clients with 403 | New `RouteConfig.auth_required: Vec<String>` (empty default = open). `RouteCtx.auth_required` threads through `CompiledRoute` from YAML to the resolver. `forward_allow_to_upstream` now takes `&ClientIdentity` and gates the request before circuit-breaker + upstream pick: mismatch → 403 with `mtls_required` rule_id (contract action `block`); a `tracing::debug` line records route_id + required + actual_kind + principal. `handle_data_request` + `_inner` both gain the `&ClientIdentity` parameter; accept_loop passes its per-connection `conn_identity`. Three pre-existing test-construction sites (`aegis-security/{noop,pipeline,rules/eval}` + `aegis-core::context` test) updated with `auth_required: Vec::new()`. **Tests** (+3): two route-table unit tests (default open; YAML round-trip with mtls+spiffe) + one end-to-end `anonymous_request_to_mtls_required_route_returns_403` driving `accept_loop` against a mock upstream confirms the 403 lands BEFORE the upstream is touched. **Deferred** (split slices): /admin/login mTLS bypass; AuditEvent `actor` field (bundle with MTLS-T11 schema bump); identity-rate-limit fan-out (no concrete policy yet). aegis-proxy 489 → **492 etcd**; production build clean. MTLS-T5 (hot-reload) next. |
+| 2026-05-01 | **MTLS-T3 (identity extraction)** Every TLS connection now populates `ClientIdentity` + feeds the per-identity tracker | New `aegis-proxy/src/listener/identity.rs` (~430 lines incl. tests) — `extract_identity_from_peer_certs` parses the leaf via x509-parser, fingerprints the DER with SHA-256, and walks SANs in priority order: SPIFFE URI → `Spiffe`; otherwise non-SPIFFE URI / DNS / email SAN → `Mtls`; CN fallback when SAN extension absent; bogus DER → Anonymous (verifier accepted; log + continue). **`accept.rs` rewrite**: TLS handshake runs *before* the `service_fn` so the captured identity is stable for every request on the connection (new `ServedIo { Tls | Plain }` enum). Per-request: when both `IdentityTracker` is wired and identity is non-Anonymous, calls `tracker.record_request(principal, kind, decision_label)` after the audit emit — so `/api/mtls/connections` (T6) lights up with real data. **`run.rs` lift**: `IdentityTracker` created once in `run.rs` and passed to BOTH `accept_loop` (data plane) and `admin_accept_loop` (admin); CA-bundle summary load stays in admin_accept_loop. **Cargo**: `sha2.workspace = true` added to aegis-proxy. **Tests** (+16 in aegis-proxy lib): SAN parser matrix (DNS / email / URI / SPIFFE / multi-SAN with SPIFFE-wins / DNS-wins-over-email / non-SPIFFE URI keeps Mtls), CN fallback, fingerprint stability + uniqueness, `chain_ok` round-trip, malformed leaf → Anonymous, SPIFFE trust-domain parser cases, Anonymous when no peer certs / empty list. aegis-proxy 473 → **489 etcd**; production build clean. MTLS-T4 (policy integration) next. |
+| 2026-05-01 | **MTLS-T2 (rustls inbound client-auth wiring)** Listener actually requests + verifies client certs | Three modes via `cfg.tls.client_auth.mode`: `disabled` (no-op), `optional` (`WebPkiClientVerifier::builder(roots).allow_unauthenticated()` — anonymous + verified both pass), `required` (handshake fails on missing or untrusted-CA cert before HTTP). New `aegis-proxy/src/listener/client_trust.rs` (~180 lines): `ClientTrustStore` newtype around `Arc<ArcSwap<RootCertStore>>` with PEM file/bytes loaders + `current()` / `swap()` (swap path lights up on MTLS-T5). New `tls_policy::build_hardened_server_config_with_client_auth` branches on the three modes; ALPN list (`h2` + `http/1.1`) preserved across all branches so HP-T1's HTTP/2 path keeps working. `run.rs` boot path parses `ca_bundle` PEM into a `ClientTrustStore` and feeds the new builder when `apply_to` includes `Data` and mode != Disabled; CA-bundle parse failures fail the boot (operator opted in; silent downgrade would be a security regression). `tracing::info!` logs mode + apply_to + bundle path so audits can confirm the rollout. **Tests** (+10 aegis-proxy lib): client_trust 5 (PEM round-trip on rcgen CA, empty/garbage rejected, error surfaces path, swap doesn't mutate snapshot); tls_policy 5 (Disabled config build; full handshake against `tokio_rustls::TlsAcceptor` for Required-with-valid → succeeds, Required-without → fails, Optional-without → succeeds, Required-with-untrusted-CA → fails). Shared `ensure_crypto_provider` OnceLock helper installs the rustls ring provider in test scope. aegis-proxy 463 → **473 etcd** tests; production build clean. MTLS-T3 (identity extraction) next. |
+| 2026-05-01 | **SC-T3 (Settings hint banner) + SC-T5 (doc consolidation)** Closes the scaling-config track to the operator surface | **SC-T3:** One-liner banner above Settings (`PageSettings`) when `useRuntimeApi()` returns a runtime block — "Runtime sizing (workers, blocking threads, CPU affinity) is restart-only. **See the Scaling page →**" with a `#/scaling` deep-link. Conditional on the API actually answering so the loading state doesn't show a misleading hint. i18n keys `settings.runtimeHint` + `settings.runtimeHintLink`. Screenshot at `tests/results/run-13-2026-05-01-sct1-sct2/screenshots/settings-sct3-banner.png`. **SC-T5:** New `docs/architecture/scaling-model.md` (3-section overview: L1 in-node workers, L2 cross-node cluster, L3 shared state) cross-linking the layer-specific docs (`runtime-tuning.md`, `ha-clustering.md`, in-tree state impls), with an "Operator visibility — the Scaling page" §spelling out card behaviours + poll cadences and a "What's *not* in the model" §listing deliberate exclusions (hot-resize tokio, per-route worker pinning, auto-scaler, cluster mutation API, Redis Cluster slot-hashing). Cross-links added to `docs/operations/runtime-tuning.md` (Verifying step 3 rewritten) + `docs/operations/ha-clustering.md` (new "Operator visibility" paragraph). `docs/control-plane/enterprise/api.md` gains a "Scaling page (SC-T2)" endpoint listing for `/api/runtime` + `/api/cluster` + `/api/state` + `/admin/drain`. Bundle: 192,690 B (188 KB), within budget. All workspace tests green. |
+| 2026-05-01 | **SC-T2 (Console "Scaling" page)** Three-layer scaling visibility surfaced to operators | New `#/scaling` route under the Tracking nav group renders three stacked cards consuming SC-T1's `/api/state` plus the existing `/api/runtime` (L1) + `/api/cluster` (L2). **L1 card**: workers (with logical-CPU context), mode auto/fixed, blocking pool + stack, CPU affinity state, restart-only footer note. **L2 card**: peers table with our-node highlight, two-step gated **Drain this node** button posting to existing audit-mutated `/admin/drain`, result pill on response. **L3 card**: Connection / Circuit / Keys / Replica-lag stats + p50/p95/p99 latency chips (auto µs/ms/s formatted), 5 s poll cadence matching Redis cache TTL. **i18n**: 36 new `scaling.*` keys. **MeteredStateBackend health() forwarder** spotted live during browser verification: wrapper was masking the real backend identifier as `"unknown"` because it didn't override `health()`; added a 1-line forward to `inner.health()` so the dashboard sees the actual backend (`in_memory` / `redis` / `reconciling`). **Live verification (run-13)**: `/api/state` returns `{"backend":"in_memory","connected":true,…}` HTTP 200 against `config/dev.yaml`; Scaling page screenshot in `tests/results/run-13-2026-05-01-sct1-sct2/screenshots/scaling.png` shows all three cards with real data. Bundle 188 KB (within 256 KB budget). All workspace tests green. |
+| 2026-05-01 | **SC-T1 (`/api/state` Layer-3 backend health)** First slice of the scaling-config track | New `/api/state` GET endpoint surfaces the configured `StateBackend`'s reachability, latency p50/p95/p99 (microseconds), key count, worst-case replica lag, server version, and circuit-breaker state. **Trait surface:** `aegis-core::state::StateBackend` gains a default `health()` returning `BackendHealth::unknown()` — backwards-compatible. New public types: `BackendHealth`, `LatencyP::from_samples` (nearest-rank percentile constructor), `CircuitState { Closed, HalfOpen, Open { last_open_at_unix_ms } }`. **Backends:** `InMemoryBackend::health` reports connected:true + live `DashMap::len`. `RedisBackend::health` runs `PING` + `INFO server` + `INFO replication` + `DBSIZE` (5s server-side cache; 256-sample rolling latency ring fed by every `with_timeout` op so percentiles reflect real traffic, not synthetic pings; circuit derives from PING success + a recent-error timer). `ReconcilingBackend::health` proxies primary, rebrands `backend` to "reconciling", forces HalfOpen during partitions. **Wiring:** `aegis-control/src/api/state.rs` defines the JSON `StateView` (externally-tagged circuit on `state`); `DashboardServices.state_backend: Option<Arc<dyn StateBackend>>` (None falls back to unknown for test bundles); dispatched async in `aegis-proxy::admin_dispatch::handle_admin_request` (sync `admin_router` can't `.await`); `aegis-proxy::run` hands the metered backend through `admin_accept_loop`. **OpenAPI:** new `/api/state` path + `StateResponse` / `StateLatency` / `StateCircuit` schemas in `docs/control-plane/api.openapi.yaml`. **Tests:** +10 aegis-core (percentile semantics, default trait health), +9 aegis-proxy redis backend (LatencyRing, parse_info_field, compute_replica_lag_ms, unreachable→Open, cache TTL), +2 aegis-proxy in_memory, +7 aegis-control unit + 2 integration (api_smoke). All workspace tests green. SC-T2 (Console "Scaling" page consuming this) next. |
+| 2026-05-01 | **PRE-T7 + PRE-T8 (extract `accept.rs` + `admin_dispatch.rs` + `run.rs`, verify)** Final proxy-refactor slice | Pure structural extraction, zero behaviour change. Three new submodules: **`accept.rs`** (808 lines — `admin_accept_loop` + `accept_loop` per-listener accept loops), **`admin_dispatch.rs`** (452 lines — `handle_admin_request` + `handle_interop_control` + `stamp_interop_response` + `handle_force_https_request` + private `read_cert_inventory`), **`run.rs`** (920 lines — `pub fn run` boot orchestrator + `ConfigReloadSource` enum + `force_https_loop` + `build_interop_runtime`). `lib.rs` re-exports `pub use run::{run, ConfigReloadSource};` so the public API surface is byte-identical for `aegis-bin`. **`lib.rs` 2650 → 559** (−2091 this slice; **cumulative −5010 / −90%** from 5569 baseline). lib.rs is now a thin facade — module declarations + `pub use` + the cross-cutting integration test module. **PRE-T8 verify**: 461 `aegis-proxy --features etcd` tests pass; full workspace ~2,434 default-feature tests pass; clippy on the refactored files clean (warnings in unrelated files are pre-existing). Proxy refactor track **complete**. Next: MTLS-T2 (rustls inbound wiring) per `plans/mtls.md`. |
+| 2026-05-01 | **PRE-T6 (extract `admin_mutate.rs`) + README rewrite** Biggest chunk yet | 18 audit-mutated PUT/POST/DELETE handlers + 5 shared helpers moved into new `admin_mutate.rs` (1714 lines — over 800 guideline; flagged for follow-up per-resource split). lib.rs imports gain `use admin_mutate::{...18 handlers...}`. **`lib.rs` 4287 → 2650** (−1637 this slice; **cumulative −2919 / −52%** from 5569 baseline). 6 of 7 submodules under 800. **README.md fully rewritten** — status with run-12 results, hot-reload story (5 surfaces + audit events), config sources (file vs etcd), observability (Prometheus + OTel + Grafana + Jaeger), refreshed repo layout + crate responsibilities. 424 default / 461 etcd unchanged. 3/3 stable. PRE-T7 (run.rs, ~700 lines) next. |
+| 2026-05-01 | **PRE-T5 (extract `admin_get.rs`)** The big chunk — every GET dispatch arm | Pure structural extraction, zero behaviour change. `admin_router` (~430 lines, every `/healthz/*` + `/metrics` + every `/api/*` GET arm — health, stats, audit, rules, upstreams, risk, mode, loadmode, runtime, detectors, blacklist, whitelist, alerts, slo, certs, cluster, gitops, **mtls (MTLS-T6)**, filters, integrations, admin sessions, cold-tier, logging, analytics, threat-intel, bots, audit/witness, tracking, upstreams/config) + 3 query parsers moved into new `admin_get.rs` (519 lines). Single call site in `admin_listener::service_fn` rebound. 5 dashboard-response unit tests import from `crate::responses::` (same fixup pattern as PRE-T4). **`lib.rs` 4762 → 4287** (−475 this slice; **cumulative −1282 / −23%**). All 6 submodules under 800-line guideline. 424 / 461 unchanged. 3/3 stable. PRE-T6 (mutation handlers, ~1500 lines) next. |
 | 2026-05-01 | **PRE-T3 (no-op) + PRE-T4 (extract `admin_login.rs`)** Two slices in one turn | PRE-T3 no-op (`admin_sse.rs` was already extracted in B4-T4 era, 385 lines). PRE-T4: 4 login/logout fns + `extract_named_cookie` shared helper moved out of `lib.rs`. New `admin_login.rs` (151 lines) + `extract_named_cookie` lifted into `responses.rs` (213 → 231). **`lib.rs` 4900 → 4762** (−138 this slice; cumulative **−807** from 5569 baseline across PRE-T1+T2+T4). All 5 submodules under 800-line guideline. lib.rs `tests` import-fixup; 424 default / 461 etcd unchanged. 3/3 stable parallel runs. PRE-T5 (admin_get_handlers, ~1200 lines) next. |
 | 2026-05-01 | **PRE-T2 (extract `data_plane.rs`)** Second slice of proxy refactor | Pure structural extraction, zero behaviour change. Four functions moved out of `aegis-proxy/src/lib.rs` (5484 → **4900 lines**) into new `data_plane.rs` (616 lines): `handle_data_request` + `handle_data_request_inner` + `forward_allow_to_upstream` + `blocked_response`. `pub(crate)` entry points + by-name `use` keep call site byte-identical. No test additions (data-plane tests live in `lib.rs::tests::run_binds_and_serves_200`, stay attached to `aegis_proxy::run` until PRE-T7). 424 default / 461 etcd unchanged. 3/3 stable parallel runs. PRE-T3 (admin/sse.rs, ~300 lines) next. |
 | 2026-05-01 | **PRE-T1 (extract `responses.rs`)** First slice of proxy refactor | Pure structural extraction, zero behaviour change. 6 response-builder helpers moved out of `aegis-proxy/src/lib.rs` (5569 → **5484 lines**) into new `responses.rs` (213 lines) — all `pub(crate)`, by-name `use` keeps the 166 call sites byte-identical. +4 unit tests (json round-trip, cache-control threading, fallback contract, security-headers application). aegis-proxy 420 → 424 default / 457 → 461 etcd. 3/3 stable parallel runs. PRE-T2 (extract `data_plane.rs`, ~700 lines) next. |

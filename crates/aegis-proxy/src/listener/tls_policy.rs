@@ -8,13 +8,15 @@
 
 use std::sync::Arc;
 
-use aegis_core::config::HstsConfig;
+use aegis_core::config::{ClientAuthMode, HstsConfig};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Response, StatusCode};
+use rustls::server::WebPkiClientVerifier;
 use rustls::version::{TLS12, TLS13};
 use rustls::SupportedProtocolVersion;
 
+use crate::listener::client_trust::ClientTrustStore;
 use crate::listener::tls::DynamicResolver;
 
 // Static slices so `protocol_versions_for` can return `&'static`
@@ -61,6 +63,73 @@ pub fn build_hardened_server_config(
     let mut config = rustls::ServerConfig::builder_with_protocol_versions(versions)
         .with_no_client_auth()
         .with_cert_resolver(resolver);
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(config)
+}
+
+/// MTLS-T2 — same as [`build_hardened_server_config`] but with
+/// inbound client-cert verification wired on.
+///
+/// `mode` selects the strictness:
+/// - [`ClientAuthMode::Disabled`] — caller should use the
+///   no-client-auth variant instead. Returns the same shape
+///   anyway (with `with_no_client_auth`) so callers don't have
+///   to branch when iterating.
+/// - [`ClientAuthMode::Optional`] — verifier built with
+///   `.allow_unauthenticated()`. Handshake admits both
+///   with-cert and without-cert clients; downstream identity
+///   extraction (MTLS-T3) marks the latter as `Anonymous`.
+/// - [`ClientAuthMode::Required`] — verifier built without
+///   `.allow_unauthenticated()`. Handshake fails when the
+///   client presents no cert, before any HTTP bytes are
+///   exchanged.
+///
+/// `trust_store` is held by `Arc` clone so the verifier observes
+/// the latest swap target. MTLS-T5 will use this for hot-reload.
+pub fn build_hardened_server_config_with_client_auth(
+    resolver: Arc<DynamicResolver>,
+    min_version: Option<&str>,
+    trust_store: &ClientTrustStore,
+    mode: ClientAuthMode,
+) -> Result<rustls::ServerConfig, rustls::Error> {
+    static PROVIDER_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    PROVIDER_INIT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+
+    let versions = protocol_versions_for(min_version);
+    let builder = rustls::ServerConfig::builder_with_protocol_versions(versions);
+
+    let mut config = match mode {
+        ClientAuthMode::Disabled => builder
+            .with_no_client_auth()
+            .with_cert_resolver(resolver),
+        ClientAuthMode::Optional => {
+            let verifier = WebPkiClientVerifier::builder(trust_store.current())
+                .allow_unauthenticated()
+                .build()
+                .map_err(|e| {
+                    rustls::Error::General(format!(
+                        "WebPkiClientVerifier (optional) build failed: {e}",
+                    ))
+                })?;
+            builder
+                .with_client_cert_verifier(verifier)
+                .with_cert_resolver(resolver)
+        }
+        ClientAuthMode::Required => {
+            let verifier = WebPkiClientVerifier::builder(trust_store.current())
+                .build()
+                .map_err(|e| {
+                    rustls::Error::General(format!(
+                        "WebPkiClientVerifier (required) build failed: {e}",
+                    ))
+                })?;
+            builder
+                .with_client_cert_verifier(verifier)
+                .with_cert_resolver(resolver)
+        }
+    };
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(config)
 }
@@ -272,4 +341,311 @@ mod tests {
             "no-store"
         );
     }
+
+    // ---------------- MTLS-T2 ----------------
+
+    /// Tests that build a `rustls::ClientConfig` directly need
+    /// the same one-shot crypto-provider install the production
+    /// path runs in `build_hardened_server_config`. Idempotent.
+    fn ensure_crypto_provider() {
+        static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        INIT.get_or_init(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
+    /// Issue a self-signed CA + server-leaf signed by it +
+    /// client-leaf signed by it. Returns PEM bundles + the cert
+    /// material the test plumbing needs (DER for rustls,
+    /// `PrivateKeyDer` for the server config). Used by the
+    /// handshake tests below.
+    #[allow(clippy::type_complexity)]
+    fn issue_test_pki(
+        server_dns: &str,
+        client_subject: &str,
+    ) -> (
+        Vec<u8>, // ca_pem
+        Vec<rustls_pki_types::CertificateDer<'static>>, // server cert chain (server leaf only)
+        rustls_pki_types::PrivateKeyDer<'static>,       // server key
+        Vec<rustls_pki_types::CertificateDer<'static>>, // client cert chain
+        rustls_pki_types::PrivateKeyDer<'static>,       // client key
+    ) {
+        use rustls_pki_types::CertificateDer;
+
+        let mut ca_params =
+            rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca =
+            rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        let srv_params =
+            rcgen::CertificateParams::new(vec![server_dns.into()]).unwrap();
+        let srv_key = rcgen::KeyPair::generate().unwrap();
+        let srv_cert = srv_params.signed_by(&srv_key, &ca_cert, &ca_key).unwrap();
+
+        let cli_params =
+            rcgen::CertificateParams::new(vec![client_subject.into()]).unwrap();
+        let cli_key = rcgen::KeyPair::generate().unwrap();
+        let cli_cert = cli_params.signed_by(&cli_key, &ca_cert, &ca_key).unwrap();
+
+        let ca_pem = ca_cert.pem().into_bytes();
+        let server_chain: Vec<CertificateDer<'static>> = vec![srv_cert.der().clone()];
+        let server_key = rustls_pki_types::PrivateKeyDer::Pkcs8(
+            rustls_pki_types::PrivatePkcs8KeyDer::from(srv_key.serialize_der()),
+        );
+        let client_chain: Vec<CertificateDer<'static>> = vec![cli_cert.der().clone()];
+        let client_key = rustls_pki_types::PrivateKeyDer::Pkcs8(
+            rustls_pki_types::PrivatePkcs8KeyDer::from(cli_key.serialize_der()),
+        );
+
+        (ca_pem, server_chain, server_key, client_chain, client_key)
+    }
+
+    /// Spin up a tokio TCP listener with the supplied
+    /// `ServerConfig` and run one handshake attempt against it.
+    /// Returns `Ok(())` if the server side completed a TLS
+    /// accept, `Err(...)` with the rustls/io error otherwise.
+    /// Used by the handshake tests below to exercise both
+    /// success and failure paths.
+    async fn drive_handshake(
+        server_cfg: rustls::ServerConfig,
+        client_cfg: rustls::ClientConfig,
+        sni: &str,
+    ) -> std::io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
+        let server = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await?;
+            let mut tls = acceptor.accept(sock).await?;
+            // Drain a probe byte so `Optional` mode actually
+            // exchanges encrypted bytes after the handshake.
+            let mut buf = [0u8; 4];
+            let _ = tls.read(&mut buf).await;
+            let _ = tls.write_all(b"ok\n").await;
+            Ok::<_, std::io::Error>(())
+        });
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_cfg));
+        let server_name = rustls_pki_types::ServerName::try_from(sni.to_string())
+            .map_err(|e| std::io::Error::other(format!("bad sni: {e}")))?;
+        let stream = tokio::net::TcpStream::connect(addr).await?;
+        let mut tls = connector.connect(server_name, stream).await?;
+        let _ = tls.write_all(b"ping").await;
+        let mut buf = [0u8; 4];
+        let _ = tls.read(&mut buf).await;
+
+        // Bubble up any error from the server task.
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            server,
+        )
+        .await
+        {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(e)) => Err(std::io::Error::other(format!("join: {e}"))),
+            Err(_) => Err(std::io::Error::other("server task timed out")),
+        }
+    }
+
+    #[test]
+    fn build_with_client_auth_disabled_returns_noauth_config() {
+        // Caller asks for Disabled — we build a config that has
+        // no client-cert verifier but still threads the cert
+        // resolver. Equivalent to the no-client-auth path.
+        let pem = {
+            let mut params =
+                rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+            params.is_ca =
+                rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            let key = rcgen::KeyPair::generate().unwrap();
+            params.self_signed(&key).unwrap().pem().into_bytes()
+        };
+        let trust = ClientTrustStore::load_from_pem_bytes(&pem).unwrap();
+        // Empty CertStore — the disabled-mode test only proves
+        // the builder accepts the config shape; we never run a
+        // handshake here.
+        let empty_store: &[(&str, &str, &[String])] = &[];
+        let store = crate::listener::tls::CertStore::load(empty_store).unwrap();
+        let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(
+            Arc::new(arc_swap::ArcSwap::from_pointee(store)),
+        ));
+        let cfg = build_hardened_server_config_with_client_auth(
+            resolver,
+            None,
+            &trust,
+            ClientAuthMode::Disabled,
+        )
+        .expect("disabled builds");
+        // ALPN list is preserved for the data-plane h2/http1.1
+        // negotiation.
+        assert!(cfg.alpn_protocols.iter().any(|p| p == b"h2"));
+        assert!(cfg.alpn_protocols.iter().any(|p| p == b"http/1.1"));
+    }
+
+    #[tokio::test]
+    async fn handshake_passes_with_valid_client_cert_when_required() {
+        ensure_crypto_provider();
+        // Issue a CA + server leaf + client leaf, all rooted in
+        // the same CA. Server enforces Required; client presents
+        // its leaf. Handshake completes.
+        let (ca_pem, srv_chain, srv_key, cli_chain, cli_key) =
+            issue_test_pki("localhost", "test-client");
+        let trust = ClientTrustStore::load_from_pem_bytes(&ca_pem).unwrap();
+
+        let server_cfg = rustls::ServerConfig::builder()
+            .with_client_cert_verifier(
+                WebPkiClientVerifier::builder(trust.current())
+                    .build()
+                    .unwrap(),
+            )
+            .with_single_cert(srv_chain, srv_key)
+            .unwrap();
+
+        let mut roots = rustls::RootCertStore::empty();
+        let mut reader = std::io::BufReader::new(ca_pem.as_slice());
+        for c in rustls_pemfile::certs(&mut reader) {
+            roots.add(c.unwrap()).unwrap();
+        }
+        let client_cfg = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(cli_chain, cli_key)
+            .unwrap();
+
+        drive_handshake(server_cfg, client_cfg, "localhost")
+            .await
+            .expect("handshake should complete with valid client cert");
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_missing_client_cert_when_required() {
+        ensure_crypto_provider();
+        // Required mode + client presents no cert → rustls fails
+        // the handshake before any HTTP byte is exchanged.
+        let (ca_pem, srv_chain, srv_key, _cli_chain, _cli_key) =
+            issue_test_pki("localhost", "test-client");
+        let trust = ClientTrustStore::load_from_pem_bytes(&ca_pem).unwrap();
+
+        let server_cfg = rustls::ServerConfig::builder()
+            .with_client_cert_verifier(
+                WebPkiClientVerifier::builder(trust.current())
+                    .build()
+                    .unwrap(),
+            )
+            .with_single_cert(srv_chain, srv_key)
+            .unwrap();
+
+        let mut roots = rustls::RootCertStore::empty();
+        let mut reader = std::io::BufReader::new(ca_pem.as_slice());
+        for c in rustls_pemfile::certs(&mut reader) {
+            roots.add(c.unwrap()).unwrap();
+        }
+        // Note: no `with_client_auth_cert` — bare client config.
+        let client_cfg = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+
+        let err = drive_handshake(server_cfg, client_cfg, "localhost")
+            .await
+            .expect_err("handshake must fail when client presents no cert");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.to_lowercase().contains("certificate")
+                || msg.to_lowercase().contains("handshake")
+                || msg.to_lowercase().contains("reset")
+                || msg.to_lowercase().contains("connection")
+                || msg.to_lowercase().contains("eof"),
+            "expected cert/handshake error, got {msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_passes_without_client_cert_when_optional() {
+        ensure_crypto_provider();
+        // Optional mode + client presents no cert → handshake
+        // still completes; downstream identity extraction (T3)
+        // marks the connection Anonymous.
+        let (ca_pem, srv_chain, srv_key, _cli_chain, _cli_key) =
+            issue_test_pki("localhost", "test-client");
+        let trust = ClientTrustStore::load_from_pem_bytes(&ca_pem).unwrap();
+
+        let server_cfg = rustls::ServerConfig::builder()
+            .with_client_cert_verifier(
+                WebPkiClientVerifier::builder(trust.current())
+                    .allow_unauthenticated()
+                    .build()
+                    .unwrap(),
+            )
+            .with_single_cert(srv_chain, srv_key)
+            .unwrap();
+
+        let mut roots = rustls::RootCertStore::empty();
+        let mut reader = std::io::BufReader::new(ca_pem.as_slice());
+        for c in rustls_pemfile::certs(&mut reader) {
+            roots.add(c.unwrap()).unwrap();
+        }
+        let client_cfg = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+
+        drive_handshake(server_cfg, client_cfg, "localhost")
+            .await
+            .expect("optional mode admits clients without certs");
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_untrusted_client_cert_when_required() {
+        ensure_crypto_provider();
+        // Required mode + client presents a cert signed by a
+        // *different* CA than the server trusts → handshake
+        // fails. This is the security-critical path: even with
+        // a "looks legit" cert, the wrong issuer is rejected.
+        let (server_ca_pem, srv_chain, srv_key, _untrusted_chain, _untrusted_key) =
+            issue_test_pki("localhost", "test-client-1");
+        let trust = ClientTrustStore::load_from_pem_bytes(&server_ca_pem).unwrap();
+
+        // Issue the client leaf from a SECOND, unrelated CA. The
+        // server's trust store doesn't know this CA.
+        let (_other_ca_pem, _other_srv, _other_srv_key, untrusted_chain, untrusted_key) =
+            issue_test_pki("localhost", "rogue-client");
+
+        let server_cfg = rustls::ServerConfig::builder()
+            .with_client_cert_verifier(
+                WebPkiClientVerifier::builder(trust.current())
+                    .build()
+                    .unwrap(),
+            )
+            .with_single_cert(srv_chain, srv_key)
+            .unwrap();
+
+        let mut roots = rustls::RootCertStore::empty();
+        let mut reader = std::io::BufReader::new(server_ca_pem.as_slice());
+        for c in rustls_pemfile::certs(&mut reader) {
+            roots.add(c.unwrap()).unwrap();
+        }
+        let client_cfg = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(untrusted_chain, untrusted_key)
+            .unwrap();
+
+        let err = drive_handshake(server_cfg, client_cfg, "localhost")
+            .await
+            .expect_err("untrusted client CA must be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.to_lowercase().contains("unknown")
+                || msg.to_lowercase().contains("issuer")
+                || msg.to_lowercase().contains("certificate")
+                || msg.to_lowercase().contains("invalid")
+                || msg.to_lowercase().contains("handshake")
+                || msg.to_lowercase().contains("trust"),
+            "expected trust/issuer error, got {msg}",
+        );
+    }
+
 }

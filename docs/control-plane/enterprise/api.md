@@ -196,6 +196,22 @@ page to keep the per-tab fan-out cheap. It returns the union of
 slo, upstreams summary, cluster peers, certs summary, gitops
 status, and alerts in one response (~5KB JSON typical).
 
+### Scaling page (SC-T2)
+
+```
+GET /api/runtime    # L1 — tokio runtime sizing (workers, mode, blocking, affinity)
+GET /api/cluster    # L2 — peers + leader + heartbeat (shared with Tracking page)
+GET /api/state      # L3 — state-backend health (backend, connected, latency, keys, replica lag, circuit)
+POST /admin/drain   # L2 mutation — flips this node's readiness to 503 (LB pulls within `inter`)
+```
+
+`/api/runtime` is restart-only (tokio doesn't permit hot resize);
+the dashboard renders the boot-effective sizing without offering
+a slider. `/api/state` is cached server-side at 5 s by the Redis
+backend so dashboard polls don't hammer the primary. The full
+three-layer reading lives in
+[`architecture/scaling-model.md`](../../architecture/scaling-model.md).
+
 ### Benchmark mode
 
 > Full design — [`../benchmark-mode.md`](../benchmark-mode.md).

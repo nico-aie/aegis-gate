@@ -449,6 +449,24 @@ async function poolDelete(name) {
   return { status: r.status, ...json };
 }
 function useRuntimeApi()  { return useApi('/api/runtime',         { intervalMs: 60000, fallback: null }); }
+// SC-T2 — Layer-3 backend health. Polls every 5 s to match the
+// server-side cache TTL the Redis backend uses; idle in_memory
+// nodes still get a fresh number every tick (cheap).
+function useStateApi()    { return useApi('/api/state',           { intervalMs: 5000, fallback: null }); }
+
+// SC-T2 — operator-initiated drain. Flips
+// `readiness.draining` so subsequent /healthz/ready probes
+// return 503; LBs (HAProxy / Nginx / k8s endpoints) stop
+// routing new traffic to this node. Audit-mutated; CSRF-gated.
+async function adminDrainPost() {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/admin/drain', {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
 
 // DD-T6 — rule CRUD wrapper. Handles CSRF + error mapping.
 async function rulesPost(body) {
@@ -597,6 +615,8 @@ Object.assign(window, {
   useAttacksDistributionApi, useAttacksTopApi,
   useAuditLogApi,
   useClusterApi, useSloApi, useCertsApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
+  // SC-T2 — Scaling page hooks + drain mutation
+  useStateApi, adminDrainPost,
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers
   useUpstreamsConfigApi, upstreamsConfigPut, poolUpsert, poolDelete,
   useRoutesApi, useTiersApi,

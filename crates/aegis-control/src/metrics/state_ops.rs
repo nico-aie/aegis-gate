@@ -187,6 +187,16 @@ impl StateBackend for MeteredStateBackend {
         self.metrics.record(op_label::CONSUME_NONCE, r.is_ok());
         r
     }
+
+    /// SC-T1 — forward `health()` through to the wrapped backend so
+    /// the dashboard sees the real backend identifier (`redis` /
+    /// `in_memory` / `reconciling`) instead of the trait-default
+    /// `"unknown"`. We don't record a metric here — health() is a
+    /// dashboard-cadence read, not a hot-path data op, and it
+    /// already has its own server-side cache in the Redis impl.
+    async fn health(&self) -> aegis_core::state::BackendHealth {
+        self.inner.health().await
+    }
 }
 
 #[cfg(test)]

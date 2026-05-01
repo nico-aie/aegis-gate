@@ -131,6 +131,7 @@ impl DrainHandle {
 /// from `new_cfg.tls.certificates` and atomic-swapped. In-flight
 /// TLS handshakes that already loaded the old store finish on
 /// it; new handshakes pick up the rotated certs immediately.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_config_watcher(
     path: PathBuf,
     cfg: Arc<ArcSwap<WafConfig>>,
@@ -139,6 +140,12 @@ pub fn spawn_config_watcher(
     proxy_ctx: Option<Arc<crate::proxy::ProxyContext>>,
     ip_rate_limiter: Option<Arc<aegis_security::rate_limit::IpRateLimiter>>,
     tls_resolver: Option<Arc<crate::listener::tls::DynamicResolver>>,
+    // MTLS-T5 — when present, the watcher re-parses
+    // `cfg.tls.client_auth.ca_bundle` and atomic-swaps it into
+    // this trust store on every successful reload. `None` for
+    // boots without inbound mTLS (the proxy doesn't pass a
+    // store; the helper short-circuits).
+    client_trust: Option<crate::listener::client_trust::ClientTrustStore>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = watch_loop(
@@ -149,6 +156,7 @@ pub fn spawn_config_watcher(
             proxy_ctx,
             ip_rate_limiter,
             tls_resolver,
+            client_trust,
         )
         .await
         {
@@ -157,6 +165,7 @@ pub fn spawn_config_watcher(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn watch_loop(
     path: PathBuf,
     cfg: Arc<ArcSwap<WafConfig>>,
@@ -165,6 +174,7 @@ async fn watch_loop(
     proxy_ctx: Option<Arc<crate::proxy::ProxyContext>>,
     ip_rate_limiter: Option<Arc<aegis_security::rate_limit::IpRateLimiter>>,
     tls_resolver: Option<Arc<crate::listener::tls::DynamicResolver>>,
+    client_trust: Option<crate::listener::client_trust::ClientTrustStore>,
 ) -> aegis_core::Result<()> {
     let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(64);
 
@@ -396,6 +406,102 @@ async fn watch_loop(
                     }
                 }
 
+                // MTLS-T5 — client-auth (mTLS inbound) trust
+                // store hot-reload. Re-parses
+                // `new_cfg.tls.client_auth.ca_bundle` and
+                // atomic-swaps it into the live ClientTrustStore.
+                // SkippedDisabled is the no-op path; Failed
+                // keeps the live store responsive and emits
+                // an audit event.
+                match crate::config_source::reload::apply_cfg_change_to_client_auth(
+                    &new_cfg,
+                    client_trust.as_ref(),
+                ) {
+                    crate::config_source::reload::ClientAuthReloadOutcome::NoStore
+                    | crate::config_source::reload::ClientAuthReloadOutcome::SkippedDisabled => {}
+                    crate::config_source::reload::ClientAuthReloadOutcome::Applied {
+                        cert_count,
+                        mode,
+                    } => {
+                        tracing::info!(
+                            cert_count,
+                            mode = ?mode,
+                            "config hot-reload: mtls trust store swapped",
+                        );
+                        bus.emit(AuditEvent {
+                            schema_version: 1,
+                            ts: chrono::Utc::now(),
+                            request_id: String::new(),
+                            class: AuditClass::Admin,
+                            tenant_id: None,
+                            tier: None,
+                            action: "mtls_reloaded".into(),
+                            reason: format!(
+                                "mtls trust store rebuilt with {cert_count} CA certificate(s)",
+                            ),
+                            client_ip: String::new(),
+                            route_id: None,
+                            rule_id: None,
+                            risk_score: None,
+                            fields: serde_json::json!({
+                                "path": path.display().to_string(),
+                                "source": "file",
+                                "cert_count": cert_count,
+                                "mode": format!("{mode:?}").to_lowercase(),
+                            }),
+                        });
+                    }
+                    crate::config_source::reload::ClientAuthReloadOutcome::MissingCaBundle => {
+                        tracing::error!(
+                            "config hot-reload: mtls reload skipped — non-disabled mode but ca_bundle missing",
+                        );
+                        bus.emit(AuditEvent {
+                            schema_version: 1,
+                            ts: chrono::Utc::now(),
+                            request_id: String::new(),
+                            class: AuditClass::Admin,
+                            tenant_id: None,
+                            tier: None,
+                            action: "mtls_reload_failed".into(),
+                            reason: "client_auth.ca_bundle missing for non-disabled mode".into(),
+                            client_ip: String::new(),
+                            route_id: None,
+                            rule_id: None,
+                            risk_score: None,
+                            fields: serde_json::json!({
+                                "path": path.display().to_string(),
+                                "source": "file",
+                                "reason": "missing_ca_bundle",
+                            }),
+                        });
+                    }
+                    crate::config_source::reload::ClientAuthReloadOutcome::Failed { reason } => {
+                        tracing::error!(
+                            reason = %reason,
+                            "config hot-reload: mtls trust store load failed; live trust unchanged",
+                        );
+                        bus.emit(AuditEvent {
+                            schema_version: 1,
+                            ts: chrono::Utc::now(),
+                            request_id: String::new(),
+                            class: AuditClass::Admin,
+                            tenant_id: None,
+                            tier: None,
+                            action: "mtls_reload_failed".into(),
+                            reason: reason.clone(),
+                            client_ip: String::new(),
+                            route_id: None,
+                            rule_id: None,
+                            risk_score: None,
+                            fields: serde_json::json!({
+                                "path": path.display().to_string(),
+                                "source": "file",
+                                "reason": reason,
+                            }),
+                        });
+                    }
+                }
+
                 cfg.store(Arc::new(new_cfg));
                 tracing::info!("config reloaded successfully");
                 bus.emit(AuditEvent {
@@ -475,7 +581,7 @@ state:
         let bus = AuditBus::new(16);
         let mut rx = bus.subscribe();
 
-        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None);
+        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None);
 
         // Give watcher time to register.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -517,7 +623,7 @@ state:
         let bus = AuditBus::new(16);
         let mut rx = bus.subscribe();
 
-        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None);
+        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None);
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Drain any spurious events from watcher startup.
@@ -606,6 +712,7 @@ compliance:
             cfg.clone(),
             bus,
             Some(mask.clone()),
+            None,
             None,
             None,
             None,
@@ -710,6 +817,7 @@ state:
             Some(proxy_ctx.clone()),
             None,
             None,
+            None,
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -798,6 +906,7 @@ state:
             bus,
             None,
             Some(proxy_ctx.clone()),
+            None,
             None,
             None,
         );
@@ -891,6 +1000,7 @@ rate_limit:
             None,
             None,
             Some(limiter.clone()),
+            None,
             None,
         );
 
@@ -1022,6 +1132,7 @@ tls:
             None,
             None,
             Some(resolver.clone()),
+            None,
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1111,6 +1222,7 @@ tls:
             None,
             None,
             Some(resolver.clone()),
+            None,
         );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 

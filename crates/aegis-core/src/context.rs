@@ -39,6 +39,13 @@ pub struct RouteCtx {
     pub failure_mode: FailureMode,
     pub upstream: String,
     pub tenant_id: Option<String>,
+    /// MTLS-T4 — required client-identity kinds for this
+    /// route. Empty = any identity admitted (default open).
+    /// Non-empty acts as an allow-list against
+    /// [`crate::ClientIdentity::kind`]. The data-plane handler
+    /// checks this after route resolution and 403s on mismatch
+    /// (`rule_id = mtls_required`).
+    pub auth_required: Vec<String>,
 }
 
 #[cfg(test)]
@@ -88,6 +95,7 @@ mod tests {
             failure_mode: FailureMode::FailClose,
             upstream: "auth-pool".into(),
             tenant_id: None,
+            auth_required: Vec::new(),
         };
         assert_eq!(rctx.tier, Tier::Critical);
         assert_eq!(rctx.failure_mode, FailureMode::FailClose);

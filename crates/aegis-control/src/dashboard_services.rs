@@ -152,6 +152,16 @@ pub struct DashboardServices {
     /// land the rustls + identity-extraction stages.
     pub identity_tracker:
         Option<std::sync::Arc<crate::identity_tracker::IdentityTracker>>,
+    /// SC-T1 — handle to the live `StateBackend` so the
+    /// `/api/state` endpoint can call `health()` without a
+    /// separate provider closure. `None` for test bundles that
+    /// boot `DashboardServices` standalone — the GET handler
+    /// returns `BackendHealth::unknown()` in that case so the
+    /// dashboard renders a "no backend wired" pill instead of
+    /// 404'ing. Wired by `aegis-proxy::run` from whatever
+    /// `state_select` produced.
+    pub state_backend:
+        Option<std::sync::Arc<dyn aegis_core::state::StateBackend>>,
 }
 
 impl DashboardServices {
@@ -377,6 +387,9 @@ impl DashboardServices {
                 // then `/api/mtls/connections` + `/api/mtls/failures`
                 // serve empty-state bodies.
                 identity_tracker: None,
+                // SC-T1 — wired by the proxy boot path. Until then
+                // `/api/state` reports `BackendHealth::unknown()`.
+                state_backend: None,
             },
             drain,
         )

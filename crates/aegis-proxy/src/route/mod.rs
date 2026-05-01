@@ -22,6 +22,10 @@ struct CompiledRoute {
     upstream: String,
     tier: Tier,
     failure_mode: FailureMode,
+    /// MTLS-T4 — `RouteConfig.auth_required` carried through
+    /// to the resolver so the data-plane handler can gate on
+    /// client identity. Empty = no gate.
+    auth_required: Vec<String>,
 }
 
 /// Hot-swappable routing table.
@@ -139,6 +143,7 @@ impl CompiledRouteTable {
                     upstream: rc.upstream.clone(),
                     tier,
                     failure_mode,
+                    auth_required: rc.auth_required.clone(),
                 });
 
                 // Insert into trie — a single path node can hold multiple
@@ -222,6 +227,7 @@ impl CompiledRoute {
             failure_mode: self.failure_mode,
             upstream: self.upstream.clone(),
             tenant_id: None,
+            auth_required: self.auth_required.clone(),
         }
     }
 }
@@ -504,5 +510,61 @@ state:
             .resolve("any", "/api/v2", &http::Method::GET)
             .unwrap();
         assert_eq!(ctx.route_id, "v2");
+    }
+
+    // ---------------- MTLS-T4 ----------------
+
+    #[test]
+    fn auth_required_default_is_empty_open_route() {
+        // Existing routes don't carry `auth_required:` in YAML —
+        // their RouteCtx must come back with an empty list so
+        // the data-plane gate is a no-op for them.
+        let cfg = five_route_config();
+        let table = RouteTable::build(&cfg).unwrap();
+        let ctx = table
+            .resolve("api.example.com", "/api/v1/users", &http::Method::GET)
+            .unwrap();
+        assert!(ctx.auth_required.is_empty(), "open routes default to no gate");
+    }
+
+    #[test]
+    fn auth_required_threads_from_yaml_to_route_ctx() {
+        // Route declares `auth_required: ["mtls", "spiffe"]` —
+        // resolver must pass that list through unchanged.
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: secure-api
+    host: "api.example.com"
+    path: "/secure/"
+    upstream: backend
+    auth_required: ["mtls", "spiffe"]
+  - id: catch-all
+    path: "/"
+    upstream: backend
+upstreams:
+  backend:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        let table = RouteTable::build(&cfg).unwrap();
+        let secure = table
+            .resolve("api.example.com", "/secure/billing", &http::Method::GET)
+            .unwrap();
+        assert_eq!(secure.route_id, "secure-api");
+        assert_eq!(secure.auth_required, vec!["mtls", "spiffe"]);
+        // Catch-all stays open.
+        let open = table
+            .resolve("api.example.com", "/public", &http::Method::GET)
+            .unwrap();
+        assert_eq!(open.route_id, "catch-all");
+        assert!(open.auth_required.is_empty());
     }
 }

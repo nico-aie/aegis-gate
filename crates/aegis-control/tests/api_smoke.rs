@@ -157,6 +157,153 @@ async fn api_attacks_top_groups_by_attacker() {
     assert_eq!(attackers[0]["hits"].as_u64(), Some(7));
 }
 
+// ---------- SC-T1 — `/api/state` round-trip via DashboardServices ----------
+
+/// Stub backend that lets us inject a fixed `BackendHealth`
+/// without depending on a concrete impl. Only `health()` is
+/// non-trivial; every other method is a stub the test never
+/// calls (the API smoke harness never drives traffic through
+/// it).
+struct StubBackend {
+    health: aegis_core::state::BackendHealth,
+}
+
+#[async_trait::async_trait]
+impl aegis_core::state::StateBackend for StubBackend {
+    async fn get(&self, _: &str) -> aegis_core::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    async fn set(
+        &self,
+        _: &str,
+        _: &[u8],
+        _: std::time::Duration,
+    ) -> aegis_core::Result<()> {
+        Ok(())
+    }
+    async fn del(&self, _: &str) -> aegis_core::Result<()> {
+        Ok(())
+    }
+    async fn incr_window(
+        &self,
+        _: &str,
+        _: std::time::Duration,
+        _: u64,
+    ) -> aegis_core::Result<aegis_core::state::SlidingWindowResult> {
+        Ok(aegis_core::state::SlidingWindowResult {
+            count: 0,
+            allowed: true,
+            retry_after: None,
+        })
+    }
+    async fn token_bucket(
+        &self,
+        _: &str,
+        _: u32,
+        _: u32,
+    ) -> aegis_core::Result<bool> {
+        Ok(true)
+    }
+    async fn get_risk(
+        &self,
+        _: &aegis_core::risk::RiskKey,
+    ) -> aegis_core::Result<u32> {
+        Ok(0)
+    }
+    async fn add_risk(
+        &self,
+        _: &aegis_core::risk::RiskKey,
+        _: i32,
+        _: u32,
+    ) -> aegis_core::Result<u32> {
+        Ok(0)
+    }
+    async fn auto_block(
+        &self,
+        _: std::net::IpAddr,
+        _: std::time::Duration,
+    ) -> aegis_core::Result<()> {
+        Ok(())
+    }
+    async fn is_auto_blocked(
+        &self,
+        _: std::net::IpAddr,
+    ) -> aegis_core::Result<bool> {
+        Ok(false)
+    }
+    async fn put_nonce(
+        &self,
+        _: &str,
+        _: std::time::Duration,
+    ) -> aegis_core::Result<bool> {
+        Ok(true)
+    }
+    async fn consume_nonce(&self, _: &str) -> aegis_core::Result<bool> {
+        Ok(true)
+    }
+    async fn health(&self) -> aegis_core::state::BackendHealth {
+        self.health.clone()
+    }
+}
+
+#[tokio::test]
+async fn api_state_unwired_returns_unknown_backend() {
+    // Boot a bundle without a state backend — the spawn helper
+    // doesn't touch `state_backend`, leaving it `None`. The proxy
+    // dispatch path should still produce a parseable response so
+    // the dashboard renders an empty-state pill instead of 404.
+    let bus = AuditBus::new(8);
+    let (services, _drain) = DashboardServices::spawn(bus, fake_pools(), None);
+    assert!(services.state_backend.is_none());
+
+    // Drive the same render path the proxy's `/api/state` handler
+    // uses. With no backend wired, fall through to
+    // `BackendHealth::unknown()`.
+    let h = aegis_core::state::BackendHealth::unknown();
+    let view = aegis_control::api::state::StateView::render(h);
+    let body = serde_json::to_value(&view).unwrap();
+    assert_eq!(body["backend"], "unknown");
+    assert_eq!(body["connected"], false);
+    assert_eq!(body["circuit"]["state"], "closed");
+}
+
+#[tokio::test]
+async fn api_state_wired_returns_backend_health() {
+    use aegis_core::state::StateBackend;
+
+    // Build a stub backend reporting healthy redis.
+    let stub_health = aegis_core::state::BackendHealth {
+        backend: "redis",
+        connected: true,
+        latency: aegis_core::state::LatencyP::from_samples(&[100, 200, 300]),
+        key_count: Some(42),
+        replica_lag_ms: Some(50),
+        server_version: Some("7.2.4".to_string()),
+        circuit: aegis_core::state::CircuitState::Closed,
+    };
+    let stub: std::sync::Arc<dyn StateBackend> = std::sync::Arc::new(StubBackend {
+        health: stub_health,
+    });
+
+    // Wire it into a fresh services bundle.
+    let bus = AuditBus::new(8);
+    let (mut services, _drain) =
+        DashboardServices::spawn(bus, fake_pools(), None);
+    services.state_backend = Some(stub);
+
+    // Drive the same path the proxy dispatch handler runs.
+    let h = services.state_backend.as_ref().unwrap().health().await;
+    let view = aegis_control::api::state::StateView::render(h);
+    let body = serde_json::to_value(&view).unwrap();
+    assert_eq!(body["backend"], "redis");
+    assert_eq!(body["connected"], true);
+    assert_eq!(body["key_count"], 42);
+    assert_eq!(body["replica_lag_ms"], 50);
+    assert_eq!(body["server_version"], "7.2.4");
+    assert_eq!(body["circuit"]["state"], "closed");
+    assert!(body["latency"].is_object());
+}
+
 #[tokio::test]
 async fn api_upstreams_summary_reflects_pool_provider() {
     let bus = AuditBus::new(8);

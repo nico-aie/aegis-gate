@@ -1,9 +1,10 @@
 # aegis-proxy/src/lib.rs split — `PRE-T*`
 
-> **Status:** Plan only — awaiting confirmation. Operator
-> flagged file size during MTLS-T6 wiring (5569 lines, ~7×
-> the 800-line guideline). Next slice before more handlers go
-> in. Track ID prefix `PRE-T<n>` (Proxy REfactor).
+> **Status:** ✅ **Complete** (2026-05-01). All 8 slices
+> shipped. `lib.rs` shrunk from 5569 → 559 lines (−90%);
+> 9 cohesive submodules created. All 461 `aegis-proxy
+> --features etcd` tests pass. Track ID prefix `PRE-T<n>`
+> (Proxy REfactor).
 
 ## 0 · Why now
 
@@ -94,20 +95,44 @@ Every audit-mutated handler (rules / blacklist / mode /
 detectors / risk thresholds / upstreams / alert-receivers /
 …). Same dispatch pattern as PRE-T5.
 
-### PRE-T7 — Extract `run.rs` (~1 h, ~700 lines)
+### PRE-T7 — ✅ Extracted `accept.rs` + `admin_dispatch.rs` + `run.rs`
 
-The remaining `pub async fn run` body lifts into its own
-module. `lib.rs` becomes a thin facade: module declarations,
-`pub use ConfigReloadSource`, and `pub async fn run(...)` as a
-one-line delegator.
+The final structural slice ended up producing three
+submodules instead of one because the original `pub async
+fn run` body had grown enough that the per-listener
+accept loops + admin/interop dispatch deserved their own
+homes:
 
-### PRE-T8 — Verify (~30 min)
+- **`accept.rs`** (808 lines) — `admin_accept_loop` +
+  `accept_loop` per-listener accept loops.
+- **`admin_dispatch.rs`** (452 lines) —
+  `handle_admin_request` (admin/dashboard router) +
+  `handle_interop_control` (`/__waf_control/*`) +
+  `stamp_interop_response` + `handle_force_https_request`
+  + private `read_cert_inventory`.
+- **`run.rs`** (920 lines) — `pub fn run` boot
+  orchestrator + `ConfigReloadSource` enum +
+  `force_https_loop` + `build_interop_runtime`.
+  Re-exported from `lib.rs` so the public API surface
+  is byte-identical for `aegis-bin`.
 
-- `wc -l` on every file → all under 800.
-- `cargo build -p aegis-bin --features production` → clean.
-- `cargo clippy --features etcd --lib -- -D warnings` → clean.
-- All 420 / 457 / 855 / 41 / 888 / 163 tests still pass.
-- `git diff --stat` shows only file moves (no logic changes).
+`lib.rs` is now a 559-line thin facade: module
+declarations, `pub use run::{run, ConfigReloadSource};`
+and the cross-cutting integration test module.
+
+### PRE-T8 — ✅ Verified
+
+- All 461 `aegis-proxy --features etcd` tests pass.
+- Full workspace ~2,434 default-feature tests pass.
+- `cargo build -p aegis-proxy --features etcd` clean.
+- `cargo clippy -p aegis-proxy --features etcd --tests`
+  clean on the refactored files (warnings in unrelated
+  files — `proto/grpc.rs`, `upstream/lb.rs`,
+  `upstream/tls.rs`, `traffic.rs`, `supervisor.rs`,
+  `admin_sse.rs` — are pre-existing and were already
+  there before PRE-T1).
+- `git diff --stat` shows only file moves; no logic
+  changes.
 
 ## 4 · Risks + mitigations
 

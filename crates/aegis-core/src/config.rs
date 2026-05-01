@@ -518,6 +518,20 @@ pub struct RouteConfig {
     pub failure_mode: Option<FailureModeConfig>,
     #[serde(default)]
     pub quota: Option<QuotaConfig>,
+    /// MTLS-T4 — required client-identity kinds. Empty (default)
+    /// means "any identity admitted" — including `Anonymous`,
+    /// preserving the current open-route behaviour.
+    /// Non-empty acts as an allow-list against
+    /// [`crate::ClientIdentity::kind()`]:
+    /// - `["mtls"]` — only mTLS-authenticated clients.
+    /// - `["spiffe"]` — only SPIFFE-id clients.
+    /// - `["mtls", "spiffe"]` — either authenticated kind.
+    /// - Including `"anonymous"` is equivalent to leaving the
+    ///   list empty; validation flags it as a likely typo.
+    /// Mismatches return 403 with an audit reason; the contract
+    /// `action` is `block`, `rule_id = mtls_required`.
+    #[serde(default)]
+    pub auth_required: Vec<String>,
 }
 
 /// Per-route request/response quotas.

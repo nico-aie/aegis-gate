@@ -20,6 +20,9 @@ const NAV = [
   ]},
   { group: 'Tracking', items: [
     { id: 'tracking', label: 'Tracking',      icon: <window.I.Gauge />,    badge: 'SLO', tone: 'warn' },
+    // SC-T2 — Scaling page: L1 in-node workers + L2 cluster
+    // peers + L3 shared-state backend health, in one stack.
+    { id: 'scaling',  label: 'Scaling',       icon: <window.I.Cluster />,  badge: null },
   ]},
   { group: 'Resources', items: [
     { id: 'help',     label: 'Help & Guide',  icon: <window.I.Book />,     badge: null },
@@ -206,6 +209,7 @@ function App() {
     case 'whitelist': page = <window.ListPage kind="whitelist" />; break;
     case 'settings':  page = <window.PageSettings />; break;
     case 'tracking':  page = <window.PageTracking />; break;
+    case 'scaling':   page = <window.PageScaling />; break;
     case 'help':      page = <window.PageHelp />; break;
     default:          page = <window.PageOverview />;
   }

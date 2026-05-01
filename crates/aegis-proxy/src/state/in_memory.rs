@@ -6,7 +6,9 @@ use dashmap::DashMap;
 
 use aegis_core::error::Result;
 use aegis_core::risk::RiskKey;
-use aegis_core::state::{SlidingWindowResult, StateBackend};
+use aegis_core::state::{
+    BackendHealth, CircuitState, SlidingWindowResult, StateBackend,
+};
 
 struct Entry {
     value: Vec<u8>,
@@ -252,6 +254,25 @@ impl StateBackend for InMemoryBackend {
         let k = format!("g:nonce:{nonce}");
         Ok(self.kv.remove(&k).is_some())
     }
+
+    /// SC-T1 — health snapshot for the in-memory backend.
+    ///
+    /// Always reports `connected: true` (the data structure is owned
+    /// in-process; there's no remote to lose). Latency / replica-lag
+    /// / version are `None` — the in-memory path doesn't measure
+    /// them and surfacing fake numbers would only confuse the
+    /// dashboard. Key count is the live `DashMap::len`.
+    async fn health(&self) -> BackendHealth {
+        BackendHealth {
+            backend: "in_memory",
+            connected: true,
+            latency: None,
+            key_count: Some(self.kv.len() as u64),
+            replica_lag_ms: None,
+            server_version: None,
+            circuit: CircuitState::Closed,
+        }
+    }
 }
 
 fn encode_bucket(tokens: f64, ts: Instant) -> Vec<u8> {
@@ -446,5 +467,29 @@ mod tests {
         // Manually trigger reap logic (same as reaper does).
         b.kv.retain(|_, entry| !entry.is_expired());
         assert!(b.is_empty());
+    }
+
+    // ---------------- SC-T1 ----------------
+
+    #[tokio::test]
+    async fn health_reports_in_memory_backend_as_connected() {
+        let b = backend();
+        let h = b.health().await;
+        assert_eq!(h.backend, "in_memory");
+        assert!(h.connected, "in-memory is always connected — no remote");
+        assert_eq!(h.key_count, Some(0));
+        assert!(h.latency.is_none(), "in-memory doesn't measure latency");
+        assert!(h.replica_lag_ms.is_none());
+        assert!(h.server_version.is_none());
+        assert_eq!(h.circuit, aegis_core::state::CircuitState::Closed);
+    }
+
+    #[tokio::test]
+    async fn health_key_count_tracks_inserts() {
+        let b = backend();
+        b.set("k1", b"v", Duration::from_secs(60)).await.unwrap();
+        b.set("k2", b"v", Duration::from_secs(60)).await.unwrap();
+        let h = b.health().await;
+        assert_eq!(h.key_count, Some(2));
     }
 }

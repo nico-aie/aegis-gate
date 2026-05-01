@@ -83,6 +83,16 @@ Operators are responsible for:
   from hostname + PID; future versions will accept a
   `node.id` config knob).
 
+**Operator visibility.** The Console exposes the cluster
+roster + Layer-3 backend health side-by-side on the
+**Scaling** page (Tracking → Scaling). `GET /api/cluster`
+returns the peers list; `GET /api/state` returns the
+configured `StateBackend`'s reachability + telemetry. The
+same page also shows L1 (in-node workers) so operators can
+verify all three layers in one view. See
+[`architecture/scaling-model.md`](../architecture/scaling-model.md)
+for the full three-layer reading.
+
 ## State backends
 
 Pluggable via a `StateBackend` trait:

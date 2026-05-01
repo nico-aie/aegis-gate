@@ -135,8 +135,10 @@ Three signals confirm your `runtime:` block was honoured:
      "host_logical_cpus": 12
    }
    ```
-3. **Dashboard panel**: `Settings → Runtime (Layer-1)` shows the
-   same JSON fields rendered as a key/value list.
+3. **Dashboard panel**: the **Scaling** page (Tracking →
+   Scaling) renders the same JSON as the L1 card with mode +
+   affinity badges. The Settings page links here as a
+   reminder that runtime sizing is restart-only.
 
 If `workers_mode` says `auto` but `workers` doesn't match
 `host_logical_cpus`, the host is reporting CPU quota (k8s,
@@ -164,8 +166,12 @@ the standard graceful pattern:
 
 ## Cross-references
 
+- [`architecture/scaling-model.md`](../architecture/scaling-model.md)
+  — three-layer scaling model overview (L1 + L2 + L3 in one
+  reading).
 - [`Architecture.md` §1](../../Architecture.md#three-layer-scaling-model)
-  — three-layer scaling model overview.
+  — three-layer scaling model overview (legacy entry, kept
+  for back-link compatibility).
 - [`ha-clustering.md`](./ha-clustering.md) — Layer-2 cross-node
   scaling.
 - [`zero-downtime-ops.md`](./zero-downtime-ops.md) — drain pattern,

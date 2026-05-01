@@ -226,6 +226,7 @@ mod tests {
             failure_mode: FailureMode::FailClose,
             upstream: "pool".into(),
             tenant_id: None,
+            auth_required: Vec::new(),
         };
         let (m, u, h, b) = view_for_path("/static/logo.png");
         let req = make_view(&m, &u, &h, &b);

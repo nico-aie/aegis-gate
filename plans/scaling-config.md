@@ -1,7 +1,10 @@
 # Scaling Configuration — `SC-T*` (a.k.a. "config workers")
 
-> **Status:** Plan only — awaiting confirmation. Track ID prefix
-> `SC-T<n>`. Belongs alongside Phase B follow-ups.
+> **Status:** **SC-T1 + SC-T2 + SC-T3 + SC-T5 ✅ shipped
+> 2026-05-01.** SC-T4 (`tokio_unstable` runtime metrics) is the
+> only remaining slice — optional polish, feature-gated, off
+> by default. Track ID prefix `SC-T<n>`. Belongs alongside
+> Phase B follow-ups.
 
 ## 0 · One-line summary
 
@@ -46,7 +49,7 @@ peers (orchestrator's job).
 
 ## 3 · Phases
 
-### SC-T1 — `GET /api/state` (Layer-3 health)
+### SC-T1 — `GET /api/state` (Layer-3 health) — ✅ shipped 2026-05-01
 **Target crate:** `aegis-control` + `aegis-proxy` (dispatch).
 
 New module `aegis-control/src/api/state.rs` returning
@@ -80,7 +83,7 @@ pub struct StateView {
 - **OpenAPI.** Add path + schema to
   `docs/control-plane/api.openapi.yaml`.
 
-### SC-T2 — Console "Scaling" page
+### SC-T2 — Console "Scaling" page — ✅ shipped 2026-05-01
 **Target:** `crates/aegis-control/assets/dashboard/src/`.
 
 - New route `/scaling` (icon `Workers`, label `Scaling`) inserted
@@ -107,7 +110,7 @@ pub struct StateView {
 - i18n strings in `i18n.json` (en + zh tracks already
   established).
 
-### SC-T3 — Settings page hint
+### SC-T3 — Settings page hint — ✅ shipped 2026-05-01
 **Target:** `pages.jsx::PageSettings`.
 
 One-liner banner above the settings list when `useRuntimeApi()`
@@ -131,7 +134,7 @@ threads, CPU affinity) is restart-only — see the
   `tokio_unstable` flag implies non-SemVer guarantees from
   tokio.
 
-### SC-T5 — Doc consolidation
+### SC-T5 — Doc consolidation — ✅ shipped 2026-05-01
 **Target:** `docs/`.
 
 - New landing page `docs/architecture/scaling-model.md` —

@@ -1,6 +1,6 @@
 # WAF Hackathon 2026 — Candidate Briefing
 
-> This document is a summary for participating teams. Detailed technical requirements and constraints are defined in [`final_docs/EN_waf_interop_contract_v2.3.md`](final_docs/EN_waf_interop_contract_v2.3.md), and the public API specification is available in [`final_docs/openapi.public.yaml`](final_docs/openapi.public.yaml).
+> This document is a summary for participating teams. Detailed technical requirements and constraints are defined in [`./EN_waf_interop_contract_v2.3.md`](final_docs/EN_waf_interop_contract_v2.3.md), and the public API specification is available in [`./openapi.public.yaml`](final_docs/openapi.public.yaml).
 
 ---
 

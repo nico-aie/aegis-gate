@@ -1,8 +1,11 @@
 # mTLS support — `MTLS-T*`
 
-> **Status:** Plan + Slice 1 in flight. Track ID prefix
-> `MTLS-T<n>`. Adds server-side mutual-TLS to a WAF that today
-> supports outbound mTLS only (`UpstreamTlsConfig`).
+> **Status:** **MTLS-T1 + T2 + T3 + T4 (route gate) + T5 +
+> T6 ✅ shipped 2026-05-01.** T4 has 3 deferred sub-slices
+> (`/admin/login` bypass, `AuditEvent.actor` field, identity-
+> rate-limit). T7..T11 (Console mutations) next. Track ID
+> prefix `MTLS-T<n>`. Adds server-side mutual-TLS to a WAF
+> that today supports outbound mTLS only (`UpstreamTlsConfig`).
 
 ## 0 · Why
 
@@ -87,7 +90,7 @@ tls:
 modes, both scopes), validation rejection cases, `ClientIdentity`
 exhaustiveness (matches all variants).
 
-### MTLS-T2 — Rustls inbound wiring (~2 h)
+### MTLS-T2 — Rustls inbound wiring — ✅ shipped 2026-05-01
 
 **Goal:** the listener actually requests + verifies client certs.
 
@@ -109,7 +112,7 @@ exhaustiveness (matches all variants).
 rejects missing cert; `mode: optional` accepts both with-cert
 and without-cert; bad cert (untrusted CA) rejected in both.
 
-### MTLS-T3 — Identity extraction (~1.5 h)
+### MTLS-T3 — Identity extraction — ✅ shipped 2026-05-01
 
 **Goal:** populate `ClientIdentity` for every request.
 
@@ -129,7 +132,14 @@ and without-cert; bad cert (untrusted CA) rejected in both.
 multi-SAN cert), fingerprint stability, anonymous fallback when
 `allow_unauthenticated` admits a no-cert connection.
 
-### MTLS-T4 — Policy integration (~1.5 h)
+### MTLS-T4 — Policy integration — ✅ partially shipped 2026-05-01
+
+> Route-scoped `auth_required: Vec<String>` gate landed
+> (rejects anonymous on `/secure/*`-style routes with
+> 403 + `mtls_required`). Three sub-slices deferred:
+> `/admin/login` mTLS bypass; `AuditEvent.actor` field
+> (schema bump — bundle with MTLS-T11); identity-rate-limit
+> fan-out (defer until concrete policy).
 
 **Goal:** identity actually gates requests.
 
@@ -151,7 +161,7 @@ multi-SAN cert), fingerprint stability, anonymous fallback when
 client + rejects anonymous; admin-login with valid cert skips
 password; admin-login with invalid SAN gets `RejectedSan` audit.
 
-### MTLS-T5 — Hot-reload (~1 h, follows established pattern)
+### MTLS-T5 — Hot-reload — ✅ shipped 2026-05-01
 
 **Goal:** rotate CA bundle + SAN allowlist + mode without
 restart.

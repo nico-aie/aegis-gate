@@ -877,6 +877,56 @@ components:
         cpu_affinity_active: { type: boolean }
         host_logical_cpus: { type: integer }
 
+    StateResponse:
+      type: object
+      required: [backend, connected, circuit]
+      properties:
+        backend:
+          type: string
+          enum: [redis, in_memory, reconciling, unknown]
+          description: Stable identifier for the configured state backend.
+        connected:
+          type: boolean
+          description: Whether the backend last responded successfully.
+        latency:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StateLatency'
+        key_count:
+          type: integer
+          nullable: true
+          description: Best-effort key count (e.g. Redis DBSIZE).
+        replica_lag_ms:
+          type: integer
+          nullable: true
+          description: Worst-case primary-to-replica lag in milliseconds.
+        server_version:
+          type: string
+          nullable: true
+          description: e.g. Redis `redis_version` from `INFO server`.
+        circuit:
+          $ref: '#/components/schemas/StateCircuit'
+
+    StateLatency:
+      type: object
+      required: [p50_us, p95_us, p99_us]
+      properties:
+        p50_us: { type: integer }
+        p95_us: { type: integer }
+        p99_us: { type: integer }
+
+    StateCircuit:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [closed, half_open, open]
+        last_open_at_unix_ms:
+          type: integer
+          description: Unix-milliseconds of the most recent open transition.
+                       Present only when `state == open`.
+
     LoginRequest:
       type: object
       required: [user, password]
@@ -981,6 +1031,23 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeResponse' }
+
+  /api/state:
+    get:
+      tags: [System]
+      summary: Layer-3 (shared state) backend health
+      description: |
+        Read-only view of the configured `StateBackend`'s current
+        reachability, key count, latency percentiles, replica lag,
+        and circuit-breaker state. Powers the Scaling page's L3
+        card. Cached server-side at 5 s; safe to poll on the
+        dashboard cadence.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StateResponse' }
 
   /api/config/version:
     get:

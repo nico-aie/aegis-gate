@@ -41,7 +41,7 @@ const OUT   = resolve(
 const ROUTES = [
   'overview', 'live', 'attacks', 'analytics', 'audit',
   'rules', 'tiers', 'blacklist', 'whitelist', 'settings',
-  'tracking', 'help',
+  'tracking', 'scaling', 'help',
 ];
 
 async function main() {

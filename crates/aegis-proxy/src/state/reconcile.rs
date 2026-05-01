@@ -389,6 +389,23 @@ impl StateBackend for ReconcilingBackend {
             Err(other) => Err(other),
         }
     }
+
+    /// SC-T1 — health for the reconciling wrapper.
+    ///
+    /// Surfaces the primary's snapshot but rebrands the `backend`
+    /// label so the dashboard can render a "reconciling (primary:
+    /// redis)" pill. The `circuit` field is forced to `HalfOpen`
+    /// while a partition is active so operators see degraded mode
+    /// even when the primary's own circuit thinks it's closed
+    /// between probes.
+    async fn health(&self) -> aegis_core::state::BackendHealth {
+        let mut h = self.primary.health().await;
+        h.backend = "reconciling";
+        if self.is_partitioned() {
+            h.circuit = aegis_core::state::CircuitState::HalfOpen;
+        }
+        h
+    }
 }
 
 #[cfg(test)]

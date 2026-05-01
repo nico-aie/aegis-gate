@@ -146,14 +146,74 @@ mod backend {
 
     use super::*;
     use std::net::IpAddr;
-    use std::sync::Arc;
-    use std::time::SystemTime;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Instant, SystemTime};
 
     use aegis_core::error::{Result, WafError};
     use aegis_core::risk::RiskKey;
-    use aegis_core::state::{SlidingWindowResult, StateBackend};
+    use aegis_core::state::{
+        BackendHealth, CircuitState, LatencyP, SlidingWindowResult, StateBackend,
+    };
     use deadpool_redis::{Config as PoolConfig, Pool, Runtime};
     use redis::{AsyncCommands, Script};
+
+    /// SC-T1 — number of recent op latency samples kept for the
+    /// `/api/state` percentile widget. 256 ≈ ~1 minute at typical
+    /// dashboard cadence; small enough to keep the buffer cheap on
+    /// every op.
+    const LATENCY_BUFFER_CAPACITY: usize = 256;
+
+    /// SC-T1 — server-side cache duration for `health()`. Matches the
+    /// dashboard's poll cadence so a busy cluster doesn't get
+    /// hammered with `INFO` / `DBSIZE` calls.
+    const HEALTH_CACHE_TTL: Duration = Duration::from_secs(5);
+
+    /// Fixed-capacity ring of recent op latencies, in microseconds.
+    /// Reads + writes are guarded by a `Mutex` because hot ops only
+    /// take it briefly (push one u64). Contention is bounded by the
+    /// op rate, not the buffer size.
+    struct LatencyRing {
+        samples: Vec<u64>,
+        cursor: usize,
+        full: bool,
+    }
+
+    impl LatencyRing {
+        fn new(cap: usize) -> Self {
+            Self {
+                samples: Vec::with_capacity(cap),
+                cursor: 0,
+                full: false,
+            }
+        }
+
+        fn push(&mut self, sample_us: u64) {
+            let cap = self.samples.capacity();
+            if self.samples.len() < cap {
+                self.samples.push(sample_us);
+                if self.samples.len() == cap {
+                    self.full = true;
+                    self.cursor = 0;
+                }
+            } else {
+                self.samples[self.cursor] = sample_us;
+                self.cursor = (self.cursor + 1) % cap;
+            }
+        }
+
+        fn snapshot(&self) -> Vec<u64> {
+            // Order doesn't matter — `LatencyP::from_samples` sorts
+            // before computing percentiles.
+            self.samples.clone()
+        }
+    }
+
+    /// Cached health snapshot. We re-run `INFO` / `DBSIZE` only when
+    /// the snapshot is older than [`HEALTH_CACHE_TTL`].
+    struct CachedHealth {
+        at: Instant,
+        value: BackendHealth,
+    }
 
     /// Redis-backed [`StateBackend`].
     ///
@@ -165,6 +225,9 @@ mod backend {
         sliding_window: Arc<Script>,
         token_bucket: Arc<Script>,
         add_risk: Arc<Script>,
+        latency: Arc<Mutex<LatencyRing>>,
+        health_cache: Arc<Mutex<Option<CachedHealth>>>,
+        last_error_at: Arc<Mutex<Option<Instant>>>,
     }
 
     impl RedisBackend {
@@ -190,6 +253,11 @@ mod backend {
                 sliding_window: Arc::new(Script::new(SLIDING_WINDOW_LUA)),
                 token_bucket: Arc::new(Script::new(TOKEN_BUCKET_LUA)),
                 add_risk: Arc::new(Script::new(ADD_RISK_LUA)),
+                latency: Arc::new(Mutex::new(LatencyRing::new(
+                    LATENCY_BUFFER_CAPACITY,
+                ))),
+                health_cache: Arc::new(Mutex::new(None)),
+                last_error_at: Arc::new(Mutex::new(None)),
             })
         }
 
@@ -200,18 +268,127 @@ mod backend {
                 .map_err(|e| WafError::State(format!("redis pool: {e}")))
         }
 
-        /// Wrap an op in the per-call timeout from config.
+        /// Wrap an op in the per-call timeout from config. Records
+        /// the elapsed time into the latency ring on success and
+        /// stamps `last_error_at` on any error so `health()` can
+        /// report a non-Closed circuit state.
         async fn with_timeout<T, F>(&self, op_name: &'static str, fut: F) -> Result<T>
         where
             F: std::future::Future<Output = redis::RedisResult<T>>,
         {
-            match tokio::time::timeout(self.config.timeout, fut).await {
-                Ok(Ok(v)) => Ok(v),
-                Ok(Err(e)) => Err(WafError::State(format!("redis {op_name}: {e}"))),
-                Err(_) => Err(WafError::State(format!(
-                    "redis {op_name}: timeout after {:?}",
-                    self.config.timeout
-                ))),
+            let started = Instant::now();
+            let outcome = tokio::time::timeout(self.config.timeout, fut).await;
+            let elapsed = started.elapsed();
+            match outcome {
+                Ok(Ok(v)) => {
+                    if let Ok(mut buf) = self.latency.lock() {
+                        buf.push(elapsed.as_micros().min(u64::MAX as u128) as u64);
+                    }
+                    Ok(v)
+                }
+                Ok(Err(e)) => {
+                    if let Ok(mut last) = self.last_error_at.lock() {
+                        *last = Some(Instant::now());
+                    }
+                    Err(WafError::State(format!("redis {op_name}: {e}")))
+                }
+                Err(_) => {
+                    if let Ok(mut last) = self.last_error_at.lock() {
+                        *last = Some(Instant::now());
+                    }
+                    Err(WafError::State(format!(
+                        "redis {op_name}: timeout after {:?}",
+                        self.config.timeout
+                    )))
+                }
+            }
+        }
+
+        /// Compute a fresh health snapshot. Runs `PING` (round-trip
+        /// + connectivity), `INFO server` (version), `INFO replication`
+        /// (replica lag), and `DBSIZE` (key count). Each step is best-
+        /// effort: a partial failure still produces a snapshot with
+        /// the fields it could fill, plus `connected: false` if the
+        /// PING didn't make it.
+        async fn fresh_health(&self) -> BackendHealth {
+            // Helper to detect that we recently saw an error so the
+            // dashboard renders a "degraded" pill even when the most
+            // recent op succeeded.
+            let recent_error = self
+                .last_error_at
+                .lock()
+                .ok()
+                .and_then(|g| *g)
+                .map(|i| i.elapsed() < HEALTH_CACHE_TTL)
+                .unwrap_or(false);
+
+            // PING — establishes connectivity for `connected: bool`.
+            let mut connected = false;
+            if let Ok(mut c) = self.conn().await {
+                let ping: redis::RedisResult<String> = redis::cmd("PING")
+                    .query_async(&mut c)
+                    .await;
+                connected = ping.map(|s| s == "PONG").unwrap_or(false);
+            }
+
+            // server INFO — version. Cheap enough to run every cache
+            // miss; redis returns ~1 KB of text we parse.
+            let mut server_version: Option<String> = None;
+            let mut replica_lag_ms: Option<u64> = None;
+            if connected {
+                if let Ok(mut c) = self.conn().await {
+                    let info: redis::RedisResult<String> =
+                        redis::cmd("INFO").arg("server").query_async(&mut c).await;
+                    if let Ok(text) = info {
+                        server_version = parse_info_field(&text, "redis_version");
+                    }
+                    let repl: redis::RedisResult<String> =
+                        redis::cmd("INFO").arg("replication").query_async(&mut c).await;
+                    if let Ok(text) = repl {
+                        replica_lag_ms = compute_replica_lag_ms(&text);
+                    }
+                }
+            }
+
+            // DBSIZE — best-effort key count.
+            let mut key_count: Option<u64> = None;
+            if connected {
+                if let Ok(mut c) = self.conn().await {
+                    let dbsize: redis::RedisResult<u64> =
+                        redis::cmd("DBSIZE").query_async(&mut c).await;
+                    if let Ok(n) = dbsize {
+                        key_count = Some(n);
+                    }
+                }
+            }
+
+            let latency = self
+                .latency
+                .lock()
+                .ok()
+                .map(|b| b.snapshot())
+                .and_then(|s| LatencyP::from_samples(&s));
+
+            let circuit = if !connected {
+                let last_open_at_unix_ms = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                CircuitState::Open { last_open_at_unix_ms }
+            } else if recent_error {
+                CircuitState::HalfOpen
+            } else {
+                CircuitState::Closed
+            };
+
+            BackendHealth {
+                backend: "redis",
+                connected,
+                latency,
+                key_count,
+                replica_lag_ms,
+                server_version,
+                circuit,
             }
         }
 
@@ -384,6 +561,78 @@ mod backend {
             let n: i32 = self.with_timeout("consume_nonce", c.del(&k)).await?;
             Ok(n > 0)
         }
+
+        /// SC-T1 — health snapshot for the dashboard's Scaling page.
+        ///
+        /// Caches the heavy parts (`INFO`, `DBSIZE`) for 5s so the
+        /// dashboard cadence doesn't add load to a busy primary. The
+        /// latency ring + circuit fields are read fresh on every
+        /// call (cheap — both behind a `Mutex<…>` of a few hundred
+        /// bytes).
+        async fn health(&self) -> BackendHealth {
+            // Fast path — fresh cached snapshot.
+            if let Ok(g) = self.health_cache.lock() {
+                if let Some(c) = g.as_ref() {
+                    if c.at.elapsed() < HEALTH_CACHE_TTL {
+                        return c.value.clone();
+                    }
+                }
+            }
+            let fresh = self.fresh_health().await;
+            if let Ok(mut g) = self.health_cache.lock() {
+                *g = Some(CachedHealth {
+                    at: Instant::now(),
+                    value: fresh.clone(),
+                });
+            }
+            fresh
+        }
+    }
+
+    /// Extract a single field's value from a Redis `INFO` payload.
+    /// Format is `key:value\r\n` or `key:value\n`; comments start
+    /// with `#`. Returns `None` when the field isn't present.
+    pub(super) fn parse_info_field(text: &str, key: &str) -> Option<String> {
+        for line in text.lines() {
+            if line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                if k == key {
+                    return Some(v.trim().to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Compute the worst-case replica lag from an `INFO replication`
+    /// payload.
+    ///
+    /// Redis reports per-slave lines like `slave0:ip=...,port=...,lag=N`.
+    /// We pick the largest lag across all replicas (operators care
+    /// about the worst case, not the average) and return it as
+    /// milliseconds. `None` when no replicas are present (master with
+    /// no slaves, or a replica itself).
+    pub(super) fn compute_replica_lag_ms(text: &str) -> Option<u64> {
+        let mut max_lag_secs: Option<u64> = None;
+        for line in text.lines() {
+            if !line.starts_with("slave") {
+                continue;
+            }
+            // slaveN:ip=x,port=y,state=online,offset=z,lag=L
+            if let Some((_, fields)) = line.split_once(':') {
+                for kv in fields.split(',') {
+                    if let Some(("lag", v)) = kv.split_once('=') {
+                        if let Ok(n) = v.parse::<u64>() {
+                            max_lag_secs =
+                                Some(max_lag_secs.map(|cur| cur.max(n)).unwrap_or(n));
+                        }
+                    }
+                }
+            }
+        }
+        max_lag_secs.map(|s| s.saturating_mul(1000))
     }
 
     /// Random suffix for sliding-window ZADD members. We avoid a
@@ -484,6 +733,116 @@ mod backend {
                 WafError::State(_) => {} // expected
                 other => panic!("expected State error, got {other:?}"),
             }
+        }
+
+        // ---------------- SC-T1 helpers ----------------
+
+        #[test]
+        fn latency_ring_grows_until_capacity_then_overwrites() {
+            let mut r = LatencyRing::new(3);
+            r.push(10);
+            r.push(20);
+            assert_eq!(r.snapshot(), vec![10, 20]);
+            r.push(30);
+            assert_eq!(r.snapshot(), vec![10, 20, 30]);
+            assert!(r.full);
+            // Overwrite oldest in cursor order.
+            r.push(40);
+            let snap = r.snapshot();
+            assert_eq!(snap.len(), 3);
+            assert!(snap.contains(&40));
+            assert!(!snap.contains(&10), "10 should have been overwritten");
+        }
+
+        #[test]
+        fn parse_info_field_extracts_redis_version() {
+            let payload = "# Server\r\n\
+                           redis_version:7.2.4\r\n\
+                           redis_git_sha1:00000000\r\n\
+                           os:Linux\r\n";
+            assert_eq!(
+                parse_info_field(payload, "redis_version"),
+                Some("7.2.4".to_string()),
+            );
+            assert_eq!(parse_info_field(payload, "os"), Some("Linux".to_string()));
+            assert_eq!(parse_info_field(payload, "missing"), None);
+        }
+
+        #[test]
+        fn parse_info_field_skips_comment_lines() {
+            // Comment lines starting with `#` must not match even if
+            // they contain a colon — Redis "# Server" gets parsed
+            // as a section header.
+            let payload = "# Server: misleading\r\nredis_version:7.0.0\r\n";
+            assert_eq!(
+                parse_info_field(payload, "redis_version"),
+                Some("7.0.0".to_string()),
+            );
+            // The `#` line shouldn't accidentally produce a "Server"
+            // field.
+            assert_eq!(parse_info_field(payload, "Server"), None);
+        }
+
+        #[test]
+        fn compute_replica_lag_picks_worst_case_in_ms() {
+            // Two replicas — operator cares about the slow one.
+            let payload = "# Replication\r\n\
+                           role:master\r\n\
+                           connected_slaves:2\r\n\
+                           slave0:ip=10.0.0.2,port=6379,state=online,offset=100,lag=1\r\n\
+                           slave1:ip=10.0.0.3,port=6379,state=online,offset=98,lag=4\r\n";
+            assert_eq!(compute_replica_lag_ms(payload), Some(4_000));
+        }
+
+        #[test]
+        fn compute_replica_lag_returns_none_for_master_with_no_slaves() {
+            let payload = "# Replication\r\nrole:master\r\nconnected_slaves:0\r\n";
+            assert_eq!(compute_replica_lag_ms(payload), None);
+        }
+
+        #[test]
+        fn compute_replica_lag_returns_none_for_replica_role() {
+            // An instance configured as a replica won't have `slaveN`
+            // lines — it'll have `master_link_status` instead. We
+            // surface `None` rather than guessing.
+            let payload = "# Replication\r\nrole:slave\r\nmaster_link_status:up\r\n";
+            assert_eq!(compute_replica_lag_ms(payload), None);
+        }
+
+        #[tokio::test]
+        async fn health_against_unreachable_server_reports_open_circuit() {
+            let cfg = RedisConfig {
+                url: "redis://127.0.0.1:1".into(),
+                pool_size: 1,
+                timeout: Duration::from_millis(50),
+                cluster: false,
+            };
+            let backend = RedisBackend::connect(cfg).expect("pool builds");
+            let h = backend.health().await;
+            assert_eq!(h.backend, "redis");
+            assert!(!h.connected, "unreachable server must report disconnected");
+            assert!(matches!(h.circuit, CircuitState::Open { .. }));
+            // No INFO ran — version stays None.
+            assert!(h.server_version.is_none());
+            assert!(h.key_count.is_none());
+        }
+
+        #[tokio::test]
+        async fn health_caches_within_ttl_window() {
+            // Two consecutive calls must return the same Instant-backed
+            // snapshot when separated by less than HEALTH_CACHE_TTL.
+            // We can't easily verify that no network round-trip ran
+            // without a mock, so we exercise the code path instead.
+            let cfg = RedisConfig {
+                url: "redis://127.0.0.1:1".into(),
+                pool_size: 1,
+                timeout: Duration::from_millis(50),
+                cluster: false,
+            };
+            let backend = RedisBackend::connect(cfg).expect("pool builds");
+            let h1 = backend.health().await;
+            let h2 = backend.health().await;
+            assert_eq!(h1, h2, "second call must return the cached snapshot");
         }
     }
 }

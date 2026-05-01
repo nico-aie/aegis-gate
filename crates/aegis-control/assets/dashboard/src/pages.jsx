@@ -1374,6 +1374,14 @@ function PageSettings() {
   const isShadow = mode === 'log_only';
   const [busy, setBusy] = useStateP(false);
 
+  // SC-T3 — surface the L1 restart-only invariant to operators
+  // who land here looking for a "workers" slider. We only show
+  // the hint when /api/runtime actually answered (otherwise
+  // the dashboard is in fallback / loading state and a
+  // banner would be misleading).
+  const runtime = window.useRuntimeApi();
+  const showRuntimeHint = !!runtime?.data;
+
   // CI-T6 wires this single toggle to the live API. The other
   // controls below stay local-only (risk thresholds, honeypots,
   // response filtering) — wiring those needs new mutation
@@ -1435,6 +1443,21 @@ function PageSettings() {
             <div>Detection events still appear in Live Feed with their original action.</div>
           </div>
           <span className="pill warn" style={{ alignSelf: 'flex-start' }}>ACTIVE</span>
+        </div>
+      )}
+
+      {showRuntimeHint && (
+        <div className="banner" style={{ marginBottom: 12, background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 10, display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+          <span style={{ color: 'var(--ink-dim)' }}>
+            Runtime sizing (workers, blocking threads, CPU affinity) is
+            restart-only.
+          </span>
+          <a
+            href="#/scaling"
+            style={{ color: 'var(--accent)', textDecoration: 'none', fontWeight: 600 }}
+          >
+            See the Scaling page →
+          </a>
         </div>
       )}
 
@@ -3241,8 +3264,333 @@ function DeletePoolModal({ name, refs, onCancel, onConfirm, busy }) {
   );
 }
 
+// ============== SC-T2 — Page: Scaling ==============
+//
+// Three-layer scaling visibility, stacked top-to-bottom:
+//   L1 — In-node tokio runtime (workers, blocking threads, affinity)
+//   L2 — Cross-node cluster (peers, leader, drain)
+//   L3 — Shared-state backend (Redis / in_memory health)
+//
+// Read-only except for the L2 "Drain this node" button which
+// POSTs to the existing audit-mutated /admin/drain endpoint.
+// L1 sizing is restart-only by design (tokio API doesn't permit
+// hot resize) — the page documents this rather than offering a
+// slider that would lie.
+
+function ScalingL1Card({ runtime }) {
+  const data = runtime?.data;
+  const hasData = !!data;
+  const affinityState = !hasData
+    ? 'unknown'
+    : data.cpu_affinity_active
+      ? 'active'
+      : data.cpu_affinity_requested
+        ? 'requested-inactive'
+        : 'off';
+  const affinityLabel = {
+    active: 'active',
+    'requested-inactive': 'requested · inactive',
+    off: 'off',
+    unknown: '—',
+  }[affinityState];
+  const affinityTone = {
+    active: 'up',
+    'requested-inactive': 'warn',
+    off: 'neutral',
+    unknown: 'neutral',
+  }[affinityState];
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Layer 1 · In-node workers</div>
+          <div className="card-sub">tokio runtime sizing · this node · restart-only</div>
+        </div>
+        <span className="pill neutral">L1</span>
+      </div>
+      {!hasData && (
+        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          Runtime info not available — endpoint may be loading.
+        </div>
+      )}
+      {hasData && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            <Stat
+              label="Workers"
+              value={data.workers}
+              sub={`of ${data.host_logical_cpus} logical CPUs`}
+            />
+            <Stat
+              label="Mode"
+              value={data.workers_mode === 'auto' ? 'auto' : 'fixed'}
+              tone={data.workers_mode === 'auto' ? 'up' : 'neutral'}
+            />
+            <Stat
+              label="Blocking pool"
+              value={data.blocking_threads}
+              sub={`${data.stack_size_kb} KiB stack`}
+            />
+            <Stat
+              label="CPU affinity"
+              value={affinityLabel}
+              tone={affinityTone}
+            />
+          </div>
+          <div style={{ marginTop: 10, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 11, color: 'var(--ink-dim)' }}>
+            Restart required to change. Edit the <code>runtime:</code> block in <code>waf.yaml</code>.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ScalingL2Card({ cluster, onDrain, draining }) {
+  const peers = cluster?.data?.peers || [];
+  const ourNode = cluster?.data?.our_node;
+  const isLeader = cluster?.data?.is_leader;
+  const [confirmStep, setConfirmStep] = useStateP(0); // 0 idle, 1 first, 2 final
+  const [drainResult, setDrainResult] = useStateP(null);
+
+  const onConfirmFirst = () => setConfirmStep(1);
+  const onCancel = () => setConfirmStep(0);
+  const onConfirmFinal = async () => {
+    setConfirmStep(0);
+    setDrainResult({ pending: true });
+    const res = await onDrain();
+    setDrainResult(res);
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Layer 2 · Cluster peers</div>
+          <div className="card-sub">
+            {peers.length} {peers.length === 1 ? 'peer' : 'peers'}
+            {ourNode ? ` · this node ${ourNode}${isLeader ? ' · leader' : ''}` : ' · standalone'}
+          </div>
+        </div>
+        <span className="pill neutral">L2</span>
+      </div>
+      {peers.length === 0 && (
+        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          No cluster peers — running standalone.
+        </div>
+      )}
+      {peers.length > 0 && (
+        <table className="data-table" style={{ width: '100%', fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left' }}>Node</th>
+              <th style={{ textAlign: 'left' }}>State</th>
+              <th style={{ textAlign: 'right' }}>Last heartbeat</th>
+              <th style={{ textAlign: 'left' }}>Role</th>
+            </tr>
+          </thead>
+          <tbody>
+            {peers.map(p => {
+              const isMe = p.node_id === ourNode;
+              return (
+                <tr key={p.node_id} style={isMe ? { background: 'var(--surface-3)' } : undefined}>
+                  <td>
+                    <code>{p.node_id}</code>
+                    {isMe && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--ink-dim)' }}>(this)</span>}
+                  </td>
+                  <td>
+                    <span className={`pill ${p.healthy ? 'up' : 'down'}`}>
+                      {p.healthy ? 'healthy' : 'down'}
+                    </span>
+                  </td>
+                  <td style={{ textAlign: 'right' }} className="num">
+                    {p.last_heartbeat_age_s != null ? `${p.last_heartbeat_age_s}s ago` : '—'}
+                  </td>
+                  <td>{p.leader ? <span className="pill solid-yellow">leader</span> : <span className="dim">replica</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--hairline)' }}>
+        {confirmStep === 0 && (
+          <>
+            <button
+              className="btn"
+              disabled={draining}
+              onClick={onConfirmFirst}
+            >
+              Drain this node
+            </button>
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              Flips readiness to 503 — the load balancer pulls this node within one health-check interval.
+            </span>
+          </>
+        )}
+        {confirmStep === 1 && (
+          <>
+            <span style={{ fontSize: 12, color: 'var(--warn)' }}>
+              Confirm — drain {ourNode || 'this node'}?
+            </span>
+            <button className="btn" onClick={onCancel}>Cancel</button>
+            <button className="btn solid-yellow" onClick={onConfirmFinal}>
+              Yes, drain
+            </button>
+          </>
+        )}
+        {drainResult?.pending && (
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Draining…</span>
+        )}
+        {drainResult && !drainResult.pending && drainResult.status >= 200 && drainResult.status < 300 && (
+          <span className="pill up">Drained — readiness now 503</span>
+        )}
+        {drainResult && !drainResult.pending && (drainResult.status < 200 || drainResult.status >= 300) && (
+          <span className="pill down">Drain failed (HTTP {drainResult.status || '—'})</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScalingL3Card({ state }) {
+  const data = state?.data;
+  const hasData = !!data;
+  const backend = data?.backend ?? 'unknown';
+  const connected = !!data?.connected;
+  const circuit = data?.circuit?.state ?? 'closed';
+  const circuitTone = circuit === 'closed' ? 'up' : circuit === 'half_open' ? 'warn' : 'down';
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <div className="card-title">Layer 3 · Shared state</div>
+          <div className="card-sub">
+            backend · {backend}
+            {hasData && ` · ${connected ? 'connected' : 'disconnected'}`}
+            {data?.server_version && ` · v${data.server_version}`}
+          </div>
+        </div>
+        <span className="pill neutral">L3</span>
+      </div>
+      {!hasData && (
+        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          State endpoint loading…
+        </div>
+      )}
+      {hasData && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 10 }}>
+            <Stat
+              label="Connection"
+              value={connected ? 'live' : 'down'}
+              tone={connected ? 'up' : 'down'}
+            />
+            <Stat
+              label="Circuit"
+              value={circuit.replace('_', ' ')}
+              tone={circuitTone}
+              sub={data?.circuit?.last_open_at_unix_ms ? new Date(data.circuit.last_open_at_unix_ms).toLocaleTimeString() : undefined}
+            />
+            <Stat
+              label="Keys"
+              value={data?.key_count != null ? data.key_count.toLocaleString() : '—'}
+              sub="DBSIZE"
+            />
+            <Stat
+              label="Replica lag"
+              value={data?.replica_lag_ms != null ? `${data.replica_lag_ms} ms` : '—'}
+              tone={data?.replica_lag_ms == null ? 'neutral' : data.replica_lag_ms > 1000 ? 'warn' : 'up'}
+            />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontSize: 12 }}>
+            <LatencyChip label="p50" us={data?.latency?.p50_us} />
+            <LatencyChip label="p95" us={data?.latency?.p95_us} />
+            <LatencyChip label="p99" us={data?.latency?.p99_us} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, sub, tone }) {
+  return (
+    <div style={{ padding: 10, background: 'var(--canvas-2)', borderRadius: 6 }}>
+      <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div className="num" style={{ fontSize: 18, fontWeight: 600, color: tone ? `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : tone === 'down' ? 'down' : 'ink'})` : 'var(--ink)' }}>
+        {value}
+      </div>
+      {sub && <div style={{ fontSize: 10, color: 'var(--ink-dim)', marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function LatencyChip({ label, us }) {
+  const display = us == null
+    ? '—'
+    : us < 1000
+      ? `${us} µs`
+      : us < 1_000_000
+        ? `${(us / 1000).toFixed(1)} ms`
+        : `${(us / 1_000_000).toFixed(2)} s`;
+  return (
+    <div style={{ padding: 8, background: 'var(--canvas-2)', borderRadius: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <span style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase' }}>{label}</span>
+      <span className="num" style={{ fontSize: 13, fontWeight: 600 }}>{display}</span>
+    </div>
+  );
+}
+
+function PageScaling() {
+  const runtime = window.useRuntimeApi();
+  const cluster = window.useClusterApi();
+  const state = window.useStateApi();
+  const [draining, setDraining] = useStateP(false);
+
+  const onDrain = async () => {
+    setDraining(true);
+    try {
+      const r = await window.adminDrainPost();
+      return r;
+    } finally {
+      setDraining(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Scaling</h1>
+          <p className="page-subtitle">
+            Three-layer scaling visibility · in-node workers, cluster peers, shared state
+          </p>
+        </div>
+        <div className="page-actions">
+          <button className="btn" onClick={() => {
+            runtime.reload && runtime.reload();
+            cluster.reload && cluster.reload();
+            state.reload && state.reload();
+          }}>
+            <window.I.Refresh /> Refresh
+          </button>
+        </div>
+      </div>
+
+      <ScalingL1Card runtime={runtime} />
+      <ScalingL2Card cluster={cluster} onDrain={onDrain} draining={draining} />
+      <ScalingL3Card state={state} />
+    </>
+  );
+}
+
 Object.assign(window, {
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
   PageUpstreams,
+  // SC-T2 — Scaling page (L1 workers + L2 cluster + L3 state).
+  PageScaling,
 });

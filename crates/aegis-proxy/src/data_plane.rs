@@ -65,6 +65,11 @@ pub(crate) async fn handle_data_request(
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
+    // MTLS-T4 — per-connection client identity. Plain-HTTP +
+    // anonymous-mTLS connections pass `&ClientIdentity::Anonymous`;
+    // the policy gate below blocks the request if the resolved
+    // route's `auth_required` excludes that identity kind.
+    identity: &aegis_core::ClientIdentity,
 ) -> (
     Response<Full<Bytes>>,
     aegis_control::interop::headers::DecisionTag,
@@ -82,6 +87,7 @@ pub(crate) async fn handle_data_request(
         bus,
         upstream_ctx,
         detector_hit_metrics,
+        identity,
     ).await;
     tracing::Span::current().record("action", result.1.action.as_str());
     result
@@ -101,6 +107,7 @@ pub(crate) async fn handle_data_request_inner(
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
+    identity: &aegis_core::ClientIdentity,
 ) -> (
     Response<Full<Bytes>>,
     aegis_control::interop::headers::DecisionTag,
@@ -393,7 +400,7 @@ pub(crate) async fn handle_data_request_inner(
             // its outcome onto a status code; we infer the
             // contract action from that (allow on 2xx/3xx,
             // block / circuit_breaker / timeout otherwise).
-            forward_allow_to_upstream(req, upstream_ctx).await
+            forward_allow_to_upstream(req, upstream_ctx, identity).await
         }
     }
 }
@@ -419,6 +426,7 @@ pub(crate) async fn handle_data_request_inner(
 pub(crate) async fn forward_allow_to_upstream(
     req: hyper::Request<hyper::body::Incoming>,
     ctx: &Arc<crate::proxy::ProxyContext>,
+    identity: &aegis_core::ClientIdentity,
 ) -> (
     Response<Full<Bytes>>,
     aegis_control::interop::headers::DecisionTag,
@@ -449,6 +457,39 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     };
     tracing::Span::current().record("upstream", route_ctx.upstream.as_str());
+
+    // MTLS-T4 — route-scoped client-identity gate.
+    //
+    // `auth_required` empty → any identity admitted (default
+    // open). Non-empty → the identity's `kind()` must appear in
+    // the list. Mismatch returns 403 with rule_id
+    // `mtls_required`; the contract decision is `block` so
+    // upstream rate-limit / risk surfaces still see the
+    // rejection. Body is minimal — operators read the audit
+    // chain for the principal that was rejected.
+    if !route_ctx.auth_required.is_empty()
+        && !route_ctx
+            .auth_required
+            .iter()
+            .any(|kind| kind == identity.kind())
+    {
+        tracing::Span::current().record("outcome", "mtls-required");
+        tracing::debug!(
+            route_id = %route_ctx.route_id,
+            required = ?route_ctx.auth_required,
+            actual_kind = identity.kind(),
+            principal = ?identity.principal(),
+            "blocked: route requires authenticated identity",
+        );
+        let resp = Response::builder()
+            .status(hyper::StatusCode::FORBIDDEN)
+            .header("content-type", "text/plain; charset=utf-8")
+            .body(Full::new(Bytes::from(
+                "forbidden: route requires authenticated client\n",
+            )))
+            .unwrap();
+        return (resp, DecisionTag::block("mtls_required"));
+    }
 
     if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
         if !cb.allow_request() {

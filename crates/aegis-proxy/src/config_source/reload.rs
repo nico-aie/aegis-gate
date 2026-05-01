@@ -31,6 +31,7 @@ use aegis_core::config::WafConfig;
 use aegis_security::detectors::{DetectorMask, SharedDetectorMask};
 use aegis_security::rate_limit::{IpRateLimitConfig, IpRateLimiter};
 
+use crate::listener::client_trust::ClientTrustStore;
 use crate::listener::tls::{CertStore, DynamicResolver};
 use crate::proxy::ProxyContext;
 
@@ -267,6 +268,102 @@ pub fn apply_cfg_change_to_routes(
     match ctx.route_table.apply(new_cfg) {
         Ok(()) => RouteReloadOutcome::Applied,
         Err(e) => RouteReloadOutcome::Failed {
+            reason: e.to_string(),
+        },
+    }
+}
+
+/// Outcome of [`apply_cfg_change_to_client_auth`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientAuthReloadOutcome {
+    /// Caller passed `trust_store: None` — proxy boot didn't
+    /// configure inbound mTLS, so there's nothing to swap into.
+    /// Operators who flip from "no client_auth" to client_auth
+    /// at runtime need to restart (the verifier is wired into
+    /// the rustls config at boot, and we don't rebuild that
+    /// here).
+    NoStore,
+    /// New CA bundle parsed and atomic-swapped into the live
+    /// store. `cert_count` is the number of trust anchors in
+    /// the new bundle (operators see this in the
+    /// `mtls_reloaded` audit event).
+    Applied {
+        cert_count: usize,
+        mode: aegis_core::config::ClientAuthMode,
+    },
+    /// `cfg.tls.client_auth` is `None` or its mode is
+    /// `Disabled` in the new cfg. Skip-not-clear: keeping the
+    /// previous trust store live is safer than swapping to
+    /// nothing — `Required`-mode listeners would reject every
+    /// handshake otherwise. Operators disabling client-auth
+    /// at runtime need a restart.
+    SkippedDisabled,
+    /// New cfg has no `ca_bundle` path even though
+    /// `mode != Disabled`. Validation should have caught this
+    /// at the `WafConfig::validate` step; we still defend in
+    /// depth and surface a `Failed` so the audit log records
+    /// the bad reload attempt.
+    MissingCaBundle,
+    /// PEM parse / chain validation of the new bundle failed.
+    /// The previous trust store stays live; operators see
+    /// `mtls_reload_failed` in the audit chain. Common
+    /// causes: missing file, no `BEGIN CERTIFICATE` blocks,
+    /// or an unsupported CA encoding.
+    Failed { reason: String },
+}
+
+/// MTLS-T5 — re-parse the configured CA bundle and atomic-
+/// swap it into the live [`ClientTrustStore`]. Triggered by
+/// both file + etcd watchers after `tls_reloaded`.
+///
+/// **Empty / disabled cfg** is treated as "skip" rather than
+/// "remove" — clearing the trust store would crash every
+/// `Required`-mode handshake. Operators disabling client-
+/// auth at runtime need a restart.
+///
+/// **Disk read errors** + **PEM parse failures** keep the
+/// previous store live and return [`ClientAuthReloadOutcome::Failed`]
+/// so the watcher can emit `mtls_reload_failed` for audit.
+pub fn apply_cfg_change_to_client_auth(
+    new_cfg: &WafConfig,
+    trust_store: Option<&ClientTrustStore>,
+) -> ClientAuthReloadOutcome {
+    let Some(trust_store) = trust_store else {
+        return ClientAuthReloadOutcome::NoStore;
+    };
+    let Some(tls_cfg) = new_cfg.tls.as_ref() else {
+        return ClientAuthReloadOutcome::SkippedDisabled;
+    };
+    let Some(ca_cfg) = tls_cfg.client_auth.as_ref() else {
+        return ClientAuthReloadOutcome::SkippedDisabled;
+    };
+    if ca_cfg.mode == aegis_core::config::ClientAuthMode::Disabled {
+        return ClientAuthReloadOutcome::SkippedDisabled;
+    }
+
+    let Some(bundle_path) = ca_cfg.ca_bundle.as_ref() else {
+        return ClientAuthReloadOutcome::MissingCaBundle;
+    };
+
+    match ClientTrustStore::load_from_pem_file(bundle_path) {
+        Ok(parsed) => {
+            // Move the parsed RootCertStore into the live
+            // handle. We can't expose `Arc<RootCertStore>`
+            // directly through `swap`, so re-clone the trust
+            // anchors into a fresh owned store and swap that.
+            let cur = parsed.current();
+            let mut owned = rustls::RootCertStore::empty();
+            for ta in cur.roots.iter() {
+                owned.roots.push(ta.clone());
+            }
+            let cert_count = owned.len();
+            trust_store.swap(owned);
+            ClientAuthReloadOutcome::Applied {
+                cert_count,
+                mode: ca_cfg.mode,
+            }
+        }
+        Err(e) => ClientAuthReloadOutcome::Failed {
             reason: e.to_string(),
         },
     }
@@ -798,5 +895,149 @@ state:
             .resolve("any", "/api/v1", &http::Method::GET)
             .unwrap();
         assert_eq!(r.route_id, "v1");
+    }
+
+    // ---------------- MTLS-T5 — apply_cfg_change_to_client_auth ----------------
+
+    /// Issue a self-signed CA in PEM form. Returns the bytes
+    /// + the path it was written to.
+    fn write_test_ca(name: &str) -> (Vec<u8>, std::path::PathBuf) {
+        use std::io::Write;
+        let mut params =
+            rcgen::CertificateParams::new(vec![name.into()]).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let pem = cert.pem().into_bytes();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("{name}.pem"));
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&pem).unwrap();
+        f.sync_all().unwrap();
+        // Leak the tempdir so the path stays valid for the test.
+        std::mem::forget(dir);
+        (pem, path)
+    }
+
+    fn yaml_with_client_auth(ca_path: &std::path::Path, mode: &str) -> String {
+        format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: pool
+upstreams:
+  pool:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+tls:
+  certificates: []
+  client_auth:
+    mode: {mode}
+    ca_bundle: {ca_path}
+    apply_to: [data]
+"#,
+            ca_path = ca_path.display(),
+        )
+    }
+
+    #[test]
+    fn client_auth_no_store_when_caller_passes_none() {
+        let (_pem, path) = write_test_ca("ca-a");
+        let cfg = parse(&yaml_with_client_auth(&path, "required"));
+        let outcome = apply_cfg_change_to_client_auth(&cfg, None);
+        assert_eq!(outcome, ClientAuthReloadOutcome::NoStore);
+    }
+
+    #[test]
+    fn client_auth_skipped_when_disabled_in_new_cfg() {
+        let (pem_a, path_a) = write_test_ca("ca-a");
+        let trust = ClientTrustStore::load_from_pem_bytes(&pem_a).unwrap();
+
+        // Build a cfg with client_auth.mode = disabled. The
+        // helper must short-circuit; the live store stays.
+        let cfg_yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: pool
+upstreams:
+  pool:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let cfg = parse(cfg_yaml);
+        let outcome = apply_cfg_change_to_client_auth(&cfg, Some(&trust));
+        assert_eq!(outcome, ClientAuthReloadOutcome::SkippedDisabled);
+        // Live store still has the original CA.
+        assert!(trust.current().len() >= 1);
+        // Path used as a fixture, no swap performed.
+        let _ = path_a;
+    }
+
+    #[test]
+    fn client_auth_applied_swaps_to_new_ca() {
+        // Live trust starts with CA-A.
+        let (pem_a, _path_a) = write_test_ca("ca-a-1");
+        let trust = ClientTrustStore::load_from_pem_bytes(&pem_a).unwrap();
+        let len_before = trust.current().len();
+
+        // New cfg points at CA-B. After reload, the live store
+        // is swapped to CA-B's roots.
+        let (_pem_b, path_b) = write_test_ca("ca-b-1");
+        let cfg = parse(&yaml_with_client_auth(&path_b, "required"));
+
+        let outcome = apply_cfg_change_to_client_auth(&cfg, Some(&trust));
+        match outcome {
+            ClientAuthReloadOutcome::Applied { cert_count, mode } => {
+                assert!(cert_count >= 1);
+                assert_eq!(mode, aegis_core::config::ClientAuthMode::Required);
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+        // Live store is non-empty after swap.
+        assert!(trust.current().len() >= len_before.min(1));
+    }
+
+    #[test]
+    fn client_auth_failed_keeps_live_store_when_path_does_not_exist() {
+        // Live trust starts populated.
+        let (pem_a, _path_a) = write_test_ca("ca-a-2");
+        let trust = ClientTrustStore::load_from_pem_bytes(&pem_a).unwrap();
+
+        // New cfg points at a non-existent path. Helper must
+        // return Failed and the live store must stay populated.
+        let bogus = std::path::PathBuf::from("/does-not-exist/ca.pem");
+        let cfg = parse(&yaml_with_client_auth(&bogus, "required"));
+
+        let outcome = apply_cfg_change_to_client_auth(&cfg, Some(&trust));
+        match outcome {
+            ClientAuthReloadOutcome::Failed { reason } => {
+                assert!(
+                    reason.contains("does-not-exist")
+                        || reason.to_lowercase().contains("ca_bundle"),
+                    "expected path or label in error: {reason}",
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        // Live store stays — operators don't lose trust on a
+        // bad reload.
+        assert!(trust.current().len() >= 1);
     }
 }

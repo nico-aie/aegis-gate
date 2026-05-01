@@ -264,6 +264,7 @@ mod tests {
             failure_mode: FailureMode::FailOpen,
             upstream: "pool".into(),
             tenant_id: None,
+            auth_required: Vec::new(),
         }
     }
 
