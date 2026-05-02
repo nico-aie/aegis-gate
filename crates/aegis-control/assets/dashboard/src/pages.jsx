@@ -2270,12 +2270,49 @@ function PageSettings() {
   const runtime = window.useRuntimeApi();
   const showRuntimeHint = !!runtime?.data;
 
-  // CI-T6 wires this single toggle to the live API. The other
-  // controls below stay local-only (risk thresholds, honeypots,
-  // response filtering) — wiring those needs new mutation
-  // endpoints that aren't shipped yet.
-  const [allow, setAllow] = useStateP(51);
-  const [challenge, setChallenge] = useStateP(75);
+  // CQF-T8 — risk thresholds wired to /api/risk/thresholds.
+  // The endpoint shipped via CI-T12; this wiring closes the
+  // CQA-T10 partial. The slider's "Allow ≤ X" is challenge_at-1
+  // and "Challenge ≤ Y" is block_at-1; we mirror the API's
+  // `challenge_at` / `block_at` directly into local state.
+  const riskApi = window.useRiskThresholdsApi();
+  const [allow, setAllow] = useStateP(0);
+  const [challenge, setChallenge] = useStateP(0);
+  const [riskBusy, setRiskBusy] = useStateP(false);
+  // Sync local sliders with whatever the live API reports —
+  // first load, hot-reload, or another operator's PUT.
+  useEffectP(() => {
+    if (!riskApi.data) return;
+    const ca = Number(riskApi.data.challenge_at);
+    const ba = Number(riskApi.data.block_at);
+    if (Number.isFinite(ca)) setAllow(Math.max(0, ca - 1));
+    if (Number.isFinite(ba)) setChallenge(Math.max(0, ba - 1));
+  }, [riskApi.data?.challenge_at, riskApi.data?.block_at]);
+
+  async function saveRiskThresholds() {
+    if (riskBusy) return;
+    setRiskBusy(true);
+    try {
+      const body = {
+        challenge_at: allow + 1,
+        block_at: challenge + 1,
+        max: Number(riskApi.data?.max) || 100,
+      };
+      const r = await window.settingsRiskThresholdsPut(body);
+      if (r && r.ok) {
+        window.aegisToast(`Risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
+        riskApi.reload && riskApi.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Risk threshold save failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Risk threshold error: ${e.message || e}`, 'err');
+    } finally {
+      setRiskBusy(false);
+    }
+  }
+
   const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
   const [stackTraces, setStackTraces] = useStateP(true);
   const [redactJSON, setRedactJSON] = useStateP(true);
@@ -2371,25 +2408,41 @@ function PageSettings() {
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div className="card-title">Risk thresholds</div>
-          <span
-            className="pill warn"
-            title="Sliders are local-only UI state. The backend endpoint PUT /api/risk/thresholds is shipped (CI-T12) but the slider isn't wired to it yet — moving them does NOT change live thresholds."
-          >not wired</span>
+          <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`}>
+            {riskApi.error ? 'fetch failed' : 'live'}
+          </span>
+          {riskApi.data && (
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 'auto' }}>
+              live: challenge ≥ {riskApi.data.challenge_at} · block ≥ {riskApi.data.block_at}
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
               <span>Allow (0 – {allow})</span><span className="num">{allow}</span>
             </div>
-            <input type="range" min="0" max="100" value={allow} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
+            <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
           </div>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
               <span>Challenge ({allow + 1} – {challenge})</span><span className="num">{challenge}</span>
             </div>
-            <input type="range" min={allow+1} max="100" value={challenge} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
+            <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
           </div>
-          <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>Block threshold: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span></div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+              Block threshold: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span>
+            </div>
+            <button
+              className="btn primary"
+              disabled={riskBusy}
+              onClick={saveRiskThresholds}
+              style={{ fontSize: 11, padding: '4px 12px' }}
+            >
+              Save thresholds
+            </button>
+          </div>
         </div>
       </div>
 
