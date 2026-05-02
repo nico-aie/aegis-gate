@@ -186,7 +186,9 @@ check '§2.3' 'capabilities body has active.overrides' \
 # §2.4 — reset_state must be synchronous + atomic + preserve audit log.
 # Drive 1 attack so the audit log is non-empty, then reset_state and
 # assert the audit log is *not* truncated (line count >= before).
-curl -sk -o /dev/null "$DATA/?id=1' OR '1'='1" || true
+# Quotes + spaces are percent-encoded so curl 8.1+ doesn't reject the
+# URL as "malformed input" before the request leaves the client.
+curl -sk -o /dev/null "$DATA/?id=1%27%20OR%20%271%27=%271" || true
 sleep 0.5
 audit_before=$(count_audit_lines)
 
