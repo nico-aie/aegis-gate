@@ -174,11 +174,11 @@ above is a code change, this is mostly YAML + workflows.
 
 | Task | Outcome |
 |---|---|
-| **B6-T1** Production Dockerfile | Multi-stage build, distroless runtime, non-root, signed image. |
-| **B6-T2** Helm chart | `deploy/helm/aegis-gate/` with values for the listeners, state backend, secret resolver, and ingress. |
-| **B6-T3** GitHub Actions CI | Workflow runs the four CI stages from [`tests/README.md` § 9](../../tests/README.md). Caches cargo. |
-| **B6-T4** HSM secret resolver | Last secret-manager driver. PKCS#11 against a real HSM. |
-| **B6-T5** Binary-handover via fd-passing | Replace the supervised re-exec pattern with `SO_REUSEPORT` + fd handoff so in-flight connections survive a restart. |
+| **B6-T1** ✅ Production Dockerfile | Multi-stage build, distroless runtime, non-root, signed image. |
+| **B6-T2** ✅ Helm chart | `deploy/helm/aegis-gate/` with values for the listeners, state backend, secret resolver, and ingress. Chart `lint` + `template` clean; `appVersion` synced to Cargo.toml. CI-gated. |
+| **B6-T3** ✅ GitHub Actions CI | Workflow runs lint + test (matrix) + smoke + **v2.3 contract gate** (Round-2 official regression) + helm lint + dockerfile (slow lane). All five gate `ci-pass`. |
+| **B6-T4** HSM secret resolver | Last secret-manager driver. PKCS#11 against a real HSM. *(Deferred)* |
+| **B6-T5** Binary-handover via fd-passing | Replace the supervised re-exec pattern with `SO_REUSEPORT` + fd handoff so in-flight connections survive a restart. *(Deferred)* |
 
 **Doc updates on close:** flip
 [`zero-downtime-ops.md`](../../docs/control-plane/zero-downtime-ops.md)
