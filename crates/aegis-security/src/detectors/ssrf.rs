@@ -39,13 +39,19 @@ impl Detector for SsrfDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        // Check query params for URLs (URL-decoded).
+        // SSRF lives in attacker-controlled URL strings: query params,
+        // body, and forwarding headers. Do NOT scan `req.uri.to_string()`
+        // — over HTTP/2 the request URI serialises to absolute form
+        // (`https://<authority>/<path>`) which would self-trip on every
+        // request whose authority is `localhost` / `127.0.0.1` / etc.
+        // The path component is also covered by the query+path scan
+        // below where the URL fragment lives.
         if let Some(query) = req.uri.query() {
             check_ssrf(&super::url_decode(query), "query", &mut signals);
         }
-
-        let uri = super::url_decode(&req.uri.to_string());
-        check_ssrf(&uri, "uri", &mut signals);
+        if !req.uri.path().is_empty() {
+            check_ssrf(&super::url_decode(req.uri.path()), "path", &mut signals);
+        }
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
         if !body.is_empty() {
@@ -188,4 +194,38 @@ mod tests {
     negative!(clean_favicon, "/favicon.ico");
     negative!(clean_mailto, "/contact?email=user@example.com");
     negative!(clean_auth, "/auth/callback");
+
+    // Regression: prior to 2026-05-02 the detector scanned
+    // `req.uri.to_string()` which over HTTP/2 returns the absolute
+    // form `https://<authority>/<path>` — every request whose
+    // authority resolved to `localhost` / `127.0.0.1` / a private IP
+    // self-tripped (false positive that broke `make smoke`).
+    // The detector now scans query / path / body / forwarding
+    // headers only — not the request URL itself.
+    #[test]
+    fn does_not_self_trip_on_localhost_authority_via_uri() {
+        let d = SsrfDetector;
+        // Simulate what http::Uri::to_string() produces under HTTP/2
+        // when authority + path are both present.
+        let u: http::Uri = "https://localhost:8443/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).is_empty(),
+            "self-targeting request should NOT trip SSRF (authority is the WAF itself)"
+        );
+    }
+
+    #[test]
+    fn does_not_self_trip_on_127_authority() {
+        let d = SsrfDetector;
+        let u: http::Uri = "http://127.0.0.1:8080/api/profile".parse().unwrap();
+        let m = http::Method::GET;
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "self-targeting 127.0.0.1 must not SSRF");
+    }
 }

@@ -143,6 +143,21 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
+// Default catch-all for /. Returns a friendly landing JSON so
+// `curl localhost:8080/` succeeds rather than 404'ing on the
+// stub mux.
+func handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"service": "aegis-fast-upstream",
+		"status":  "ok",
+		"hint":    "see /health, /game/list, /api/profile, /sitemap.xml",
+	})
+}
+
 func handleStatic(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = fmt.Fprint(w, "// static asset placeholder\n")
@@ -172,6 +187,7 @@ func handleSitemap(w http.ResponseWriter, r *http.Request) {
 func main() {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/login", handleLogin)
 	mux.HandleFunc("/otp", handleOTP)
 	mux.HandleFunc("/api/profile", handleProfile)

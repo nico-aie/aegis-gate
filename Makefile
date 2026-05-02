@@ -62,7 +62,8 @@ SMOKE_ADMIN      ?= http://localhost:9443
 
 .PHONY: help setup cert build build-debug run run-dev run-strict run-throughput \
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
-        dashboard redis-up redis-down obs-up obs-down urls logs
+        dashboard redis-up redis-down obs-up obs-down urls logs \
+        upstream-build upstream-up upstream-down
 
 help:
 	@awk 'BEGIN { FS = ":.*##" } \
@@ -71,11 +72,12 @@ help:
 
 ##@ First-light
 
-setup: cert build ## Generate dev cert + release build (one-shot fresh clone)
+setup: cert build ## Generate dev cert + release build + (optional) build mock upstream
+	@$(MAKE) --no-print-directory upstream-build 2>/dev/null || true
 	@echo
 	@echo "Setup done. Boot:"
-	@echo "  make run-dev    # dev profile (Redis auto-starts)"
-	@echo "  make run        # prod-balanced (Redis auto-starts)"
+	@echo "  make run-dev    # dev profile (Redis + mock upstream auto-start)"
+	@echo "  make run        # prod-balanced (Redis auto-starts; you wire upstream)"
 
 cert: $(DEV_CRT) ## Generate self-signed dev TLS cert (idempotent)
 
@@ -102,7 +104,7 @@ dashboard: ## Rebuild the dashboard JSX bundle (run after editing src/*.jsx)
 run: $(WAF_BIN) cert redis-up ## Boot against $(CONFIG) — default: prod-balanced
 	@$(WAF_BIN) run --config $(CONFIG)
 
-run-dev: $(WAF_BIN) cert redis-up ## Boot against config/dev.yaml (auto-starts Redis)
+run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts Redis + mock upstream)
 	@$(WAF_BIN) run --config $(CONFIG_DEV)
 
 run-strict: $(WAF_BIN) cert redis-up ## Boot against prod-strict profile — compliance-tightened
@@ -131,6 +133,31 @@ redis-up: ## Start the local dev Redis (idempotent — auto-invoked by all run-*
 
 redis-down: ## Stop the local dev Redis
 	@docker stop aegis-redis 2>/dev/null || true
+
+# Mock upstream — Go-based, handles 50k+ RPS, used by run-dev so the
+# data plane has something to forward to. Production profiles wire
+# their own upstreams via config; this target is dev-only.
+UPSTREAM_BIN_DEV := /tmp/aegis-fast-upstream
+
+upstream-build: ## Build the bundled Go mock upstream (one-time, ~5s)
+	@command -v go >/dev/null || { echo "FAIL: go not installed; brew install go (or skip — run-dev still boots, smoke test will 502 on data-plane)"; exit 1; }
+	@go build -o $(UPSTREAM_BIN_DEV) tests/hackathon/upstream/fast-upstream.go
+	@echo "built $(UPSTREAM_BIN_DEV)"
+
+upstream-up: ## Start the dev mock upstream on :9999 (idempotent — auto-invoked by run-dev)
+	@if lsof -nP -iTCP:9999 -sTCP:LISTEN >/dev/null 2>&1; then \
+	    : ;\
+	elif [ -x "$(UPSTREAM_BIN_DEV)" ]; then \
+	    nohup $(UPSTREAM_BIN_DEV) >/tmp/aegis-fast-upstream.log 2>&1 & \
+	    sleep 0.3; \
+	    echo "upstream up (logs: /tmp/aegis-fast-upstream.log)"; \
+	else \
+	    echo "Note: $(UPSTREAM_BIN_DEV) not built. Run 'make upstream-build' first to enable a mock upstream — without it, the data-plane smoke check will return 502 (which is also valid: the WAF is healthy, the upstream is just absent)."; \
+	fi
+
+upstream-down: ## Stop the dev mock upstream
+	@pkill -f $(UPSTREAM_BIN_DEV) 2>/dev/null || true
+	@echo "upstream stopped"
 
 obs-up: redis-up ## Start the full observability stack (Redis + Prometheus + Grafana + Jaeger)
 	@docker compose -f deploy/docker-compose.dev.yml up -d prometheus grafana jaeger 2>&1 | grep -v "Network\|orphan" || true
@@ -186,13 +213,23 @@ clippy: ## cargo clippy --workspace -- -D warnings
 fmt: ## cargo fmt --all
 	@$(CARGO) fmt --all
 
-smoke: ## curl the data plane + admin health (assumes `make run` is up)
+smoke: ## curl the data plane + admin health (assumes `make run-dev` is up)
 	@printf "HTTPS  %-32s " "$(SMOKE_DATA_HTTPS)"
-	@curl -sk -o /dev/null -w "%{http_code}\n" $(SMOKE_DATA_HTTPS) || echo "DOWN"
+	@code=$$(curl -sk -o /dev/null -w "%{http_code}" --max-time 3 $(SMOKE_DATA_HTTPS) 2>/dev/null); \
+	    if [ "$$code" = "200" ]; then echo "$$code  ✓"; \
+	    elif [ "$$code" = "502" ]; then echo "$$code  (no upstream wired — run 'make upstream-up' or boot 'make run-dev')"; \
+	    elif [ "$$code" = "000" ] || [ -z "$$code" ]; then echo "DOWN  (TLS listener not bound — dev.yaml + cert needed; run 'make cert')"; \
+	    else echo "$$code"; fi
 	@printf "HTTP   %-32s " "$(SMOKE_DATA_HTTP)"
-	@curl -s  -o /dev/null -w "%{http_code}\n" $(SMOKE_DATA_HTTP) || echo "DOWN"
+	@code=$$(curl -s  -o /dev/null -w "%{http_code}" --max-time 3 $(SMOKE_DATA_HTTP) 2>/dev/null); \
+	    if [ "$$code" = "200" ]; then echo "$$code  ✓"; \
+	    elif [ "$$code" = "502" ]; then echo "$$code  (no upstream wired — run 'make upstream-up' or boot 'make run-dev')"; \
+	    elif [ "$$code" = "000" ] || [ -z "$$code" ]; then echo "DOWN  (WAF not running — start with 'make run-dev')"; \
+	    else echo "$$code"; fi
 	@printf "Admin  %-32s " "$(SMOKE_ADMIN)/healthz/ready"
-	@curl -s  -o /dev/null -w "%{http_code}\n" $(SMOKE_ADMIN)/healthz/ready || echo "DOWN"
+	@code=$$(curl -s  -o /dev/null -w "%{http_code}" --max-time 3 $(SMOKE_ADMIN)/healthz/ready 2>/dev/null); \
+	    if [ "$$code" = "200" ]; then echo "$$code  ✓"; \
+	    else echo "$${code:-DOWN}"; fi
 
 openapi-test: ## OpenAPI shape contract test (assumes `make run` is up)
 	@AEGIS_ADMIN=$(SMOKE_ADMIN) bash tests/api/openapi-shape.sh
