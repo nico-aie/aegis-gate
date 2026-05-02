@@ -37,13 +37,14 @@ const ACME_CHALLENGE_PREFIX: &str = "/.well-known/acme-challenge/";
 use crate::admin_get::admin_router;
 use crate::admin_login::{handle_admin_login, handle_admin_logout};
 use crate::admin_mutate::{
-    handle_admin_drain, handle_alert_ack, handle_alert_receiver_delete,
-    handle_alert_receiver_test, handle_alert_receivers_put, handle_detectors_put,
-    handle_loadmode_put, handle_logging_put, handle_mode_put,
-    handle_mtls_sans_delete, handle_mtls_sans_put, handle_mtls_sans_test,
-    handle_pool_delete, handle_pool_upsert, handle_risk_reset,
-    handle_risk_thresholds_put, handle_rules_delete, handle_rules_post,
-    handle_rules_put, handle_rules_toggle, handle_upstreams_config_put,
+    handle_access_list_delete, handle_access_list_post, handle_admin_drain,
+    handle_alert_ack, handle_alert_receiver_delete, handle_alert_receiver_test,
+    handle_alert_receivers_put, handle_detectors_put, handle_loadmode_put,
+    handle_logging_put, handle_mode_put, handle_mtls_sans_delete,
+    handle_mtls_sans_put, handle_mtls_sans_test, handle_pool_delete,
+    handle_pool_upsert, handle_risk_reset, handle_risk_thresholds_put,
+    handle_rules_delete, handle_rules_post, handle_rules_put,
+    handle_rules_toggle, handle_upstreams_config_put,
 };
 use crate::responses::{json_body_response, json_response};
 
@@ -233,6 +234,29 @@ pub(crate) async fn handle_admin_request(
                 if let Ok(seq) = seq_str.parse::<u64>() {
                     return handle_rollback(req, seq, services).await;
                 }
+            }
+        }
+    }
+
+    // CQF-T2 — Blacklist + Whitelist CRUD. Audit-mutated;
+    // CSRF-gated.
+    //   POST   /api/{blacklist,whitelist}        add a single entry
+    //   DELETE /api/{blacklist,whitelist}/{id}   remove a single entry
+    if method == hyper::Method::POST
+        && (path == "/api/blacklist" || path == "/api/whitelist")
+    {
+        let kind = if path == "/api/blacklist" { "blacklist" } else { "whitelist" };
+        return handle_access_list_post(req, kind, services).await;
+    }
+    if method == hyper::Method::DELETE {
+        if let Some(rest) = path.strip_prefix("/api/blacklist/") {
+            if !rest.is_empty() && !rest.contains('/') {
+                return handle_access_list_delete(req, "blacklist", rest, services).await;
+            }
+        }
+        if let Some(rest) = path.strip_prefix("/api/whitelist/") {
+            if !rest.is_empty() && !rest.contains('/') {
+                return handle_access_list_delete(req, "whitelist", rest, services).await;
             }
         }
     }

@@ -439,6 +439,30 @@ async function mtlsSansTest(san) {
   return { status: r.status, ...(await r.json().catch(() => ({}))) };
 }
 
+// CQF-T2 — Blacklist + Whitelist add / delete. Audit-mutated;
+// `kind` is `'blacklist'` or `'whitelist'`. The body shape is
+// the AccessListEntry the Rust store deserialises:
+//   { id, kind: 'ip'|'cidr'|'asn', value, note, expires_at?, bypass: [] }
+async function accessListAdd(kind, entry) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/${kind}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify(entry),
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
+async function accessListDelete(kind, id) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/${kind}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
+
 // CQF-T1 — admin logout. POSTs /admin/logout with the CSRF
 // header. The handler responds 204 + Set-Cookie clearing
 // both `aegis_session` and `aegis_csrf` so the browser
@@ -754,4 +778,6 @@ Object.assign(window, {
   useMtlsSansApi, mtlsSansPut, mtlsSansDelete, mtlsSansTest,
   // CQF-T1 — admin logout
   adminLogout,
+  // CQF-T2 — Blacklist + Whitelist add/delete
+  accessListAdd, accessListDelete,
 });

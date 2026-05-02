@@ -1689,6 +1689,179 @@ pub(crate) async fn handle_admin_drain(
 }
 
 // ---------------------------------------------------------------------------
+// CQF-T2 — Blacklist + Whitelist CRUD (audit-mutated)
+// ---------------------------------------------------------------------------
+
+/// Pick the right `AccessListStore` from `services` based on the
+/// `kind` discriminator. Returns the store + a stable lowercase
+/// label used in audit-chain `action` strings + a resource prefix.
+fn access_list_store(
+    kind: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Option<(std::sync::Arc<aegis_control::api::blacklist::AccessListStore>, &'static str)> {
+    match kind {
+        "blacklist" => Some((services.blacklist.clone(), "blacklist")),
+        "whitelist" => Some((services.whitelist.clone(), "whitelist")),
+        _ => None,
+    }
+}
+
+/// `POST /api/{blacklist,whitelist}` — add a single entry.
+/// Body: `{ "id":"<id>", "kind":"ip|cidr|asn", "value":"<v>",
+/// "note":"<>", "expires_at":"<rfc3339>"|null, "bypass":[…] }`.
+/// Audit-mutated; CSRF-gated. The store applies any compliance
+/// `expires_at` clamp before insert; the audit-chain entry shows
+/// the clamped value.
+pub(crate) async fn handle_access_list_post(
+    req: hyper::Request<hyper::body::Incoming>,
+    kind: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "access-list-post");
+
+    let Some((store, label)) = access_list_store(kind, services) else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(
+                format!("unknown access list kind '{kind}'"),
+            ),
+        );
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let parsed: aegis_control::api::blacklist::AccessListEntry =
+        match serde_json::from_str(body_str) {
+            Ok(e) => e,
+            Err(e) => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(
+                        format!("invalid {label} entry: {e}"),
+                    ),
+                );
+            }
+        };
+
+    let before = serde_json::Value::Null;
+    let after = serde_json::to_value(&parsed)
+        .unwrap_or(serde_json::Value::Null);
+    let resource = format!("/api/{label}");
+    let action = format!("{label}_add");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: &action,
+        reason: "operator added access-list entry",
+    };
+
+    let store_for_apply = store.clone();
+    let entry_for_apply = parsed.clone();
+    let outcome = services.mutate.apply::<_, aegis_control::api::blacklist::AccessListEntry, aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            store_for_apply
+                .put(entry_for_apply)
+                .map_err(aegis_control::api::mutation::MutationError::Validation)
+        },
+    );
+    match outcome {
+        Ok(o) => json_response(
+            201,
+            &serde_json::json!({
+                "ok": true,
+                "entry": o.value,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// `DELETE /api/{blacklist,whitelist}/{id}` — remove a single entry.
+/// Returns 422 with `validation` reason when the id isn't present
+/// so the dashboard can surface "no such entry" without 500-ing.
+pub(crate) async fn handle_access_list_delete(
+    req: hyper::Request<hyper::body::Incoming>,
+    kind: &str,
+    id: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "access-list-delete");
+
+    let Some((store, label)) = access_list_store(kind, services) else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(
+                format!("unknown access list kind '{kind}'"),
+            ),
+        );
+    };
+
+    let existing = store.get(id);
+    let Some(existing) = existing else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(
+                format!("no {label} entry with id '{id}'"),
+            ),
+        );
+    };
+
+    let before = serde_json::to_value(&existing)
+        .unwrap_or(serde_json::Value::Null);
+    let after = serde_json::Value::Null;
+    let resource = format!("/api/{label}/{id}");
+    let action = format!("{label}_remove");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "DELETE",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: &action,
+        reason: "operator removed access-list entry",
+    };
+
+    let store_for_apply = store.clone();
+    let id_owned = id.to_string();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            store_for_apply.delete(&id_owned);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "removed": id,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MTLS-T7 — Allowed SAN allowlist mutations
 // ---------------------------------------------------------------------------
 

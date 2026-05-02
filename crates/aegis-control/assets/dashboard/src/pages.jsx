@@ -1508,6 +1508,71 @@ function ListPage({ kind }) {
   const raw = api.data?.entries ?? api.data ?? [];
   const data = Array.isArray(raw) ? raw : [];
 
+  // CQF-T2 — Add entry form + per-row delete. Form is shown
+  // inline in the page-head when "Add entry" is clicked; submit
+  // lands via accessListAdd → audit-mutated POST.
+  const [showForm, setShowForm] = useStateP(false);
+  const [busy, setBusy] = useStateP(false);
+  const [draftKind, setDraftKind] = useStateP('ip');
+  const [draftValue, setDraftValue] = useStateP('');
+  const [draftNote, setDraftNote] = useStateP('');
+  const [draftBypass, setDraftBypass] = useStateP('');
+
+  async function submitAdd() {
+    const value = draftValue.trim();
+    if (!value || busy) return;
+    setBusy(true);
+    try {
+      const id = `${kind}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+      // NOTE: `Math.random` here is for ID minting only (no security
+      // surface; the server validates anyway). Not a render path.
+      const entry = {
+        id,
+        kind: draftKind,
+        value,
+        note: draftNote.trim(),
+        bypass: !isBL && draftBypass.trim()
+          ? draftBypass.split(',').map(s => s.trim()).filter(Boolean)
+          : [],
+        created_at: new Date().toISOString(),
+      };
+      const r = await window.accessListAdd(kind, entry);
+      if (r.ok) {
+        window.aegisToast(`Added ${kind} entry ${draftKind}:${value}`, 'ok');
+        setDraftValue(''); setDraftNote(''); setDraftBypass('');
+        setShowForm(false);
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        window.aegisToast(`Add failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Add error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteRow(entry) {
+    if (busy) return;
+    if (!confirm(`Remove ${kind} entry ${entry.kind}:${entry.value}?`)) return;
+    setBusy(true);
+    try {
+      const r = await window.accessListDelete(kind, entry.id);
+      if (r.ok) {
+        window.aegisToast(`Removed ${entry.kind}:${entry.value}`, 'ok');
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        window.aegisToast(`Remove failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Remove error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       <div className="page-head">
@@ -1526,9 +1591,80 @@ function ListPage({ kind }) {
           <button className="btn" onClick={() => api.reload && api.reload()}>
             <window.I.Refresh /> Refresh
           </button>
-          <button className="btn primary"><window.I.Plus /> Add entry</button>
+          <button
+            className="btn primary"
+            onClick={() => setShowForm(v => !v)}
+            disabled={busy}
+          >
+            <window.I.Plus /> {showForm ? 'Cancel' : 'Add entry'}
+          </button>
         </div>
       </div>
+
+      {showForm && (
+        <div className="card" style={{ marginBottom: 12, padding: 12 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Type</label>
+              <select
+                value={draftKind}
+                onChange={e => setDraftKind(e.target.value)}
+                disabled={busy}
+                style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', minWidth: 90 }}
+              >
+                <option value="ip">ip</option>
+                <option value="cidr">cidr</option>
+                <option value="asn">asn</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 220 }}>
+              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Value</label>
+              <input
+                type="text"
+                value={draftValue}
+                onChange={e => setDraftValue(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') submitAdd(); }}
+                placeholder={draftKind === 'ip' ? '203.0.113.7' : draftKind === 'cidr' ? '203.0.113.0/24' : 'AS13335'}
+                disabled={busy}
+                style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace' }}
+              />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 2, minWidth: 200 }}>
+              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Note (optional)</label>
+              <input
+                type="text"
+                value={draftNote}
+                onChange={e => setDraftNote(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') submitAdd(); }}
+                placeholder="why this entry exists"
+                disabled={busy}
+                style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)' }}
+              />
+            </div>
+            {!isBL && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
+                <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Bypass (CSV; "all" = full trust)</label>
+                <input
+                  type="text"
+                  value={draftBypass}
+                  onChange={e => setDraftBypass(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') submitAdd(); }}
+                  placeholder="sqli,xss  or  all"
+                  disabled={busy}
+                  style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)' }}
+                />
+              </div>
+            )}
+            <button
+              className="btn primary"
+              onClick={submitAdd}
+              disabled={busy || !draftValue.trim()}
+            >
+              Submit
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="card" style={{ padding: 0 }}>
         <table className="tbl tbl-compact">
@@ -1540,11 +1676,12 @@ function ListPage({ kind }) {
               <th style={{ width: 130 }}>{isBL ? 'Action' : 'Bypass'}</th>
               <th style={{ width: 130 }}>Expires</th>
               <th style={{ width: 130 }}>Created</th>
+              <th style={{ width: 80 }}></th>
             </tr>
           </thead>
           <tbody>
             {data.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
                 No entries.
               </td></tr>
             )}
@@ -1569,6 +1706,17 @@ function ListPage({ kind }) {
                 </td>
                 <td className="dim" style={{ fontSize: 11 }}>
                   {e.created_at ? new Date(e.created_at).toISOString().slice(0, 10) : '—'}
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  <button
+                    className="btn danger"
+                    style={{ fontSize: 11, padding: '4px 8px' }}
+                    onClick={() => deleteRow(e)}
+                    disabled={busy}
+                    title={`Remove ${e.kind || 'entry'} ${e.value}`}
+                  >
+                    Remove
+                  </button>
                 </td>
               </tr>
             ))}
