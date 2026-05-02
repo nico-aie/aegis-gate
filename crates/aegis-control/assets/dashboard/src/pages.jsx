@@ -4838,10 +4838,251 @@ function PageScaling() {
   );
 }
 
+// ================================================================
+// PHASE 2 — Access Lists (Blacklist + Whitelist merged with tabs).
+// ================================================================
+function PageAccessLists() {
+  const [tab, setTab] = useStateP(() => location.hash.includes('whitelist') ? 'whitelist' : 'blacklist');
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Access Lists</h1>
+          <p className="page-subtitle">Block known-bad IPs / CIDRs / ASNs · whitelist trusted callers with optional detector-bypass</p>
+        </div>
+      </div>
+      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.I.Info />
+        <span>
+          Both lists are audit-chained on every mutation. Blacklist
+          entries always block. Whitelist entries can specify a
+          per-detector <em>bypass</em> (e.g. <code>sqli,xss</code>) or
+          <code> all</code> for high-trust sources.
+        </span>
+      </div>
+      <div className="tab-bar" style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+        <button
+          className={`btn ${tab === 'blacklist' ? 'primary' : ''}`}
+          onClick={() => setTab('blacklist')}
+        ><window.I.Ban /> Blacklist</button>
+        <button
+          className={`btn ${tab === 'whitelist' ? 'primary' : ''}`}
+          onClick={() => setTab('whitelist')}
+        ><window.I.Check /> Whitelist</button>
+      </div>
+      {tab === 'blacklist'
+        ? <ListPage kind="blacklist" />
+        : <ListPage kind="whitelist" />}
+    </>
+  );
+}
+
+// ================================================================
+// PHASE 3 — SOC pages, stub bodies until each lands fully wired.
+// Each page renders a "ships in Phase 3" frame plus whatever real
+// data we already have via existing endpoints.
+// ================================================================
+function StubPage({ title, subtitle, children, eta }) {
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">{title}</h1>
+          <p className="page-subtitle">{subtitle}</p>
+        </div>
+      </div>
+      <div className="card" style={{ padding: '12px 16px', marginBottom: 12, background: 'var(--surface-2)' }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          <window.I.Sparkles />
+          <div style={{ fontSize: 12 }}>
+            <strong>Phase 3 in progress.</strong> {eta || 'Full wiring lands this sprint.'}
+            {' '}See <a href="#/help" style={{ color: 'var(--accent)' }}>plans/console-soc-refactor.md</a> §"Phase 3".
+          </div>
+        </div>
+      </div>
+      {children}
+    </>
+  );
+}
+
+function PageIncidents() {
+  const alerts = window.useAlertsApi ? window.useAlertsApi() : { data: null };
+  const active = alerts.data?.alerts || alerts.data?.firing || [];
+  return (
+    <StubPage
+      title="Incidents"
+      subtitle="Open alerts · MTTR clock · ack / snooze / escalate"
+      eta="Triage queue with SLA timestamps + alert-rule builder land in Phase 3."
+    >
+      <div className="card">
+        <window.SectionHeader title="Active alerts" sub={`${active.length} firing · from /api/alerts`} />
+        {active.length === 0 ? (
+          <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
+            No alerts firing. <a href="#/health" style={{ color: 'var(--accent)' }}>Health & SLOs</a> shows SLO-burn pressure.
+          </div>
+        ) : (
+          <table className="tbl tbl-compact">
+            <thead><tr><th>Severity</th><th>Title</th><th>Started</th><th>Receiver</th></tr></thead>
+            <tbody>
+              {active.map((a, i) => (
+                <tr key={a.id || i}>
+                  <td><span className={`pill ${a.severity === 'critical' ? 'down' : 'warn'}`}>{a.severity || 'warn'}</span></td>
+                  <td>{a.title || a.name || '—'}</td>
+                  <td>{a.started_at ? new Date(a.started_at).toLocaleString() : '—'}</td>
+                  <td>{a.receiver || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </StubPage>
+  );
+}
+
+function PageInvestigation() {
+  const [pivot, setPivot] = useStateP('');
+  const [activePivot, setActivePivot] = useStateP('');
+  return (
+    <StubPage
+      title="Investigation"
+      subtitle="Drill from any IP / request_id / rule_id into all WAF context"
+      eta="Backed by existing /api/audit + /api/attacks/top — full pivot UI lands in Phase 3."
+    >
+      <div className="card" style={{ padding: 16 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+          <window.I.Search />
+          <input
+            type="text"
+            placeholder="Paste an IP, CIDR, request_id, rule_id, SAN, or session ID…"
+            value={pivot}
+            onChange={e => setPivot(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') setActivePivot(pivot.trim()); }}
+            style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 13 }}
+          />
+          <button className="btn primary" onClick={() => setActivePivot(pivot.trim())}>Pivot</button>
+        </div>
+        {activePivot ? (
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+            <p>Pivoting on <code>{activePivot}</code>…</p>
+            <p>Phase 3 will fan-out to: matching audit events, recent rule matches, attacker table entries, SAN allowlist matches, threat-intel hits.</p>
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+            Enter a value above and press Enter. Until Phase 3 lands, use <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail</a>'s filter inputs (IP, rule_id, request_id).
+          </div>
+        )}
+      </div>
+    </StubPage>
+  );
+}
+
+function PageThreatIntel() {
+  const ti = window.useApi ? window.useApi('/api/threat-intel/hits', { intervalMs: 30000, fallback: null }) : { data: null };
+  const hits = ti.data?.hits || [];
+  return (
+    <StubPage
+      title="Threat Intel"
+      subtitle="TAXII feeds · GeoIP DB · STIX bundles · MISP feeds — health + recent matches"
+      eta="Feed-management UI (add/remove without YAML edit) lands in Phase 3. Today's view: recent indicator hits."
+    >
+      <div className="card">
+        <window.SectionHeader title="Recent indicator hits" sub={`${hits.length} hits in current window`} />
+        {hits.length === 0 ? (
+          <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
+            No threat-intel matches. Configure feeds in <code>config/*.yaml</code> under <code>threat_intel:</code> + restart, or wait for Phase 3 UI.
+          </div>
+        ) : (
+          <table className="tbl tbl-compact">
+            <thead><tr><th>Feed</th><th>Indicator</th><th>Hits</th><th>Last seen</th></tr></thead>
+            <tbody>
+              {hits.map((h, i) => (
+                <tr key={i}>
+                  <td>{h.feed}</td>
+                  <td className="num">{h.indicator}</td>
+                  <td className="num">{h.hits}</td>
+                  <td>{h.last_seen ? new Date(h.last_seen).toLocaleString() : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <div className="card" style={{ marginTop: 12 }}>
+        <window.SectionHeader title="GeoIP DB status" sub="MaxMind .mmdb load state" />
+        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)' }}>
+          GeoIP enrichment is gated on the <code>geoip</code> Cargo feature. When loaded, the Overview map shows attacker country/city blips. Phase 3 adds an upload-and-verify button here.
+        </div>
+      </div>
+    </StubPage>
+  );
+}
+
+function PageCompliance() {
+  const status = window.useStatusApi ? window.useStatusApi() : { data: null };
+  const modes = status.data?.compliance?.modes || [];
+  return (
+    <StubPage
+      title="Compliance Profile"
+      subtitle="PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator"
+      eta="Clamp editor lands in Phase 3. Today's view: which modes are active + which detectors / classes they pin."
+    >
+      <div className="card">
+        <window.SectionHeader title="Active compliance modes" sub={modes.length === 0 ? 'no modes set' : `${modes.length} active`} />
+        <div style={{ padding: 16 }}>
+          {modes.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+              No <code>compliance.modes</code> set in the running config. Edit your YAML's <code>compliance:</code> block and restart, or wait for the Phase 3 in-place editor.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {modes.map(m => <span key={m} className="pill ok">{m.toUpperCase()}</span>)}
+            </div>
+          )}
+        </div>
+      </div>
+    </StubPage>
+  );
+}
+
+function PageReports() {
+  return (
+    <StubPage
+      title="Reports"
+      subtitle="Daily / weekly digests · compliance reports · CSV exports"
+      eta="CSV exports of audit + attacks land in Phase 3. PDF + scheduled delivery in Phase 4."
+    >
+      <div className="card" style={{ padding: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
+          {[
+            { title: 'Audit trail (last 24h)', sub: 'CSV of every chained event' },
+            { title: 'Top attackers (last 7d)', sub: 'IP / ASN / country / hits / first seen' },
+            { title: 'Detector hit summary', sub: 'CSV of detector → count by tier' },
+            { title: 'Compliance snapshot', sub: 'Active modes + clamped detectors' },
+          ].map(card => (
+            <div key={card.title} className="card" style={{ padding: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>{card.title}</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', margin: '4px 0 8px' }}>{card.sub}</div>
+              <button className="btn" disabled style={{ opacity: 0.6, cursor: 'not-allowed' }}>
+                <window.I.Download /> Download (Phase 3)
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </StubPage>
+  );
+}
+
 Object.assign(window, {
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
   PageUpstreams,
   // SC-T2 — Scaling page (L1 workers + L2 cluster + L3 state).
   PageScaling,
+  // Phase 2 — merged Access Lists, plus Phase 3 stubs.
+  // PageHelp is owned by help.jsx (loaded after this file).
+  PageAccessLists,
+  PageIncidents, PageInvestigation, PageThreatIntel,
+  PageCompliance, PageReports,
 });

@@ -2,32 +2,58 @@
 const { useState, useEffect } = React;
 
 // ============== Sidebar nav model ==============
+//
+// SOC-grade IA (plans/console-soc-refactor.md, Phase 2):
+//   - 4 groups (was 4 — same count, different boundaries)
+//   - 17 page slots (was 13)
+//   - Blacklist + Whitelist merged into one "Access Lists" page
+//   - "Configuration" → "Policy"; "Tracking" → "Observability"
+//   - 5 NEW pages (Phase 3): Incidents, Investigation, Threat
+//     Intel, Performance, Reports. Items here today; the page
+//     bodies show a friendly "ships in Phase 3" stub until then.
+//
+// Page IDs kept stable for back-compat. Hash routes redirected
+// for the renames: #blacklist / #whitelist → #access-lists,
+// #tracking → #health, #attacks → #attack-analytics.
 const NAV = [
-  { group: 'Operator', items: [
-    { id: 'overview', label: 'Overview',      icon: <window.I.Shield />,   badge: null },
-    { id: 'live',     label: 'Live Feed',     icon: <window.I.Activity />, badge: 'LIVE', tone: 'live' },
-    { id: 'attacks',  label: 'Attack Events', icon: <window.I.Siren />,    badge: null },
-    { id: 'analytics',label: 'Analytics',     icon: <window.I.BarChart />, badge: null },
-    { id: 'audit',    label: 'Audit Log',     icon: <window.I.Book />,     badge: null },
+  { group: 'Security Ops', items: [
+    { id: 'overview',      label: 'Overview',         icon: <window.I.Shield />,   badge: null },
+    { id: 'live',          label: 'Live Feed',        icon: <window.I.Activity />, badge: 'LIVE', tone: 'live' },
+    { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: 'NEW', tone: 'warn' },
+    { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: 'NEW', tone: 'warn' },
+    { id: 'attack-analytics', label: 'Attack Analytics', icon: <window.I.BarChart />, badge: null },
+    { id: 'threat-intel',  label: 'Threat Intel',     icon: <window.I.Globe />,    badge: 'NEW', tone: 'warn' },
   ]},
-  { group: 'Configuration', items: [
-    { id: 'rules',    label: 'Rule Manager',  icon: <window.I.Layers />,   badge: null },
-    { id: 'tiers',    label: 'Tier Config',   icon: <window.I.Cluster />,  badge: null },
-    { id: 'upstreams',label: 'Upstreams',     icon: <window.I.Server />,   badge: null },
-    { id: 'blacklist',label: 'Blacklist',     icon: <window.I.Ban />,      badge: null, tone: 'down' },
-    { id: 'whitelist',label: 'Whitelist',     icon: <window.I.Check />,    badge: null, tone: 'up' },
-    { id: 'settings', label: 'Settings',      icon: <window.I.Settings />, badge: null },
+  { group: 'Policy', items: [
+    { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
+    { id: 'detectors',     label: 'Detectors',        icon: <window.I.Cluster />,  badge: null },
+    { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
+    { id: 'upstreams',     label: 'Routing & Upstreams', icon: <window.I.Server />, badge: null },
+    { id: 'compliance',    label: 'Compliance',       icon: <window.I.Check />,    badge: 'NEW', tone: 'warn' },
   ]},
-  { group: 'Tracking', items: [
-    { id: 'tracking', label: 'Tracking',      icon: <window.I.Gauge />,    badge: 'SLO', tone: 'warn' },
-    // SC-T2 — Scaling page: L1 in-node workers + L2 cluster
-    // peers + L3 shared-state backend health, in one stack.
-    { id: 'scaling',  label: 'Scaling',       icon: <window.I.Cluster />,  badge: null },
+  { group: 'Observability', items: [
+    { id: 'performance',   label: 'Performance',      icon: <window.I.Gauge />,    badge: 'NEW', tone: 'warn' },
+    { id: 'health',        label: 'Health & SLOs',    icon: <window.I.Heart />,    badge: 'SLO', tone: 'warn' },
+    { id: 'audit',         label: 'Audit Trail',      icon: <window.I.Book />,     badge: null },
+    { id: 'scaling',       label: 'Scaling',          icon: <window.I.Cluster />,  badge: null },
   ]},
-  { group: 'Resources', items: [
-    { id: 'help',     label: 'Help & Guide',  icon: <window.I.Book />,     badge: null },
+  { group: 'Admin', items: [
+    { id: 'settings',      label: 'Settings',         icon: <window.I.Settings />, badge: null },
+    { id: 'reports',       label: 'Reports',          icon: <window.I.Download />, badge: 'NEW', tone: 'warn' },
+    { id: 'help',          label: 'Help & Guide',     icon: <window.I.Book />,     badge: null },
   ]},
 ];
+
+// Hash-route redirects for Phase 2 renames. Old bookmarks keep
+// working — the App router rewrites the hash before resolving.
+const ROUTE_REDIRECTS = {
+  'attacks':   'attack-analytics',
+  'analytics': 'performance',
+  'tiers':     'detectors',
+  'tracking':  'health',
+  'blacklist': 'access-lists',
+  'whitelist': 'access-lists',
+};
 
 // ============== TopBar ==============
 //
@@ -294,7 +320,12 @@ function StatusBar({ tick }) {
 
 // ============== App ==============
 function App() {
-  const [route, setRoute] = useState(() => location.hash.slice(2) || 'overview');
+  // Resolve hash → route, applying redirects for renamed pages.
+  const resolveRoute = () => {
+    const raw = location.hash.slice(2) || 'overview';
+    return ROUTE_REDIRECTS[raw] || raw;
+  };
+  const [route, setRoute] = useState(resolveRoute);
   const tick = window.useTicking(2000);
 
   // Compact density + yellow accent are the defaults; no tweaks
@@ -304,9 +335,19 @@ function App() {
     document.documentElement.dataset.accent = 'yellow';
   }, []);
 
-  // Hash routing
+  // Hash routing — apply Phase-2 renames on every hash change so
+  // pasted-in old URLs land on the new page.
   useEffect(() => {
-    const onHash = () => setRoute(location.hash.slice(2) || 'overview');
+    const onHash = () => {
+      const raw = location.hash.slice(2) || 'overview';
+      const resolved = ROUTE_REDIRECTS[raw];
+      if (resolved) {
+        location.replace(`#/${resolved}`);
+        setRoute(resolved);
+      } else {
+        setRoute(raw);
+      }
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
@@ -314,21 +355,25 @@ function App() {
 
   let page = null;
   switch (route) {
-    case 'overview':  page = <window.PageOverview />; break;
-    case 'live':      page = <window.PageLiveFeed />; break;
-    case 'attacks':   page = <window.PageAttackEvents />; break;
-    case 'analytics': page = <window.PageAnalytics />; break;
-    case 'audit':     page = <window.PageAuditLog />; break;
-    case 'rules':     page = <window.PageRuleManager />; break;
-    case 'tiers':     page = <window.PageTierConfig />; break;
-    case 'upstreams': page = <window.PageUpstreams />; break;
-    case 'blacklist': page = <window.ListPage kind="blacklist" />; break;
-    case 'whitelist': page = <window.ListPage kind="whitelist" />; break;
-    case 'settings':  page = <window.PageSettings />; break;
-    case 'tracking':  page = <window.PageTracking />; break;
-    case 'scaling':   page = <window.PageScaling />; break;
-    case 'help':      page = <window.PageHelp />; break;
-    default:          page = <window.PageOverview />;
+    case 'overview':         page = <window.PageOverview />; break;
+    case 'live':             page = <window.PageLiveFeed />; break;
+    case 'incidents':        page = <window.PageIncidents />; break;
+    case 'investigation':    page = <window.PageInvestigation />; break;
+    case 'attack-analytics': page = <window.PageAttackEvents />; break;
+    case 'threat-intel':     page = <window.PageThreatIntel />; break;
+    case 'rules':            page = <window.PageRuleManager />; break;
+    case 'detectors':        page = <window.PageTierConfig />; break;
+    case 'access-lists':     page = <window.PageAccessLists />; break;
+    case 'upstreams':        page = <window.PageUpstreams />; break;
+    case 'compliance':       page = <window.PageCompliance />; break;
+    case 'performance':      page = <window.PageAnalytics />; break;
+    case 'health':           page = <window.PageTracking />; break;
+    case 'audit':            page = <window.PageAuditLog />; break;
+    case 'scaling':          page = <window.PageScaling />; break;
+    case 'settings':         page = <window.PageSettings />; break;
+    case 'reports':          page = <window.PageReports />; break;
+    case 'help':             page = <window.PageHelp />; break;
+    default:                 page = <window.PageOverview />;
   }
 
   return (
