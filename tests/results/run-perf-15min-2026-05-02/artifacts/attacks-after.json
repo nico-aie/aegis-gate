@@ -1,0 +1,1 @@
+{"window_seconds":900,"categories":[{"name":"upstream","count":25009,"pct":48.6},{"name":"unknown","count":13250,"pct":25.7},{"name":"detector:path","count":7952,"pct":15.4},{"name":"detector:sqli","count":5298,"pct":10.3}]}
