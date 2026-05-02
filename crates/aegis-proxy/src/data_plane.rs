@@ -147,34 +147,25 @@ pub(crate) async fn handle_data_request_inner(
     let allow_verbose_fields =
         verbosity_level.is_at_least(aegis_core::VerbosityLevel::Info);
     use aegis_core::pipeline::{BodyPeek, RequestView};
+    use http_body_util::BodyExt;
 
-    let body_peek = BodyPeek::empty();
-    let view = RequestView {
-        method: req.method(),
-        uri: req.uri(),
-        version: req.version(),
-        headers: req.headers(),
-        peer,
-        tls: None,
-        body: &body_peek,
-    };
+    // CQF / detector-coverage fix — actually buffer the request
+    // body so the SSRF / XSS / body_abuse detectors that inspect
+    // it have something to look at. Previously this was always
+    // `BodyPeek::empty()`, which silently disabled every body-
+    // based detector and caused the hackathon-stress-test
+    // detection ceiling at ~33%. Body collect is deferred until
+    // AFTER rate-limit + strike-block (cheap shedders run first;
+    // body buffering doesn't waste cycles on requests we'd
+    // reject anyway), then threaded into both the detector view
+    // AND the upstream forwarder so each request reads its body
+    // exactly once.
+    const MAX_BODY_BYTES: usize = 1 * 1024 * 1024; // 1 MiB
 
-    // Classify the request to a tier so per-tier overrides apply.
-    // Route context isn't plumbed yet (route table lookup is in
-    // aegis-proxy::route, separate work); pass `None` here and rely
-    // on the path heuristic in `classify_tier`.
-    let (tier, _failure_mode) = aegis_security::pipeline::classify_tier(None, &view);
-    // OTEL-T3 — record the resolved tier on the request span so
-    // Jaeger filters by tier work without parsing logs.
-    tracing::Span::current().record(
-        "tier",
-        aegis_security::detectors::tier_str(tier),
-    );
-
-    // P6 short-circuit: if the client's lifetime strike counter
-    // has crossed the configured threshold, refuse before running
-    // any detectors. Saves CPU under DDoS from known-bad sources.
     let peer_ip = peer.ip();
+    // P6 short-circuit: lifetime-strike block runs before any
+    // body or detector cost so a flooding known-bad source can't
+    // burn CPU.
     if risk.is_strike_blocked(peer_ip) {
         let resp = blocked_response(
             peer,
@@ -262,6 +253,64 @@ pub(crate) async fn handle_data_request_inner(
         return (resp, DecisionTag::rate_limit("ip-rate-limit"));
     }
 
+    // Body collect — after cheap shedders (strike + rate-limit)
+    // so we don't pay the buffering cost on rejected requests.
+    // Bytes are threaded into the detector view AND down to the
+    // upstream forwarder; each request reads its body exactly
+    // once.
+    let (parts, body) = req.into_parts();
+    let body_bytes = match body.collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(e) => {
+            tracing::warn!(error = %e, "client body read failed");
+            let resp = Response::builder()
+                .status(hyper::StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({ "error": "body_read_error" }).to_string(),
+                )))
+                .unwrap();
+            return (resp, DecisionTag::block("body-read-error"));
+        }
+    };
+    if body_bytes.len() > MAX_BODY_BYTES {
+        let resp = Response::builder()
+            .status(hyper::StatusCode::PAYLOAD_TOO_LARGE)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(
+                serde_json::json!({
+                    "error": "body_too_large",
+                    "max_bytes": MAX_BODY_BYTES,
+                })
+                .to_string(),
+            )))
+            .unwrap();
+        return (resp, DecisionTag::block("body-too-large"));
+    }
+
+    let body_peek = BodyPeek::new(
+        body_bytes.to_vec(),
+        Some(body_bytes.len() as u64),
+        false,
+    );
+    let view = RequestView {
+        method: &parts.method,
+        uri: &parts.uri,
+        version: parts.version,
+        headers: &parts.headers,
+        peer,
+        tls: None,
+        body: &body_peek,
+    };
+
+    // Tier classification needs `view`, so it's run here rather
+    // than at the very top.
+    let (tier, _failure_mode) = aegis_security::pipeline::classify_tier(None, &view);
+    tracing::Span::current().record(
+        "tier",
+        aegis_security::detectors::tier_str(tier),
+    );
+
     // Run security detectors filtered by the effective mask for
     // this tier. A class turned off via PUT /api/detectors (base
     // or per-tier override) short-circuits before the detector body
@@ -286,7 +335,7 @@ pub(crate) async fn handle_data_request_inner(
         let reason = format!("blocked by detectors: {} (score: {})", tags.join(", "), post_state.score);
         tracing::warn!(
             peer = %peer,
-            path = %req.uri(),
+            path = %parts.uri,
             score = post_state.score,
             strikes = post_state.strikes,
             detectors = ?tags,
@@ -305,8 +354,8 @@ pub(crate) async fn handle_data_request_inner(
             serde_json::Value::Null
         } else {
             serde_json::json!({
-                "path": req.uri().to_string(),
-                "method": req.method().to_string(),
+                "path": parts.uri.to_string(),
+                "method": parts.method.to_string(),
                 "detectors": tags,
                 "strikes": post_state.strikes,
                 "load_mode": load_mode.as_str(),
@@ -366,8 +415,8 @@ pub(crate) async fn handle_data_request_inner(
                 "blocked by risk score",
                 None,
                 risk.snapshot(peer_ip).map(|s| s.score),
-                req.uri(),
-                req.method(),
+                &parts.uri,
+                &parts.method,
                 bus,
             );
             (resp, DecisionTag::block("risk-score"))
@@ -400,7 +449,7 @@ pub(crate) async fn handle_data_request_inner(
             // its outcome onto a status code; we infer the
             // contract action from that (allow on 2xx/3xx,
             // block / circuit_breaker / timeout otherwise).
-            forward_allow_to_upstream(req, upstream_ctx, identity).await
+            forward_allow_to_upstream(parts, body_bytes, upstream_ctx, identity).await
         }
     }
 }
@@ -416,15 +465,16 @@ pub(crate) async fn handle_data_request_inner(
     fields(
         otel.kind = "client",
         host = tracing::field::Empty,
-        path = %req.uri().path(),
-        method = %req.method(),
+        path = %parts.uri.path(),
+        method = %parts.method,
         upstream = tracing::field::Empty,
         member = tracing::field::Empty,
         outcome = tracing::field::Empty,
     ),
 )]
 pub(crate) async fn forward_allow_to_upstream(
-    req: hyper::Request<hyper::body::Incoming>,
+    parts: http::request::Parts,
+    body_bytes: Bytes,
     ctx: &Arc<crate::proxy::ProxyContext>,
     identity: &aegis_core::ClientIdentity,
 ) -> (
@@ -432,17 +482,16 @@ pub(crate) async fn forward_allow_to_upstream(
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
-    use http_body_util::BodyExt;
     use std::sync::atomic::Ordering;
 
-    let host = req
-        .headers()
+    let host = parts
+        .headers
         .get(hyper::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost")
         .to_string();
-    let path = req.uri().path().to_string();
-    let method = req.method().clone();
+    let path = parts.uri.path().to_string();
+    let method = parts.method.clone();
     tracing::Span::current().record("host", host.as_str());
 
     let route_ctx = match ctx.route_table.resolve(&host, &path, &method) {
@@ -529,20 +578,6 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     };
     tracing::Span::current().record("member", tracing::field::display(&member.addr));
-
-    let (parts, body) = req.into_parts();
-    let body_bytes = match body.collect().await {
-        Ok(c) => c.to_bytes(),
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to collect client body");
-            tracing::Span::current().record("outcome", "body-read-error");
-            let resp = Response::builder()
-                .status(hyper::StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from("body read error\n")))
-                .unwrap();
-            return (resp, DecisionTag::block("body-read-error"));
-        }
-    };
 
     member.inflight.fetch_add(1, Ordering::Relaxed);
     let result = crate::upstream::forward::forward(
