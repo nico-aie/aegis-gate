@@ -21,6 +21,23 @@ const CAT_COLOR = {
 };
 function colorFor(name) { return CAT_COLOR[name] || '#6B7280'; }
 
+// CQF-T6 — live RiskHeatmap. Reads from useTopRiskPathsApi
+// (audit ring grouped by path → max risk per path → top 8).
+// Renders an honest empty state when no audit events have
+// arrived yet, rather than the previous hardcoded JSX rows.
+function RiskHeatmapLive() {
+  const { rows } = window.useTopRiskPathsApi(200, 8);
+  if (!rows || rows.length === 0) {
+    return (
+      <div style={{ padding: 18, fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic', textAlign: 'center' }}>
+        No risk-bearing audit events in the recent window.
+        Drive some traffic (or a probe) to populate the heatmap.
+      </div>
+    );
+  }
+  return <window.RiskHeatmap rows={rows} h={200} />;
+}
+
 function PageOverview() {
   const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
   const tsApi = window.useTimeseriesApi(60, 1);    // /api/stats/timeseries — 60s window, 1s buckets
@@ -240,8 +257,11 @@ function PageOverview() {
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-head">
           <div>
-            <div className="card-title">Risk heatmap — top routes × time</div>
-            <div className="card-sub">Cell intensity = risk-score sum per 2-min bucket</div>
+            <div className="card-title">Risk heatmap — top paths × intensity</div>
+            <div className="card-sub">
+              Top 8 paths by max risk score over the most-recent
+              200 audit events. Live · derived from /api/audit/since.
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 10, color: 'var(--ink-dim)' }}>
             <span>low</span>
@@ -251,16 +271,7 @@ function PageOverview() {
             <span>high</span>
           </div>
         </div>
-        <window.RiskHeatmap rows={[
-          { path: '/api/login', intensity: 0.95 },
-          { path: '/api/admin/*', intensity: 0.85 },
-          { path: '/wp-admin/*', intensity: 0.75 },
-          { path: '/api/payments', intensity: 0.55 },
-          { path: '/api/webhooks/*', intensity: 0.92 },
-          { path: '/.env, /.git/*', intensity: 0.99 },
-          { path: '/actuator/*', intensity: 0.42 },
-          { path: '/api/users', intensity: 0.35 },
-        ]} h={200} />
+        <RiskHeatmapLive />
       </div>
 
       {/* Top attackers */}

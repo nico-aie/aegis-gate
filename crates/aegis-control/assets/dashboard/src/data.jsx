@@ -530,6 +530,39 @@ function useTiersApi() {
   return useApi('/api/tiers', { intervalMs: 30000, fallback: { tiers: [] } });
 }
 
+// CQF-T6 — derive a per-path risk heatmap client-side from
+// `/api/audit/since`. The endpoint returns up to `limit` events
+// with `fields.path` + `risk_score`; we group by path, take the
+// max risk per path (heatmap intensity), sort, and keep the top
+// `top` paths. A purpose-built backend aggregator would be the
+// long-term fix; this is enough to retire the hardcoded rows
+// flagged in CQA-T1 / T14 today.
+function useTopRiskPathsApi(limit = 200, top = 8) {
+  const api = useApi(`/api/audit/since?limit=${limit}`, {
+    intervalMs: 5000,
+    fallback: { events: [] },
+  });
+  const events = Array.isArray(api?.data?.events) ? api.data.events : [];
+  // Group by path → max risk
+  const byPath = new Map();
+  for (const ev of events) {
+    const p = ev?.fields?.path;
+    const r = Number(ev?.risk_score ?? 0);
+    if (!p) continue;
+    const cur = byPath.get(p) || 0;
+    if (r > cur) byPath.set(p, r);
+  }
+  const rows = Array.from(byPath.entries())
+    .map(([path, score]) => ({
+      path,
+      // RiskHeatmap expects intensity ∈ [0, 1]; risk_score is 0..100.
+      intensity: Math.max(0, Math.min(1, score / 100)),
+    }))
+    .sort((a, b) => b.intensity - a.intensity)
+    .slice(0, top);
+  return { ...api, rows };
+}
+
 // CQF-T3 — detector mask read + audit-mutated PUT. The PUT
 // handler (handle_detectors_put) lives in admin_mutate.rs;
 // body shape per `DetectorsPutBody` in detectors.rs:
@@ -802,4 +835,6 @@ Object.assign(window, {
   accessListAdd, accessListDelete,
   // CQF-T3 — Detector mask read + audit-mutated PUT
   useDetectorsApi, detectorsPut,
+  // CQF-T6 — Top-risk-paths heatmap derived from /api/audit/since
+  useTopRiskPathsApi,
 });
