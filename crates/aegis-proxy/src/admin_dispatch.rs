@@ -302,7 +302,7 @@ async fn handle_rollback(
     seq: u64,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
-    use aegis_control::api::rollback::{rollback_for_seq, RollbackError};
+    use aegis_control::api::rollback::{rollback_for_seq, RollbackError, RollbackTargets};
 
     let Some(rt) = services.interop.as_ref() else {
         return json_response(
@@ -313,7 +313,16 @@ async fn handle_rollback(
         );
     };
 
-    match rollback_for_seq(&services.audit_ring, seq, &rt.modes) {
+    // Wire every live store the dispatcher might need. Each is
+    // optional (None = NotApplicable / ApplyFailed) so a partial
+    // wiring still functions for v1 mode_set rollbacks.
+    let targets = RollbackTargets {
+        mode_store: &rt.modes,
+        risk: Some(&services.risk),
+        allowed_sans: services.allowed_sans.as_ref(),
+    };
+
+    match rollback_for_seq(&services.audit_ring, seq, &targets) {
         Ok(outcome) => {
             // Audit-emit the rollback itself so the chain captures
             // it. The new event is `<orig>_rollback` with

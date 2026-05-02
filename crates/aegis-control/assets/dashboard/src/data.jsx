@@ -399,9 +399,15 @@ async function configRollback(seq) {
 }
 
 // HACK-T4 — actions the dashboard knows are rollback-able.
-// Mirrors the const list in `aegis-control::api::rollback`.
-// Operators see the Rollback button only on these rows.
-const ROLLBACKABLE_ACTIONS = ['mode_set'];
+// Mirrors `pub const ROLLBACKABLE_ACTIONS` in
+// `aegis-control::api::rollback`. Keep in sync; operators see
+// the Rollback button only on these rows.
+const ROLLBACKABLE_ACTIONS = [
+  'mode_set',                // v1
+  'risk_thresholds_set',     // v2
+  'mtls_sans_set',           // v2
+  'mtls_sans_removed',       // v2
+];
 
 // MTLS-T7 — Allowed SAN allowlist. Read once + on demand;
 // the underlying store is hot-reloadable so we don't need
