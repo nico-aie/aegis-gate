@@ -30,14 +30,18 @@ packaging track, the Hackathon-readiness track (HACK-T1..T5
   benchmark team's source-IP fan-out / latency target /
   attack-labelling source — see
   [`plans/hackathon-stress-test.md`](plans/hackathon-stress-test.md) §8.
+- **Console QA — full feature audit** ([`plans/console-qa.md`](plans/console-qa.md)) —
+  14-slice manual sweep verifying every screen / button / action
+  against live data; no fakes, no dead buttons, every mutation
+  round-trips through the audit chain. ~9 h wall-clock.
 - **MTLS-T8..T11** queued — break-glass, CA upload, per-route
   editor. T1..T7 ✅ shipped (rustls inbound, identity
   extraction, route gate, hot-reload, console observability,
   SAN allowlist).
 - **Detector coverage gap-fills** under consideration to
-  raise Round-1 detection rate: mass-assignment body shape,
-  brute-force on /login, SSRF metadata-IP body scan, XXE
-  detector. Each ~half-day.
+  raise Round-1 detection rate from 33 % → ~73 %: mass-assignment
+  body shape, brute-force on /login, SSRF metadata-IP body scan,
+  XXE detector. Each ~half-day.
 
 **Recent verification (2026-05-02, perf-sweep + harness smoke):**
 

@@ -1229,51 +1229,69 @@ Last five tasks, compressed. For full detail see git history.
 
 ## Next Task
 
-**Operator priorities all closed today:** upstreams CRUD
-end-to-end (CC-T1.1.b + CC-T1.2 + CC-T1.audit), Grafana setup
-(GRAFANA-T1), and OTel tracing wired through hot paths
-(OTEL-T1 + T2 + T3). Audit gaps #3 (Prometheus instrumentation)
-+ #4 (OTel 0%) are now fully closed.
+**This session's work all closed:** HACK-T4 rollback action +
+MTLS-T7 SAN allowlist (live-verified, see
+`plans/followups-rollback-and-sans.md`); 15-min hackathon
+stress-test harness scaffolded + first run completed (legit
+median 3 ms, 100 % of detected attacks prevented, detection
+ceiling 33 % limited by attack-corpus coverage); plans/ +
+top-level docs refreshed.
 
-### Top of queue — PRE-T (proxy refactor) BEFORE more mTLS slices
+### Top of queue — Console QA full feature audit (CQA-T*)
 
-Operator flagged `aegis-proxy/src/lib.rs` size during MTLS-T6
-(now 5569 lines, ~7× the 800-line guideline). New plan
-`plans/proxy-refactor.md` documents PRE-T1..T8:
+Operator-flagged: every screen / button / action must work
+end-to-end against live data — no fakes, no fixtures, no
+dead buttons. New plan `plans/console-qa.md` documents
+14 slices (one per page + cross-cutting + final mock-data
+audit). Manual sweep first; Playwright automation as
+follow-up. ~9 h wall-clock total, parallelizable.
 
-1. **PRE-T1** — extract `responses.rs` (~120 lines).
-2. **PRE-T2** — extract `data_plane.rs` (~700 lines).
-3. **PRE-T3** — extract `admin/sse.rs` (~300 lines).
-4. **PRE-T4** — extract `admin/login.rs` (~400 lines).
-5. **PRE-T5** — extract `admin/get_handlers.rs` (~1200 lines).
-6. **PRE-T6** — extract `admin/mutation_handlers.rs` (~1500 lines).
-7. **PRE-T7** — extract `run.rs` (~700 lines), leave `lib.rs`
-   as a thin facade.
-8. **PRE-T8** — verify (no file > 800 lines, all tests pass,
-   git-stat shows file moves only).
+1. **CQA-T1..T12** — one slice per dashboard page
+   (Overview, Live Feed, Attack Events, Analytics, Audit Log,
+   Rule Manager, Tier Config, Upstreams, Blacklist+Whitelist,
+   Settings, Tracking, Scaling).
+2. **CQA-T13** — cross-cutting (TopBar drain / logout, toasts,
+   status bar).
+3. **CQA-T14** — mock-data + static-fixture grep audit.
 
-**Pure structural refactor — zero behaviour change.** ~6-8 h
-total, but every subsequent mTLS slice (T2 rustls wiring, T3
-identity extraction, T4 policy, T7 SAN allowlist mutations,
-T8 mode toggle, …) lands in a focused submodule rather than
-inflating a 5500-line file further.
+Output lands in `tests/results/run-cqa-<YYYYMMDD>/`.
 
-### After PRE-T8 — resume MTLS-T
+### After Console QA — detector coverage gap-fills
 
-Per `plans/mtls.md` ship order, MTLS-T6 backend already
-shipped. The remaining slices land in the new module
-structure:
+Round-1 stress-test showed detection capped at 33 %. Four
+half-day detectors lift it to ~73 %:
 
-1. **MTLS-T6 frontend** (deferred from this turn) — dashboard
-   `<PageMtls>` + `useMtlsApi()` hook + nav entry + i18n.
-   Lands AFTER PRE-T8 so the JSX changes don't coordinate
-   with a moving target on the Rust side. ~1-2 h.
-2. **MTLS-T2** — rustls inbound wiring with
-   `WebPkiClientVerifier` + `ClientTrustStore`. ~2 h.
-3. **MTLS-T3** — identity extraction from
-   `peer_certificates()`. Pure sync function. ~1.5 h.
-4. **MTLS-T4 → T11** — policy / audit / hot-reload / 5-tier
-   console UI / break-glass / per-route auth_required.
+1. **SSRF body URL scanner** — flag bodies containing
+   `http://169.254.169.254/...` (cloud metadata), `file://`,
+   `gopher://`, internal-RFC1918 URLs in user-supplied URL
+   fields.
+2. **Mass-assignment body shape** — flag JSON bodies on
+   non-admin endpoints that contain `role`, `is_admin`,
+   `balance`, `permissions`, `scope`.
+3. **XXE detector** — flag XML bodies with `<!ENTITY`
+   plus `SYSTEM` or `PUBLIC` external-entity markers.
+4. **Login brute-force window** — N failed `/login` from
+   one IP in T seconds → challenge / block. Reuses the
+   existing risk-strikes plumbing.
+
+The remaining ~25 % of corpus shapes (IDOR, true app-layer
+header-injection variants) are by-design app-layer and
+won't be addressed at the WAF tier.
+
+### Queued (not blocking the above)
+
+- **MTLS-T8..T11** — break-glass, CA upload, per-route
+  editor (Console mutation surfaces).
+- **Phase B B6-T2** (Helm) + **B6-T3** (CI). T4 (HSM) +
+  T5 (fd-pass) deferred.
+- **SC-T4** — `tokio_unstable` runtime metrics → Prometheus
+  (optional polish).
+- **MTLS-T4 deferred sub-slices** (`/admin/login` mTLS
+  bypass; identity-rate-limit fan-out).
+- Per-resource split of `admin_mutate.rs` (1714 lines).
+- **HACK-T4 rollback v2** — per-handler inverse-apply for
+  rule_upserted, detector mask, blacklist/whitelist,
+  threshold changes (v1 covers `mode_set` only).
 
 ### Other queued items (parked, not blocking MTLS-T)
 
