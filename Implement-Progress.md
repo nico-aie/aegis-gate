@@ -870,11 +870,128 @@
 
 ## Last Completed
 
-**Task:** **Followups bundle: HACK-T4 rollback action +
-MTLS-T7 Console SAN allowlist.** Two cohesive Console
-mutation surfaces wrapping up Tier-B Config history with a
-one-click undo and the deferred MTLS-T7 SAN allowlist
-management with hot-reloadable allowlist + UI.
+**Task:** **Detector-coverage sprint + rollback v2..v5 +
+SC-T4 (Prometheus runtime metrics)** — closes the last
+formally-active items in the queue. Headline signal: the
+hackathon-stress-test detection rate jumped **33 % → 80 %**
+in the post-sprint 15-min run.
+
+### What shipped this session (chronological)
+
+1. **`d190582` — body-collect fix** (data_plane.rs):
+   `BodyPeek::empty()` was always passed to the detector view,
+   silently disabling every body-based detector. Single-line
+   bug with ~+40 detection-points value. Body now collected
+   once after rate-limit/strike checks (capped at 1 MiB),
+   threaded into both the detector view and the upstream
+   forwarder. Required `forward_allow_to_upstream` signature
+   change to `(parts, body_bytes)`.
+
+2. **`80d1756` — mass-assignment + XXE detectors**: extended
+   `BodyAbuseDetector` with two new pattern checks. Mass-
+   assignment flags privileged-field JSON keys (role /
+   is_admin / balance / api_token / …) carefully excluding
+   generic flags (active / enabled / scope) to keep FP rate
+   low. XXE flags `<!ENTITY … SYSTEM "..."` external-entity
+   declarations in XML bodies. Both share the existing
+   `body_abuse` class so no new mask variant. +35 tests.
+
+3. **`54e3af1` — brute-force detector** (`crates/aegis-security/
+   src/detectors/brute_force.rs`): stateful per-IP windowed
+   counter on auth paths (10 attempts in 60 s default).
+   Disabled in the harness's bench config because the
+   shared-IP synthetic load trips it; production with real-IP
+   fan-out gets the protection. +9 tests; registered as the
+   8th default detector. Default-detectors-count test bumped
+   from 7 to 8.
+
+4. **`9bbc324` — CI gates** (B6-T2 + T3 close-out): the v2.3
+   contract gate (Round-2 official regression) was missing
+   from CI. Added `contract-v23` job + `helm` lint job;
+   ci-pass aggregator now waits on lint + test + smoke +
+   contract-v23 + helm. Helm chart `appVersion` synced to
+   Cargo.toml's `0.1.0`.
+
+5. **`082150a` — promoted 2026-05-02 stress-test result**
+   to a versioned report (`tests/results/run-perf-15min-
+   2026-05-02/`).
+
+6. **`da23ab2` — three deliverables bundle**: 15-min run v2
+   report (33 % → 80 % detection delta documented); CQA
+   round-3 walkthrough with 26 screenshots driven by a new
+   `tests/dashboard/cqa-walkthrough.mjs` Playwright harness;
+   profile sweep (3 datapoints) + 3 production profiles
+   (`config/profiles/{prod-balanced,prod-high-throughput,
+   prod-strict}.yaml` — all `waf validate` clean) + operator
+   picker doc (`docs/operator/profiles.md`).
+
+7. **`3bfbe7d`, `6b95e77`, `c35b5dd`, `cec6036`, `a25f5b0`
+   — rollback v2..v5**: extends the v1 `mode_set`-only
+   rollback dispatcher to **11 of 18 audit-mutated actions**.
+   v2 added risk_thresholds + mTLS SANs (set/removed); v3
+   added blacklist + whitelist add/remove with idempotent
+   already-gone handling; the audit-label fix (`c35b5dd`)
+   relabelled detector mutations from generic `"update"`
+   to `"detector_mask_set"` so v4 could match cleanly; v5
+   added verbosity_set + loadmode_set. `RollbackTargets`
+   borrows live stores; missing-store paths return
+   `ApplyFailed("X store not wired")`. Dashboard's
+   `ROLLBACKABLE_ACTIONS` mirror grew in lock-step. 30
+   dispatcher tests across v1..v5.
+
+8. **`5823140` — SC-T4 Prometheus runtime metrics**: 4
+   gauges (`aegis_runtime_active_workers / blocking_threads /
+   blocking_queue_depth / io_driver_fd_count`) always
+   registered on `/metrics` so the scrape surface is stable;
+   populate with live numbers when the WAF is built with
+   `RUSTFLAGS="--cfg tokio_unstable" --features
+   tokio_unstable`. Default builds emit zeros (no silent
+   data-loss). `crates/aegis-control/Cargo.toml` whitelists
+   `cfg(tokio_unstable)` to silence the cargo lint. New
+   "Runtime metrics (Prometheus)" section in
+   `docs/operations/runtime-tuning.md` documents each
+   gauge's diagnostic value + the tokio-unstable tradeoff.
+
+### Verification
+
+- `cargo test --workspace`: all green across all touchpoints
+  (aegis-proxy 466 / aegis-control 938 / aegis-security 930 /
+  aegis-bin 32).
+- 15-min hackathon harness: detection 33 % → **80 %** with
+  `detector:xss` (8 %) + `detector:ssrf` (4 %) +
+  `detector:mass` (4 %) all newly contributing; legit median
+  2.95 ms; 100 %-of-detected attacks prevented.
+- Live-verified each rollback v2..v5 end-to-end via curl
+  round-trips against the running WAF.
+- Live-verified SC-T4 in both build modes: default reads
+  `aegis_runtime_active_workers 0`; with `--cfg
+  tokio_unstable` reads `12` (matches host CPUs).
+
+### Out of scope (deferred)
+
+- Rollback v6+: rule_create / rule_update / rule_delete /
+  rule_toggle (CRUD ops with body content); risk_reset
+  (per-IP, needs IP threading); alert_receivers_set /
+  alert_receiver_delete (audit chain carries
+  redacted secrets — lossy round-trip); pool_upsert /
+  pool_delete / upstreams_set (audit chain carries derived
+  `UpstreamsConfigView`, not full `PoolConfig` — lossy).
+  These need audit-shape changes before the dispatcher can
+  cleanly inverse-apply; tracked separately.
+- MTLS-T8..T11 (break-glass, CA upload, per-route editor):
+  need rustls ServerConfig hot-swap (multi-hour refactor).
+- Phase B B6-T4 (HSM resolver) + B6-T5 (fd-pass binary
+  handover): no customer trigger; supervised re-exec
+  pattern is acceptable for current ops profile.
+
+---
+
+### Earlier — Followups bundle: HACK-T4 rollback action +
+MTLS-T7 Console SAN allowlist
+
+Two cohesive Console mutation surfaces wrapping up Tier-B
+Config history with a one-click undo and the deferred MTLS-T7
+SAN allowlist management with hot-reloadable allowlist + UI.
 
 ### What landed (Part A — HACK-T4 rollback action)
 
@@ -1229,69 +1346,50 @@ Last five tasks, compressed. For full detail see git history.
 
 ## Next Task
 
-**This session's work all closed:** HACK-T4 rollback action +
-MTLS-T7 SAN allowlist (live-verified, see
-`plans/followups-rollback-and-sans.md`); 15-min hackathon
-stress-test harness scaffolded + first run completed (legit
-median 3 ms, 100 % of detected attacks prevented, detection
-ceiling 33 % limited by attack-corpus coverage); plans/ +
-top-level docs refreshed.
+**Every formally-active item is now closed.** Today shipped:
+CQF-T sprint (16 of 19 slices), 4 detector gap-fills (33 % →
+80 % detection), CI gates (v2.3 contract + Helm), 3 prod
+profiles + operator picker doc, rollback v2..v5 (11 of 18
+audit-mutated actions), SC-T4 Prometheus runtime metrics. The
+queue is **empty of formally-tracked work**.
 
-### Top of queue — Console QA full feature audit (CQA-T*)
+### Open intake — pick from these when starting next
 
-Operator-flagged: every screen / button / action must work
-end-to-end against live data — no fakes, no fixtures, no
-dead buttons. New plan `plans/console-qa.md` documents
-14 slices (one per page + cross-cutting + final mock-data
-audit). Manual sweep first; Playwright automation as
-follow-up. ~9 h wall-clock total, parallelizable.
+**Hackathon Round-1 dependencies (waiting on the team):**
+1. Their real upstream binary — drop-in via `UPSTREAM_BIN=`
+   env var; no harness change needed.
+2. Their source-IP fan-out shape — affects rate-limit /
+   brute-force tuning.
+3. Their official latency target — currently the harness
+   uses laptop-class targets (p99 ≤ 200 ms / OK ≥ 95 % /
+   detection ≥ 85 %).
+4. Whether they want mTLS-bypass for the legit_users
+   scenario — the MTLS-T7 SAN allowlist we shipped supports
+   this.
 
-1. **CQA-T1..T12** — one slice per dashboard page
-   (Overview, Live Feed, Attack Events, Analytics, Audit Log,
-   Rule Manager, Tier Config, Upstreams, Blacklist+Whitelist,
-   Settings, Tracking, Scaling).
-2. **CQA-T13** — cross-cutting (TopBar drain / logout, toasts,
-   status bar).
-3. **CQA-T14** — mock-data + static-fixture grep audit.
+**Rollback v6+ — one feature per slice when ready** (each
+needs a small audit-shape change to be lossless):
+- `rule_create` / `rule_update` / `rule_delete` / `rule_toggle`
+  — body content + state machine; needs full rule body in audit
+- `risk_reset` — per-IP strike clear; needs IP threading
+- `alert_receivers_set` / `alert_receiver_delete` — audit
+  chain currently carries redacted secrets (intentional);
+  rollback would need a sealed-secret payload track
+- `pool_upsert` / `pool_delete` / `upstreams_set` — audit
+  chain carries derived `UpstreamsConfigView` not full
+  `PoolConfig`; rollback would need the full shape
 
-Output lands in `tests/results/run-cqa-<YYYYMMDD>/`.
-
-### After Console QA — detector coverage gap-fills
-
-Round-1 stress-test showed detection capped at 33 %. Four
-half-day detectors lift it to ~73 %:
-
-1. **SSRF body URL scanner** — flag bodies containing
-   `http://169.254.169.254/...` (cloud metadata), `file://`,
-   `gopher://`, internal-RFC1918 URLs in user-supplied URL
-   fields.
-2. **Mass-assignment body shape** — flag JSON bodies on
-   non-admin endpoints that contain `role`, `is_admin`,
-   `balance`, `permissions`, `scope`.
-3. **XXE detector** — flag XML bodies with `<!ENTITY`
-   plus `SYSTEM` or `PUBLIC` external-entity markers.
-4. **Login brute-force window** — N failed `/login` from
-   one IP in T seconds → challenge / block. Reuses the
-   existing risk-strikes plumbing.
-
-The remaining ~25 % of corpus shapes (IDOR, true app-layer
-header-injection variants) are by-design app-layer and
-won't be addressed at the WAF tier.
-
-### Queued (not blocking the above)
-
-- **MTLS-T8..T11** — break-glass, CA upload, per-route
-  editor (Console mutation surfaces).
-- **Phase B B6-T2** (Helm) + **B6-T3** (CI). T4 (HSM) +
-  T5 (fd-pass) deferred.
-- **SC-T4** — `tokio_unstable` runtime metrics → Prometheus
-  (optional polish).
-- **MTLS-T4 deferred sub-slices** (`/admin/login` mTLS
-  bypass; identity-rate-limit fan-out).
-- Per-resource split of `admin_mutate.rs` (1714 lines).
-- **HACK-T4 rollback v2** — per-handler inverse-apply for
-  rule_upserted, detector mask, blacklist/whitelist,
-  threshold changes (v1 covers `mode_set` only).
+**Operational polish (deferred / opt-in):**
+- MTLS-T8..T11 (break-glass, CA upload, per-route editor)
+  — needs rustls ServerConfig hot-swap (~multi-hour refactor)
+- Phase B B6-T4 (HSM resolver), B6-T5 (fd-pass binary
+  handover) — no customer trigger
+- Per-resource split of `admin_mutate.rs` (1714 lines, over
+  the 800-line guideline) — pure refactor, no behaviour
+  change
+- Round-cqa walkthrough automation: extend `tests/dashboard/
+  cqa-walkthrough.mjs` to assert the new gauges show up on
+  Settings ("Runtime metrics" mini-strip per SC-T4 §1)
 
 ### Other queued items (parked, not blocking MTLS-T)
 

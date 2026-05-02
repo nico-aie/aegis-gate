@@ -19,8 +19,14 @@ Akamai Kona, and Cloudflare Enterprise.
 **Core M1–M3, Aegis WAF Console redesign, HA cluster, the
 external interop contract, the entire Phase B production
 packaging track, the Hackathon-readiness track (HACK-T1..T5
-+ both follow-ups), and the proxy refactor (lib.rs 5569 →
-559 lines) are all shipped.** Active work:
++ rollback v2..v5 + SAN allowlist), the proxy refactor
+(lib.rs 5569 → 559 lines), the Console QA gap-fill sprint
+(CQF-T1..T16), the detector-coverage sprint (mass-assignment
++ XXE + brute-force on auth paths + SSRF body scan +
+BodyPeek fix), the SC-T4 tokio runtime metrics, and the
+production profile picker (balanced / strict / high-throughput
++ Makefile profile-aware run targets) are all shipped.**
+Active work:
 
 - **Hackathon Round-1 stress-test prep** — 15-min mixed-traffic
   harness scaffolded under `tests/hackathon/` (mock upstream
@@ -30,18 +36,10 @@ packaging track, the Hackathon-readiness track (HACK-T1..T5
   benchmark team's source-IP fan-out / latency target /
   attack-labelling source — see
   [`plans/hackathon-stress-test.md`](plans/hackathon-stress-test.md) §8.
-- **Console QA — full feature audit** ([`plans/console-qa.md`](plans/console-qa.md)) —
-  14-slice manual sweep verifying every screen / button / action
-  against live data; no fakes, no dead buttons, every mutation
-  round-trips through the audit chain. ~9 h wall-clock.
 - **MTLS-T8..T11** queued — break-glass, CA upload, per-route
   editor. T1..T7 ✅ shipped (rustls inbound, identity
   extraction, route gate, hot-reload, console observability,
   SAN allowlist).
-- **Detector coverage gap-fills** under consideration to
-  raise Round-1 detection rate from 33 % → ~73 %: mass-assignment
-  body shape, brute-force on /login, SSRF metadata-IP body scan,
-  XXE detector. Each ~half-day.
 
 **Recent verification (2026-05-02, perf-sweep + harness smoke):**
 
@@ -51,7 +49,7 @@ packaging track, the Hackathon-readiness track (HACK-T1..T5
 | v2.3 contract gate (`tests/contract/v2.3_compliance.sh`) | **40 / 40 PASS** (after curl 8.1+ URL-encode fix) |
 | API smoke (auth, detectors, risk, loadmode, logging, cold-tier) | **56 / 56 PASS** |
 | Protocol mix | HTTP/1.1 PASS; HTTP/2/3/gRPC graceful SKIP (no TLS data plane in dev cfg); WS info |
-| Hackathon harness smoke (30 s, 10/3/10 VUs) | legit p99 **5.81 ms**, legit OK **99.76 %**, attacks detected **33 %** (corpus has app-layer shapes today's detectors don't reach yet — see "detector gap-fills" above) |
+| Hackathon harness 15-min run v2 (post detector-coverage sprint) | legit p99 **4.52 ms**, legit OK **99 %**, attacks detected **80 %** (was 33 % v1; +47 pp from BodyPeek fix + mass-assignment / XXE / brute-force / SSRF body) |
 | MTLS-T7 SAN allowlist live verification | GET-empty → PUT 3 → test admit matrix (exact / wildcard single-label match / wildcard multi-label rejected / unknown rejected) → DELETE → audit chain captured set + remove |
 | HACK-T4 rollback live verification | `POST /api/config/versions/{seq}/rollback` for `mode_set` → mode reverts → audit chain captures `mode_set_rollback` |
 
@@ -80,18 +78,28 @@ p95 **286 µs** (run-12); Nuclei 742 templates / 1 431 requests
 # 1. One-shot setup — generates self-signed dev cert + release build
 make setup
 
-# 2. Boot the WAF
-make run                    # uses config/prod.yaml by default
+# 2a. First-light — in-memory state, no Redis required
+make run-dev
+
+# 2b. Production default — prod-balanced profile (Redis-backed)
+make redis-up && make run
 
 # 3. Smoke test (in another terminal)
 make smoke
 ```
 
-Run `make help` to see every target. Common overrides:
+Run `make help` to see every target. Profile picker (4 starting
+points — see [`docs/operator/profiles.md`](docs/operator/profiles.md)):
 
 ```sh
-CONFIG=config/dev.yaml make run                          # boot dev config
+make run-dev              # config/dev.yaml — in-memory, no Redis
+make run                  # config/profiles/prod-balanced.yaml — DEFAULT
+make run-strict           # config/profiles/prod-strict.yaml — compliance-tightened
+make run-throughput       # config/profiles/prod-high-throughput.yaml — CDN front-door
+
+CONFIG=config/prod.yaml make run                         # legacy template
 FEATURES="redis alerts geoip taxii http3 etcd otel" make build
+make validate-all                                        # validate dev + 3 profiles
 make test                                                # cargo test --workspace
 ```
 
@@ -111,8 +119,8 @@ Step-by-step setup + tuning + admin auth:
 ### Config sources (boot-time selection)
 
 ```sh
-# Default — load from a local YAML file
-./target/release/waf run --config config/prod.yaml
+# Default — load from a local YAML file (prod-balanced profile)
+./target/release/waf run --config config/profiles/prod-balanced.yaml
 
 # etcd v3 (--features etcd) — load from a key, watch for changes
 AEGIS_CONFIG_SOURCE=etcd \

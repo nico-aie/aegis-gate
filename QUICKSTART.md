@@ -25,23 +25,47 @@ required.
 ## Fast path
 
 ```sh
-make setup    # generate dev cert + release build (~2 min cold, ~10 s warm)
-make run      # boot against config/prod.yaml
-make smoke    # in another terminal: curl data + admin endpoints
+make setup       # generate dev cert + release build (~2 min cold, ~10 s warm)
+make run-dev     # first-light: in-memory state, no Redis required
+make smoke       # in another terminal: curl data + admin endpoints
 ```
 
-Run `make help` to see every available target. Override defaults via env:
+`make run-dev` boots `config/dev.yaml` — same detector mask + risk
+shape as the recommended **prod-balanced** profile, but with
+in-memory state and inline test credentials so it works on a fresh
+clone with zero infrastructure.
+
+For the production profile (the actual recommended starting point):
 
 ```sh
-CONFIG=config/dev.yaml make run                          # boot dev config
+make redis-up    # start the local dev Redis (one-time)
+make run         # boots config/profiles/prod-balanced.yaml
+```
+
+Run `make help` to see every available target. The four profiles:
+
+| Target | Config | When |
+|---|---|---|
+| `make run-dev` | `config/dev.yaml` | First-light, tests, in-memory |
+| `make run` | `config/profiles/prod-balanced.yaml` | **Production default** (Redis state, 7-day audit) |
+| `make run-strict` | `config/profiles/prod-strict.yaml` | Compliance-driven (PCI/HIPAA/SOC2/GDPR) |
+| `make run-throughput` | `config/profiles/prod-high-throughput.yaml` | CDN front-door, > 5 k RPS |
+
+Decision tree + empirical comparison:
+[`docs/operator/profiles.md`](docs/operator/profiles.md).
+
+Override the default config with env, e.g.:
+
+```sh
+CONFIG=config/prod.yaml make run                         # legacy template
 FEATURES="redis alerts geoip taxii http3" make build     # custom feature set
 ```
 
 That's enough to get a green health probe and serve TLS on `:8443`
 with a self-signed dev cert. The 502s on `:8080` / `:8443` you'll see
-in `make smoke` are expected — the placeholder upstreams in
-`prod.yaml` (ports 3001-3004) aren't running. Replace them with
-your real backends when wiring an app.
+in `make smoke` are expected — the placeholder upstreams (ports
+3001-3004 / 9999) aren't running. Replace them with your real
+backends when wiring an app.
 
 ---
 
@@ -87,19 +111,23 @@ single-node in-memory WAF. Service catalogue + ports:
 ### 4. Validate the config
 
 ```sh
-./target/release/waf validate --config config/prod.yaml
+# Default — prod-balanced
+./target/release/waf validate --config config/profiles/prod-balanced.yaml
+
+# Or validate every profile in one shot
+make validate-all
 ```
 
-Expected: `config OK: config/prod.yaml`.
+Expected: `config OK: <path>`.
 
 ### 5. Run the gateway
 
 ```sh
-# Debug
-cargo run -p aegis-bin -- run --config config/prod.yaml
+# Dev (no Redis)
+cargo run -p aegis-bin -- run --config config/dev.yaml
 
-# Release
-./target/release/waf run --config config/prod.yaml
+# Production default (Redis required — `make redis-up` first)
+./target/release/waf run --config config/profiles/prod-balanced.yaml
 ```
 
 Boot log shows the runtime sizing it picked up:
@@ -137,8 +165,9 @@ abort after `AEGIS_DRAIN_GRACE_MS` (default 5 s).
 
 ## Tuning Layer-1 workers
 
-The `runtime:` block in [`config/prod.yaml`](config/prod.yaml) is
-the in-process scaling knob:
+The `runtime:` block (commented in
+[`config/prod.yaml`](config/prod.yaml); add to any profile under
+`config/profiles/`) is the in-process scaling knob:
 
 ```yaml
 runtime:
@@ -182,8 +211,13 @@ unprotected and the dashboard login screen rejects all attempts.
 ```sh
 make help                              # List every make target
 make setup                             # Cert + release build
-make run                               # Boot against $(CONFIG)
-make validate                          # Config dry-run
+make run-dev                           # Boot config/dev.yaml (in-memory)
+make run                               # Boot prod-balanced (default; Redis req)
+make run-strict                        # Boot prod-strict (compliance)
+make run-throughput                    # Boot prod-high-throughput (CDN)
+make redis-up | redis-down             # Start / stop the dev Redis sidecar
+make validate                          # Dry-run $(CONFIG)
+make validate-all                      # Dry-run dev + all 3 prod profiles
 make smoke                             # Curl data + admin endpoints
 make test                              # cargo test --workspace
 make clippy                            # cargo clippy -- -D warnings
@@ -240,6 +274,7 @@ run with mock upstream + k6 + post-run summary —
 
 | Doc | What |
 |-----|------|
+| [`docs/operator/profiles.md`](docs/operator/profiles.md) | Profile decision tree (balanced / strict / high-throughput) + empirical comparison |
 | [`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md) | SOC team cheat sheet (config → deploy → monitor + incident playbooks) |
 | [`config/README.md`](config/README.md) | Pick-one config + fork-prod recipe |
 | [`deploy/GUIDE.md`](deploy/GUIDE.md) | Production deployment (image, systemd, cluster) |

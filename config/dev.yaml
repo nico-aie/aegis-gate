@@ -1,6 +1,6 @@
 # Aegis-Gate — Development / Test-harness Configuration
 #
-# Self-contained config used by `tests/`:
+# Self-contained config used by `tests/` and `make run-dev`:
 #   - no `${secret:env:…}` references — every credential is inline
 #     so `cargo run -p aegis-bin -- run --config config/dev.yaml`
 #     works without bootstrapping anything else
@@ -9,10 +9,22 @@
 #   - `compliance: null` so detector-flip tests aren't clamped
 #   - one literal admin: user "admin", password "aegis-test-1234"
 #
+# Detector mask + risk thresholds + load-mode shape mirror
+# `config/profiles/prod-balanced.yaml` so the dev experience matches
+# the recommended production profile. The differences (in-memory state,
+# inline credentials, loose rate limits, /tmp audit sink) exist solely
+# to keep the test harness self-contained.
+#
 # DO NOT use this config in production:
 #   - the password is in version control
 #   - the CSRF secret is a literal placeholder
 #   - rate limits + risk thresholds are loose to keep tests green
+#
+# For a real deployment, fork one of:
+#   - config/profiles/prod-balanced.yaml      (default — 99 % of cases)
+#   - config/profiles/prod-strict.yaml        (compliance-driven)
+#   - config/profiles/prod-high-throughput.yaml (CDN front-door)
+# See docs/operator/profiles.md for the picker.
 #
 # To regenerate the password hash (e.g. rotate the test password):
 #   echo "<new-password>" | cargo run -p aegis-bin -- admin set-password

@@ -4,11 +4,19 @@
 # clone:
 #
 #     make setup          # generate dev cert + release build
-#     make run            # boot the WAF against config/prod.yaml
+#     make run-dev        # first-light: in-memory, no Redis required
+#     make run            # production default: prod-balanced profile
+#                         #   (requires Redis — `make redis-up` first)
 #     make smoke          # curl the data plane + admin health probe
 #
+# Profile picker (see docs/operator/profiles.md):
+#     make run-dev          → config/dev.yaml                       (in-memory)
+#     make run              → config/profiles/prod-balanced.yaml    (default)
+#     make run-strict       → config/profiles/prod-strict.yaml      (compliance)
+#     make run-throughput   → config/profiles/prod-high-throughput.yaml
+#
 # Override defaults via env, e.g.:
-#     CONFIG=config/dev.yaml make run
+#     CONFIG=config/prod.yaml make run
 #     FEATURES="redis alerts geoip taxii http3" make build
 
 # Make sure rustup's cargo is reachable when invoked from a non-login
@@ -25,13 +33,23 @@ CARGO ?= cargo
 # these. See config/README.md for the resolver / feature mapping.
 FEATURES        ?= redis
 
-# Default config to run against.
-CONFIG          ?= config/prod.yaml
+# Default config to run against. The prod-balanced profile is the
+# recommended starting point for production deployments — full detector
+# mask, balanced risk thresholds, Redis state, 7-day audit retention.
+# For first-light without Redis, use `make run-dev` (config/dev.yaml).
+# See docs/operator/profiles.md for the full profile decision tree.
+CONFIG          ?= config/profiles/prod-balanced.yaml
+
+# Profile shortcuts — used by the run-* convenience targets below.
+CONFIG_DEV        := config/dev.yaml
+CONFIG_BALANCED   := config/profiles/prod-balanced.yaml
+CONFIG_STRICT     := config/profiles/prod-strict.yaml
+CONFIG_THROUGHPUT := config/profiles/prod-high-throughput.yaml
 
 # Where the release binary lands.
 WAF_BIN         := target/release/waf
 
-# Self-signed cert paths (must match config/prod.yaml).
+# Self-signed cert paths (referenced by every profile under config/).
 DEV_CRT         := config/certs/dev.crt
 DEV_KEY         := config/certs/dev.key
 
@@ -42,8 +60,9 @@ SMOKE_ADMIN      ?= http://localhost:9443
 
 # --- Phony targets ----------------------------------------------------------
 
-.PHONY: help setup cert build build-debug run validate test test-fast \
-        clippy fmt smoke clean reset-cert dashboard
+.PHONY: help setup cert build build-debug run run-dev run-strict run-throughput \
+        validate validate-all test test-fast clippy fmt smoke clean reset-cert \
+        dashboard redis-up redis-down
 
 help:
 	@awk 'BEGIN { FS = ":.*##" } \
@@ -54,8 +73,11 @@ help:
 
 setup: cert build ## Generate dev cert + release build (one-shot fresh clone)
 	@echo
-	@echo "Setup done. Boot with:"
-	@echo "  make run"
+	@echo "Setup done. First-light (no Redis):"
+	@echo "  make run-dev"
+	@echo
+	@echo "Production default (prod-balanced — needs Redis):"
+	@echo "  make redis-up && make run"
 
 cert: $(DEV_CRT) ## Generate self-signed dev TLS cert (idempotent)
 
@@ -79,11 +101,32 @@ dashboard: ## Rebuild the dashboard JSX bundle (run after editing src/*.jsx)
 
 ##@ Run
 
-run: $(WAF_BIN) cert ## Boot the WAF against $(CONFIG) (default: config/prod.yaml)
+run: $(WAF_BIN) cert ## Boot against $(CONFIG) — default: prod-balanced (Redis required)
 	@$(WAF_BIN) run --config $(CONFIG)
+
+run-dev: $(WAF_BIN) cert ## Boot against config/dev.yaml — in-memory, no Redis
+	@$(WAF_BIN) run --config $(CONFIG_DEV)
+
+run-strict: $(WAF_BIN) cert ## Boot against prod-strict profile — compliance-tightened
+	@$(WAF_BIN) run --config $(CONFIG_STRICT)
+
+run-throughput: $(WAF_BIN) cert ## Boot against prod-high-throughput profile — CDN front-door tuning
+	@$(WAF_BIN) run --config $(CONFIG_THROUGHPUT)
 
 validate: $(WAF_BIN) ## Validate $(CONFIG) without booting
 	@$(WAF_BIN) validate --config $(CONFIG)
+
+validate-all: $(WAF_BIN) ## Validate dev + all three production profiles
+	@for cfg in $(CONFIG_DEV) $(CONFIG_BALANCED) $(CONFIG_STRICT) $(CONFIG_THROUGHPUT); do \
+	    printf "validate %-44s " "$$cfg"; \
+	    $(WAF_BIN) validate --config $$cfg >/dev/null 2>&1 && echo OK || { echo FAIL; $(WAF_BIN) validate --config $$cfg; exit 1; }; \
+	done
+
+redis-up: ## Start the local dev Redis (required by prod-balanced/strict/throughput)
+	@docker compose -f deploy/docker-compose.dev.yml up -d redis
+
+redis-down: ## Stop the local dev Redis
+	@docker compose -f deploy/docker-compose.dev.yml stop redis
 
 $(WAF_BIN):
 	@$(MAKE) --no-print-directory build
