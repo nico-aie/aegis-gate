@@ -4943,37 +4943,234 @@ function PageIncidents() {
 function PageInvestigation() {
   const [pivot, setPivot] = useStateP('');
   const [activePivot, setActivePivot] = useStateP('');
+  const [pivotKind, setPivotKind] = useStateP('auto'); // auto | ip | request_id | rule_id
+  // Derive pivot type from the input shape.
+  const detectKind = (s) => {
+    if (!s) return null;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return 'request_id';
+    if (/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(s)) return 'ip';
+    if (/^[a-f0-9:]+:[a-f0-9:]+$/i.test(s)) return 'ip'; // ipv6
+    if (/^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/i.test(s)) return 'rule_id'; // e.g. owasp.sqli.union
+    return 'rule_id';
+  };
+  const effectiveKind = pivotKind === 'auto' ? detectKind(activePivot) : pivotKind;
+
+  // Hit the audit endpoint with the right filter for this pivot kind.
+  const auditQ = (() => {
+    if (!activePivot) return { ip: undefined, ruleId: undefined, requestId: undefined };
+    if (effectiveKind === 'ip')         return { ip: activePivot, ruleId: undefined, requestId: undefined };
+    if (effectiveKind === 'rule_id')    return { ip: undefined, ruleId: activePivot, requestId: undefined };
+    if (effectiveKind === 'request_id') return { ip: undefined, ruleId: undefined, requestId: activePivot };
+    return { ip: undefined, ruleId: undefined, requestId: undefined };
+  })();
+  const audit = window.useAuditLogApi
+    ? window.useAuditLogApi({ ...auditQ, limit: 200 })
+    : { data: null };
+  const events = audit.data?.events || [];
+
+  // Top-attackers table: when pivoting on an IP, find the row.
+  const topAttackers = window.useApi
+    ? window.useApi('/api/attacks/top', { intervalMs: 30000, fallback: null })
+    : { data: null };
+  const attackerRow = activePivot && effectiveKind === 'ip'
+    ? (topAttackers.data?.attackers || []).find(a => a.identifier === activePivot)
+    : null;
+
+  // Stats roll-up over the audit window.
+  const summary = useMemoP(() => {
+    if (!events.length) return null;
+    const byAction = {};
+    const byDetector = {};
+    const byPath = {};
+    const ips = new Set();
+    let earliest = Infinity, latest = -Infinity;
+    for (const row of events) {
+      const e = row.event || row;
+      const a = e.action || 'unknown';
+      byAction[a] = (byAction[a] || 0) + 1;
+      const d = e.detector || (e.detectors && e.detectors[0]) || e.rule_id || 'n/a';
+      byDetector[d] = (byDetector[d] || 0) + 1;
+      const p = e.path || '/';
+      byPath[p] = (byPath[p] || 0) + 1;
+      if (e.client_ip) ips.add(e.client_ip);
+      const ts = e.ts ? Date.parse(e.ts) : NaN;
+      if (Number.isFinite(ts)) {
+        earliest = Math.min(earliest, ts);
+        latest = Math.max(latest, ts);
+      }
+    }
+    return {
+      total: events.length,
+      byAction,
+      byDetector,
+      byPath,
+      uniqueIps: ips.size,
+      windowStart: Number.isFinite(earliest) ? new Date(earliest) : null,
+      windowEnd: Number.isFinite(latest) ? new Date(latest) : null,
+    };
+  }, [events]);
+
   return (
-    <StubPage
-      title="Investigation"
-      subtitle="Drill from any IP / request_id / rule_id into all WAF context"
-      eta="Backed by existing /api/audit + /api/attacks/top — full pivot UI lands in Phase 3."
-    >
-      <div className="card" style={{ padding: 16 }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Investigation</h1>
+          <p className="page-subtitle">Pivot from any IP / request_id / rule_id into the full WAF context</p>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <window.I.Search />
           <input
             type="text"
-            placeholder="Paste an IP, CIDR, request_id, rule_id, SAN, or session ID…"
+            placeholder="Paste an IP (1.2.3.4 or 10.0.0.0/8), request_id (UUID), or rule_id (owasp.sqli.union)…"
             value={pivot}
             onChange={e => setPivot(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') setActivePivot(pivot.trim()); }}
             style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 13 }}
           />
+          <select
+            value={pivotKind}
+            onChange={e => setPivotKind(e.target.value)}
+            style={{ padding: '8px 6px', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 12 }}
+          >
+            <option value="auto">auto-detect</option>
+            <option value="ip">IP / CIDR</option>
+            <option value="request_id">request_id</option>
+            <option value="rule_id">rule_id</option>
+          </select>
           <button className="btn primary" onClick={() => setActivePivot(pivot.trim())}>Pivot</button>
         </div>
-        {activePivot ? (
-          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-            <p>Pivoting on <code>{activePivot}</code>…</p>
-            <p>Phase 3 will fan-out to: matching audit events, recent rule matches, attacker table entries, SAN allowlist matches, threat-intel hits.</p>
-          </div>
-        ) : (
-          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-            Enter a value above and press Enter. Until Phase 3 lands, use <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail</a>'s filter inputs (IP, rule_id, request_id).
+        {activePivot && (
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-dim)' }}>
+            Pivoting on <code>{activePivot}</code> · type: <strong>{effectiveKind || 'unknown'}</strong>
           </div>
         )}
       </div>
-    </StubPage>
+
+      {!activePivot && (
+        <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
+          Enter an identifier above and press Enter. The audit ring (last 200 events for the matching filter) is searched in real time.
+        </div>
+      )}
+
+      {activePivot && summary && (
+        <>
+          <div className="grid-12" style={{ marginBottom: 12 }}>
+            <div className="col-3 card" style={{ padding: 12 }}>
+              <div className="card-title">Events</div>
+              <div className="num" style={{ fontSize: 24 }}>{summary.total.toLocaleString()}</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>matching this pivot</div>
+            </div>
+            <div className="col-3 card" style={{ padding: 12 }}>
+              <div className="card-title">Unique IPs</div>
+              <div className="num" style={{ fontSize: 24 }}>{summary.uniqueIps}</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>seen across these events</div>
+            </div>
+            <div className="col-3 card" style={{ padding: 12 }}>
+              <div className="card-title">Window</div>
+              <div style={{ fontSize: 13 }}>
+                {summary.windowStart ? summary.windowStart.toLocaleTimeString() : '—'}
+                <br />
+                <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                  → {summary.windowEnd ? summary.windowEnd.toLocaleTimeString() : '—'}
+                </span>
+              </div>
+            </div>
+            <div className="col-3 card" style={{ padding: 12 }}>
+              <div className="card-title">Top action</div>
+              {(() => {
+                const top = Object.entries(summary.byAction).sort((a, b) => b[1] - a[1])[0];
+                return top ? (
+                  <>
+                    <div style={{ fontSize: 18 }}>
+                      <span className={`pill ${top[0] === 'block' ? 'down' : top[0] === 'allow' ? 'up' : 'warn'}`}>{top[0]}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{top[1]} of {summary.total}</div>
+                  </>
+                ) : <span>—</span>;
+              })()}
+            </div>
+          </div>
+
+          {attackerRow && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <window.SectionHeader title="Attacker context" sub="from /api/attacks/top" />
+              <div style={{ padding: 12, display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
+                <div><strong>Hits</strong>: <span className="num">{attackerRow.hits}</span></div>
+                {attackerRow.country && <div><strong>Country</strong>: {attackerRow.country}</div>}
+                {attackerRow.asn && <div><strong>ASN</strong>: {attackerRow.asn}</div>}
+                {attackerRow.risk !== undefined && <div><strong>Risk</strong>: <span className="num">{attackerRow.risk}</span></div>}
+                {attackerRow.categories && (
+                  <div><strong>Categories</strong>: {Array.isArray(attackerRow.categories) ? attackerRow.categories.join(', ') : attackerRow.categories}</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="grid-12" style={{ marginBottom: 12 }}>
+            <div className="col-6 card">
+              <window.SectionHeader title="Action breakdown" />
+              <table className="tbl tbl-compact">
+                <tbody>
+                  {Object.entries(summary.byAction).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+                    <tr key={k}>
+                      <td><span className={`pill ${k === 'block' ? 'down' : k === 'allow' ? 'up' : 'warn'}`}>{k}</span></td>
+                      <td className="num" style={{ textAlign: 'right' }}>{v}</td>
+                      <td className="num" style={{ textAlign: 'right' }}>{((v / summary.total) * 100).toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="col-6 card">
+              <window.SectionHeader title="Top detectors / rules" />
+              <table className="tbl tbl-compact">
+                <tbody>
+                  {Object.entries(summary.byDetector).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => (
+                    <tr key={k}>
+                      <td><code style={{ fontSize: 11 }}>{k}</code></td>
+                      <td className="num" style={{ textAlign: 'right' }}>{v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="card">
+            <window.SectionHeader title={`Audit timeline (newest first, ${events.length} of last 200)`} />
+            <table className="tbl tbl-compact">
+              <thead><tr><th>ts</th><th>action</th><th>ip</th><th>method</th><th>path</th><th>rule_id</th></tr></thead>
+              <tbody>
+                {events.slice(0, 100).map((row, i) => {
+                  const e = row.event || row;
+                  return (
+                    <tr key={i}>
+                      <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                        {e.ts ? new Date(e.ts).toLocaleTimeString() : '—'}
+                      </td>
+                      <td><span className={`pill ${e.action === 'block' ? 'down' : e.action === 'allow' ? 'up' : 'warn'}`}>{e.action || '—'}</span></td>
+                      <td className="num">{e.client_ip || '—'}</td>
+                      <td>{e.method || '—'}</td>
+                      <td><code style={{ fontSize: 11 }}>{(e.path || '/').slice(0, 60)}</code></td>
+                      <td><code style={{ fontSize: 11 }}>{e.rule_id || e.detector || '—'}</code></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {activePivot && !summary && events.length === 0 && (
+        <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
+          No audit events found for <code>{activePivot}</code> in the in-process ring (last 200 events).
+        </div>
+      )}
+    </>
   );
 }
 
@@ -5018,21 +5215,43 @@ function PageThreatIntel() {
   );
 }
 
+// Reference data: which detector classes each compliance mode pins.
+// Mirrors the backend clamps in `crates/aegis-core/src/compliance.rs`.
+const COMPLIANCE_CLAMPS = {
+  pci_dss: ['sqli', 'xss', 'path_traversal', 'header_injection'],
+  hipaa:   ['sqli', 'xss', 'ssrf', 'header_injection'],
+  soc2:    ['sqli', 'xss', 'path_traversal', 'header_injection', 'recon'],
+  gdpr:    ['sqli', 'xss'],
+  fips:    ['sqli', 'xss', 'path_traversal', 'header_injection', 'ssrf'],
+};
+
 function PageCompliance() {
   const status = window.useStatusApi ? window.useStatusApi() : { data: null };
-  const modes = status.data?.compliance?.modes || [];
+  const detectors = window.useApi ? window.useApi('/api/detectors', { intervalMs: 30000, fallback: null }) : { data: null };
+  const modes = status.data?.compliance?.modes || status.data?.compliance_modes || [];
+  const lockedClasses = detectors.data?.locked_classes || [];
+
   return (
-    <StubPage
-      title="Compliance Profile"
-      subtitle="PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator"
-      eta="Clamp editor lands in Phase 3. Today's view: which modes are active + which detectors / classes they pin."
-    >
-      <div className="card">
-        <window.SectionHeader title="Active compliance modes" sub={modes.length === 0 ? 'no modes set' : `${modes.length} active`} />
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Compliance Profile</h1>
+          <p className="page-subtitle">PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator (read-only; editor in Phase 4)</p>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <window.SectionHeader title="Active modes" sub={modes.length === 0 ? 'no modes pinned' : `${modes.length} mode${modes.length === 1 ? '' : 's'} active`} />
         <div style={{ padding: 16 }}>
           {modes.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-              No <code>compliance.modes</code> set in the running config. Edit your YAML's <code>compliance:</code> block and restart, or wait for the Phase 3 in-place editor.
+              No <code>compliance.modes</code> set in the running config. To activate, edit your YAML's <code>compliance:</code> block and restart:
+              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, margin: '8px 0 0', overflow: 'auto', fontSize: 11 }}>
+{`compliance:
+  modes:
+    - pci_dss
+    - soc2`}
+              </pre>
             </div>
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -5041,36 +5260,114 @@ function PageCompliance() {
           )}
         </div>
       </div>
-    </StubPage>
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <window.SectionHeader title="Detector clamps by mode" sub="What each mode forces ON (cannot be disabled while active)" />
+        <table className="tbl tbl-compact">
+          <thead><tr><th>Mode</th><th>Pinned detectors</th><th>Status</th></tr></thead>
+          <tbody>
+            {Object.entries(COMPLIANCE_CLAMPS).map(([mode, classes]) => {
+              const active = modes.includes(mode);
+              return (
+                <tr key={mode} style={active ? { background: 'var(--surface-2)' } : undefined}>
+                  <td><strong>{mode.toUpperCase().replace('_', ' ')}</strong></td>
+                  <td style={{ fontSize: 11 }}>
+                    {classes.map(c => (
+                      <span key={c} className="pill" style={{ marginRight: 4, fontSize: 10 }}>{c}</span>
+                    ))}
+                  </td>
+                  <td>
+                    {active
+                      ? <span className="pill ok">active</span>
+                      : <span className="pill" style={{ opacity: 0.5 }}>inactive</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {lockedClasses.length > 0 && (
+        <div className="card">
+          <window.SectionHeader
+            title="Locked detector classes"
+            sub="These detectors cannot be disabled while the active modes are pinned"
+          />
+          <div style={{ padding: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {lockedClasses.map(c => <span key={c} className="pill warn">{c}</span>)}
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{ marginTop: 12, padding: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.I.Info />
+        <span>
+          The clamp editor (toggle modes without YAML edit + restart) ships in Phase 4.
+          Detector tier overrides remain editable on the <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors</a> page.
+        </span>
+      </div>
+    </>
   );
 }
 
 function PageReports() {
+  // Only the audit CSV is wired today; the rest are placeholders.
+  // Phase 4 adds PDF + scheduled delivery.
+  const cards = [
+    {
+      title: 'Audit trail (last 200 events)',
+      sub: 'CSV of every chained event — request decisions + config mutations',
+      href: '/api/reports/audit.csv?limit=200',
+      ready: true,
+    },
+    {
+      title: 'Audit trail (last 1000 events)',
+      sub: 'Larger window for weekly review',
+      href: '/api/reports/audit.csv?limit=1000',
+      ready: true,
+    },
+    {
+      title: 'Top attackers (last 7d)',
+      sub: 'IP / ASN / country / hits / first seen — Phase 4',
+      href: null,
+      ready: false,
+    },
+    {
+      title: 'Compliance snapshot',
+      sub: 'Active modes + clamped detectors — Phase 4',
+      href: null,
+      ready: false,
+    },
+  ];
   return (
-    <StubPage
-      title="Reports"
-      subtitle="Daily / weekly digests · compliance reports · CSV exports"
-      eta="CSV exports of audit + attacks land in Phase 3. PDF + scheduled delivery in Phase 4."
-    >
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Reports</h1>
+          <p className="page-subtitle">CSV exports · compliance digests · scheduled delivery (Phase 4)</p>
+        </div>
+      </div>
       <div className="card" style={{ padding: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
-          {[
-            { title: 'Audit trail (last 24h)', sub: 'CSV of every chained event' },
-            { title: 'Top attackers (last 7d)', sub: 'IP / ASN / country / hits / first seen' },
-            { title: 'Detector hit summary', sub: 'CSV of detector → count by tier' },
-            { title: 'Compliance snapshot', sub: 'Active modes + clamped detectors' },
-          ].map(card => (
-            <div key={card.title} className="card" style={{ padding: 10 }}>
-              <div style={{ fontSize: 12, fontWeight: 600 }}>{card.title}</div>
-              <div style={{ fontSize: 11, color: 'var(--ink-dim)', margin: '4px 0 8px' }}>{card.sub}</div>
-              <button className="btn" disabled style={{ opacity: 0.6, cursor: 'not-allowed' }}>
-                <window.I.Download /> Download (Phase 3)
-              </button>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+          {cards.map(card => (
+            <div key={card.title} className="card" style={{ padding: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{card.title}</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', margin: '4px 0 10px' }}>{card.sub}</div>
+              {card.ready ? (
+                <a className="btn primary" href={card.href} download>
+                  <window.I.Download /> Download CSV
+                </a>
+              ) : (
+                <button className="btn" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
+                  <window.I.Download /> Phase 4
+                </button>
+              )}
             </div>
           ))}
         </div>
       </div>
-    </StubPage>
+    </>
   );
 }
 

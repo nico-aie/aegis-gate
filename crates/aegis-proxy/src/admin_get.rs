@@ -191,6 +191,45 @@ pub(crate) fn admin_router(
                 "private, no-store",
             )
         }
+        // Phase-3 reports: CSV export of the in-process audit ring.
+        // Same data as `/api/audit/since` (capped at 200 events) but
+        // emitted as CSV for direct spreadsheet import. Phase 4
+        // adds time-range parameters + a streaming-from-disk path
+        // for longer histories.
+        "/api/reports/audit.csv" => {
+            let limit = parse_query_u32(query, "limit", 200);
+            let json_str = services.audit.render_since(0, limit);
+            let parsed: serde_json::Value =
+                serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);
+            let mut csv = String::from("seq,ts,class,action,client_ip,method,path,rule_id,reason,request_id\n");
+            if let Some(events) = parsed.get("events").and_then(|v| v.as_array()) {
+                for entry in events {
+                    let seq = entry.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let e = entry.get("event").unwrap_or(entry);
+                    let getter = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                    csv.push_str(&format!(
+                        "{},{},{},{},{},{},{},{},{},{}\n",
+                        seq,
+                        csv_escape(getter("ts")),
+                        csv_escape(getter("class")),
+                        csv_escape(getter("action")),
+                        csv_escape(getter("client_ip")),
+                        csv_escape(getter("method")),
+                        csv_escape(getter("path")),
+                        csv_escape(getter("rule_id")),
+                        csv_escape(getter("reason")),
+                        csv_escape(getter("request_id")),
+                    ));
+                }
+            }
+            Response::builder()
+                .status(200)
+                .header("content-type", "text/csv; charset=utf-8")
+                .header("content-disposition", "attachment; filename=\"audit.csv\"")
+                .header("cache-control", "no-store")
+                .body(Full::new(Bytes::from(csv)))
+                .unwrap()
+        }
         "/api/attacks/by-detector" => {
             let window = parse_query_u32(query, "window", 900);
             json_body_response(
@@ -572,4 +611,16 @@ fn parse_query_u64(query: &str, key: &str, default: u64) -> u64 {
         }
     }
     default
+}
+
+/// Quote a CSV field per RFC 4180 — wrap in double-quotes if the
+/// value contains comma / quote / newline; double up embedded
+/// quotes. Returns the field as-is when no quoting is needed.
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        let escaped = s.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
+    }
 }
