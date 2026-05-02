@@ -1,0 +1,104 @@
+# Hackathon Round-1 stress-test config.
+#
+# Derived from config/dev.yaml with three deltas tuned for the
+# 15-min mixed-traffic harness (legit + crawler + attacker VUs
+# all sourced from 127.0.0.1 on a laptop). See
+# `plans/hackathon-stress-test.md` §4 for rationale.
+#
+# Run with:
+#   ./target/release/waf run --config tests/hackathon/configs/bench.yaml
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+
+upstreams:
+  stub-pool:
+    members:
+      - addr: "127.0.0.1:9999"
+    lb: round_robin
+
+state:
+  backend: in_memory
+
+# Risk thresholds — bumped so legit-user VUs sharing a single
+# source IP don't trip the strike-block path. The hackathon
+# benchmark team will re-tune when they fan-out from real IPs.
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 99998
+    block_at:     99999
+  # `strikes.block_at` is a SEPARATE permanent-block counter that
+  # never decays — bump it too so legit VUs sharing 127.0.0.1
+  # don't hit it just because attacker VUs share the same source IP.
+  strikes:
+    block_at: 1000000
+
+# Load mode — same reasoning. We want the WAF to stay in Normal
+# regardless of how hard k6 hits the data plane.
+load_mode:
+  elevated_rps:    100000
+  critical_rps:    1000000
+  sample_interval: 1s
+
+# Audit — both jsonl + minimal so the post-run summary can
+# correlate detected count with what landed on disk.
+audit:
+  sinks:
+    - jsonl:
+        path: "/tmp/aegis-hackathon-audit.jsonl"
+  chain:
+    enabled: true
+  retention: "7d"
+  pseudonymize_ip: false
+
+# Rate limit — loose enough that 130 VUs from 127.0.0.1 isn't
+# itself a DoS signal. Detector-driven blocks come from the
+# detection layer, not from this bucket.
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 100000000
+      window: "1s"
+
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+observability:
+  prometheus:
+    bind: "127.0.0.1:9090"
+    enabled: false
+
+admin:
+  bind: "127.0.0.1:9443"
+  identity:
+    user: admin
+    # Same hash as dev.yaml — argon2id of "aegis-test-1234".
+    password_hash: "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHRlc3R0ZXN0$kxlR4dPmllB+IMOmw3hNW1Lv3qiI4xFC7FgTiM2wmiU"
+
+interop:
+  enabled: true
+  audit_path: "./waf_audit.log"
+  control_secret: "waf-hackathon-2026-ctrl"
