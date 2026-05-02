@@ -1,0 +1,139 @@
+# Aegis-Gate — prod-balanced semantics + shared-IP synthetic-load tweaks.
+#
+# This config exists to answer one question:
+#   "At >5000 RPS sustained from a SINGLE source IP, with the recommended
+#   prod-balanced detector mask + risk shape, what's the headline latency,
+#   detection rate, and where does the system bottleneck?"
+#
+# Differences vs config/profiles/prod-balanced.yaml — and why:
+#   - state.backend: in_memory          (prod uses redis; the redis hop is
+#                                        a separate measurement track —
+#                                        we want pure WAF cost here)
+#   - risk.thresholds: 99998/99999      (prod uses 40/80; can't simulate
+#                                        per-IP scoring with a single
+#                                        synthetic source)
+#   - risk.strikes.block_at: 1_000_000  (same reason — shared-IP harness
+#                                        crosses any reasonable strike cap
+#                                        within seconds)
+#   - rate_limit.bucket: 100M/s         (prod uses 6k/min = 100/s; can't
+#                                        share that across 1 IP at 5k RPS)
+#   - detectors.brute_force: false      (legit VUs share /login; would
+#                                        always trip; prod keeps it ON
+#                                        because real IPs fan out)
+#   - admin.identity inline             (prod resolves from secret manager)
+#   - audit sink: /tmp/...              (prod writes /var/log/aegis/...)
+#
+# Same as prod-balanced (and what we're actually testing):
+#   - 7 OWASP detectors fully on
+#   - body abuse mass-assignment + XXE patterns
+#   - SSRF body-IP scan
+#   - All the post-detector-coverage-sprint additions
+#   - load_mode shape (elevated/critical RPS thresholds)
+#   - audit chain on, 7-day retention
+#
+# Run with:
+#   tests/hackathon/run.sh   (set WAF_CONFIG to point here)
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+
+upstreams:
+  stub-pool:
+    members:
+      - addr: "127.0.0.1:9999"
+    lb: round_robin
+
+state:
+  backend: in_memory
+
+# Risk weights mirror prod-balanced exactly — only the thresholds are
+# bumped (shared-IP harness would otherwise trip the score-based block
+# within seconds because every legit/attacker VU shares 127.0.0.1).
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 99998
+    block_at:     99999
+  strikes:
+    block_at: 1000000
+
+# load_mode mirrors prod-balanced shape but with a higher elevated_rps
+# ceiling — we WANT the WAF to stay in Normal during the test so we
+# measure baseline cost, not degraded mode.
+load_mode:
+  elevated_rps:    100000
+  critical_rps:    1000000
+  sample_interval: 1s
+
+audit:
+  sinks:
+    - jsonl:
+        path: "/tmp/aegis-prod-balanced-5k-audit.jsonl"
+  chain:
+    enabled: true
+  retention: "7d"
+  pseudonymize_ip: false
+
+# Rate-limit bucket disabled for the test (single source IP would
+# saturate any realistic limit within milliseconds at 5k+ RPS).
+# Detector-driven blocks come from the detection layer, not this bucket.
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 100000000
+      window: "1s"
+
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+# Same detector mask as prod-balanced, except brute_force which the
+# shared-IP harness can't honour (every legit /login from 127.0.0.1
+# crosses the 10/60s threshold within the first few seconds).
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: true }
+  brute_force:      { enabled: false }
+
+observability:
+  prometheus:
+    bind: "127.0.0.1:9090"
+    enabled: true
+
+admin:
+  bind: "127.0.0.1:9443"
+  identity:
+    user: admin
+    # Same hash as dev.yaml — argon2id of "aegis-test-1234".
+    password_hash: "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHRlc3R0ZXN0$kxlR4dPmllB+IMOmw3hNW1Lv3qiI4xFC7FgTiM2wmiU"
+
+interop:
+  enabled: true
+  audit_path: "./waf_audit.log"
+  control_secret: "waf-hackathon-2026-ctrl"

@@ -50,6 +50,7 @@ Active work:
 | API smoke (auth, detectors, risk, loadmode, logging, cold-tier) | **56 / 56 PASS** |
 | Protocol mix | HTTP/1.1 PASS; HTTP/2/3/gRPC graceful SKIP (no TLS data plane in dev cfg); WS info |
 | Hackathon harness 15-min run v2 (post detector-coverage sprint) | legit p99 **4.52 ms**, legit OK **99 %**, attacks detected **80 %** (was 33 % v1; +47 pp from BodyPeek fix + mass-assignment / XXE / brute-force / SSRF body) |
+| **prod-balanced @ 5 k+ RPS** (2-min sustained, Go upstream) | k6 **4 891 RPS** / WAF-internal **6 392 RPS**, legit p99 **1.03 ms**, legit median **0.13 ms**, legit OK **100 %**, detection **80 %** (`tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/REPORT.md`) |
 | MTLS-T7 SAN allowlist live verification | GET-empty → PUT 3 → test admit matrix (exact / wildcard single-label match / wildcard multi-label rejected / unknown rejected) → DELETE → audit chain captured set + remove |
 | HACK-T4 rollback live verification | `POST /api/config/versions/{seq}/rollback` for `mode_set` → mode reverts → audit chain captures `mode_set_rollback` |
 

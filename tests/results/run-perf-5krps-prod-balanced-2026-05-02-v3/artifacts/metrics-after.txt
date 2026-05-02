@@ -1,0 +1,113 @@
+# HELP aegis_runtime_active_workers Number of active tokio worker threads in the runtime. Read from tokio::runtime::Handle::current().metrics().num_workers(). Constant for the process lifetime under the multi-threaded scheduler.
+# TYPE aegis_runtime_active_workers gauge
+aegis_runtime_active_workers 12
+# HELP aegis_runtime_blocking_queue_depth Number of queued blocking-pool tasks waiting for a worker. Steadily-rising depth = blocking pool saturated; size up `runtime.blocking_threads` or move work off `tokio::task::spawn_blocking`.
+# TYPE aegis_runtime_blocking_queue_depth gauge
+aegis_runtime_blocking_queue_depth 0
+# HELP aegis_runtime_blocking_threads Number of currently-spawned blocking threads in the runtime's blocking pool. Bounded by `runtime.blocking_threads` config. Watch for sustained values at the cap — indicates work shedding into the blocking pool faster than it drains.
+# TYPE aegis_runtime_blocking_threads gauge
+aegis_runtime_blocking_threads 1
+# HELP aegis_runtime_io_driver_fd_count Number of file descriptors registered with the tokio I/O driver. Includes every TCP socket, every TLS stream, every Redis pool conn. Useful for catching FD leaks (sustained climb without a corresponding RPS climb).
+# TYPE aegis_runtime_io_driver_fd_count gauge
+aegis_runtime_io_driver_fd_count 0
+# HELP waf_audit_events_total Total events emitted to the AuditBus, labelled by class (detection / admin / access / system).
+# TYPE waf_audit_events_total counter
+waf_audit_events_total{class="access"} 643423
+waf_audit_events_total{class="admin"} 0
+waf_audit_events_total{class="detection"} 247260
+waf_audit_events_total{class="system"} 0
+# HELP waf_detector_hits_total Total detector firings per detector class. Incremented once per detector that emits at least one Signal on a given request, regardless of how many sub-tags the detector reported. Mirrors aegis_security::detectors::DetectorClass values.
+# TYPE waf_detector_hits_total counter
+waf_detector_hits_total{class="body_abuse"} 20595
+waf_detector_hits_total{class="brute_force"} 0
+waf_detector_hits_total{class="header_injection"} 0
+waf_detector_hits_total{class="path_traversal"} 51513
+waf_detector_hits_total{class="recon"} 0
+waf_detector_hits_total{class="sqli"} 30921
+waf_detector_hits_total{class="ssrf"} 30888
+waf_detector_hits_total{class="xss"} 20613
+# HELP waf_request_duration_ms Time spent in each WAF pipeline stage (milliseconds).
+# TYPE waf_request_duration_ms histogram
+waf_request_duration_ms_bucket{stage="detect",le="0.05"} 760752
+waf_request_duration_ms_bucket{stage="detect",le="0.1"} 764923
+waf_request_duration_ms_bucket{stage="detect",le="0.25"} 766645
+waf_request_duration_ms_bucket{stage="detect",le="0.5"} 766952
+waf_request_duration_ms_bucket{stage="detect",le="1"} 767002
+waf_request_duration_ms_bucket{stage="detect",le="2.5"} 767034
+waf_request_duration_ms_bucket{stage="detect",le="5"} 767042
+waf_request_duration_ms_bucket{stage="detect",le="10"} 767046
+waf_request_duration_ms_bucket{stage="detect",le="25"} 767053
+waf_request_duration_ms_bucket{stage="detect",le="50"} 767053
+waf_request_duration_ms_bucket{stage="detect",le="100"} 767053
+waf_request_duration_ms_bucket{stage="detect",le="250"} 767053
+waf_request_duration_ms_bucket{stage="detect",le="+Inf"} 767053
+waf_request_duration_ms_sum{stage="detect"} 12175.12632699999
+waf_request_duration_ms_count{stage="detect"} 767053
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.05"} 767034
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.1"} 767044
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.25"} 767052
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.5"} 767052
+waf_request_duration_ms_bucket{stage="rate_limit",le="1"} 767052
+waf_request_duration_ms_bucket{stage="rate_limit",le="2.5"} 767053
+waf_request_duration_ms_bucket{stage="rate_limit",le="5"} 767053
+waf_request_duration_ms_bucket{stage="rate_limit",le="10"} 767053
+waf_request_duration_ms_bucket{stage="rate_limit",le="25"} 767053
+waf_request_duration_ms_bucket{stage="rate_limit",le="50"} 767053
+waf_request_duration_ms_bucket{stage="rate_limit",le="100"} 767053
+waf_request_duration_ms_bucket{stage="rate_limit",le="250"} 767053
+waf_request_duration_ms_bucket{stage="rate_limit",le="+Inf"} 767053
+waf_request_duration_ms_sum{stage="rate_limit"} 125.46883999934408
+waf_request_duration_ms_count{stage="rate_limit"} 767053
+waf_request_duration_ms_bucket{stage="total",le="0.05"} 115297
+waf_request_duration_ms_bucket{stage="total",le="0.1"} 726974
+waf_request_duration_ms_bucket{stage="total",le="0.25"} 751541
+waf_request_duration_ms_bucket{stage="total",le="0.5"} 758963
+waf_request_duration_ms_bucket{stage="total",le="1"} 762615
+waf_request_duration_ms_bucket{stage="total",le="2.5"} 764630
+waf_request_duration_ms_bucket{stage="total",le="5"} 765641
+waf_request_duration_ms_bucket{stage="total",le="10"} 766647
+waf_request_duration_ms_bucket{stage="total",le="25"} 767051
+waf_request_duration_ms_bucket{stage="total",le="50"} 767053
+waf_request_duration_ms_bucket{stage="total",le="100"} 767053
+waf_request_duration_ms_bucket{stage="total",le="250"} 767053
+waf_request_duration_ms_bucket{stage="total",le="+Inf"} 767053
+waf_request_duration_ms_sum{stage="total"} 73981.74660199715
+waf_request_duration_ms_count{stage="total"} 767053
+# HELP waf_requests_total Total data-plane requests handled by the WAF, labelled by the decision action emitted (allow / block / challenge / rate_limit / timeout / circuit_breaker).
+# TYPE waf_requests_total counter
+waf_requests_total{action="allow"} 643423
+waf_requests_total{action="block"} 123630
+waf_requests_total{action="challenge"} 0
+waf_requests_total{action="circuit_breaker"} 0
+waf_requests_total{action="rate_limit"} 0
+waf_requests_total{action="timeout"} 0
+# HELP waf_state_backend_ops_total Total state-backend operations performed by the WAF, labelled by op (get / set / del / incr_window / token_bucket / get_risk / add_risk / auto_block / is_auto_blocked / put_nonce / consume_nonce) and outcome (ok / error).
+# TYPE waf_state_backend_ops_total counter
+waf_state_backend_ops_total{op="add_risk",outcome="error"} 0
+waf_state_backend_ops_total{op="add_risk",outcome="ok"} 0
+waf_state_backend_ops_total{op="auto_block",outcome="error"} 0
+waf_state_backend_ops_total{op="auto_block",outcome="ok"} 0
+waf_state_backend_ops_total{op="consume_nonce",outcome="error"} 0
+waf_state_backend_ops_total{op="consume_nonce",outcome="ok"} 0
+waf_state_backend_ops_total{op="del",outcome="error"} 0
+waf_state_backend_ops_total{op="del",outcome="ok"} 1
+waf_state_backend_ops_total{op="get",outcome="error"} 0
+waf_state_backend_ops_total{op="get",outcome="ok"} 1
+waf_state_backend_ops_total{op="get_risk",outcome="error"} 0
+waf_state_backend_ops_total{op="get_risk",outcome="ok"} 0
+waf_state_backend_ops_total{op="incr_window",outcome="error"} 0
+waf_state_backend_ops_total{op="incr_window",outcome="ok"} 0
+waf_state_backend_ops_total{op="is_auto_blocked",outcome="error"} 0
+waf_state_backend_ops_total{op="is_auto_blocked",outcome="ok"} 0
+waf_state_backend_ops_total{op="put_nonce",outcome="error"} 0
+waf_state_backend_ops_total{op="put_nonce",outcome="ok"} 0
+waf_state_backend_ops_total{op="set",outcome="error"} 0
+waf_state_backend_ops_total{op="set",outcome="ok"} 1
+waf_state_backend_ops_total{op="token_bucket",outcome="error"} 0
+waf_state_backend_ops_total{op="token_bucket",outcome="ok"} 0
+# HELP waf_upstream_members_healthy Count of upstream pool members currently passing health probes per pool. Equals total when no probe is configured (assumed healthy).
+# TYPE waf_upstream_members_healthy gauge
+waf_upstream_members_healthy{pool="stub-pool"} 1
+# HELP waf_upstream_members_total Configured count of upstream pool members per pool.
+# TYPE waf_upstream_members_total gauge
+waf_upstream_members_total{pool="stub-pool"} 1
