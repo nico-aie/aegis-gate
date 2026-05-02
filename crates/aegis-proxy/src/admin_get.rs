@@ -288,6 +288,19 @@ pub(crate) fn admin_router(
             );
             json_body_response(r.status, r.body, "private, max-age=30")
         }
+        // Phase-1 placeholder: per-route error rate. Wired on the
+        // dashboard but the in-process counter that backs it ships
+        // in Phase 4 (per-route counters threaded through the data
+        // plane). Returns an empty list with a `partial: true`
+        // flag so the UI can show a "ships in Phase 4" empty state
+        // instead of treating the 404 as a hard failure.
+        "/api/analytics/routes" => {
+            json_body_response(
+                200,
+                serde_json::json!({"routes": [], "partial": true}).to_string(),
+                "private, max-age=10",
+            )
+        }
         // Phase-1: per-stage p50/p95/p99 from the in-process
         // `RequestStageHistogram`. Returns `{stages: {total: {p50_ms,
         // p95_ms, p99_ms, samples}, detect: {...}, ...}}` so the

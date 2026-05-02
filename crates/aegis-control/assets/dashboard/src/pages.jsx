@@ -741,7 +741,7 @@ function PageAttackEvents() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Attack Events</h1>
+          <h1 className="page-title">Attack Analytics</h1>
           <p className="page-subtitle">
             Curated detector firings · OWASP + custom rules · last {win}
           </p>
@@ -883,7 +883,7 @@ function PageAnalytics() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Analytics</h1>
+          <h1 className="page-title">Performance</h1>
           <p className="page-subtitle">
             Historical trends · {range} window
           </p>
@@ -1091,7 +1091,7 @@ function PageAuditLog() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Audit Log</h1>
+          <h1 className="page-title">Audit Trail</h1>
           <p className="page-subtitle">
             Hash-chained · {events.length.toLocaleString()} events shown
             <span style={{ marginLeft: 8 }}>
@@ -1501,7 +1501,7 @@ function PageRuleManager() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Rule Manager</h1>
+          <h1 className="page-title">Rules</h1>
           <p className="page-subtitle">{merged.length} total · validate before apply · audit-chained</p>
         </div>
         <div className="page-actions">
@@ -1869,7 +1869,7 @@ function PageTierConfig() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Tier Config</h1>
+          <h1 className="page-title">Detectors</h1>
           <p className="page-subtitle">
             Pipeline assignment per tier ·
             <span className="num"> {tiers.length}</span> active tiers ·
@@ -3377,7 +3377,7 @@ function PageTracking() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Tracking</h1>
+          <h1 className="page-title">Health &amp; SLOs</h1>
           <p className="page-subtitle">
             Operational state · SLO · cluster · GitOps · cert health
             <span style={{ marginLeft: 8 }}>
@@ -3923,7 +3923,7 @@ function PageUpstreams() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Upstreams</h1>
+          <h1 className="page-title">Routing &amp; Upstreams</h1>
           <p className="page-subtitle">
             <span className="num">{names.length}</span> pool{names.length === 1 ? '' : 's'} ·
             <span className="num"> {totalMembers}</span> total members ·
