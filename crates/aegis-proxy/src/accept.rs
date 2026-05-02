@@ -68,6 +68,10 @@ pub(crate) async fn admin_accept_loop(
     // `POST /api/rules/simulate` evaluates against an
     // identical chain.
     detectors: Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>,
+    // Phase-1 analytics — shared with the data plane so
+    // `/api/analytics/latency` reads from the same series the
+    // data plane records into.
+    request_stage_hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -408,6 +412,10 @@ pub(crate) async fn admin_accept_loop(
     // every other consumer reads, so the dashboard sees the same
     // round-trip latency the data plane does.
     services.state_backend = Some(state_backend);
+    // Phase-1 analytics — share the per-stage duration histogram
+    // so `/api/analytics/latency` can compute p50/p95/p99 from
+    // the same series the data plane records.
+    services.request_stage_hist = Some(request_stage_hist.clone());
     // HACK-T3 — wire the same detector list the data plane
     // runs so `/api/rules/simulate` can evaluate against an
     // identical chain.

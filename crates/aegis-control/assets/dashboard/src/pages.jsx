@@ -186,14 +186,30 @@ function PageOverview() {
         />
         <window.StatTile
           title="Upstream"
-          value={upstream
-            ? (upstream.unhealthy === 0 ? 'Healthy' : upstream.unhealthy < upstream.healthy ? 'Degraded' : 'Down')
-            : '—'}
-          sub={upstream
-            ? `${upstream.healthy} of ${upstream.healthy + upstream.unhealthy} members up`
-            : 'awaiting first stats sample'}
+          value={(() => {
+            if (!upstream) return '—';
+            const healthy = Number(upstream.healthy ?? 0);
+            const unhealthy = Number(upstream.unhealthy ?? 0);
+            if (healthy + unhealthy === 0) return '—';
+            if (unhealthy === 0) return 'Healthy';
+            return unhealthy < healthy ? 'Degraded' : 'Down';
+          })()}
+          sub={(() => {
+            if (!upstream) return 'awaiting first stats sample';
+            const healthy = Number(upstream.healthy ?? 0);
+            const unhealthy = Number(upstream.unhealthy ?? 0);
+            const total = healthy + unhealthy;
+            if (total === 0) return 'no members configured';
+            return `${healthy} of ${total} members up`;
+          })()}
           icon={<window.I.Server />}
-          tone={upstream ? (upstream.unhealthy === 0 ? 'up' : 'warn') : undefined}
+          tone={(() => {
+            if (!upstream) return undefined;
+            const healthy = Number(upstream.healthy ?? 0);
+            const unhealthy = Number(upstream.unhealthy ?? 0);
+            if (healthy + unhealthy === 0) return undefined;
+            return unhealthy === 0 ? 'up' : 'warn';
+          })()}
         />
       </div>
 
@@ -206,11 +222,23 @@ function PageOverview() {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <span className="pill block">{topAttackers.length} active sources</span>
-            <span className={`pill ${blips.length > 0 ? 'ok' : 'warn'}`}>
-              {blips.length > 0 ? `${blips.length} geo-tagged` : 'geo DB not loaded'}
+            <span
+              className={`pill ${blips.length > 0 ? 'ok' : 'warn'}`}
+              title={blips.length > 0
+                ? `${blips.length} sources have country lookups`
+                : "GeoIP MaxMind DB not loaded — see docs/operator/geoip-setup.md"}
+              style={{ cursor: blips.length === 0 ? 'help' : 'default' }}
+            >
+              {blips.length > 0 ? `${blips.length} geo-tagged` : 'GeoIP DB not loaded'}
             </span>
           </div>
         </div>
+        {blips.length === 0 && topAttackers.length > 0 && (
+          <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--ink-dim)', borderBottom: '1px solid var(--hairline)' }}>
+            Map empty because GeoIP DB isn't loaded. The Top Attackers table below still shows every IP.
+            {' '}<a href="#/help" style={{ color: 'var(--accent)' }}>How to install GeoIP →</a>
+          </div>
+        )}
         <window.WorldMap blips={blips} h={300} />
       </div>
 
@@ -546,6 +574,14 @@ function PageLiveFeed() {
           </button>
         </div>
       </div>
+      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.I.Activity />
+        <span>
+          <strong>Live Feed</strong> shows every <em>request</em> the WAF inspected
+          (allow / block / challenge). For configuration mutations and a
+          chained, durable trail, see <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail →</a>.
+        </span>
+      </div>
 
       <div className="card flat" style={{ padding: 12, marginBottom: 12 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -813,6 +849,8 @@ function PageAnalytics() {
   const [range, setRange] = useStateP('24h');
   const cfg = ANALYTICS_WINDOWS[range] ?? ANALYTICS_WINDOWS['24h'];
   const ts = window.useTimeseriesApi(cfg.window, cfg.step);
+  const latency = window.useLatencyApi ? window.useLatencyApi() : { data: null };
+  const routes = window.useAnalyticsRoutesApi ? window.useAnalyticsRoutesApi() : { data: null };
   // HACK-T1 — SLO + Cert summaries also retired from static
   // fixtures. Both endpoints already shipped (Tracking page
   // consumes them); we just expose them on Analytics too so
@@ -877,12 +915,41 @@ function PageAnalytics() {
         <div className="col-6 card">
           <window.SectionHeader
             title="Latency p50/p95/p99"
-            sub="WAF + upstream end-to-end"
+            sub={(() => {
+              const total = latency.data?.stages?.total;
+              return total
+                ? `WAF-internal · ${total.samples.toLocaleString()} samples`
+                : 'no samples yet — drive traffic with `make mock-load`';
+            })()}
           />
-          <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
-            <span>Latency percentiles ship via Prometheus.</span>
-            <span style={{ fontSize: 11 }}>Scrape <code>/metrics</code> for <code>waf_request_duration_ms_bucket</code> or wire Grafana for live sparklines.</span>
-          </div>
+          {(() => {
+            const stages = latency.data?.stages || {};
+            const stageOrder = ['total', 'detect', 'rate_limit', 'respond'];
+            const present = stageOrder.filter(s => stages[s]);
+            if (present.length === 0) {
+              return (
+                <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  No samples yet. Drive traffic and refresh.
+                </div>
+              );
+            }
+            const fmt = v => v >= 1 ? v.toFixed(2) : v.toFixed(3);
+            return (
+              <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
+                <thead><tr><th>Stage</th><th style={{ textAlign: 'right' }}>p50 (ms)</th><th style={{ textAlign: 'right' }}>p95 (ms)</th><th style={{ textAlign: 'right' }}>p99 (ms)</th></tr></thead>
+                <tbody>
+                  {present.map(s => (
+                    <tr key={s}>
+                      <td style={{ fontWeight: s === 'total' ? 600 : 400 }}>{s}</td>
+                      <td className="num" style={{ textAlign: 'right' }}>{fmt(stages[s].p50_ms)}</td>
+                      <td className="num" style={{ textAlign: 'right' }}>{fmt(stages[s].p95_ms)}</td>
+                      <td className="num" style={{ textAlign: 'right' }}>{fmt(stages[s].p99_ms)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          })()}
         </div>
         <div className="col-6 card">
           <window.SectionHeader
@@ -1044,6 +1111,15 @@ function PageAuditLog() {
             <window.I.Refresh /> Refresh
           </button>
         </div>
+      </div>
+      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.I.Book />
+        <span>
+          <strong>Audit Log</strong> is the hash-chained durable trail of
+          everything: request decisions <em>plus</em> configuration
+          mutations (rules, modes, blocklists). For only live request
+          events without config noise, see <a href="#/live" style={{ color: 'var(--accent)' }}>Live Feed →</a>.
+        </span>
       </div>
 
       <div className="card flat" style={{ padding: 12, marginBottom: 12 }}>
@@ -3400,8 +3476,8 @@ function PageTracking() {
 
       <div className="card" style={{ marginBottom: 12 }}>
         {(() => {
-          const totalMembers = upstreams.reduce((s, x) => s + (x.members || x.total_members || 0), 0);
-          const totalHealthy = upstreams.reduce((s, x) => s + (x.healthy || x.healthy_members || 0), 0);
+          const totalMembers = upstreams.reduce((s, x) => s + (x.total ?? x.members ?? x.total_members ?? 0), 0);
+          const totalHealthy = upstreams.reduce((s, x) => s + (x.healthy ?? x.healthy_members ?? 0), 0);
           return (
             <window.SectionHeader
               title="Upstream pools"
@@ -3418,7 +3494,7 @@ function PageTracking() {
               </td></tr>
             )}
             {upstreams.map(p => {
-              const total = p.members ?? p.total_members ?? 0;
+              const total = p.total ?? p.members ?? p.total_members ?? 0;
               const healthy = p.healthy ?? p.healthy_members ?? 0;
               const cb = p.cb || p.circuit_breaker || 'closed';
               const ok = total > 0 && healthy === total;
@@ -4337,6 +4413,15 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                 />
                 <span className="field-label" style={{ marginBottom: 0 }}>Upstream TLS (https)</span>
               </label>
+            </div>
+            <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+              <window.I.Info />
+              <span>
+                <strong>Protocol:</strong> currently HTTP / HTTPS only.
+                gRPC, h2c, and TCP forwarders ship in <a href="#/help" style={{ color: 'var(--accent)' }}>Phase 3</a>.
+                For now, gRPC over HTTP/2 works if your upstream
+                negotiates h2 via ALPN (TLS on, modern client).
+              </span>
             </div>
           </fieldset>
         </div>

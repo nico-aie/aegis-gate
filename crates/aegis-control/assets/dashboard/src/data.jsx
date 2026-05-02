@@ -605,6 +605,8 @@ async function detectorsPut(body) {
 function useClusterApi()  { return useApi('/api/cluster',         { intervalMs: 5000, fallback: null }); }
 function useSloApi()      { return useApi('/api/slo',             { intervalMs: 10000, fallback: null }); }
 function useCertsApi()    { return useApi('/api/certs',           { intervalMs: 30000, fallback: null }); }
+function useLatencyApi()  { return useApi('/api/analytics/latency',{ intervalMs: 5000, fallback: null }); }
+function useAnalyticsRoutesApi() { return useApi('/api/analytics/routes',{ intervalMs: 10000, fallback: null }); }
 function useAlertsApi()   { return useApi('/api/alerts',          { intervalMs: 5000, fallback: null }); }
 function useGitopsApi()   { return useApi('/api/gitops/status',   { intervalMs: 30000, fallback: null }); }
 // HACK-T1 — empty list rather than seeded fixture.
@@ -837,7 +839,7 @@ Object.assign(window, {
   // HACK-T4 — Tier-B config-change timeline + rollback
   useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
-  useClusterApi, useSloApi, useCertsApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
+  useClusterApi, useSloApi, useCertsApi, useLatencyApi, useAnalyticsRoutesApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
   // SC-T2 — Scaling page hooks + drain mutation
   useStateApi, adminDrainPost,
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers

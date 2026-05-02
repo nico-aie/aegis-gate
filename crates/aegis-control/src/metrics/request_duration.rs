@@ -80,6 +80,77 @@ impl RequestStageHistogram {
     pub fn sample_count(&self, stage: &str) -> u64 {
         self.inner.with_label_values(&[stage]).get_sample_count()
     }
+
+    /// Compute p50 / p95 / p99 percentiles in milliseconds from
+    /// the Prometheus histogram's cumulative bucket counts. Same
+    /// algorithm PromQL `histogram_quantile` uses (linear
+    /// interpolation between bucket boundaries).
+    ///
+    /// Returns `None` when the histogram has zero samples for the
+    /// stage. The returned values are total-cumulative — they
+    /// reflect every sample recorded since the process started.
+    /// For windowed percentiles the dashboard polls this on a
+    /// schedule and the difference between adjacent calls is
+    /// what's recently happening; the absolute curve is fine for
+    /// "is the WAF healthy" headline.
+    pub fn percentiles_ms(&self, stage: &str) -> Option<LatencyPercentiles> {
+        use prometheus::core::Collector;
+        let h = self.inner.with_label_values(&[stage]);
+        let families = h.collect();
+        // HistogramVec.with_label_values returns a Histogram which
+        // collects exactly one MetricFamily containing one Metric.
+        let metric = families.first()?.get_metric().first()?;
+        let proto = metric.get_histogram();
+        let total = proto.get_sample_count();
+        if total == 0 {
+            return None;
+        }
+        let buckets = proto.get_bucket();
+        if buckets.is_empty() {
+            return None;
+        }
+        Some(LatencyPercentiles {
+            p50_ms: quantile(buckets, total, 0.50),
+            p95_ms: quantile(buckets, total, 0.95),
+            p99_ms: quantile(buckets, total, 0.99),
+            samples: total,
+        })
+    }
+}
+
+/// p50/p95/p99 in milliseconds plus the sample count behind them.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct LatencyPercentiles {
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub samples: u64,
+}
+
+/// Linear-interpolation `histogram_quantile`. `buckets` carries
+/// cumulative counts per `upper_bound` (the format
+/// `prometheus::Histogram::proto()` produces). Same shape as
+/// PromQL's `histogram_quantile`.
+fn quantile(buckets: &[prometheus::proto::Bucket], total: u64, p: f64) -> f64 {
+    let target = (total as f64) * p;
+    let mut prev_count = 0u64;
+    let mut prev_bound = 0.0f64;
+    for b in buckets {
+        let cum = b.get_cumulative_count();
+        let upper = b.get_upper_bound();
+        if (cum as f64) >= target {
+            // Linear interpolation between prev_bound and upper.
+            if cum == prev_count {
+                return upper;
+            }
+            let frac = (target - prev_count as f64) / (cum - prev_count) as f64;
+            return prev_bound + (upper - prev_bound) * frac;
+        }
+        prev_count = cum;
+        prev_bound = upper;
+    }
+    // Past the last bucket — return the highest bound (capped).
+    buckets.last().map(|b| b.get_upper_bound()).unwrap_or(0.0)
 }
 
 #[cfg(test)]

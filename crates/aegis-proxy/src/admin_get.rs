@@ -249,6 +249,31 @@ pub(crate) fn admin_router(
             );
             json_body_response(r.status, r.body, "private, max-age=30")
         }
+        // Phase-1: per-stage p50/p95/p99 from the in-process
+        // `RequestStageHistogram`. Returns `{stages: {total: {p50_ms,
+        // p95_ms, p99_ms, samples}, detect: {...}, ...}}` so the
+        // Analytics page can render them without scraping
+        // `/metrics` itself.
+        "/api/analytics/latency" => {
+            use aegis_control::metrics::request_duration::stage;
+            let body = match services.request_stage_hist.as_ref() {
+                None => serde_json::json!({"stages": {}}).to_string(),
+                Some(h) => {
+                    let stages = [stage::TOTAL, stage::DETECT, stage::RATE_LIMIT, stage::RESPOND];
+                    let mut out = serde_json::Map::new();
+                    for s in stages {
+                        if let Some(p) = h.percentiles_ms(s) {
+                            out.insert(
+                                s.to_string(),
+                                serde_json::to_value(p).unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    }
+                    serde_json::json!({"stages": out}).to_string()
+                }
+            };
+            json_body_response(200, body, "private, max-age=2")
+        }
 
         // D-M4 read endpoints. Mutating endpoints (POST / PUT /
         // DELETE) are deferred until the M3 audit-mutation

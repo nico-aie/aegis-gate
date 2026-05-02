@@ -62,7 +62,7 @@ SMOKE_ADMIN      ?= http://localhost:9443
 
 .PHONY: help setup cert build build-debug run run-dev run-strict run-throughput \
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
-        dashboard redis-up redis-down obs-up obs-down urls logs \
+        dashboard redis-up redis-down obs-up obs-down urls logs login-reset \
         upstream-build upstream-up upstream-down \
         mock-load mock-load-attacks mock-load-mix
 
@@ -255,6 +255,20 @@ clippy: ## cargo clippy --workspace -- -D warnings
 
 fmt: ## cargo fmt --all
 	@$(CARGO) fmt --all
+
+login-reset: ## Force-clear stale browser session — call /admin/logout + print clear-cookie advice
+	@echo "==> calling /admin/logout"
+	@curl -sS -X POST $(SMOKE_ADMIN)/admin/logout -o /dev/null -w "  status=%{http_code}\n" || true
+	@echo
+	@echo "If the dashboard still says 'missing aegis_csrf cookie', clear browser"
+	@echo "cookies for $(SMOKE_ADMIN):"
+	@echo "  Chrome:   DevTools → Application → Cookies → 127.0.0.1:9443 → trash"
+	@echo "  Firefox:  Settings → Privacy → Manage Data → 127.0.0.1 → Remove"
+	@echo "  Safari:   Develop → Empty Caches; Storage → 127.0.0.1 → Delete"
+	@echo
+	@echo "Then refresh the dashboard and log in again. The new session will"
+	@echo "issue cookies without the Secure flag (since AEGIS_INSECURE_COOKIES=1"
+	@echo "is set by 'make run-dev'), and the browser will accept them on HTTP."
 
 smoke: ## curl the data plane + admin health (assumes `make run-dev` is up)
 	@printf "HTTPS  %-32s " "$(SMOKE_DATA_HTTPS)"

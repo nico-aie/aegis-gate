@@ -736,6 +736,19 @@ pub async fn run(
     let admin_tcp = tokio::net::TcpListener::bind(admin_addr).await?;
     tracing::info!("admin-plane listening on {admin_addr}");
 
+    // Boot-time visibility into cookie hardening — a missed-cookie
+    // CSRF rejection without this line takes hours to debug.
+    if aegis_control::admin_auth::csrf::insecure_cookies_enabled() {
+        tracing::warn!(
+            "AEGIS_INSECURE_COOKIES=1 — session + CSRF cookies issued WITHOUT Secure flag. \
+             Use only on plain-HTTP dev admin listeners; never in production."
+        );
+    } else {
+        tracing::info!(
+            "session + CSRF cookies issued with HttpOnly + Secure + SameSite=Strict"
+        );
+    }
+
     let admin_cfg = cfg.clone();
     let admin_readiness = readiness.clone();
     let admin_bus = bus;
@@ -752,6 +765,7 @@ pub async fn run(
     let admin_state_backend = state.clone();
     let admin_identity_tracker = identity_tracker.clone();
     let admin_detectors = detectors.clone();
+    let admin_request_stage_hist = request_stage_hist.clone();
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -769,6 +783,7 @@ pub async fn run(
         admin_state_backend,
         admin_identity_tracker,
         admin_detectors,
+        admin_request_stage_hist,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);
