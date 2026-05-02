@@ -80,10 +80,41 @@ function TopBar() {
         <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
           <span className={`led ${healthTone}`} /> {healthLabel}
         </span>
-        <button className="icon-btn" title="Notifications" style={{ position: 'relative' }}>
-          <window.I.Bell />
-          <span style={{ position: 'absolute', top: 4, right: 4, width: 6, height: 6, borderRadius: '50%', background: 'var(--down)' }} />
-        </button>
+        {(() => {
+          // CQF-T10 — notifications bell wired to /api/alerts.
+          // Badge shows the count of currently-firing alerts (no
+          // ack flow exposed here; that lives on the Tracking
+          // page). Click opens the Tracking page filtered to
+          // firing alerts via a hash-state convention; if no
+          // hook is wired the click still navigates so the
+          // operator lands somewhere useful.
+          const alertsApi = window.useAlertsApi();
+          const firing = (alertsApi.data?.firing || []).length;
+          return (
+            <button
+              className="icon-btn"
+              title={firing > 0 ? `${firing} firing alert${firing === 1 ? '' : 's'}` : 'No firing alerts'}
+              style={{ position: 'relative' }}
+              onClick={() => { location.hash = '#/tracking'; }}
+            >
+              <window.I.Bell />
+              {firing > 0 && (
+                <span style={{
+                  position: 'absolute',
+                  top: 2, right: 2,
+                  minWidth: firing > 9 ? 14 : 10, height: 10,
+                  padding: firing > 9 ? '0 3px' : 0,
+                  borderRadius: 5,
+                  background: 'var(--down)',
+                  color: '#000',
+                  fontSize: 8, fontWeight: 700, lineHeight: '10px',
+                  textAlign: 'center',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>{firing > 99 ? '99+' : firing}</span>
+              )}
+            </button>
+          );
+        })()}
         <div className="user-chip">
           <div className="avatar">AD</div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -91,6 +122,32 @@ function TopBar() {
             <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>SUPER · TOTP</span>
           </div>
         </div>
+        {/* CQF-T14 — TopBar drain button. Two-step confirm; calls
+            /admin/drain (audit-mutated; flips readiness so external
+            LBs stop routing new traffic). The Scaling page also
+            exposes the same action; this button mirrors it for
+            quick access during incident response. */}
+        <button
+          className="icon-btn"
+          title="Drain this node (readiness → false)"
+          style={{ color: 'var(--warn)' }}
+          onClick={async () => {
+            if (!confirm('Drain this node? /healthz/ready will return 503 and external LBs will stop routing new traffic. In-flight requests continue.')) return;
+            try {
+              const r = await window.adminDrainPost();
+              if (r && r.status === 'draining') {
+                window.aegisToast(`Drain initiated · node ${r.node || 'unknown'} · already=${r.already ?? false}`, 'ok');
+              } else {
+                const msg = (r && (r.error || r.message)) || 'unknown response';
+                window.aegisToast(`Drain failed: ${msg}`, 'err');
+              }
+            } catch (e) {
+              window.aegisToast(`Drain error: ${e.message || e}`, 'err');
+            }
+          }}
+        >
+          <window.I.Pause />
+        </button>
         {/* CQF-T1 — operator logout. POSTs /admin/logout with CSRF; handler returns
             204 + Set-Cookie clearing both aegis_session and aegis_csrf. We
             redirect to the login screen so the next mutation has no auth state

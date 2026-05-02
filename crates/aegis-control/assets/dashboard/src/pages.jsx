@@ -78,7 +78,6 @@ function PageOverview() {
   // Adapt /api/stats/timeseries → series shape the TrafficChart wants.
   const series = useMemoP(() => {
     const pts = tsApi.data?.points || [];
-    if (pts.length === 0) return window.useTrafficSeries ? [] : [];
     return pts.map(p => ({ total: p.total, blocked: p.blocked }));
   }, [tsApi.data]);
 
@@ -759,7 +758,10 @@ function PageAttackEvents() {
               </div>
               {malicious && (
                 <div style={{ marginTop: 6, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 11, color: 'var(--ink-mute)' }}>
-                  <strong style={{ color: 'var(--ink-strong)' }}>{malicious.pct.toFixed(1)}%</strong> of classified bot traffic in this window flagged malicious.
+                  {/* CQF-T12 — defensive guard: malicious.pct may be undefined
+                      when the backend aggregator hasn't filled the field yet
+                      (e.g. fresh boot, no events). */}
+                  <strong style={{ color: 'var(--ink-strong)' }}>{(malicious.pct ?? 0).toFixed(1)}%</strong> of classified bot traffic in this window flagged malicious.
                 </div>
               )}
             </div>

@@ -743,7 +743,10 @@ function useModeApi() {
 // an edit form means "keep existing secret" — the dashboard must merge the
 // new partial with the cached redacted view client-side.
 function useAlertReceiversApi() {
-  return window.useApi('/api/alert-receivers', {
+  // CQF-T13 — was reaching through `window.useApi` for no
+  // reason. Direct reference matches every other hook in this
+  // file and avoids the indirection if the global ever drifts.
+  return useApi('/api/alert-receivers', {
     intervalMs: 5000,
     fallback: { receivers: [] },
   });
@@ -801,7 +804,14 @@ async function waitForVersion(expectedVersion, timeoutMs = 10000) {
 Object.assign(window, {
   ATTACK_CATS, ATTACKER_GEO, ORIGIN, ROUTES, REGIONS,
   RULES, TIERS, BLACKLIST, WHITELIST, UPSTREAMS, CLUSTER, CERTS, ALERTS, ADMIN_LOG,
-  useLiveFeed, useTrafficSeries, useTicking, makeLiveEvent,
+  // CQF-T15 — useLiveFeed + useTrafficSeries dropped from the
+  // export list. Both used Math.random for fake-data simulation
+  // and were retired from every render path during HACK-T1; they
+  // remain as helpers in this file for any future test harness
+  // but are no longer hung off `window`. useTicking and
+  // makeLiveEvent are kept — useTicking drives session-uptime
+  // counters (no random) and makeLiveEvent is harness-only.
+  useTicking, makeLiveEvent,
   // DD-T2 + DD-T6 + DD-T7 — real-API hooks
   useApi, useRealLiveFeed,
   useRulesApi, useBlacklistApi, useWhitelistApi,
