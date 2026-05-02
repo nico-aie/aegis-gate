@@ -123,7 +123,41 @@ function TopBar() {
 }
 
 // ============== Sidebar ==============
+//
+// CQF-T9 — sidebar footer is wired to /api/about. Build is the
+// short SHA + version; uptime is computed from the boot timestamp
+// the API returns. Falls back to em-dashes when the API is
+// unreachable so the footer never lies about a value it doesn't
+// have.
+function fmtUptimeFromMs(deltaMs) {
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) return '—';
+  const sec = Math.floor(deltaMs / 1000);
+  const days = Math.floor(sec / 86400);
+  const hours = Math.floor((sec % 86400) / 3600);
+  const mins = Math.floor((sec % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
 function Sidebar({ active, onNav }) {
+  const status = window.useStatusApi();
+  const version = status.data?.version || '';
+  const buildSha = status.data?.build_sha || '';
+  const buildLabel = (version && buildSha)
+    ? `${version}-${String(buildSha).slice(0, 4)}`
+    : (version || '—');
+  // useStatusApi polls every 5s, so this re-renders naturally
+  // without a separate clock.
+  let uptimeLabel = '—';
+  const startedRaw = status.data?.started_at || status.data?.boot_ts || status.data?.start_time;
+  if (startedRaw) {
+    const started = Date.parse(startedRaw);
+    if (Number.isFinite(started)) {
+      uptimeLabel = fmtUptimeFromMs(Date.now() - started);
+    }
+  }
+
   return (
     <aside className="sidebar">
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 8px' }}>
@@ -144,8 +178,8 @@ function Sidebar({ active, onNav }) {
         ))}
       </div>
       <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', fontSize: 10, color: 'var(--ink-faint)' }}>
-        <div style={{ marginBottom: 4 }}>BUILD <span className="num" style={{ color: 'var(--ink-mute)' }}>1.4.2-3a8f</span></div>
-        <div>UPTIME <span className="num" style={{ color: 'var(--ink-mute)' }}>14d 22h</span></div>
+        <div style={{ marginBottom: 4 }}>BUILD <span className="num" style={{ color: 'var(--ink-mute)' }} title={buildSha || ''}>{buildLabel}</span></div>
+        <div>UPTIME <span className="num" style={{ color: 'var(--ink-mute)' }}>{uptimeLabel}</span></div>
       </div>
     </aside>
   );

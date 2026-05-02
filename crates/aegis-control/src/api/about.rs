@@ -15,7 +15,30 @@
 
 #![allow(dead_code)]
 
+use std::sync::OnceLock;
+
 use serde::Serialize;
+
+/// Process boot timestamp — captured the first time `/api/about`
+/// is rendered (or sooner via `mark_started`). Lets the dashboard
+/// compute UPTIME from `Date.now() - started_at` without a
+/// dedicated runtime endpoint. CQF-T9.
+static BOOT_TS: OnceLock<chrono::DateTime<chrono::Utc>> = OnceLock::new();
+
+/// Stamp the process's boot time. Idempotent: only the first call
+/// wins. Safe to call from `aegis-bin::main` at startup so the
+/// timestamp reflects actual boot, not the first dashboard
+/// request.
+pub fn mark_started() -> chrono::DateTime<chrono::Utc> {
+    *BOOT_TS.get_or_init(chrono::Utc::now)
+}
+
+/// Read the process boot timestamp, lazily initialising on first
+/// call. Returns the same timestamp for the rest of the process
+/// lifetime.
+fn boot_ts() -> chrono::DateTime<chrono::Utc> {
+    *BOOT_TS.get_or_init(chrono::Utc::now)
+}
 
 /// JSON shape returned by `GET /api/about`.
 ///
@@ -29,6 +52,10 @@ pub struct AboutResponse {
     pub version: &'static str,
     pub build_sha: Option<&'static str>,
     pub environment: Option<String>,
+    /// Process boot time as RFC 3339 (UTC). The dashboard computes
+    /// UPTIME = `Date.now() - started_at` rather than carry a
+    /// duration field that goes stale between polls.
+    pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl AboutResponse {
@@ -40,6 +67,7 @@ impl AboutResponse {
             version: env!("CARGO_PKG_VERSION"),
             build_sha: option_env!("AEGIS_BUILD_SHA"),
             environment,
+            started_at: boot_ts(),
         }
     }
 }
@@ -61,9 +89,20 @@ mod tests {
         let body = render(Some("staging".into()));
         let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         let obj = v.as_object().expect("top-level object");
-        for key in ["name", "version", "build_sha", "environment"] {
+        for key in ["name", "version", "build_sha", "environment", "started_at"] {
             assert!(obj.contains_key(key), "/api/about missing {key}");
         }
+    }
+
+    #[test]
+    fn started_at_is_stable_across_calls() {
+        // Boot timestamp is captured once and reused — repeated
+        // /api/about reads must report the same value.
+        let a = render(None);
+        let b = render(None);
+        let av: serde_json::Value = serde_json::from_str(&a).unwrap();
+        let bv: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(av["started_at"], bv["started_at"]);
     }
 
     #[test]

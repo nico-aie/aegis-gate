@@ -192,6 +192,13 @@ async fn run_gateway_inner(
 
     tracing::info!("loaded config from {}", config_path.display());
 
+    // CQF-T9 — stamp the process boot timestamp so /api/about
+    // can report `started_at`; the dashboard sidebar computes
+    // UPTIME from `Date.now() - started_at` rather than carry a
+    // stale duration field.
+    let boot_ts = aegis_control::api::about::mark_started();
+    tracing::info!(boot_ts = %boot_ts, "process boot timestamp stamped");
+
     let pipeline: Arc<dyn aegis_core::SecurityPipeline> =
         Arc::new(aegis_security::NoopPipeline);
     let (state, state_summary) = state_select::select(&cfg)?;
