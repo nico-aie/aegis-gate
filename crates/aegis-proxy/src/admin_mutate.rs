@@ -1579,8 +1579,14 @@ pub(crate) async fn handle_detectors_put(
         actor: &actor,
         request_id: &request_id,
         resource: "/api/detectors",
-        action: "update",
-        reason: "detector class toggle",
+        // CQF-T3 quality fix — was "update" for everything; the
+        // generic label made the rollback dispatcher unable to
+        // match this row vs. e.g. `mode_set` or
+        // `risk_thresholds_set`. The new label is consistent
+        // with the other audit-mutated handlers
+        // (`{resource}_set`).
+        action: "detector_mask_set",
+        reason: "operator updated detector mask",
     };
     let mask_handle = services.detector_mask.clone();
     let outcome = services.mutate.apply(&req_ctx, before, after, || {
