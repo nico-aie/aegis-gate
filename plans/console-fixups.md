@@ -1,7 +1,19 @@
 # Console fixups — `CQF-T*`
 
-> **Status:** Active — derived directly from CQA-T1..T14
-> findings (`tests/results/run-cqa-20260502/SUMMARY.md`).
+> **Status:** ✅ HIGH + MEDIUM bucket complete (2026-05-02).
+> 16 of 19 slices shipped. Three LOW slices deferred to a
+> future track:
+>
+> - CQF-T17 (per-member drain on Upstreams) — needs a new
+>   backend endpoint + per-member ready/not-ready state model
+> - CQF-T18 (Latency / per-route placeholder labels) — pending
+>   the Prometheus aggregator follow-up identified in run-12
+> - CQF-T19 (per-rule stats tab) — needs backend per-rule hit
+>   counter
+>
+> Round-2 verification report:
+> `tests/results/run-cqa-round2-20260502/README.md`
+>
 > Track ID prefix `CQF-T<n>`. Two-day sprint to flip every
 > Fail / Partial slice in the CQA pass to Pass.
 >
