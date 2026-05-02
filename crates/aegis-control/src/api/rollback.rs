@@ -52,6 +52,8 @@ use crate::interop::mode::ModeStore;
 /// **v3** — adds `blacklist_add`, `blacklist_remove`,
 ///          `whitelist_add`, `whitelist_remove`.
 /// **v4** — adds `detector_mask_set` (base mask + per-tier overrides).
+/// **v5** — adds `verbosity_set` and `loadmode_set` (operator pin
+///          / unset).
 pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
     "mode_set",
     "risk_thresholds_set",
@@ -62,6 +64,8 @@ pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
     "whitelist_add",
     "whitelist_remove",
     "detector_mask_set",
+    "verbosity_set",
+    "loadmode_set",
 ];
 
 /// Live state stores the rollback dispatcher needs to apply the
@@ -80,6 +84,8 @@ pub struct RollbackTargets<'a> {
     pub blacklist: Option<&'a AccessListStore>,
     pub whitelist: Option<&'a AccessListStore>,
     pub detector_mask: Option<&'a aegis_security::detectors::SharedDetectorMask>,
+    pub verbosity: Option<&'a aegis_core::SharedVerbosity>,
+    pub load_gauge: Option<&'a aegis_core::LoadGauge>,
 }
 
 impl<'a> RollbackTargets<'a> {
@@ -92,6 +98,8 @@ impl<'a> RollbackTargets<'a> {
             blacklist: None,
             whitelist: None,
             detector_mask: None,
+            verbosity: None,
+            load_gauge: None,
         }
     }
 }
@@ -182,6 +190,8 @@ pub fn rollback_for_seq(
         "detector_mask_set" => {
             apply_detector_mask_rollback(seq, &event, targets.detector_mask)
         }
+        "verbosity_set" => apply_verbosity_rollback(seq, &event, targets.verbosity),
+        "loadmode_set" => apply_loadmode_rollback(seq, &event, targets.load_gauge),
         // Future cases land here. The const ROLLBACKABLE_ACTIONS
         // gate keeps this match aligned.
         other => Err(RollbackError::NotRollbackable(other.to_string())),
@@ -503,6 +513,154 @@ fn apply_detector_mask_rollback(
     })
 }
 
+/// `verbosity_set` rollback. Audit shape:
+/// ```json
+/// "diff": {
+///   "before": { "level": "info", "levels": [...] },
+///   "after":  { "level": "debug" }
+/// }
+/// ```
+fn apply_verbosity_rollback(
+    seq: u64,
+    event: &AuditEvent,
+    verbosity: Option<&aegis_core::SharedVerbosity>,
+) -> Result<RollbackOutcome, RollbackError> {
+    let v = verbosity.ok_or_else(|| {
+        RollbackError::ApplyFailed("verbosity store not wired into rollback targets".into())
+    })?;
+    let level_str = event
+        .fields
+        .get("diff")
+        .and_then(|d| d.get("before"))
+        .and_then(|b| b.get("level"))
+        .and_then(|l| l.as_str())
+        .ok_or_else(|| RollbackError::MissingBefore("diff.before.level".into()))?;
+    let target = parse_verbosity(level_str).ok_or_else(|| {
+        RollbackError::ApplyFailed(format!("unknown verbosity level `{level_str}`"))
+    })?;
+
+    let live = v.current();
+    v.set(target);
+
+    Ok(RollbackOutcome {
+        rolled_back_to_seq: seq,
+        action: event.action.clone(),
+        before: serde_json::json!({ "level": verbosity_str(target) }),
+        after: serde_json::json!({ "level": verbosity_str(live) }),
+    })
+}
+
+fn parse_verbosity(s: &str) -> Option<aegis_core::VerbosityLevel> {
+    use aegis_core::VerbosityLevel;
+    match s.to_ascii_lowercase().as_str() {
+        "silent" => Some(VerbosityLevel::Silent),
+        "error"  => Some(VerbosityLevel::Error),
+        "warn"   => Some(VerbosityLevel::Warn),
+        "info"   => Some(VerbosityLevel::Info),
+        "debug"  => Some(VerbosityLevel::Debug),
+        "trace"  => Some(VerbosityLevel::Trace),
+        _        => None,
+    }
+}
+
+fn verbosity_str(l: aegis_core::VerbosityLevel) -> &'static str {
+    use aegis_core::VerbosityLevel;
+    match l {
+        VerbosityLevel::Silent => "silent",
+        VerbosityLevel::Error  => "error",
+        VerbosityLevel::Warn   => "warn",
+        VerbosityLevel::Info   => "info",
+        VerbosityLevel::Debug  => "debug",
+        VerbosityLevel::Trace  => "trace",
+    }
+}
+
+/// `loadmode_set` rollback. Audit shape from
+/// `LoadGauge::snapshot()`:
+/// ```json
+/// "diff": {
+///   "before": {
+///     "mode": "Normal",
+///     "effective_mode": "Elevated",
+///     "rps_last_sample": 1234,
+///     "override_active": true,
+///     "elevated_rps": 1500,
+///     "critical_rps": 4000
+///   },
+///   ...
+/// }
+/// ```
+/// The rollback target is the `before.override_active` +
+/// `before.effective_mode` pair: when override was active,
+/// re-pin to that mode; when it wasn't, clear the override
+/// (return to auto).
+fn apply_loadmode_rollback(
+    seq: u64,
+    event: &AuditEvent,
+    gauge: Option<&aegis_core::LoadGauge>,
+) -> Result<RollbackOutcome, RollbackError> {
+    let g = gauge.ok_or_else(|| {
+        RollbackError::ApplyFailed("load_gauge not wired into rollback targets".into())
+    })?;
+    let before = event
+        .fields
+        .get("diff")
+        .and_then(|d| d.get("before"))
+        .ok_or_else(|| RollbackError::MissingBefore("diff.before".into()))?;
+    let override_active = before
+        .get("override_active")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| RollbackError::MissingBefore("diff.before.override_active".into()))?;
+
+    let target_override = if override_active {
+        let mode_str = before
+            .get("effective_mode")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RollbackError::MissingBefore("diff.before.effective_mode".into()))?;
+        let mode = parse_load_mode(mode_str).ok_or_else(|| {
+            RollbackError::ApplyFailed(format!("unknown load mode `{mode_str}`"))
+        })?;
+        Some(mode)
+    } else {
+        None
+    };
+
+    let live_override = g.override_value();
+    g.set_override(target_override);
+
+    Ok(RollbackOutcome {
+        rolled_back_to_seq: seq,
+        action: event.action.clone(),
+        before: serde_json::json!({
+            "override_active": override_active,
+            "effective_mode": target_override.map(load_mode_str),
+        }),
+        after: serde_json::json!({
+            "override_active": live_override.is_some(),
+            "effective_mode": live_override.map(load_mode_str),
+        }),
+    })
+}
+
+fn parse_load_mode(s: &str) -> Option<aegis_core::LoadMode> {
+    use aegis_core::LoadMode;
+    match s {
+        "Normal"   | "normal"   => Some(LoadMode::Normal),
+        "Elevated" | "elevated" => Some(LoadMode::Elevated),
+        "Critical" | "critical" => Some(LoadMode::Critical),
+        _ => None,
+    }
+}
+
+fn load_mode_str(m: aegis_core::LoadMode) -> &'static str {
+    use aegis_core::LoadMode;
+    match m {
+        LoadMode::Normal   => "Normal",
+        LoadMode::Elevated => "Elevated",
+        LoadMode::Critical => "Critical",
+    }
+}
+
 fn lookup_event(
     ring: &Arc<AuditRing>,
     seq: u64,
@@ -758,6 +916,7 @@ mod tests {
             mode_store: &mode, risk: Some(&risk),
             allowed_sans: None, blacklist: None, whitelist: None,
             detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -800,6 +959,7 @@ mod tests {
             mode_store: &mode, risk: Some(&risk),
             allowed_sans: None, blacklist: None, whitelist: None,
             detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
         match err {
@@ -855,6 +1015,7 @@ mod tests {
             mode_store: &mode, risk: None,
             allowed_sans: Some(&sans),
             blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -892,6 +1053,7 @@ mod tests {
             mode_store: &mode, risk: None,
             allowed_sans: Some(&sans),
             blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -988,6 +1150,7 @@ mod tests {
             blacklist: Some(&blacklist),
             whitelist: None,
             detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "blacklist_add");
@@ -1011,6 +1174,7 @@ mod tests {
             blacklist: Some(&blacklist),
             whitelist: None,
             detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "blacklist_remove");
@@ -1043,6 +1207,7 @@ mod tests {
             blacklist: Some(&blacklist),
             whitelist: Some(&whitelist),
             detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "whitelist_add");
@@ -1087,6 +1252,7 @@ mod tests {
             blacklist: Some(&blacklist),
             whitelist: None,
             detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.before["already_gone"], true);
@@ -1103,6 +1269,7 @@ mod tests {
             mode_store: &mode, risk: None,
             allowed_sans: Some(&sans),
             blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert!(outcome.before["allowed"].as_array().unwrap().is_empty());
@@ -1166,6 +1333,7 @@ mod tests {
             mode_store: &mode, risk: None, allowed_sans: None,
             blacklist: None, whitelist: None,
             detector_mask: Some(&mask),
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "detector_mask_set");
@@ -1203,6 +1371,7 @@ mod tests {
             mode_store: &mode, risk: None, allowed_sans: None,
             blacklist: None, whitelist: None,
             detector_mask: Some(&mask),
+            verbosity: None, load_gauge: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "detector_mask_set");
@@ -1252,11 +1421,201 @@ mod tests {
             mode_store: &mode, risk: None, allowed_sans: None,
             blacklist: None, whitelist: None,
             detector_mask: Some(&mask),
+            verbosity: None, load_gauge: None,
         };
         let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
         match err {
             RollbackError::ApplyFailed(msg) => {
                 assert!(msg.contains("garbage_tier"), "got: {msg}");
+            }
+            other => panic!("expected ApplyFailed, got {other:?}"),
+        }
+    }
+
+    // ---------------- v5 — verbosity_set / loadmode_set ----------------
+
+    fn verbosity_event(before: &str, after: &str) -> AuditEvent {
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: format!("req-v-{before}"),
+            class: AuditClass::Admin,
+            tenant_id: None,
+            tier: None,
+            action: "verbosity_set".into(),
+            reason: "operator changes verbosity".into(),
+            client_ip: String::new(),
+            route_id: None,
+            rule_id: None,
+            risk_score: None,
+            fields: serde_json::json!({
+                "actor": "admin",
+                "diff": {
+                    "before": { "level": before, "levels": ["silent","error","warn","info","debug","trace"] },
+                    "after":  { "level": after  },
+                },
+                "resource": "/api/logging",
+            }),
+        }
+    }
+
+    #[test]
+    fn verbosity_rollback_re_applies_before_level() {
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(verbosity_event("info", "trace"));
+        let mode = ModeStore::new(Mode::Enforce);
+        let v = aegis_core::SharedVerbosity::new(aegis_core::VerbosityLevel::Trace);
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: Some(&v), load_gauge: None,
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "verbosity_set");
+        assert_eq!(outcome.before["level"], "info");
+        assert_eq!(outcome.after["level"], "trace");
+        assert_eq!(v.current(), aegis_core::VerbosityLevel::Info);
+    }
+
+    #[test]
+    fn verbosity_rollback_unknown_level_surfaces_error() {
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(verbosity_event("yelling", "info"));
+        let mode = ModeStore::new(Mode::Enforce);
+        let v = aegis_core::SharedVerbosity::new(aegis_core::VerbosityLevel::Info);
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: Some(&v), load_gauge: None,
+        };
+        let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
+        match err {
+            RollbackError::ApplyFailed(msg) => {
+                assert!(msg.contains("yelling"), "got: {msg}");
+            }
+            other => panic!("expected ApplyFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verbosity_rollback_without_store_fails() {
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(verbosity_event("info", "debug"));
+        let mode = ModeStore::new(Mode::Enforce);
+        let err = rollback_for_seq(
+            &ring, seq, &RollbackTargets::mode_only(&mode),
+        ).unwrap_err();
+        match err {
+            RollbackError::ApplyFailed(msg) => {
+                assert!(msg.contains("verbosity store not wired"), "got: {msg}");
+            }
+            other => panic!("expected ApplyFailed, got {other:?}"),
+        }
+    }
+
+    fn loadmode_event(
+        before_active: bool, before_mode: &str,
+        after_active: bool, after_mode: &str,
+    ) -> AuditEvent {
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "req-lm".into(),
+            class: AuditClass::Admin,
+            tenant_id: None,
+            tier: None,
+            action: "loadmode_set".into(),
+            reason: "operator pins load mode".into(),
+            client_ip: String::new(),
+            route_id: None,
+            rule_id: None,
+            risk_score: None,
+            fields: serde_json::json!({
+                "actor": "admin",
+                "diff": {
+                    "before": {
+                        "mode": "Normal",
+                        "effective_mode": before_mode,
+                        "rps_last_sample": 1234,
+                        "override_active": before_active,
+                        "elevated_rps": 1500,
+                        "critical_rps": 4000,
+                    },
+                    "after": {
+                        "mode": "Normal",
+                        "effective_mode": after_mode,
+                        "rps_last_sample": 1234,
+                        "override_active": after_active,
+                        "elevated_rps": 1500,
+                        "critical_rps": 4000,
+                    },
+                },
+                "resource": "/api/loadmode",
+            }),
+        }
+    }
+
+    fn fresh_load_gauge() -> aegis_core::LoadGauge {
+        aegis_core::LoadGauge::new(aegis_core::LoadModeConfig {
+            elevated_rps: 1500,
+            critical_rps: 4000,
+            sample_interval: std::time::Duration::from_secs(1),
+            hysteresis: 0.1,
+        })
+    }
+
+    #[test]
+    fn loadmode_rollback_re_pins_override() {
+        // Operator went (override:true, Elevated) → (override:false).
+        // Roll back should re-pin to Elevated.
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(loadmode_event(true, "Elevated", false, "Normal"));
+        let mode = ModeStore::new(Mode::Enforce);
+        let g = fresh_load_gauge();
+        // Live: no override active.
+        assert_eq!(g.override_value(), None);
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: Some(&g),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "loadmode_set");
+        assert_eq!(outcome.before["override_active"], true);
+        assert_eq!(outcome.before["effective_mode"], "Elevated");
+        assert_eq!(g.override_value(), Some(aegis_core::LoadMode::Elevated));
+    }
+
+    #[test]
+    fn loadmode_rollback_clears_override() {
+        // Operator went (override:false) → (override:true, Critical).
+        // Roll back should clear the override.
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(loadmode_event(false, "Normal", true, "Critical"));
+        let mode = ModeStore::new(Mode::Enforce);
+        let g = fresh_load_gauge();
+        g.set_override(Some(aegis_core::LoadMode::Critical));
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: Some(&g),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.before["override_active"], false);
+        assert_eq!(g.override_value(), None);
+    }
+
+    #[test]
+    fn loadmode_rollback_without_store_fails() {
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(loadmode_event(true, "Elevated", false, "Normal"));
+        let mode = ModeStore::new(Mode::Enforce);
+        let err = rollback_for_seq(
+            &ring, seq, &RollbackTargets::mode_only(&mode),
+        ).unwrap_err();
+        match err {
+            RollbackError::ApplyFailed(msg) => {
+                assert!(msg.contains("load_gauge not wired"), "got: {msg}");
             }
             other => panic!("expected ApplyFailed, got {other:?}"),
         }

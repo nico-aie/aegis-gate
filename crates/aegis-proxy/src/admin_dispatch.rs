@@ -323,6 +323,8 @@ async fn handle_rollback(
         blacklist: Some(&services.blacklist),
         whitelist: Some(&services.whitelist),
         detector_mask: Some(&services.detector_mask),
+        verbosity: Some(&services.verbosity),
+        load_gauge: Some(&services.load_gauge),
     };
 
     match rollback_for_seq(&services.audit_ring, seq, &targets) {
