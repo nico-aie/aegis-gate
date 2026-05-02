@@ -256,6 +256,18 @@ pub async fn run(
         aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
             .expect("detector hit metrics registration failed"),
     );
+    // SC-T4 — tokio runtime metrics. Always registered so the
+    // /metrics surface is stable; the gauges read 0 unless the
+    // build was made with RUSTFLAGS="--cfg tokio_unstable", in
+    // which case `sample_now` populates real numbers from
+    // `tokio::runtime::Handle::current().metrics()`. The
+    // background sampler ticks every 5 s — same cadence as the
+    // upstream-pool sync — so the cost is negligible (one
+    // atomic-loads-and-set every 5 s).
+    let runtime_metrics =
+        aegis_control::metrics::runtime::RuntimeMetrics::register(&metrics)
+            .expect("runtime metrics registration failed");
+    runtime_metrics.spawn_sampler(std::time::Duration::from_secs(5));
     // PROM-T3 — per-op state-backend counter
     // `waf_state_backend_ops_total{op,outcome}`. Wraps the
     // resolved state backend with a delegating impl that

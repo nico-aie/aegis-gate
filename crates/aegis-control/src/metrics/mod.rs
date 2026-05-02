@@ -3,6 +3,7 @@ pub mod decisions;
 pub mod detector_hits;
 pub mod exporter;
 pub mod request_duration;
+pub mod runtime;
 pub mod state_ops;
 pub mod upstream_pools;
 

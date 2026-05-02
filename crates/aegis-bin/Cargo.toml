@@ -57,6 +57,18 @@ otel = [
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
 ]
+# `tokio_unstable` — registers the four runtime-metrics gauges
+# (aegis_runtime_active_workers, aegis_runtime_blocking_threads,
+#  aegis_runtime_blocking_queue_depth, aegis_runtime_io_driver_fd_count)
+# on /metrics. SC-T4. Requires building with
+#   RUSTFLAGS="--cfg tokio_unstable"
+# to actually populate the gauges (the cfg flag opts in to
+# tokio's non-SemVer runtime-metrics API). Without the rustc
+# cfg, the gauges register but always read zero. Default off:
+# operators opt in for the additional observability when they
+# accept tokio's non-SemVer guarantees on this surface.
+tokio_unstable = []
+
 # `production` — full feature set the `deploy/Dockerfile` ships.
 # Operators who want a slimmer image can drop individual features
 # (e.g. `aws-only` deployments don't need `gcp` + `azure` +

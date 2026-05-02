@@ -145,6 +145,51 @@ If `workers_mode` says `auto` but `workers` doesn't match
 cgroups) rather than physical cores — `num_cpus::get()` honours
 that.
 
+## Runtime metrics (Prometheus)
+
+The WAF exposes four gauges on `/metrics` that surface internal
+tokio runtime state. They're useful for catching saturation
+that doesn't show up in request-side metrics:
+
+| Gauge | What it tells you |
+|---|---|
+| `aegis_runtime_active_workers` | Number of worker threads. Constant under the multi-threaded scheduler. Cross-check against `runtime.workers`. |
+| `aegis_runtime_blocking_threads` | Currently-spawned blocking-pool threads. Bounded by `runtime.blocking_threads`. **Sustained at the cap → blocking pool saturated.** |
+| `aegis_runtime_blocking_queue_depth` | Queued blocking-pool tasks waiting for a worker. **Steadily-rising depth → upsize `runtime.blocking_threads` or move work off `tokio::task::spawn_blocking`.** |
+| `aegis_runtime_io_driver_fd_count` | FDs registered with the I/O driver (TCP sockets, TLS streams, Redis pool conns). **Sustained climb without RPS climb → suspect FD leak.** |
+
+### Tokio-unstable tradeoff
+
+The gauges above always exist on `/metrics` — operators get a
+stable scrape surface. But they only **populate** with live
+numbers when the WAF was built with the tokio-blessed
+`--cfg tokio_unstable` rustc flag plus the matching Cargo
+feature:
+
+```sh
+RUSTFLAGS="--cfg tokio_unstable" \
+  cargo build -p aegis-bin --release --features tokio_unstable
+```
+
+Without that flag pair, the gauges read **0** — there's no
+silent data-loss; `aegis_runtime_active_workers 0` clearly
+flags "operator opted out of unstable metrics". Default builds
+ship without the flag because tokio doesn't carry SemVer
+guarantees on the runtime-metrics API; pinning every minor
+tokio bump on a stable build is the wrong tradeoff for most
+deployments. Operators who want the visibility opt in
+explicitly.
+
+The Helm chart and `production` Cargo feature **do not**
+enable `tokio_unstable`. Add it to your own chart's `values.
+yaml` (or your own `Dockerfile`) when ready.
+
+The `aegis_runtime_io_driver_fd_count` gauge reads zero even
+with the cfg flag set — tokio's `io-driver-metrics` cfg gate is
+not yet exposed in stable releases. The gauge is registered
+ahead of time so the Prometheus scrape series doesn't churn
+when tokio promotes it.
+
 ## Hot-reload posture
 
 The `runtime:` block is **restart-only** by design. Tokio doesn't

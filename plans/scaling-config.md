@@ -118,21 +118,26 @@ returns a `runtime:` block: "Runtime sizing (workers, blocking
 threads, CPU affinity) is restart-only — see the
 [Scaling page](#/scaling)." No layout churn.
 
-### SC-T4 — Tokio unstable runtime metrics → Prometheus
-**Target:** `aegis-bin` (feature gate) + `aegis-proxy/src/metrics.rs`.
+### SC-T4 — Tokio unstable runtime metrics → Prometheus ✅ shipped 2026-05-02
+**Target:** `aegis-bin` (feature gate) + `aegis-control/src/metrics/runtime.rs`.
 
-- Add `tokio_unstable` Cargo feature alias on `aegis-bin`
-  (off by default — opt-in to keep production builds on
-  stable APIs).
-- When enabled, expose:
+- ✅ `tokio_unstable` Cargo feature added on `aegis-bin` (off
+  by default; opt-in via
+  `RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio_unstable`).
+- ✅ Four gauges always registered on `/metrics`:
   - `aegis_runtime_active_workers`
   - `aegis_runtime_blocking_queue_depth`
   - `aegis_runtime_blocking_threads`
   - `aegis_runtime_io_driver_fd_count`
-- Wire into the L1 card "Runtime metrics" mini-strip.
-- Document the trade-off in `runtime-tuning.md` — the
-  `tokio_unstable` flag implies non-SemVer guarantees from
-  tokio.
+- ✅ Background sampler ticks every 5 s; gauges read 0 without
+  the cfg flag, populate live numbers with it.
+- ✅ Tradeoff documented in
+  [`docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md#runtime-metrics-prometheus).
+- Out of scope: L1-card "Runtime metrics" mini-strip on the
+  Scaling page is deferred — the dashboard already has the
+  underlying `/api/runtime` data; the `aegis_runtime_*` gauges
+  are surfaced in Prometheus + Grafana, which is the primary
+  consumer for runtime metrics.
 
 ### SC-T5 — Doc consolidation — ✅ shipped 2026-05-01
 **Target:** `docs/`.

@@ -62,3 +62,10 @@ tempfile = "3"
 # MTLS-T6 — `parse_ca_bundle` tests build a self-signed CA on
 # the fly so we can exercise the PEM parser without a fixture.
 rcgen.workspace = true
+
+# SC-T4 — `tokio_unstable` is a tokio-blessed rustc cfg flag,
+# not a Cargo feature; declare it here so `cargo check` doesn't
+# warn about an unrecognized cfg name. The runtime-metrics
+# module gates real population of the gauges behind this cfg.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
