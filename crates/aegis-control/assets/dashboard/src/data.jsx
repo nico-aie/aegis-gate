@@ -439,6 +439,21 @@ async function mtlsSansTest(san) {
   return { status: r.status, ...(await r.json().catch(() => ({}))) };
 }
 
+// CQF-T1 — admin logout. POSTs /admin/logout with the CSRF
+// header. The handler responds 204 + Set-Cookie clearing
+// both `aegis_session` and `aegis_csrf` so the browser
+// drops them. We then redirect the operator to the login
+// screen.
+async function adminLogout() {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/admin/logout', {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  return { status: r.status };
+}
+
 // HACK-T3 — Tier-A bonus: rule simulator. POST a synthetic
 // request and get back the live decision tree. CSRF cookie+
 // header same as other audit-mutated POSTs (the simulator
@@ -737,4 +752,6 @@ Object.assign(window, {
   useAlertReceiversApi, alertReceiversPut, alertReceiverDelete, alertReceiverTest,
   // MTLS-T7 — Allowed SAN allowlist (read + audit-mutated PUT/DELETE/POST-test)
   useMtlsSansApi, mtlsSansPut, mtlsSansDelete, mtlsSansTest,
+  // CQF-T1 — admin logout
+  adminLogout,
 });

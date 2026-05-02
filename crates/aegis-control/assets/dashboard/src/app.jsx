@@ -91,6 +91,32 @@ function TopBar() {
             <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>SUPER · TOTP</span>
           </div>
         </div>
+        {/* CQF-T1 — operator logout. POSTs /admin/logout with CSRF; handler returns
+            204 + Set-Cookie clearing both aegis_session and aegis_csrf. We
+            redirect to the login screen so the next mutation has no auth state
+            to lean on. */}
+        <button
+          className="icon-btn"
+          title="Sign out"
+          onClick={async () => {
+            try {
+              const r = await window.adminLogout();
+              if (r.status === 204 || r.status === 200) {
+                window.aegisToast && window.aegisToast('Signed out', 'ok');
+              } else {
+                window.aegisToast && window.aegisToast(`Logout returned ${r.status}`, 'warn');
+              }
+            } catch (e) {
+              window.aegisToast && window.aegisToast(`Logout error: ${e.message || e}`, 'err');
+            } finally {
+              // Always navigate away — even when the network call fails the
+              // safest thing is to abandon the session UI.
+              location.href = '/admin/login';
+            }
+          }}
+        >
+          <window.I.LogOut />
+        </button>
       </div>
     </div>
   );
