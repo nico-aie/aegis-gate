@@ -2670,47 +2670,26 @@ function PageSettings() {
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <div className="card-head">
-          <div>
-            <div className="card-title">
-              Cache management
-              <span className="pill warn" style={{ marginLeft: 8 }} title="Cache sizes / ages / entry counts are static demo values. Reset button is non-functional. Real cache stats need /api/caches/stats which isn't implemented yet.">
-                demo data
-              </span>
-            </div>
-            <div className="card-sub">Flush internal caches without restarting the WAF</div>
-          </div>
-          <button className="btn danger" disabled><window.I.Refresh /> Reset all caches</button>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
-          {[
-            { k: 'rules',   t: 'Rule cache',          d: 'Compiled regex / rule AST',         size: '128 MB', age: '14m', n: '1,247 entries' },
-            { k: 'geoip',   t: 'GeoIP cache',         d: 'IP → country/ASN lookups',          size: '412 MB', age: '2h 8m', n: '8.4M entries' },
-            { k: 'ti',      t: 'Threat-intel cache', d: 'Feed-derived indicators',           size: '58 MB',  age: '6m', n: '142,381 entries' },
-            { k: 'fp',      t: 'Fingerprint cache',   d: 'JA4 / TLS fingerprints',            size: '24 MB',  age: '3m', n: '52,108 entries' },
-            { k: 'session', t: 'Session cache',       d: 'Challenge-passed session tokens',   size: '16 MB',  age: '52s', n: '12,884 entries' },
-            { k: 'dns',     t: 'DNS cache',           d: 'Upstream resolution',               size: '4 MB',   age: '11m', n: '3,212 entries' },
-          ].map(c => (
-            <div key={c.k} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>{c.t}</div>
-                <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{c.d}</div>
-                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>
-                  <span className="num">{c.size}</span> · <span className="num">{c.n}</span> · refreshed <span className="num">{c.age}</span> ago
-                </div>
-              </div>
-              <button className="btn sm">Flush</button>
-            </div>
-          ))}
-        </div>
-        <div className="banner warn" style={{ marginTop: 12, padding: 10 }}>
-          <div style={{ marginTop: 1 }}><window.I.Siren /></div>
-          <div style={{ flex: 1, fontSize: 12 }}>
-            Flushing the GeoIP or rule cache briefly increases latency while caches warm up. The action is hash-chained into the audit log.
-          </div>
-        </div>
-      </div>
+      {/*
+        CQF-T7 — Cache management card removed.
+
+        The previous card rendered 6 hardcoded "demo data"
+        cache buckets (rules / geoip / ti / fp / session / dns)
+        with hand-drawn sizes ("128 MB"), ages ("14m"), and entry
+        counts ("8.4M entries"). The Flush buttons and the
+        Reset-all button were both no-op stubs. M1 doesn't ship
+        a query-cache layer (only the per-decision audit ring,
+        which is bounded in entry count, not bytes); the card
+        was aspirational.
+
+        If a future track adds a per-cache stats endpoint
+        (/api/caches/stats) and a flush handler, re-add the
+        card here, sourced from the live API. The interop
+        contract surface already has POST /__waf_control/
+        flush_cache for benchmark-side cache invalidation
+        (returns 200/4xx; not 5xx) — but that's not a per-
+        bucket inspector.
+      */}
     </>
   );
 }
