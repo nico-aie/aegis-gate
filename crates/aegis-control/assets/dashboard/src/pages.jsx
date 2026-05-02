@@ -29,6 +29,35 @@ function PageOverview() {
   const tick = window.useTicking(2000);
   const [drawerEvent, setDrawerEvent] = useStateP(null);
 
+  // CQF-T4 — wire the "Block" button on each Top Attackers row.
+  // Uses the audit-mutated POST /api/blacklist endpoint shipped
+  // in CQF-T2. ID is minted client-side for traceability; the
+  // store enforces uniqueness so an accidental double-click on
+  // the same IP is a 4xx, not a duplicate row.
+  async function quickBlockIp(ip) {
+    if (!ip || ip === '—') return;
+    if (!confirm(`Add ${ip} to blacklist?`)) return;
+    const id = `ui-${ip.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+    try {
+      const r = await window.accessListAdd('blacklist', {
+        id,
+        kind: ip.includes('/') ? 'cidr' : 'ip',
+        value: ip,
+        note: 'blocked from Overview Top Attackers',
+        bypass: [],
+        created_at: new Date().toISOString(),
+      });
+      if (r.ok) {
+        window.aegisToast(`Blocked ${ip}`, 'ok');
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        window.aegisToast(`Block failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Block error: ${e.message || e}`, 'err');
+    }
+  }
+
   // Adapt /api/stats/timeseries → series shape the TrafficChart wants.
   const series = useMemoP(() => {
     const pts = tsApi.data?.points || [];
@@ -271,7 +300,12 @@ function PageOverview() {
                 </td>
                 <td><window.RiskMeter value={a.risk} /></td>
                 <td onClick={e => e.stopPropagation()}>
-                  <button className="btn sm danger" style={{ marginRight: 6 }}>Block</button>
+                  <button
+                    className="btn sm danger"
+                    style={{ marginRight: 6 }}
+                    title={`Add ${a.id} to blacklist`}
+                    onClick={() => quickBlockIp(a.id)}
+                  >Block</button>
                   <button className="btn sm" onClick={() => setDrawerEvent(a)}>Inspect</button>
                 </td>
               </tr>
@@ -347,6 +381,63 @@ function PageLiveFeed() {
   const [filterTier, setFilterTier] = useStateP('all');
   const [search, setSearch] = useStateP('');
   const [selected, setSelected] = useStateP(null);
+
+  // CQF-T4 — drawer footer actions. Block IP / Whitelist write
+  // through the audit-mutated POST endpoints shipped in CQF-T2.
+  // Copy as cURL builds a minimally-reproducible curl command
+  // from the selected event (method + path + WAF data plane
+  // host). No API call; clipboard only.
+  async function quickAccessListAdd(kind, ip, note) {
+    if (!ip) return;
+    const id = `ui-${ip.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+    try {
+      const r = await window.accessListAdd(kind, {
+        id,
+        kind: ip.includes('/') ? 'cidr' : 'ip',
+        value: ip,
+        note,
+        bypass: kind === 'whitelist' ? ['all'] : [],
+        created_at: new Date().toISOString(),
+      });
+      if (r.ok) {
+        window.aegisToast(`${kind === 'blacklist' ? 'Blocked' : 'Whitelisted'} ${ip}`, 'ok');
+        setSelected(null);
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        window.aegisToast(`${kind} failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`${kind} error: ${e.message || e}`, 'err');
+    }
+  }
+  async function copyAsCurl(ev) {
+    if (!ev) return;
+    // Best-effort host: data plane is on the same origin's port 8080
+    // for dev; for non-localhost installs the operator can edit.
+    const host = (location.hostname || '127.0.0.1') + ':8080';
+    const proto = location.protocol === 'https:' ? 'https' : 'http';
+    const method = (ev.method || 'GET').toUpperCase();
+    const path = ev.path || '/';
+    const lines = [
+      `curl -i \\`,
+      `  -X ${method} \\`,
+      `  -H 'X-Forwarded-For: ${ev.ip || '127.0.0.1'}' \\`,
+      `  '${proto}://${host}${path}'`,
+    ];
+    const cmd = lines.join('\n');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(cmd);
+        window.aegisToast('Copied curl to clipboard', 'ok');
+      } else {
+        // Fallback: select-and-prompt so operators on browsers
+        // without async clipboard can still grab the command.
+        window.prompt('Copy this curl command:', cmd);
+      }
+    } catch (e) {
+      window.aegisToast(`Clipboard error: ${e.message || e}`, 'err');
+    }
+  }
 
   const filtered = events.filter(e => {
     if (filterAction !== 'all' && e.action !== filterAction) return false;
@@ -445,7 +536,11 @@ function PageLiveFeed() {
       </div>
 
       <window.Drawer open={!!selected} onClose={() => setSelected(null)} title={selected?.path}
-        footer={<><button className="btn">Copy as cURL</button><button className="btn danger">Block IP</button><button className="btn primary">Whitelist</button></>}>
+        footer={<>
+          <button className="btn" onClick={() => copyAsCurl(selected)}>Copy as cURL</button>
+          <button className="btn danger" onClick={() => selected && quickAccessListAdd('blacklist', selected.ip, `blocked from Live Feed · ${selected.path}`)}>Block IP</button>
+          <button className="btn primary" onClick={() => selected && quickAccessListAdd('whitelist', selected.ip, `whitelisted from Live Feed · ${selected.path}`)}>Whitelist</button>
+        </>}>
         {selected && <RequestDetail data={{ ip: selected.ip, geo: selected.geo, risk: selected.risk, cats: [selected.cat] }} />}
       </window.Drawer>
     </>
