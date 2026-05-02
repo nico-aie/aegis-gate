@@ -385,6 +385,60 @@ function useConfigVersionsApi(limit = 50) {
   return useApi(`/api/config/versions?limit=${limit}`, { intervalMs: 5000, fallback: null });
 }
 
+// HACK-T4 rollback — POST /api/config/versions/{seq}/rollback.
+// Returns the dispatcher outcome (decision_action, before,
+// after) or an error object on 4xx/5xx.
+async function configRollback(seq) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/config/versions/${encodeURIComponent(seq)}/rollback`, {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
+
+// HACK-T4 — actions the dashboard knows are rollback-able.
+// Mirrors the const list in `aegis-control::api::rollback`.
+// Operators see the Rollback button only on these rows.
+const ROLLBACKABLE_ACTIONS = ['mode_set'];
+
+// MTLS-T7 — Allowed SAN allowlist. Read once + on demand;
+// the underlying store is hot-reloadable so we don't need
+// aggressive polling. The mutation helpers below are the
+// audit-mutated PUT / DELETE / POST-test endpoints.
+function useMtlsSansApi() {
+  return useApi('/api/mtls/sans', { intervalMs: 15000, fallback: { allowed: [] } });
+}
+async function mtlsSansPut(allowed) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/mtls/sans', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ allowed }),
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
+async function mtlsSansDelete(san) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/mtls/sans/${encodeURIComponent(san)}`, {
+    method: 'DELETE',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
+async function mtlsSansTest(san) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/mtls/sans/${encodeURIComponent(san)}/test`, {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
+
 // HACK-T3 — Tier-A bonus: rule simulator. POST a synthetic
 // request and get back the live decision tree. CSRF cookie+
 // header same as other audit-mutated POSTs (the simulator
@@ -665,8 +719,8 @@ Object.assign(window, {
   useAttacksByDetectorApi, useBotMixApi, useThreatIntelApi,
   // HACK-T3 — Tier-A rule simulator
   rulesSimulate,
-  // HACK-T4 — Tier-B config-change timeline
-  useConfigVersionsApi,
+  // HACK-T4 — Tier-B config-change timeline + rollback
+  useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
   useClusterApi, useSloApi, useCertsApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
   // SC-T2 — Scaling page hooks + drain mutation
@@ -681,4 +735,6 @@ Object.assign(window, {
   useRiskThresholdsApi, settingsRiskThresholdsPut,
   // CC-T2.* — alert-receivers (read + audit-mutated PUT/DELETE/POST-test)
   useAlertReceiversApi, alertReceiversPut, alertReceiverDelete, alertReceiverTest,
+  // MTLS-T7 — Allowed SAN allowlist (read + audit-mutated PUT/DELETE/POST-test)
+  useMtlsSansApi, mtlsSansPut, mtlsSansDelete, mtlsSansTest,
 });

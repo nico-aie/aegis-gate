@@ -1,13 +1,15 @@
 # Hackathon-Readiness — `HACK-T*`
 
-> **Status:** **✅ Complete** — HACK-T1..T5 all shipped
-> (2026-05-01 / 2026-05-02). One feature each in Tier A
-> (rule simulator), Tier B (config-history timeline), and
-> Tier C (Syslog/CEF forwarder) per v2.3 §2.4 diminishing-
-> returns rule. Round 1 mock-data risk closed; Round 2
-> contract regression gate added; Round 3 Tier bonuses
-> claimed. Two follow-ups deferred: HACK-T4 actual
-> rollback action, HACK-T5 TLS syslog transport.
+> **Status:** **✅ Complete + extended** — HACK-T1..T5 all
+> shipped (2026-05-01 / 2026-05-02), plus the **HACK-T5
+> TLS transport** follow-up (2026-05-02). One feature each
+> in Tier A (rule simulator), Tier B (config-history
+> timeline), and Tier C (Syslog/CEF forwarder, now with
+> TLS) per v2.3 §2.4 diminishing-returns rule. Round 1
+> mock-data risk closed; Round 2 contract regression gate
+> added; Round 3 Tier bonuses claimed. Only **HACK-T4
+> rollback action** remains deferred to a follow-up
+> (per-handler inverse-apply logic).
 > Track ID prefix `HACK-T<n>`. Targets the v2.3 contract requirements
 > documented in
 > [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md)
@@ -229,7 +231,7 @@ lifecycle).
 - Rollback wires through the existing audit-mutated mutation
   path, so it cannot bypass authz / CSRF / chain.
 
-### HACK-T5 — Tier-C: Syslog/CEF audit forwarder — ✅ shipped 2026-05-02
+### HACK-T5 — Tier-C: Syslog/CEF audit forwarder — ✅ shipped 2026-05-02 (TLS transport follow-up: ✅ shipped 2026-05-02)
 
 **Goal:** stream the existing JSONL audit log to a remote
 syslog endpoint (RFC 5424) or CEF receiver. Tier C bonus

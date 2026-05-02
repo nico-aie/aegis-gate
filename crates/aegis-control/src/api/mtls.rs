@@ -175,6 +175,111 @@ pub struct CaSummaryView {
     pub certificates: Vec<CaCertSummary>,
 }
 
+/// MTLS-T7 — live, mutable allowed-SAN list.
+///
+/// Created at boot from `cfg.tls.client_auth.allowed_sans`,
+/// then mutated via the audit-mutated `PUT/DELETE/POST-test`
+/// handlers. Identity extraction reads through `admits()` /
+/// `matched_pattern()` per cert; both are O(n) on a typically
+/// small list (single-digit operator entries) so no index is
+/// needed.
+///
+/// Empty list = "no allowlist gate"; any SAN admits. Operators
+/// turning the gate on populate the list, then optionally lock
+/// it down via `client_auth.mode = Required`.
+///
+/// Wildcard syntax: `*.example.com` matches a single label
+/// (RFC 6125 §6.4.3) — `svc.example.com` admits but neither
+/// `example.com` nor `a.b.example.com` does.
+#[derive(Debug, Clone)]
+pub struct AllowedSansStore {
+    inner: Arc<arc_swap::ArcSwap<Vec<String>>>,
+}
+
+impl AllowedSansStore {
+    /// Snapshot of the current allowlist. Cheap; the
+    /// underlying ArcSwap returns an `Arc<Vec<String>>` —
+    /// callers `(*snap).clone()` if they want owned strings,
+    /// otherwise iterate against the borrowed slice.
+    pub fn current(&self) -> Vec<String> {
+        (*self.inner.load_full()).clone()
+    }
+
+    /// Replace the entire allowlist atomically. Used by the
+    /// `PUT /api/mtls/sans` whole-list-replace handler.
+    pub fn store(&self, new_list: Vec<String>) {
+        self.inner.store(Arc::new(new_list));
+    }
+
+    /// Remove one entry. Returns `true` if the entry was
+    /// present and removed; `false` if it wasn't there.
+    /// Atomic via load → modify → store; concurrent removes
+    /// are last-writer-wins.
+    pub fn remove(&self, san: &str) -> bool {
+        let current = self.inner.load_full();
+        let mut next: Vec<String> = (*current).clone();
+        let before = next.len();
+        next.retain(|s| s != san);
+        if next.len() != before {
+            self.inner.store(Arc::new(next));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Read-side admission check. Empty allowlist → admit
+    /// everything (back-compat with operators not opting in).
+    /// Non-empty → at least one pattern must match `san`.
+    pub fn admits(&self, san: &str) -> bool {
+        let snap = self.inner.load_full();
+        if snap.is_empty() {
+            return true;
+        }
+        snap.iter().any(|p| san_matches(p, san))
+    }
+
+    /// Like `admits` but returns the FIRST matching pattern,
+    /// for the `/api/mtls/sans/{san}/test` response. `None`
+    /// when nothing matched.
+    pub fn matched_pattern(&self, san: &str) -> Option<String> {
+        let snap = self.inner.load_full();
+        snap.iter().find(|p| san_matches(p, san)).cloned()
+    }
+}
+
+impl From<Vec<String>> for AllowedSansStore {
+    fn from(list: Vec<String>) -> Self {
+        Self {
+            inner: Arc::new(arc_swap::ArcSwap::from_pointee(list)),
+        }
+    }
+}
+
+/// Pattern → SAN match. `*.example.com` matches one label of
+/// `<label>.example.com`; the bare `example.com` does NOT
+/// match the wildcard, and nested labels (`a.b.example.com`)
+/// are rejected too. Plain patterns require an exact match.
+pub fn san_matches(pattern: &str, san: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        // The SAN must end with `.<suffix>` (so the wildcard
+        // bound has at least one character before the dot)
+        // AND have exactly one label before that dot.
+        let needle = format!(".{suffix}");
+        if !san.ends_with(&needle) {
+            return false;
+        }
+        let prefix_len = san.len() - needle.len();
+        if prefix_len == 0 {
+            return false;
+        }
+        let prefix = &san[..prefix_len];
+        // Single-label match: no dots in the prefix.
+        return !prefix.contains('.');
+    }
+    pattern == san
+}
+
 pub fn render_ca_summary(tracker: Option<&Arc<IdentityTracker>>) -> String {
     let view = match tracker.and_then(|t| t.ca_summary()) {
         Some(summary) => CaSummaryView {
@@ -313,6 +418,76 @@ state: { backend: in_memory }
         let body = render_ca_summary(None);
         assert!(body.contains("\"certificates\":[]"));
         assert!(body.contains("\"bundle_path\":null"));
+    }
+
+    // ---------------- MTLS-T7 — AllowedSansStore ----------------
+
+    #[test]
+    fn allowed_sans_store_round_trips() {
+        let s = AllowedSansStore::from(vec!["a.example.com".into(), "b@example.com".into()]);
+        assert_eq!(s.current().len(), 2);
+        s.store(vec!["c.example.com".into()]);
+        assert_eq!(s.current().len(), 1);
+        assert_eq!(s.current()[0], "c.example.com");
+    }
+
+    #[test]
+    fn allowed_sans_empty_admits_anything() {
+        let s = AllowedSansStore::from(Vec::<String>::new());
+        // Empty list = no allowlist gate; any SAN admits.
+        assert!(s.admits("anyone"));
+        assert!(s.admits("foo.bar.baz"));
+    }
+
+    #[test]
+    fn allowed_sans_exact_match() {
+        let s = AllowedSansStore::from(vec!["svc.example.com".into()]);
+        assert!(s.admits("svc.example.com"));
+        assert!(!s.admits("other.example.com"));
+        assert!(!s.admits(""));
+    }
+
+    #[test]
+    fn allowed_sans_wildcard_single_label() {
+        let s = AllowedSansStore::from(vec!["*.example.com".into()]);
+        assert!(s.admits("svc.example.com"));
+        assert!(s.admits("api.example.com"));
+        // Wildcard does not match the bare domain.
+        assert!(!s.admits("example.com"));
+        // Wildcard does not match nested labels (RFC 6125 §6.4.3).
+        assert!(!s.admits("a.b.example.com"));
+        // Different domain — reject.
+        assert!(!s.admits("svc.other.com"));
+    }
+
+    #[test]
+    fn allowed_sans_remove_one_works() {
+        let s = AllowedSansStore::from(vec!["a".into(), "b".into(), "c".into()]);
+        let removed = s.remove("b");
+        assert!(removed);
+        let cur = s.current();
+        assert_eq!(cur.len(), 2);
+        assert!(!cur.contains(&"b".to_string()));
+        // Removing again is a no-op.
+        let removed_again = s.remove("b");
+        assert!(!removed_again);
+    }
+
+    #[test]
+    fn allowed_sans_match_returns_first_pattern() {
+        let s = AllowedSansStore::from(vec![
+            "*.example.com".into(),
+            "exact@example.com".into(),
+        ]);
+        assert_eq!(
+            s.matched_pattern("svc.example.com"),
+            Some("*.example.com".to_string()),
+        );
+        assert_eq!(
+            s.matched_pattern("exact@example.com"),
+            Some("exact@example.com".to_string()),
+        );
+        assert_eq!(s.matched_pattern("nope"), None);
     }
 
     #[test]

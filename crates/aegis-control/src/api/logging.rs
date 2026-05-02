@@ -73,6 +73,7 @@ pub fn render_cold_tier(sinks: &[AuditSinkConfig]) -> String {
                 kind: match transport {
                     aegis_core::config::SyslogTransport::Udp => "udp",
                     aegis_core::config::SyslogTransport::Tcp => "tcp",
+                    aegis_core::config::SyslogTransport::Tls => "tls",
                 },
                 destination: address.clone(),
                 delivery: "unknown",
@@ -147,6 +148,8 @@ mod tests {
                 format: aegis_core::config::SyslogFormat::Rfc5424,
                 facility: 10,
                 app_name: "aegis-waf".into(),
+                ca_bundle: None,
+                server_name: None,
             },
             AuditSinkConfig::Splunk {
                 endpoint: "https://splunk.example.com:8088".into(),

@@ -62,6 +62,13 @@ pub struct SyslogConfig {
     pub facility: u8,
     /// APP-NAME header field — typically `aegis-waf`.
     pub app_name: String,
+    /// HACK-T5 TLS — optional explicit CA bundle PEM. `None`
+    /// → use webpki system roots. Ignored unless
+    /// `transport = Tls`.
+    pub ca_bundle: Option<std::path::PathBuf>,
+    /// HACK-T5 TLS — SNI / cert-validation hostname. `None`
+    /// → derive from the host part of `address`.
+    pub server_name: Option<String>,
 }
 
 impl Default for SyslogConfig {
@@ -72,6 +79,8 @@ impl Default for SyslogConfig {
             format: SyslogFormat::Rfc5424,
             facility: 10,
             app_name: "aegis-waf".into(),
+            ca_bundle: None,
+            server_name: None,
         }
     }
 }
@@ -93,6 +102,14 @@ enum TransportState {
     /// and will retry on the next event (with backoff applied
     /// elsewhere).
     Tcp(Option<TcpStream>),
+    /// HACK-T5 — TLS-wrapped TCP. Reconnects re-handshake;
+    /// the rustls config is held alongside so reconnect can
+    /// reuse the same trust + SNI without re-parsing.
+    Tls {
+        stream: Option<tokio_rustls::client::TlsStream<TcpStream>>,
+        connector: tokio_rustls::TlsConnector,
+        server_name: rustls_pki_types::ServerName<'static>,
+    },
 }
 
 impl SyslogSink {
@@ -100,7 +117,10 @@ impl SyslogSink {
     /// socket; TCP connects synchronously and backs off on
     /// failure (initial connect failure is logged and the
     /// sink is left in a disconnected state — subsequent
-    /// `write` calls reconnect lazily).
+    /// `write` calls reconnect lazily). TLS handshakes after
+    /// the TCP connect using `tokio_rustls`; on initial
+    /// failure the sink is left disconnected and the next
+    /// send retries (same lazy-reconnect contract as TCP).
     pub async fn connect(cfg: SyslogConfig) -> aegis_core::Result<Self> {
         let state = match cfg.transport {
             SyslogTransport::Udp => {
@@ -128,6 +148,28 @@ impl SyslogSink {
                         );
                         TransportState::Tcp(None)
                     }
+                }
+            }
+            SyslogTransport::Tls => {
+                // Build the TLS connector once and reuse for
+                // reconnects. SNI defaults to the host part
+                // of `address` if `server_name` is unset.
+                let connector = build_tls_connector(&cfg)?;
+                let server_name = derive_server_name(&cfg)?;
+                let stream = tls_connect(&cfg.address, &connector, &server_name).await
+                    .map(Some)
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            address = %cfg.address,
+                            error = %e,
+                            "syslog tls initial handshake failed; will retry on first event",
+                        );
+                        None
+                    });
+                TransportState::Tls {
+                    stream,
+                    connector,
+                    server_name,
                 }
             }
         };
@@ -181,6 +223,31 @@ impl SyslogSink {
                     *slot = None;
                     return Err(aegis_core::WafError::Other(format!(
                         "syslog tcp send to {} failed: {e}",
+                        self.cfg.address,
+                    )));
+                }
+            }
+            TransportState::Tls { stream, connector, server_name } => {
+                if stream.is_none() {
+                    match tls_connect(&self.cfg.address, connector, server_name).await {
+                        Ok(s) => *stream = Some(s),
+                        Err(e) => {
+                            return Err(aegis_core::WafError::Other(format!(
+                                "syslog tls reconnect to {} failed: {e}",
+                                self.cfg.address,
+                            )));
+                        }
+                    }
+                }
+                let s = stream.as_mut().expect("just reconnected");
+                let mut framed = line;
+                if !framed.ends_with('\n') {
+                    framed.push('\n');
+                }
+                if let Err(e) = s.write_all(framed.as_bytes()).await {
+                    *stream = None;
+                    return Err(aegis_core::WafError::Other(format!(
+                        "syslog tls send to {} failed: {e}",
                         self.cfg.address,
                     )));
                 }
@@ -279,6 +346,122 @@ fn severity_for(class: AuditClass) -> u8 {
         AuditClass::Access => 6,
         AuditClass::System => 5, // notice
     }
+}
+
+/// HACK-T5 TLS — build a `tokio_rustls::TlsConnector` from
+/// the syslog config. Loads the configured `ca_bundle` if
+/// present; otherwise uses webpki system roots. The returned
+/// connector is reused across reconnects so we never re-parse
+/// the trust store on a per-event basis.
+fn build_tls_connector(
+    cfg: &SyslogConfig,
+) -> aegis_core::Result<tokio_rustls::TlsConnector> {
+    use rustls_pki_types::CertificateDer;
+    use std::sync::Arc;
+
+    // Install the ring crypto provider once per process. The
+    // upstream-mTLS path does the same dance.
+    static PROVIDER_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    PROVIDER_INIT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+
+    let mut roots = rustls::RootCertStore::empty();
+    if let Some(bundle_path) = cfg.ca_bundle.as_ref() {
+        let pem = std::fs::read(bundle_path).map_err(|e| {
+            aegis_core::WafError::Config(format!(
+                "syslog tls ca_bundle {} read failed: {e}",
+                bundle_path.display(),
+            ))
+        })?;
+        let mut reader = std::io::BufReader::new(pem.as_slice());
+        let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| {
+                aegis_core::WafError::Config(format!(
+                    "syslog tls ca_bundle parse failed: {e}",
+                ))
+            })?;
+        if certs.is_empty() {
+            return Err(aegis_core::WafError::Config(
+                "syslog tls ca_bundle has no CERTIFICATE blocks".into(),
+            ));
+        }
+        for cert in certs {
+            roots.add(cert).map_err(|e| {
+                aegis_core::WafError::Config(format!(
+                    "syslog tls rustls rejected CA: {e}",
+                ))
+            })?;
+        }
+    } else {
+        // Webpki system roots — appropriate when the receiver
+        // is behind a public CA. Operators with private PKI
+        // configure `ca_bundle` instead.
+        roots.extend(
+            webpki_roots::TLS_SERVER_ROOTS
+                .iter()
+                .cloned(),
+        );
+    }
+
+    let client_cfg = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(tokio_rustls::TlsConnector::from(Arc::new(client_cfg)))
+}
+
+/// Pull the SNI / cert-validation hostname out of `cfg`.
+/// Explicit `server_name` wins; otherwise we strip the `:port`
+/// suffix from `address`. IPv6 literals (with brackets) are
+/// passed through verbatim — rustls accepts them.
+fn derive_server_name(
+    cfg: &SyslogConfig,
+) -> aegis_core::Result<rustls_pki_types::ServerName<'static>> {
+    let raw = cfg
+        .server_name
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| host_from_address(&cfg.address));
+    rustls_pki_types::ServerName::try_from(raw.clone()).map_err(|e| {
+        aegis_core::WafError::Config(format!(
+            "syslog tls server_name {raw} invalid: {e}",
+        ))
+    })
+}
+
+fn host_from_address(addr: &str) -> String {
+    // IPv6 literal: `[::1]:514` → `[::1]`. Strip the trailing
+    // `:port` while preserving brackets.
+    if let Some(close) = addr.find(']') {
+        return addr[..=close].to_string();
+    }
+    match addr.rsplit_once(':') {
+        Some((host, _)) => host.to_string(),
+        None => addr.to_string(),
+    }
+}
+
+/// HACK-T5 TLS — TCP connect + rustls handshake. Returns a
+/// negotiated stream ready for `write_all`.
+async fn tls_connect(
+    address: &str,
+    connector: &tokio_rustls::TlsConnector,
+    server_name: &rustls_pki_types::ServerName<'static>,
+) -> aegis_core::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let tcp = TcpStream::connect(address).await.map_err(|e| {
+        aegis_core::WafError::Other(format!(
+            "syslog tls tcp connect to {address} failed: {e}",
+        ))
+    })?;
+    connector
+        .connect(server_name.clone(), tcp)
+        .await
+        .map_err(|e| {
+            aegis_core::WafError::Other(format!(
+                "syslog tls handshake to {address} failed: {e}",
+            ))
+        })
 }
 
 /// Spawnable forwarder task — subscribes to the bus and
@@ -502,5 +685,210 @@ mod tests {
         let sink = SyslogSink::connect(cfg).await.unwrap();
         let result = sink.send(&detection_event()).await;
         assert!(result.is_err(), "expected send to fail with no listener");
+    }
+
+    // ---------------- HACK-T5 TLS ----------------
+
+    #[test]
+    fn host_from_address_strips_port() {
+        assert_eq!(host_from_address("syslog.example.com:6514"), "syslog.example.com");
+        assert_eq!(host_from_address("10.0.0.5:514"), "10.0.0.5");
+        // No port → unchanged.
+        assert_eq!(host_from_address("syslog"), "syslog");
+    }
+
+    #[test]
+    fn host_from_address_preserves_ipv6_brackets() {
+        assert_eq!(host_from_address("[::1]:6514"), "[::1]");
+        assert_eq!(host_from_address("[2001:db8::1]:6514"), "[2001:db8::1]");
+    }
+
+    #[test]
+    fn derive_server_name_explicit_field_wins() {
+        let cfg = SyslogConfig {
+            address: "10.0.0.5:6514".into(),
+            transport: SyslogTransport::Tls,
+            server_name: Some("syslog.internal.example.com".into()),
+            ..Default::default()
+        };
+        let sn = derive_server_name(&cfg).unwrap();
+        // ServerName::Dns variant → display matches.
+        let dns_str = format!("{sn:?}");
+        assert!(
+            dns_str.contains("syslog.internal.example.com"),
+            "expected DNS name in {dns_str}",
+        );
+    }
+
+    #[test]
+    fn derive_server_name_falls_back_to_address_host() {
+        let cfg = SyslogConfig {
+            address: "syslog.example.com:6514".into(),
+            transport: SyslogTransport::Tls,
+            server_name: None,
+            ..Default::default()
+        };
+        let sn = derive_server_name(&cfg).unwrap();
+        let dns_str = format!("{sn:?}");
+        assert!(dns_str.contains("syslog.example.com"));
+    }
+
+    #[test]
+    fn build_tls_connector_uses_webpki_roots_when_no_ca_bundle() {
+        // Connector must build cleanly without a configured
+        // ca_bundle — webpki roots are bundled into the
+        // `webpki-roots` crate.
+        let cfg = SyslogConfig {
+            transport: SyslogTransport::Tls,
+            ca_bundle: None,
+            ..Default::default()
+        };
+        // `TlsConnector` doesn't impl Debug, so we can't use
+        // `.expect(...)` directly; check the variant instead.
+        assert!(
+            build_tls_connector(&cfg).is_ok(),
+            "webpki roots connector must build",
+        );
+    }
+
+    #[test]
+    fn build_tls_connector_rejects_missing_ca_bundle() {
+        let cfg = SyslogConfig {
+            transport: SyslogTransport::Tls,
+            ca_bundle: Some(std::path::PathBuf::from("/no/such/ca.pem")),
+            ..Default::default()
+        };
+        let err = match build_tls_connector(&cfg) {
+            Err(e) => e,
+            Ok(_) => panic!("expected ca_bundle path error"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/no/such/ca.pem"),
+            "error must surface bundle path: {msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn tls_send_round_trips_to_self_signed_loopback_listener() {
+        // Issue a self-signed cert for `localhost`, run a
+        // tokio_rustls server on it, write the CA into a
+        // tempfile, configure the sink to trust it via
+        // `ca_bundle`, and verify the receiver got a
+        // CEF-formatted line.
+        use std::io::Write;
+        use rustls_pki_types::CertificateDer;
+        use tokio::io::AsyncReadExt;
+
+        // 1. Generate self-signed CA + leaf.
+        let mut ca_params =
+            rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        let leaf_params =
+            rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
+
+        // Write the CA pem to a tempfile so the sink can
+        // load it via the `ca_bundle` config knob.
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca.pem");
+        let mut f = std::fs::File::create(&ca_path).unwrap();
+        f.write_all(ca_cert.pem().as_bytes()).unwrap();
+        f.sync_all().unwrap();
+
+        // 2. Build the rustls server config with the leaf
+        // and stand up a TLS listener.
+        // Install crypto provider for the server side.
+        static SERVER_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        SERVER_INIT.get_or_init(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+
+        let leaf_chain: Vec<CertificateDer<'static>> =
+            vec![leaf_cert.der().clone()];
+        let leaf_priv = rustls_pki_types::PrivateKeyDer::Pkcs8(
+            rustls_pki_types::PrivatePkcs8KeyDer::from(leaf_key.serialize_der()),
+        );
+        let server_cfg = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(leaf_chain, leaf_priv)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_cfg));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let recv_handle = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut tls = acceptor.accept(sock).await.unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                match tls.read(&mut tmp).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        if buf.contains(&b'\n') {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            String::from_utf8(buf).unwrap()
+        });
+
+        // 3. Build the syslog sink as a TLS client trusting
+        // our CA, send one event, and verify the receiver
+        // got the framed line.
+        let cfg = SyslogConfig {
+            address: addr.to_string(),
+            transport: SyslogTransport::Tls,
+            format: SyslogFormat::Cef,
+            ca_bundle: Some(ca_path),
+            // Override SNI to `localhost` because the leaf's
+            // SAN is `localhost` but the address is
+            // `127.0.0.1:NNN`.
+            server_name: Some("localhost".into()),
+            ..Default::default()
+        };
+        let sink = SyslogSink::connect(cfg).await.expect("tls handshake");
+        sink.send(&detection_event()).await.expect("send");
+
+        let received = tokio::time::timeout(Duration::from_secs(3), recv_handle)
+            .await
+            .expect("tls recv timed out")
+            .unwrap();
+        assert!(
+            received.starts_with("CEF:0|Aegis|"),
+            "expected CEF header in {received}",
+        );
+        assert!(received.ends_with('\n'));
+
+        // Keep tempdir alive until end of test.
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_failure_against_nothing_does_not_panic() {
+        // No listener at the address. Initial handshake fails;
+        // sink is left disconnected with `stream: None`. First
+        // `send` returns Err (the forward task can log + continue).
+        let cfg = SyslogConfig {
+            address: "127.0.0.1:1".into(),
+            transport: SyslogTransport::Tls,
+            format: SyslogFormat::Rfc5424,
+            ca_bundle: None,
+            ..Default::default()
+        };
+        let sink = SyslogSink::connect(cfg).await.unwrap();
+        let result = sink.send(&detection_event()).await;
+        assert!(
+            result.is_err(),
+            "expected tls send to fail with no listener",
+        );
     }
 }

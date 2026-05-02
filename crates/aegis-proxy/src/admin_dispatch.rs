@@ -39,10 +39,11 @@ use crate::admin_login::{handle_admin_login, handle_admin_logout};
 use crate::admin_mutate::{
     handle_admin_drain, handle_alert_ack, handle_alert_receiver_delete,
     handle_alert_receiver_test, handle_alert_receivers_put, handle_detectors_put,
-    handle_loadmode_put, handle_logging_put, handle_mode_put, handle_pool_delete,
-    handle_pool_upsert, handle_risk_reset, handle_risk_thresholds_put,
-    handle_rules_delete, handle_rules_post, handle_rules_put, handle_rules_toggle,
-    handle_upstreams_config_put,
+    handle_loadmode_put, handle_logging_put, handle_mode_put,
+    handle_mtls_sans_delete, handle_mtls_sans_put, handle_mtls_sans_test,
+    handle_pool_delete, handle_pool_upsert, handle_risk_reset,
+    handle_risk_thresholds_put, handle_rules_delete, handle_rules_post,
+    handle_rules_put, handle_rules_toggle, handle_upstreams_config_put,
 };
 use crate::responses::{json_body_response, json_response};
 
@@ -222,7 +223,132 @@ pub(crate) async fn handle_admin_request(
         return handle_simulate(req, services).await;
     }
 
+    // HACK-T4 rollback (deferred follow-up): re-applies the
+    // captured `before` state of an audit-mutated change.
+    // POST /api/config/versions/{seq}/rollback. v1 supports
+    // `mode_set` only — see `aegis-control::api::rollback`.
+    if method == hyper::Method::POST {
+        if let Some(rest) = path.strip_prefix("/api/config/versions/") {
+            if let Some(seq_str) = rest.strip_suffix("/rollback") {
+                if let Ok(seq) = seq_str.parse::<u64>() {
+                    return handle_rollback(req, seq, services).await;
+                }
+            }
+        }
+    }
+
+    // MTLS-T7 — Allowed SAN allowlist mutations. Audit-mutated;
+    // CSRF-gated. Three handlers:
+    //   PUT    /api/mtls/sans              whole-list replace
+    //   DELETE /api/mtls/sans/{san}        single remove
+    //   POST   /api/mtls/sans/{san}/test   synthetic admit check
+    if method == hyper::Method::PUT && path == "/api/mtls/sans" {
+        return handle_mtls_sans_put(req, services).await;
+    }
+    if let Some(suffix) = path.strip_prefix("/api/mtls/sans/") {
+        if method == hyper::Method::POST {
+            if let Some(san) = suffix.strip_suffix("/test") {
+                if !san.is_empty() && !san.contains('/') {
+                    return handle_mtls_sans_test(req, san, services).await;
+                }
+            }
+        }
+        if method == hyper::Method::DELETE
+            && !suffix.is_empty()
+            && !suffix.contains('/')
+        {
+            return handle_mtls_sans_delete(req, suffix, services).await;
+        }
+    }
+
     admin_router(req, cfg, readiness, startup, metrics, services)
+}
+
+/// HACK-T4 rollback — body for
+/// `POST /api/config/versions/{seq}/rollback`.
+///
+/// Calls into `aegis-control::api::rollback` to re-apply the
+/// captured `before` state, then emits a new Admin audit event
+/// (`<orig>_rollback`) so the chain records the rollback.
+/// Errors map to HTTP statuses: NotFound → 404; the rest
+/// (NotAdminClass / NotRollbackable / MissingBefore /
+/// ApplyFailed) → 422 with an operator-readable body.
+async fn handle_rollback(
+    _req: hyper::Request<hyper::body::Incoming>,
+    seq: u64,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::rollback::{rollback_for_seq, RollbackError};
+
+    let Some(rt) = services.interop.as_ref() else {
+        return json_response(
+            503,
+            &serde_json::json!({
+                "error": "rollback unavailable — interop runtime not wired",
+            }),
+        );
+    };
+
+    match rollback_for_seq(&services.audit_ring, seq, &rt.modes) {
+        Ok(outcome) => {
+            // Audit-emit the rollback itself so the chain captures
+            // it. The new event is `<orig>_rollback` with
+            // `before` / `after` carrying the diff that was
+            // applied (NOT the original event's diff —
+            // operators reading the chain see the rollback
+            // direction, not the original change direction).
+            let rollback_action = format!("{}_rollback", outcome.action);
+            services.bus.emit(aegis_core::audit::AuditEvent {
+                schema_version: 1,
+                ts: chrono::Utc::now(),
+                request_id: String::new(),
+                class: aegis_core::audit::AuditClass::Admin,
+                tenant_id: None,
+                tier: None,
+                action: rollback_action,
+                reason: format!(
+                    "operator rolled back to audit version {}",
+                    outcome.rolled_back_to_seq,
+                ),
+                client_ip: String::new(),
+                route_id: None,
+                rule_id: None,
+                risk_score: None,
+                fields: serde_json::json!({
+                    "actor": "admin",
+                    "rollback_to_seq": outcome.rolled_back_to_seq,
+                    "diff": {
+                        "before": outcome.before.clone(),
+                        "after":  outcome.after.clone(),
+                    },
+                    "resource": "/api/config/versions",
+                    "source": "dashboard",
+                }),
+            });
+
+            let body = serde_json::to_string(&serde_json::json!({
+                "ok": true,
+                "rolled_back_to_seq": outcome.rolled_back_to_seq,
+                "action": outcome.action,
+                "before": outcome.before,
+                "after": outcome.after,
+            }))
+            .unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "private, no-store")
+        }
+        Err(RollbackError::NotFound(s)) => json_response(
+            404,
+            &serde_json::json!({
+                "error": format!("audit version {s} not found"),
+            }),
+        ),
+        Err(e) => json_response(
+            422,
+            &serde_json::json!({
+                "error": e.to_string(),
+            }),
+        ),
+    }
 }
 
 /// HACK-T3 — body for `POST /api/rules/simulate`.

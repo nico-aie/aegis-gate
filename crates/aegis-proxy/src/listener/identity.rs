@@ -58,6 +58,45 @@ pub fn extract_identity_from_peer_certs(
     peer_certs: Option<&[rustls_pki_types::CertificateDer<'static>]>,
     chain_ok: bool,
 ) -> ClientIdentity {
+    extract_identity_with_allowlist(peer_certs, chain_ok, None)
+}
+
+/// MTLS-T7 — same as [`extract_identity_from_peer_certs`] but
+/// gates on the live SAN allowlist. When the store is `Some`
+/// AND non-empty AND the parsed SAN doesn't match any pattern,
+/// the result is downgraded to `ClientIdentity::Anonymous`
+/// (the verifier accepted the chain — we just narrowed the
+/// principal set). Empty store admits everything (back-compat).
+pub fn extract_identity_with_allowlist(
+    peer_certs: Option<&[rustls_pki_types::CertificateDer<'static>]>,
+    chain_ok: bool,
+    allowed_sans: Option<&aegis_control::api::mtls::AllowedSansStore>,
+) -> ClientIdentity {
+    let identity = extract_identity_inner(peer_certs, chain_ok);
+    match (&identity, allowed_sans) {
+        // Anonymous — nothing to gate.
+        (ClientIdentity::Anonymous, _) => identity,
+        // No allowlist configured — admit.
+        (_, None) => identity,
+        (_, Some(store)) => {
+            let principal = identity.principal().unwrap_or("");
+            if store.admits(principal) {
+                identity
+            } else {
+                tracing::debug!(
+                    principal = %principal,
+                    "client cert SAN not in allowlist; downgraded to Anonymous",
+                );
+                ClientIdentity::Anonymous
+            }
+        }
+    }
+}
+
+fn extract_identity_inner(
+    peer_certs: Option<&[rustls_pki_types::CertificateDer<'static>]>,
+    chain_ok: bool,
+) -> ClientIdentity {
     let leaf = match peer_certs.and_then(|certs| certs.first()) {
         Some(c) => c,
         None => return ClientIdentity::Anonymous,
@@ -464,5 +503,108 @@ mod tests {
         let bogus = vec![CertificateDer::from(vec![0u8; 8])];
         let id = extract_identity_from_peer_certs(Some(&bogus), true);
         assert_eq!(id, ClientIdentity::Anonymous);
+    }
+
+    // ---------------- MTLS-T7 — SAN allowlist gate ----------------
+
+    #[test]
+    fn allowlist_none_passes_through() {
+        // Back-compat: extract_identity_from_peer_certs goes
+        // through the new path with allowlist = None and must
+        // produce the same result.
+        let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
+            "svc.example.com".try_into().unwrap(),
+        )]);
+        let certs = der_to_certs(der);
+        let id = extract_identity_with_allowlist(Some(&certs), true, None);
+        match id {
+            ClientIdentity::Mtls { san, .. } => assert_eq!(san, "svc.example.com"),
+            other => panic!("expected Mtls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn allowlist_empty_admits_any_san() {
+        // Empty list = no gate. Same shape as `None`.
+        use aegis_control::api::mtls::AllowedSansStore;
+        let store = AllowedSansStore::from(Vec::<String>::new());
+        let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
+            "svc.example.com".try_into().unwrap(),
+        )]);
+        let certs = der_to_certs(der);
+        let id = extract_identity_with_allowlist(Some(&certs), true, Some(&store));
+        assert!(matches!(id, ClientIdentity::Mtls { .. }));
+    }
+
+    #[test]
+    fn allowlist_admits_matching_san() {
+        use aegis_control::api::mtls::AllowedSansStore;
+        let store = AllowedSansStore::from(vec!["svc.example.com".into()]);
+        let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
+            "svc.example.com".try_into().unwrap(),
+        )]);
+        let certs = der_to_certs(der);
+        let id = extract_identity_with_allowlist(Some(&certs), true, Some(&store));
+        match id {
+            ClientIdentity::Mtls { san, .. } => assert_eq!(san, "svc.example.com"),
+            other => panic!("expected Mtls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn allowlist_downgrades_unmatched_san_to_anonymous() {
+        use aegis_control::api::mtls::AllowedSansStore;
+        let store = AllowedSansStore::from(vec!["allowed.example.com".into()]);
+        let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
+            "rogue.example.com".try_into().unwrap(),
+        )]);
+        let certs = der_to_certs(der);
+        let id = extract_identity_with_allowlist(Some(&certs), true, Some(&store));
+        // Verifier accepted the chain (chain_ok = true) but
+        // the SAN isn't on the allowlist → Anonymous.
+        assert_eq!(id, ClientIdentity::Anonymous);
+    }
+
+    #[test]
+    fn allowlist_admits_wildcard_subdomain() {
+        use aegis_control::api::mtls::AllowedSansStore;
+        let store = AllowedSansStore::from(vec!["*.example.com".into()]);
+        let der = issue_leaf_with_sans(vec![rcgen::SanType::DnsName(
+            "svc.example.com".try_into().unwrap(),
+        )]);
+        let certs = der_to_certs(der);
+        let id = extract_identity_with_allowlist(Some(&certs), true, Some(&store));
+        assert!(matches!(id, ClientIdentity::Mtls { .. }));
+    }
+
+    #[test]
+    fn allowlist_with_anonymous_passes_through() {
+        // Anonymous identity has no SAN to match — the gate
+        // doesn't apply (skipping it would be a security bug
+        // by promoting Anonymous to Mtls). Result stays
+        // Anonymous regardless of the allowlist contents.
+        use aegis_control::api::mtls::AllowedSansStore;
+        let store = AllowedSansStore::from(vec!["anything".into()]);
+        let id = extract_identity_with_allowlist(None, false, Some(&store));
+        assert_eq!(id, ClientIdentity::Anonymous);
+    }
+
+    #[test]
+    fn allowlist_admits_spiffe_uri_on_match() {
+        use aegis_control::api::mtls::AllowedSansStore;
+        let store = AllowedSansStore::from(vec![
+            "spiffe://prod.example.com/payments-api".into(),
+        ]);
+        let der = issue_leaf_with_sans(vec![rcgen::SanType::URI(
+            "spiffe://prod.example.com/payments-api".try_into().unwrap(),
+        )]);
+        let certs = der_to_certs(der);
+        let id = extract_identity_with_allowlist(Some(&certs), true, Some(&store));
+        match id {
+            ClientIdentity::Spiffe { uri, .. } => {
+                assert_eq!(uri, "spiffe://prod.example.com/payments-api");
+            }
+            other => panic!("expected Spiffe, got {other:?}"),
+        }
     }
 }

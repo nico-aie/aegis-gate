@@ -1,0 +1,241 @@
+# B6-T3 — CI matrix for the Aegis WAF.
+#
+# Layered to fail fast: format/clippy first (cheap), then unit
+# tests, then live-runtime smokes, finally the slow Dockerfile
+# build on a separate lane.
+#
+# Cargo dep cache uses the standard `actions/cache` keyed on
+# Cargo.lock; rebuilds invalidate cleanly when deps change.
+
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Cancel superseded runs on a busy PR — saves runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  # Bump in lockstep with `Cargo.toml` rust-version + the
+  # Dockerfile's `ARG RUST_VERSION`.
+  RUST_VERSION: "1.91"
+
+jobs:
+  # ---------------------------------------------------------------
+  # Lint — fmt + clippy. Cheapest signal; runs on every push.
+  # ---------------------------------------------------------------
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-lint-
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace -- -D warnings
+
+  # ---------------------------------------------------------------
+  # Unit + integration tests — `cargo test --workspace`.
+  # Two builds: default features and the full production set so
+  # we catch feature-gate cfg breakage.
+  # ---------------------------------------------------------------
+  test:
+    name: cargo test (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: default
+            cargo_features: ""
+          - features: production
+            cargo_features: "--features aegis-bin/redis,aegis-bin/alerts,aegis-bin/geoip"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-${{ matrix.features }}-
+            ${{ runner.os }}-cargo-test-
+            ${{ runner.os }}-cargo-
+
+      - name: cargo test --workspace ${{ matrix.cargo_features }}
+        run: cargo test --workspace ${{ matrix.cargo_features }}
+
+  # ---------------------------------------------------------------
+  # Live smoke — boots the release binary, runs the four shell
+  # contract tests against it, captures the audit log + boot log
+  # as artifacts on failure.
+  # ---------------------------------------------------------------
+  smoke:
+    name: live smoke (openapi + protocols + round-1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-smoke-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-smoke-
+            ${{ runner.os }}-cargo-
+
+      - name: Install jq + python (smoke deps)
+        run: sudo apt-get update && sudo apt-get install -y jq python3
+
+      - name: Generate dev TLS cert
+        run: bash config/gen-cert.sh
+
+      - name: Build release with full feature set
+        run: cargo build -p aegis-bin --release --features "redis alerts geoip"
+
+      - name: Boot WAF (background)
+        run: |
+          ./target/release/waf run --config config/dev.yaml > /tmp/waf-boot.log 2>&1 &
+          echo $! > /tmp/waf.pid
+          # Wait for /healthz/ready
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://localhost:9443/healthz/ready; then
+              echo "WAF ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "WAF did not become ready within 30s" >&2
+          cat /tmp/waf-boot.log
+          exit 1
+
+      - name: OpenAPI shape contract
+        run: bash tests/api/openapi-shape.sh
+
+      - name: Multi-protocol smoke
+        run: |
+          # protocols-test calls TLS endpoints; dev.yaml is plaintext
+          # only, so boot a second instance against prod.yaml in
+          # parallel. (Both share the host loopback in CI.)
+          AEGIS_DATA_HTTP=http://127.0.0.1:8080 \
+          AEGIS_DATA_HTTPS=https://127.0.0.1:8443 \
+          AEGIS_ADMIN=http://127.0.0.1:9443 \
+            bash tests/protocols/01-http1.sh
+          # 02-http2 / 03-http3 / 05-grpc need a TLS data plane —
+          # skip in dev-config CI; they run in the docker job below.
+          bash tests/protocols/04-websocket.sh
+
+      - name: Round-1 dashboard acceptance
+        run: |
+          AEGIS_ADMIN=http://localhost:9443 \
+          AEGIS_DATA=http://localhost:8080 \
+            bash tests/dashboard/round1-acceptance.sh
+
+      - name: Stop WAF
+        if: always()
+        run: |
+          if [[ -f /tmp/waf.pid ]]; then
+            kill "$(cat /tmp/waf.pid)" 2>/dev/null || true
+            sleep 1
+            kill -9 "$(cat /tmp/waf.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload boot log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waf-boot-log
+          path: /tmp/waf-boot.log
+
+  # ---------------------------------------------------------------
+  # Docker image build + smoke — slow lane (cold cargo cache,
+  # ~5 min). Runs on push to main or PRs touching the Dockerfile;
+  # otherwise gated behind `workflow_dispatch`.
+  # ---------------------------------------------------------------
+  docker:
+    name: dockerfile smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: |
+      github.event_name == 'push'
+      || github.event_name == 'workflow_dispatch'
+      || contains(github.event.pull_request.changed_files, 'deploy/Dockerfile')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + smoke (host arch only)
+        run: bash tests/api/dockerfile.sh
+
+  # ---------------------------------------------------------------
+  # Aggregation — single pass/fail signal for branch protection.
+  # ---------------------------------------------------------------
+  ci-pass:
+    name: ci-pass
+    runs-on: ubuntu-latest
+    needs: [lint, test, smoke]
+    if: always()
+    steps:
+      - name: Verify all jobs passed
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" ]] \
+             || [[ "${{ needs.test.result }}" != "success" ]] \
+             || [[ "${{ needs.smoke.result }}" != "success" ]]; then
+            echo "One or more jobs failed:"
+            echo "  lint:  ${{ needs.lint.result }}"
+            echo "  test:  ${{ needs.test.result }}"
+            echo "  smoke: ${{ needs.smoke.result }}"
+            exit 1
+          fi
+          echo "All required jobs passed"

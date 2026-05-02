@@ -169,6 +169,15 @@ pub struct DashboardServices {
     /// returns 404.
     pub detectors:
         Option<std::sync::Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>>,
+    /// MTLS-T7 — live, mutable allowed-SAN list. The boot path
+    /// seeds it from `cfg.tls.client_auth.allowed_sans`; the
+    /// audit-mutated `PUT/DELETE /api/mtls/sans` handlers update
+    /// it in place. The data-plane identity-extraction call
+    /// reads through this store on every TLS handshake to gate
+    /// admission. `None` for test bundles → identity extraction
+    /// behaves as before (no allowlist gate).
+    pub allowed_sans:
+        Option<crate::api::mtls::AllowedSansStore>,
 }
 
 impl DashboardServices {
@@ -400,6 +409,9 @@ impl DashboardServices {
                 // HACK-T3 — wired by the proxy boot path. Until then
                 // `/api/rules/simulate` returns 503.
                 detectors: None,
+                // MTLS-T7 — wired by the proxy boot path. Until then
+                // identity extraction skips the allowlist gate.
+                allowed_sans: None,
             },
             drain,
         )

@@ -1,0 +1,53 @@
+# Build context filter for `deploy/Dockerfile`.
+#
+# The point: keep the build context small (~10 MB instead of
+# ~10 GB) so `docker build` is fast and reproducible.
+
+# Cargo build outputs — rebuild fresh inside the image
+target/
+**/target/
+
+# Local dev tools
+node_modules/
+package-lock.json
+*.log
+*.pid
+
+# Local generated certs + audit logs — operator supplies their own
+config/certs/
+waf_audit.log
+*.ndjson
+
+# Editor + OS noise
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
+
+# Tests + benches don't need to be in the runtime image
+benches/output/
+tests/results/
+tests/dashboard/screenshots/
+
+# Git metadata only — a 50 MB .git slows the build for nothing.
+# Builders that need the SHA at compile time should pass it as
+# `--build-arg BUILD_SHA="$(git rev-parse HEAD)"`.
+.git/
+
+# CI + dev infra
+.github/
+deploy/docker-compose.dev.yml
+deploy/docker-compose.test.yml
+deploy/etcd/
+deploy/pebble/
+deploy/prometheus/
+
+# Don't recursively copy the Dockerfile into itself
+deploy/Dockerfile
+deploy/Dockerfile.*
+
+# Docs not needed at runtime — the image carries the binary, not the README.
+Hackathon_Doc/
+docs/CODEMAPS/
+plans/archive/

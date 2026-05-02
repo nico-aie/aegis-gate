@@ -412,6 +412,24 @@ pub(crate) async fn admin_accept_loop(
     // runs so `/api/rules/simulate` can evaluate against an
     // identical chain.
     services.detectors = Some(detectors);
+    // MTLS-T7 — Allowed SAN allowlist. Seeded from
+    // `cfg.tls.client_auth.allowed_sans` (empty when client-auth
+    // is disabled or no SANs were configured). The store is hot-
+    // reloadable: dashboard PUT/DELETE handlers call
+    // `store.store(..)` / `store.remove(..)` to rotate it without
+    // a restart, and the listener identity extractor consults it
+    // through `extract_identity_with_allowlist`.
+    {
+        let initial: Vec<String> = cfg
+            .tls
+            .as_ref()
+            .and_then(|t| t.client_auth.as_ref())
+            .map(|ca| ca.allowed_sans.clone())
+            .unwrap_or_default();
+        services.allowed_sans = Some(
+            aegis_control::api::mtls::AllowedSansStore::from(initial),
+        );
+    }
 
     // DURABLE-T1 — audit chain durability. For each Jsonl sink the
     // operator configured under `cfg.audit.sinks`, open a real
@@ -507,6 +525,8 @@ pub(crate) async fn admin_accept_loop(
                 format,
                 facility,
                 app_name,
+                ca_bundle,
+                server_name,
             } = entry
             {
                 let cfg_syslog = SyslogConfig {
@@ -515,6 +535,8 @@ pub(crate) async fn admin_accept_loop(
                     format: *format,
                     facility: *facility,
                     app_name: app_name.clone(),
+                    ca_bundle: ca_bundle.clone(),
+                    server_name: server_name.clone(),
                 };
                 match SyslogSink::connect(cfg_syslog.clone()).await {
                     Ok(sink) => {

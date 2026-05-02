@@ -72,7 +72,51 @@
   **CC-T3** (i18n / OpenAPI / docs / acceptance round-trip).
   **Phase B B6 packaging** still has B6-T4 (HSM) + B6-T5
   (fd-pass) deferred. **Scaling config (SC-T\*)** parked.
-- **Latest activity:** **HACK-T5 (Tier-C bonus: Syslog/CEF
+- **Latest activity:** **HACK-T5 TLS transport (deferred
+  follow-up) closed 2026-05-02.** Closes the last
+  explicitly-deferred item from the HACK-T track. Audit
+  events can now traverse untrusted networks
+  (cloud → on-prem SIEM, multi-region → central log lake)
+  without exposing the audit stream.
+  - **Schema**: `SyslogTransport` gains a `Tls` variant.
+    `AuditSinkConfig::Syslog` gains `ca_bundle:
+    Option<PathBuf>` (None → webpki system roots, Some →
+    private CA PEM) and `server_name: Option<String>`
+    (None → host part of `address`).
+  - **Sink**: new `TransportState::Tls { stream, connector,
+    server_name }` variant. Connect path runs
+    `TcpStream::connect` then `tokio_rustls::TlsConnector::connect`;
+    the `TlsConnector` is built once and reused across
+    reconnects. Send writes newline-framed RFC 5424 / CEF
+    payloads to the negotiated stream; failure drops the
+    stream and triggers lazy reconnect on the next event
+    (same contract as plain TCP). `webpki-roots` provides
+    the default trust; private PKI configures `ca_bundle:`.
+  - **`build_tls_connector`** + `derive_server_name` +
+    `host_from_address` + `tls_connect` — pure helpers,
+    each unit-tested.
+  - **Cargo**: aegis-control gains `rustls = { features =
+    ["ring"] }`, `tokio-rustls`, `webpki-roots` (workspace
+    versions). Adds the `ring` crypto provider once per
+    process via a `OnceLock`.
+  - **Tests** (+8): host_from_address strips port, IPv6
+    brackets preserved, derive_server_name explicit field
+    wins, falls back to address host, build_tls_connector
+    with webpki roots, build_tls_connector rejects missing
+    ca_bundle path with operator-readable error,
+    **`tls_send_round_trips_to_self_signed_loopback_listener`**
+    (issues self-signed CA + leaf via rcgen, runs a real
+    `tokio_rustls::TlsAcceptor`, configures the sink with
+    the CA pem written to a tempdir, sends one event,
+    verifies the receiver got the CEF-framed line),
+    tls_handshake_failure does not panic.
+  - **Backwards-compatible**: existing UDP / TCP YAML
+    keeps working unchanged. The new fields all default to
+    None.
+  - aegis-control 889 → **897** lib tests; production
+    build clean.
+
+- **Earlier activity:** **HACK-T5 (Tier-C bonus: Syslog/CEF
   audit forwarder) closed 2026-05-02.** **Hackathon-
   readiness track is now complete** — all five slices
   (HACK-T1..T5) shipped; one feature claimed in each of
@@ -826,9 +870,166 @@
 
 ## Last Completed
 
-**Task:** **PRE-T6 (extract `admin_mutate.rs`)** — Sixth slice
-of the proxy refactor + **README rewrite**. Pure structural
-extraction, **zero behaviour change**.
+**Task:** **Followups bundle: HACK-T4 rollback action +
+MTLS-T7 Console SAN allowlist.** Two cohesive Console
+mutation surfaces wrapping up Tier-B Config history with a
+one-click undo and the deferred MTLS-T7 SAN allowlist
+management with hot-reloadable allowlist + UI.
+
+### What landed (Part A — HACK-T4 rollback action)
+
+- New `aegis-control/src/api/rollback.rs` (~280 LOC + 8 tests):
+  `rollback_for_seq(audit_ring, seq, mode_store) ->
+  Result<RollbackOutcome, RollbackError>` — looks up the audit
+  event by seq, asserts class=Admin and action ∈
+  `ROLLBACKABLE_ACTIONS` (v1: `["mode_set"]`), reads
+  `event.fields.diff.before.mode`, calls
+  `mode_store.set_all(target_mode)`, returns
+  `{ rolled_back_to_seq, action, before, after }`.
+- `RollbackError` variants: `NotFound(u64)` / `NotAdminClass`
+  / `NotRollbackable(action)` / `MissingBefore` /
+  `ApplyFailed(reason)` — each carries a short operator-
+  readable `Display`.
+- `aegis-proxy::admin_dispatch::handle_rollback` async handler
+  for `POST /api/config/versions/{seq}/rollback`. Calls
+  `rollback_for_seq`, then re-emits the rollback as a new
+  Admin audit event with `action: "{orig}_rollback"`,
+  `fields: { rollback_to_seq, diff: { before, after }, ... }`
+  so the chain captures the rollback direction (not the
+  original change direction). Errors map: NotFound → 404; the
+  rest → 422 with operator-readable body.
+- Dashboard: `data.jsx` adds `configRollback(seq)` + the
+  `ROLLBACKABLE_ACTIONS` const (mirrors the Rust list);
+  `pages.jsx::ConfigVersionsCard` gains a Rollback button on
+  rollback-able rows with two-step confirm modal showing the
+  `before` state preview.
+- **Live verified (run-18):** drove `PUT /api/mode log_only`,
+  then `POST /api/config/versions/1/rollback` returned
+  `{"ok":true,"action":"mode_set","before":{"mode":"enforce"},
+  "after":{"mode":"log_only"},"rolled_back_to_seq":1}`;
+  `/api/mode` confirmed back to `enforce`; audit chain showed
+  seq #2 with `action: "mode_set_rollback"` and
+  `rollback_to_seq: 1`.
+
+### What landed (Part B — MTLS-T7 Console SAN allowlist)
+
+- New `AllowedSansStore` in `aegis-control/src/api/mtls.rs`
+  with `Arc<ArcSwap<Vec<String>>>` + `current() / store(new) /
+  remove(san) -> bool / admits(san) -> bool /
+  matched_pattern(san) -> Option<String>` and the pure
+  `san_matches(pattern, san)` helper implementing RFC 6125
+  §6.4.3 wildcard semantics (`*.example.com` matches a single
+  label only, NOT `example.com` and NOT `a.b.example.com`).
+- `aegis-proxy/src/listener/identity.rs::extract_identity_with_allowlist`
+  takes an `Option<&AllowedSansStore>` and downgrades any
+  cert whose SANs don't match the (non-empty) allowlist to
+  `ClientIdentity::Anonymous`. Empty allowlist = admit
+  anything (back-compat). Original
+  `extract_identity_from_peer_certs` now delegates to the new
+  function with `None`.
+- `DashboardServices.allowed_sans:
+  Option<AllowedSansStore>` field; `accept.rs` seeds it from
+  `cfg.tls.client_auth.allowed_sans` (empty fallback) so the
+  three Console handlers below have a live store regardless
+  of cfg shape.
+- Three new audit-mutated handlers in
+  `aegis-proxy/src/admin_mutate.rs`:
+  - `handle_mtls_sans_put` — `PUT /api/mtls/sans` with
+    `{ allowed: [...] }` body. Validates each entry (non-
+    empty, no whitespace, single wildcard restricted to the
+    leftmost label, no nested `*`); deduplicates.
+    Action: `mtls_sans_set`.
+  - `handle_mtls_sans_delete` — `DELETE
+    /api/mtls/sans/{san}`. Returns 422 `validation` when SAN
+    not present. Action: `mtls_sans_removed`.
+  - `handle_mtls_sans_test` — `POST /api/mtls/sans/{san}/test`.
+    Read-only synthetic admit check returning
+    `{ admitted, matched }` — operators can verify wildcard
+    behaviour without making a real mTLS handshake. No
+    audit emit (read-side).
+- Read endpoint `GET /api/mtls/sans` (in `admin_get.rs`)
+  returns `{ allowed: [...] }`.
+- Dashboard: `data.jsx` adds `useMtlsSansApi`, `mtlsSansPut`,
+  `mtlsSansDelete`, `mtlsSansTest`. New `MtlsSansCard`
+  component on Settings page (between `ConfigVersionsCard`
+  and Shadow Mode card) with: list of patterns + per-row
+  "Copy to test" / "Remove" buttons, "Add SAN" inline input,
+  inline "Test admit" widget showing matched pattern as a pill.
+- **Live verified (run-mtls-sans, 2026-05-02):**
+  - `GET /api/mtls/sans` empty → `PUT` 3 entries
+    (`svc.example.com`, `*.api.example.com`,
+    `spiffe://example.org/svc`) → `GET` confirms.
+  - Test endpoint matrix: exact match works; wildcard
+    single-label match works (`thing.api.example.com` →
+    `*.api.example.com`); wildcard multi-label correctly
+    rejected (`deep.thing.api.example.com` not admitted);
+    unknown SAN rejected.
+  - `DELETE svc.example.com` succeeds; `DELETE missing.example.com`
+    returns 400 validation.
+  - Audit chain captured `mtls_sans_set` (seq #1) and
+    `mtls_sans_removed` (seq #2) with full before/after diff.
+
+### Test counts
+
+- aegis-control: **15/15** mtls.rs tests pass (6 new
+  `AllowedSansStore` tests).
+- aegis-proxy: **23/23** identity tests pass (7 new
+  allowlist tests).
+- New rollback module: **8/8** tests pass.
+- Workspace sweep: **all green**, 0 failures.
+- Production build: clean (`cargo build --release -p
+  aegis-bin`).
+
+### Files touched
+
+- new: `crates/aegis-control/src/api/rollback.rs` (~280 LOC,
+  8 tests)
+- new: `plans/followups-rollback-and-sans.md` (status now ✅
+  DONE)
+- modified: `crates/aegis-control/src/api/mtls.rs` (+
+  AllowedSansStore + 6 tests)
+- modified: `crates/aegis-control/src/api/mod.rs` (export
+  `rollback`)
+- modified: `crates/aegis-control/src/dashboard_services.rs`
+  (+ `allowed_sans` field)
+- modified: `crates/aegis-proxy/src/listener/identity.rs`
+  (+ `extract_identity_with_allowlist` + 7 tests)
+- modified: `crates/aegis-proxy/src/admin_mutate.rs` (+ 3
+  handlers, ~210 LOC)
+- modified: `crates/aegis-proxy/src/admin_get.rs` (+ GET
+  arm)
+- modified: `crates/aegis-proxy/src/admin_dispatch.rs` (+ 4
+  dispatch arms, + handle_rollback)
+- modified: `crates/aegis-proxy/src/accept.rs` (seed
+  `services.allowed_sans` from cfg)
+- modified:
+  `crates/aegis-control/assets/dashboard/src/data.jsx`
+  (+ rollback + SAN helpers)
+- modified:
+  `crates/aegis-control/assets/dashboard/src/pages.jsx`
+  (+ MtlsSansCard, + Rollback button)
+- bundle rebuilt (~210 KB).
+
+### Deferred (carry-overs)
+
+- Per-handler inverse-apply for additional rollback targets
+  (rule_upserted, detector mask, blacklist/whitelist add/
+  remove, threshold changes). v1 is `mode_set` only.
+- Persisting the SAN allowlist back to disk: today edits
+  live in ArcSwap and survive until restart; persistence
+  via cfg-source writeback is a follow-up (matches the
+  upstream-pools and alert-receivers pattern that already
+  carries the same gap).
+- Rotating the AllowedSansStore from cfg-watcher is
+  intentionally NOT done; once an operator edits via UI,
+  the watcher should NOT clobber. Deferred policy decision.
+
+---
+
+### Earlier — PRE-T6 (extract `admin_mutate.rs`)
+
+Sixth slice of the proxy refactor + **README rewrite**. Pure
+structural extraction, **zero behaviour change**.
 
 ### What landed
 
@@ -938,15 +1139,24 @@ OpenAPI shape + 8/8 round-1 acceptance).
   forwarder: UDP/TCP transports + RFC 5424/CEF formats;
   one task per `AuditSinkConfig::Syslog` entry. **HACK-T
   track complete.**
-- **HACK-T4 follow-up**: actual rollback action (per-
-  handler undo logic). Each mutation handler gains a
-  paired inverse-apply path; the Settings card sprouts a
-  "Rollback to #N" button (two-step confirm).
+- **HACK-T4 follow-up rollback action** ✅ shipped 2026-05-02
+  — `POST /api/config/versions/{seq}/rollback` for `mode_set`
+  (v1); UI Rollback button on `ConfigVersionsCard` with two-
+  step confirm. See `plans/followups-rollback-and-sans.md`.
+  Per-handler inverse-apply for additional rollback targets
+  (rule_upserted, detector mask, blacklist, etc.) is queued
+  as future polish.
+- **MTLS-T7 (SAN allowlist)** ✅ shipped 2026-05-02 — live
+  `AllowedSansStore` + GET/PUT/DELETE/test API + dashboard
+  card on Settings page. Identity extraction now downgrades
+  non-matching SANs to Anonymous. Wildcard semantics per RFC
+  6125 §6.4.3 (single label only).
 
 **Queued (paused) tracks:**
-- **MTLS-T7..T11** — Console mutation surfaces (mode
-  toggle, SAN allowlist, break-glass, CA upload, per-route
-  editor).
+- **MTLS-T8..T11** — remaining Console mutation surfaces
+  (break-glass, CA upload, per-route editor). The mode
+  toggle is already shipped via CI-T6; T7 SAN allowlist is
+  shipped above.
 - **Phase B B6-T2** (Helm) + **B6-T3** (CI). T4 (HSM) +
   T5 (fd-pass) deferred.
 - **SC-T4** — `tokio_unstable` runtime metrics → Prometheus
@@ -973,6 +1183,8 @@ Last five tasks, compressed. For full detail see git history.
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-05-02 | **Followups: HACK-T4 rollback action + MTLS-T7 Console SAN allowlist** | Two cohesive Console mutation surfaces: (a) rollback dispatcher (`aegis-control/src/api/rollback.rs`, ~280 LOC + 8 tests) + `POST /api/config/versions/{seq}/rollback` handler that re-applies captured `before` state for `mode_set` (v1) and emits `<orig>_rollback` audit event; UI Rollback button on `ConfigVersionsCard` with two-step confirm. (b) `AllowedSansStore` (ArcSwap-backed; RFC 6125 §6.4.3 single-label wildcard) + `extract_identity_with_allowlist` that downgrades non-matching SANs to Anonymous + 4 new endpoints (`GET/PUT /api/mtls/sans`, `DELETE /api/mtls/sans/{san}`, `POST /api/mtls/sans/{san}/test`); UI `MtlsSansCard` on Settings page with add/remove/test workflow. **Live verified:** rollback round-trip drove mode toggle then rolled back with audit chain confirming `mode_set_rollback` at seq #2; SAN allowlist GET-empty → PUT 3 → test admit matrix (exact / wildcard single-label match / wildcard multi-label rejected / unknown rejected) → DELETE one → audit captured `mtls_sans_set` + `mtls_sans_removed` with full before/after diff. **Tests** (+21 net): 8 rollback dispatcher + 6 AllowedSansStore + 7 identity-allowlist; workspace sweep all green; production build clean (~210 KB bundle). Closes both deferred follow-ups from HACK-T4 + MTLS-T7. |
+| 2026-05-02 | **HACK-T5 TLS transport (deferred follow-up)** Audit forwarder over TLS | Closes the last explicit deferral from the HACK-T track. `SyslogTransport` gains `Tls`; `AuditSinkConfig::Syslog` gains `ca_bundle: Option<PathBuf>` (None = webpki system roots) + `server_name: Option<String>` (None = host part of address). New `TransportState::Tls { stream, connector, server_name }` variant uses `tokio_rustls::TlsConnector` to wrap the TCP stream after handshake; reconnect on send failure rebuilds the TLS session with the same connector + SNI. `build_tls_connector` + `derive_server_name` + `host_from_address` + `tls_connect` pure helpers each unit-tested. aegis-control Cargo adds `rustls = { features = ["ring"] }`, `tokio-rustls`, `webpki-roots` (workspace versions). **Tests** (+8): IPv6 + port-strip in `host_from_address`, explicit `server_name` wins, fallback to address host, webpki-roots connector build, missing-ca_bundle error surfaces path, **TLS round-trip** (rcgen self-signed CA + leaf, real `tokio_rustls::TlsAcceptor` server, sink configured with the CA pem in a tempdir, sends event, verifies receiver got the CEF-framed line), TLS handshake failure does not panic. Existing UDP/TCP YAML keeps working unchanged. aegis-control 889 → **897** lib tests; production build clean. |
 | 2026-05-02 | **HACK-T5 (Tier-C bonus: Syslog/CEF audit forwarder)** Closes the hackathon-readiness track | Module rewrite of `aegis-control/src/audit/sinks/syslog.rs` (~440 LOC + 11 unit tests) — was a stub, now actually sends. New `SyslogSink::connect(cfg)` async constructor binds a UDP socket OR opens TCP; `send` per-event with lazy TCP reconnect. Schema extension on `AuditSinkConfig::Syslog`: `transport` (Udp/Tcp) + `format` (Rfc5424/Cef) + `facility` + `app_name` (defaults preserve old `address`-only YAML). RFC 5424 framing computes PRI from facility × 8 + severity (Detection=4, Admin/Access=6, System=5). CEF framing: `CEF:0\|Aegis\|aegis-waf\|0.1.0\|<class>\|<action>\|<sev>\|<ext>` with `act=` / `src=` / `request_id=` / `mode=` / `cs1=rule_id` / `cn1=risk_score`; pipe/equals/backslash/newline escaped per spec. Boot wiring: `accept::admin_accept_loop` spawns one `run_forward_task` per Syslog entry alongside existing JSONL persist task — failures log + drop from this sink only. **Live verified (run-17)**: WAF booted with both jsonl + syslog sinks; benign request streamed `<86>` RFC 5424 message to a UDP receiver; SQLi probe streamed `<84>` (Detection severity) with full event JSON; receiver log in `tests/results/run-17-2026-05-02-hackt5/`. **Tests** (+6 net): RFC 5424 PRI / app_name / event-JSON / Admin severity; CEF canonical header / extensions / pipe-equals-escape / per-class severity; UDP loopback round-trip; TCP loopback round-trip with CEF; TCP reconnect-no-panic. aegis-control 883 → **889** lib tests; production build clean. **HACK-T track complete** — all five slices (T1..T5) shipped; one feature each in Tier A/B/C per v2.3 §2.4 diminishing-returns rule. |
 | 2026-05-01 | **HACK-T4 (Tier-B bonus: config history timeline)** | New `GET /api/config/versions?limit=50` filters the audit ring to `class = Admin` events, returns newest-first with seq / ts / action / reason / actor / source / request_id / fields. New `aegis-control/src/api/config_versions.rs` (~310 LOC + 11 unit tests covering: empty ring, detection-class excluded, newest-first ordering, limit cap, actor extraction with `system` fallback, source heuristic when field absent, explicit source field wins, limit-zero treated as one, JSON validity, fields-payload preservation, interleaved Detection/Admin filtering). Dashboard hook `useConfigVersionsApi` + `ConfigVersionsCard` component on Settings page (between runtime hint banner and Shadow Mode card) with TIER B pill, table view, and click-to-expand row showing the full `fields` JSON (mutation handlers' before/after diffs) plus a "View in Audit Log →" cross-link with the request_id. Live verified (run-16): drove two `PUT /api/mode` toggles → endpoint returns both events newest-first with full `{ before, after }` diff; browser screenshot at `tests/results/run-16-2026-05-01-hackt4/screenshots/config-history-expanded.png`. **Rollback deferred** to follow-up (per-handler undo logic; the timeline browse is the visible Tier-B value per v2.3 §2.4). aegis-control 872 → **883** lib tests; bundle 201 KB; production build clean. HACK-T5 (Tier-C Syslog forwarder) next. |
 | 2026-05-01 | **HACK-T3 (Tier-A bonus: rule simulator)** | New `POST /api/rules/simulate` runs a synthetic request through the live detector chain (`default_detectors()` + live `SharedDetectorMask`) with **zero** side effects. New `aegis-control/src/api/simulator.rs` (~370 LOC + 10 unit tests): pure `simulate(req, detectors, mask) -> SimulateResponse` returning decision_action / rule_id / risk_score / detectors_fired / signals (class+detail) / tier / muted_detectors. `percent_encode_path` lets operators paste pre-decoded paths from the audit log without `http::Uri::parse` rejecting unencoded quotes. `DashboardServices.detectors: Option<Arc<Vec<Box<dyn Detector>>>>` lifted in `run.rs` and stamped by `admin_accept_loop` so simulator + data plane share the same detector instance — verdicts can't drift. `admin_dispatch::handle_simulate` async handler caps body at 64 KiB (anti-DoS). **Dashboard**: new `RuleSimulator` card on Rule Manager with TIER A pill, method/path/body inputs, Simulate button — clicking renders verdict pill (BLOCK/ALLOW/CHALLENGE) + rule_id + risk + tier + fired/muted chips + signals table. **Bonus**: also retired `window.RULES` static fallback in PageRuleManager (HACK-T1 miss). Live verified (run-15): SQLi → BLOCK+sqli+risk 40; XSS-in-body → BLOCK+xss; browser screenshot of populated verdict panel in `tests/results/run-15-2026-05-01-hackt2-t3/`. aegis-control 862 → **872** lib tests; bundle 197 KB; production build clean. HACK-T4 (Tier-B versioning) next. |

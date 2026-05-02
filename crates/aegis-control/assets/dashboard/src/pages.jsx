@@ -1589,8 +1589,34 @@ function ListPage({ kind }) {
 function ConfigVersionsCard() {
   const api = window.useConfigVersionsApi(50);
   const [expanded, setExpanded] = useStateP(null);
+  // HACK-T4 rollback — per-row state.
+  // confirmSeq: which row is showing the "Confirm rollback?" prompt.
+  // busy: which row is currently posting (disables both confirm
+  // and other rollback buttons until done).
+  // result: last rollback outcome, keyed by seq, so the row can
+  // show a success / error pill after the click.
+  const [confirmSeq, setConfirmSeq] = useStateP(null);
+  const [busy, setBusy] = useStateP(false);
+  const [result, setResult] = useStateP({});
   const versions = api.data?.versions ?? [];
   const bounded = !!api.data?.bounded;
+  const rollbackable = (window.ROLLBACKABLE_ACTIONS || []);
+
+  const onRollback = async (seq) => {
+    if (busy) return;
+    setBusy(true);
+    setResult(prev => ({ ...prev, [seq]: { pending: true } }));
+    try {
+      const r = await window.configRollback(seq);
+      setResult(prev => ({ ...prev, [seq]: r }));
+      if (r.status === 200) {
+        setConfirmSeq(null);
+        api.reload && api.reload();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const toneFor = (action) => {
     if (action.includes('failed') || action.includes('reload_failed')) return 'down';
@@ -1660,19 +1686,61 @@ function ConfigVersionsCard() {
                   {isOpen && (
                     <tr>
                       <td colSpan={7} style={{ background: 'var(--canvas-2)', padding: '12px 14px' }}>
-                        <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>
-                          Request id
-                        </div>
-                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 10 }}>
-                          {v.request_id || <span className="dim">—</span>}{' '}
-                          {v.request_id && (
-                            <a
-                              href={`#/audit?request_id=${encodeURIComponent(v.request_id)}`}
-                              style={{ color: 'var(--accent)', marginLeft: 8 }}
-                            >
-                              View in Audit Log →
-                            </a>
-                          )}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12 }}>
+                          <div>
+                            <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>
+                              Request id
+                            </div>
+                            <div className="mono" style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+                              {v.request_id || <span className="dim">—</span>}{' '}
+                              {v.request_id && (
+                                <a
+                                  href={`#/audit?request_id=${encodeURIComponent(v.request_id)}`}
+                                  style={{ color: 'var(--accent)', marginLeft: 8 }}
+                                >
+                                  View in Audit Log →
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                          {/* HACK-T4 rollback button. Visible only for rollback-able
+                              actions; everything else gets a disabled hint. */}
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            {rollbackable.includes(v.action) ? (
+                              confirmSeq === v.seq ? (
+                                <>
+                                  <span style={{ fontSize: 11, color: 'var(--warn)' }}>
+                                    Confirm — rollback to #{v.seq}?
+                                  </span>
+                                  <button className="btn sm" onClick={() => setConfirmSeq(null)} disabled={busy}>
+                                    Cancel
+                                  </button>
+                                  <button className="btn sm solid-yellow" onClick={() => onRollback(v.seq)} disabled={busy}>
+                                    Yes, rollback
+                                  </button>
+                                </>
+                              ) : (
+                                <button className="btn sm" onClick={() => setConfirmSeq(v.seq)} disabled={busy}>
+                                  Rollback to #{v.seq}
+                                </button>
+                              )
+                            ) : (
+                              <span style={{ fontSize: 11, color: 'var(--ink-dim)' }} title={`Action '${v.action}' is not rollback-able in this build.`}>
+                                rollback unavailable
+                              </span>
+                            )}
+                            {result[v.seq]?.pending && (
+                              <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>rolling back…</span>
+                            )}
+                            {result[v.seq] && !result[v.seq].pending && result[v.seq].status === 200 && (
+                              <span className="pill up">rolled back</span>
+                            )}
+                            {result[v.seq] && !result[v.seq].pending && result[v.seq].status !== 200 && (
+                              <span className="pill down" title={result[v.seq].error || ''}>
+                                rollback failed (HTTP {result[v.seq].status})
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>
                           Fields
@@ -1689,6 +1757,194 @@ function ConfigVersionsCard() {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// MTLS-T7 — Allowed SAN allowlist card. Lives on the Settings
+// page; allows operators to add/remove DNS / wildcard / SPIFFE
+// patterns and test admit decisions without making a real mTLS
+// handshake. Empty list = admit anything (back-compat).
+function MtlsSansCard() {
+  const api = window.useMtlsSansApi();
+  const list = Array.isArray(api?.data?.allowed) ? api.data.allowed : [];
+  const [draft, setDraft] = useStateP('');
+  const [busy, setBusy] = useStateP(false);
+  const [testTarget, setTestTarget] = useStateP('');
+  const [testResult, setTestResult] = useStateP(null);
+
+  async function addOne() {
+    const next = (draft || '').trim();
+    if (!next || busy) return;
+    if (list.includes(next)) {
+      window.aegisToast(`SAN '${next}' is already allowed`, 'warn');
+      return;
+    }
+    setBusy(true);
+    try {
+      const merged = [...list, next];
+      const r = await window.mtlsSansPut(merged);
+      if (r && r.ok) {
+        window.aegisToast(`Added SAN '${next}'`, 'ok');
+        setDraft('');
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.error || r.message)) || 'unknown error';
+        window.aegisToast(`Add SAN failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Add SAN error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeOne(san) {
+    if (busy) return;
+    if (!confirm(`Remove SAN '${san}' from allowlist?`)) return;
+    setBusy(true);
+    try {
+      const r = await window.mtlsSansDelete(san);
+      if (r && r.ok) {
+        window.aegisToast(`Removed SAN '${san}'`, 'ok');
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.error || r.message)) || 'unknown error';
+        window.aegisToast(`Remove failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Remove error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runTest() {
+    const target = (testTarget || '').trim();
+    if (!target || busy) return;
+    setBusy(true);
+    setTestResult(null);
+    try {
+      const r = await window.mtlsSansTest(target);
+      setTestResult(r);
+    } catch (e) {
+      setTestResult({ ok: false, error: e.message || String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const empty = list.length === 0;
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">mTLS — Allowed SANs</div>
+          <div className="card-subtitle">
+            Restrict which client-cert Subject Alternative Names are
+            accepted. Empty list admits anything (back-compat).
+            Wildcards match a single label (RFC 6125 §6.4.3):
+            <code style={{ marginLeft: 4 }}>*.api.example.com</code>
+            {' '}admits <code>svc.api.example.com</code> but not
+            {' '}<code>a.b.api.example.com</code>.
+          </div>
+        </div>
+        <span className={`pill ${empty ? 'warn' : 'ok'}`}>
+          {empty ? 'open (any SAN)' : `${list.length} pattern${list.length === 1 ? '' : 's'}`}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+        <input
+          type="text"
+          placeholder="svc.example.com  or  *.api.example.com  or  spiffe://example.org/svc"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') addOne(); }}
+          disabled={busy}
+          style={{ flex: 1, padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace' }}
+        />
+        <button className="btn primary" onClick={addOne} disabled={busy || !draft.trim()}>
+          Add SAN
+        </button>
+      </div>
+
+      {empty ? (
+        <div style={{ padding: 8, fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+          No patterns configured — every cert-presenting peer is admitted.
+        </div>
+      ) : (
+        <table className="table" style={{ width: '100%', marginBottom: 8 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left' }}>Pattern</th>
+              <th style={{ textAlign: 'right', width: 200 }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map(p => (
+              <tr key={p}>
+                <td style={{ fontFamily: 'monospace' }}>{p}</td>
+                <td style={{ textAlign: 'right' }}>
+                  <button
+                    className="btn"
+                    style={{ marginRight: 6 }}
+                    disabled={busy}
+                    onClick={() => { setTestTarget(p); setTestResult(null); }}
+                  >
+                    Copy to test
+                  </button>
+                  <button
+                    className="btn danger"
+                    disabled={busy}
+                    onClick={() => removeOne(p)}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <div style={{ marginTop: 8, padding: 8, background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4 }}>
+        <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginBottom: 6 }}>
+          Test admission for a candidate SAN:
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="text"
+            placeholder="svc.example.com"
+            value={testTarget}
+            onChange={e => setTestTarget(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') runTest(); }}
+            disabled={busy}
+            style={{ flex: 1, padding: '6px 8px', background: 'var(--canvas-1)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace' }}
+          />
+          <button className="btn" onClick={runTest} disabled={busy || !testTarget.trim()}>
+            Test admit
+          </button>
+        </div>
+        {testResult && (
+          <div style={{ marginTop: 6, fontSize: 12 }}>
+            {testResult.ok && testResult.admitted ? (
+              <span className="pill ok">
+                admitted{testResult.matched ? ` · matched ${testResult.matched}` : ''}
+              </span>
+            ) : testResult.ok && !testResult.admitted ? (
+              <span className="pill err">
+                rejected — no matching pattern
+              </span>
+            ) : (
+              <span className="pill err">
+                error: {testResult.error || testResult.status || 'unknown'}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1787,6 +2043,8 @@ function PageSettings() {
       )}
 
       <ConfigVersionsCard />
+
+      <MtlsSansCard />
 
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-head">

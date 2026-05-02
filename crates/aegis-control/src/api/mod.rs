@@ -16,6 +16,7 @@ pub mod login;
 pub mod mtls;
 pub mod mutation;
 pub mod risk;
+pub mod rollback;
 pub mod routes;
 pub mod rules;
 pub mod runtime;

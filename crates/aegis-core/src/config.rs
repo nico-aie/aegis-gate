@@ -1539,6 +1539,23 @@ pub enum AuditSinkConfig {
         /// Application name reported in the RFC 5424 header.
         #[serde(default = "default_syslog_app_name")]
         app_name: String,
+        /// HACK-T5 TLS — optional CA bundle for the syslog
+        /// receiver's server certificate. PEM file containing
+        /// one or more trust anchors. `None` falls back to
+        /// the webpki system roots — appropriate when the
+        /// receiver is behind a public CA (Let's Encrypt
+        /// etc.). Required when the receiver presents a
+        /// private CA. Ignored when `transport != tls`.
+        #[serde(default)]
+        ca_bundle: Option<PathBuf>,
+        /// HACK-T5 TLS — SNI / cert-validation hostname.
+        /// Defaults to the host part of `address` (typical
+        /// for endpoints accessed via DNS); set explicitly
+        /// when the receiver's cert CN/SAN doesn't match
+        /// the connect address (e.g. routing through a
+        /// load balancer). Ignored when `transport != tls`.
+        #[serde(default)]
+        server_name: Option<String>,
     },
     Splunk { endpoint: String, token_ref: String },
     Kafka { brokers: Vec<String>, topic: String },
@@ -1559,13 +1576,17 @@ fn default_audit_jsonl_flush_interval() -> Duration {
 /// HACK-T5 — supported syslog transport. UDP is the default
 /// (RFC 5426 datagram); TCP is RFC 6587 octet-counting framing
 /// (no octet-counting prefix in this slice — newline-terminated
-/// is widely supported and simpler).
+/// is widely supported and simpler). TLS wraps TCP in
+/// `tokio_rustls` so syslog payloads cross untrusted networks
+/// (cloud → on-prem SIEM, multi-region → central log lake)
+/// without exposing the audit stream.
 #[derive(Copy, Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SyslogTransport {
     #[default]
     Udp,
     Tcp,
+    Tls,
 }
 
 /// HACK-T5 — supported syslog message format.

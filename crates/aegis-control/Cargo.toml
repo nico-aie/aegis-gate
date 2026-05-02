@@ -43,6 +43,16 @@ rustls-pemfile.workspace = true
 rustls-pki-types.workspace = true
 x509-parser.workspace = true
 
+# HACK-T5 TLS — `audit::sinks::syslog::SyslogTransport::Tls`
+# wraps the TCP stream in `tokio_rustls::TlsConnector` so audit
+# events can cross untrusted networks (cloud → on-prem SIEM)
+# without exposing the audit stream. webpki-roots is the
+# default trust; operators with private PKI configure
+# `ca_bundle:` instead.
+rustls = { workspace = true, features = ["ring"] }
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+
 # Optional — gated by the `alerts` feature.
 reqwest = { workspace = true, optional = true }
 

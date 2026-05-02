@@ -1688,6 +1688,238 @@ pub(crate) async fn handle_admin_drain(
     )
 }
 
+// ---------------------------------------------------------------------------
+// MTLS-T7 — Allowed SAN allowlist mutations
+// ---------------------------------------------------------------------------
+
+/// `PUT /api/mtls/sans` — whole-list replace of the
+/// `services.allowed_sans` store. Audit-mutated; CSRF-gated.
+/// Body: `{ "allowed": ["svc.example.com", "*.api.example.com", ...] }`.
+/// Empty list is allowed and means "admit anything" (back-compat).
+pub(crate) async fn handle_mtls_sans_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "mtls-sans-put");
+
+    let Some(store) = services.allowed_sans.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "allowed-SANs store not wired".into(),
+            ),
+        );
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        #[serde(default)]
+        allowed: Vec<String>,
+    }
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() {
+        "{\"allowed\":[]}"
+    } else {
+        body_str
+    }) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
+
+    // Validate: each entry is non-empty trimmed; reject patterns
+    // with whitespace or with `*` anywhere except as the leftmost
+    // label (`*.example.com`). Duplicates are squashed.
+    let mut next: Vec<String> = Vec::with_capacity(parsed.allowed.len());
+    for raw in &parsed.allowed {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "SAN entries must be non-empty".into(),
+                ),
+            );
+        }
+        if trimmed.chars().any(char::is_whitespace) {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "SAN '{trimmed}' contains whitespace"
+                )),
+            );
+        }
+        // Wildcards only permitted as the entire leftmost label.
+        if trimmed.contains('*') && !trimmed.starts_with("*.") {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "SAN '{trimmed}' uses '*' outside the leftmost label"
+                )),
+            );
+        }
+        if trimmed.starts_with("*.") && trimmed[2..].contains('*') {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "SAN '{trimmed}' contains more than one wildcard"
+                )),
+            );
+        }
+        if !next.iter().any(|s| s == trimmed) {
+            next.push(trimmed.to_string());
+        }
+    }
+
+    let before = serde_json::json!({"allowed": store.current()});
+    let after = serde_json::json!({"allowed": next.clone()});
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/mtls/sans",
+        action: "mtls_sans_set",
+        reason: "operator updated allowed SAN list",
+    };
+
+    let store_for_apply = store.clone();
+    let next_for_apply = next.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            store_for_apply.store(next_for_apply);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "count": next.len(),
+                "allowed": next,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// `DELETE /api/mtls/sans/{san}` — remove a single entry.
+/// Returns 422 with a validation error when the SAN isn't
+/// present (so the dashboard can surface "no such SAN"
+/// without a 500). Audit-mutated; CSRF-gated.
+pub(crate) async fn handle_mtls_sans_delete(
+    req: hyper::Request<hyper::body::Incoming>,
+    san: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "mtls-sans-delete");
+
+    let Some(store) = services.allowed_sans.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "allowed-SANs store not wired".into(),
+            ),
+        );
+    };
+
+    let current = store.current();
+    if !current.iter().any(|s| s == san) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "no SAN entry '{san}'"
+            )),
+        );
+    }
+    let next: Vec<String> = current.iter().filter(|s| *s != san).cloned().collect();
+
+    let before = serde_json::json!({"allowed": current.clone()});
+    let after = serde_json::json!({"allowed": next.clone()});
+    let resource = format!("/api/mtls/sans/{san}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "DELETE",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "mtls_sans_removed",
+        reason: "operator removed allowed SAN",
+    };
+
+    let store_for_apply = store.clone();
+    let target = san.to_string();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            store_for_apply.remove(&target);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "removed": san,
+                "remaining": next.len(),
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// `POST /api/mtls/sans/{san}/test` — synthetic admit check.
+/// Returns `{ admitted, matched }` so operators can verify
+/// that a wildcard / exact pattern is doing what they expect
+/// without making a real mTLS handshake. Read-only — no
+/// audit emit (the chain only records changes).
+pub(crate) async fn handle_mtls_sans_test(
+    _req: hyper::Request<hyper::body::Incoming>,
+    san: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let Some(store) = services.allowed_sans.as_ref() else {
+        return json_response(
+            503,
+            &serde_json::json!({
+                "error": "allowed-SANs store not wired",
+            }),
+        );
+    };
+    let admitted = store.admits(san);
+    let matched = store.matched_pattern(san);
+    json_response(
+        200,
+        &serde_json::json!({
+            "ok": true,
+            "san": san,
+            "admitted": admitted,
+            "matched": matched,
+        }),
+    )
+}
+
 /// Render a [`MaskState`] as a JSON object with `base` and
 /// `overrides` keys. Used as the `before`/`after` payload of the
 /// audit-chain diff so reviewers can see exactly which tier (and

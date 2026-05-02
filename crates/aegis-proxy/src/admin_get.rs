@@ -434,6 +434,20 @@ pub(crate) fn admin_router(
             ),
             "private, max-age=2",
         ),
+        // MTLS-T7 — live allowed-SAN list. Empty array when
+        // no allowlist is wired (test bundles or operators
+        // who haven't opted in).
+        "/api/mtls/sans" => {
+            let body = match services.allowed_sans.as_ref() {
+                Some(store) => serde_json::json!({ "allowed": store.current() }),
+                None => serde_json::json!({ "allowed": [] }),
+            };
+            json_body_response(
+                200,
+                serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()),
+                "private, max-age=2",
+            )
+        }
         "/api/upstreams" => json_body_response(200, services.upstreams.render(), "private, max-age=2"),
         // CC-T1.1 — full upstream-pool configuration view. Reads
         // `cfg.upstreams` plus pre-computed route references so
