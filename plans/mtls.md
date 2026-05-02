@@ -1,11 +1,16 @@
 # mTLS support — `MTLS-T*`
 
 > **Status:** **MTLS-T1 + T2 + T3 + T4 (route gate) + T5 +
-> T6 ✅ shipped 2026-05-01.** T4 has 3 deferred sub-slices
-> (`/admin/login` bypass, `AuditEvent.actor` field, identity-
-> rate-limit). T7..T11 (Console mutations) next. Track ID
-> prefix `MTLS-T<n>`. Adds server-side mutual-TLS to a WAF
-> that today supports outbound mTLS only (`UpstreamTlsConfig`).
+> T6 + T7 ✅ shipped 2026-05-01 / 2026-05-02.** T4 has 3
+> deferred sub-slices (`/admin/login` bypass,
+> `AuditEvent.actor` field, identity-rate-limit). T7 (SAN
+> allowlist) shipped via `plans/followups-rollback-and-sans.md`
+> with live `AllowedSansStore`, GET/PUT/DELETE/test endpoints,
+> identity-extraction gate, and Settings-page UI card. T8..T11
+> (break-glass, CA upload, per-route editor) remain queued.
+> Track ID prefix `MTLS-T<n>`. Adds server-side mutual-TLS to
+> a WAF that today supports outbound mTLS only
+> (`UpstreamTlsConfig`).
 
 ## 0 · Why
 

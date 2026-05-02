@@ -14,43 +14,46 @@ Akamai Kona, and Cloudflare Enterprise.
 > **For AI Assistants** — read `Implement-Progress.md` and
 > `plans/plan.md` before writing any code.
 
-## Status (as of 2026-05-01)
+## Status (as of 2026-05-02)
 
 **Core M1–M3, Aegis WAF Console redesign, HA cluster, the
-external interop contract, and the entire Phase B production
-packaging track are all shipped.** Active tracks today:
+external interop contract, the entire Phase B production
+packaging track, the Hackathon-readiness track (HACK-T1..T5
++ both follow-ups), and the proxy refactor (lib.rs 5569 →
+559 lines) are all shipped.** Active work:
 
-- **MTLS-T\*** — server-side mutual TLS. Schema + identity types
-  shipped (T1), read-only console observability shipped (T6,
-  Tier 1 of 5). T2 (rustls inbound wiring) + T3 (identity
-  extraction) + T7..T11 (mutation UI tiers) deferred behind the
-  proxy refactor.
-- **PRE-T\*** — proxy structural refactor. PRE-T1..T6 closed —
-  `aegis-proxy/src/lib.rs` shrunk from 5569 to **2650 lines
-  (−52%)** by extracting six focused submodules. PRE-T7
-  (run.rs) + PRE-T8 (verify) remain.
-- **PageAttackEvents + PageAnalytics → Prometheus** —
-  follow-up identified in run-12 to wire the two
-  remaining synthetic-data dashboard pages to live
-  `waf_detector_hits_total` / `waf_request_duration_ms`
-  series. ~3-4 h.
+- **Hackathon Round-1 stress-test prep** — 15-min mixed-traffic
+  harness scaffolded under `tests/hackathon/` (mock upstream
+  matching `Hackathon_Doc/openapi.public.yaml`, k6 mixed-
+  traffic script with 15-shape attack corpus, bench config,
+  one-shot `run.sh`, post-run `summary.sh`). Awaiting
+  benchmark team's source-IP fan-out / latency target /
+  attack-labelling source — see
+  [`plans/hackathon-stress-test.md`](plans/hackathon-stress-test.md) §8.
+- **MTLS-T8..T11** queued — break-glass, CA upload, per-route
+  editor. T1..T7 ✅ shipped (rustls inbound, identity
+  extraction, route gate, hot-reload, console observability,
+  SAN allowlist).
+- **Detector coverage gap-fills** under consideration to
+  raise Round-1 detection rate: mass-assignment body shape,
+  brute-force on /login, SSRF metadata-IP body scan, XXE
+  detector. Each ~half-day.
 
-**Recent perf + security verification (2026-05-01, run-12):**
+**Recent verification (2026-05-02, perf-sweep + harness smoke):**
 
 | Check | Result |
 |---|---|
-| `cargo test -p aegis-proxy --features etcd --lib` | **461 / 0 / 0**, 3/3 stable parallel runs |
-| Workspace tests | **2,431 default-feature** (163 core + 855 control + 424 proxy + 41 bin + 888 security + 460 in-tree integration) |
-| OpenAPI shape contract | **32 / 32 PASS** |
-| Round-1 Hackathon WAF-FE acceptance | **8 / 8 PASS** (SSE 55 ms / hot-reload 76 ms / find-audit 48 ms) |
-| Detector probes (SQLi, XSS, path traversal, SSRF, CRLF) | **All blocked** |
-| Risk auto-block round-trip | 5 attack probes → score 100 + 50 strikes → `strike_blocked: true`; `PUT /api/risk/{ip}/reset` clears |
-| k6 baseline | **37 600 req/s** sustained, median **60 µs** / p95 **286 µs**, 10k/min rate-limit budget enforced |
-| Nuclei security scan | 742 templates, 1 431 requests, **0 vulnerabilities matched** |
-| Dashboard screenshots | **12 / 12 pages** captured |
-| MTLS-T6 endpoints | All 4 GETs serve correct JSON (cfg / connections / failures / ca-summary) |
+| Workspace tests | **~2 500 / 0 fail** across 17 binaries |
+| v2.3 contract gate (`tests/contract/v2.3_compliance.sh`) | **40 / 40 PASS** (after curl 8.1+ URL-encode fix) |
+| API smoke (auth, detectors, risk, loadmode, logging, cold-tier) | **56 / 56 PASS** |
+| Protocol mix | HTTP/1.1 PASS; HTTP/2/3/gRPC graceful SKIP (no TLS data plane in dev cfg); WS info |
+| Hackathon harness smoke (30 s, 10/3/10 VUs) | legit p99 **5.81 ms**, legit OK **99.76 %**, attacks detected **33 %** (corpus has app-layer shapes today's detectors don't reach yet — see "detector gap-fills" above) |
+| MTLS-T7 SAN allowlist live verification | GET-empty → PUT 3 → test admit matrix (exact / wildcard single-label match / wildcard multi-label rejected / unknown rejected) → DELETE → audit chain captured set + remove |
+| HACK-T4 rollback live verification | `POST /api/config/versions/{seq}/rollback` for `mode_set` → mode reverts → audit chain captures `mode_set_rollback` |
 
-Full report: [`tests/results/run-12-2026-05-01-mtls-pre-refactor/README.md`](tests/results/run-12-2026-05-01-mtls-pre-refactor/README.md).
+Earlier baselines: k6 **37 600 req/s** sustained at median **60 µs** /
+p95 **286 µs** (run-12); Nuclei 742 templates / 1 431 requests
+**0 vulnerabilities** (run-12).
 
 | Milestone | Crate | Description |
 |---|---|---|
@@ -144,6 +147,9 @@ aegis-gate/
 │   ├── README.md                  # Status board for every track
 │   ├── plan.md                    # AI assistant guide + protocol
 │   ├── implementation-matrix.md   # doc-by-doc Implemented/Partial/Designed
+│   ├── hackathon-stress-test.md   # ACTIVE — Round-1 15-min stress-test prep
+│   ├── followups-rollback-and-sans.md # CLOSED — HACK-T4 rollback + MTLS-T7 SANs
+│   ├── hackathon-readiness.md     # CLOSED — HACK-T1..T5 + follow-ups
 │   ├── proxy.md                   # M1 (closed)
 │   ├── security.md                # M2 (closed)
 │   ├── control.md                 # M3 (closed)
@@ -151,15 +157,15 @@ aegis-gate/
 │   ├── cluster-ingress-lb.md      # HA-T1..T5 (closed)
 │   ├── interop-contract.md        # IT-T1..T6 (closed)
 │   ├── interop-dry-run.md         # DR-T1..T7 (closed)
-│   ├── console-config-pages.md    # CC-T1..T3 (closed)
+│   ├── console-config-pages.md    # CC-T1..T2 (closed)
 │   ├── console-api-integration.md # CI-T1..T12 (closed)
 │   ├── post-run-08.md             # AF-T1, HP-T1, TLS-T1 (closed)
 │   ├── post-k6-followup.md        # P1..P8 + F-T1..F-T10 (closed)
 │   ├── benchmark-mode.md          # folded into B5-T2
 │   ├── phase-b/                   # B1..B6 (closed)
-│   ├── mtls.md                    # MTLS-T1..T12 (T1+T6 closed; T2..T11 in plan)
-│   ├── proxy-refactor.md          # PRE-T1..T8 (T1..T6 closed)
-│   ├── scaling-config.md          # SC-T* (parked)
+│   ├── mtls.md                    # MTLS-T1..T11 (T1..T7 closed; T8..T11 queued)
+│   ├── proxy-refactor.md          # PRE-T1..T8 (closed)
+│   ├── scaling-config.md          # SC-T* (T1..T3 + T5 closed; T4 deferred)
 │   └── archive/                   # superseded plans, kept for history
 ├── docs/                          # Per-feature specifications (~60 files, foldered)
 │   ├── README.md                  # Taxonomy index + ownership map
@@ -189,13 +195,20 @@ aegis-gate/
 │   ├── api/                       # curl + jq smoke tests (16 scripts)
 │   │   ├── openapi-shape.sh       # 32-check OpenAPI contract
 │   │   └── upstreams-crud.sh      # CC-T1.audit end-to-end CRUD
+│   ├── contract/                  # v2.3 contract regression gate (40 numbered §X.Y checks)
+│   ├── hackathon/                 # Round-1 15-min stress-test harness
+│   │   ├── upstream/server.py     #   mock app matching openapi.public.yaml
+│   │   ├── k6/mixed-15min.js      #   legit + crawler + attacker scenarios
+│   │   ├── configs/bench.yaml     #   loose-thresholds WAF config for shared-IP load
+│   │   ├── run.sh                 #   orchestrator (boot → 15-min k6 → summary)
+│   │   └── summary.sh             #   post-run Markdown report
 │   ├── load/                      # k6 scripts (baseline, rate-limit, ddos-burst, …)
 │   ├── security/                  # corpus + nuclei + zap runners
 │   ├── dashboard/                 # round1-acceptance.sh + capture-screenshots.mjs
 │   ├── cluster/                   # HA smoke (5 scripts + fixtures)
 │   ├── interop/                   # 27-check interop contract
 │   ├── protocols/                 # h1 / h2 / WS / gRPC / h3
-│   └── results/                   # 12 dated run reports with logs + screenshots
+│   └── results/                   # dated run reports with logs + screenshots
 └── crates/
     ├── aegis-core/                # Shared types, traits, config schema, ClientIdentity
     ├── aegis-proxy/               # Data plane (TLS, routing, upstreams, state)

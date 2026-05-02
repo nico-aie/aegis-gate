@@ -1,10 +1,13 @@
 # Console API Integration Plan (CI-T1..T6)
 
-> **Status:** Active — picked up after the dashboard redesign
-> (DD-T0..T8) closed. Bridges the gap between the UI shell shipped
-> in run-10 and the real backend data the WAF already produces.
+> **Status:** Closed — CI-T1..T6 + CI-T12 (risk thresholds)
+> all shipped. Bridges the gap between the UI shell shipped in
+> run-10 and the real backend data the WAF already produces. The
+> follow-up CC-T track (config pages — upstreams + alert
+> receivers) also shipped on top of this. Reference only; do not
+> start new work here.
 >
-> See [`README.md`](./README.md) for the track status board.
+> See [`README.md`](./README.md) for the live status board.
 
 ---
 

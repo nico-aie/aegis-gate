@@ -1,16 +1,14 @@
 # Console Config Pages — `CC-T*`
 
-> **Status:** Plan only — awaiting confirmation. Track ID prefix
-> `CC-T<n>`. Two follow-ups to the closed CI-T*
-> console-API-integration track:
->
-> 1. **Upstreams config page** — full CRUD on `upstreams.*`.
-> 2. **Alert channels block** in the existing Tracking page —
->    list / add / edit / remove `slo.alert_receivers`.
->
-> Both reuse the audit-mutated PUT pipeline established in CI-T6
-> (`/api/mode`) and CI-T12 (`/api/risk/thresholds`). No new
-> infrastructure.
+> **Status:** Closed — CC-T1.* (upstreams CRUD: `PUT
+> /api/upstreams/config`, `PUT /api/upstreams/pool/{id}`,
+> `DELETE /api/upstreams/pool/{id}`) and CC-T2.* (alert
+> receivers: `PUT /api/alert-receivers`, `DELETE
+> /api/alert-receivers/{name}`, `POST /api/alert-receivers/
+> {name}/test`) all shipped — see
+> `crates/aegis-proxy/src/admin_mutate.rs` for the audit-mutated
+> handlers and the matching dashboard cards on Upstreams +
+> Tracking pages. Reference only; do not start new work here.
 
 ## 0 · Why now
 

@@ -17,6 +17,7 @@ the link.
 | What's the current status of every doc / feature? | [`implementation-matrix.md`](./implementation-matrix.md) |
 | What's the active work track? | [§ Status board](#status-board) below — find the row marked **Active** |
 | What's done? | [§ Status board](#status-board) — rows marked **Closed** |
+| How do we run the Round-1 stress test? | [`hackathon-stress-test.md`](./hackathon-stress-test.md) — runbook + open questions for benchmark team |
 
 ## For the AI assistant
 
@@ -38,11 +39,14 @@ Order = execution priority. **Earlier rows run first.** The
 
 | State | Track | Plan file | Task ID prefix | Notes |
 |---|---|---|---|---|
-| Closed | Hackathon-readiness — v2.3 contract + Tier bonuses | [`hackathon-readiness.md`](./hackathon-readiness.md) | `HACK-T<n>` | ✅ HACK-T1..T5 shipped 2026-05-01 / 2026-05-02. Round 1 mock-data risk closed; Round 2 contract gate (40/40 PASS); Tier A (rule simulator), Tier B (config history), Tier C (Syslog/CEF) all claimed. Deferred: HACK-T4 rollback action, HACK-T5 TLS transport. |
-| **Queued** | mTLS — Console mutation surfaces | [`mtls.md`](./mtls.md) | `MTLS-T<n>` | T1..T5 + T6 ✅ shipped 2026-05-01 (rustls inbound, identity extraction, route-scoped policy gate, hot-reload, console observability). T7..T11 (mode toggle, SAN allowlist, break-glass, CA upload, per-route editor) deferred. |
+| **Active** | Hackathon Round-1 stress-test prep — 15-min mixed-traffic harness | [`hackathon-stress-test.md`](./hackathon-stress-test.md) | — (prep only) | Harness scaffolded under `tests/hackathon/` (mock upstream + k6 mixed-traffic + bench config + run + summary scripts). Awaiting benchmark team's source-IP fan-out / latency target / attack-labelling source — see plan §8. Detector-coverage gap-fills (mass-assignment, brute-force, SSRF, XXE) sit on top of this. |
+| Closed | Follow-ups — HACK-T4 rollback + MTLS-T7 SAN allowlist | [`followups-rollback-and-sans.md`](./followups-rollback-and-sans.md) | — (follow-up bundle) | ✅ both parts shipped 2026-05-02. `POST /api/config/versions/{seq}/rollback` (mode_set v1) + UI button; live `AllowedSansStore` with 4 endpoints (GET/PUT/DELETE/test) + identity-extraction gate + Settings card. |
+| Closed | Hackathon-readiness — v2.3 contract + Tier bonuses | [`hackathon-readiness.md`](./hackathon-readiness.md) | `HACK-T<n>` | ✅ HACK-T1..T5 shipped 2026-05-01 / 2026-05-02; both deferred follow-ups (HACK-T5 TLS transport + HACK-T4 rollback action) also shipped 2026-05-02. Round 1 mock-data risk closed; Round 2 contract gate 40/40; Tier A + B + C all claimed. |
+| **Queued** | mTLS — remaining Console mutation surfaces | [`mtls.md`](./mtls.md) | `MTLS-T<n>` | T1..T7 ✅ shipped 2026-05-01 / 2026-05-02 (rustls inbound, identity extraction, route gate, hot-reload, console observability, SAN allowlist). T8..T11 (break-glass, CA upload, per-route editor) deferred. |
 | **Queued** | Phase B — production packaging | [`phase-b/README.md`](./phase-b/README.md) | `B<n>-T<x>` | B1..B5 ✅ closed. B6-T1 (Dockerfile) ✅ shipped; B6-T2 (Helm) + B6-T3 (CI) pending; B6-T4 (HSM) + B6-T5 (fd-pass) deferred. |
 | **Queued** | Scaling configuration — Tier A bonus complement | [`scaling-config.md`](./scaling-config.md) | `SC-T<n>` | T1..T3 + T5 ✅ shipped 2026-05-01 (`/api/state` + Scaling page + Settings hint + docs). T4 (`tokio_unstable` Prometheus metrics) deferred — optional polish. |
-| Closed | Console config pages — upstreams editor + alerts | [`console-config-pages.md`](./console-config-pages.md) | `CC-T<n>` | Reference only — CC-T1..T3 + alert-receivers shipped (run-11/run-12) |
+| Closed | Console API integration | [`console-api-integration.md`](./console-api-integration.md) | `CI-T<n>` | Reference only — CI-T1..T6 + CI-T12 (risk thresholds) shipped; bridged the DD-T0..T8 UI shell to live API data. |
+| Closed | Console config pages — upstreams editor + alerts | [`console-config-pages.md`](./console-config-pages.md) | `CC-T<n>` | Reference only — CC-T1.* (upstreams CRUD) + CC-T2.* (alert receivers PUT/DELETE/test) shipped. |
 | Closed | Proxy refactor — `lib.rs` 5569 → 559 lines | [`proxy-refactor.md`](./proxy-refactor.md) | `PRE-T<n>` | Reference only — PRE-T1..T8 shipped 2026-05-01; lib.rs is now a thin facade |
 | Closed | Dashboard redesign — Aegis WAF Console | [`dashboard-redesign.md`](./dashboard-redesign.md) | `DD-T<n>` | Reference only — shipped in run-10 (DD-T0..T8) |
 | Closed | Cluster ingress / load-balancer | [`cluster-ingress-lb.md`](./cluster-ingress-lb.md) | `HA-T<n>` | Reference only — HA-T1..T5 shipped in run-05 |
@@ -64,9 +68,9 @@ in [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md):
 
 | Round | Weight | Status | Track |
 |---|---|---|---|
-| 1 — Functionality (Pass/Fail) | gate | ✅ mock-data risk closed (run-14) | **HACK-T1** ✅ |
-| 2 — Automated benchmark | 65% (≥ 70% gate) | ✅ run-12 + HACK-T2 regression gate (40/40 PASS) | **HACK-T2** ✅ |
-| 3 — Performance + Tier bonuses | 35% + bonus | ✅ Tier A + B + C all claimed (rule simulator / config history / Syslog forwarder) | **HACK-T3..T5** ✅ |
+| 1 — Functionality (Pass/Fail) | gate | ✅ mock-data risk closed (run-14); 15-min mixed-traffic harness scaffolded (`tests/hackathon/`) ready for the benchmark team | **HACK-T1** ✅ + stress-test prep |
+| 2 — Automated benchmark | 65% (≥ 70% gate) | ✅ run-12 + HACK-T2 regression gate (40/40 PASS after curl 8.1+ URL-encode fix) | **HACK-T2** ✅ |
+| 3 — Performance + Tier bonuses | 35% + bonus | ✅ Tier A + B (now incl. rollback action) + C (now incl. TLS transport) all claimed | **HACK-T3..T5** ✅ + follow-ups |
 
 ---
 
@@ -78,15 +82,23 @@ plans/
 ├── plan.md                         AI assistant guide (rules + protocol)
 ├── implementation-matrix.md        doc-by-doc Implemented / Partial / Designed-only
 │
-├── hackathon-readiness.md          ACTIVE — HACK-T1..T5 (Round 1 / 2 / 3 gap fixes + Tier bonuses)
+├── hackathon-stress-test.md        ACTIVE — Round-1 15-min mixed-traffic harness prep
+│                                   (mock upstream + k6 + bench config + report;
+│                                   awaiting benchmark team's IP fan-out / target /
+│                                   labelling source — see plan §8)
+├── followups-rollback-and-sans.md  CLOSED — HACK-T4 rollback action +
+│                                   MTLS-T7 SAN allowlist (both shipped 2026-05-02)
+├── hackathon-readiness.md          CLOSED — HACK-T1..T5 + both follow-ups shipped
 │
-├── mtls.md                         QUEUED — MTLS-T7..T11 Console mutations remain
+├── mtls.md                         QUEUED — MTLS-T8..T11 (break-glass / CA upload /
+│                                   per-route editor) remain; T1..T7 ✅ shipped
 ├── scaling-config.md               QUEUED — SC-T4 (tokio_unstable metrics) remains, optional
 ├── phase-b/                        QUEUED — production packaging
 │   └── README.md                   B1..B5 closed; B6-T2 / T3 pending; T4 / T5 deferred
 │
 ├── proxy-refactor.md               CLOSED — PRE-T1..T8 (lib.rs 5569 → 559)
-├── console-config-pages.md         CLOSED — CC-T1..T3 + alert-receivers
+├── console-api-integration.md      CLOSED — CI-T1..T6 + CI-T12
+├── console-config-pages.md         CLOSED — CC-T1.* + CC-T2.* (upstreams + alert receivers)
 │
 └── (older closed tracks — reference only, do not start new work here)
     ├── proxy.md                    M1 — proxy core

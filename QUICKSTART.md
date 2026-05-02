@@ -210,7 +210,12 @@ make clippy                                               # lint (zero warnings)
 The cluster smoke + LB tests live under
 [`tests/cluster/`](tests/cluster/); load tests under
 [`tests/load/`](tests/load/); dashboard acceptance under
-[`tests/dashboard/`](tests/dashboard/).
+[`tests/dashboard/`](tests/dashboard/); the v2.3 contract gate
+under [`tests/contract/`](tests/contract/); and the Round-1
+Hackathon stress-test harness under
+[`tests/hackathon/`](tests/hackathon/) (15-min mixed-traffic
+run with mock upstream + k6 + post-run summary —
+`bash tests/hackathon/run.sh`).
 
 ---
 
@@ -243,3 +248,5 @@ The cluster smoke + LB tests live under
 | [`docs/operations/ha-clustering.md`](docs/operations/ha-clustering.md) | Layer-2 cross-node HA |
 | [`Architecture.md`](Architecture.md) | System design + three-layer scaling model |
 | [`Implement-Progress.md`](Implement-Progress.md) | Implementation log |
+| [`plans/README.md`](plans/README.md) | Live status board for every track (Active / Queued / Closed) |
+| [`plans/hackathon-stress-test.md`](plans/hackathon-stress-test.md) | Round-1 stress-test harness runbook + open questions |

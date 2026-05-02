@@ -1,15 +1,20 @@
 # Hackathon-Readiness — `HACK-T*`
 
-> **Status:** **✅ Complete + extended** — HACK-T1..T5 all
-> shipped (2026-05-01 / 2026-05-02), plus the **HACK-T5
-> TLS transport** follow-up (2026-05-02). One feature each
-> in Tier A (rule simulator), Tier B (config-history
-> timeline), and Tier C (Syslog/CEF forwarder, now with
-> TLS) per v2.3 §2.4 diminishing-returns rule. Round 1
-> mock-data risk closed; Round 2 contract regression gate
-> added; Round 3 Tier bonuses claimed. Only **HACK-T4
-> rollback action** remains deferred to a follow-up
-> (per-handler inverse-apply logic).
+> **Status:** **✅ Closed** — HACK-T1..T5 all shipped
+> (2026-05-01 / 2026-05-02), plus two follow-ups also
+> shipped (2026-05-02): **HACK-T5 TLS transport** for the
+> Syslog forwarder, and **HACK-T4 rollback action**
+> (`POST /api/config/versions/{seq}/rollback` for `mode_set`
+> v1, audit-mutated, with UI button — see
+> [`followups-rollback-and-sans.md`](./followups-rollback-and-sans.md)).
+> One feature each in Tier A (rule simulator), Tier B
+> (config-history timeline + rollback), and Tier C (Syslog/
+> CEF forwarder, with TLS) per v2.3 §2.4 diminishing-returns
+> rule. Round 1 mock-data risk closed; Round 2 contract
+> regression gate 40/40 (after curl 8.1+ URL-encode fix);
+> Round 3 Tier bonuses claimed. v1 rollback covers
+> `mode_set` only — per-handler inverse-apply for
+> additional rollback targets remains future polish.
 > Track ID prefix `HACK-T<n>`. Targets the v2.3 contract requirements
 > documented in
 > [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md)
