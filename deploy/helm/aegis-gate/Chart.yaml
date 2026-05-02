@@ -7,8 +7,12 @@ description: |
   Redis state, HorizontalPodAutoscaler, ServiceMonitor, and
   graceful-drain hooks.
 type: application
+# Chart version follows semver of THIS chart (templates + values)
+# only; bump on a chart change even if appVersion is unchanged.
 version: 0.1.0
-appVersion: "1.4.2"
+# appVersion mirrors aegis-bin's Cargo.toml `package.version`
+# — bump in lock-step with the binary release.
+appVersion: "0.1.0"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/example/aegis-gate
 icon: https://example.com/aegis-gate-icon.png
