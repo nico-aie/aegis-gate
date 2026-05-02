@@ -112,10 +112,17 @@ upstreams:
     lb: round_robin
 
 # ---------------------------------------------------------------------------
-# State backend
+# State backend — Redis. Required for cluster deployments (shared
+# rate-limit counters + leader-lease) and recommended for single-node
+# too because hot-reload survives without losing in-flight state.
+# Replace the URL with your real Redis (sentinel / cluster / managed).
 # ---------------------------------------------------------------------------
 state:
-  backend: in_memory
+  backend: redis
+  redis:
+    urls: ["redis://127.0.0.1:6379"]   # REPLACE FOR PRODUCTION
+    pool_size: 32
+    timeout: "100ms"
 
 # ---------------------------------------------------------------------------
 # Rules

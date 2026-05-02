@@ -4,14 +4,14 @@
 # clone:
 #
 #     make setup          # generate dev cert + release build
-#     make run-dev        # first-light: in-memory, no Redis required
-#     make run            # production default: prod-balanced profile
-#                         #   (requires Redis — `make redis-up` first)
+#     make run-dev        # first-light: dev profile (Redis auto-starts)
 #     make smoke          # curl the data plane + admin health probe
 #
-# Profile picker (see docs/operator/profiles.md):
-#     make run-dev          → config/dev.yaml                       (in-memory)
-#     make run              → config/profiles/prod-balanced.yaml    (default)
+# Profile picker (see docs/operator/profiles.md). Every run-* target
+# auto-starts the dev Redis via the redis-up dep — first-light is
+# one command.
+#     make run-dev          → config/dev.yaml                       (dev/test)
+#     make run              → config/profiles/prod-balanced.yaml    (default prod)
 #     make run-strict       → config/profiles/prod-strict.yaml      (compliance)
 #     make run-throughput   → config/profiles/prod-high-throughput.yaml
 #
@@ -62,7 +62,7 @@ SMOKE_ADMIN      ?= http://localhost:9443
 
 .PHONY: help setup cert build build-debug run run-dev run-strict run-throughput \
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
-        dashboard redis-up redis-down
+        dashboard redis-up redis-down obs-up obs-down urls logs
 
 help:
 	@awk 'BEGIN { FS = ":.*##" } \
@@ -73,11 +73,9 @@ help:
 
 setup: cert build ## Generate dev cert + release build (one-shot fresh clone)
 	@echo
-	@echo "Setup done. First-light (no Redis):"
-	@echo "  make run-dev"
-	@echo
-	@echo "Production default (prod-balanced — needs Redis):"
-	@echo "  make redis-up && make run"
+	@echo "Setup done. Boot:"
+	@echo "  make run-dev    # dev profile (Redis auto-starts)"
+	@echo "  make run        # prod-balanced (Redis auto-starts)"
 
 cert: $(DEV_CRT) ## Generate self-signed dev TLS cert (idempotent)
 
@@ -101,16 +99,16 @@ dashboard: ## Rebuild the dashboard JSX bundle (run after editing src/*.jsx)
 
 ##@ Run
 
-run: $(WAF_BIN) cert ## Boot against $(CONFIG) — default: prod-balanced (Redis required)
+run: $(WAF_BIN) cert redis-up ## Boot against $(CONFIG) — default: prod-balanced
 	@$(WAF_BIN) run --config $(CONFIG)
 
-run-dev: $(WAF_BIN) cert ## Boot against config/dev.yaml — in-memory, no Redis
+run-dev: $(WAF_BIN) cert redis-up ## Boot against config/dev.yaml (auto-starts Redis)
 	@$(WAF_BIN) run --config $(CONFIG_DEV)
 
-run-strict: $(WAF_BIN) cert ## Boot against prod-strict profile — compliance-tightened
+run-strict: $(WAF_BIN) cert redis-up ## Boot against prod-strict profile — compliance-tightened
 	@$(WAF_BIN) run --config $(CONFIG_STRICT)
 
-run-throughput: $(WAF_BIN) cert ## Boot against prod-high-throughput profile — CDN front-door tuning
+run-throughput: $(WAF_BIN) cert redis-up ## Boot against prod-high-throughput profile — CDN front-door tuning
 	@$(WAF_BIN) run --config $(CONFIG_THROUGHPUT)
 
 validate: $(WAF_BIN) ## Validate $(CONFIG) without booting
@@ -122,11 +120,54 @@ validate-all: $(WAF_BIN) ## Validate dev + all three production profiles
 	    $(WAF_BIN) validate --config $$cfg >/dev/null 2>&1 && echo OK || { echo FAIL; $(WAF_BIN) validate --config $$cfg; exit 1; }; \
 	done
 
-redis-up: ## Start the local dev Redis (required by prod-balanced/strict/throughput)
-	@docker compose -f deploy/docker-compose.dev.yml up -d redis
+redis-up: ## Start the local dev Redis (idempotent — auto-invoked by all run-* targets)
+	@if docker ps --filter "name=^aegis-redis$$" --format '{{.Status}}' | grep -q "^Up"; then \
+	    : ;\
+	elif docker ps -a --filter "name=^aegis-redis$$" --format '{{.Names}}' | grep -q .; then \
+	    docker start aegis-redis >/dev/null; \
+	else \
+	    docker compose -f deploy/docker-compose.dev.yml up -d redis; \
+	fi
 
 redis-down: ## Stop the local dev Redis
-	@docker compose -f deploy/docker-compose.dev.yml stop redis
+	@docker stop aegis-redis 2>/dev/null || true
+
+obs-up: redis-up ## Start the full observability stack (Redis + Prometheus + Grafana + Jaeger)
+	@docker compose -f deploy/docker-compose.dev.yml up -d prometheus grafana jaeger 2>&1 | grep -v "Network\|orphan" || true
+	@echo
+	@$(MAKE) --no-print-directory urls
+
+obs-down: ## Stop the observability stack (keeps Redis)
+	@docker compose -f deploy/docker-compose.dev.yml stop prometheus grafana jaeger 2>/dev/null || true
+
+urls: ## Print where to find every UI / endpoint / log file
+	@echo "== Aegis-Gate URLs =="
+	@echo "  Data plane (HTTP)        http://localhost:8080/"
+	@echo "  Data plane (HTTPS)       https://localhost:8443/   (-k for self-signed cert)"
+	@echo "  Admin / dashboard        http://localhost:9443/"
+	@echo "  Admin healthz            http://localhost:9443/healthz/ready"
+	@echo "  Admin Prometheus scrape  http://localhost:9443/metrics"
+	@echo "  Runtime sizing           http://localhost:9443/api/runtime"
+	@echo
+	@echo "== Observability stack (after 'make obs-up') =="
+	@echo "  Prometheus UI            http://localhost:9090/"
+	@echo "  Grafana UI               http://localhost:3000/    (admin/admin on first login)"
+	@echo "    └─ pre-loaded boards   Aegis WAF Overview · Runtime · Redis"
+	@echo "  Jaeger UI (traces)       http://localhost:16686/"
+	@echo "  redis-exporter           http://localhost:9121/metrics"
+	@echo
+	@echo "== Logs / state =="
+	@echo "  WAF stdout (foreground)  the terminal where 'make run' is running"
+	@echo "  Audit chain (jsonl)      /tmp/aegis-dev-audit.jsonl"
+	@echo "  Interop audit            ./waf_audit.log"
+	@echo "  Redis container logs     docker logs -f aegis-redis"
+	@echo "  Prometheus logs          docker logs -f aegis-prometheus"
+	@echo "  Grafana logs             docker logs -f aegis-grafana"
+
+logs: ## Tail the WAF audit chain + redis container logs
+	@echo "(Ctrl-C to stop)"; \
+	tail -F /tmp/aegis-dev-audit.jsonl ./waf_audit.log 2>/dev/null &
+	@docker logs -f aegis-redis 2>&1 | sed 's/^/[redis] /'
 
 $(WAF_BIN):
 	@$(MAKE) --no-print-directory build

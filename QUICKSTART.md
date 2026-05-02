@@ -10,44 +10,46 @@ and **manual** (every step explicit). For production deployment see
 | Tool | Version | Check |
 |------|---------|-------|
 | Rust | 1.91+ | `rustc --version` |
-| `openssl` | 1.1+ | `openssl version` (used by the dev-cert script) |
+| `openssl` | 1.1+ | `openssl version` |
 | `make` | any | `make --version` |
-| Docker + Compose | v2.20+ (optional) | `docker compose version` |
+| Docker + Compose | v2.20+ | `docker compose version` |
 | `curl` | any | `curl --version` |
 
-Docker is only needed for the optional dev infra (etcd, Prometheus,
-Jaeger, Redis, httpbin). The WAF boots standalone with
-`state.backend: in_memory` and a local YAML config — no Docker
-required.
+Docker is **required** — every config (dev, prod, all 3 profiles) uses
+Redis for shared rate-limit counters + leader leases. The Makefile
+spins the dev Redis up automatically when you `make run`; no manual
+plumbing.
 
 ---
 
-## Fast path
+## Fast path — three commands
 
 ```sh
 make setup       # generate dev cert + release build (~2 min cold, ~10 s warm)
-make run-dev     # first-light: in-memory state, no Redis required
+make run-dev     # boot WAF (Redis auto-starts via the run-dev dep)
 make smoke       # in another terminal: curl data + admin endpoints
+make urls        # print every URL + log-file path
 ```
 
-`make run-dev` boots `config/dev.yaml` — same detector mask + risk
-shape as the recommended **prod-balanced** profile, but with
-in-memory state and inline test credentials so it works on a fresh
-clone with zero infrastructure.
+That's it. `make run-dev` boots `config/dev.yaml` against a Redis
+sidecar (started for you on `127.0.0.1:6379`); the WAF binds:
 
-For the production profile (the actual recommended starting point):
+- `:8080` (HTTP data plane)
+- `:9443` (admin / dashboard / `/metrics` / `/healthz`)
 
-```sh
-make redis-up    # start the local dev Redis (one-time)
-make run         # boots config/profiles/prod-balanced.yaml
-```
+The 502s you see on `make smoke` are expected — the placeholder
+upstream on `:9999` isn't running. Wire your real backend in
+`config/dev.yaml` `upstreams:` when ready.
 
-Run `make help` to see every available target. The four profiles:
+### Profile picker
+
+`make run-dev` is for first-light. For real workloads pick one of
+the production profiles (each auto-starts Redis):
 
 | Target | Config | When |
 |---|---|---|
-| `make run-dev` | `config/dev.yaml` | First-light, tests, in-memory |
-| `make run` | `config/profiles/prod-balanced.yaml` | **Production default** (Redis state, 7-day audit) |
+| `make run-dev` | `config/dev.yaml` | Local dev (inline test creds) |
+| `make run` | `config/profiles/prod-balanced.yaml` | **Production default** |
 | `make run-strict` | `config/profiles/prod-strict.yaml` | Compliance-driven (PCI/HIPAA/SOC2/GDPR) |
 | `make run-throughput` | `config/profiles/prod-high-throughput.yaml` | CDN front-door, > 5 k RPS |
 
@@ -61,11 +63,45 @@ CONFIG=config/prod.yaml make run                         # legacy template
 FEATURES="redis alerts geoip taxii http3" make build     # custom feature set
 ```
 
-That's enough to get a green health probe and serve TLS on `:8443`
-with a self-signed dev cert. The 502s on `:8080` / `:8443` you'll see
-in `make smoke` are expected — the placeholder upstreams (ports
-3001-3004 / 9999) aren't running. Replace them with your real
-backends when wiring an app.
+---
+
+## Where to find things — UIs, metrics, logs
+
+```sh
+make urls         # one-shot reference card
+make obs-up       # bring up Prometheus + Grafana + Jaeger
+```
+
+| What | Where | Notes |
+|------|-------|-------|
+| Data plane (HTTP) | `http://localhost:8080/` | every request flows through detectors |
+| Data plane (HTTPS) | `https://localhost:8443/` | self-signed; use `curl -k` |
+| Admin / dashboard | `http://localhost:9443/` | login: `admin` / `aegis-test-1234` |
+| Health (ready) | `http://localhost:9443/healthz/ready` | `state_backend_up: true` once Redis hydrates |
+| Prometheus scrape | `http://localhost:9443/metrics` | OpenMetrics; ~70 series |
+| Runtime sizing | `http://localhost:9443/api/runtime` | tokio worker count + flags |
+| **Prometheus UI** | `http://localhost:9090/` | `make obs-up` |
+| **Grafana UI** | `http://localhost:3000/` | `admin/admin`; 3 boards pre-loaded |
+| **Jaeger UI** (traces) | `http://localhost:16686/` | OTel spans per request |
+| Redis | `redis://localhost:6379` | `docker exec aegis-redis redis-cli` |
+
+Pre-loaded Grafana boards (under `deploy/grafana/dashboards/`):
+- **Aegis WAF Overview** — RPS, per-tier mix, top blocked detectors
+- **Aegis Runtime** — tokio worker / blocking-pool / I/O driver gauges
+- **Aegis Redis** — pool size, op latency, error rate
+
+### Logs
+
+| Source | Path | Notes |
+|--------|------|-------|
+| WAF stdout | the terminal running `make run` | structured `tracing` (subscribe via `RUST_LOG`) |
+| Audit chain (NDJSON) | `/tmp/aegis-dev-audit.jsonl` | hash-chained — `waf audit verify --from <path>` |
+| Interop contract audit | `./waf_audit.log` | mode toggles + control-plane mutations |
+| Redis container | `docker logs -f aegis-redis` | |
+| Prometheus container | `docker logs -f aegis-prometheus` | |
+| Grafana container | `docker logs -f aegis-grafana` | |
+
+For SOC-team incident workflows: [`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md).
 
 ---
 
@@ -104,8 +140,9 @@ cargo build -p aegis-bin --release --features "redis affinity"
 docker compose -f deploy/docker-compose.dev.yml up -d
 ```
 
-Spins up etcd, Prometheus, Jaeger, Redis, httpbin. Skip for a
-single-node in-memory WAF. Service catalogue + ports:
+Spins up etcd, Prometheus, Jaeger, Redis, httpbin. The `make obs-up`
+target is a thinner alternative that only boots Prometheus + Grafana
++ Jaeger (no etcd). Service catalogue + ports:
 [`deploy/README.md`](deploy/README.md).
 
 ### 4. Validate the config
@@ -123,10 +160,10 @@ Expected: `config OK: <path>`.
 ### 5. Run the gateway
 
 ```sh
-# Dev (no Redis)
+# Dev (Redis-backed; `make redis-up` if you haven't already)
 cargo run -p aegis-bin -- run --config config/dev.yaml
 
-# Production default (Redis required — `make redis-up` first)
+# Production default
 ./target/release/waf run --config config/profiles/prod-balanced.yaml
 ```
 
@@ -210,12 +247,15 @@ unprotected and the dashboard login screen rejects all attempts.
 
 ```sh
 make help                              # List every make target
-make setup                             # Cert + release build
-make run-dev                           # Boot config/dev.yaml (in-memory)
-make run                               # Boot prod-balanced (default; Redis req)
+make setup                             # Cert + release build (one-shot)
+make run-dev                           # Boot config/dev.yaml (Redis auto-starts)
+make run                               # Boot prod-balanced (default)
 make run-strict                        # Boot prod-strict (compliance)
 make run-throughput                    # Boot prod-high-throughput (CDN)
-make redis-up | redis-down             # Start / stop the dev Redis sidecar
+make obs-up | obs-down                 # Start / stop Prometheus + Grafana + Jaeger
+make redis-up | redis-down             # Start / stop the dev Redis (auto by run-*)
+make urls                              # Print every URL + log-file path
+make logs                              # Tail the audit chain + redis container
 make validate                          # Dry-run $(CONFIG)
 make validate-all                      # Dry-run dev + all 3 prod profiles
 make smoke                             # Curl data + admin endpoints
@@ -262,7 +302,10 @@ run with mock upstream + k6 + post-run summary —
 | TLS handshake fails with self-signed cert | Use `curl -k` (or your client's "ignore cert" flag) — replace with a real cert before going live |
 | Config validation fails | Run `make validate` — error shows file + field with line number |
 | Port already in use | `lsof -i :8443` (or :8080 / :9443), kill the conflict |
-| `etcd connection refused` | Optional dep — either start it (`docker compose up -d`) or set `state.backend: in_memory` |
+| `redis connection refused` | The Makefile auto-starts Redis via `make redis-up`. If it's down: `docker ps --filter name=aegis-redis`; if missing entirely, `make redis-up` recreates it. |
+| `state.backend = redis but this binary was built without the redis feature` | Rebuild: `FEATURES=redis make build` (the Makefile default) — old release binaries from before the Redis-default switch need this once. |
+| Grafana login fails | Default creds on first login: `admin` / `admin` (Grafana then prompts you to change). Boards live at `deploy/grafana/dashboards/`. |
+| `etcd connection refused` | Optional — `docker compose -f deploy/docker-compose.dev.yml up -d etcd` or omit if you use file-based config (default). |
 | `/api/runtime` shows fewer workers than CPUs | The host is reporting CPU quota (k8s, cgroups). `num_cpus::get()` honours that — pin `runtime.workers: <int>` to override |
 | Tests fail on a clean checkout | `cargo test -p <crate>` for the failing crate; full suite output is in `target/debug/deps/<crate>*.log` |
 | Clippy warnings | CI enforces `-D warnings`. Fix locally with `cargo clippy --fix`. |

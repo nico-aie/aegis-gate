@@ -10,6 +10,12 @@ first, then `tests/api/run-all.sh`. Those two together cover the
 contracts the security-toggle plan (P1–P8) and the post-k6 follow-up
 (F-T1..F-T10) introduced.
 
+> **Working with an AI assistant on tests?** Read
+> [`AI-ASSISTANT-RULES.md`](./AI-ASSISTANT-RULES.md) (terse do/don't
+> sheet) and [`AI-ASSISTANT-GUIDE.md`](./AI-ASSISTANT-GUIDE.md)
+> (workflow + review checklist) **before** the first prompt.
+
+
 ## Layout
 
 ```

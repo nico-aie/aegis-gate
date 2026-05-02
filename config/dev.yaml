@@ -4,7 +4,8 @@
 #   - no `${secret:env:…}` references — every credential is inline
 #     so `cargo run -p aegis-bin -- run --config config/dev.yaml`
 #     works without bootstrapping anything else
-#   - `state.backend: in_memory` — no Redis dependency
+#   - `state.backend: redis` — same as production. Spin up the dev
+#     Redis with `make redis-up` (or `make run-dev` triggers it).
 #   - tuned thresholds for single-host k6 / curl smoke runs
 #   - `compliance: null` so detector-flip tests aren't clamped
 #   - one literal admin: user "admin", password "aegis-test-1234"
@@ -60,10 +61,20 @@ upstreams:
     lb: round_robin
 
 # ---------------------------------------------------------------------------
-# State backend — in-memory keeps tests deterministic
+# State backend — Redis. Same shape as production so behaviour is
+# identical between dev and prod. The dev Redis lives in the docker
+# compose at deploy/docker-compose.dev.yml; spin it up with
+# `make redis-up`. Tests that need self-contained synthetic load
+# (no Redis hop) live under tests/hackathon/configs/* and override
+# this block to `in_memory` explicitly — that's stress-test infra,
+# not deployment.
 # ---------------------------------------------------------------------------
 state:
-  backend: in_memory
+  backend: redis
+  redis:
+    urls: ["redis://127.0.0.1:6379"]
+    pool_size: 16
+    timeout: "100ms"
 
 # ---------------------------------------------------------------------------
 # Detectors — every class on, so attack-corpus tests trip them all

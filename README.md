@@ -76,24 +76,26 @@ p95 **286 µs** (run-12); Nuclei 742 templates / 1 431 requests
 ## Quick Start
 
 ```sh
-# 1. One-shot setup — generates self-signed dev cert + release build
-make setup
+make setup       # generate dev cert + release build
+make run-dev     # boot WAF — Redis auto-starts in the background
+make smoke       # in another terminal: curl data + admin endpoints
+make urls        # print every URL + log path
 
-# 2a. First-light — in-memory state, no Redis required
-make run-dev
-
-# 2b. Production default — prod-balanced profile (Redis-backed)
-make redis-up && make run
-
-# 3. Smoke test (in another terminal)
-make smoke
+# Optional — bring up the full observability stack:
+make obs-up      # Prometheus + Grafana + Jaeger
 ```
 
-Run `make help` to see every target. Profile picker (4 starting
-points — see [`docs/operator/profiles.md`](docs/operator/profiles.md)):
+Every config (dev / prod / 3 profiles) uses **Redis** as the state
+backend — same shape across all environments. The Makefile
+auto-spins-up the dev Redis on every `run-*` target; you don't need
+to plumb it manually. `make urls` prints all the relevant URLs +
+where logs land.
+
+Profile picker (4 starting points —
+[`docs/operator/profiles.md`](docs/operator/profiles.md)):
 
 ```sh
-make run-dev              # config/dev.yaml — in-memory, no Redis
+make run-dev              # config/dev.yaml — local dev (inline test creds)
 make run                  # config/profiles/prod-balanced.yaml — DEFAULT
 make run-strict           # config/profiles/prod-strict.yaml — compliance-tightened
 make run-throughput       # config/profiles/prod-high-throughput.yaml — CDN front-door
@@ -104,7 +106,7 @@ make validate-all                                        # validate dev + 3 prof
 make test                                                # cargo test --workspace
 ```
 
-Step-by-step setup + tuning + admin auth:
+Step-by-step setup + tuning + admin auth + URL/logs map:
 [`QUICKSTART.md`](QUICKSTART.md). Production deployment:
 [`deploy/GUIDE.md`](deploy/GUIDE.md). YAML reference:
 [`config/README.md`](config/README.md).
