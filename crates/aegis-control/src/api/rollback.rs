@@ -51,6 +51,7 @@ use crate::interop::mode::ModeStore;
 ///          `mtls_sans_removed`.
 /// **v3** — adds `blacklist_add`, `blacklist_remove`,
 ///          `whitelist_add`, `whitelist_remove`.
+/// **v4** — adds `detector_mask_set` (base mask + per-tier overrides).
 pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
     "mode_set",
     "risk_thresholds_set",
@@ -60,6 +61,7 @@ pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
     "blacklist_remove",
     "whitelist_add",
     "whitelist_remove",
+    "detector_mask_set",
 ];
 
 /// Live state stores the rollback dispatcher needs to apply the
@@ -77,6 +79,7 @@ pub struct RollbackTargets<'a> {
     pub allowed_sans: Option<&'a AllowedSansStore>,
     pub blacklist: Option<&'a AccessListStore>,
     pub whitelist: Option<&'a AccessListStore>,
+    pub detector_mask: Option<&'a aegis_security::detectors::SharedDetectorMask>,
 }
 
 impl<'a> RollbackTargets<'a> {
@@ -88,6 +91,7 @@ impl<'a> RollbackTargets<'a> {
             allowed_sans: None,
             blacklist: None,
             whitelist: None,
+            detector_mask: None,
         }
     }
 }
@@ -174,6 +178,9 @@ pub fn rollback_for_seq(
         }
         "whitelist_add" | "whitelist_remove" => {
             apply_access_list_rollback(seq, &event, "whitelist", targets.whitelist)
+        }
+        "detector_mask_set" => {
+            apply_detector_mask_rollback(seq, &event, targets.detector_mask)
         }
         // Future cases land here. The const ROLLBACKABLE_ACTIONS
         // gate keeps this match aligned.
@@ -404,6 +411,96 @@ fn apply_access_list_rollback(
             after: serde_json::Value::Null,
         })
     }
+}
+
+/// `detector_mask_set` rollback — re-apply the captured base
+/// mask + per-tier overrides snapshot. The audit-chain payload
+/// shape (from `mask_state_to_json` in admin_mutate.rs):
+///
+/// ```json
+/// "diff": {
+///   "before": {
+///     "base":      { "sqli": true, "xss": true, … },
+///     "overrides": { "high":  { … }, "critical": { … } }
+///   },
+///   "after": { … same shape … }
+/// }
+/// ```
+///
+/// The inverse is a single full-state replace via
+/// `SharedDetectorMask::store_state`. Per-tier overrides
+/// not present in `before.overrides` are cleared.
+fn apply_detector_mask_rollback(
+    seq: u64,
+    event: &AuditEvent,
+    mask: Option<&aegis_security::detectors::SharedDetectorMask>,
+) -> Result<RollbackOutcome, RollbackError> {
+    use aegis_security::detectors::{
+        DetectorMask, DetectorMaskBody, MaskState, ALL_TIERS,
+    };
+
+    let mask = mask.ok_or_else(|| {
+        RollbackError::ApplyFailed("detector_mask store not wired into rollback targets".into())
+    })?;
+
+    let before = event
+        .fields
+        .get("diff")
+        .and_then(|d| d.get("before"))
+        .ok_or_else(|| RollbackError::MissingBefore("diff.before".into()))?;
+
+    let base_val = before
+        .get("base")
+        .ok_or_else(|| RollbackError::MissingBefore("diff.before.base".into()))?;
+    let base_body: DetectorMaskBody = serde_json::from_value(base_val.clone())
+        .map_err(|e| RollbackError::ApplyFailed(format!("diff.before.base parse: {e}")))?;
+    let base_mask: DetectorMask = base_body.into();
+
+    let mut state = MaskState::new(base_mask);
+
+    if let Some(overrides) = before.get("overrides").and_then(|v| v.as_object()) {
+        for (tier_name, body_val) in overrides {
+            let tier = crate::api::detectors::parse_tier_str(tier_name)
+                .ok_or_else(|| {
+                    RollbackError::ApplyFailed(format!(
+                        "diff.before.overrides has unknown tier `{tier_name}`",
+                    ))
+                })?;
+            let body: DetectorMaskBody = serde_json::from_value(body_val.clone())
+                .map_err(|e| {
+                    RollbackError::ApplyFailed(format!(
+                        "diff.before.overrides.{tier_name} parse: {e}"
+                    ))
+                })?;
+            state = state.with_override(tier, Some(body.into()));
+        }
+    }
+
+    // Snapshot live for the after-payload before swapping.
+    let live_state = mask.load_state();
+    let live_base_body: DetectorMaskBody = live_state.base.into();
+    let mut live_overrides = serde_json::Map::new();
+    for tier in ALL_TIERS {
+        if let Some(m) = live_state.override_for(tier) {
+            let body: DetectorMaskBody = m.into();
+            live_overrides.insert(
+                aegis_security::detectors::tier_str(tier).to_string(),
+                serde_json::to_value(body).unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+
+    mask.store_state(state);
+
+    Ok(RollbackOutcome {
+        rolled_back_to_seq: seq,
+        action: event.action.clone(),
+        before: before.clone(),
+        after: serde_json::json!({
+            "base": live_base_body,
+            "overrides": serde_json::Value::Object(live_overrides),
+        }),
+    })
 }
 
 fn lookup_event(
@@ -660,6 +757,7 @@ mod tests {
         let targets = RollbackTargets {
             mode_store: &mode, risk: Some(&risk),
             allowed_sans: None, blacklist: None, whitelist: None,
+            detector_mask: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -701,6 +799,7 @@ mod tests {
         let targets = RollbackTargets {
             mode_store: &mode, risk: Some(&risk),
             allowed_sans: None, blacklist: None, whitelist: None,
+            detector_mask: None,
         };
         let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
         match err {
@@ -755,7 +854,7 @@ mod tests {
         let targets = RollbackTargets {
             mode_store: &mode, risk: None,
             allowed_sans: Some(&sans),
-            blacklist: None, whitelist: None,
+            blacklist: None, whitelist: None, detector_mask: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -792,7 +891,7 @@ mod tests {
         let targets = RollbackTargets {
             mode_store: &mode, risk: None,
             allowed_sans: Some(&sans),
-            blacklist: None, whitelist: None,
+            blacklist: None, whitelist: None, detector_mask: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -888,6 +987,7 @@ mod tests {
             allowed_sans: None,
             blacklist: Some(&blacklist),
             whitelist: None,
+            detector_mask: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "blacklist_add");
@@ -910,6 +1010,7 @@ mod tests {
             allowed_sans: None,
             blacklist: Some(&blacklist),
             whitelist: None,
+            detector_mask: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "blacklist_remove");
@@ -941,6 +1042,7 @@ mod tests {
             allowed_sans: None,
             blacklist: Some(&blacklist),
             whitelist: Some(&whitelist),
+            detector_mask: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "whitelist_add");
@@ -984,6 +1086,7 @@ mod tests {
             allowed_sans: None,
             blacklist: Some(&blacklist),
             whitelist: None,
+            detector_mask: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.before["already_gone"], true);
@@ -999,10 +1102,163 @@ mod tests {
         let targets = RollbackTargets {
             mode_store: &mode, risk: None,
             allowed_sans: Some(&sans),
-            blacklist: None, whitelist: None,
+            blacklist: None, whitelist: None, detector_mask: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert!(outcome.before["allowed"].as_array().unwrap().is_empty());
         assert!(sans.current().is_empty());
+    }
+
+    // ---------------- v4 — detector_mask_set ----------------
+
+    fn full_mask_body(all_on: bool) -> serde_json::Value {
+        serde_json::json!({
+            "sqli": all_on, "xss": all_on, "path_traversal": all_on,
+            "ssrf": all_on, "header_injection": all_on, "body_abuse": all_on,
+            "recon": all_on, "brute_force": all_on,
+        })
+    }
+
+    fn detector_mask_event(
+        before: serde_json::Value,
+        after: serde_json::Value,
+    ) -> AuditEvent {
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "req-mask".into(),
+            class: AuditClass::Admin,
+            tenant_id: None,
+            tier: None,
+            action: "detector_mask_set".into(),
+            reason: "operator updated detector mask".into(),
+            client_ip: String::new(),
+            route_id: None,
+            rule_id: None,
+            risk_score: None,
+            fields: serde_json::json!({
+                "actor": "admin",
+                "diff": { "before": before, "after": after },
+                "resource": "/api/detectors",
+            }),
+        }
+    }
+
+    #[test]
+    fn detector_mask_rollback_re_applies_base() {
+        use aegis_security::detectors::{DetectorMask, SharedDetectorMask};
+        let ring = Arc::new(AuditRing::new());
+        // Operator went all-on → recon-off. Roll back to all-on.
+        let mut after_body = full_mask_body(true);
+        after_body["recon"] = serde_json::json!(false);
+        let seq = ring.record(detector_mask_event(
+            serde_json::json!({ "base": full_mask_body(true), "overrides": {} }),
+            serde_json::json!({ "base": after_body,           "overrides": {} }),
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        // Live mask currently has recon: false (post-mutation).
+        let live_mask = DetectorMask::all_enabled();
+        let mut live_recon_off = live_mask;
+        live_recon_off.set(aegis_security::detectors::DetectorClass::Recon, false);
+        let mask = SharedDetectorMask::new(live_recon_off);
+
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None,
+            detector_mask: Some(&mask),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "detector_mask_set");
+
+        // After rollback, the live mask should have recon=true again.
+        let restored = mask.load_state();
+        assert!(restored
+            .base
+            .is_enabled(aegis_security::detectors::DetectorClass::Recon));
+    }
+
+    #[test]
+    fn detector_mask_rollback_re_applies_overrides() {
+        use aegis_security::detectors::{DetectorMask, SharedDetectorMask};
+        let ring = Arc::new(AuditRing::new());
+        // Before: base all-on + `high` override with recon-off.
+        // After: base all-on + no overrides (operator cleared the override).
+        // Rollback should re-add the `high` override.
+        let mut high_override = full_mask_body(true);
+        high_override["recon"] = serde_json::json!(false);
+        let seq = ring.record(detector_mask_event(
+            serde_json::json!({
+                "base": full_mask_body(true),
+                "overrides": { "high": high_override },
+            }),
+            serde_json::json!({
+                "base": full_mask_body(true),
+                "overrides": {},
+            }),
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let mask = SharedDetectorMask::new(DetectorMask::all_enabled());
+
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None,
+            detector_mask: Some(&mask),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "detector_mask_set");
+
+        let restored = mask.load_state();
+        let high_mask = restored.override_for(
+            aegis_core::Tier::High,
+        ).expect("high override should be restored");
+        assert!(!high_mask.is_enabled(
+            aegis_security::detectors::DetectorClass::Recon
+        ));
+    }
+
+    #[test]
+    fn detector_mask_rollback_without_store_fails() {
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(detector_mask_event(
+            serde_json::json!({ "base": full_mask_body(true), "overrides": {} }),
+            serde_json::json!({ "base": full_mask_body(false), "overrides": {} }),
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let err = rollback_for_seq(
+            &ring, seq, &RollbackTargets::mode_only(&mode),
+        ).unwrap_err();
+        match err {
+            RollbackError::ApplyFailed(msg) => {
+                assert!(msg.contains("detector_mask store not wired"), "got: {msg}");
+            }
+            other => panic!("expected ApplyFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detector_mask_rollback_unknown_tier_surfaces_error() {
+        use aegis_security::detectors::{DetectorMask, SharedDetectorMask};
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(detector_mask_event(
+            serde_json::json!({
+                "base": full_mask_body(true),
+                "overrides": { "garbage_tier": full_mask_body(false) },
+            }),
+            serde_json::json!({ "base": full_mask_body(true), "overrides": {} }),
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let mask = SharedDetectorMask::new(DetectorMask::all_enabled());
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None,
+            detector_mask: Some(&mask),
+        };
+        let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
+        match err {
+            RollbackError::ApplyFailed(msg) => {
+                assert!(msg.contains("garbage_tier"), "got: {msg}");
+            }
+            other => panic!("expected ApplyFailed, got {other:?}"),
+        }
     }
 }

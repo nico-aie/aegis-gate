@@ -411,6 +411,7 @@ const ROLLBACKABLE_ACTIONS = [
   'blacklist_remove',        // v3
   'whitelist_add',           // v3
   'whitelist_remove',        // v3
+  'detector_mask_set',       // v4
 ];
 
 // MTLS-T7 — Allowed SAN allowlist. Read once + on demand;
