@@ -36,6 +36,7 @@ use aegis_core::audit::{AuditClass, AuditEvent};
 use serde::Serialize;
 
 use crate::api::audit::AuditRing;
+use crate::api::blacklist::AccessListStore;
 use crate::api::mtls::AllowedSansStore;
 use crate::interop::headers::Mode;
 use crate::interop::mode::ModeStore;
@@ -48,11 +49,17 @@ use crate::interop::mode::ModeStore;
 /// **v1** — `mode_set` only.
 /// **v2** — adds `risk_thresholds_set`, `mtls_sans_set`,
 ///          `mtls_sans_removed`.
+/// **v3** — adds `blacklist_add`, `blacklist_remove`,
+///          `whitelist_add`, `whitelist_remove`.
 pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
     "mode_set",
     "risk_thresholds_set",
     "mtls_sans_set",
     "mtls_sans_removed",
+    "blacklist_add",
+    "blacklist_remove",
+    "whitelist_add",
+    "whitelist_remove",
 ];
 
 /// Live state stores the rollback dispatcher needs to apply the
@@ -68,12 +75,20 @@ pub struct RollbackTargets<'a> {
     pub mode_store: &'a ModeStore,
     pub risk: Option<&'a aegis_security::risk::RiskTracker>,
     pub allowed_sans: Option<&'a AllowedSansStore>,
+    pub blacklist: Option<&'a AccessListStore>,
+    pub whitelist: Option<&'a AccessListStore>,
 }
 
 impl<'a> RollbackTargets<'a> {
     /// Convenience constructor — only mode-store wired (v1 shape).
     pub fn mode_only(mode_store: &'a ModeStore) -> Self {
-        Self { mode_store, risk: None, allowed_sans: None }
+        Self {
+            mode_store,
+            risk: None,
+            allowed_sans: None,
+            blacklist: None,
+            whitelist: None,
+        }
     }
 }
 
@@ -153,6 +168,12 @@ pub fn rollback_for_seq(
         "risk_thresholds_set" => apply_risk_thresholds_rollback(seq, &event, targets.risk),
         "mtls_sans_set" | "mtls_sans_removed" => {
             apply_mtls_sans_rollback(seq, &event, targets.allowed_sans)
+        }
+        "blacklist_add" | "blacklist_remove" => {
+            apply_access_list_rollback(seq, &event, "blacklist", targets.blacklist)
+        }
+        "whitelist_add" | "whitelist_remove" => {
+            apply_access_list_rollback(seq, &event, "whitelist", targets.whitelist)
         }
         // Future cases land here. The const ROLLBACKABLE_ACTIONS
         // gate keeps this match aligned.
@@ -307,6 +328,82 @@ fn apply_mtls_sans_rollback(
         before: serde_json::json!({ "allowed": before_list }),
         after: serde_json::json!({ "allowed": live }),
     })
+}
+
+/// `{kind}_add` / `{kind}_remove` rollback for blacklist + whitelist.
+/// The audit payloads carry single entries, not whole lists:
+/// - `_add`    audit: `before = null`,  `after  = entry` →
+///                    inverse = delete(entry.id)
+/// - `_remove` audit: `before = entry`, `after  = null`  →
+///                    inverse = put(entry)
+///
+/// Validation matches the live store's contract: bad-shape audit
+/// payloads (parse fail / kind mismatch / missing id) surface as
+/// `ApplyFailed` with a clear message.
+fn apply_access_list_rollback(
+    seq: u64,
+    event: &AuditEvent,
+    label: &'static str,  // "blacklist" or "whitelist"
+    store: Option<&AccessListStore>,
+) -> Result<RollbackOutcome, RollbackError> {
+    let store = store.ok_or_else(|| {
+        RollbackError::ApplyFailed(format!("{label} store not wired into rollback targets"))
+    })?;
+
+    let diff = event
+        .fields
+        .get("diff")
+        .ok_or_else(|| RollbackError::MissingBefore("diff".into()))?;
+
+    let is_add = event.action.ends_with("_add");
+
+    if is_add {
+        // Roll back an add → DELETE the entry that was added.
+        // The audit's `after` carries the entry; pull its id.
+        let entry_val = diff
+            .get("after")
+            .ok_or_else(|| RollbackError::MissingBefore("diff.after".into()))?;
+        let id = entry_val
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RollbackError::MissingBefore("diff.after.id".into()))?;
+        if !store.delete(id) {
+            // Already gone — operator may have manually deleted.
+            // Idempotent: report success with empty after.
+            return Ok(RollbackOutcome {
+                rolled_back_to_seq: seq,
+                action: event.action.clone(),
+                before: serde_json::json!({ "removed_id": id, "already_gone": true }),
+                after: serde_json::Value::Null,
+            });
+        }
+        Ok(RollbackOutcome {
+            rolled_back_to_seq: seq,
+            action: event.action.clone(),
+            before: serde_json::json!({ "removed_id": id }),
+            after: serde_json::Value::Null,
+        })
+    } else {
+        // Roll back a remove → PUT the entry back.
+        let entry_val = diff
+            .get("before")
+            .ok_or_else(|| RollbackError::MissingBefore("diff.before".into()))?;
+        let entry: crate::api::blacklist::AccessListEntry =
+            serde_json::from_value(entry_val.clone()).map_err(|e| {
+                RollbackError::ApplyFailed(format!(
+                    "diff.before is not an AccessListEntry: {e}"
+                ))
+            })?;
+        let restored = store
+            .put(entry.clone())
+            .map_err(RollbackError::ApplyFailed)?;
+        Ok(RollbackOutcome {
+            rolled_back_to_seq: seq,
+            action: event.action.clone(),
+            before: serde_json::to_value(&restored).unwrap_or(serde_json::Value::Null),
+            after: serde_json::Value::Null,
+        })
+    }
 }
 
 fn lookup_event(
@@ -561,7 +658,8 @@ mod tests {
         let risk = aegis_security::risk::RiskTracker::new(&risk_cfg);
 
         let targets = RollbackTargets {
-            mode_store: &mode, risk: Some(&risk), allowed_sans: None,
+            mode_store: &mode, risk: Some(&risk),
+            allowed_sans: None, blacklist: None, whitelist: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -601,7 +699,8 @@ mod tests {
         let risk_cfg = aegis_core::config::RiskConfig::default();
         let risk = aegis_security::risk::RiskTracker::new(&risk_cfg);
         let targets = RollbackTargets {
-            mode_store: &mode, risk: Some(&risk), allowed_sans: None,
+            mode_store: &mode, risk: Some(&risk),
+            allowed_sans: None, blacklist: None, whitelist: None,
         };
         let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
         match err {
@@ -654,7 +753,9 @@ mod tests {
             "c.example.com".into(),
         ]);
         let targets = RollbackTargets {
-            mode_store: &mode, risk: None, allowed_sans: Some(&sans),
+            mode_store: &mode, risk: None,
+            allowed_sans: Some(&sans),
+            blacklist: None, whitelist: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -689,7 +790,9 @@ mod tests {
             "b.example.com".into(),
         ]);
         let targets = RollbackTargets {
-            mode_store: &mode, risk: None, allowed_sans: Some(&sans),
+            mode_store: &mode, risk: None,
+            allowed_sans: Some(&sans),
+            blacklist: None, whitelist: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -715,6 +818,177 @@ mod tests {
         }
     }
 
+    // ---------------- v3 — blacklist / whitelist add+remove ----------------
+
+    fn access_list_event(
+        action: &str,
+        kind: &str,
+        id: &str,
+        value: &str,
+    ) -> AuditEvent {
+        let entry = serde_json::json!({
+            "id": id,
+            "kind": "ip",
+            "value": value,
+            "note": "qa",
+            "expires_at": null,
+            "bypass": [],
+            "created_at": "2026-05-02T00:00:00Z",
+        });
+        let (before, after) = if action.ends_with("_add") {
+            (serde_json::Value::Null, entry)
+        } else {
+            (entry, serde_json::Value::Null)
+        };
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: format!("req-{action}-{id}"),
+            class: AuditClass::Admin,
+            tenant_id: None,
+            tier: None,
+            action: action.into(),
+            reason: format!("operator {} access-list entry", if action.ends_with("_add") { "added" } else { "removed" }),
+            client_ip: String::new(),
+            route_id: None,
+            rule_id: None,
+            risk_score: None,
+            fields: serde_json::json!({
+                "actor": "admin",
+                "diff": { "before": before, "after": after },
+                "resource": format!("/api/{kind}"),
+            }),
+        }
+    }
+
+    #[test]
+    fn blacklist_add_rollback_deletes_the_entry() {
+        let ring = Arc::new(AuditRing::new());
+        let blacklist = AccessListStore::new();
+        // Pretend operator added "bl-1" → 203.0.113.7. Live store
+        // mirrors that.
+        blacklist.put(crate::api::blacklist::AccessListEntry {
+            id: "bl-1".into(),
+            kind: "ip".into(),
+            value: "203.0.113.7".into(),
+            note: "qa".into(),
+            expires_at: None,
+            bypass: vec![],
+            created_at: chrono::Utc::now(),
+        }).unwrap();
+        assert_eq!(blacklist.list().len(), 1);
+
+        let seq = ring.record(access_list_event(
+            "blacklist_add", "blacklist", "bl-1", "203.0.113.7",
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let targets = RollbackTargets {
+            mode_store: &mode,
+            risk: None,
+            allowed_sans: None,
+            blacklist: Some(&blacklist),
+            whitelist: None,
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "blacklist_add");
+        assert_eq!(outcome.before["removed_id"], "bl-1");
+        assert_eq!(blacklist.list().len(), 0);
+    }
+
+    #[test]
+    fn blacklist_remove_rollback_re_adds_entry() {
+        let ring = Arc::new(AuditRing::new());
+        let blacklist = AccessListStore::new();
+        // Operator just removed "bl-1"; live store is empty.
+        let seq = ring.record(access_list_event(
+            "blacklist_remove", "blacklist", "bl-1", "203.0.113.7",
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let targets = RollbackTargets {
+            mode_store: &mode,
+            risk: None,
+            allowed_sans: None,
+            blacklist: Some(&blacklist),
+            whitelist: None,
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "blacklist_remove");
+        assert_eq!(blacklist.list().len(), 1);
+        assert_eq!(blacklist.list()[0].value, "203.0.113.7");
+    }
+
+    #[test]
+    fn whitelist_add_rollback_deletes_via_whitelist_store() {
+        let ring = Arc::new(AuditRing::new());
+        let blacklist = AccessListStore::new();
+        let whitelist = AccessListStore::new();
+        whitelist.put(crate::api::blacklist::AccessListEntry {
+            id: "wl-1".into(),
+            kind: "cidr".into(),
+            value: "10.0.0.0/8".into(),
+            note: "internal".into(),
+            expires_at: None,
+            bypass: vec!["all".into()],
+            created_at: chrono::Utc::now(),
+        }).unwrap();
+        let seq = ring.record(access_list_event(
+            "whitelist_add", "whitelist", "wl-1", "10.0.0.0/8",
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let targets = RollbackTargets {
+            mode_store: &mode,
+            risk: None,
+            allowed_sans: None,
+            blacklist: Some(&blacklist),
+            whitelist: Some(&whitelist),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "whitelist_add");
+        // Whitelist now empty; blacklist untouched.
+        assert_eq!(whitelist.list().len(), 0);
+        assert_eq!(blacklist.list().len(), 0);
+    }
+
+    #[test]
+    fn access_list_rollback_without_store_fails() {
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(access_list_event(
+            "blacklist_add", "blacklist", "bl-1", "1.2.3.4",
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let err = rollback_for_seq(
+            &ring, seq, &RollbackTargets::mode_only(&mode),
+        ).unwrap_err();
+        match err {
+            RollbackError::ApplyFailed(msg) => {
+                assert!(msg.contains("blacklist store not wired"), "got: {msg}");
+            }
+            other => panic!("expected ApplyFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn access_list_add_rollback_idempotent_when_already_gone() {
+        // Operator added bl-1, then manually removed it before
+        // hitting the rollback button. The rollback should still
+        // succeed with `already_gone: true` rather than 404.
+        let ring = Arc::new(AuditRing::new());
+        let blacklist = AccessListStore::new();
+        let seq = ring.record(access_list_event(
+            "blacklist_add", "blacklist", "bl-orphan", "1.2.3.4",
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let targets = RollbackTargets {
+            mode_store: &mode,
+            risk: None,
+            allowed_sans: None,
+            blacklist: Some(&blacklist),
+            whitelist: None,
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.before["already_gone"], true);
+    }
+
     #[test]
     fn mtls_sans_rollback_to_empty_list() {
         // Operator went [] → [a]; rolling back drops [a] back to [].
@@ -723,7 +997,9 @@ mod tests {
         let mode = ModeStore::new(Mode::Enforce);
         let sans = AllowedSansStore::from(vec!["a.example.com".to_string()]);
         let targets = RollbackTargets {
-            mode_store: &mode, risk: None, allowed_sans: Some(&sans),
+            mode_store: &mode, risk: None,
+            allowed_sans: Some(&sans),
+            blacklist: None, whitelist: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert!(outcome.before["allowed"].as_array().unwrap().is_empty());

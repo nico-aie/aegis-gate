@@ -320,6 +320,8 @@ async fn handle_rollback(
         mode_store: &rt.modes,
         risk: Some(&services.risk),
         allowed_sans: services.allowed_sans.as_ref(),
+        blacklist: Some(&services.blacklist),
+        whitelist: Some(&services.whitelist),
     };
 
     match rollback_for_seq(&services.audit_ring, seq, &targets) {

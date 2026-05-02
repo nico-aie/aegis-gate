@@ -407,6 +407,10 @@ const ROLLBACKABLE_ACTIONS = [
   'risk_thresholds_set',     // v2
   'mtls_sans_set',           // v2
   'mtls_sans_removed',       // v2
+  'blacklist_add',           // v3
+  'blacklist_remove',        // v3
+  'whitelist_add',           // v3
+  'whitelist_remove',        // v3
 ];
 
 // MTLS-T7 — Allowed SAN allowlist. Read once + on demand;
