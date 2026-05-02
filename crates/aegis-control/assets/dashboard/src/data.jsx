@@ -530,6 +530,26 @@ function useTiersApi() {
   return useApi('/api/tiers', { intervalMs: 30000, fallback: { tiers: [] } });
 }
 
+// CQF-T3 — detector mask read + audit-mutated PUT. The PUT
+// handler (handle_detectors_put) lives in admin_mutate.rs;
+// body shape per `DetectorsPutBody` in detectors.rs:
+//   { "mask": {sqli, xss, path_traversal, ssrf, header_injection,
+//              body_abuse, recon, brute_force},
+//     "overrides": { "<tier>": {…}|null, … } }
+function useDetectorsApi() {
+  return useApi('/api/detectors', { intervalMs: 30000, fallback: null });
+}
+async function detectorsPut(body) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/detectors', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+}
+
 // Hook: cluster, slo, certs, alerts, gitops, upstreams (Tracking page)
 // HACK-T1 — fallbacks switched from static fixtures to `null`
 // per Hackathon v2.3 §2.2 ("Dashboard uses... local state, or
@@ -780,4 +800,6 @@ Object.assign(window, {
   adminLogout,
   // CQF-T2 — Blacklist + Whitelist add/delete
   accessListAdd, accessListDelete,
+  // CQF-T3 — Detector mask read + audit-mutated PUT
+  useDetectorsApi, detectorsPut,
 });

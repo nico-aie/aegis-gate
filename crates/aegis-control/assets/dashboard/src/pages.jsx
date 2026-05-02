@@ -1373,6 +1373,163 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
 }
 
 // ============== TIER CONFIG ==============
+// CQF-T3 — detector mask editor. Audit-mutated edit of the
+// base mask + per-tier overrides via `PUT /api/detectors`.
+// Compliance-locked classes (sqli/xss/path_traversal/ssrf when
+// any compliance mode is active) render as a disabled toggle.
+const MASK_CLASSES = ['sqli', 'xss', 'path_traversal', 'ssrf', 'header_injection', 'body_abuse', 'recon', 'brute_force'];
+
+function DetectorMaskCard() {
+  const api = window.useDetectorsApi();
+  const baseMask = api.data?.mask || null;
+  const overrides = api.data?.overrides || {};
+  const lockedClasses = api.data?.locked_classes || [];
+  const complianceModes = api.data?.compliance_modes || [];
+
+  const [busy, setBusy] = useStateP(false);
+  const [editing, setEditing] = useStateP(null);
+  const [draft, setDraft] = useStateP({});
+
+  if (!baseMask) {
+    return (
+      <div className="card" style={{ marginBottom: 12, padding: 12 }}>
+        <div className="card-head">
+          <div className="card-title">Detector Mask</div>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--ink-dim)', padding: 8 }}>
+          Loading detector mask…
+        </div>
+      </div>
+    );
+  }
+
+  function startEdit(target, current) {
+    setEditing(target);
+    setDraft({ ...current });
+  }
+
+  async function saveEdit() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const body = editing === 'base'
+        ? { mask: draft }
+        : { overrides: { [editing]: draft } };
+      const r = await window.detectorsPut(body);
+      if (r.ok) {
+        window.aegisToast(`Saved detector mask · ${editing}`, 'ok');
+        setEditing(null);
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        window.aegisToast(`Save failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Save error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearOverride(tierName) {
+    if (busy) return;
+    if (!confirm(`Clear ${tierName} override and inherit from base?`)) return;
+    setBusy(true);
+    try {
+      const r = await window.detectorsPut({ overrides: { [tierName]: null } });
+      if (r.ok) {
+        window.aegisToast(`Cleared ${tierName} override`, 'ok');
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        window.aegisToast(`Clear failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Clear error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const renderRow = (label, mask, target) => {
+    const isEditing = editing === target;
+    const view = isEditing ? draft : mask;
+    return (
+      <div key={target} style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>{label}</div>
+        <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {MASK_CLASSES.map(cls => {
+            const enabled = !!view[cls];
+            const locked = lockedClasses.includes(cls);
+            return (
+              <button
+                key={cls}
+                onClick={() => {
+                  if (!isEditing || locked) return;
+                  setDraft(d => ({ ...d, [cls]: !d[cls] }));
+                }}
+                disabled={!isEditing || locked || busy}
+                title={locked ? `${cls} is pinned by active compliance mode` : (enabled ? 'enabled — click to disable' : 'disabled — click to enable')}
+                className={`pill ${enabled ? 'ok' : 'neutral'}`}
+                style={{
+                  fontSize: 10,
+                  cursor: isEditing && !locked ? 'pointer' : 'default',
+                  opacity: locked ? 0.6 : 1,
+                  padding: '2px 8px',
+                  border: isEditing && !locked ? '1px dashed var(--hairline)' : '1px solid transparent',
+                }}
+              >
+                {locked && '🔒 '}{cls}{!enabled && ' · off'}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {isEditing ? (
+            <>
+              <button className="btn primary" disabled={busy} onClick={saveEdit} style={{ fontSize: 11, padding: '4px 10px' }}>Save</button>
+              <button className="btn" disabled={busy} onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '4px 10px' }}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button className="btn" disabled={busy || editing !== null} onClick={() => startEdit(target, mask)} style={{ fontSize: 11, padding: '4px 10px' }}>Edit</button>
+              {target !== 'base' && (
+                <button className="btn danger" disabled={busy || editing !== null} onClick={() => clearOverride(target)} style={{ fontSize: 11, padding: '4px 10px' }}>Clear</button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 12, padding: 0 }}>
+      <div className="card-head" style={{ padding: 12 }}>
+        <div>
+          <div className="card-title">Detector Mask</div>
+          <div className="card-subtitle">
+            Edit the base mask or per-tier overrides. Locked classes
+            (🔒) are pinned by active compliance modes
+            {complianceModes.length > 0 && (
+              <> ({complianceModes.join(', ')})</>
+            )}
+            . Audit-mutated; takes effect within one hot-reload tick.
+          </div>
+        </div>
+      </div>
+      {renderRow('base', baseMask, 'base')}
+      {Object.keys(overrides).length === 0 ? (
+        <div style={{ borderTop: '1px solid var(--hairline)', padding: 10, fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+          No per-tier overrides configured. Use Edit on a tier-specific row below to add one — or PUT a JSON body with the desired tier name to /api/detectors.
+        </div>
+      ) : (
+        Object.entries(overrides).map(([tier, mask]) => renderRow(tier, mask, tier))
+      )}
+    </div>
+  );
+}
+
 function PageTierConfig() {
   const tiersApi = window.useTiersApi();
   const routesApi = window.useRoutesApi();
@@ -1412,6 +1569,8 @@ function PageTierConfig() {
           </button>
         </div>
       </div>
+
+      <DetectorMaskCard />
 
       <div className="split-list">
         <div className="left">
