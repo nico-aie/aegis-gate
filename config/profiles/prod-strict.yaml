@@ -1,0 +1,159 @@
+# Aegis-Gate — Profile: prod-strict
+#
+# === When to use ===
+# Compliance-heavy deployments. Healthcare (HIPAA), payments (PCI),
+# financial services (SOC2 + GDPR + PCI), public-sector. Tradeoff
+# is "hold the line first, performance second."
+#
+# === Empirical numbers (extrapolated from sweep — full run gated on
+# operator's compliance-mode configuration) ===
+# Median latency:   ~2.5 ms (some compliance pinning adds detector cost)
+# p95 latency:      ~4 ms
+# p99 latency:      ~10 ms
+# Legit OK rate:    ~95 % (tighter thresholds catch more)
+# Detection rate:   ~85 % (every detector on + tighter score)
+# Throughput:       ~250 RPS at 10 / 10 VUs
+#
+# === Tradeoffs vs prod-balanced ===
+# - `risk.thresholds.challenge_at` 30 (was 40) — earlier intervention
+# - `risk.thresholds.block_at`     60 (was 80) — earlier hard-block
+# - `risk.strikes.block_at`        25 (was 50) — quicker permanent block
+# - `compliance.modes` populated   → SQL/XSS/Path/SSRF detectors LOCKED
+#                                    (cannot be disabled via dashboard
+#                                    PUT /api/detectors); audit chain
+#                                    captures every mode toggle
+# - `audit.retention: 90d` (was 7d) — meets common compliance bars
+# - `audit.pseudonymize_ip: true`   — GDPR-friendly storage
+# - Tighter rate limit (3 k/min vs 6 k) — auth/PII endpoint protection
+# - `detectors` fully enabled including `recon` (compliance scanners
+#   want every signal; noise is operator's problem)
+#
+# === Required edits before booting ===
+# Same as prod-balanced + populate `compliance.modes` per your
+# regulatory profile. The empty default applies no clamps; adding
+# any mode locks the detector mask classes that mode pins.
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8443"
+      tls: true
+  admin:
+    bind: "127.0.0.1:9443"
+
+tls:
+  min_version: "1.2"   # bump to "1.3" for SOC2 Type II / FedRAMP
+  certificates:
+    - cert_path: "/etc/aegis/certs/api.example.com.pem"   # REPLACE
+      key_ref:   "/etc/aegis/certs/api.example.com.key"   # REPLACE
+      hosts:     ["api.example.com"]
+  hsts:
+    max_age: 63072000          # 2 years (max preload-list eligible)
+    include_subdomains: true
+    preload: true              # only after submitting to hstspreload.org
+  client_auth:
+    mode: required             # mTLS REQUIRED for compliance use cases
+    ca_bundle: "/etc/aegis/ca/clients.pem"
+    apply_to: [admin]
+    allowed_sans: []           # operators add their org SANs
+
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: app-pool
+
+upstreams:
+  app-pool:
+    members:
+      - addr: "127.0.0.1:9999"   # REPLACE
+    lb: round_robin
+
+state:
+  backend: redis
+  redis:
+    urls: ["${secret:redis_url}"]   # secret-manager resolved
+    pool_size: 32
+    timeout: "100ms"
+
+# Tighter risk thresholds — challenge at 30, block at 60, permanent
+# strike-block at 25 strikes.
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 25      # bumped (was 20)
+    detector_hit: 30     # bumped (was 25)
+    bot_unknown: 15      # bumped (was 10)
+    repeat_offender: 20  # bumped (was 15)
+  decay_half_life: "10m"
+  thresholds:
+    challenge_at: 30
+    block_at:     60
+  strikes:
+    block_at: 25
+
+load_mode:
+  elevated_rps:    1000
+  critical_rps:    3000
+  sample_interval: 1s
+
+# 90-day retention + pseudonymize IPs at storage time.
+audit:
+  sinks:
+    - jsonl:
+        path: "/var/log/aegis/audit.jsonl"
+  chain:
+    enabled: true
+  retention: "90d"
+  pseudonymize_ip: true
+
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 3000          # tighter than balanced (6k)
+      window: "1m"
+
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: true
+
+# Every detector on. Compliance auditors want every signal even
+# if the operator filters/mutes specific ones.
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: true }
+  brute_force:      { enabled: true }
+
+# Compliance modes — populate these per your regulatory profile.
+# Empty default = no clamp; any mode locks the SQL/XSS/Path/SSRF
+# classes from being disabled at runtime.
+compliance:
+  modes: []      # e.g. ["pci_dss"], ["hipaa", "gdpr"], ["soc2", "fips"]
+
+observability:
+  prometheus:
+    bind: "127.0.0.1:9090"
+    enabled: true
+  otel:
+    endpoint: "${secret:otel_endpoint}"
+    service_name: "aegis-waf"
+
+admin:
+  bind: "127.0.0.1:9443"
+  identity:
+    user: admin
+    password_hash: "${secret:admin_password_hash}"
+
+interop:
+  enabled: true
+  audit_path: "/var/log/aegis/contract-audit.jsonl"
+  control_secret: "${secret:waf_control_secret}"

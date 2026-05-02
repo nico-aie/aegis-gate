@@ -1,17 +1,23 @@
 # `config/` — WAF configuration files
 
-Four YAML configs cover every supported deployment shape. Pick one,
-run `waf validate`, then run `waf run`.
+Several YAML configs cover every supported deployment shape. Pick
+one, run `waf validate`, then run `waf run`. Three opinionated
+production profiles live under `profiles/`; pick by reading
+[`docs/operator/profiles.md`](../docs/operator/profiles.md) first.
 
 ```
 config/
-├── README.md           # This guide
-├── prod.yaml           # Production template — secrets via ${secret:…} resolvers
-├── dev.yaml            # Single-node dev / CI — passwords inline, no Redis
-├── cluster-a.yaml      # HA fixture node A — Redis-backed shared state
-├── cluster-b.yaml      # HA fixture node B — pairs with cluster-a.yaml
+├── README.md                       # This guide
+├── prod.yaml                       # Generic production template
+├── dev.yaml                        # Single-node dev / CI
+├── cluster-a.yaml                  # HA fixture node A — Redis-backed
+├── cluster-b.yaml                  # HA fixture node B — pairs with cluster-a
+├── profiles/                       # Opinionated production profiles
+│   ├── prod-balanced.yaml          #   Default — sane production defaults
+│   ├── prod-high-throughput.yaml   #   Throughput-first; recon + brute_force OFF
+│   └── prod-strict.yaml            #   Compliance-first; mTLS required, 90d audit
 └── rules/
-    └── example.yaml    # Custom rule examples
+    └── example.yaml                # Custom rule examples
 ```
 
 ---
@@ -20,11 +26,16 @@ config/
 
 | Use case | File | Run command |
 |---|---|---|
-| Production single node | `prod.yaml` | `waf run --config config/prod.yaml` |
+| **Default production** | `profiles/prod-balanced.yaml` | `waf run --config config/profiles/prod-balanced.yaml` |
+| Throughput-first prod (CDN-fronted, ≥ 5 k RPS sustained) | `profiles/prod-high-throughput.yaml` | `waf run --config config/profiles/prod-high-throughput.yaml` |
+| Compliance-driven prod (PCI / HIPAA / SOC2 / GDPR / FedRAMP) | `profiles/prod-strict.yaml` | `waf run --config config/profiles/prod-strict.yaml` |
+| Custom production (none of the above fit) | fork `prod.yaml` | edit, then `waf validate` to catch drift |
 | Local development | `dev.yaml` | `waf run --config config/dev.yaml` |
 | k6 / integration tests | `dev.yaml` | (same as dev — load_mode thresholds match the k6 scripts) |
 | Two-node HA cluster | `cluster-a.yaml` + `cluster-b.yaml` | one `waf run` per node + Redis + HAProxy |
-| Anything else | fork `prod.yaml` | edit, then `waf validate` to catch drift |
+
+Profile picking guide with empirical numbers:
+[`docs/operator/profiles.md`](../docs/operator/profiles.md).
 
 The default config path when no `--config` is passed is `config/prod.yaml`.
 

@@ -1,0 +1,191 @@
+# Aegis-Gate — Profile: prod-balanced
+#
+# === When to use ===
+# Default production. 99 % of deployments should start here.
+# All detectors on. Sane thresholds. Real upstream + Redis state.
+#
+# === Empirical numbers (run-profile-sweep-20260502, A-baseline) ===
+# Median latency:   1.89 ms
+# p95 latency:      2.90 ms
+# p99 latency:      4.52 ms
+# Legit OK rate:    99 %
+# Detection rate:   80 % (corpus mix; prod with real fan-out: ~85 %)
+# Throughput:       344 RPS at 10 / 10 VUs (scales linearly to ~3 k+ RPS)
+#
+# === Tradeoffs ===
+# vs `prod-high-throughput` — pays 1-2 ms p99 for stronger detection.
+# vs `prod-strict`          — easier on legitimate traffic; admits more.
+#
+# === Required edits before booting ===
+# 1. Replace `certificates:` block with real cert paths or wire `acme:`
+# 2. Replace `admin.identity.password_hash` with a hash from
+#      ./target/release/waf admin set-password
+# 3. Replace `redis.url` if your Redis lives elsewhere
+# 4. Set `interop.control_secret` from a secret manager (do NOT keep
+#    the placeholder string in production)
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8443"
+      tls: true
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+tls:
+  min_version: "1.2"
+  certificates:
+    - cert_path: "config/certs/dev.crt"      # REPLACE
+      key_ref:   "config/certs/dev.key"      # REPLACE
+      hosts:     ["api.example.com"]
+  hsts:
+    max_age: 31536000
+    include_subdomains: true
+    preload: false
+
+# ---------------------------------------------------------------------------
+# Routes — single catch-all so every path is inspected
+# ---------------------------------------------------------------------------
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: app-pool
+
+# ---------------------------------------------------------------------------
+# Upstream pools
+# ---------------------------------------------------------------------------
+upstreams:
+  app-pool:
+    members:
+      - addr: "127.0.0.1:9999"   # REPLACE with real upstream(s)
+    lb: round_robin
+
+# ---------------------------------------------------------------------------
+# State backend — Redis (multi-node-ready). Switch to `in_memory` only
+# for single-node deployments where shared rate-limit counters aren't
+# needed.
+# ---------------------------------------------------------------------------
+state:
+  backend: redis
+  redis:
+    urls: ["redis://127.0.0.1:6379"]  # REPLACE
+    pool_size: 32
+    timeout: "100ms"
+
+# ---------------------------------------------------------------------------
+# Risk scoring — balanced thresholds.
+#   challenge_at: 40  → suspicious requests get a JS challenge (RPS-tier
+#                       enforcement, not a hard block)
+#   block_at:     80  → score sustained at this level → 403
+#   strikes.block_at: 50 → permanent strike-block per IP after 50
+#                          malicious decisions; cleared via dashboard
+# ---------------------------------------------------------------------------
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 40
+    block_at:     80
+  strikes:
+    block_at: 50
+
+# ---------------------------------------------------------------------------
+# Load mode — adaptive degradation under traffic spikes. Tuned for a
+# moderately-sized single instance (~5k RPS sustained capacity).
+# ---------------------------------------------------------------------------
+load_mode:
+  elevated_rps:    1500
+  critical_rps:    4000
+  sample_interval: 1s
+
+# ---------------------------------------------------------------------------
+# Audit chain — 7-day retention; durable jsonl + chain-hash on.
+# ---------------------------------------------------------------------------
+audit:
+  sinks:
+    - jsonl:
+        path: "/var/log/aegis/audit.jsonl"
+  chain:
+    enabled: true
+  retention: "7d"
+  pseudonymize_ip: false
+
+# ---------------------------------------------------------------------------
+# Rate limit — bucket sized for a single instance handling normal
+# user-facing traffic. Adjust the limit upward for cluster
+# deployments where the bucket is shared via Redis.
+# ---------------------------------------------------------------------------
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 6000
+      window: "1m"
+
+# ---------------------------------------------------------------------------
+# Rules — engine on; no custom rules by default. Detector chain handles
+# OWASP shapes; custom rules go in config/rules/*.yaml when needed.
+# ---------------------------------------------------------------------------
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+# ---------------------------------------------------------------------------
+# Detector mask — full default. brute_force ON because production
+# IPs fan out (only the test harness disables it for shared-IP
+# synthetic load).
+# ---------------------------------------------------------------------------
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: true }
+  brute_force:      { enabled: true }
+
+# ---------------------------------------------------------------------------
+# Observability — Prometheus on, OTel optional.
+# ---------------------------------------------------------------------------
+observability:
+  prometheus:
+    bind: "127.0.0.1:9090"
+    enabled: true
+  # otel:
+  #   endpoint: "https://otel.example.com:4318/v1/traces"
+  #   service_name: "aegis-waf"
+
+# ---------------------------------------------------------------------------
+# Admin — argon2id password + TOTP. password_hash regenerated via
+#   ./target/release/waf admin set-password
+# ---------------------------------------------------------------------------
+admin:
+  bind: "127.0.0.1:9443"
+  identity:
+    user: admin
+    password_hash: "REPLACE WITH HASH FROM 'waf admin set-password'"
+
+# ---------------------------------------------------------------------------
+# Interop contract — required for Round-1/2 hackathon scoring; flip
+# `enabled: false` in non-hackathon prod if the contract surface
+# isn't needed.
+# ---------------------------------------------------------------------------
+interop:
+  enabled: true
+  audit_path: "/var/log/aegis/contract-audit.jsonl"
+  control_secret: "REPLACE FROM SECRET MANAGER"

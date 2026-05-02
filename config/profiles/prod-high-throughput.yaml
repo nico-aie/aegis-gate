@@ -1,0 +1,146 @@
+# Aegis-Gate — Profile: prod-high-throughput
+#
+# === When to use ===
+# Throughput-first deployments where p99 budget is tighter than
+# detection coverage. Common shapes:
+#   - CDN-fronted API gateways behind a WAF with their own TLS / WAF
+#   - Cache-heavy traffic where most requests are static-fetch
+#   - Bot-management offloaded to upstream
+#
+# === Empirical numbers (run-profile-sweep-20260502, B-heavy-load) ===
+# Median latency:   1.60 ms  (vs 1.89 ms balanced)
+# p95 latency:      2.29 ms  (vs 2.90 ms balanced)
+# p99 latency:      8.18 ms  (vs 4.52 ms balanced) — heavier load
+# Legit OK rate:    97 %     (vs 99 % balanced — slightly more bouncing)
+# Detection rate:   80 %     (same; recon/brute-force off)
+# Throughput:       417 RPS  (+21 % over balanced under same VU count)
+#
+# === Tradeoffs vs prod-balanced ===
+# - `recon` detector OFF: noisy on legit `/sitemap.xml`,
+#   `/robots.txt`, `/.well-known/*` traffic; saves ~5 % CPU.
+# - `brute_force` detector OFF: state-keeping per-IP costs
+#   memory + tiny CPU. Disable if upstream handles auth shaping.
+# - Tighter `risk.thresholds.challenge_at`: 60 (was 40) → fewer
+#   suspicious requests get challenges; reserves CPU for the
+#   data path.
+# - Larger `rate_limit` bucket: 30k/min vs 6k/min — designed for
+#   a single instance fronting a CDN cache hit-rate.
+# - `load_mode` `critical_rps: 8000` so a sustained 4-8 k RPS
+#   stays in Normal mode (no audit-field stripping).
+#
+# === Required edits before booting ===
+# Same as prod-balanced — see § "Required edits" there.
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8443"
+      tls: true
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+
+tls:
+  min_version: "1.2"
+  certificates:
+    - cert_path: "config/certs/dev.crt"      # REPLACE
+      key_ref:   "config/certs/dev.key"      # REPLACE
+      hosts:     ["api.example.com"]
+  hsts:
+    max_age: 31536000
+    include_subdomains: true
+    preload: false
+
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: app-pool
+
+upstreams:
+  app-pool:
+    members:
+      - addr: "127.0.0.1:9999"   # REPLACE
+    lb: round_robin
+
+state:
+  backend: redis
+  redis:
+    urls: ["redis://127.0.0.1:6379"]  # REPLACE
+    pool_size: 32
+    timeout: "100ms"
+
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 60   # higher than balanced (40)
+    block_at:     80
+  strikes:
+    block_at: 50
+
+# Higher load-mode ceilings so the WAF stays in Normal mode under
+# the higher target RPS.
+load_mode:
+  elevated_rps:    4000
+  critical_rps:    8000
+  sample_interval: 1s
+
+audit:
+  sinks:
+    - jsonl:
+        path: "/var/log/aegis/audit.jsonl"
+  chain:
+    enabled: true
+  retention: "3d"          # shorter than balanced (7d) — high-volume
+  pseudonymize_ip: false
+
+# Bigger bucket for high-RPS deployments behind a CDN / LB.
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 30000
+      window: "1m"
+
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+# Tighter detector mask: recon + brute_force OFF (their hit rates
+# are domain-specific; turn them back on if your upstream needs
+# the protection).
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: false }   # CDN traffic trips this
+  brute_force:      { enabled: false }   # auth shaping at upstream
+
+observability:
+  prometheus:
+    bind: "127.0.0.1:9090"
+    enabled: true
+
+admin:
+  bind: "127.0.0.1:9443"
+  identity:
+    user: admin
+    password_hash: "REPLACE WITH HASH FROM 'waf admin set-password'"
+
+interop:
+  enabled: true
+  audit_path: "/var/log/aegis/contract-audit.jsonl"
+  control_secret: "REPLACE FROM SECRET MANAGER"

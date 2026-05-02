@@ -1,0 +1,1 @@
+{"window_seconds":900,"categories":[{"name":"unknown","count":55036,"pct":41.6},{"name":"detector:path","count":22940,"pct":17.3},{"name":"upstream","count":22204,"pct":16.8},{"name":"detector:sqli","count":13766,"pct":10.4},{"name":"detector:xss","count":9168,"pct":6.9},{"name":"detector:ssrf","count":4584,"pct":3.5},{"name":"detector:mass","count":4578,"pct":3.5}]}
