@@ -1320,15 +1320,17 @@ function PageRuleManager() {
     id: r.id,
     name: r.id,
     kind: 'custom',
-    pri: 100,
+    pri: r.pri ?? r.priority ?? 100,
     field: 'any',
     op: 'regex',
     pattern: '',
-    action: 'block',
-    risk: 50,
+    action: r.action ?? 'block',
+    risk: r.risk ?? 50,
     enabled: r.enabled !== undefined ? r.enabled : true,
-    cat: 'custom',
-    hits1h: 0,
+    cat: r.cat ?? 'custom',
+    // CQF-T16 — preserve `hits1h` when the backend supplies it
+    // (was discarded as `0` regardless of API value).
+    hits1h: Number(r.hits1h ?? r.hits_1h ?? 0),
     body: r.body || ruleRowToBody({ id: r.id }),
   }));
 
