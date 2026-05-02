@@ -1,4 +1,5 @@
 pub mod body_abuse;
+pub mod brute_force;
 pub mod header_injection;
 pub mod mask;
 pub mod path_traversal;
@@ -127,6 +128,7 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
         Box::new(header_injection::HeaderInjectionDetector),
         Box::new(body_abuse::BodyAbuseDetector::default()),
         Box::new(recon::ReconDetector),
+        Box::new(brute_force::BruteForceDetector::default()),
     ]
 }
 
@@ -164,7 +166,9 @@ mod tests {
     #[test]
     fn default_detectors_count() {
         let d = default_detectors();
-        assert_eq!(d.len(), 7);
+        // sqli + xss + path_traversal + ssrf + header_injection
+        // + body_abuse + recon + brute_force.
+        assert_eq!(d.len(), 8);
     }
 
     #[test]
