@@ -70,7 +70,20 @@ FEATURES="redis alerts geoip taxii http3" make build     # custom feature set
 ```sh
 make urls         # one-shot reference card
 make obs-up       # bring up Prometheus + Grafana + Jaeger
+make mock-load    # drive synthetic traffic so the dashboard has data to show
 ```
+
+### Mock load — see the dashboard come alive
+
+Three traffic shapes (each defaults to 60s; override with `DURATION=2m`):
+
+```sh
+make mock-load           # ~50 RPS legit + crawler + attacker mix
+make mock-load-attacks   # attack-only flood — detectors fire, audit chain fills
+make mock-load-mix       # high-volume mix (~5 k RPS) — stress the WAF
+```
+
+While these run, refresh the dashboard / Grafana to watch live activity.
 
 | What | Where | Notes |
 |------|-------|-------|

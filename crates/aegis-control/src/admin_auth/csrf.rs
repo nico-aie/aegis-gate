@@ -48,8 +48,26 @@ pub enum CsrfResult {
 }
 
 /// Format the CSRF Set-Cookie (NOT HttpOnly so JS can read).
+///
+/// The `Secure` flag is included by default. Browsers reject
+/// `Secure` cookies sent over plain HTTP, so the dev profile
+/// (admin listener on plain `127.0.0.1:9443`) needs the flag
+/// dropped — set `AEGIS_INSECURE_COOKIES=1` in the environment.
+/// **Dev-only escape hatch — never set in production.** The
+/// Makefile's `run-dev` target sets it; `run` / `run-strict` /
+/// `run-throughput` do not.
 pub fn format_csrf_cookie(token: &str) -> String {
-    format!("aegis_csrf={token}; Secure; SameSite=Strict; Path=/")
+    let secure = if insecure_cookies_enabled() { "" } else { "Secure; " };
+    format!("aegis_csrf={token}; {secure}SameSite=Strict; Path=/")
+}
+
+/// Read the dev-only `AEGIS_INSECURE_COOKIES=1` opt-out. See
+/// [`format_csrf_cookie`] for why this exists.
+pub fn insecure_cookies_enabled() -> bool {
+    matches!(
+        std::env::var("AEGIS_INSECURE_COOKIES").as_deref(),
+        Ok("1") | Ok("true")
+    )
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

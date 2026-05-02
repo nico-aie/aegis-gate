@@ -63,7 +63,8 @@ SMOKE_ADMIN      ?= http://localhost:9443
 .PHONY: help setup cert build build-debug run run-dev run-strict run-throughput \
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
         dashboard redis-up redis-down obs-up obs-down urls logs \
-        upstream-build upstream-up upstream-down
+        upstream-build upstream-up upstream-down \
+        mock-load mock-load-attacks mock-load-mix
 
 help:
 	@awk 'BEGIN { FS = ":.*##" } \
@@ -105,7 +106,7 @@ run: $(WAF_BIN) cert redis-up ## Boot against $(CONFIG) — default: prod-balanc
 	@$(WAF_BIN) run --config $(CONFIG)
 
 run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts Redis + mock upstream)
-	@$(WAF_BIN) run --config $(CONFIG_DEV)
+	@AEGIS_INSECURE_COOKIES=1 $(WAF_BIN) run --config $(CONFIG_DEV)
 
 run-strict: $(WAF_BIN) cert redis-up ## Boot against prod-strict profile — compliance-tightened
 	@$(WAF_BIN) run --config $(CONFIG_STRICT)
@@ -158,6 +159,48 @@ upstream-up: ## Start the dev mock upstream on :9999 (idempotent — auto-invoke
 upstream-down: ## Stop the dev mock upstream
 	@pkill -f $(UPSTREAM_BIN_DEV) 2>/dev/null || true
 	@echo "upstream stopped"
+
+##@ Demo / observability traffic
+# Generate live traffic against the local WAF so the dashboard +
+# Grafana have something to display. All three targets assume
+# `make run-dev` is already running in another terminal.
+
+# Default duration; override with DURATION=2m make mock-load-mix
+DURATION ?= 60s
+
+mock-load: ## Generate legit + crawler + attacker mix at modest rate (~50 RPS, $(DURATION))
+	@command -v k6 >/dev/null || { echo "FAIL: k6 not installed; brew install k6"; exit 1; }
+	@echo "==> driving WAF on $(SMOKE_DATA_HTTP) for $(DURATION)"
+	@WAF_TARGET=$(SMOKE_DATA_HTTP) \
+	    DURATION=$(DURATION) \
+	    LEGIT_RPS=40 CRAWLER_RPS=5 ATTACKER_RPS=8 \
+	    k6 run --no-summary tests/hackathon/k6/prod-balanced-5k-v2.js \
+	    || true
+	@echo
+	@echo "==> dashboard now has data: http://localhost:9443/  (Tracking → Live Activity)"
+	@echo "==> Grafana (if 'make obs-up' was run): http://localhost:3000/"
+
+mock-load-attacks: ## Attack-only flood — drives detector hits + audit chain ($(DURATION))
+	@command -v k6 >/dev/null || { echo "FAIL: k6 not installed; brew install k6"; exit 1; }
+	@echo "==> attack-only flood on $(SMOKE_DATA_HTTP) for $(DURATION)"
+	@WAF_TARGET=$(SMOKE_DATA_HTTP) \
+	    DURATION=$(DURATION) \
+	    LEGIT_RPS=0 CRAWLER_RPS=0 ATTACKER_RPS=30 \
+	    k6 run --no-summary tests/hackathon/k6/prod-balanced-5k-v2.js \
+	    || true
+	@echo
+	@echo "==> dashboard: http://localhost:9443/  (Attacks Distribution / Audit Trail)"
+
+mock-load-mix: ## High-volume mix (~5 k RPS) — see how the dashboard looks under stress
+	@command -v k6 >/dev/null || { echo "FAIL: k6 not installed; brew install k6"; exit 1; }
+	@echo "==> high-volume mix on $(SMOKE_DATA_HTTP) for $(DURATION) (~5k RPS)"
+	@WAF_TARGET=$(SMOKE_DATA_HTTP) \
+	    DURATION=$(DURATION) \
+	    LEGIT_RPS=4000 CRAWLER_RPS=300 ATTACKER_RPS=1000 \
+	    k6 run --no-summary tests/hackathon/k6/prod-balanced-5k-v2.js \
+	    || true
+	@echo
+	@echo "==> dashboard: http://localhost:9443/"
 
 obs-up: redis-up ## Start the full observability stack (Redis + Prometheus + Grafana + Jaeger)
 	@docker compose -f deploy/docker-compose.dev.yml up -d prometheus grafana jaeger 2>&1 | grep -v "Network\|orphan" || true

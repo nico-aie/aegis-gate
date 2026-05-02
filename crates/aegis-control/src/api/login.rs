@@ -215,8 +215,11 @@ pub fn logout(
 ) -> LogoutOutcome {
     let clear_session_cookie =
         format_cookie("aegis_session", "", 0);
-    let clear_csrf_cookie =
-        "aegis_csrf=; Secure; SameSite=Strict; Path=/; Max-Age=0".to_string();
+    let clear_csrf_cookie = if crate::admin_auth::csrf::insecure_cookies_enabled() {
+        "aegis_csrf=; SameSite=Strict; Path=/; Max-Age=0".to_string()
+    } else {
+        "aegis_csrf=; Secure; SameSite=Strict; Path=/; Max-Age=0".to_string()
+    };
 
     if let Some(cookie) = session_cookie {
         if let Some(rec) = sessions.validate(cookie) {

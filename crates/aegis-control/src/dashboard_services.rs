@@ -441,18 +441,30 @@ impl DashboardServices {
 /// already-snapshot values) so changes to the live config aren't
 /// reflected — call `pool_snapshot_provider` again on hot reload.
 ///
-/// All pools report `healthy = 0` until the cluster runtime lands
-/// real per-member health. The names + total counts surface
-/// correctly so the dashboard table is populated; state is "Down"
-/// per the [`compute_summary`] rules.
+/// All pools report `healthy = total` (every member assumed up)
+/// until the cluster runtime lands real per-member health probes.
+/// This matches the in-process `Member::new()` default of
+/// `healthy: AtomicBool::new(true)` — the data plane *will* route
+/// to those members, so reporting "Down" in the dashboard while
+/// the proxy actually serves traffic was misleading.
+///
+/// When a pool config carries a `health:` block, the live probe
+/// flips the member flag in `PoolRegistry`; this provider does
+/// not yet read those flags (carry-over noted in
+/// `Implement-Progress.md` — depends on membership-driven
+/// cluster runtime). Once that lands, replace the closure body
+/// with a live registry read.
 pub fn pool_snapshot_provider(cfg: &aegis_core::config::WafConfig) -> PoolSnapshotProvider {
     let pools: Vec<PoolHealthEntry> = cfg
         .upstreams
         .iter()
-        .map(|(name, pool)| PoolHealthEntry {
-            name: name.clone(),
-            healthy: 0,
-            total: pool.members.len() as u32,
+        .map(|(name, pool)| {
+            let total = pool.members.len() as u32;
+            PoolHealthEntry {
+                name: name.clone(),
+                healthy: total,
+                total,
+            }
         })
         .collect();
     Arc::new(move || PoolHealthSnapshot {
@@ -847,6 +859,10 @@ state:
         let p = &snap.pools[0];
         assert_eq!(p.name, "api-pool");
         assert_eq!(p.total, 2);
-        assert_eq!(p.healthy, 0); // No live cluster — placeholder.
+        // Members default to healthy=true at construction; with no
+        // live `health:` probe configured, `healthy == total`.
+        // Replace this assertion with a live registry read once the
+        // cluster runtime lands real per-member health probes.
+        assert_eq!(p.healthy, 2);
     }
 }

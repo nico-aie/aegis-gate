@@ -137,9 +137,19 @@ impl SessionStore {
 }
 
 /// Format the Set-Cookie header value.
+///
+/// The `Secure` flag is included by default. See
+/// [`crate::admin_auth::csrf::insecure_cookies_enabled`] for the
+/// dev-only `AEGIS_INSECURE_COOKIES=1` opt-out used when the admin
+/// listener is plain HTTP (Makefile's `run-dev` target sets it).
 pub fn format_cookie(name: &str, value: &str, max_age_s: i64) -> String {
+    let secure = if crate::admin_auth::csrf::insecure_cookies_enabled() {
+        ""
+    } else {
+        "Secure; "
+    };
     format!(
-        "{name}={value}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={max_age_s}"
+        "{name}={value}; HttpOnly; {secure}SameSite=Strict; Path=/; Max-Age={max_age_s}"
     )
 }
 
