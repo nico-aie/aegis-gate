@@ -315,58 +315,127 @@ function PageOverview() {
       </div>
 
       <window.Drawer open={!!drawerEvent} onClose={() => setDrawerEvent(null)} title={drawerEvent?.id}>
-        {drawerEvent && <RequestDetail data={{ ip: drawerEvent.id, geo: drawerEvent.geo, hits: drawerEvent.hits, risk: drawerEvent.risk, cats: drawerEvent.cats }} />}
+        {drawerEvent && <RequestDetail data={{
+          ip: drawerEvent.id, geo: drawerEvent.geo, hits: drawerEvent.hits,
+          risk: drawerEvent.risk, cats: drawerEvent.cats,
+        }} />}
       </window.Drawer>
     </>
   );
 }
 
+// CQF-T5 — RequestDetail. Renders only the fields the caller
+// actually has. Caller passes through whatever the upstream API
+// returned (Live-Feed event row or attacks-top attacker row);
+// fields the caller doesn't have render as em-dashes or are
+// omitted entirely.
+//
+// The drawer is opened from two surfaces today:
+//   - Overview Top Attackers   row → { id (ip), geo, hits, risk, cats }
+//   - Live Feed event          row → { id, ts, ip, method, path,
+//                                      region, tier, risk, action, rules }
+//
+// Optionally the caller can pass `requestId` to drive a one-off
+// `/api/audit/since` lookup; when the chain entry is found we
+// surface request_id + chain_hash + prev. Otherwise the Audit
+// section just shows the request_id (if any).
 function RequestDetail({ data }) {
+  const ip = data?.ip || '—';
+  const action = data?.action || null;
+  const tier = data?.tier || null;
+  const risk = (typeof data?.risk === 'number') ? data.risk : null;
+  const rules = Array.isArray(data?.rules) ? data.rules : [];
+  const cats = Array.isArray(data?.cats) ? data.cats : [];
+  const method = data?.method || null;
+  const path = data?.path || null;
+  const region = data?.region || null;
+  const ts = data?.ts || null;
+  const geo = data?.geo || null;
+  const requestId = data?.request_id || data?.requestId || null;
+  const detectorReason = rules.length > 0 ? rules.join(', ') : (cats.length > 0 ? cats.join(', ') : null);
+
+  // Optional: look the request up in the audit ring so the chain
+  // hash + prev hash + sinks reflect reality. Disabled when no
+  // request_id is available; otherwise polls once on mount.
+  const auditApi = window.useAuditLookupForRequestId
+    ? window.useAuditLookupForRequestId(requestId)
+    : null;
+  const auditEntry = auditApi?.data || null;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div>
         <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Summary</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
-          <div><div className="dim">Action</div><span className="pill block">block</span></div>
-          <div><div className="dim">Reason</div><span className="mono">owasp-ssrf-001</span></div>
-          <div><div className="dim">Risk</div><window.RiskMeter value={data.risk || 92} /></div>
-          <div><div className="dim">Tier</div><span className="pill tier-crit">crit</span></div>
+          <div>
+            <div className="dim">Action</div>
+            {action ? <window.ActionPill value={action} /> : <span className="dim mono">—</span>}
+          </div>
+          <div>
+            <div className="dim">Reason</div>
+            {detectorReason
+              ? <span className="mono">{detectorReason}</span>
+              : <span className="dim mono">—</span>}
+          </div>
+          <div>
+            <div className="dim">Risk</div>
+            {risk !== null ? <window.RiskMeter value={risk} /> : <span className="dim mono">—</span>}
+          </div>
+          <div>
+            <div className="dim">Tier</div>
+            {tier ? <window.TierPill value={tier} /> : <span className="dim mono">—</span>}
+          </div>
         </div>
       </div>
       <div>
         <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Network</div>
         <div style={{ fontSize: 12, lineHeight: 1.7, fontFamily: 'var(--font-mono)' }}>
-          <div><span className="dim">client_ip</span> {data.ip}</div>
-          <div><span className="dim">asn</span> AS14061 (DigitalOcean)</div>
-          <div><span className="dim">geo</span> {data.geo?.cc} · {data.geo?.city} ({data.geo?.lat?.toFixed(2)}, {data.geo?.lon?.toFixed(2)})</div>
-          <div><span className="dim">ja4</span> t13d_1516h2_8daaf6152771_e5627efa2ab1</div>
-          <div><span className="dim">xff</span> 10.32.4.11 → 10.99.0.1</div>
+          <div><span className="dim">client_ip</span> {ip}</div>
+          {geo && (geo.cc || geo.city || geo.lat) && (
+            <div>
+              <span className="dim">geo</span> {geo.cc || '—'}
+              {geo.city ? ` · ${geo.city}` : ''}
+              {(typeof geo.lat === 'number' && typeof geo.lon === 'number')
+                ? ` (${geo.lat.toFixed(2)}, ${geo.lon.toFixed(2)})`
+                : ''}
+            </div>
+          )}
+          {region && <div><span className="dim">region</span> {region}</div>}
+          {ts && <div><span className="dim">ts</span> {ts}</div>}
         </div>
       </div>
-      <div>
-        <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Request</div>
-        <pre style={{ background: 'var(--canvas)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 10, fontSize: 11, fontFamily: 'var(--font-mono)', overflow: 'auto', margin: 0, color: 'var(--ink-mute)' }}>{`POST /api/webhooks/fetch HTTP/1.1
-Host: api.aegis.example.com
-User-Agent: curl/7.81.0
-Content-Type: application/json
-X-Forwarded-For: ${data.ip}
-
-{"url": "http://169.254.169.254/latest/meta-data/iam/"}`}</pre>
-      </div>
-      <div>
-        <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Detection</div>
-        <div style={{ fontSize: 12 }}>
-          <div className="mono"><span className="dim">rule</span> owasp-ssrf-001 — SSRF: Internal Addresses</div>
-          <div className="mono"><span className="dim">match</span> body→url contains <span style={{ color: 'var(--down)' }}>169.254.169.254</span></div>
+      {(method || path) && (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Request</div>
+          <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>
+            {method && <span style={{ color: 'var(--info)', marginRight: 8 }}>{method}</span>}
+            {path && <span style={{ color: 'var(--ink)' }}>{path}</span>}
+          </div>
         </div>
-      </div>
+      )}
+      {rules.length > 0 && (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Detection</div>
+          <div style={{ fontSize: 12, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {rules.map(r => <span key={r} className="pill neutral" style={{ fontSize: 10 }}>{r}</span>)}
+          </div>
+        </div>
+      )}
       <div>
         <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Audit</div>
         <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--ink-mute)' }}>
-          <div><span className="dim">request_id</span> req_8a1f2c4d9e0b</div>
-          <div><span className="dim">chain_hash</span> a4f2e9c1b3d7…</div>
-          <div><span className="dim">prev</span> a4f2e9c1b3d6 <span className="pill ok" style={{ marginLeft: 6 }}>verified</span></div>
-          <div><span className="dim">sinks</span> splunk ✓ · datadog ✓ · s3-archive ✓</div>
+          <div><span className="dim">request_id</span> {requestId || <span className="dim">—</span>}</div>
+          {auditEntry ? (
+            <>
+              <div><span className="dim">chain_hash</span> {auditEntry.hash || '—'}</div>
+              <div><span className="dim">prev</span> {auditEntry.prev_hash || '—'}</div>
+              <div><span className="dim">seq</span> {auditEntry.seq != null ? `#${auditEntry.seq}` : '—'}</div>
+            </>
+          ) : (
+            <div className="dim" style={{ fontStyle: 'italic', fontSize: 10 }}>
+              chain hash + prev surface in /api/audit/since once a request_id is known.
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -541,7 +610,14 @@ function PageLiveFeed() {
           <button className="btn danger" onClick={() => selected && quickAccessListAdd('blacklist', selected.ip, `blocked from Live Feed · ${selected.path}`)}>Block IP</button>
           <button className="btn primary" onClick={() => selected && quickAccessListAdd('whitelist', selected.ip, `whitelisted from Live Feed · ${selected.path}`)}>Whitelist</button>
         </>}>
-        {selected && <RequestDetail data={{ ip: selected.ip, geo: selected.geo, risk: selected.risk, cats: [selected.cat] }} />}
+        {selected && <RequestDetail data={{
+          ip: selected.ip, geo: selected.geo, risk: selected.risk,
+          cats: selected.cat ? [selected.cat] : [],
+          method: selected.method, path: selected.path,
+          region: selected.region, tier: selected.tier,
+          action: selected.action, rules: selected.rules,
+          ts: selected.ts, request_id: selected.request_id || selected.id,
+        }} />}
       </window.Drawer>
     </>
   );
