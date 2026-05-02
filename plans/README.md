@@ -40,7 +40,8 @@ Order = execution priority. **Earlier rows run first.** The
 | State | Track | Plan file | Task ID prefix | Notes |
 |---|---|---|---|---|
 | **Active** | Hackathon Round-1 stress-test prep — 15-min mixed-traffic harness | [`hackathon-stress-test.md`](./hackathon-stress-test.md) | — (prep only) | Harness scaffolded under `tests/hackathon/` (mock upstream + k6 mixed-traffic + bench config + run + summary scripts). 15-min run completed 2026-05-02: legit median 3 ms, 100 %-of-detected attacks prevented. Detection capped at 33 % (5/15 corpus shapes); 4 detector gap-fills (SSRF, mass-assignment, XXE, brute-force) would lift to ~73 %. Awaiting benchmark team inputs — see plan §8. |
-| **Active** | Console QA — full feature audit | [`console-qa.md`](./console-qa.md) | `CQA-T<n>` | Verifies every screen / button / action against live data — no fakes, no fixtures, no dead buttons. 14 slices (one per page + cross-cutting + mock-data audit). Manual first pass; Playwright automation as follow-up. |
+| Closed | Console QA — full feature audit | [`console-qa.md`](./console-qa.md) | `CQA-T<n>` | ✅ Sweep complete 2026-05-02. Backend healthy (41/41 read APIs, CSRF, audit-chain). Dashboard pages: 5 Pass / 3 Partial / 6 Fail. Findings → `tests/results/run-cqa-20260502/SUMMARY.md`. |
+| **Active** | Console fixups — wire dead buttons + replace hardcoded JSX | [`console-fixups.md`](./console-fixups.md) | `CQF-T<n>` | Two-day sprint (~8 h) flipping every CQA Fail/Partial to Pass. 7 HIGH (logout, BL/WL CRUD, tier-mask UI, Overview/Live-Feed action buttons, RequestDetail live data, RiskHeatmap, cache-card decision) + 7 MEDIUM + 5 LOW. |
 | Closed | Follow-ups — HACK-T4 rollback + MTLS-T7 SAN allowlist | [`followups-rollback-and-sans.md`](./followups-rollback-and-sans.md) | — (follow-up bundle) | ✅ both parts shipped 2026-05-02. `POST /api/config/versions/{seq}/rollback` (mode_set v1) + UI button; live `AllowedSansStore` with 4 endpoints (GET/PUT/DELETE/test) + identity-extraction gate + Settings card. |
 | Closed | Hackathon-readiness — v2.3 contract + Tier bonuses | [`hackathon-readiness.md`](./hackathon-readiness.md) | `HACK-T<n>` | ✅ HACK-T1..T5 shipped 2026-05-01 / 2026-05-02; both deferred follow-ups (HACK-T5 TLS transport + HACK-T4 rollback action) also shipped 2026-05-02. Round 1 mock-data risk closed; Round 2 contract gate 40/40; Tier A + B + C all claimed. |
 | **Queued** | mTLS — remaining Console mutation surfaces | [`mtls.md`](./mtls.md) | `MTLS-T<n>` | T1..T7 ✅ shipped 2026-05-01 / 2026-05-02 (rustls inbound, identity extraction, route gate, hot-reload, console observability, SAN allowlist). T8..T11 (break-glass, CA upload, per-route editor) deferred. |
@@ -87,9 +88,10 @@ plans/
 │                                   (mock upstream + k6 + bench config + report;
 │                                   awaiting benchmark team's IP fan-out / target /
 │                                   labelling source — see plan §8)
-├── console-qa.md                   ACTIVE — full Console feature audit (CQA-T1..T14)
-│                                   (every screen / button / action verified
-│                                   against live data; no fakes, no dead buttons)
+├── console-qa.md                   CLOSED — CQA-T1..T14 sweep complete (5/3/6 P/Pa/F)
+├── console-fixups.md               ACTIVE — CQF-T1..T19 sprint flipping CQA Fails to
+│                                   Pass: dead buttons, hardcoded JSX clusters, missing
+│                                   logout, missing BL/WL CRUD, tier-mask UI
 ├── followups-rollback-and-sans.md  CLOSED — HACK-T4 rollback action +
 │                                   MTLS-T7 SAN allowlist (both shipped 2026-05-02)
 ├── hackathon-readiness.md          CLOSED — HACK-T1..T5 + both follow-ups shipped
