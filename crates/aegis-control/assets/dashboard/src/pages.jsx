@@ -965,6 +965,13 @@ function PageAuditLog() {
   const [ipFilter, setIpFilter] = useStateP('');
   const [ruleIdFilter, setRuleIdFilter] = useStateP('');
   const [requestIdFilter, setRequestIdFilter] = useStateP('');
+  // CQF-T11 — time-range chip + load-more pagination.
+  // `windowKey` ∈ '1h' | '24h' | '7d' | 'all'. Backend
+  // /api/audit/since takes `cursor` not `since_ts`, so we
+  // filter client-side after fetch — bounded by the
+  // already-shipped 200-row server cap.
+  const [windowKey, setWindowKey] = useStateP('all');
+  const [pageLimit, setPageLimit] = useStateP(200);
   const [debouncedQ, setDebouncedQ] = useStateP({ ip: '', ruleId: '', requestId: '' });
 
   // Debounce filter inputs so the API isn't hit on every keystroke.
@@ -979,10 +986,22 @@ function PageAuditLog() {
     ip: debouncedQ.ip || undefined,
     ruleId: debouncedQ.ruleId || undefined,
     requestId: debouncedQ.requestId || undefined,
-    limit: 200,
+    limit: pageLimit,
   });
-  const events = audit.data?.events || [];
+  const rawEvents = audit.data?.events || [];
   const gap = audit.data?.gap;
+
+  // CQF-T11 — time-range filter applied client-side.
+  const events = useMemoP(() => {
+    if (windowKey === 'all') return rawEvents;
+    const sec = windowKey === '1h' ? 3600 : windowKey === '24h' ? 86400 : 604800;
+    const cutoff = Date.now() - sec * 1000;
+    return rawEvents.filter(row => {
+      const e = row.event || row;
+      const ts = e.ts ? Date.parse(e.ts) : NaN;
+      return Number.isFinite(ts) ? ts >= cutoff : true;
+    });
+  }, [rawEvents, windowKey]);
 
   function fmt(ts) {
     try {
@@ -1035,8 +1054,25 @@ function PageAuditLog() {
                  value={ruleIdFilter} onChange={e => setRuleIdFilter(e.target.value)} />
           <input className="input" style={{ flex: 1, maxWidth: 320 }} placeholder="request_id"
                  value={requestIdFilter} onChange={e => setRequestIdFilter(e.target.value)} />
+          {/* CQF-T11 — time-range chip group */}
+          <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+            {[
+              { k: '1h',  l: '1h' },
+              { k: '24h', l: '24h' },
+              { k: '7d',  l: '7d' },
+              { k: 'all', l: 'all' },
+            ].map(({ k, l }) => (
+              <button
+                key={k}
+                className={`btn ${windowKey === k ? 'primary' : ''}`}
+                style={{ padding: '4px 10px', fontSize: 11 }}
+                onClick={() => setWindowKey(k)}
+              >{l}</button>
+            ))}
+          </div>
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
-            cursor {audit.data?.cursor ?? 0} → {audit.data?.next_cursor ?? 0}
+            cursor {audit.data?.cursor ?? 0} → {audit.data?.next_cursor ?? 0} ·
+            page limit {pageLimit}
           </span>
         </div>
       </div>
@@ -1074,6 +1110,26 @@ function PageAuditLog() {
             })}
           </tbody>
         </table>
+        {/* CQF-T11 — load-more pagination. Each click bumps the
+            server-side limit by 200 (capped at the audit ring's
+            configured high-water; rawEvents.length plateaus once
+            we've seen everything available). */}
+        {rawEvents.length >= pageLimit && (
+          <div style={{ padding: 10, borderTop: '1px solid var(--hairline)', textAlign: 'center' }}>
+            <button
+              className="btn"
+              onClick={() => setPageLimit(n => n + 200)}
+              style={{ fontSize: 11 }}
+            >
+              Load 200 more (currently {pageLimit})
+            </button>
+          </div>
+        )}
+        {windowKey !== 'all' && events.length < rawEvents.length && (
+          <div style={{ padding: 8, fontSize: 10, color: 'var(--ink-dim)', fontStyle: 'italic', textAlign: 'center', borderTop: '1px solid var(--hairline)' }}>
+            Showing {events.length} of {rawEvents.length} fetched (filtered by time range "{windowKey}")
+          </div>
+        )}
       </div>
     </>
   );
