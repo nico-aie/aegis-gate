@@ -31,7 +31,12 @@ CARGO ?= cargo
 # Default Cargo features for the release binary. Adjust to what your
 # deployment actually needs; the dev-cert path doesn't depend on any of
 # these. See config/README.md for the resolver / feature mapping.
-FEATURES        ?= redis
+#
+# `geoip` is included by default because it's a no-op (paths-unset)
+# when the operator hasn't run `make geoip-link` — costs nothing,
+# saves the "rebuild with geoip" rediscovery cycle. Override with
+# FEATURES="redis" to drop it for slimmer images.
+FEATURES        ?= redis geoip
 
 # Default config to run against. The prod-balanced profile is the
 # recommended starting point for production deployments — full detector
