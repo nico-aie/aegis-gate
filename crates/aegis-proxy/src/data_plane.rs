@@ -2014,3 +2014,188 @@ state: { backend: in_memory }
         assert_eq!(block_event.route_id.as_deref(), Some("tcp-tunnel"));
     }
 }
+
+// WS-T5 — end-to-end WebSocket bridge test through the WAF.
+//
+// The unit tests in `tcp_connect_tests` flagged the limitation
+// they couldn't cover: "without a real hyper handshake we can't
+// drive OnUpgrade::await to success".  This module fixes that
+// for the WS path — it stands up a real hyper listener that
+// serves connections via `serve_connection_with_upgrades`, so
+// the OnUpgrade extension that the WS bridge consumes is
+// genuinely populated by hyper rather than synthesised on a
+// hand-built Parts.
+//
+// What's proven here:
+// - is_websocket_upgrade detection fires.
+// - forward_websocket_upgrade exchanges the 101 handshake
+//   against a real WS backend.
+// - The OnUpgrade extracted off the client request resolves
+//   when hyper completes the upgrade.
+// - copy_bidirectional moves real frames between client and
+//   upstream.
+//
+// What's still NOT covered (acceptable):
+// - TLS termination on the inbound side (no TLS in the
+//   bare-TCP integration shape; covered by the existing TLS
+//   forwarder unit tests).
+// - The full detector chain — we call `forward_allow_to_upstream`
+//   directly, which already short-circuits the chain when an
+//   upgrade fires.  Detector-fires-before-WS coverage lives
+//   in the upstream unit tests.
+#[cfg(test)]
+mod websocket_e2e_tests {
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use aegis_core::audit::AuditBus;
+    use aegis_core::ClientIdentity;
+    use aegis_core::pipeline::SecurityPipeline;
+    use bytes::Bytes;
+    use http_body_util::BodyExt;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+
+    use crate::proxy::ProxyContext;
+
+    fn route_latency() -> aegis_control::metrics::route_latency::RouteLatencyHistogram {
+        let reg = aegis_control::metrics::MetricsRegistry::init();
+        aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&reg)
+            .expect("route latency histogram registers")
+    }
+
+    /// Drive a real WebSocket client → WAF → echo backend
+    /// round-trip and assert the bridge moves frames in both
+    /// directions.  Closes the WS-T5 plan slice.
+    #[tokio::test]
+    async fn websocket_round_trips_frames_through_waf() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        // 1. Echo backend on a random port.
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        let backend_task = tokio::spawn(async move {
+            // Single accept — the test sends one connection.
+            let (stream, _) = backend.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut tx, mut rx) = futures::StreamExt::split(ws);
+            while let Some(Ok(msg)) = futures::StreamExt::next(&mut rx).await {
+                if msg.is_text() || msg.is_binary() {
+                    if tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // 2. WAF ProxyContext pointing at the echo backend.
+        //    Catch-all route, no detectors / risk / rate-limit
+        //    in the test path because forward_allow_to_upstream
+        //    bypasses the chain when an upgrade fires.
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend_addr}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig =
+            serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> =
+            Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        // 3. WAF data-plane listener.  hyper's
+        //    serve_connection_with_upgrades is the load-bearing
+        //    bit — it installs the OnUpgrade extension on every
+        //    request so the WS bridge has something to await.
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let bus = AuditBus::new(16);
+
+        let ctx_for_listener = ctx.clone();
+        let bus_for_listener = bus.clone();
+        let rh = Arc::new(route_latency());
+        let waf_task = tokio::spawn(async move {
+            let (stream, peer) = waf.accept().await.unwrap();
+            let ctx_for_svc = ctx_for_listener.clone();
+            let bus_for_svc = bus_for_listener.clone();
+            let rh_for_svc = rh.clone();
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let ctx = ctx_for_svc.clone();
+                let bus = bus_for_svc.clone();
+                let rh = rh_for_svc.clone();
+                async move {
+                    let (parts, body) = req.into_parts();
+                    let body_bytes = body
+                        .collect()
+                        .await
+                        .map(|c| c.to_bytes())
+                        .unwrap_or_default();
+                    let (resp, _tag) = super::forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        &ctx,
+                        &ClientIdentity::Anonymous,
+                        &rh,
+                        Instant::now(),
+                        peer.ip(),
+                        &bus,
+                    )
+                    .await;
+                    Ok::<_, Infallible>(resp)
+                }
+            });
+            let io = TokioIo::new(stream);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
+        });
+
+        // Tiny grace so both listeners are ready.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // 4. Real WS client driving the round-trip.
+        let url = format!("ws://127.0.0.1:{}/", waf_addr.port());
+        let (ws, _resp) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("client connects to WAF and upgrades");
+        let (mut tx, mut rx) = futures::StreamExt::split(ws);
+
+        tx.send(Message::Text("hello".into())).await.unwrap();
+        let echo = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("first frame")
+            .expect("first frame ok");
+        assert_eq!(echo.into_text().unwrap(), "hello");
+
+        tx.send(Message::Text("world".into())).await.unwrap();
+        let echo2 = futures::StreamExt::next(&mut rx)
+            .await
+            .expect("second frame")
+            .expect("second frame ok");
+        assert_eq!(echo2.into_text().unwrap(), "world");
+
+        // Clean shutdown — drop the sink so the bridge sees EOF.
+        drop(tx);
+        // Give the WAF + backend tasks a beat to drain their
+        // copy_bidirectional then bail out.  Aborts are safe
+        // because both listeners only accept once.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        backend_task.abort();
+        waf_task.abort();
+    }
+}
