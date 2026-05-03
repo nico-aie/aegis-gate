@@ -23,6 +23,48 @@ use hyper::Response;
 use crate::responses::{extract_named_cookie, json_body_response};
 
 
+/// FIX 2026-05-03 — GET `/admin/login` — render the login page.
+///
+/// Prior to this commit the server only handled `POST /admin/login`
+/// (the JSON authenticate endpoint).  The dashboard SPA's CSRF
+/// interceptor + the explicit logout button both navigate the
+/// browser to `/admin/login`, but a GET there returned a JSON
+/// `{"error":"not found"}` 404 — the operator saw "page not found"
+/// with no way to re-authenticate.  This handler serves the
+/// embedded `login.html`, which loads `/admin/login.js` (handled
+/// by [`handle_admin_login_js`] below) for the form-submit logic.
+///
+/// The page honours `?next=<path>` so callers can preserve the
+/// intended destination across re-auth (the JS validates it stays
+/// same-origin before navigating).
+pub(crate) fn handle_admin_login_page() -> Response<Full<Bytes>> {
+    static LOGIN_HTML: &[u8] = include_bytes!("assets/login.html");
+    crate::responses::apply_dashboard_security_headers(
+        Response::builder()
+            .status(200)
+            .header("content-type", "text/html; charset=utf-8")
+            .header("cache-control", "no-store"),
+    )
+    .body(Full::new(Bytes::from_static(LOGIN_HTML)))
+    .unwrap()
+}
+
+/// FIX 2026-05-03 — GET `/admin/login.js` — the login page's
+/// form-submit client.  Lives at this path so CSP `script-src
+/// 'self'` covers it without an inline-script hash.  Same
+/// dashboard security headers as the page itself.
+pub(crate) fn handle_admin_login_js() -> Response<Full<Bytes>> {
+    static LOGIN_JS: &[u8] = include_bytes!("assets/login.js");
+    crate::responses::apply_dashboard_security_headers(
+        Response::builder()
+            .status(200)
+            .header("content-type", "application/javascript; charset=utf-8")
+            .header("cache-control", "no-store"),
+    )
+    .body(Full::new(Bytes::from_static(LOGIN_JS)))
+    .unwrap()
+}
+
 pub(crate) async fn handle_admin_login(
     req: hyper::Request<hyper::body::Incoming>,
     peer: std::net::SocketAddr,

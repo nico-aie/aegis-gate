@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-density="compact" data-accent="yellow">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis WAF · Sign in</title>
+  <link rel="stylesheet" href="/dashboard/assets/aegis.css">
+  <style>
+    html, body {
+      min-height: 100vh;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      margin: 0;
+    }
+    .login-card {
+      background: var(--surface-1, #1a1a1a);
+      color: var(--fg, #f0f0f0);
+      padding: 2rem 2.25rem;
+      border-radius: 12px;
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+      min-width: 320px;
+      max-width: 360px;
+      width: 100%;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+    }
+    .login-card h1 {
+      margin: 0 0 0.25rem;
+      font-size: 1.4rem;
+      letter-spacing: 0.01em;
+    }
+    .login-card .subtitle {
+      color: var(--fg-muted, #999);
+      font-size: 0.85rem;
+      margin: 0 0 1.5rem;
+    }
+    .login-card label {
+      display: block;
+      margin: 0.85rem 0 0.3rem;
+      font-size: 0.85rem;
+      color: var(--fg-muted, #999);
+    }
+    .login-card input {
+      width: 100%;
+      padding: 0.55rem 0.7rem;
+      box-sizing: border-box;
+      background: var(--surface-2, #111);
+      color: var(--fg, #f0f0f0);
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+      border-radius: 6px;
+      font-size: 0.95rem;
+    }
+    .login-card input:focus {
+      outline: none;
+      border-color: var(--accent, #f4c430);
+    }
+    .login-card button {
+      width: 100%;
+      padding: 0.7rem;
+      margin-top: 1.25rem;
+      background: var(--accent, #f4c430);
+      color: #111;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .login-card button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .login-card .error {
+      color: var(--danger, #ff5d5d);
+      margin-top: 0.85rem;
+      min-height: 1.2em;
+      font-size: 0.85rem;
+    }
+    .login-card .footer {
+      margin-top: 1.5rem;
+      color: var(--fg-muted, #777);
+      font-size: 0.75rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <h1>Aegis WAF</h1>
+    <p class="subtitle">Sign in to the control plane</p>
+    <form id="login-form" autocomplete="on">
+      <label for="login-user">Username</label>
+      <input id="login-user" name="user" required autofocus autocomplete="username">
+      <label for="login-password">Password</label>
+      <input id="login-password" name="password" type="password" required autocomplete="current-password">
+      <button type="submit" id="login-submit">Sign in</button>
+      <div class="error" id="login-error" role="alert" aria-live="polite"></div>
+    </form>
+    <div class="footer">aegis-gate · admin</div>
+  </div>
+  <script src="/admin/login.js"></script>
+</body>
+</html>

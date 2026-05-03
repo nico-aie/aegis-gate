@@ -69,6 +69,16 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::POST && path == "/admin/logout" {
         return handle_admin_logout(req, services);
     }
+    // FIX 2026-05-03 — GET /admin/login renders the standalone
+    // login page (the SPA's CSRF interceptor + logout button both
+    // navigate here).  GET /admin/login.js serves the form-submit
+    // client.  Both go through the dashboard CSP.
+    if method == hyper::Method::GET && path == "/admin/login" {
+        return crate::admin_login::handle_admin_login_page();
+    }
+    if method == hyper::Method::GET && path == "/admin/login.js" {
+        return crate::admin_login::handle_admin_login_js();
+    }
 
     // HA-T5 — operator-initiated drain. Flips
     // `readiness.draining` so subsequent `/healthz/ready` probes
