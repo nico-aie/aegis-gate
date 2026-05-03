@@ -23,11 +23,13 @@
 
 ## Status (snapshot)
 
-- **As of:** 2026-05-03
-- **Workspace tests:** ~2 823 across 17 binaries (all green;
-  baseline 2 500 + ~320 from TCP-T + FDP-T + SWEEP-T + geoip
-  + dashboard fix tracks shipped 2026-05-03).
-- **Dashboard bundle:** ~278 KB
+- **As of:** 2026-05-03 (PM)
+- **Workspace tests:** ~2 850 across 17 binaries (all green;
+  baseline 2 500 + ~350 from TCP-T + FDP-T + SWEEP-T + geoip +
+  dashboard fix + access-list runtime + AI-T1 stub + WS bridge
+  + login page fix + multi-vhost upstream + WS metrics shipped
+  2026-05-03).
+- **Dashboard bundle:** **294 086 bytes**
   (`crates/aegis-control/assets/dashboard/app.js`).
 - **Headline perf** (`tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/`):
   prod-balanced profile sustained **4 891 RPS k6 / 6 392 RPS WAF-internal**
@@ -37,17 +39,39 @@
   15-min mixed-traffic harness, post-detector-coverage sprint —
   **80 % detection** (was 33 % v1), legit p99 4.52 ms, 100 % of
   detected attacks prevented.
-- **Active track (this week):** **AI detector** — design pass shipped at
-  [`plans/ai-detector.md`](./plans/ai-detector.md) with all 4 decisions
-  locked-in (operator-supplied .onnx, default-off Cargo feature, 0.85
-  threshold, hybrid `mode: observe | enforce`). 9-slice AI-T1..T9
-  breakdown awaiting the operator's .onnx file before AI-T1 starts.
-- **Closed 2026-05-03:** TCP forwarder Phase 4 (TCP-T1..T6 — CONNECT
-  tunneling via `scheme: tcp` routes), Binary handover via fd-passing
-  (FDP-T1..T6 — library primitives; accept-loop drain refactor
-  remaining), SWEEP-T multi-tester sweep tooling, MTLS-T10 Phase 2
-  (live CA bundle hot-swap), B5 benchmark two-factor gating, geoip
-  XFF wiring + 3-state dashboard pill.
+- **Active track:** none open — all four queued tracks (access-
+  list runtime, AI-T1 stub, FDP drain refactor, WS bridge) shipped
+  2026-05-03. AI-T2..T9 wait on the operator's `.onnx` file.
+- **Closed 2026-05-03 (AM):** TCP forwarder Phase 4 (TCP-T1..T6),
+  Binary handover library (FDP-T1..T6), SWEEP-T sweep tooling,
+  MTLS-T10 Phase 2, B5 benchmark gating, geoip XFF wiring + 3-state
+  pill.
+- **Closed 2026-05-03 (PM, this session):**
+  - Access-list runtime enforcement (`d801dfd`) — was a CRUD-only
+    gap; data plane now consults the live Arc on every request.
+  - AI-T1 stub (`d8660a9`) — `ai` Cargo feature + tract-onnx
+    workspace dep + `WafConfig.ai: AiConfig` schema.
+  - FDP accept-loop drain refactor (`faee699`) — SIGUSR2 polling
+    task wired to `perform_handover`; closes the one gap from the
+    AM FDP commits.
+  - WebSocket bridge (`d612d4b` WS-T2/T3/T4 + `6f2730f` WS-T6) —
+    end-to-end raw-TCP forwarder + `OnUpgrade` bridge + audit
+    pair + Prometheus metrics + Live-Feed proto pill.
+  - Manual validation scripts (`9585c7e`) — `tests/manual/` for
+    access-list / CSRF / fake-country / WS / VipTalk.
+  - README + QUICKSTART rewrite (`ef1fdaa`) — Build → Run → Test
+    → Deploy spine.
+  - Login page fix (`01695f0`) — GET `/admin/login` now serves
+    the standalone form; closes the operator's "page not found"
+    + session-expired dead-end.
+  - Console SOC-UX pass (`c854617`) — Live Feed path/method/status
+    fixed; Investigation defaults to recent-requests list +
+    absorbs Attack Analytics; RequestDetail drawer shows
+    status/latency/route/extra fields.
+  - Multi-vhost upstream support (`062d602`) — `MemberConfig.host_header`
+    override unlocks vhost-routed backends.
+  - Top Attackers page (`674c86f`) — first-class SOC view of
+    `/api/attacks/top` with one-click pivot + block.
 - **Operator UX simplified 2026-05-02:** every config (dev / prod /
   3 profiles) defaults to **Redis state**; the Makefile auto-starts
   the dev Redis on every `run-*` target. New `make obs-up` / `make urls`
@@ -155,7 +179,8 @@ hot-restart works end-to-end via SIGUSR2".
 
 | Date | Task | Outcome |
 |---|---|---|
-| 2026-05-03 | TCP-T + FDP-T + SWEEP-T + AI-T design + geoip XFF | This entry. ~3500 LOC + 320 new tests. CONNECT tunneling live; binary-handover library shipped (one gap); multi-tester sweep tooling ready; AI-T design with all 4 decisions locked-in awaits .onnx file. |
+| 2026-05-03 PM | Open-tracks closeout + UX pass | Access-list runtime, AI-T1 stub, FDP drain refactor, WS bridge (T2/T3/T4/T6), login page fix, multi-vhost upstream (`host_header`), Investigation default-list + Attack-Analytics merge, Top Attackers page. ~2 200 LOC + ~30 new tests; bundle 294 KB. 11 commits. |
+| 2026-05-03 AM | TCP-T + FDP-T + SWEEP-T + AI-T design + geoip XFF | ~3500 LOC + 320 new tests. CONNECT tunneling live; binary-handover library; multi-tester sweep tooling. |
 | 2026-05-02 (PM) | Operator UX simplification + Redis-default + obs stack + AI-testing scaffold | `make setup && make run-dev` boots a Redis-backed dev profile in 2 commands. AI-Assistant testing rules + guide live under `tests/`. |
 | 2026-05-02 (mid) | prod-balanced @ 5 k+ RPS sustained (3 iterative runs) | v3 = 4 891 RPS k6 / 6 392 RPS WAF-internal, legit p99 1.03 ms, legit OK 100 %, 80 % detection. Surfaced 7 improvements; identified Python upstream as the prior 600-RPS ceiling. |
 | 2026-05-02 (early) | Profile picker + Makefile profile-aware run targets | 3 profiles (balanced/strict/high-throughput) + `docs/operator/profiles.md` decision tree + `run-strict`/`run-throughput`/`validate-all` make targets. |
@@ -330,25 +355,38 @@ milestone ships you can see exactly which lines to delete. See
 [`plans/phase-b/README.md`](./plans/phase-b/README.md) for the task
 breakdown.
 
-**Access-list runtime enforcement** — surfaced 2026-05-03.
-`/api/blacklist` + `/api/whitelist` accept full CRUD (operators
-add IP / CIDR / ASN / country entries, dashboard renders them,
-audit chain records mutations) but **the data-plane handler
-never consults the lists** — no traffic is actually filtered
-on the basis of these entries today. Bug-shaped, not feature-
-shaped. Fixing it requires:
-  - `AccessListStore::matches(ip)` + `matches_country(cc)`
-    helpers (~50 LOC).
-  - Hook into `data_plane::handle_data_request_inner` after
-    XFF resolution: if peer ∈ blacklist → block; if peer ∈
-    whitelist → skip detector chain.
-  - Wire `services.geoip` into the matcher so country entries
-    actually resolve.
-  - 4-6h of work; see ed45062..0bbe415 for adjacent context.
-The dashboard's country-kind picker (this commit, ed45062 +
-following) is honest about today's CRUD-only behaviour —
-operators can save country entries but they don't filter
-traffic until the runtime evaluator lands.
+**Access-list runtime enforcement** ✅ **CLOSED** 2026-05-03 PM
+(`d801dfd`). `AccessListEntry::matches(peer, country_lookup)` lives
+on the aegis-control type; `ProxyContext` owns shared `Arc<AccessListStore>`
+for blacklist + whitelist + a `OnceLock`-installed
+`AccessListCountryLookup` adapter wrapping the live `MaxMindReader`.
+Data-plane handler consults blacklist immediately after XFF
+resolution (cheapest-possible block) and short-circuits the detector
+chain on a whitelist hit. Strikes still override whitelist so a
+hammering whitelisted source can't burn CPU. 6 new unit tests cover
+ip / cidr / country / expired / no-lookup-silent-miss / first-hit-
+traceability paths.
+
+**Multi-vhost upstream HTTPS / SNI pinning** — surfaced 2026-05-03 PM.
+`MemberConfig.host_header` (commit `062d602`) handles the Host-
+header rewrite case for vhost-routed backends. The TLS SNI +
+cert-validation hostname for HTTPS upstreams still come from the
+URL host (the member IP); operators with public TLS upstreams that
+strictly validate SNI vs cert CN/SAN need a sidecar (Caddy/nginx)
+today. A custom-resolver pass that pins both Host header AND SNI
+to the override is queued; ~80 LOC + a hyper-rustls
+`ServerName::DnsName(override)` shim.
+
+**WS-T5 — real WS round-trip integration test** — bridge mechanics
+shipped (T2/T3/T4 + T6 metrics), all three sub-mechanics covered
+by unit tests (`is_websocket_upgrade`, `forward_websocket_upgrade`,
+`bridge_upgrade`). The genuinely missing case is "successful WS
+bridge through `forward_allow_to_upstream` with hyper actually
+serving the connection." Manual verification at
+`tests/manual/websocket-bridge.sh` covers it today; an in-process
+test would need ~150 LOC to plumb the full ProxyContext + 14
+parameters of detector chain — meaningful effort, low marginal
+coverage.
 
 **B1 — HA & multi-node** ✅ **CLOSED** 2026-04-29 — single-node
 + Redis-primary + local-fallback ships;
