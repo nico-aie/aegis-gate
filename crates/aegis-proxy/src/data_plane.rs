@@ -197,9 +197,48 @@ pub(crate) async fn handle_data_request_inner(
         let trusted = default_trusted_proxies();
         aegis_security::ip_rep::xff::resolve_client_ip(peer.ip(), xff, &trusted)
     };
+    // FIX 2026-05-03 — runtime access-list enforcement. The
+    // blacklist + whitelist were CRUD-only before this commit
+    // (operators could add entries via the Console + see them
+    // listed but no traffic was actually filtered). Now they're
+    // consulted RIGHT after XFF resolution + before the strike
+    // gate, so a known-bad IP / CIDR / country gets the
+    // cheapest possible block; whitelisted sources skip the
+    // full detector chain.
+    let lookup_ref = upstream_ctx
+        .access_list_country_lookup
+        .get()
+        .map(|arc| arc.as_ref() as &dyn aegis_control::api::blacklist::AccessListCountryLookup);
+    if let Some(entry_id) = upstream_ctx.blacklist.matches(peer_ip, lookup_ref) {
+        tracing::debug!(
+            peer = %peer_ip,
+            entry = %entry_id,
+            "access list: blacklist hit",
+        );
+        let resp = blocked_response(
+            peer,
+            "blocked by blacklist",
+            Some(format!("blacklist:{entry_id}")),
+            None,
+            req.uri(),
+            req.method(),
+            bus,
+        );
+        return (resp, DecisionTag::block("blacklist"));
+    }
+    let on_whitelist = upstream_ctx
+        .whitelist
+        .matches(peer_ip, lookup_ref)
+        .is_some();
+    if on_whitelist {
+        tracing::debug!(peer = %peer_ip, "access list: whitelist hit, skipping detectors");
+    }
+
     // P6 short-circuit: lifetime-strike block runs before any
     // body or detector cost so a flooding known-bad source can't
-    // burn CPU.
+    // burn CPU. Whitelisted sources still hit this gate — strikes
+    // override whitelist (a whitelisted IP hammering the API
+    // hits the strike threshold then gets the permanent 403).
     if risk.is_strike_blocked(peer_ip) {
         let resp = blocked_response(
             peer,
@@ -349,15 +388,30 @@ pub(crate) async fn handle_data_request_inner(
     // this tier. A class turned off via PUT /api/detectors (base
     // or per-tier override) short-circuits before the detector body
     // runs.
+    //
+    // FIX 2026-05-03 — whitelist bypass. When the request's
+    // peer IP matched a whitelist entry above (`on_whitelist`),
+    // skip the detector chain entirely. This is the contract
+    // operators expect from the whitelist: "trust this source
+    // unconditionally" — the whitelist's `bypass: ["all"]`
+    // field on entries gives finer-grained control in a
+    // future track, but the simple "match → bypass" semantics
+    // matches every other WAF.
     let effective = mask.resolve(Some(tier));
     let detect_t0 = std::time::Instant::now();
-    let (signals, fired_classes) = aegis_security::detectors::run_all_filtered_timed(
-        detectors,
-        effective,
-        &view,
-        |class, elapsed| detector_latency_hist.record(class, elapsed),
-    );
-    request_stage_hist.record(stages::DETECT, detect_t0.elapsed());
+    let (signals, fired_classes) = if on_whitelist {
+        request_stage_hist.record(stages::DETECT, detect_t0.elapsed());
+        (Vec::new(), Vec::new())
+    } else {
+        let r = aegis_security::detectors::run_all_filtered_timed(
+            detectors,
+            effective,
+            &view,
+            |class, elapsed| detector_latency_hist.record(class, elapsed),
+        );
+        request_stage_hist.record(stages::DETECT, detect_t0.elapsed());
+        r
+    };
     // PROM-T2 — record one increment per detector that emitted a
     // signal. Cost: one CounterVec inc per fired class (~30 ns).
     // In the common allow-path `fired_classes` is empty so cost

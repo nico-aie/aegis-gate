@@ -97,6 +97,13 @@ pub(crate) async fn admin_accept_loop(
     // setups) leave `cfg.admin.tls` unset → None → existing
     // plain-HTTP path.
     admin_tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
+    // FIX 2026-05-03 — shared ProxyContext so the admin plane
+    // can (a) plug the same blacklist/whitelist Arcs into
+    // DashboardServices that the data plane consults at the
+    // top of `handle_data_request`, and (b) install the GeoIP
+    // adapter for `kind: country` matching after the MaxMind
+    // reader is opened below.
+    upstream_ctx: Arc<crate::proxy::ProxyContext>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -283,6 +290,15 @@ pub(crate) async fn admin_accept_loop(
     // accept_loop already holds, so all surfaces see one shared
     // ModeStore + audit sink.
     let mut services = services;
+
+    // FIX 2026-05-03 — share access-list stores between
+    // DashboardServices (CRUD via /api/blacklist + /api/whitelist)
+    // and ProxyContext (runtime matcher in the data-plane
+    // handler). Before this commit they were distinct Arc
+    // instances, so adds via the dashboard never reached the
+    // data plane. Now they're the same Arc.
+    services.blacklist = upstream_ctx.blacklist.clone();
+    services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
 
     // CI-T5 — seed `services.routes` from `cfg.routes` so
@@ -360,11 +376,43 @@ pub(crate) async fn admin_accept_loop(
                 asn.as_deref(),
             ) {
                 Ok(reader) => {
-                    services.attacks.set_geo_lookup(Arc::new(reader));
+                    let reader_arc: Arc<dyn aegis_security::geoip::GeoIpLookup> =
+                        Arc::new(reader);
+                    services.attacks.set_geo_lookup(reader_arc.clone());
+                    // FIX 2026-05-03 — wrap the reader in an
+                    // AccessListCountryLookup adapter so the
+                    // runtime matcher resolves `kind: country`
+                    // entries against the same .mmdb. Without
+                    // this, country entries silently miss.
+                    struct GeoIpToAccessListAdapter(
+                        Arc<dyn aegis_security::geoip::GeoIpLookup>,
+                    );
+                    impl aegis_control::api::blacklist::AccessListCountryLookup
+                        for GeoIpToAccessListAdapter
+                    {
+                        fn country_of(
+                            &self,
+                            peer: std::net::IpAddr,
+                        ) -> Option<String> {
+                            self.0.country(peer)
+                        }
+                    }
+                    let adapter: Arc<dyn aegis_control::api::blacklist::AccessListCountryLookup> =
+                        Arc::new(GeoIpToAccessListAdapter(reader_arc));
+                    if upstream_ctx
+                        .access_list_country_lookup
+                        .set(adapter)
+                        .is_err()
+                    {
+                        tracing::debug!(
+                            "access-list country lookup already set; \
+                             skipping duplicate install",
+                        );
+                    }
                     tracing::info!(
                         country = ?cfg.geoip.country_db,
                         asn = ?cfg.geoip.asn_db,
-                        "geoip reader wired into AttacksHandler",
+                        "geoip reader wired into AttacksHandler + access-list matcher",
                     );
                 }
                 Err(e) => {

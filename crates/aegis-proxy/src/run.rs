@@ -986,6 +986,7 @@ pub async fn run(
         admin_client_trust,
         admin_inflight,
         admin_tls_acceptor,
+        upstream_ctx.clone(),
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

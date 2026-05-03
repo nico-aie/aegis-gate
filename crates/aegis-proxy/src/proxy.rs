@@ -41,6 +41,28 @@ pub struct ProxyContext {
     /// phase reads `inflight.current()` to know when it's
     /// safe to exit. Cheap to clone (Arc<AtomicU32> shared).
     pub inflight: crate::hotbin::InFlightCounter,
+    /// FIX 2026-05-03 — runtime access-list enforcement.
+    /// Operators populate these via the Console; the handler
+    /// consults them after XFF resolution but BEFORE the
+    /// detector chain. Always present (may be empty) so the
+    /// data-plane handler doesn't need a hot-path `Option`
+    /// check — ArcSwap inside `AccessListStore` makes
+    /// hot-reload free.
+    pub blacklist: Arc<aegis_control::api::blacklist::AccessListStore>,
+    pub whitelist: Arc<aegis_control::api::blacklist::AccessListStore>,
+    /// Adapter wrapping the live GeoIP reader (when wired) so
+    /// the access-list matcher can resolve `kind: country`
+    /// entries without taking a direct dep on `aegis-security`.
+    /// Wrapped in [`std::sync::OnceLock`] so the boot path can
+    /// install the lookup AFTER `Arc::new(ProxyContext)` — the
+    /// `MaxMindReader` is built inside the admin accept-loop
+    /// where `cfg.geoip` is consulted; storing it back here
+    /// shares the same reader between control + data planes.
+    /// Unset when the binary is built without `geoip` OR no
+    /// .mmdb is configured — country entries silently miss.
+    pub access_list_country_lookup: std::sync::OnceLock<
+        Arc<dyn aegis_control::api::blacklist::AccessListCountryLookup>,
+    >,
 }
 
 impl ProxyContext {
@@ -58,6 +80,17 @@ impl ProxyContext {
             benchmark: BenchmarkConfig::off(),
             tunnels: crate::tcp_tunnel::ConcurrentTunnels::new(),
             inflight: crate::hotbin::InFlightCounter::new(),
+            // Default empty stores — boot path shares the
+            // same Arcs into DashboardServices so
+            // /api/blacklist + /api/whitelist mutations are
+            // observed by the data-plane matcher in real time.
+            blacklist: Arc::new(
+                aegis_control::api::blacklist::AccessListStore::new(),
+            ),
+            whitelist: Arc::new(
+                aegis_control::api::blacklist::AccessListStore::new(),
+            ),
+            access_list_country_lookup: std::sync::OnceLock::new(),
         })
     }
 
