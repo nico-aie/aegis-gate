@@ -191,6 +191,243 @@ pub fn adopt_inherited_listeners_with_cfg(cfg: &FdPassConfig) -> AdoptOutcome {
     adopt_listeners_from_fds(&names, cfg.base_fd)
 }
 
+/// FDP-T4 — in-flight request counter for the drain protocol.
+/// The accept loop wraps every accepted connection in an
+/// `InFlightGuard`; on drop the counter decrements. The drain
+/// path waits for the counter to reach zero (or the grace
+/// timeout to fire) before exiting.
+///
+/// Cheap to clone (`Arc<AtomicU32>` underneath); every clone
+/// shares the same counter.
+#[derive(Clone, Debug, Default)]
+pub struct InFlightCounter {
+    inner: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl InFlightCounter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Admit one in-flight request. Returns a guard that
+    /// decrements the counter on drop. Holders MUST keep the
+    /// guard alive for the request's full lifetime so the
+    /// drain protocol's "wait until in-flight == 0" condition
+    /// reflects reality.
+    pub fn admit(&self) -> InFlightGuard {
+        self.inner
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        InFlightGuard {
+            counter: self.inner.clone(),
+        }
+    }
+
+    pub fn current(&self) -> u32 {
+        self.inner.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// RAII guard returned from [`InFlightCounter::admit`].
+/// Decrements on drop. Marked `#[must_use]` so a stray
+/// `let _ = counter.admit()` surfaces a lint.
+#[must_use = "in-flight guard must be held for the request's lifetime"]
+pub struct InFlightGuard {
+    counter: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl std::fmt::Debug for InFlightGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InFlightGuard").finish()
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.counter
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// FDP-T4 — config knobs for [`perform_handover`].
+#[derive(Clone, Debug)]
+pub struct HandoverConfig {
+    /// Time to wait for the child to advertise readiness.
+    /// Past this, we kill the child and roll back.
+    pub readiness_timeout: std::time::Duration,
+    /// Time to wait after readiness for in-flight requests to
+    /// drain. Past this, we exit anyway and the still-running
+    /// tasks die with the process.
+    pub drain_grace: std::time::Duration,
+    /// How often to poll the readiness probe + the in-flight
+    /// counter during drain. 50ms is a reasonable default —
+    /// fast enough that drain finishes promptly when the
+    /// counter hits zero, slow enough that we don't burn CPU.
+    pub poll_interval: std::time::Duration,
+}
+
+impl Default for HandoverConfig {
+    fn default() -> Self {
+        Self {
+            readiness_timeout: std::time::Duration::from_secs(30),
+            drain_grace: std::time::Duration::from_secs(30),
+            poll_interval: std::time::Duration::from_millis(50),
+        }
+    }
+}
+
+/// FDP-T4 — outcome of a single handover attempt. The drain
+/// path emits a `binary_handover_completed` audit event with
+/// these fields (see plans/binary-handover-fd-pass.md §8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HandoverOutcome {
+    /// Child became ready; in-flight requests drained within
+    /// the grace window; parent exited cleanly. The expected
+    /// happy path.
+    Drained {
+        readiness_duration_ms: u64,
+        drain_duration_ms: u64,
+        inflight_at_signal: u32,
+    },
+    /// Child became ready but in-flight requests didn't reach
+    /// zero before the grace timer expired. Parent exits anyway;
+    /// remaining tasks die with the process.
+    DrainTimeout {
+        readiness_duration_ms: u64,
+        drain_duration_ms: u64,
+        inflight_at_signal: u32,
+        inflight_at_exit: u32,
+    },
+    /// Child failed its readiness probe within the timeout.
+    /// Parent killed the child and resumed accepting.
+    RolledBack {
+        reason: String,
+        readiness_attempts: u32,
+    },
+}
+
+impl HandoverOutcome {
+    pub fn is_drained(&self) -> bool {
+        matches!(self, Self::Drained { .. })
+    }
+
+    /// Audit `rule_id` mapping. Pairs with the
+    /// `binary_handover_completed` action.
+    pub fn rule_id(&self) -> &'static str {
+        match self {
+            Self::Drained { .. } => "handover_drained",
+            Self::DrainTimeout { .. } => "handover_drain_timeout",
+            Self::RolledBack { .. } => "handover_rolled_back",
+        }
+    }
+}
+
+/// FDP-T4 — orchestrate a single handover attempt.
+///
+/// Sequence:
+///
+///  1. Spawn the successor via [`spawn_successor`] (caller
+///     prepared the [`SuccessorPlan`]).
+///  2. Poll the `is_child_ready` closure every
+///     `cfg.poll_interval` until it returns true or
+///     `cfg.readiness_timeout` expires.
+///  3. On readiness: snapshot `inflight.current()`. Wait for
+///     `inflight` to reach 0 OR `cfg.drain_grace` to expire.
+///  4. On readiness timeout: `kill -KILL` the child, return
+///     [`HandoverOutcome::RolledBack`]. Caller resumes its
+///     accept loops.
+///
+/// The caller is responsible for **stopping its accept loops**
+/// once this fn returns Drained / DrainTimeout (the parent's
+/// listener FDs are now shared with the child; both procs
+/// accept until the parent stops). For the rollback path the
+/// caller should **resume** accepting.
+///
+/// `is_child_ready` is a generic closure — production wires it
+/// to an HTTP probe against `/healthz/ready`, tests wire it to
+/// a synthetic `AtomicBool`.
+pub async fn perform_handover<F, Fut>(
+    plan: SuccessorPlan,
+    inflight: InFlightCounter,
+    cfg: HandoverConfig,
+    is_child_ready: F,
+) -> HandoverOutcome
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let mut child = match spawn_successor(plan) {
+        Ok(c) => c,
+        Err(e) => {
+            return HandoverOutcome::RolledBack {
+                reason: format!("spawn failed: {e}"),
+                readiness_attempts: 0,
+            };
+        }
+    };
+
+    // Phase 1 — poll readiness until success or timeout.
+    let readiness_started = std::time::Instant::now();
+    let mut attempts: u32 = 0;
+    let ready = loop {
+        attempts += 1;
+        if is_child_ready().await {
+            break true;
+        }
+        // Did the child exit on its own? If yes, no point
+        // polling further.
+        if let Ok(Some(_status)) = child.try_wait() {
+            return HandoverOutcome::RolledBack {
+                reason: "child exited before readiness".into(),
+                readiness_attempts: attempts,
+            };
+        }
+        if readiness_started.elapsed() >= cfg.readiness_timeout {
+            break false;
+        }
+        tokio::time::sleep(cfg.poll_interval).await;
+    };
+
+    if !ready {
+        // Kill the child — it had its chance. `kill` sends
+        // SIGKILL on Unix; child can't catch it.
+        let _ = child.kill();
+        let _ = child.wait();
+        return HandoverOutcome::RolledBack {
+            reason: format!(
+                "readiness timed out after {:?}",
+                cfg.readiness_timeout,
+            ),
+            readiness_attempts: attempts,
+        };
+    }
+
+    let readiness_duration_ms = readiness_started.elapsed().as_millis() as u64;
+    let inflight_at_signal = inflight.current();
+
+    // Phase 2 — drain. Caller is expected to stop accepting at
+    // this point so the in-flight count strictly decreases.
+    let drain_started = std::time::Instant::now();
+    loop {
+        let cur = inflight.current();
+        if cur == 0 {
+            return HandoverOutcome::Drained {
+                readiness_duration_ms,
+                drain_duration_ms: drain_started.elapsed().as_millis() as u64,
+                inflight_at_signal,
+            };
+        }
+        if drain_started.elapsed() >= cfg.drain_grace {
+            return HandoverOutcome::DrainTimeout {
+                readiness_duration_ms,
+                drain_duration_ms: drain_started.elapsed().as_millis() as u64,
+                inflight_at_signal,
+                inflight_at_exit: cur,
+            };
+        }
+        tokio::time::sleep(cfg.poll_interval).await;
+    }
+}
+
 /// FDP-T2 — adopt the listener for `name` from `inherited` if
 /// present, else fresh-bind to `addr`. The boot path's
 /// drop-in replacement for `tokio::net::TcpListener::bind`.
@@ -753,6 +990,288 @@ mod tests {
         let (status, stdout) = run_sh_and_capture(plan);
         assert!(status.success());
         assert_eq!(stdout.trim_end(), "test-value-42");
+    }
+
+    // -----------------------------------------------------------
+    // FDP-T4 — InFlightCounter + HandoverOutcome
+    // -----------------------------------------------------------
+
+    #[test]
+    fn inflight_starts_at_zero() {
+        let c = InFlightCounter::new();
+        assert_eq!(c.current(), 0);
+    }
+
+    #[test]
+    fn inflight_admit_increments_drop_decrements() {
+        let c = InFlightCounter::new();
+        let g1 = c.admit();
+        let g2 = c.admit();
+        assert_eq!(c.current(), 2);
+        drop(g1);
+        assert_eq!(c.current(), 1);
+        drop(g2);
+        assert_eq!(c.current(), 0);
+    }
+
+    #[test]
+    fn inflight_clones_share_state() {
+        let c1 = InFlightCounter::new();
+        let c2 = c1.clone();
+        let _g = c1.admit();
+        assert_eq!(c1.current(), 1);
+        assert_eq!(c2.current(), 1, "clones must share counter");
+    }
+
+    #[test]
+    fn handover_outcome_rule_ids_match_design_doc() {
+        let drained = HandoverOutcome::Drained {
+            readiness_duration_ms: 0,
+            drain_duration_ms: 0,
+            inflight_at_signal: 0,
+        };
+        assert_eq!(drained.rule_id(), "handover_drained");
+        let timeout = HandoverOutcome::DrainTimeout {
+            readiness_duration_ms: 0,
+            drain_duration_ms: 0,
+            inflight_at_signal: 0,
+            inflight_at_exit: 0,
+        };
+        assert_eq!(timeout.rule_id(), "handover_drain_timeout");
+        let rolled = HandoverOutcome::RolledBack {
+            reason: "x".into(),
+            readiness_attempts: 1,
+        };
+        assert_eq!(rolled.rule_id(), "handover_rolled_back");
+    }
+
+    #[test]
+    fn handover_outcome_is_drained_helper() {
+        let d = HandoverOutcome::Drained {
+            readiness_duration_ms: 1,
+            drain_duration_ms: 1,
+            inflight_at_signal: 0,
+        };
+        assert!(d.is_drained());
+        let r = HandoverOutcome::RolledBack {
+            reason: "x".into(),
+            readiness_attempts: 1,
+        };
+        assert!(!r.is_drained());
+    }
+
+    fn fast_cfg() -> HandoverConfig {
+        // Tight timings so unit tests stay sub-second.
+        HandoverConfig {
+            readiness_timeout: std::time::Duration::from_millis(500),
+            drain_grace: std::time::Duration::from_millis(500),
+            poll_interval: std::time::Duration::from_millis(10),
+        }
+    }
+
+    fn sh_sleep_plan(seconds: u32) -> SuccessorPlan {
+        // /bin/sh that sleeps and exits — used as the
+        // "successor" in tests where the child's behaviour
+        // doesn't matter, only that it's spawnable.
+        SuccessorPlan {
+            binary_path: std::path::PathBuf::from("/bin/sh"),
+            listeners: vec![],
+            extra_env: vec![],
+            args: vec!["-c".into(), format!("sleep {seconds}; exit 0")],
+        }
+    }
+
+    #[tokio::test]
+    async fn handover_drains_when_child_ready_and_no_inflight() {
+        let inflight = InFlightCounter::new();
+        // Child that lives long enough to be polled
+        // "ready" — the readiness check itself is our control.
+        let outcome = perform_handover(
+            sh_sleep_plan(5),
+            inflight,
+            fast_cfg(),
+            || async { true }, // immediately ready
+        )
+        .await;
+
+        match outcome {
+            HandoverOutcome::Drained {
+                inflight_at_signal,
+                ..
+            } => {
+                assert_eq!(inflight_at_signal, 0);
+            }
+            other => panic!("expected Drained, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handover_drains_after_inflight_falls_to_zero() {
+        // Two guards admitted before handover. Schedule both
+        // drops on a background task with a delay shorter than
+        // drain_grace. Drain should observe count → 0 and
+        // return Drained.
+        let inflight = InFlightCounter::new();
+        let g1 = inflight.admit();
+        let g2 = inflight.admit();
+        assert_eq!(inflight.current(), 2);
+
+        let releaser = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            drop(g1);
+            drop(g2);
+        });
+
+        let outcome = perform_handover(
+            sh_sleep_plan(5),
+            inflight,
+            HandoverConfig {
+                readiness_timeout: std::time::Duration::from_millis(500),
+                drain_grace: std::time::Duration::from_millis(500),
+                poll_interval: std::time::Duration::from_millis(10),
+            },
+            || async { true },
+        )
+        .await;
+        let _ = releaser.await;
+
+        match outcome {
+            HandoverOutcome::Drained {
+                inflight_at_signal,
+                ..
+            } => {
+                assert_eq!(inflight_at_signal, 2);
+            }
+            HandoverOutcome::DrainTimeout {
+                inflight_at_exit, ..
+            } => {
+                panic!("drain timed out with {inflight_at_exit} in-flight");
+            }
+            other => panic!("expected Drained, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handover_drain_timeout_when_inflight_stuck() {
+        let inflight = InFlightCounter::new();
+        let _stuck = inflight.admit(); // never released
+
+        let outcome = perform_handover(
+            sh_sleep_plan(5),
+            inflight,
+            HandoverConfig {
+                readiness_timeout: std::time::Duration::from_millis(200),
+                drain_grace: std::time::Duration::from_millis(150),
+                poll_interval: std::time::Duration::from_millis(10),
+            },
+            || async { true },
+        )
+        .await;
+
+        match outcome {
+            HandoverOutcome::DrainTimeout {
+                inflight_at_exit, ..
+            } => {
+                assert_eq!(inflight_at_exit, 1);
+            }
+            other => panic!("expected DrainTimeout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handover_rolls_back_when_child_never_ready() {
+        let outcome = perform_handover(
+            sh_sleep_plan(5),
+            InFlightCounter::new(),
+            HandoverConfig {
+                readiness_timeout: std::time::Duration::from_millis(120),
+                drain_grace: std::time::Duration::from_millis(100),
+                poll_interval: std::time::Duration::from_millis(10),
+            },
+            || async { false }, // never ready
+        )
+        .await;
+
+        match outcome {
+            HandoverOutcome::RolledBack {
+                reason,
+                readiness_attempts,
+            } => {
+                assert!(
+                    reason.contains("readiness timed out"),
+                    "unexpected reason: {reason}",
+                );
+                // ~12 attempts at 10ms intervals over 120ms;
+                // allow slack for scheduling jitter.
+                assert!(
+                    readiness_attempts >= 5,
+                    "expected ≥5 readiness attempts, got {readiness_attempts}",
+                );
+            }
+            other => panic!("expected RolledBack, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handover_rolls_back_when_child_exits_early() {
+        // /bin/false exits 1 immediately. The poll loop should
+        // notice via `try_wait` and roll back without waiting
+        // for the readiness timeout.
+        let outcome = perform_handover(
+            SuccessorPlan {
+                binary_path: std::path::PathBuf::from("/bin/sh"),
+                listeners: vec![],
+                extra_env: vec![],
+                args: vec!["-c".into(), "exit 1".into()],
+            },
+            InFlightCounter::new(),
+            HandoverConfig {
+                readiness_timeout: std::time::Duration::from_secs(5), // long
+                drain_grace: std::time::Duration::from_millis(100),
+                poll_interval: std::time::Duration::from_millis(20),
+            },
+            || async { false }, // never ready, but child exits first
+        )
+        .await;
+
+        match outcome {
+            HandoverOutcome::RolledBack { reason, .. } => {
+                assert!(
+                    reason.contains("child exited before readiness"),
+                    "unexpected reason: {reason}",
+                );
+            }
+            other => panic!("expected RolledBack, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handover_rolls_back_when_spawn_fails() {
+        // Bogus binary path → Command::spawn returns Err.
+        let plan = SuccessorPlan {
+            binary_path: std::path::PathBuf::from("/no/such/binary/zzzz"),
+            listeners: vec![],
+            extra_env: vec![],
+            args: vec![],
+        };
+        let outcome = perform_handover(
+            plan,
+            InFlightCounter::new(),
+            fast_cfg(),
+            || async { true },
+        )
+        .await;
+
+        match outcome {
+            HandoverOutcome::RolledBack {
+                reason,
+                readiness_attempts,
+            } => {
+                assert!(reason.contains("spawn failed"), "got: {reason}");
+                assert_eq!(readiness_attempts, 0);
+            }
+            other => panic!("expected RolledBack, got {other:?}"),
+        }
     }
 
     #[test]
