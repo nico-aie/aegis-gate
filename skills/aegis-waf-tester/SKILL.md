@@ -1,13 +1,12 @@
 ---
 name: aegis-waf-tester
 description: End-to-end QA tester for the Aegis-Gate WAF. Drives the
-  data plane via curl + the dashboard via a real browser (Playwright),
-  evaluates functional correctness, UX quality from a SOC-analyst
-  perspective, and basic performance, then writes structured bug /
-  issue / feedback reports under `reports/findings/`. Use whenever
-  the operator asks for "test the WAF", "QC the dashboard", "is the
-  WAF working", or wants a fresh round of regression coverage after
-  a release.
+  data plane via curl + the dashboard via a real browser (Playwright
+  when available), evaluates functional correctness, UX from a
+  SOC-analyst perspective, and basic performance, then writes
+  structured bug / issue / feedback reports. Use whenever the
+  operator asks for "test the WAF", "QC the dashboard", "is the WAF
+  working", or wants a regression round after a release.
 ---
 
 # Aegis-Gate End-to-End Tester (skill)
@@ -20,222 +19,409 @@ can triage.
 
 You are NOT writing fixes. Your job is to **find problems, document
 them clearly, and rank them**. Recommend fixes only as part of the
-finding write-up, not as code changes.
+finding write-up.
 
-## Inputs
+---
 
-The operator typically invokes you in one of three modes:
+## How to invoke
 
-1. **Smoke** — fastest pass, ~5 min. Boot, login, click each page,
-   one curl through the data plane. Goal: catch regressions.
-2. **Functional** — ~20 min. Walks the test plan in
-   `checklists/functional.md`. Drives every interactive control
-   that mutates state. Goal: catch broken features.
-3. **Full QC** — ~60 min. Functional + UX + performance + security
-   regression. Drives all four checklists. Goal: release readiness.
+Run when the operator says "test the WAF", "QC the dashboard", "run
+the aegis-waf-tester skill", or similar. Three modes:
 
-If the operator doesn't specify, ask which mode (one short
-question, then proceed).
+| Mode | Time | Coverage |
+|---|---|---|
+| **Smoke** | ~5 min | Pre-flight + auth flow + click every dashboard page + one curl through data plane. Catches regressions. |
+| **Functional** | ~20 min | Smoke + every interactive control + every shipped feature surface. Catches broken features. |
+| **Full QC** | ~60 min | Functional + UX (SOC-analyst lens) + perf smoke + security regression. Release readiness. |
 
-## Required tools
+If the operator doesn't specify, default to **Smoke** and offer to
+extend after.
 
-You need **all of**:
+---
 
-- `Bash` — for curl, scripts, shell-driven API calls
-- `Read` / `Write` / `Edit` — for findings files
-- **Playwright MCP** — browser automation for the dashboard.
-  Surfaced as `mcp__plugin_ecc_playwright__browser_*` tools in
-  Claude Desktop when the playwright plugin is installed.
-  Alternative: `mcp__claude_ai_chrome__*` if claude.ai's Chrome
-  bridge is configured.
+## Setup — read this BEFORE running
 
-If Playwright is unavailable, **say so explicitly** and fall back
-to curl-only coverage. Do not fake browser results.
+The Skill needs **two things** to be useful:
 
-## Pre-flight (do this every time)
+1. **A running WAF** on the default ports (data plane `:8080`,
+   admin `:9443`, Redis `:6379`).
+2. **The repo folder mounted in the session** (so you can read
+   the test scripts and write findings into `reports/findings/`).
 
-Before any tests, verify:
+If **either** is missing, do this in order:
+
+### A. Pre-flight before anything else
+
+If you have access to `Bash` AND can see a `skills/aegis-waf-tester/`
+folder in the working directory:
 
 ```bash
 bash skills/aegis-waf-tester/scripts/verify-waf-up.sh
 ```
 
-This checks the data plane (`:8080`), admin (`:9443`), and Redis
-(`:6379`) are all live. If anything fails:
+If you don't see the skill folder (Claude Desktop without the repo
+connected), the same checks inline:
 
-- If the WAF isn't running: ask the operator to run `make run-dev`
-  in another terminal, then re-run the script.
-- If Redis is down: `make redis-up` brings it back.
-- If the dashboard returns 502 / 404 / non-200: that's already a
-  finding — log it before continuing.
+```bash
+curl -fsS --max-time 3 http://127.0.0.1:9443/healthz/live  || echo "WAF admin DOWN"
+curl -fsS --max-time 3 http://127.0.0.1:8080/   2>&1 | grep -q . || echo "WAF data DOWN"
+(echo PING; sleep 0.2) | nc -w 2 127.0.0.1 6379 | grep -q PONG || echo "Redis DOWN"
+```
 
-Default credentials for `make run-dev`:
+### B. If the WAF is down
+
+**Don't refuse to run** — offer to start it. If you can run shell:
+
+```bash
+# From the aegis-gate repo root:
+make redis-up      # starts the dev Redis (idempotent)
+make run-dev &     # boots the WAF in the background
+sleep 5
+bash skills/aegis-waf-tester/scripts/verify-waf-up.sh
+```
+
+If you don't have shell access to the operator's machine, **tell
+them this exact pair of commands** and ask them to run it in
+another terminal, then come back. One short message — don't
+fabricate findings while you wait.
+
+### C. If the repo isn't connected to the session
+
+This is fine — fall back to **self-contained mode**:
+
+- Don't try to `cd aegis-gate` or read `tests/manual/`.
+- Use only the inline curl commands embedded in this SKILL.md.
+- Write findings as **markdown to chat** (using the FINDING
+  TEMPLATE below) instead of files. The operator can save them
+  manually.
+- Report counts the same way at the end (`Findings: N CRITICAL …`).
+
+### D. Required tools
+
+| Tool | Purpose | Required? |
+|---|---|---|
+| `Bash` | curl + nc + jq | **Yes** — without it you can do nothing. |
+| `Read` / `Write` / `Edit` | repo file access | Optional — write findings to chat instead when missing. |
+| `mcp__plugin_ecc_playwright__browser_*` | browser automation | Optional — fall back to curl-only and log a single INFO finding noting the gap. |
+
+If Playwright is missing, that's already documented as the
+expected fallback path. Note it once and proceed.
+
+---
+
+## Default credentials (`make run-dev`)
+
 - User: `admin`
 - Password: `aegis-test-1234`
-- CSRF: cookie `aegis_csrf` after `POST /admin/login`
+- Admin: `http://127.0.0.1:9443`
+- Data plane: `http://127.0.0.1:8080` (HTTP), `https://127.0.0.1:8443` (HTTPS)
+- After `POST /admin/login` you'll get an `aegis_session` + `aegis_csrf`
+  cookie pair. Subsequent mutations need `X-CSRF-Token: <csrf-cookie-value>`
+  on the request header AND the cookie itself sent. Standard double-submit.
 
-## Test workflow
+---
+
+## Embedded test plan
+
+Every check below is a yes/no. File a finding for any "no" outcome.
 
 ### Phase 1 — Auth + Dashboard shell
 
-Browser steps (`mcp__plugin_ecc_playwright__browser_*`):
-
-1. `browser_navigate` → `http://localhost:9443/admin/login`
-2. `browser_snapshot` — assert the login form renders
-   (`#login-user`, `#login-password`, "Sign in" button).
-3. `browser_fill_form` with bad creds first (`admin` /
-   `wrong`). Submit. Assert a visible error.
-4. `browser_fill_form` with good creds. Submit. Assert
-   redirect to `/dashboard/`.
-5. For each sidebar link — Overview, Live Feed, Investigation,
-   Top Attackers, Threat Intel, Rules, Detectors, Access Lists,
-   Routing & Upstreams, Compliance, Performance, Health & SLOs,
-   Audit Trail, Scaling, Settings, Reports, Help — `browser_click`
-   the entry, `browser_snapshot`, and verify:
-   - The page title matches the sidebar label.
-   - No "Loading…" spinner stuck for >5 s.
-   - No JavaScript console errors (`browser_console_messages`).
-   - Visible empty-state copy is honest (e.g. "no data yet" for
-     fresh boot, NOT a stuck spinner).
-
-**Log a finding** for any: 4xx/5xx page, empty content where data
-should appear, missing nav entry, broken link, console error, slow
-page (>2 s on `make run-dev`).
-
-### Phase 2 — Data-plane round-trip
-
-Drive synthetic traffic to populate the dashboard:
-
 ```bash
-bash skills/aegis-waf-tester/scripts/drive-traffic.sh
+A=http://127.0.0.1:9443
+
+# 1. GET /admin/login renders the login form
+curl -fsS "$A/admin/login" | grep -q 'id="login-form"'
+
+# 2. POST with bad creds -> 401 + reason invalid_credentials
+curl -s -o /tmp/r -w "%{http_code}" -X POST -H "content-type: application/json" \
+  -d '{"user":"admin","password":"wrong"}' "$A/admin/login"
+# expect: 401 ; jq -r .reason /tmp/r == "invalid_credentials"
+
+# 3. POST with good creds -> 200 + sets aegis_session AND aegis_csrf cookies
+curl -s -c /tmp/jar -X POST -H "content-type: application/json" \
+  -d '{"user":"admin","password":"aegis-test-1234"}' "$A/admin/login"
+grep -q aegis_session /tmp/jar && grep -q aegis_csrf /tmp/jar
+
+# 4. SPA shell loads
+curl -fsS -b /tmp/jar "$A/" | grep -q 'id="root"'
+curl -fsS -b /tmp/jar "$A/dashboard/assets/app.js" >/dev/null
+
+# 5. Every documented dashboard API returns 200
+for path in \
+  /api/about /api/cluster /api/runtime /api/loadmode /api/state \
+  /api/routes /api/upstreams /api/upstreams/config \
+  /api/detectors /api/rules /api/blacklist /api/whitelist \
+  /api/audit/since?limit=5 /api/attacks/top \
+  /api/attacks/by-detector?window=3600 \
+  /api/bots/mix?window=3600 /api/threat-intel/hits /api/threat-intel/feeds \
+  /api/geoip/status /api/slo /api/alerts /api/alert-receivers \
+  /api/certs /api/risk /api/incidents \
+  /api/stats/timeseries?window=3600 /api/analytics/latency \
+  /api/mtls/connections /api/mtls/failures /api/mtls/ca-summary \
+  /api/admin/sessions /api/admin/break-glass /api/cold-tier \
+  /api/integrations /api/gitops/status /api/config /api/config/version
+do
+  s=$(curl -s -b /tmp/jar -o /dev/null -w "%{http_code}" "$A$path")
+  [[ "$s" == "200" ]] || echo "  FAIL $s $path"
+done
 ```
 
-That script runs ~30 s of mixed legit + attacker traffic. While it
-runs, refresh the dashboard:
+### Phase 2 — Drive synthetic traffic so the dashboard has signal
 
-- **Live Feed** — every row should populate with real Path / Method /
-  Status / IP / Action. The Path column was historically buggy —
-  if it shows blank, file a finding immediately.
-- **Top Attackers** — should show a ranked list once attacker
-  traffic has run for ~10 s. Empty list while traffic is flowing
-  is a finding.
-- **Investigation** — default view should show recent requests.
-  Click any row → drawer shows full request detail (status,
-  latency, route, extra fields).
-- **Audit Trail** — every mutation should land in the chain.
+```bash
+DATA=http://127.0.0.1:8080
+ATTACKER=( 8.8.8.8 1.1.1.1 9.9.9.9 )
+LEGIT=(    1.0.0.1 9.9.9.10 8.8.4.4 )
 
-### Phase 3 — Functional regression
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  ip="${ATTACKER[$((i % 3))]}"
+  curl -s -o /dev/null -H "X-Forwarded-For: $ip" "$DATA/login?u=admin'+OR+1=1--"
+  curl -s -o /dev/null -H "X-Forwarded-For: $ip" "$DATA/?q=<script>alert(1)</script>"
+  curl -s -o /dev/null -H "X-Forwarded-For: $ip" "$DATA/files?p=../../../../etc/passwd"
+  curl -s -o /dev/null -H "X-Forwarded-For: $ip" "$DATA/.env"
 
-Walk `checklists/functional.md` end to end. The checklist covers:
+  legit="${LEGIT[$((i % 3))]}"
+  curl -s -o /dev/null -H "X-Forwarded-For: $legit" "$DATA/api/users/$i"
+  curl -s -o /dev/null -A "Mozilla/5.0 (Macintosh; Intel) AppleWebKit/605.1.15" \
+       -H "X-Forwarded-For: $legit" "$DATA/api/list"
+done
+sleep 2
+```
 
-- Access lists: blacklist + whitelist CRUD, country-code matching
-  via spoofed `X-Forwarded-For`.
-- CSRF: missing-token / wrong-token responses.
-- WebSocket bridge.
-- Multi-vhost upstreams.
-- Hot-reload of routes / detectors / rate limits.
-- VipTalk alert delivery (or `skipped_feature_off`).
+After this drive, validate:
 
-Most steps map to scripts under `tests/manual/` in the repo —
-re-use them rather than retyping curl commands.
+```bash
+# A — Top Attackers populates with real signal
+curl -s -b /tmp/jar "$A/api/attacks/top?window=300" \
+  | jq '.attackers | length, .attackers[0:3] | map({identifier, hits, country, asn})'
 
-### Phase 4 — UX from a SOC-analyst lens
+# B — by-detector chart shows real classes (sqli / xss / path_traversal /
+#     recon), NOT prefixed with "detector:" and NOT truncated.
+curl -s -b /tmp/jar "$A/api/attacks/by-detector?window=300" | jq '.detectors'
 
-Walk `checklists/ux-soc.md`. Pretend you've never seen this
-product. For each page, ask:
+# C — Bot mix has more than just "unknown"
+curl -s -b /tmp/jar "$A/api/bots/mix?window=300" | jq '.categories'
 
-- Can I tell at a glance what's happening?
-- If I see a problem, can I act on it without reading docs?
-- Are empty states honest (not "0" pretending to be data)?
-- Are pivots between pages obvious (Live Feed → Investigation
-  → Top Attackers → Block IP)?
+# D — Live Feed audit shape — fields.{method,path,status} populated
+curl -s -b /tmp/jar "$A/api/audit/since?limit=3" \
+  | jq '.events[0] | {ts, action, client_ip, fields: (.fields | {method, path, status, bot_category})}'
+```
 
-Findings here are usually MEDIUM-severity but compound over a
-release. Don't skip them.
+### Phase 3 — CSRF + auth gate
 
-### Phase 5 — Performance smoke
+```bash
+CSRF=$(awk -v IGNORECASE=1 '/aegis_csrf/{print $7}' /tmp/jar)
+NOW=$(date -u +%FT%TZ)
 
-Walk `checklists/performance.md`. Run a quick `make mock-load-mix`
-and observe `/metrics`:
+# Add a real entry — needs full body shape (id, kind, value, note, bypass, created_at)
+BODY="{\"id\":\"qa-test\",\"kind\":\"ip\",\"value\":\"203.0.113.99\",\"note\":\"qa\",\"bypass\":[],\"created_at\":\"$NOW\"}"
 
-- Latency: p99 should be <5 ms on `make run-dev`.
-- Throughput: ≥1 000 req/s on a laptop is the floor.
-- Memory growth: should stabilise within 60 s.
+# 1. POST with valid CSRF -> 201
+curl -s -b /tmp/jar -X POST -H "content-type: application/json" -H "x-csrf-token: $CSRF" \
+  -d "$BODY" -o /dev/null -w "%{http_code}\n" "$A/api/blacklist"
+# expect: 201
 
-The user's authoritative perf data is at
-`tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/REPORT.md`
-— compare against that baseline for context.
+# 2. POST with no CSRF header -> 403, reason csrf_missing_header
+curl -s -b /tmp/jar -X POST -H "content-type: application/json" \
+  -d "${BODY/qa-test/qa-test-2}" -o /tmp/r -w "%{http_code}\n" "$A/api/blacklist"
+# expect: 403 ; jq -r .reason /tmp/r == "csrf_missing_header"
 
-### Phase 6 — Security regression
+# 3. POST with wrong CSRF header -> 403, reason csrf_mismatch
+curl -s -b /tmp/jar -X POST -H "content-type: application/json" -H "x-csrf-token: WRONG" \
+  -d "${BODY/qa-test/qa-test-3}" -o /tmp/r -w "%{http_code}\n" "$A/api/blacklist"
+# expect: 403 ; jq -r .reason /tmp/r == "csrf_mismatch"
 
-Walk `checklists/security.md`. Replays known-bad payloads
-(SQLi / XSS / path-traversal / XXE / SSRF / ReDoS) through the
-data plane and asserts the right detector fires + the right
-rule_id appears in `x-waf-rule-id`.
+# 4. Verify the entry actually blocks traffic
+curl -s -o /dev/null -w "%{http_code}\n" -H "X-Forwarded-For: 203.0.113.99" "$DATA/"
+# expect: 403
+
+# Cleanup
+curl -s -b /tmp/jar -H "x-csrf-token: $CSRF" -X DELETE "$A/api/blacklist/qa-test" -o /dev/null
+```
+
+### Phase 4 — Functional spot-checks
+
+For Functional + Full QC modes only. Pick one or two from each
+group below:
+
+- **Access lists runtime enforcement.** Add a CIDR blacklist
+  entry. Verify `203.0.113.0/24` block applies to `.42` and `.7`
+  but not to `192.0.2.7`.
+- **Country-code blacklist (needs GeoIP).** Add `kind: country`
+  entry for CN. `curl -H "X-Forwarded-For: 223.5.5.5"` returns 403.
+  If `/api/geoip/status.db_loaded == false`, skip with INFO.
+- **WebSocket bridge.** Pick a route on a non-tcp scheme. From
+  the operator's machine: `websocat ws://127.0.0.1:8080/`. The
+  audit chain emits `websocket_open` + `websocket_close`.
+- **Hot-reload.** Edit `config/dev.yaml`'s
+  `cfg.detectors.recon.enabled` to false. Within ~5 s the WAF
+  logs `config_reload`; data plane stops firing recon.
+  *(skip if no repo access)*
+
+### Phase 5 — UX from SOC-analyst lens (Full QC only)
+
+Pretend you're a SOC analyst on day 1. For each scenario below,
+rate 1-5 (5 = effortless, 1 = friction); file a finding for any
+score ≤ 3.
+
+- **S1** "I just got paged" — open Overview. Within 5 s can the
+  analyst tell: WAF up? Traffic flowing? Anything blocked? Any
+  active alerts?
+- **S2** "Who's attacking me?" — Top Attackers ranks by hits, not
+  alpha. One-click Pivot + Block.
+- **S3** "What did this attacker do?" — Pivot lands on
+  Investigation with the IP pre-filled and timeline populated.
+  Drawer shows status / latency / route / extra fields.
+- **S4** Audit Trail surfaces recent mutations within 3 s, with
+  actor + chain hash visible.
+- **S5** Empty states are honest — no fake numbers on a fresh boot.
+
+### Phase 6 — Performance smoke (Full QC only)
+
+```bash
+# Baseline: prod-balanced 5 k+ RPS / p99 1.03 ms / 80 % detection.
+# Compare against tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/.
+
+# Quick throughput check on `make run-dev`:
+make mock-load-mix DURATION=30s &
+sleep 32
+curl -s "$A/api/analytics/latency" | jq '.stages.total // {note: "no samples yet"}'
+# Expect: p99 ≤ 5 ms on a laptop, ≥ 1 000 RPS sustained
+```
+
+### Phase 7 — Security regression (Full QC only)
+
+Replay known-bad payloads + assert the right detector fires:
+
+```bash
+probe() {
+  local label="$1" path="$2"
+  local s rule
+  s=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Forwarded-For: 8.8.8.8" "$DATA$path")
+  rule=$(curl -s -D - -o /dev/null -H "X-Forwarded-For: 8.8.8.8" "$DATA$path" \
+         | grep -i '^x-waf-rule-id:' | awk '{print $2}' | tr -d '\r')
+  printf "  %-22s status=%s rule=%s\n" "$label" "$s" "${rule:-(none)}"
+}
+probe "sqli union"    "/?q=UNION+SELECT+null,version()"
+probe "sqli boolean"  "/login?u=admin'+OR+1=1--"
+probe "xss script"    "/?q=<script>alert(1)</script>"
+probe "ptrav"         "/files?p=../../../../etc/passwd"
+probe "ssrf imds"     "/fetch?url=http://169.254.169.254/"
+probe "recon env"     "/.env"
+probe "recon admin"   "/wp-admin"
+```
+
+Expect every probe to return `status=403` with a `rule_id` matching
+its detector class (`sqli` / `xss` / `path_traversal` / `ssrf` /
+`recon`). Any 200 or empty `rule` is a finding.
+
+---
 
 ## Findings — file shape
 
-Every finding lands as a file under `reports/findings/` named
-`YYYY-MM-DD--<short-slug>.md`. Use the template at
-`reports/REPORT_TEMPLATE.md`.
+### Severity ladder (use exactly these strings)
 
-Severity ladder (use exactly these strings):
+- `CRITICAL` — security vulnerability, data loss, complete breakage
+  of a primary surface. Stop testing, escalate.
+- `HIGH` — primary feature broken (Live Feed empty, blacklist not
+  enforced, dashboard stuck loading). Worth a hotfix.
+- `MEDIUM` — secondary feature degraded, UX friction that costs the
+  operator real time, perf regression beyond 2× baseline.
+- `LOW` — typo, polish, "would be nice".
+- `INFO` — passing observation; "this works as designed" or "this
+  is a documented limitation". File these too — they're proof the
+  test ran.
 
-- `CRITICAL` — security vulnerability, data loss, complete
-  breakage of a primary surface (data plane returns 5xx for
-  every request, login impossible, …). Stop testing, escalate.
-- `HIGH` — primary feature broken (Live Feed empty, blacklist
-  not enforced, dashboard stuck loading). Worth a hotfix.
-- `MEDIUM` — secondary feature degraded, UX friction that costs
-  the operator real time, perf regression beyond 2x baseline.
-- `LOW` — typo, polish, "would be nice", new-comer confusion
-  that resolves once you read the docs.
-- `INFO` — passing observation; "this works as designed" or
-  "this is a documented limitation". File these too — they're
-  proof the test ran.
+### Output destination
 
-Be concrete. Bad finding: "Live Feed slow." Good finding:
-"Live Feed page took 4.2 s to render its first 10 rows on a
-freshly-booted dev WAF (target ≤1 s); browser console showed
-the SSE stream took 3.1 s before the first frame. Repro with
-`make run-dev` + load `http://localhost:9443/#/live-feed` in
-Chrome 130. See screenshot at `reports/findings/.../sse-slow.png`."
+- **If the repo is connected** (you can see `skills/aegis-waf-tester/reports/`):
+  write each finding to `skills/aegis-waf-tester/reports/findings/YYYY-MM-DD/<slug>.md`
+  using the template below.
+- **If the repo is NOT connected**: emit each finding directly into
+  the chat using the same template. Operator copies them out
+  manually.
 
-## When you finish
+### FINDING TEMPLATE (copy + fill in)
 
-End every run with a single summary message to the operator:
+```markdown
+---
+id: YYYY-MM-DD-<short-slug>
+date: YYYY-MM-DDTHH:MMZ
+severity: CRITICAL | HIGH | MEDIUM | LOW | INFO
+area: dashboard | data-plane | admin-api | docs | perf | security
+component: <e.g. live-feed, blacklist, websocket-bridge>
+status: open
+test_mode: smoke | functional | full-qc
+---
+
+# <One-line title>
+
+## Summary
+What's broken, where, why it matters to a SOC operator.
+
+## Repro
+Numbered, copy-pasteable steps with exact commands + env.
+
+## Expected
+What a SOC operator would expect.
+
+## Actual
+What happened. Paste exact output, trimmed.
+
+## Suggested fix
+One paragraph. Point at file:line when you can.
+
+## Severity rationale
+Why this severity? Be specific.
+```
+
+---
+
+## End-of-run summary (always emit)
 
 ```
 Aegis-Gate test run complete · <mode> · <duration>
 Findings: <C> CRITICAL · <H> HIGH · <M> MEDIUM · <L> LOW · <I> INFO
 Top blocker: <one-line summary of the most-severe finding>
-Reports: skills/aegis-waf-tester/reports/findings/<YYYY-MM-DD>/*.md
+Reports: <path>  (or "in chat above" when no repo)
 Next suggested action: <one concrete dev-task or "ship it">
 ```
 
 Keep this summary under 8 lines.
 
+---
+
 ## Anti-patterns (don't do these)
 
-- ❌ Filing a finding for a behaviour that's documented as
-  intended (e.g. "country blacklist is empty" when no GeoIP DB
-  is wired and `make geoip-link` hasn't run).
-- ❌ Inventing browser interactions you can't actually perform
-  (Playwright MCP not loaded → say so, fall back to curl).
-- ❌ Reporting "tests passed" without listing what you actually
-  ran. Always enumerate.
-- ❌ Editing the WAF source. You are a tester, not a developer.
-  Include a suggested fix in the finding write-up only.
-- ❌ Marking everything CRITICAL. Save the label for things that
-  genuinely block release.
+- ❌ **Refusing to run because something is missing.** If pre-flight
+  fails, OFFER the start commands. If repo is missing, run
+  self-contained. The operator wants forward progress.
+- ❌ **Fabricating browser interactions** when Playwright isn't
+  loaded. Note the gap, fall back to curl, keep going.
+- ❌ **Filing CRITICAL on documented limitations** (e.g. AI
+  detector empty when no `.onnx` is configured). Read
+  `Implement-Progress.md`'s carry-over list when the repo is
+  available; otherwise default to LOW / INFO for anything
+  ambiguous.
+- ❌ **Editing the WAF source code.** You're a tester. Fixes are
+  suggestions in the finding write-up, not commits.
+- ❌ **Reporting "tests passed" without enumerating what you ran.**
+- ❌ **Marking everything CRITICAL.** Save the label for things
+  that genuinely block release.
 
-## Repo references the skill consumes
+---
 
-- `tests/manual/` — hand-runnable validation scripts (access
-  lists, CSRF, fake-country IPs, WebSocket, VipTalk).
-- `QUICKSTART.md` — operator setup + URLs.
+## Repo references (when available)
+
+- `tests/manual/` — hand-runnable validation scripts (mirror of
+  Phase 4 above).
 - `Implement-Progress.md` — current state of every track,
-  including known limitations to NOT file findings against.
-- `tests/results/` — historical run reports for perf comparison.
-- `docs/operator/soc-runbook.md` — the SOC-analyst workflow this
-  skill mirrors.
+  including documented limitations to NOT file findings against.
+- `tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/` —
+  perf baseline for comparison.
+- `docs/operator/upstream-cookbook.md` — what each `connection.scheme`
+  supports (HTTP / HTTPS / WebSocket auto-bridge / gRPC / TCP CONNECT /
+  multi-vhost).
+- `docs/security/detectors/README.md` — per-detector class names +
+  which tags each emits in `fields.detectors[]`.

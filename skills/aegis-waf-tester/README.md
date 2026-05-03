@@ -27,26 +27,61 @@ mkdir -p ~/.claude/skills
 cp -R skills/aegis-waf-tester ~/.claude/skills/
 ```
 
-Then restart Claude Desktop. The skill is now available — just
-ask Claude:
+Then restart Claude Desktop. The skill is now available.
 
-> "Use the aegis-waf-tester skill to do a full QC pass on the
-> WAF I just booted with `make run-dev`."
+## Run it (two equivalent paths)
 
-Or for a fast smoke:
+### Path 1 — connect the repo, let Claude do everything
 
-> "Smoke-test the WAF with the aegis-waf-tester skill."
+In Claude Desktop:
 
-## Prerequisites
+1. **Mount the `aegis-gate` repo folder** into your workspace
+   (Settings → Project / Folder Access). The skill reads its
+   own scripts + writes findings into the repo without that.
+2. Ask Claude:
+   > Use the aegis-waf-tester skill in smoke mode.
 
-The Skill needs:
+If the WAF isn't running, Claude will detect it via pre-flight
+and offer to boot it for you. The skill auto-runs:
 
-- A running WAF: `make run-dev` in another terminal.
-- The **Playwright MCP** plugin enabled in Claude Desktop (gives
-  Claude a real browser). Without it, the Skill falls back to
-  curl-only coverage and says so explicitly. Install via
-  Claude Desktop → Settings → MCP Servers → Playwright, or the
-  `ecc` plugin's bundled playwright.
+```bash
+bash skills/aegis-waf-tester/scripts/start-waf.sh
+bash skills/aegis-waf-tester/scripts/verify-waf-up.sh
+```
+
+…then proceeds with the test mode you asked for.
+
+### Path 2 — pre-boot yourself, no repo mounted
+
+If you'd rather start the WAF manually (or your Claude Desktop
+doesn't have repo access):
+
+```bash
+# In a terminal on your laptop:
+make redis-up
+make run-dev &      # leave this running
+```
+
+Then in Claude Desktop:
+
+> Use the aegis-waf-tester skill in smoke mode against the WAF
+> running on http://127.0.0.1:9443. No repo access — write
+> findings as markdown into chat.
+
+The skill falls back to **self-contained mode**: every check is
+inlined into SKILL.md (no external script reads), and findings
+land in the chat as copy-pasteable markdown blocks instead of
+files in the repo. Test coverage is the same.
+
+## Prerequisites — what each tool unlocks
+
+| Tool / setup | Without it the skill… |
+|---|---|
+| `Bash` available to Claude | …can't do anything. `Bash` is the only hard requirement. |
+| `Read` / `Write` / `Edit` | …writes findings into chat instead of files. Same content, less convenient archival. |
+| Repo folder mounted | …loses access to checklists, can't run start-waf.sh / verify-waf-up.sh, falls back to inlined checks in SKILL.md. |
+| WAF running on default ports | …pre-flight fails. Skill offers to boot via `start-waf.sh` or asks you to run `make run-dev`. |
+| **Playwright MCP** plugin | …falls back to curl-only coverage and logs one INFO finding noting the gap. Most checks still pass. |
 - `curl` and `jq` on PATH (every modern dev box has them).
 - Optional but recommended: `wscat` (or `websocat`) for the
   WebSocket bridge tests.
@@ -75,7 +110,8 @@ skills/aegis-waf-tester/
 ├── SKILL.md                # Main skill instructions Claude reads
 ├── README.md               # This file (operator-facing)
 ├── scripts/
-│   ├── verify-waf-up.sh    # Pre-flight (data plane + admin + Redis)
+│   ├── verify-waf-up.sh    # Pre-flight (data plane + admin + Redis); guidance per failure
+│   ├── start-waf.sh        # Idempotent boot: redis-up + (build if needed) + WAF + wait for ready
 │   ├── drive-traffic.sh    # 30 s of mixed legit + attack mix
 │   └── reset-state.sh      # Clear access lists between runs
 ├── checklists/
