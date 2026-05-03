@@ -233,6 +233,13 @@ pub async fn run(
         aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
             .expect("histogram registration failed"),
     );
+    // Phase-3 per-route latency. Cardinality bounded by the
+    // route_id key space (configured `routes:`); each request
+    // records one sample after the route resolves.
+    let route_latency_hist = std::sync::Arc::new(
+        aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+            .expect("route latency histogram registration failed"),
+    );
     // PROM-T1 — per-decision counter `waf_requests_total{action}`.
     // Lights up the WAF Overview "Decision mix" panel.
     let decision_metrics = std::sync::Arc::new(
@@ -572,6 +579,7 @@ pub async fn run(
         let load_gauge = load_gauge.clone();
         let verbosity = verbosity.clone();
         let request_stage_hist = request_stage_hist.clone();
+        let route_latency_hist_l = route_latency_hist.clone();
         let bus = bus.clone();
         let upstream_ctx_l = upstream_ctx.clone();
         let acceptor = if listener_tls { tls_acceptor.clone() } else { None };
@@ -588,6 +596,7 @@ pub async fn run(
             load_gauge,
             verbosity,
             request_stage_hist,
+            route_latency_hist_l,
             bus,
             upstream_ctx_l,
             acceptor,
@@ -772,6 +781,7 @@ pub async fn run(
     let admin_identity_tracker = identity_tracker.clone();
     let admin_detectors = detectors.clone();
     let admin_request_stage_hist = request_stage_hist.clone();
+    let admin_route_latency_hist = route_latency_hist.clone();
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -790,6 +800,7 @@ pub async fn run(
         admin_identity_tracker,
         admin_detectors,
         admin_request_stage_hist,
+        admin_route_latency_hist,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

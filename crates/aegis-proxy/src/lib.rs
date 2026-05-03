@@ -148,6 +148,10 @@ state:
             aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics_reg)
                 .unwrap(),
         );
+        let route_latency_hist = std::sync::Arc::new(
+            aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics_reg)
+                .unwrap(),
+        );
         let bus = aegis_core::AuditBus::new(64);
         let upstream_ctx = std::sync::Arc::new(
             crate::proxy::ProxyContext::build(
@@ -165,6 +169,7 @@ state:
             load_gauge,
             verbosity,
             request_stage_hist,
+            route_latency_hist,
             bus,
             upstream_ctx,
             None, // no tls_acceptor in this plain-http test
@@ -254,6 +259,10 @@ state:
             aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics_reg)
                 .unwrap(),
         );
+        let route_latency_hist = std::sync::Arc::new(
+            aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics_reg)
+                .unwrap(),
+        );
         let bus = aegis_core::AuditBus::new(64);
         let upstream_ctx = std::sync::Arc::new(
             crate::proxy::ProxyContext::build(
@@ -271,6 +280,7 @@ state:
             load_gauge,
             verbosity,
             request_stage_hist,
+            route_latency_hist,
             bus,
             upstream_ctx,
             None,

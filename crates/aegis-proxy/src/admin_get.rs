@@ -348,6 +348,40 @@ pub(crate) fn admin_router(
                 "private, max-age=10",
             )
         }
+        // Phase-3: per-route p50/p95/p99 from the dedicated
+        // `RouteLatencyHistogram`. Returns
+        // `{routes: [{route, p50_ms, p95_ms, p99_ms, samples}]}`
+        // sorted by samples descending. Capped at ?limit=N
+        // (default 20). Routes with no samples are omitted.
+        "/api/analytics/latency/routes" => {
+            let limit = parse_query_u32(query, "limit", 20);
+            let body = match services.route_latency_hist.as_ref() {
+                None => serde_json::json!({"routes": []}).to_string(),
+                Some(h) => {
+                    let mut rows: Vec<serde_json::Value> = h
+                        .known_routes()
+                        .into_iter()
+                        .filter_map(|r| {
+                            let p = h.percentiles_ms(&r)?;
+                            Some(serde_json::json!({
+                                "route": r,
+                                "p50_ms": p.p50_ms,
+                                "p95_ms": p.p95_ms,
+                                "p99_ms": p.p99_ms,
+                                "samples": p.samples,
+                            }))
+                        })
+                        .collect();
+                    rows.sort_by(|a, b| {
+                        b.get("samples").and_then(|v| v.as_u64()).unwrap_or(0)
+                            .cmp(&a.get("samples").and_then(|v| v.as_u64()).unwrap_or(0))
+                    });
+                    rows.truncate(limit as usize);
+                    serde_json::json!({"routes": rows}).to_string()
+                }
+            };
+            json_body_response(200, body, "private, max-age=2")
+        }
         // Phase-1: per-stage p50/p95/p99 from the in-process
         // `RequestStageHistogram`. Returns `{stages: {total: {p50_ms,
         // p95_ms, p99_ms, samples}, detect: {...}, ...}}` so the

@@ -62,6 +62,7 @@ pub(crate) async fn handle_data_request(
     load_gauge: &aegis_core::LoadGauge,
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
+    route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
@@ -84,6 +85,7 @@ pub(crate) async fn handle_data_request(
         load_gauge,
         verbosity,
         request_stage_hist,
+        route_latency_hist,
         bus,
         upstream_ctx,
         detector_hit_metrics,
@@ -104,6 +106,7 @@ pub(crate) async fn handle_data_request_inner(
     load_gauge: &aegis_core::LoadGauge,
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
+    route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
@@ -118,6 +121,13 @@ pub(crate) async fn handle_data_request_inner(
     // (early-return on rate-limit, strike-block, detector block,
     // or the Allow / Challenge / Block bottom). One sample per
     // request — no double-counting.
+    //
+    // Per-route latency is recorded separately inside
+    // `forward_allow_to_upstream` once the RouteTable resolves —
+    // blocked / rate-limited / challenged requests never reach
+    // route resolution and are excluded from per-route series
+    // (correct: their latency reflects the WAF decision, not the
+    // route).
     struct TotalGuard<'a> {
         h: &'a aegis_control::metrics::request_duration::RequestStageHistogram,
         t0: std::time::Instant,
@@ -130,9 +140,10 @@ pub(crate) async fn handle_data_request_inner(
             );
         }
     }
+    let request_start = std::time::Instant::now();
     let _total_guard = TotalGuard {
         h: request_stage_hist,
-        t0: std::time::Instant::now(),
+        t0: request_start,
     };
     // P7: bump the request counter so the sampler can update mode.
     load_gauge.tick();
@@ -449,7 +460,7 @@ pub(crate) async fn handle_data_request_inner(
             // its outcome onto a status code; we infer the
             // contract action from that (allow on 2xx/3xx,
             // block / circuit_breaker / timeout otherwise).
-            forward_allow_to_upstream(parts, body_bytes, upstream_ctx, identity).await
+            forward_allow_to_upstream(parts, body_bytes, upstream_ctx, identity, route_latency_hist, request_start).await
         }
     }
 }
@@ -477,6 +488,8 @@ pub(crate) async fn forward_allow_to_upstream(
     body_bytes: Bytes,
     ctx: &Arc<crate::proxy::ProxyContext>,
     identity: &aegis_core::ClientIdentity,
+    route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    request_start: std::time::Instant,
 ) -> (
     Response<Full<Bytes>>,
     aegis_control::interop::headers::DecisionTag,
@@ -494,6 +507,28 @@ pub(crate) async fn forward_allow_to_upstream(
     let method = parts.method.clone();
     tracing::Span::current().record("host", host.as_str());
 
+    // RAII helper — record per-route latency on every exit from
+    // this function (allow forward, breaker open, no route, etc.).
+    // Captures the resolved route_id once known; until then the
+    // sample falls under "<unrouted>" so no traffic goes
+    // unattributed. The String owns its content so the guard
+    // can outlive the scoped `route_ctx` borrow.
+    struct RouteLatencyGuard<'a> {
+        h: &'a aegis_control::metrics::route_latency::RouteLatencyHistogram,
+        t0: std::time::Instant,
+        route: std::cell::RefCell<String>,
+    }
+    impl<'a> Drop for RouteLatencyGuard<'a> {
+        fn drop(&mut self) {
+            self.h.record(&self.route.borrow(), self.t0.elapsed());
+        }
+    }
+    let _route_guard = RouteLatencyGuard {
+        h: route_latency_hist,
+        t0: request_start,
+        route: std::cell::RefCell::new("<unrouted>".to_string()),
+    };
+
     let route_ctx = match ctx.route_table.resolve(&host, &path, &method) {
         Some(r) => r,
         None => {
@@ -506,6 +541,11 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     };
     tracing::Span::current().record("upstream", route_ctx.upstream.as_str());
+    // Capture the route_id for the per-route latency histogram.
+    // Lifetime: route_ctx borrows from `ctx.route_table` which
+    // is the same Arc<ProxyContext> the caller holds; safe to
+    // hand out the &str here.
+    *_route_guard.route.borrow_mut() = route_ctx.route_id.clone();
 
     // MTLS-T4 — route-scoped client-identity gate.
     //

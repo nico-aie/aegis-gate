@@ -130,7 +130,13 @@ pub struct LatencyPercentiles {
 /// Linear-interpolation `histogram_quantile`. `buckets` carries
 /// cumulative counts per `upper_bound` (the format
 /// `prometheus::Histogram::proto()` produces). Same shape as
-/// PromQL's `histogram_quantile`.
+/// PromQL's `histogram_quantile`. Public so the per-route
+/// histogram (`crate::metrics::route_latency`) can reuse the
+/// same algorithm.
+pub fn quantile_ms(buckets: &[prometheus::proto::Bucket], total: u64, p: f64) -> f64 {
+    quantile(buckets, total, p)
+}
+
 fn quantile(buckets: &[prometheus::proto::Bucket], total: u64, p: f64) -> f64 {
     let target = (total as f64) * p;
     let mut prev_count = 0u64;

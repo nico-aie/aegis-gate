@@ -850,6 +850,7 @@ function PageAnalytics() {
   const cfg = ANALYTICS_WINDOWS[range] ?? ANALYTICS_WINDOWS['24h'];
   const ts = window.useTimeseriesApi(cfg.window, cfg.step);
   const latency = window.useLatencyApi ? window.useLatencyApi() : { data: null };
+  const routeLatency = window.useRouteLatencyApi ? window.useRouteLatencyApi() : { data: null };
   const routes = window.useAnalyticsRoutesApi ? window.useAnalyticsRoutesApi() : { data: null };
   // HACK-T1 — SLO + Cert summaries also retired from static
   // fixtures. Both endpoints already shipped (Tracking page
@@ -1002,6 +1003,57 @@ function PageAnalytics() {
                           </td>
                         </tr>
                       ))}
+                    </tbody>
+                  </table>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      </div>
+
+      <div className="grid-12" style={{ marginBottom: 12 }}>
+        <div className="col-12 card">
+          {(() => {
+            const rows = routeLatency.data?.routes || [];
+            return (
+              <>
+                <window.SectionHeader
+                  title="Latency p50/p95/p99 by route"
+                  sub={rows.length > 0
+                    ? `${rows.length} active route${rows.length === 1 ? '' : 's'} · live histogram`
+                    : 'no per-route samples yet'}
+                />
+                {rows.length === 0 ? (
+                  <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    Drive traffic with <code>make mock-load</code>; per-route series populate as routes resolve.
+                  </div>
+                ) : (
+                  <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
+                    <thead><tr>
+                      <th>Route</th>
+                      <th style={{ textAlign: 'right' }}>Samples</th>
+                      <th style={{ textAlign: 'right' }}>p50 (ms)</th>
+                      <th style={{ textAlign: 'right' }}>p95 (ms)</th>
+                      <th style={{ textAlign: 'right' }}>p99 (ms)</th>
+                    </tr></thead>
+                    <tbody>
+                      {rows.slice(0, 15).map(r => {
+                        const fmt = v => v >= 1 ? v.toFixed(2) : v.toFixed(3);
+                        return (
+                          <tr key={r.route}>
+                            <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
+                            <td className="num" style={{ textAlign: 'right' }}>{r.samples.toLocaleString()}</td>
+                            <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p50_ms)}</td>
+                            <td className="num" style={{ textAlign: 'right' }}>{fmt(r.p95_ms)}</td>
+                            <td className="num" style={{ textAlign: 'right' }}>
+                              <span className={`pill ${r.p99_ms > 100 ? 'down' : r.p99_ms > 10 ? 'warn' : 'up'}`}>
+                                {fmt(r.p99_ms)}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
