@@ -744,19 +744,15 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     }
 
-    // WS-T1 — WebSocket upgrade detection. The full bridge
-    // (WS-T2..T6 — see plans/websocket-bridge.md) is its own
-    // implementation track; this stub fires before the HTTP
-    // forwarder so operators get a clear signal in audit +
-    // dashboard that WebSocket traffic is being attempted but
-    // not yet bridged. Better than the previous silent failure
-    // (the 101 went through hyper's pooled HTTP client which
-    // dropped the upgrade hook on the floor).
-    //
-    // Reconstruct the HeaderMap into a synthetic Request for
-    // the existing detector — `is_websocket_upgrade` only
-    // reads headers + Connection, doesn't touch the body.
-    {
+    // WS-T2/T3 — WebSocket upgrade bridge. Detects the
+    // `Upgrade: websocket` + `Connection: Upgrade` pair, picks a
+    // healthy upstream member, opens a raw TCP connection, and
+    // (on 101) bridges client + upstream sockets via
+    // `copy_bidirectional` after hyper resolves `OnUpgrade`.
+    // See `plans/websocket-bridge.md §3` for the architecture
+    // diagram + rationale (hyper's pooled client can't honor
+    // upgrades; this is the workaround).
+    let is_ws_upgrade = {
         let synthetic = hyper::Request::builder()
             .method(parts.method.clone())
             .uri(parts.uri.clone())
@@ -765,28 +761,267 @@ pub(crate) async fn forward_allow_to_upstream(
                 *r.headers_mut() = parts.headers.clone();
                 r
             });
-        let is_ws = synthetic
+        synthetic
             .as_ref()
             .map(crate::proto::ws::is_websocket_upgrade)
-            .unwrap_or(false);
-        if is_ws {
-            tracing::Span::current().record("outcome", "websocket_not_yet_implemented");
-            tracing::warn!(
-                route_id = %route_ctx.route_id,
-                upstream = %route_ctx.upstream,
-                "WebSocket upgrade detected — bridge implementation lands in WS-T2..T6 \
-                 (see plans/websocket-bridge.md); request rejected so operator sees the gap",
-            );
+            .unwrap_or(false)
+    };
+    if is_ws_upgrade {
+        let pool = match ctx.pools.get(&route_ctx.upstream) {
+            Some(p) => p,
+            None => {
+                let resp = Response::builder()
+                    .status(hyper::StatusCode::BAD_GATEWAY)
+                    .header("x-waf-rule-id", "websocket_no_upstream_pool")
+                    .body(Full::new(Bytes::from(
+                        "WebSocket upgrade: upstream pool missing\n",
+                    )))
+                    .unwrap();
+                return (resp, DecisionTag::block("websocket_no_upstream_pool"));
+            }
+        };
+        let member = match pool
+            .strategy
+            .pick(&pool.members, Some(parts.uri.path()))
+        {
+            Some(m) => m.clone(),
+            None => {
+                let resp = Response::builder()
+                    .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                    .header("x-waf-rule-id", "websocket_no_healthy_member")
+                    .body(Full::new(Bytes::from(
+                        "WebSocket upgrade: no healthy upstream member\n",
+                    )))
+                    .unwrap();
+                return (resp, DecisionTag::block("websocket_no_healthy_member"));
+            }
+        };
+
+        let mut parts = parts;
+        let on_upgrade =
+            parts.extensions.remove::<hyper::upgrade::OnUpgrade>();
+        let Some(on_upgrade) = on_upgrade else {
+            // No OnUpgrade extension — hyper didn't install one,
+            // which means the connection isn't HTTP/1.1 upgrade-
+            // capable.  HTTP/2 extended CONNECT (RFC 8441) is
+            // out of scope for v1.
             let resp = Response::builder()
                 .status(hyper::StatusCode::BAD_GATEWAY)
-                .header("x-waf-rule-id", "websocket_not_yet_implemented")
-                .header("content-type", "text/plain; charset=utf-8")
+                .header(
+                    "x-waf-rule-id",
+                    "websocket_no_upgrade_extension",
+                )
                 .body(Full::new(Bytes::from(
-                    "WebSocket upgrade not yet bridged — see WS-T plan in plans/websocket-bridge.md\n",
+                    "WebSocket upgrade: HTTP/2 extended CONNECT not supported\n",
                 )))
                 .unwrap();
-            return (resp, DecisionTag::block("websocket_not_yet_implemented"));
+            return (
+                resp,
+                DecisionTag::block("websocket_no_upgrade_extension"),
+            );
+        };
+
+        let upstream_handshake = match crate::proto::ws_forward::forward_websocket_upgrade(
+            &parts.method,
+            &parts.uri,
+            &parts.headers,
+            &body_bytes,
+            member.addr,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(
+                    route_id = %route_ctx.route_id,
+                    upstream = %member.addr,
+                    error = %e,
+                    "WebSocket upgrade upstream forward failed",
+                );
+                let resp = Response::builder()
+                    .status(hyper::StatusCode::BAD_GATEWAY)
+                    .header(
+                        "x-waf-rule-id",
+                        "websocket_upstream_forward_failed",
+                    )
+                    .body(Full::new(Bytes::from(
+                        "WebSocket upgrade: upstream forward failed\n",
+                    )))
+                    .unwrap();
+                return (
+                    resp,
+                    DecisionTag::block("websocket_upstream_forward_failed"),
+                );
+            }
+        };
+
+        let crate::proto::ws_forward::UpstreamHandshake {
+            status,
+            headers,
+            leftover,
+            socket: upstream_socket,
+        } = upstream_handshake;
+
+        if status == hyper::StatusCode::SWITCHING_PROTOCOLS {
+            tracing::Span::current().record("outcome", "websocket_bridged");
+            let bus_for_task = bus.clone();
+            let route_id_for_task = route_ctx.route_id.clone();
+            let upstream_addr = member.addr;
+            tokio::spawn(async move {
+                let started = std::time::Instant::now();
+                match on_upgrade.await {
+                    Ok(upgraded) => {
+                        let mut client_io =
+                            hyper_util::rt::TokioIo::new(upgraded);
+                        let mut upstream = upstream_socket;
+                        // If the upstream sent post-handshake
+                        // bytes that landed in our head buffer,
+                        // forward them to the client first so the
+                        // bridge starts with both sides aligned.
+                        if !leftover.is_empty() {
+                            if let Err(e) = tokio::io::AsyncWriteExt::write_all(
+                                &mut client_io,
+                                &leftover,
+                            )
+                            .await
+                            {
+                                tracing::debug!(
+                                    error = %e,
+                                    "websocket: leftover flush to client failed",
+                                );
+                                return;
+                            }
+                        }
+                        let copy = tokio::io::copy_bidirectional(
+                            &mut client_io,
+                            &mut upstream,
+                        )
+                        .await;
+                        let elapsed = started.elapsed();
+                        let (c2u, u2c) = copy.unwrap_or((0, 0));
+                        bus_for_task.emit(aegis_core::audit::AuditEvent {
+                            schema_version: 1,
+                            ts: chrono::Utc::now(),
+                            request_id: blake3::hash(
+                                format!(
+                                    "ws:{upstream_addr}:{}",
+                                    chrono::Utc::now()
+                                        .timestamp_nanos_opt()
+                                        .unwrap_or(0),
+                                )
+                                .as_bytes(),
+                            )
+                            .to_hex()
+                            .to_string(),
+                            class: aegis_core::audit::AuditClass::Access,
+                            tenant_id: None,
+                            tier: None,
+                            action: "websocket_close".to_string(),
+                            reason: "ws_bridge_closed".to_string(),
+                            client_ip: peer_ip.to_string(),
+                            route_id: Some(route_id_for_task.clone()),
+                            rule_id: None,
+                            risk_score: None,
+                            fields: serde_json::json!({
+                                "upstream_addr": upstream_addr.to_string(),
+                                "duration_ms": elapsed.as_millis() as u64,
+                                "bytes_to_upstream": c2u,
+                                "bytes_from_upstream": u2c,
+                            }),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "websocket: client OnUpgrade failed",
+                        );
+                    }
+                }
+            });
+
+            // WS-T4 — open audit event before the spawned task.
+            bus.emit(aegis_core::audit::AuditEvent {
+                schema_version: 1,
+                ts: chrono::Utc::now(),
+                request_id: blake3::hash(
+                    format!(
+                        "ws-open:{}:{}",
+                        member.addr,
+                        chrono::Utc::now()
+                            .timestamp_nanos_opt()
+                            .unwrap_or(0),
+                    )
+                    .as_bytes(),
+                )
+                .to_hex()
+                .to_string(),
+                class: aegis_core::audit::AuditClass::Access,
+                tenant_id: None,
+                tier: None,
+                action: "websocket_open".to_string(),
+                reason: "ws_bridge_started".to_string(),
+                client_ip: peer_ip.to_string(),
+                route_id: Some(route_ctx.route_id.clone()),
+                rule_id: None,
+                risk_score: None,
+                fields: serde_json::json!({
+                    "upstream_addr": member.addr.to_string(),
+                    "host": host,
+                    "path": path,
+                }),
+            });
+
+            // Build the 101 response with upstream's headers so
+            // the WebSocket negotiation surfaces (Sec-WebSocket-
+            // Accept etc.) reach the client byte-for-byte.
+            let mut resp_builder =
+                Response::builder().status(hyper::StatusCode::SWITCHING_PROTOCOLS);
+            for (name, value) in headers.iter() {
+                resp_builder = resp_builder.header(name, value);
+            }
+            let resp = resp_builder
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            return (resp, DecisionTag::allow());
         }
+
+        // Non-101 — upstream rejected the upgrade.  Drain any
+        // remaining body from the upstream socket up to a
+        // sensible bound and proxy the response through.
+        let mut body = leftover;
+        let mut upstream_socket = upstream_socket;
+        let mut chunk = [0u8; 4096];
+        let drain_deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while body.len() < 64 * 1024 && std::time::Instant::now() < drain_deadline {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                tokio::io::AsyncReadExt::read(&mut upstream_socket, &mut chunk),
+            )
+            .await
+            {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => body.extend_from_slice(&chunk[..n]),
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        let mut resp_builder = Response::builder().status(status);
+        for (name, value) in headers.iter() {
+            // Strip Content-Length / Transfer-Encoding — Full<Bytes>
+            // is fixed-size so hyper sets the right framing for us.
+            let n = name.as_str();
+            if n.eq_ignore_ascii_case("content-length")
+                || n.eq_ignore_ascii_case("transfer-encoding")
+            {
+                continue;
+            }
+            resp_builder = resp_builder.header(name, value);
+        }
+        let resp = resp_builder
+            .body(Full::new(Bytes::from(body)))
+            .unwrap();
+        return (resp, DecisionTag::allow());
     }
 
     if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
@@ -1670,12 +1905,16 @@ state: { backend: in_memory }
     }
 
     #[tokio::test]
-    async fn websocket_upgrade_request_returns_502_with_documented_rule_id() {
-        // WS-T1 — until the full bridge lands (WS-T2..T6), a
-        // GET with `Upgrade: websocket` + `Connection: Upgrade`
-        // should NOT silently fail. It must return 502 with
-        // `x-waf-rule-id: websocket_not_yet_implemented` so
-        // the dashboard surfaces the gap.
+    async fn websocket_upgrade_attempt_with_unreachable_upstream_emits_block_with_documented_rule_id(
+    ) {
+        // WS-T2/T3 — when the upgrade detector fires we now try
+        // a real raw-TCP forward to the resolved member.  The
+        // `http_route_cfg()` pool points at 127.0.0.1:65530
+        // which won't accept; the bridge surfaces that as a
+        // 502 with `x-waf-rule-id: websocket_upstream_forward_failed`
+        // (no OnUpgrade extension on a synthetic Parts means we
+        // hit the no-extension path slightly earlier — both
+        // are valid block points the dashboard can surface).
         let cfg = http_route_cfg();
         let ctx = build_ctx(&cfg);
         let bus = AuditBus::new(16);
@@ -1705,10 +1944,15 @@ state: { backend: in_memory }
         )
         .await;
 
-        assert_eq!(resp.status(), 502);
-        assert_eq!(
-            rule_id_header(&resp),
-            Some("websocket_not_yet_implemented"),
+        assert_eq!(resp.status(), hyper::StatusCode::BAD_GATEWAY);
+        let rid = rule_id_header(&resp);
+        assert!(
+            matches!(
+                rid,
+                Some("websocket_no_upgrade_extension")
+                    | Some("websocket_upstream_forward_failed")
+            ),
+            "unexpected rule_id: {rid:?}",
         );
         assert_eq!(tag.action.as_str(), "block");
     }
