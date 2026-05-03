@@ -56,6 +56,11 @@ pub struct AboutResponse {
     /// UPTIME = `Date.now() - started_at` rather than carry a
     /// duration field that goes stale between polls.
     pub started_at: chrono::DateTime<chrono::Utc>,
+    /// MTLS-T9 — true when `AEGIS_MTLS_BREAK_GLASS=1` was set at
+    /// process start. The dashboard renders a prominent red
+    /// banner whenever this is true so operators can't miss
+    /// that mTLS enforcement is downgraded.
+    pub mtls_break_glass_active: bool,
 }
 
 impl AboutResponse {
@@ -68,6 +73,7 @@ impl AboutResponse {
             build_sha: option_env!("AEGIS_BUILD_SHA"),
             environment,
             started_at: boot_ts(),
+            mtls_break_glass_active: aegis_core::break_glass::is_active(),
         }
     }
 }

@@ -1,6 +1,7 @@
 // aegis-core: shared types and cross-crate contracts
 
 pub mod audit;
+pub mod break_glass;
 pub mod cache;
 pub mod cluster;
 pub mod config;

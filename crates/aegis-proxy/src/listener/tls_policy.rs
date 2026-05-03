@@ -100,7 +100,20 @@ pub fn build_hardened_server_config_with_client_auth(
     let versions = protocol_versions_for(min_version);
     let builder = rustls::ServerConfig::builder_with_protocol_versions(versions);
 
-    let mut config = match mode {
+    // MTLS-T9 break-glass — when the boot env var is set, downgrade
+    // `Required` to `Optional` so an operator who lost their cert
+    // can still complete a TLS handshake and recover. The downgrade
+    // is logged + audit-emitted at boot in `run.rs`; we silently
+    // apply here on every config build (boot + hot-reload).
+    let effective_mode = if aegis_core::break_glass::is_active()
+        && mode == ClientAuthMode::Required
+    {
+        ClientAuthMode::Optional
+    } else {
+        mode
+    };
+
+    let mut config = match effective_mode {
         ClientAuthMode::Disabled => builder
             .with_no_client_auth()
             .with_cert_resolver(resolver),

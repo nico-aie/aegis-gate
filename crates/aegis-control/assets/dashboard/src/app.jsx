@@ -98,6 +98,15 @@ function TopBar() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span className={`env-pill ${env}`}>● {env.toUpperCase()}</span>
+        {status.data?.mtls_break_glass_active && (
+          <span
+            className="pill down"
+            title="AEGIS_MTLS_BREAK_GLASS=1 was set at boot — mTLS `required` is downgraded to `optional`. Unset env + restart to return to enforced mode."
+            style={{ marginLeft: 4, animation: 'pulse 2s ease-in-out infinite' }}
+          >
+            ⚠ MTLS BREAK-GLASS
+          </span>
+        )}
       </div>
 
       <div style={{ flex: 1 }} />
