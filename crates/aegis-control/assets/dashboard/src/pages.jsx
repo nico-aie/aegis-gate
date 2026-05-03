@@ -4572,6 +4572,13 @@ function poolConfigFromForm(d) {
       addr: (m.addr || '').trim(),
       weight: Number(m.weight) || 1,
       ...(m.zone && m.zone.trim() ? { zone: m.zone.trim() } : {}),
+      // 2026-05-03 — multi-vhost upstream support.  When set,
+      // the WAF rewrites the upstream Host header AND (for
+      // HTTPS schemes) drives SNI + cert validation against
+      // this name while pinning DNS to the addr above.
+      ...(m.host_header && m.host_header.trim()
+        ? { host_header: m.host_header.trim() }
+        : {}),
     })),
     lb: d.lb || 'round_robin',
     connection: {
@@ -4625,6 +4632,7 @@ function poolFormFromView(view) {
       addr: m.addr || '',
       weight: m.weight ?? 1,
       zone: m.zone || '',
+      host_header: m.host_header || '',
     })),
     lb: view.lb || 'round_robin',
     health_enabled: !!view.health,
@@ -4682,7 +4690,13 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
     }));
   }
   function addMember() {
-    setD(prev => ({ ...prev, members: [...prev.members, { addr: '', weight: 1, zone: '' }] }));
+    setD(prev => ({
+      ...prev,
+      members: [
+        ...prev.members,
+        { addr: '', weight: 1, zone: '', host_header: '' },
+      ],
+    }));
   }
   function removeMember(i) {
     setD(prev => ({ ...prev, members: prev.members.filter((_, idx) => idx !== i) }));
@@ -4746,6 +4760,10 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                   <th>Address (host:port)</th>
                   <th style={{ width: 70 }}>Weight</th>
                   <th style={{ width: 100 }}>Zone</th>
+                  <th
+                    style={{ width: 160 }}
+                    title="Optional. When set, the upstream sees Host: <vhost>; for HTTPS this name also drives SNI + cert validation. Leave blank for IP-addressed backends."
+                  >Host header (vhost)</th>
                   <th style={{ width: 36 }}></th>
                 </tr>
               </thead>
@@ -4775,6 +4793,14 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                         value={m.zone}
                         onChange={e => setMember(i, 'zone', e.target.value)}
                         placeholder="optional"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input mono"
+                        value={m.host_header || ''}
+                        onChange={e => setMember(i, 'host_header', e.target.value)}
+                        placeholder="example.com"
                       />
                     </td>
                     <td>
@@ -4968,25 +4994,61 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                   }))}
                   style={{ padding: '4px 6px', borderRadius: 4, border: '1px solid var(--hairline)', fontSize: 12 }}
                 >
-                  <option value="auto">auto (TLS toggle decides)</option>
-                  <option value="http">http (plaintext h1)</option>
-                  <option value="https">https (TLS + ALPN h1/h2)</option>
-                  <option value="h2c">h2c (HTTP/2 cleartext)</option>
-                  <option value="grpc">grpc (HTTPS, ALPN h2 only)</option>
-                  <option value="tcp">tcp (raw — Phase 4, returns 502)</option>
+                  <option value="auto">auto — h1/h2 via TLS toggle (also bridges WS)</option>
+                  <option value="http">http — plaintext h1 (also bridges WS)</option>
+                  <option value="https">https — TLS, ALPN h1/h2 (also bridges WSS)</option>
+                  <option value="h2c">h2c — HTTP/2 cleartext (no h1 fallback)</option>
+                  <option value="grpc">grpc — HTTPS, ALPN h2 only (gRPC strict)</option>
+                  <option value="tcp">tcp — raw byte tunneling (CONNECT method)</option>
                 </select>
               </label>
             </div>
-            <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-              <window.I.Info />
-              <span>
-                <strong>Protocol picker:</strong> <code>auto</code> mirrors the
-                legacy <code>tls</code> flag (h1/h2 ALPN-negotiated).
-                {' '}<code>grpc</code> forces ALPN h2-only and skips
-                HTTP/1.1 fallback. <code>h2c</code> is HTTP/2 over plain TCP
-                — useful for service-mesh sidecars. <code>tcp</code> raw byte
-                forwarding ships in Phase 4.
-              </span>
+            {/* 2026-05-03 — protocol matrix that explains exactly
+                what each scheme handles, including WS upgrades
+                (which are auto-detected on http/https/auto and
+                don't need a separate scheme). */}
+            <div style={{ marginTop: 10, padding: 10, borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--ink-dim)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                <window.I.Info />
+                <strong style={{ color: 'var(--ink)' }}>Protocol matrix</strong>
+              </div>
+              <table className="tbl tbl-compact" style={{ fontSize: 10 }}>
+                <thead>
+                  <tr>
+                    <th>Scheme</th>
+                    <th>HTTP/1.1</th>
+                    <th>HTTP/2</th>
+                    <th>WebSocket</th>
+                    <th>gRPC</th>
+                    <th>Raw TCP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td><code>auto</code></td><td>✓</td><td>ALPN</td><td>✓ auto</td><td>—</td><td>—</td></tr>
+                  <tr><td><code>http</code></td><td>✓</td><td>—</td><td>✓ auto</td><td>—</td><td>—</td></tr>
+                  <tr><td><code>https</code></td><td>✓</td><td>ALPN</td><td>✓ wss</td><td>—</td><td>—</td></tr>
+                  <tr><td><code>h2c</code></td><td>—</td><td>✓</td><td>—</td><td>✓ h2c</td><td>—</td></tr>
+                  <tr><td><code>grpc</code></td><td>—</td><td>✓</td><td>—</td><td>✓ TLS</td><td>—</td></tr>
+                  <tr><td><code>tcp</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>✓ CONNECT</td></tr>
+                </tbody>
+              </table>
+              <div style={{ marginTop: 6 }}>
+                <strong>WebSocket</strong> is detected by the
+                <code style={{ margin: '0 3px' }}>Upgrade: websocket</code>
+                + <code style={{ margin: '0 3px' }}>Connection: Upgrade</code>
+                header pair on any
+                <code style={{ margin: '0 3px' }}>http</code> /
+                <code style={{ margin: '0 3px' }}>https</code> /
+                <code style={{ margin: '0 3px' }}>auto</code> scheme — no
+                separate config.  The bridge runs
+                <code style={{ margin: '0 3px' }}>copy_bidirectional</code>
+                after the upstream returns 101.
+                {' '}<strong>Raw TCP tunneling</strong> requires{' '}
+                <code>scheme: tcp</code> AND the
+                <code style={{ margin: '0 3px' }}>CONNECT</code> method.
+                Other methods on a tcp pool return 502
+                {' '}<code>non_connect_to_tcp_route</code>.
+              </div>
             </div>
           </fieldset>
         </div>

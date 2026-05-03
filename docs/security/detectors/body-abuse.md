@@ -26,6 +26,38 @@ A small compressed body that expands to massive size. The WAF enforces max **dec
 
 Deeply nested JSON (`[[[[[[[[[...]]]]]]]]`) that triggers O(depth) stack usage in parsers. The WAF enforces a max nesting depth.
 
+### XML external entity (XXE)
+
+External-entity declarations in XML bodies — the classic
+`<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>`
+shape that lets a vulnerable XML parser read arbitrary files
+or hit internal URLs.  Detector tag: **`xxe`**.  The check
+requires both:
+
+1. The body looks like XML (`Content-Type: application/xml`
+   or the first non-whitespace byte is `<`).
+2. The body matches the XXE-entity-declaration regex
+   (`<!ENTITY ... SYSTEM ...>` and common variants).
+
+A non-XML body that happens to contain the XXE substring is
+NOT flagged — false-positive guard against legitimate JSON /
+log bodies that quote the XXE pattern.
+
+### Mass-assignment field abuse
+
+A POST / PUT body that includes privilege-escalation field
+names in JSON / form-encoded payloads — `admin`,
+`is_superuser`, `role`, `permissions`, `password_hash`,
+`csrf_token`, etc.  Detector tag: **`mass_assignment`**.  Aimed
+at backends that naively bind every JSON field of a request
+to a model column (Rails / Django / .NET / etc.).
+
+The check only fires when the body looks like a structured
+write (JSON or `application/x-www-form-urlencoded`) and the
+field appears at the top level — nested fields and string
+values that happen to contain the word are ignored to keep
+false positives down.
+
 ### XML entity expansion (Billion Laughs)
 
 Nested entity definitions that expand exponentially when parsed. Example:
