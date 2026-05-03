@@ -298,25 +298,33 @@ doc `docs/security/detectors/ai-detector.md`.
   page, reads `/metrics` directly, renders inferences / hit rate
   / mean latency live. Bundle now 305 058 bytes.
 
-**Perf measured** (`tests/perf/results/ai-compare-20260503T185335Z/REPORT.md`):
+**Perf measured** (`tests/results/run-ai-compare-2026-05-03/REPORT.md`):
 side-by-side comparison harness, 4 cases × 8 000 requests at
-400 RPS (60 % attack mix):
+400 RPS (60 % attack mix), with **p99** captured against a
+**5 ms target**:
 
-| Case | Detect % | FP % | Attack p95 | Mean inference | RSS |
+| Case | Detect % | FP % | Attack p95 / **p99** | Mean inference | RSS |
 |---|---|---|---|---|---|
-| ALL on (regex+AI) | **93.3** | 38.4 | **1.11 ms** | **357 µs** | 222 MB |
-| AI ONLY | 86.3 | 39.6 | 1.85 ms | 468 µs | 502 MB |
-| REGEX ONLY | 92.9 | 10.5 | 1.01 ms | — | 63 MB |
-| NONE (baseline) | 0.0 | 0.0 | 1.19 ms | — | 52 MB |
+| ALL on (regex+AI) | **93.8** | 40.0 | 2.48 / **4.53** | **694 µs** | 562 MB |
+| AI ONLY | 85.7 | 40.1 | 2.39 / **5.58** ❌ | 783 µs | 507 MB |
+| REGEX ONLY | 93.5 | 10.4 | 1.36 / **2.26** ✅ | — | 65 MB |
+| NONE (baseline) | 0.0 | 0.0 | 1.42 / **2.44** ✅ | — | 51 MB |
 
-AI lifts detection +0.4 pp over regex-only on this corpus, costs
-~0.1 ms p95, +160 MB RSS (38 MB ONNX + arenas). Bundled model
-favours recall: at threshold 0.5 it fires on ~67 % of all
+**p99 vs 5 ms target**: regex-only ✅, no-detector ✅, regex+AI
+⚠ (clean p99 5.71 ms — over by 0.71 ms on laptop), AI-only ❌
+(5.58 ms attack p99). Production-class hardware is expected to
+close the gap (the existing 5 k RPS run measured p99 1.03 ms
+with the regex chain).
+
+AI lifts detection +0.3 pp over regex-only on this corpus, costs
+~+1.1 ms p95 / +2.3 ms p99 / +500 MB RSS chained. Bundled model
+favours recall: at threshold 0.5 it fires on ~68 % of all
 traffic — `ai.mode: observe` is the right starting position;
 threshold-tightening recipe documented in the per-detector page.
 
 **Re-run perf**: `bash tests/perf/ai-compare.sh` (env knobs
-`RPS=`, `DURATION=`, `ONLY="A B"`).
+`RPS=`, `DURATION=`, `ONLY="A B"`). Output lands at
+`tests/results/run-ai-compare-<UTC-date>/REPORT.md`.
 
 ### Other queued / parked
 

@@ -7,8 +7,8 @@
 >
 > See the design rationale in
 > [`../../../plans/ai-detector.md`](../../../plans/ai-detector.md)
-> and the perf comparison report under
-> [`../../../tests/perf/results/ai-compare-*/REPORT.md`](../../../tests/perf/).
+> and the perf + p99 comparison report at
+> [`../../../tests/results/run-ai-compare-2026-05-03/REPORT.md`](../../../tests/results/run-ai-compare-2026-05-03/REPORT.md).
 
 ## Purpose
 
@@ -101,30 +101,45 @@ a calibration trail.
 
 ## Performance (measured)
 
-From `tests/perf/results/ai-compare-*` — 4 cases × 8 000
-requests at 400 RPS (60 % attack mix), prod-balanced shape on a
-single laptop:
+From `tests/results/run-ai-compare-2026-05-03/REPORT.md` — 4
+cases × 8 000 requests at 400 RPS (60 % attack mix),
+prod-balanced shape on a laptop:
 
-| Mode | Detect % | FP % | Attack p95 ms | Clean p95 ms | RSS MB |
+| Mode | Detect % | FP % | Attack p95 / **p99** ms | Clean p95 / **p99** ms | RSS MB |
 |---|---|---|---|---|---|
-| ALL on (regex+AI)  | 93.3 | 38.4 | 1.11 | 1.33 | 222 |
-| AI ONLY            | 86.3 | 39.6 | 1.85 | 2.05 | 502 |
-| REGEX ONLY         | 92.9 | 10.5 | 1.01 | 1.48 |  63 |
-| NONE (baseline)    |  0.0 |  0.0 | 1.19 | 1.17 |  52 |
+| ALL on (regex+AI)  | 93.8 | 40.0 | 2.48 / **4.53** | 2.90 / **5.71** | 562 |
+| AI ONLY            | 85.7 | 40.1 | 2.39 / **5.58** | 2.69 / **5.47** | 507 |
+| REGEX ONLY         | 93.5 | 10.4 | 1.36 / **2.26** | 1.80 / **2.92** |  65 |
+| NONE (baseline)    |  0.0 |  0.0 | 1.42 / **2.44** | 1.44 / **2.58** |  51 |
+
+**p99 vs the 5 ms target.** Regex-only and the no-detector
+baseline pass cleanly. Adding AI pushes p99 across the 5 ms
+line on laptop hardware (clean p99 5.71 ms in case A,
+5.47 ms in case B). On production hosts with bigger CPU
+budget the gap closes — the headline 5 k RPS run on
+`prod-balanced-5k` already demonstrated p99 1.03 ms with the
+regex chain, so AI on a production host should land
+comfortably inside the target. **Plan to verify on real
+hardware before promoting to enforce.**
 
 **Per-request inference cost**:
-- 357 µs mean when chained (ALL on)
-- 468 µs mean when AI runs alone (cache locality differs)
-- p95 inference ≤ 0.5 ms — well inside the 5 ms `ai.timeout` floor
+- 694 µs mean when chained (case A) — 357 µs measured on a
+  warm-cache earlier run; the value moves with system load
+  and ONNX arena state
+- 783 µs mean when AI runs alone (case B)
+- p95 inference well inside the 5 ms `ai.timeout` ceiling
 
-**Memory cost**: +160 MB RSS on top of the regex chain — 38 MB
-ONNX session weights plus arenas the runtime allocates lazily.
+**Memory cost**: +500 MB RSS on top of the regex chain in this
+run (65 → 562 MB) — the 38 MB ONNX session plus arenas the
+runtime allocates lazily over the run; an earlier short run
+measured +160 MB before the arena had filled. Production
+sizing should budget ~500 MB once arenas have stabilised.
 
 **Throughput**: all four cases sustained 400 RPS without
-saturation. The headline 5 k RPS ceiling test is in
+saturation. The saturation ceiling test is the existing
 [`tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/`](../../../tests/results/) —
-that ran with regex-only; the AI-on chain trades ~0.1 ms p95 for
-the +0.4 pp detection lift on the bundled model.
+that ran with regex-only. A 5 k RPS run with AI enabled is the
+next perf experiment.
 
 ## False-positive control
 
@@ -230,6 +245,7 @@ report is calibrated against.
 
 - Plan + design rationale — [`plans/ai-detector.md`](../../../plans/ai-detector.md)
 - Dataset + training notes — [`data/ai_model/WAF_DATASET_REPORT_VI.md`](../../../data/ai_model/WAF_DATASET_REPORT_VI.md)
-- Perf report — `tests/perf/results/ai-compare-<UTC>/REPORT.md` (latest run)
+- Perf + p99 report — [`tests/results/run-ai-compare-2026-05-03/`](../../../tests/results/run-ai-compare-2026-05-03/)
+  (re-run with `bash tests/perf/ai-compare.sh`)
 - Detector chain semantics — [`./README.md`](./README.md)
 - Tier mask + compliance clamp — [`../tiered-protection.md`](../tiered-protection.md)

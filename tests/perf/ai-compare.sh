@@ -367,7 +367,7 @@ print(f"- **Cases**: {', '.join(modes)}")
 print()
 print("## Headline")
 print()
-print("| Case | Mode | Throughput rps | Detect % | FP % | Attack p50 / p95 / max ms | Clean p50 / p95 / max ms | RSS MB |")
+print("| Case | Mode | Throughput rps | Detect % | FP % | Attack p50 / p95 / **p99** / max ms | Clean p50 / p95 / **p99** / max ms | RSS MB |")
 print("|---|---|---|---|---|---|---|---|")
 for m in modes:
     d = load(m)
@@ -376,7 +376,7 @@ for m in modes:
         continue
     a, c = d["attack_latency_ms"], d["clean_latency_ms"]
     print(f"| {m} | {labels.get(m, m)} | {d['throughput_rps']} | {d['detection_rate_pct']} | {d['false_positive_rate_pct']} | "
-          f"{a['p50']} / {a['p95']} / {a['max']} | {c['p50']} / {c['p95']} / {c['max']} | {round(d['rss_kb']/1024,1)} |")
+          f"{a['p50']} / {a['p95']} / **{a['p99']}** / {a['max']} | {c['p50']} / {c['p95']} / **{c['p99']}** / {c['max']} | {round(d['rss_kb']/1024,1)} |")
 print()
 print("## Detection breakdown (counts)")
 print()

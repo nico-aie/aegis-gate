@@ -1,40 +1,43 @@
 {
   "mode": "B",
   "throughput_rps": 400.0,
-  "http_reqs": 8001,
-  "attacks_total": 4742,
-  "attacks_detected": 4092,
-  "detection_rate_pct": 86.3,
-  "clean_total": 3259,
-  "clean_blocked": 1291,
-  "false_positive_rate_pct": 39.6,
+  "http_reqs": 8000,
+  "attacks_total": 4811,
+  "attacks_detected": 4124,
+  "detection_rate_pct": 85.7,
+  "clean_total": 3189,
+  "clean_blocked": 1279,
+  "false_positive_rate_pct": 40.1,
   "http_req_duration_ms": {
-    "avg": 0.94,
-    "p50": 0.71,
-    "p90": 1.7,
-    "p95": 1.97,
-    "max": 22.27
+    "avg": 1.59,
+    "p50": 1.43,
+    "p90": 2.2,
+    "p95": 2.54,
+    "p99": 5.56,
+    "max": 39.37
   },
   "attack_latency_ms": {
-    "avg": 0.89,
-    "p50": 0.66,
-    "p90": 1.52,
-    "p95": 1.85,
-    "max": 21.34
+    "avg": 1.49,
+    "p50": 1.33,
+    "p90": 2.02,
+    "p95": 2.39,
+    "p99": 5.58,
+    "max": 20.61
   },
   "clean_latency_ms": {
-    "avg": 1.02,
-    "p50": 0.76,
-    "p90": 1.83,
-    "p95": 2.05,
-    "max": 22.27
+    "avg": 1.74,
+    "p50": 1.64,
+    "p90": 2.36,
+    "p95": 2.69,
+    "p99": 5.47,
+    "max": 39.37
   },
-  "rss_kb": 513616,
+  "rss_kb": 519360,
   "detector_hits": {
-    "class=\"ai\"": 5383
+    "class=\"ai\"": 5403
   },
-  "ai_hits": 5383,
-  "ai_inference_count": 8001,
-  "ai_inference_mean_us": 467.7,
-  "ai_inference_total_ms": 3742.2
+  "ai_hits": 5403,
+  "ai_inference_count": 8000,
+  "ai_inference_mean_us": 783.1,
+  "ai_inference_total_ms": 6265.1
 }

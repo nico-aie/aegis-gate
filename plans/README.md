@@ -15,7 +15,7 @@ but no longer guiding new work.
 
 | Track | Plan | Notes |
 |---|---|---|
-| **AI detector** integration | [`ai-detector.md`](./ai-detector.md) · [per-detector doc](../docs/security/detectors/ai-detector.md) | **Shipped 2026-05-03** — T1..T9 all live. `ort` 2.0-rc.12, 26-feature extractor, binary attack/normal verdict, hybrid `mode: observe \| enforce`. Mean inference 357 µs, +0.1 ms p95 chained behind regex. Perf comparison: `tests/perf/results/ai-compare-20260503T185335Z/REPORT.md`. |
+| **AI detector** integration | [`ai-detector.md`](./ai-detector.md) · [per-detector doc](../docs/security/detectors/ai-detector.md) | **Shipped 2026-05-03** — T1..T9 all live. `ort` 2.0-rc.12, 26-feature extractor, binary attack/normal verdict, hybrid `mode: observe \| enforce`. Mean inference 694 µs, +1.1 ms p95 / +2.3 ms p99 chained behind regex (laptop hardware). Perf comparison + p99 vs 5 ms target: `tests/results/run-ai-compare-2026-05-03/REPORT.md`. |
 | TCP CONNECT tunneling (Phase 4) | [`tcp-forwarder-phase-4.md`](./tcp-forwarder-phase-4.md) | TCP-T1..T6 shipped 2026-05-03. |
 | Binary handover (fd-pass) | [`binary-handover-fd-pass.md`](./binary-handover-fd-pass.md) | FDP-T1..T6 library + accept-loop drain refactor shipped 2026-05-03. |
 | WebSocket bridge | [`websocket-bridge.md`](./websocket-bridge.md) | WS-T1..T6 shipped 2026-05-03 (T5 e2e test, T6 metrics + Live-Feed pill). |

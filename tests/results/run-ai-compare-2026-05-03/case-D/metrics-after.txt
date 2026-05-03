@@ -50,37 +50,37 @@ waf_request_duration_ms_bucket{stage="detect",le="50"} 8001
 waf_request_duration_ms_bucket{stage="detect",le="100"} 8001
 waf_request_duration_ms_bucket{stage="detect",le="250"} 8001
 waf_request_duration_ms_bucket{stage="detect",le="+Inf"} 8001
-waf_request_duration_ms_sum{stage="detect"} 4.236216000000022
+waf_request_duration_ms_sum{stage="detect"} 7.553287000000023
 waf_request_duration_ms_count{stage="detect"} 8001
 waf_request_duration_ms_bucket{stage="rate_limit",le="0.05"} 8000
-waf_request_duration_ms_bucket{stage="rate_limit",le="0.1"} 8001
-waf_request_duration_ms_bucket{stage="rate_limit",le="0.25"} 8001
-waf_request_duration_ms_bucket{stage="rate_limit",le="0.5"} 8001
-waf_request_duration_ms_bucket{stage="rate_limit",le="1"} 8001
-waf_request_duration_ms_bucket{stage="rate_limit",le="2.5"} 8001
-waf_request_duration_ms_bucket{stage="rate_limit",le="5"} 8001
-waf_request_duration_ms_bucket{stage="rate_limit",le="10"} 8001
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.1"} 8000
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.25"} 8000
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.5"} 8000
+waf_request_duration_ms_bucket{stage="rate_limit",le="1"} 8000
+waf_request_duration_ms_bucket{stage="rate_limit",le="2.5"} 8000
+waf_request_duration_ms_bucket{stage="rate_limit",le="5"} 8000
+waf_request_duration_ms_bucket{stage="rate_limit",le="10"} 8000
 waf_request_duration_ms_bucket{stage="rate_limit",le="25"} 8001
 waf_request_duration_ms_bucket{stage="rate_limit",le="50"} 8001
 waf_request_duration_ms_bucket{stage="rate_limit",le="100"} 8001
 waf_request_duration_ms_bucket{stage="rate_limit",le="250"} 8001
 waf_request_duration_ms_bucket{stage="rate_limit",le="+Inf"} 8001
-waf_request_duration_ms_sum{stage="rate_limit"} 4.476332000000014
+waf_request_duration_ms_sum{stage="rate_limit"} 18.788067000000574
 waf_request_duration_ms_count{stage="rate_limit"} 8001
 waf_request_duration_ms_bucket{stage="total",le="0.05"} 0
-waf_request_duration_ms_bucket{stage="total",le="0.1"} 219
-waf_request_duration_ms_bucket{stage="total",le="0.25"} 5461
-waf_request_duration_ms_bucket{stage="total",le="0.5"} 7430
-waf_request_duration_ms_bucket{stage="total",le="1"} 7956
-waf_request_duration_ms_bucket{stage="total",le="2.5"} 7996
-waf_request_duration_ms_bucket{stage="total",le="5"} 7999
-waf_request_duration_ms_bucket{stage="total",le="10"} 8001
+waf_request_duration_ms_bucket{stage="total",le="0.1"} 0
+waf_request_duration_ms_bucket{stage="total",le="0.25"} 1006
+waf_request_duration_ms_bucket{stage="total",le="0.5"} 6005
+waf_request_duration_ms_bucket{stage="total",le="1"} 7886
+waf_request_duration_ms_bucket{stage="total",le="2.5"} 7982
+waf_request_duration_ms_bucket{stage="total",le="5"} 7993
+waf_request_duration_ms_bucket{stage="total",le="10"} 7998
 waf_request_duration_ms_bucket{stage="total",le="25"} 8001
 waf_request_duration_ms_bucket{stage="total",le="50"} 8001
 waf_request_duration_ms_bucket{stage="total",le="100"} 8001
 waf_request_duration_ms_bucket{stage="total",le="250"} 8001
 waf_request_duration_ms_bucket{stage="total",le="+Inf"} 8001
-waf_request_duration_ms_sum{stage="total"} 2003.4080660000075
+waf_request_duration_ms_sum{stage="total"} 3565.9937060000007
 waf_request_duration_ms_count{stage="total"} 8001
 # HELP waf_requests_total Total data-plane requests handled by the WAF, labelled by the decision action emitted (allow / block / challenge / rate_limit / timeout / circuit_breaker).
 # TYPE waf_requests_total counter
@@ -93,19 +93,19 @@ waf_requests_total{action="timeout"} 0
 # HELP waf_route_request_duration_ms Per-route end-to-end request duration (milliseconds). Labelled by `route` (the route_id from the matched route table entry). Bucket layout matches `waf_request_duration_ms` so dashboards can compose both sources.
 # TYPE waf_route_request_duration_ms histogram
 waf_route_request_duration_ms_bucket{route="catch-all",le="0.05"} 0
-waf_route_request_duration_ms_bucket{route="catch-all",le="0.1"} 227
-waf_route_request_duration_ms_bucket{route="catch-all",le="0.25"} 5471
-waf_route_request_duration_ms_bucket{route="catch-all",le="0.5"} 7453
-waf_route_request_duration_ms_bucket{route="catch-all",le="1"} 7956
-waf_route_request_duration_ms_bucket{route="catch-all",le="2.5"} 7996
-waf_route_request_duration_ms_bucket{route="catch-all",le="5"} 7999
-waf_route_request_duration_ms_bucket{route="catch-all",le="10"} 8001
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.1"} 0
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.25"} 1050
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.5"} 6066
+waf_route_request_duration_ms_bucket{route="catch-all",le="1"} 7887
+waf_route_request_duration_ms_bucket{route="catch-all",le="2.5"} 7982
+waf_route_request_duration_ms_bucket{route="catch-all",le="5"} 7993
+waf_route_request_duration_ms_bucket{route="catch-all",le="10"} 7998
 waf_route_request_duration_ms_bucket{route="catch-all",le="25"} 8001
 waf_route_request_duration_ms_bucket{route="catch-all",le="50"} 8001
 waf_route_request_duration_ms_bucket{route="catch-all",le="100"} 8001
 waf_route_request_duration_ms_bucket{route="catch-all",le="250"} 8001
 waf_route_request_duration_ms_bucket{route="catch-all",le="+Inf"} 8001
-waf_route_request_duration_ms_sum{route="catch-all"} 1992.2689669999927
+waf_route_request_duration_ms_sum{route="catch-all"} 3544.2325960000057
 waf_route_request_duration_ms_count{route="catch-all"} 8001
 # HELP waf_state_backend_ops_total Total state-backend operations performed by the WAF, labelled by op (get / set / del / incr_window / token_bucket / get_risk / add_risk / auto_block / is_auto_blocked / put_nonce / consume_nonce) and outcome (ok / error).
 # TYPE waf_state_backend_ops_total counter
