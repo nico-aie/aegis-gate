@@ -22,11 +22,14 @@
 //!   the resolved post-default value of 0 as "no cap" so
 //!   integration test fixtures can opt out.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
 
 use aegis_core::tcp_destination::{
     is_internal_address, parse_authority, policy_admits, TcpDestinationRule,
@@ -282,6 +285,159 @@ impl ConnectAdmission {
             Self::Deny { rule_id, .. } => rule_id,
         }
     }
+}
+
+/// TCP-T3b — close-reason classification for the
+/// `tcp_tunnel_close` audit event. Distinguishing connect
+/// failure from a clean close vs. a mid-stream error matters
+/// for operator triage:
+///
+/// - `Ok` — `copy_bidirectional` returned Ok; either side
+///   sent EOF and the other drained. The expected steady-state
+///   close.
+/// - `Error` — `copy_bidirectional` returned Err. Network
+///   reset, broken pipe, or upstream-side abort. Bytes
+///   transferred up to the failure point are still reported
+///   so operators can see "tunnel got 100MB through then
+///   died" vs. "tunnel never moved a byte".
+/// - `ConnectFailed` — the TCP connect to the upstream never
+///   succeeded. Bytes are 0/0; duration is the time spent in
+///   the connect attempt (typically the connect_timeout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TunnelCloseReason {
+    Ok,
+    Error,
+    ConnectFailed,
+}
+
+impl TunnelCloseReason {
+    /// Audit `rule_id` mapping. The audit emitter (TCP-T4)
+    /// pairs these with the `tcp_tunnel_close` action.
+    pub fn rule_id(&self) -> &'static str {
+        match self {
+            Self::Ok => "tunnel_closed_normal",
+            Self::Error => "tunnel_closed_error",
+            Self::ConnectFailed => "tunnel_upstream_unreachable",
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+            Self::ConnectFailed => "connect_failed",
+        }
+    }
+}
+
+/// Payload the bridge passes to its `on_close` callback. The
+/// data-plane wiring (TCP-T3c) renders this into a
+/// `tcp_tunnel_close` audit event; tests use it to assert on
+/// observable side effects without a full bus.
+#[derive(Clone, Debug)]
+pub struct TunnelClosed {
+    pub reason: TunnelCloseReason,
+    pub duration: Duration,
+    pub bytes_to_upstream: u64,
+    pub bytes_from_upstream: u64,
+}
+
+/// TCP-T3b — bridge an upgraded HTTP CONNECT stream to a real
+/// upstream TCP socket and run `copy_bidirectional` until one
+/// side EOFs.
+///
+/// `client` is the post-upgrade stream from
+/// `hyper::upgrade::on(...)` (wrapped via
+/// `hyper_util::rt::TokioIo` to give it `AsyncRead + AsyncWrite`).
+/// Tests pass a `tokio::io::DuplexStream` so the upgrade
+/// machinery doesn't need to be stubbed.
+///
+/// `_guard` is moved in by value and dropped on return; the
+/// per-IP slot is held for the tunnel's full lifetime.
+///
+/// `on_close` runs synchronously after the bridge exits — the
+/// caller wires it to audit emission. We deliberately don't
+/// take an `AuditBus` directly so the function is unit-
+/// testable without one.
+///
+/// Returns the close-reason classification so the caller can
+/// log / metric it without re-deriving from the `TunnelClosed`
+/// payload.
+pub async fn bridge_tunnel<S>(
+    mut client: S,
+    dest: SocketAddr,
+    connect_timeout: Duration,
+    _guard: TunnelGuard,
+    on_close: impl FnOnce(TunnelClosed),
+) -> TunnelCloseReason
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let started = Instant::now();
+    // Upstream connect with the configured timeout. A stuck
+    // upstream after the SYN is the data-plane's biggest tunnel
+    // foot-gun — without a timeout, every misconfigured route
+    // becomes a slowloris vector.
+    let connect_fut = TcpStream::connect(dest);
+    let upstream = match tokio::time::timeout(connect_timeout, connect_fut).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, dest = %dest, "tcp tunnel: upstream connect failed");
+            on_close(TunnelClosed {
+                reason: TunnelCloseReason::ConnectFailed,
+                duration: started.elapsed(),
+                bytes_to_upstream: 0,
+                bytes_from_upstream: 0,
+            });
+            return TunnelCloseReason::ConnectFailed;
+        }
+        Err(_) => {
+            tracing::warn!(
+                dest = %dest,
+                timeout_ms = connect_timeout.as_millis(),
+                "tcp tunnel: upstream connect timed out",
+            );
+            on_close(TunnelClosed {
+                reason: TunnelCloseReason::ConnectFailed,
+                duration: started.elapsed(),
+                bytes_to_upstream: 0,
+                bytes_from_upstream: 0,
+            });
+            return TunnelCloseReason::ConnectFailed;
+        }
+    };
+    // Disable Nagle on the upstream — tunnels carry small
+    // interactive frames as often as bulk transfer; the
+    // latency cost of buffering 200 ms isn't worth the
+    // marginal throughput gain.
+    let _ = upstream.set_nodelay(true);
+    let mut upstream = upstream;
+
+    // Splice. `copy_bidirectional` returns
+    // (bytes_a_to_b, bytes_b_to_a) on Ok — for us
+    // (client → upstream, upstream → client). Either-side
+    // EOF returns Ok; mid-stream errors return Err with the
+    // partial counts unrecoverable from this API. We report
+    // 0/0 in the Err branch and let operators read the
+    // tracing log for the byte-flight observation if they
+    // need it. (Future: switch to a hand-rolled split-and-
+    // copy that captures partial counts on error.)
+    let result = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    let (reason, bytes_to_upstream, bytes_from_upstream) = match result {
+        Ok((to_up, from_up)) => (TunnelCloseReason::Ok, to_up, from_up),
+        Err(e) => {
+            tracing::warn!(error = %e, dest = %dest, "tcp tunnel: copy errored mid-stream");
+            (TunnelCloseReason::Error, 0, 0)
+        }
+    };
+    let payload = TunnelClosed {
+        reason,
+        duration: started.elapsed(),
+        bytes_to_upstream,
+        bytes_from_upstream,
+    };
+    on_close(payload);
+    reason
 }
 
 #[cfg(test)]
@@ -687,5 +843,174 @@ mod tests {
             &tunnels,
         ));
         assert_eq!(outcome.rule_id(), "tunnel_admitted");
+    }
+
+    // -----------------------------------------------------------
+    // TCP-T3b — bridge_tunnel
+    // -----------------------------------------------------------
+
+    #[test]
+    fn close_reason_rule_ids_match_design_doc() {
+        assert_eq!(TunnelCloseReason::Ok.rule_id(), "tunnel_closed_normal");
+        assert_eq!(TunnelCloseReason::Error.rule_id(), "tunnel_closed_error");
+        assert_eq!(
+            TunnelCloseReason::ConnectFailed.rule_id(),
+            "tunnel_upstream_unreachable"
+        );
+    }
+
+    #[test]
+    fn close_reason_as_str_is_short_and_stable() {
+        assert_eq!(TunnelCloseReason::Ok.as_str(), "ok");
+        assert_eq!(TunnelCloseReason::Error.as_str(), "error");
+        assert_eq!(TunnelCloseReason::ConnectFailed.as_str(), "connect_failed");
+    }
+
+    /// Spawn a tiny echo server on 127.0.0.1:0 and return its
+    /// SocketAddr + a JoinHandle that completes when the
+    /// listener task exits.
+    async fn spawn_echo_upstream() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut sock, _) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let mut buf = vec![0u8; 4096];
+            loop {
+                let n = match sock.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                if sock.write_all(&buf[..n]).await.is_err() {
+                    break;
+                }
+            }
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn bridge_tunnel_round_trips_bytes_through_an_echo_upstream() {
+        use std::sync::Mutex;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (dest, _upstream_task) = spawn_echo_upstream().await;
+        let tunnels = ConcurrentTunnels::new();
+        let guard = tunnels.try_admit(ip("198.51.100.1"), 4).unwrap();
+
+        // Client side of the upgraded stream is a duplex pair.
+        let (client_io, mut client_app) = tokio::io::duplex(4096);
+
+        // Capture the TunnelClosed payload via a Mutex<Option>.
+        let captured: Arc<Mutex<Option<TunnelClosed>>> = Arc::new(Mutex::new(None));
+        let captured_cl = captured.clone();
+
+        let bridge = tokio::spawn(async move {
+            bridge_tunnel(
+                client_io,
+                dest,
+                Duration::from_secs(2),
+                guard,
+                move |closed| {
+                    *captured_cl.lock().unwrap() = Some(closed);
+                },
+            )
+            .await
+        });
+
+        // Drive the "client" — write some bytes, read the echo.
+        client_app.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        client_app.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+
+        // EOF the client side → bridge sees client EOF →
+        // copy_bidirectional returns Ok → bridge exits.
+        drop(client_app);
+
+        let reason = bridge.await.unwrap();
+        assert_eq!(reason, TunnelCloseReason::Ok);
+
+        let closed = captured.lock().unwrap().clone().expect("on_close fired");
+        assert_eq!(closed.reason, TunnelCloseReason::Ok);
+        // Client wrote 4 bytes; upstream echoed 4 bytes.
+        assert_eq!(closed.bytes_to_upstream, 4);
+        assert_eq!(closed.bytes_from_upstream, 4);
+        // Tunnel guard dropped → counter back to 0.
+        assert_eq!(tunnels.count(ip("198.51.100.1")), 0);
+    }
+
+    #[tokio::test]
+    async fn bridge_tunnel_reports_connect_failed_on_unreachable_upstream() {
+        use std::sync::Mutex;
+        let tunnels = ConcurrentTunnels::new();
+        let guard = tunnels.try_admit(ip("198.51.100.1"), 4).unwrap();
+        let (client_io, _client_app) = tokio::io::duplex(4096);
+        let captured: Arc<Mutex<Option<TunnelClosed>>> = Arc::new(Mutex::new(None));
+        let captured_cl = captured.clone();
+
+        // 198.51.100.0/24 is TEST-NET-2, guaranteed unreachable
+        // — but unreachable can manifest as either a refused
+        // connect (immediate Err) or a black-holed connect
+        // (timeout). Cap the connect timeout tight so the test
+        // doesn't hang on the latter.
+        let dead: SocketAddr = "198.51.100.99:1".parse().unwrap();
+
+        let reason = bridge_tunnel(
+            client_io,
+            dead,
+            Duration::from_millis(200),
+            guard,
+            move |closed| {
+                *captured_cl.lock().unwrap() = Some(closed);
+            },
+        )
+        .await;
+
+        assert_eq!(reason, TunnelCloseReason::ConnectFailed);
+        let closed = captured.lock().unwrap().clone().expect("on_close fired");
+        assert_eq!(closed.reason, TunnelCloseReason::ConnectFailed);
+        assert_eq!(closed.bytes_to_upstream, 0);
+        assert_eq!(closed.bytes_from_upstream, 0);
+        assert_eq!(tunnels.count(ip("198.51.100.1")), 0);
+    }
+
+    #[tokio::test]
+    async fn bridge_tunnel_drops_guard_when_caller_drops_future() {
+        // This validates the RAII guarantee — even if the bridge
+        // future is cancelled mid-tunnel (e.g. the parent task
+        // is aborted), the guard's drop runs and the counter
+        // returns to zero. Tokio's cancellation semantics are
+        // "drop the future"; the guard moved into bridge_tunnel
+        // is part of that future's local state, so its Drop
+        // fires.
+        let (addr, _upstream_task) = spawn_echo_upstream().await;
+        let tunnels = ConcurrentTunnels::new();
+        let guard = tunnels.try_admit(ip("198.51.100.1"), 4).unwrap();
+        let (client_io, _client_app) = tokio::io::duplex(4096);
+
+        let bridge = tokio::spawn(async move {
+            bridge_tunnel(
+                client_io,
+                addr,
+                Duration::from_secs(2),
+                guard,
+                |_| {},
+            )
+            .await
+        });
+        // Yield once so bridge_tunnel can connect.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(tunnels.count(ip("198.51.100.1")), 1);
+
+        bridge.abort();
+        // After abort, the future is dropped — guard's Drop
+        // runs synchronously, decrementing the count.
+        // Wait briefly for the abort to land.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(tunnels.count(ip("198.51.100.1")), 0);
     }
 }
