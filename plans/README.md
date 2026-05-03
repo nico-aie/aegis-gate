@@ -99,9 +99,6 @@ plans/
 ├── console-qa.md                   CLOSED — CQA-T1..T14 sweep complete (5/3/6 P/Pa/F)
 ├── console-fixups.md               CLOSED — CQF-T1..T16 shipped (HIGH + MEDIUM + first
 │                                   LOW); T17/T18/T19 deferred (need backend slices)
-├── console-soc-refactor.md         PLAN-ONLY — SOC-grade console redesign (drafted
-│                                   2026-05-02; many phases shipped under Phase 3
-│                                   console work but doc not yet flipped)
 ├── followups-rollback-and-sans.md  CLOSED — HACK-T4 rollback + MTLS-T7 SAN allowlist
 ├── hackathon-readiness.md          CLOSED — HACK-T1..T5 + follow-ups shipped
 ├── hackathon-stress-test.md        CLOSED — Round-1 stress test runs done
@@ -127,6 +124,10 @@ plans/
     ├── post-k6-followup.md         P1..P8 + F-T1..F-T10
     ├── benchmark-mode.md           folded into Phase B (B5-T2)
     └── archive/
+        ├── console-soc-refactor.md         SOC-grade console redesign (Plan-only;
+        │                                   drafted 2026-05-02; many phases shipped
+        │                                   under Phase 3 console work — never audited
+        │                                   for which slices remain open)
         ├── dashboard-enterprise/           D-M1..D-M6 — superseded by DD-T0..T8
         └── dashboard-redesign-early-brief/ M0..M10 brief — superseded by DD-T0..T8
 ```
