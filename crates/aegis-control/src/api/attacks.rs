@@ -324,9 +324,18 @@ impl AttacksAggregator {
     /// by count desc.
     pub fn by_detector(&self, window_seconds: u32) -> ByDetectorResponse {
         let dist = self.distribution(window_seconds);
+        // 2026-05-03 fix — filter the synthetic `unknown` bucket
+        // out.  detector_name() falls back to "unknown" for
+        // malformed detection events (missing both
+        // fields.detectors and rule_id); those shouldn't appear
+        // on the Investigation page's per-detector chart because
+        // they're not really detector firings, they're dropped
+        // signals.  Filtering keeps the chart focused on real
+        // classes (sqli / xss / path_traversal / …).
         let detectors = dist
             .categories
             .into_iter()
+            .filter(|c| c.name != "unknown")
             .map(|c| DetectorCount {
                 name: c.name,
                 count: c.count,
@@ -535,16 +544,45 @@ fn is_rfc1918_or_loopback(ip: &str) -> bool {
 }
 
 /// Resolve the detector name for an audit event.
+/// Resolve a single canonical detector class from one audit
+/// event.  Order of preference:
+///
+/// 1. `fields.detectors[0]` — the data plane emits the array
+///    shape with bare class names (`"sqli"`, `"path_traversal"`).
+///    This is the modern path; matches the per-class strings
+///    that detector tests assert on.
+/// 2. `fields.detector` — legacy single-string field, kept as
+///    a forward-compat shim.
+/// 3. `rule_id` prefix split on `-` / `/` — older code paths
+///    that emit `rule_id: "detector:sqli,xss"` etc.  The
+///    `_` separator was dropped 2026-05-03 because it was
+///    truncating `path_traversal` → `path` and producing
+///    "detector:path" labels in the by-detector aggregator.
+/// 4. Fallback `"unknown"` — only happens for malformed
+///    detection events; the by-detector aggregator filters
+///    those out so they don't pollute the SOC chart.
 fn detector_name(ev: &AuditEvent) -> String {
+    if let Some(arr) = ev.fields.get("detectors").and_then(|v| v.as_array()) {
+        if let Some(first) = arr.first().and_then(|v| v.as_str()) {
+            if !first.is_empty() {
+                return first.to_string();
+            }
+        }
+    }
     if let Some(name) = ev.fields.get("detector").and_then(|v| v.as_str()) {
         if !name.is_empty() {
             return name.to_string();
         }
     }
     if let Some(rule_id) = ev.rule_id.as_deref() {
-        let prefix = rule_id.split(['-', '_', '/']).next().unwrap_or("");
+        let prefix = rule_id.split(['-', '/']).next().unwrap_or("");
         if !prefix.is_empty() {
-            return prefix.to_string();
+            // Strip the legacy `detector:` prefix when present so
+            // SOC dashboards always see bare class names.
+            return prefix
+                .strip_prefix("detector:")
+                .unwrap_or(prefix)
+                .to_string();
         }
     }
     "unknown".to_string()
@@ -807,17 +845,48 @@ mod tests {
 
     #[test]
     fn detector_name_falls_back_to_rule_id_prefix() {
-        // No fields.detector → split on '-' / '_' / '/'.
+        // No fields.detector → split on '-' / '/' only.  `_` was
+        // dropped 2026-05-03 because it truncated `path_traversal`
+        // → `path` in the by-detector aggregator.
         let cases = &[
             ("sqli-12", "sqli"),
-            ("xss_owasp_3", "xss"),
+            ("xss_owasp_3", "xss_owasp_3"),
             ("recon/probe-1", "recon"),
             ("ssrf", "ssrf"),
+            // The legacy `detector:` prefix that `data_plane.rs`
+            // emits is stripped so SOC dashboards see bare class
+            // names everywhere.
+            ("detector:sqli", "sqli"),
+            ("detector:path_traversal", "path_traversal"),
+            ("detector:sqli,xss", "sqli,xss"),
         ];
         for (rule_id, expected) in cases {
             let ev = det_event(None, Some(rule_id));
             assert_eq!(detector_name(&ev), *expected, "rule_id={rule_id}");
         }
+    }
+
+    #[test]
+    fn detector_name_prefers_fields_detectors_array() {
+        // Modern data-plane shape — `fields.detectors[0]` first.
+        let mut ev = det_event(None, Some("legacy-rule-1"));
+        ev.fields = serde_json::json!({"detectors": ["sqli", "xss"]});
+        assert_eq!(detector_name(&ev), "sqli");
+    }
+
+    #[test]
+    fn by_detector_filters_unknown_bucket() {
+        // Detection events with no detector + no rule_id resolve
+        // to "unknown" via the fallback; those must NOT pollute
+        // the by-detector chart.
+        let agg = AttacksAggregator::new();
+        agg.record(&det_event(Some("sqli"), None));
+        agg.record(&det_event(Some("sqli"), None));
+        agg.record(&det_event(None, None)); // → "unknown"
+        let r = agg.by_detector(900);
+        let names: Vec<&str> = r.detectors.iter().map(|d| d.name.as_str()).collect();
+        assert!(!names.contains(&"unknown"), "got {names:?}");
+        assert!(names.contains(&"sqli"));
     }
 
     #[test]

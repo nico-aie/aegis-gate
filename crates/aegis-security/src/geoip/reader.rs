@@ -147,12 +147,34 @@ impl GeoIpLookup for MaxMindReader {
     fn country(&self, ip: IpAddr) -> Option<String> {
         let reader = self.country.load_full()?;
         // MaxMind's `Country` struct exposes the ISO code at
-        // `country.iso_code`. We deliberately do NOT fall back
-        // to `registered_country` — operators who care about
-        // routing the request rather than billing should use a
-        // City DB and adapt.
+        // `country.iso_code`.
+        //
+        // 2026-05-03 fix — the previous shape deliberately
+        // skipped `registered_country` "for routing-honesty",
+        // but for SOC dashboards (Top Attackers / Investigation
+        // / threat-intel) the registered country is the right
+        // answer: anycast IPs (1.1.1.1 / 9.9.9.9 / many CDN
+        // edges) have an empty `country` block in GeoLite2-
+        // Country and ONLY a `registered_country`.  Returning
+        // None for those left the dashboard's Country column
+        // blank for the busiest attackers.  Now we prefer
+        // `country` then fall back to `registered_country` —
+        // matches the classic "where is this IP registered"
+        // operator question.
         let entry: geoip2::Country = reader.lookup(ip).ok()?;
-        entry.country.and_then(|c| c.iso_code).map(|s| s.to_string())
+        let from_country = entry
+            .country
+            .as_ref()
+            .and_then(|c| c.iso_code)
+            .map(|s| s.to_string());
+        if from_country.is_some() {
+            return from_country;
+        }
+        entry
+            .registered_country
+            .as_ref()
+            .and_then(|c| c.iso_code)
+            .map(|s| s.to_string())
     }
 
     fn asn(&self, ip: IpAddr) -> Option<u32> {

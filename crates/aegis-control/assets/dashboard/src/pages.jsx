@@ -883,9 +883,30 @@ function PageAttackEvents() {
             title="Bot classification mix"
             sub={totalBots > 0 ? `${totalBots.toLocaleString()} classified requests` : 'no bot signal yet'}
           />
-          {botSegments.length === 0 ? (
+          {/*
+            2026-05-03 fix — when every classified request lands
+            in `unknown`, the bot classifier is wired but isn't
+            producing usable signal on this profile (no JA4
+            baseline, no UA rules in dev cfg, etc.).  Showing a
+            100% "unknown" stacked bar reads as a dishonest
+            "we classified things"; instead we surface the
+            actionable empty state with a config pointer.
+          */}
+          {botSegments.length === 0 ||
+            (botCategories.length === 1 && botCategories[0].name === 'unknown') ? (
             <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-              No bot classifications recorded in the last {win}.
+              {botCategories.length === 1 && botCategories[0].name === 'unknown' ? (
+                <>
+                  Bot classifier wired but every request landed in
+                  <code style={{ margin: '0 4px' }}>unknown</code>.
+                  This profile has no JA4 baseline / UA allow-list to drive
+                  classification — see{' '}
+                  <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>{' '}
+                  for the bring-up.
+                </>
+              ) : (
+                <>No bot classifications recorded in the last {win}.</>
+              )}
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -4378,8 +4399,18 @@ function PageUpstreams() {
     if (!selected && names.length > 0) setSelected(names[0]);
   }, [names.length, selected]);
 
-  const totalMembers = names.reduce((s, n) => s + (pools[n].members?.length || 0), 0);
-  const orphaned = names.filter(n => (pools[n].referenced_by_routes || []).length === 0).length;
+  // Defensive — `pools[n]` can be undefined transiently between
+  // a mutation landing and the next reload completing; without
+  // optional chaining the page used to throw and the
+  // PageErrorBoundary would catch it (still better than the
+  // white-page-on-refresh bug, but we'd rather not crash at all).
+  const totalMembers = names.reduce(
+    (s, n) => s + (pools[n]?.members?.length || 0),
+    0,
+  );
+  const orphaned = names.filter(
+    n => (pools[n]?.referenced_by_routes || []).length === 0,
+  ).length;
 
   const openAdd = () => setEditor({ mode: 'add' });
   const openEdit = (name, pool) => setEditor({ mode: 'edit', name, pool });
@@ -5802,9 +5833,19 @@ function PageInvestigation() {
                   title="Bot classification mix"
                   sub={botCategories.length ? `${botCategories.reduce((s, c) => s + c.count, 0).toLocaleString()} classified · last 1h` : 'no bot signal yet'}
                 />
-                {botSegments.length === 0 ? (
+                {botSegments.length === 0 ||
+                  (botCategories.length === 1 && botCategories[0].name === 'unknown') ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                    No bot classifications recorded.
+                    {botCategories.length === 1 && botCategories[0].name === 'unknown' ? (
+                      <>
+                        Bot classifier wired but every request landed in
+                        <code style={{ margin: '0 4px' }}>unknown</code>.
+                        This profile has no JA4 baseline — see{' '}
+                        <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>.
+                      </>
+                    ) : (
+                      <>No bot classifications recorded.</>
+                    )}
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

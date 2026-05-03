@@ -327,6 +327,97 @@ function StatusBar({ tick }) {
   );
 }
 
+// ============== Error boundary ==============
+//
+// 2026-05-03 — operators reported "auto-refresh shows white page"
+// on a few pages (e.g. Routing & Upstreams).  Root cause: a
+// component throws during a polling-driven re-render (race on
+// API shape, undefined access on a transient empty payload, etc.)
+// and React unmounts the whole tree because there's no error
+// boundary above it.  This boundary catches the error, keeps the
+// shell + sidebar visible, and renders an actionable retry card
+// so the operator can navigate away or reload without losing the
+// session.
+class PageErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    // Log to the browser console so the operator (or QA) can
+    // capture the stack from DevTools.  No telemetry path yet.
+    console.error('[aegis-console] page render crashed:', error, info);
+  }
+  componentDidUpdate(prevProps) {
+    // Reset on route change so navigating to a working page
+    // un-traps the boundary without a full reload.
+    if (prevProps.route !== this.props.route && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+  render() {
+    if (this.state.error) {
+      const msg = this.state.error?.message || String(this.state.error);
+      return React.createElement(
+        'div',
+        { className: 'card', style: { padding: 24, maxWidth: 720, margin: '32px auto' } },
+        React.createElement('h2', { style: { marginTop: 0 } }, 'Page render error'),
+        React.createElement(
+          'p',
+          { style: { color: 'var(--ink-mute)' } },
+          'This page hit a JavaScript error while rendering. The shell + sidebar still work — pick a different page or reload.',
+        ),
+        React.createElement(
+          'pre',
+          {
+            style: {
+              background: 'var(--surface-2)',
+              padding: 12,
+              borderRadius: 6,
+              fontSize: 11,
+              overflow: 'auto',
+              maxHeight: 240,
+            },
+          },
+          msg,
+        ),
+        React.createElement(
+          'div',
+          { style: { display: 'flex', gap: 8, marginTop: 12 } },
+          React.createElement(
+            'button',
+            {
+              className: 'btn primary',
+              onClick: () => this.setState({ error: null }),
+            },
+            'Retry render',
+          ),
+          React.createElement(
+            'button',
+            {
+              className: 'btn',
+              onClick: () => { window.location.hash = '#/overview'; this.setState({ error: null }); },
+            },
+            'Back to Overview',
+          ),
+          React.createElement(
+            'button',
+            {
+              className: 'btn',
+              onClick: () => window.location.reload(),
+            },
+            'Reload page',
+          ),
+        ),
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ============== App ==============
 function App() {
   // Resolve hash → route, applying redirects for renamed pages.
@@ -392,7 +483,9 @@ function App() {
     <div className="app density-compact">
       <TopBar />
       <Sidebar active={route} onNav={nav} />
-      <main className="content">{page}</main>
+      <main className="content">
+        <PageErrorBoundary route={route}>{page}</PageErrorBoundary>
+      </main>
       <StatusBar tick={tick} />
       <window.ToastContainer />
     </div>
