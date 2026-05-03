@@ -385,17 +385,85 @@ function useConfigVersionsApi(limit = 50) {
   return useApi(`/api/config/versions?limit=${limit}`, { intervalMs: 5000, fallback: null });
 }
 
+// FIX 2026-05-03: global fetch interceptor + central
+// CSRF-aware mutation helper. The interceptor catches the
+// session-expired CSRF reject (HTTP 403 + reason: "csrf_*")
+// from EVERY mutation call site (refactored or not), surfaces
+// a toast, and redirects to /admin/login after 1.5 s. Without
+// this, operators hit "Add failed: missing aegis_csrf cookie"
+// with no context + no way back to login.
+//
+// Install once at module load. Idempotent — repeated installs
+// (HMR / hot-reload) re-wrap our own wrapper, harmlessly.
+(function installCsrfFetchInterceptor() {
+  if (typeof window === 'undefined' || window.__aegisCsrfFetchInstalled) {
+    return;
+  }
+  window.__aegisCsrfFetchInstalled = true;
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const r = await _origFetch(...args);
+    if (r.status === 403 && !window.__aegisCsrfRedirecting) {
+      try {
+        const cloned = r.clone();
+        const body = await cloned.json();
+        if (typeof body?.reason === 'string' && body.reason.startsWith('csrf_')) {
+          window.__aegisCsrfRedirecting = true;
+          const toast = window.aegisToast
+            || ((m) => console.warn('[csrf]', m));
+          toast('Session expired — redirecting to login…', 'warn');
+          setTimeout(() => {
+            window.location.href = '/admin/login';
+          }, 1500);
+        }
+      } catch (_e) {
+        // Body wasn't JSON or already consumed; non-fatal.
+        // Caller still gets the original Response.
+      }
+    }
+    return r;
+  };
+})();
+
+// Central CSRF-aware mutation helper for new code.
+//
+// `body` is JSON-stringified when present; pass null for
+// methods like DELETE / no-body POST.
+async function csrfMutate(url, { method = 'POST', body = null } = {}) {
+  const csrf = document.cookie.split('; ')
+    .find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const headers = { 'x-csrf-token': csrf };
+  let init = { method, credentials: 'same-origin', headers };
+  if (body !== null && body !== undefined) {
+    headers['content-type'] = 'application/json';
+    init.body = typeof body === 'string' ? body : JSON.stringify(body);
+  }
+  const r = await fetch(url, init);
+  const parsed = await r.json().catch(() => ({}));
+  // Detect session-expired CSRF reject. The server returns
+  // reason: "csrf_missing_cookie" | "csrf_missing_header" |
+  // "csrf_mismatch" with HTTP 403 (see
+  // aegis_control::api::mutation::MutationError).
+  if (r.status === 403 && typeof parsed?.reason === 'string'
+      && parsed.reason.startsWith('csrf_')) {
+    if (typeof window !== 'undefined' && !window.__aegisCsrfRedirecting) {
+      window.__aegisCsrfRedirecting = true;
+      const toast = window.aegisToast || ((m) => console.warn(m));
+      toast('Session expired — redirecting to login…', 'warn');
+      setTimeout(() => {
+        window.location.href = '/admin/login';
+      }, 1500);
+    }
+  }
+  return { status: r.status, ...parsed };
+}
+
 // HACK-T4 rollback — POST /api/config/versions/{seq}/rollback.
 // Returns the dispatcher outcome (decision_action, before,
 // after) or an error object on 4xx/5xx.
 async function configRollback(seq) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch(`/api/config/versions/${encodeURIComponent(seq)}/rollback`, {
-    method: 'POST',
-    headers: { 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-  });
-  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+  return csrfMutate(`/api/config/versions/${encodeURIComponent(seq)}/rollback`,
+                    { method: 'POST' });
 }
 
 // HACK-T4 — actions the dashboard knows are rollback-able.
@@ -428,18 +496,10 @@ function useMtlsSansApi() {
   return useApi('/api/mtls/sans', { intervalMs: 15000, fallback: { allowed: [] } });
 }
 async function mtlsSansPut(allowed) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/api/mtls/sans', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-    body: JSON.stringify({ allowed }),
-  });
-  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+  return csrfMutate('/api/mtls/sans', { method: 'PUT', body: JSON.stringify({ allowed }) });
 }
 async function mtlsSansDelete(san) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch(`/api/mtls/sans/${encodeURIComponent(san)}`, {
+  return csrfMutate(`/api/mtls/sans/${encodeURIComponent(san)}`, {
     method: 'DELETE',
     headers: { 'x-csrf-token': csrf },
     credentials: 'same-origin',
@@ -447,13 +507,7 @@ async function mtlsSansDelete(san) {
   return { status: r.status, ...(await r.json().catch(() => ({}))) };
 }
 async function mtlsSansTest(san) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch(`/api/mtls/sans/${encodeURIComponent(san)}/test`, {
-    method: 'POST',
-    headers: { 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-  });
-  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+  return csrfMutate(`/api/mtls/sans/${encodeURIComponent(san)}/test`, { method: 'POST' });
 }
 
 // CQF-T2 — Blacklist + Whitelist add / delete. Audit-mutated;
@@ -461,23 +515,10 @@ async function mtlsSansTest(san) {
 // the AccessListEntry the Rust store deserialises:
 //   { id, kind: 'ip'|'cidr'|'asn', value, note, expires_at?, bypass: [] }
 async function accessListAdd(kind, entry) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch(`/api/${kind}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-    body: JSON.stringify(entry),
-  });
-  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+  return csrfMutate(`/api/${kind}`, { method: 'POST', body: JSON.stringify(entry) });
 }
 async function accessListDelete(kind, id) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch(`/api/${kind}/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    headers: { 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-  });
-  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+  return csrfMutate(`/api/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 // CQF-T1 — admin logout. POSTs /admin/logout with the CSRF
@@ -502,13 +543,7 @@ async function adminLogout() {
 // path).
 async function rulesSimulate(body) {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/api/rules/simulate', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-    body: JSON.stringify(body),
-  });
-  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+  const r = await fetch('/api/rules/simulate', { method: 'POST', body: JSON.stringify(body) });
 }
 
 // HACK-T1 — live hooks for PageAttackEvents. Each one is
@@ -590,14 +625,7 @@ function useDetectorsApi() {
   return useApi('/api/detectors', { intervalMs: 30000, fallback: null });
 }
 async function detectorsPut(body) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/api/detectors', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-    body: JSON.stringify(body),
-  });
-  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+  return csrfMutate('/api/detectors', { method: 'PUT', body: JSON.stringify(body) });
 }
 
 // Hook: cluster, slo, certs, alerts, gitops, upstreams (Tracking page)
@@ -620,8 +648,7 @@ function useGeoipStatusApi() { return useApi('/api/geoip/status',   { intervalMs
 // Phase-3 incident mutations (CSRF-double-submit, POST). Each
 // returns `{ ok, ... }` on success or throws on error.
 async function incidentAck(id, opts) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch(`/api/incidents/${encodeURIComponent(id)}/ack`, {
+  return csrfMutate(`/api/incidents/${encodeURIComponent(id)}/ack`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
     body: JSON.stringify(opts || {}),
@@ -670,11 +697,7 @@ function useUpstreamsConfigApi() {
 // pattern from rulesPut / settingsModePut.
 async function upstreamsConfigPut(pools) {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/api/upstreams/config', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-    body: JSON.stringify({ pools }),
+  const r = await fetch('/api/upstreams/config', { method: 'PUT', body: JSON.stringify({ pools }),
   });
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
@@ -717,9 +740,7 @@ async function adminDrainPost() {
   const r = await fetch('/admin/drain', {
     method: 'POST',
     headers: { 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-  });
-  return { status: r.status, ...(await r.json().catch(() => ({}))) };
+    credentials: 'same-origin' });
 }
 
 // DD-T6 — rule CRUD wrapper. Handles CSRF + error mapping.
