@@ -16,6 +16,7 @@ pub mod risk;
 pub mod sd;
 pub mod secrets;
 pub mod state;
+pub mod tcp_destination;
 pub mod tier;
 pub mod verbosity;
 

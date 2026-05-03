@@ -311,6 +311,33 @@ impl WafConfig {
                 )));
             }
         }
+        // TCP-T1 — every route resolving to a `scheme: tcp` pool
+        // must carry a non-empty `tcp_destination_allowlist`, and
+        // every entry must parse cleanly. Validation here
+        // (rather than at first request) gives operators a fast
+        // failure at boot rather than a 500 on first CONNECT.
+        for route in &self.routes {
+            let pool = self.upstreams.get(&route.upstream).expect("checked above");
+            if pool.connection.scheme != UpstreamScheme::Tcp {
+                continue;
+            }
+            if route.tcp_destination_allowlist.is_empty() {
+                return Err(crate::error::WafError::Config(format!(
+                    "route '{}' targets tcp pool '{}' but has empty tcp_destination_allowlist — \
+                     CONNECT tunnels would be rejected on every request. \
+                     Add at least one '<cidr>:<port-spec>' entry.",
+                    route.id, route.upstream,
+                )));
+            }
+            for entry in &route.tcp_destination_allowlist {
+                if let Err(e) = crate::tcp_destination::parse_rule(entry) {
+                    return Err(crate::error::WafError::Config(format!(
+                        "route '{}': {}",
+                        route.id, e,
+                    )));
+                }
+            }
+        }
         // Every pool must have at least one member.
         for (name, pool) in &self.upstreams {
             if pool.members.is_empty() {
@@ -533,6 +560,22 @@ pub struct RouteConfig {
     ///   `action` is `block`, `rule_id = mtls_required`.
     #[serde(default)]
     pub auth_required: Vec<String>,
+    /// TCP-T1 — destination allowlist for CONNECT-method tunnels.
+    /// Only consulted when this route's pool has
+    /// `scheme: tcp`. Empty (default) = closed: every CONNECT
+    /// attempt is rejected. Each entry parses as
+    /// `<cidr>:<port-spec>` (see
+    /// [`crate::tcp_destination::parse_rule`]). Hardcoded reject
+    /// of loopback / link-local / unspecified address space —
+    /// bypass via `AEGIS_TCP_TUNNEL_ALLOW_INTERNAL=1`.
+    #[serde(default)]
+    pub tcp_destination_allowlist: Vec<String>,
+    /// TCP-T2 — per-source-IP cap on concurrent open tunnels.
+    /// 0 = use the boot default (16). Tunnels are heavy (one
+    /// socket each direction + a copy task); a misbehaving
+    /// client otherwise drains FDs.
+    #[serde(default)]
+    pub max_concurrent_tunnels_per_ip: u32,
 }
 
 /// Per-route request/response quotas.
@@ -3113,5 +3156,108 @@ state: { backend: in_memory }
         let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
         cfg.validate().unwrap();
         assert_eq!(cfg.listeners.force_https.unwrap().status, 301);
+    }
+
+    // -----------------------------------------------------------
+    // TCP-T1 — `tcp_destination_allowlist` validation
+    // -----------------------------------------------------------
+
+    fn cfg_with_tcp_route(allowlist_yaml: &str) -> String {
+        // YAML fragment: a route → tcp pool, with the allowlist
+        // injected verbatim so each test can shape the field
+        // however it needs.
+        format!(
+            r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:8080" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+routes:
+  - id: tcp-tunnel
+    path: "/"
+    upstream: tcp-mesh
+{allowlist_yaml}
+upstreams:
+  tcp-mesh:
+    members: [{{ addr: "127.0.0.1:6379" }}]
+    connection: {{ scheme: tcp }}
+state: {{ backend: in_memory }}
+"#
+        )
+    }
+
+    #[test]
+    fn tcp_route_with_no_allowlist_is_rejected() {
+        let yaml = cfg_with_tcp_route("");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("empty tcp_destination_allowlist"),
+            "expected empty-allowlist message, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn tcp_route_with_valid_allowlist_validates_ok() {
+        let yaml = cfg_with_tcp_route(
+            r#"    tcp_destination_allowlist:
+      - "10.0.0.0/8:6379"
+      - "192.168.1.0/24:443"
+"#,
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().expect("valid config");
+    }
+
+    #[test]
+    fn tcp_route_with_garbage_allowlist_entry_is_rejected() {
+        let yaml = cfg_with_tcp_route(
+            r#"    tcp_destination_allowlist:
+      - "10.0.0.0/8:6379"
+      - "not a real entry"
+"#,
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("route 'tcp-tunnel'"), "got {msg}");
+        assert!(
+            msg.contains("missing ':<port-spec>'") || msg.contains("bad cidr"),
+            "expected parse-error message, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn tcp_route_with_loopback_entry_is_rejected_via_internal_gate() {
+        let yaml = cfg_with_tcp_route(
+            r#"    tcp_destination_allowlist:
+      - "127.0.0.0/8:*"
+"#,
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("internal-only"),
+            "expected internal-only reject, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn non_tcp_route_skips_allowlist_validation() {
+        // HTTP route (default scheme=auto) without an allowlist
+        // — fine, the validation only fires on tcp pools.
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:8080" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: default }
+upstreams:
+  default: { members: [{ addr: "127.0.0.1:8081" }] }
+state: { backend: in_memory }
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().expect("non-tcp route should validate without allowlist");
     }
 }
