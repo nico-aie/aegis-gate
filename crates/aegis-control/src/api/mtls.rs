@@ -320,6 +320,7 @@ state: { backend: in_memory }
             hsts: None,
             acme: None,
             client_auth: Some(ca),
+            advertise_h3: None,
         });
         cfg
     }

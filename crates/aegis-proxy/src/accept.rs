@@ -767,6 +767,11 @@ pub(crate) async fn accept_loop(
     bus: AuditBus,
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
     tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
+    // B5 carry-over — when `Some(port)` AND this listener serves
+    // TLS (`tls_acceptor.is_some()`), every data-plane response
+    // is stamped with an `Alt-Svc:` header advertising the
+    // supplied UDP port for HTTP/3. `None` emits nothing.
+    advertise_h3_port: Option<u16>,
     interop: Option<Arc<aegis_control::interop::InteropRuntime>>,
     // PROM-T1 — per-decision counter; recorded once per request
     // after `handle_data_request` returns its DecisionTag.
@@ -913,6 +918,26 @@ pub(crate) async fn accept_loop(
                     // `waf_requests_total{action}` per request.
                     // Cost: ~30 ns (label lookup + atomic inc).
                     decision_metrics.record(decision.action);
+                    // B5 carry-over — Alt-Svc auto-stamp on every
+                    // TLS-served response when an h3 advertise port
+                    // was configured. Capable browsers cache the
+                    // hint for 24 h and switch subsequent requests
+                    // to QUIC. Idempotent: skips if the data plane
+                    // already added the header.
+                    let mut resp = resp;
+                    if let Some(port) = advertise_h3_port {
+                        if !resp.headers().contains_key(crate::listener::http3::ALT_SVC_HEADER) {
+                            if let Ok(v) = hyper::header::HeaderValue::from_str(
+                                &crate::listener::http3::default_alt_svc(port),
+                            ) {
+                                resp.headers_mut().insert(
+                                    crate::listener::http3::ALT_SVC_HEADER,
+                                    v,
+                                );
+                            }
+                        }
+                    }
+                    let resp = resp;
                     // OTEL-T3 note: action is recorded on the
                     // request span from inside handle_data_request
                     // (the span is only active during that

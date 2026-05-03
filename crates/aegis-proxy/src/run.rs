@@ -651,6 +651,14 @@ pub async fn run(
         let bus = bus.clone();
         let upstream_ctx_l = upstream_ctx.clone();
         let acceptor = if listener_tls { tls_acceptor.clone() } else { None };
+        // B5 — Alt-Svc auto-stamp only on TLS listeners. Plain
+        // HTTP listeners never advertise h3 (UA may follow it
+        // and downgrade-misroute).
+        let advertise_h3_port = if listener_tls {
+            cfg.tls.as_ref().and_then(|t| t.advertise_h3)
+        } else {
+            None
+        };
         let interop_l = interop_runtime.clone();
         let decision_metrics_l = decision_metrics.clone();
         let detector_hit_metrics_l = detector_hit_metrics.clone();
@@ -669,6 +677,7 @@ pub async fn run(
             bus,
             upstream_ctx_l,
             acceptor,
+            advertise_h3_port,
             interop_l,
             decision_metrics_l,
             detector_hit_metrics_l,

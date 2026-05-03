@@ -924,6 +924,19 @@ pub struct TlsConfig {
     /// `WebPkiClientVerifier` path; see [`ClientAuthConfig`].
     #[serde(default)]
     pub client_auth: Option<ClientAuthConfig>,
+    /// B5 carry-over — when set, every TLS-served data-plane
+    /// response is stamped with an `Alt-Svc:` header
+    /// advertising the supplied UDP port for HTTP/3. Capable
+    /// browsers will switch to QUIC for subsequent requests
+    /// (cached for 24h by default). `None` (default) emits
+    /// nothing — clients keep the original protocol.
+    ///
+    /// Only meaningful when an HTTP/3 listener is also
+    /// configured (cargo `http3` feature). Set to `Some(443)`
+    /// in front-door deployments where the QUIC listener
+    /// is bound to the public 443/UDP.
+    #[serde(default)]
+    pub advertise_h3: Option<u16>,
 }
 
 /// MTLS-T1 — server-side mTLS client-cert verification settings.

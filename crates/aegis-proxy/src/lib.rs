@@ -178,6 +178,7 @@ state:
             bus,
             upstream_ctx,
             None, // no tls_acceptor in this plain-http test
+            None, // no Alt-Svc advertise_h3 port in this test
             None, // no interop runtime in this plain-http test
             std::sync::Arc::new(
                 aegis_control::metrics::decisions::DecisionMetrics::register(&metrics_reg)
@@ -294,6 +295,7 @@ state:
             bus,
             upstream_ctx,
             None,
+            None, // no Alt-Svc advertise_h3 port in this test
             None,
             std::sync::Arc::new(
                 aegis_control::metrics::decisions::DecisionMetrics::register(&metrics_reg)
