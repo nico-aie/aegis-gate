@@ -66,6 +66,16 @@ pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
     "detector_mask_set",
     "verbosity_set",
     "loadmode_set",
+    // v6 — rule CRUD. Each captures full `{id, body, enabled}`
+    // in the audit event's `before` field, so re-apply is
+    // straightforward (delete-on-create / upsert-on-delete /
+    // upsert-on-update). `rule_toggle` reads the current
+    // `body` from the live store and re-upserts with the
+    // before-toggle `enabled` value.
+    "rule_create",
+    "rule_update",
+    "rule_delete",
+    "rule_toggle",
 ];
 
 /// Live state stores the rollback dispatcher needs to apply the
@@ -86,6 +96,11 @@ pub struct RollbackTargets<'a> {
     pub detector_mask: Option<&'a aegis_security::detectors::SharedDetectorMask>,
     pub verbosity: Option<&'a aegis_core::SharedVerbosity>,
     pub load_gauge: Option<&'a aegis_core::LoadGauge>,
+    /// v6 — live rule store for `rule_{create,update,delete,toggle}`
+    /// rollback. None for tests / older deployments; the dispatcher
+    /// returns `ApplyFailed` with a clear message when the action
+    /// requires this store and it's absent.
+    pub rules: Option<&'a crate::api::rules::RuleStore>,
 }
 
 impl<'a> RollbackTargets<'a> {
@@ -100,6 +115,7 @@ impl<'a> RollbackTargets<'a> {
             detector_mask: None,
             verbosity: None,
             load_gauge: None,
+            rules: None,
         }
     }
 }
@@ -192,9 +208,128 @@ pub fn rollback_for_seq(
         }
         "verbosity_set" => apply_verbosity_rollback(seq, &event, targets.verbosity),
         "loadmode_set" => apply_loadmode_rollback(seq, &event, targets.load_gauge),
+        "rule_create" | "rule_update" | "rule_delete" | "rule_toggle" => {
+            apply_rule_rollback(seq, &event, targets.rules)
+        }
         // Future cases land here. The const ROLLBACKABLE_ACTIONS
         // gate keeps this match aligned.
         other => Err(RollbackError::NotRollbackable(other.to_string())),
+    }
+}
+
+/// v6 — rules CRUD rollback. Each rule action captures the full
+/// `{id, body, enabled}` in the audit event's `fields.diff.before`
+/// (or `fields.diff.after` is null for create/delete; we read
+/// from before for the inverse).
+///
+/// | Original action | `before` shape          | Inverse                      |
+/// |-----------------|-------------------------|------------------------------|
+/// | rule_create     | null                    | `delete(id)`                 |
+/// | rule_update     | {id, body, enabled}     | `upsert(before)`             |
+/// | rule_delete     | {id, body, enabled}     | `upsert(before)`             |
+/// | rule_toggle     | {id, enabled}           | read live body + `upsert`    |
+fn apply_rule_rollback(
+    seq: u64,
+    event: &AuditEvent,
+    rules: Option<&crate::api::rules::RuleStore>,
+) -> Result<RollbackOutcome, RollbackError> {
+    let store = rules.ok_or_else(|| {
+        RollbackError::ApplyFailed(format!(
+            "{} rollback unavailable: no rules store wired",
+            event.action,
+        ))
+    })?;
+
+    let diff = event
+        .fields
+        .get("diff")
+        .ok_or_else(|| RollbackError::MissingBefore("diff".into()))?;
+    let before = diff.get("before").cloned().unwrap_or(serde_json::Value::Null);
+    let after = diff.get("after").cloned().unwrap_or(serde_json::Value::Null);
+
+    match event.action.as_str() {
+        "rule_create" => {
+            // Inverse: delete the rule that the original create added.
+            let id = after
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RollbackError::MissingBefore("after.id".into()))?;
+            let live_before = store.get(id).map(|r| {
+                serde_json::json!({"id": r.id, "body": r.body, "enabled": r.enabled})
+            });
+            store.delete(id);
+            Ok(RollbackOutcome {
+                rolled_back_to_seq: seq,
+                action: event.action.clone(),
+                before: serde_json::Value::Null,
+                after: live_before.unwrap_or(serde_json::Value::Null),
+            })
+        }
+        "rule_update" | "rule_delete" => {
+            // Inverse: re-upsert the prior version.
+            let id = before
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RollbackError::MissingBefore("before.id".into()))?;
+            let body = before
+                .get("body")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RollbackError::MissingBefore("before.body".into()))?;
+            let enabled = before
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let live_before = store.get(id).map(|r| {
+                serde_json::json!({"id": r.id, "body": r.body, "enabled": r.enabled})
+            });
+            let v = store.upsert(id, body, enabled);
+            if !v.ok {
+                return Err(RollbackError::ApplyFailed(format!(
+                    "rule re-validation failed: {}",
+                    v.errors
+                        .first()
+                        .map(|m| format!("line {}: {}", m.line, m.message))
+                        .unwrap_or_else(|| "unknown".into()),
+                )));
+            }
+            Ok(RollbackOutcome {
+                rolled_back_to_seq: seq,
+                action: event.action.clone(),
+                before: serde_json::json!({"id": id, "body": body, "enabled": enabled}),
+                after: live_before.unwrap_or(serde_json::Value::Null),
+            })
+        }
+        "rule_toggle" => {
+            // The toggle audit event captures only `{id, enabled}`
+            // (body unchanged). Read live body from the store and
+            // re-upsert with the prior enabled value.
+            let id = before
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| RollbackError::MissingBefore("before.id".into()))?;
+            let prior_enabled = before
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| RollbackError::MissingBefore("before.enabled".into()))?;
+            let live = store.get(id).ok_or_else(|| {
+                RollbackError::ApplyFailed(format!(
+                    "rule_toggle rollback: rule `{id}` no longer exists in the store",
+                ))
+            })?;
+            let live_before = serde_json::json!({"id": live.id, "enabled": live.enabled});
+            let _ = store.upsert(id, &live.body, prior_enabled);
+            Ok(RollbackOutcome {
+                rolled_back_to_seq: seq,
+                action: event.action.clone(),
+                before: serde_json::json!({"id": id, "enabled": prior_enabled}),
+                after: live_before,
+            })
+        }
+        // The match arm in `rollback_for_seq` is exhaustive for
+        // these four — anything else is a programmer error.
+        other => Err(RollbackError::ApplyFailed(format!(
+            "apply_rule_rollback called with non-rule action `{other}`",
+        ))),
     }
 }
 
@@ -917,6 +1052,7 @@ mod tests {
             allowed_sans: None, blacklist: None, whitelist: None,
             detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -960,6 +1096,7 @@ mod tests {
             allowed_sans: None, blacklist: None, whitelist: None,
             detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
         match err {
@@ -1016,6 +1153,7 @@ mod tests {
             allowed_sans: Some(&sans),
             blacklist: None, whitelist: None, detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -1054,6 +1192,7 @@ mod tests {
             allowed_sans: Some(&sans),
             blacklist: None, whitelist: None, detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
 
@@ -1151,6 +1290,7 @@ mod tests {
             whitelist: None,
             detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "blacklist_add");
@@ -1175,6 +1315,7 @@ mod tests {
             whitelist: None,
             detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "blacklist_remove");
@@ -1208,6 +1349,7 @@ mod tests {
             whitelist: Some(&whitelist),
             detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "whitelist_add");
@@ -1253,6 +1395,7 @@ mod tests {
             whitelist: None,
             detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.before["already_gone"], true);
@@ -1270,6 +1413,7 @@ mod tests {
             allowed_sans: Some(&sans),
             blacklist: None, whitelist: None, detector_mask: None,
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert!(outcome.before["allowed"].as_array().unwrap().is_empty());
@@ -1334,6 +1478,7 @@ mod tests {
             blacklist: None, whitelist: None,
             detector_mask: Some(&mask),
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "detector_mask_set");
@@ -1372,6 +1517,7 @@ mod tests {
             blacklist: None, whitelist: None,
             detector_mask: Some(&mask),
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "detector_mask_set");
@@ -1422,6 +1568,7 @@ mod tests {
             blacklist: None, whitelist: None,
             detector_mask: Some(&mask),
             verbosity: None, load_gauge: None,
+            rules: None,
         };
         let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
         match err {
@@ -1469,6 +1616,7 @@ mod tests {
             mode_store: &mode, risk: None, allowed_sans: None,
             blacklist: None, whitelist: None, detector_mask: None,
             verbosity: Some(&v), load_gauge: None,
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "verbosity_set");
@@ -1487,6 +1635,7 @@ mod tests {
             mode_store: &mode, risk: None, allowed_sans: None,
             blacklist: None, whitelist: None, detector_mask: None,
             verbosity: Some(&v), load_gauge: None,
+            rules: None,
         };
         let err = rollback_for_seq(&ring, seq, &targets).unwrap_err();
         match err {
@@ -1578,6 +1727,7 @@ mod tests {
             mode_store: &mode, risk: None, allowed_sans: None,
             blacklist: None, whitelist: None, detector_mask: None,
             verbosity: None, load_gauge: Some(&g),
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.action, "loadmode_set");
@@ -1599,6 +1749,7 @@ mod tests {
             mode_store: &mode, risk: None, allowed_sans: None,
             blacklist: None, whitelist: None, detector_mask: None,
             verbosity: None, load_gauge: Some(&g),
+            rules: None,
         };
         let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
         assert_eq!(outcome.before["override_active"], false);
@@ -1616,6 +1767,140 @@ mod tests {
         match err {
             RollbackError::ApplyFailed(msg) => {
                 assert!(msg.contains("load_gauge not wired"), "got: {msg}");
+            }
+            other => panic!("expected ApplyFailed, got {other:?}"),
+        }
+    }
+
+    // ============== v6 rule rollback tests ==============
+
+    fn rule_event(action: &str, before: serde_json::Value, after: serde_json::Value) -> AuditEvent {
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "test".into(),
+            class: AuditClass::Admin,
+            tenant_id: None,
+            tier: None,
+            action: action.into(),
+            reason: format!("test {action}"),
+            client_ip: "1.1.1.1".into(),
+            route_id: None,
+            rule_id: None,
+            risk_score: None,
+            fields: serde_json::json!({"diff": {"before": before, "after": after}}),
+        }
+    }
+
+    #[test]
+    fn rule_create_rollback_deletes_the_rule() {
+        let ring = Arc::new(AuditRing::new());
+        let store = crate::api::rules::RuleStore::new();
+        // Simulate the live state after a rule_create.
+        store.upsert("custom-1", "match path == \"/admin\"", true);
+        let seq = ring.record(rule_event(
+            "rule_create",
+            serde_json::Value::Null,
+            serde_json::json!({"id": "custom-1", "body": "match path == \"/admin\"", "enabled": true}),
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: None, rules: Some(&store),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "rule_create");
+        assert!(store.get("custom-1").is_none());
+    }
+
+    #[test]
+    fn rule_delete_rollback_restores_the_rule() {
+        let ring = Arc::new(AuditRing::new());
+        let store = crate::api::rules::RuleStore::new();
+        // Simulate live state after rule_delete: rule is gone.
+        let seq = ring.record(rule_event(
+            "rule_delete",
+            serde_json::json!({"id": "deleted-1", "body": "match path == \"/x\"", "enabled": true}),
+            serde_json::Value::Null,
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: None, rules: Some(&store),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "rule_delete");
+        let restored = store.get("deleted-1").expect("rule should be restored");
+        assert_eq!(restored.body, "match path == \"/x\"");
+        assert!(restored.enabled);
+    }
+
+    #[test]
+    fn rule_update_rollback_reapplies_prior_body() {
+        let ring = Arc::new(AuditRing::new());
+        let store = crate::api::rules::RuleStore::new();
+        store.upsert("r1", "match path == \"/new\"", false);
+        let seq = ring.record(rule_event(
+            "rule_update",
+            serde_json::json!({"id": "r1", "body": "match path == \"/old\"", "enabled": true}),
+            serde_json::json!({"id": "r1", "body": "match path == \"/new\"", "enabled": false}),
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: None, rules: Some(&store),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "rule_update");
+        let now = store.get("r1").unwrap();
+        assert_eq!(now.body, "match path == \"/old\"");
+        assert!(now.enabled);
+    }
+
+    #[test]
+    fn rule_toggle_rollback_flips_enabled_back() {
+        let ring = Arc::new(AuditRing::new());
+        let store = crate::api::rules::RuleStore::new();
+        // Live state after a toggle: enabled=true (was false).
+        store.upsert("r1", "match path == \"/login\"", true);
+        let seq = ring.record(rule_event(
+            "rule_toggle",
+            serde_json::json!({"id": "r1", "enabled": false}),
+            serde_json::json!({"id": "r1", "enabled": true}),
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let targets = RollbackTargets {
+            mode_store: &mode, risk: None, allowed_sans: None,
+            blacklist: None, whitelist: None, detector_mask: None,
+            verbosity: None, load_gauge: None, rules: Some(&store),
+        };
+        let outcome = rollback_for_seq(&ring, seq, &targets).unwrap();
+        assert_eq!(outcome.action, "rule_toggle");
+        let now = store.get("r1").unwrap();
+        assert!(!now.enabled);
+        // Body must be preserved — the toggle audit event didn't
+        // capture body, so the rollback reads it from live.
+        assert_eq!(now.body, "match path == \"/login\"");
+    }
+
+    #[test]
+    fn rule_rollback_without_store_fails() {
+        let ring = Arc::new(AuditRing::new());
+        let seq = ring.record(rule_event(
+            "rule_create",
+            serde_json::Value::Null,
+            serde_json::json!({"id": "x", "body": "match true", "enabled": true}),
+        ));
+        let mode = ModeStore::new(Mode::Enforce);
+        let err = rollback_for_seq(
+            &ring, seq, &RollbackTargets::mode_only(&mode),
+        ).unwrap_err();
+        match err {
+            RollbackError::ApplyFailed(msg) => {
+                assert!(msg.contains("rules store"), "got: {msg}");
             }
             other => panic!("expected ApplyFailed, got {other:?}"),
         }

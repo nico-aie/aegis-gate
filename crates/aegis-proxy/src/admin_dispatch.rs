@@ -349,6 +349,7 @@ async fn handle_rollback(
         detector_mask: Some(&services.detector_mask),
         verbosity: Some(&services.verbosity),
         load_gauge: Some(&services.load_gauge),
+        rules: Some(&services.rules),
     };
 
     match rollback_for_seq(&services.audit_ring, seq, &targets) {
