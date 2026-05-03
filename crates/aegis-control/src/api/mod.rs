@@ -10,6 +10,7 @@ pub mod config_versions;
 pub mod detectors;
 pub mod detectors_persist;
 pub mod filters;
+pub mod incidents;
 pub mod load_mode;
 pub mod logging;
 pub mod login;

@@ -170,6 +170,11 @@ pub struct DashboardServices {
     /// `{stages: {}}` body.
     pub request_stage_hist:
         Option<std::sync::Arc<crate::metrics::request_duration::RequestStageHistogram>>,
+    /// Phase-3 incident overlay — operator ack/snooze/resolve
+    /// state on top of the SLO engine's firing alerts. Always
+    /// present; the tracker starts empty and grows as operators
+    /// interact with the Incidents page.
+    pub incidents: std::sync::Arc<crate::api::incidents::IncidentTracker>,
     /// HACK-T3 — shared detector list for the `/api/rules/simulate`
     /// preview endpoint (Tier-A bonus). Same `Vec<Box<dyn Detector>>`
     /// the data-plane `accept_loop` runs, so the simulator and live
@@ -418,6 +423,11 @@ impl DashboardServices {
                 // `RequestStageHistogram` is registered. Tests
                 // don't drive real requests so this stays None.
                 request_stage_hist: None,
+                // Phase-3 incident overlay — empty at boot, fills
+                // as operators ack/snooze/resolve via the dashboard.
+                incidents: std::sync::Arc::new(
+                    crate::api::incidents::IncidentTracker::new(),
+                ),
                 // HACK-T3 — wired by the proxy boot path. Until then
                 // `/api/rules/simulate` returns 503.
                 detectors: None,

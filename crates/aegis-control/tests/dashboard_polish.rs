@@ -109,9 +109,12 @@ fn bundle_under_documented_budget() {
 #[test]
 fn app_js_under_per_bundle_budget() {
     // The pre-compiled app.js holds every page + every widget. Cap
-    // at 256 KB to catch accidental dependency bloat — the v1
-    // bundle is ~158 KB.
-    const APP_JS_BUDGET: usize = 256_000;
+    // at 320 KB to catch accidental dependency bloat — v1 was ~158 KB,
+    // post-Phase-3 (Investigation pivot, Incidents queue with
+    // ack/snooze/resolve, Threat Intel, Compliance, Reports CSV) is
+    // ~263 KB. Real dependency growth (new React lib, etc.) needs
+    // an explicit budget bump + comment here, not a silent overrun.
+    const APP_JS_BUDGET: usize = 320_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,

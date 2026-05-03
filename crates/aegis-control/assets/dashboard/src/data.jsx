@@ -607,6 +607,45 @@ function useSloApi()      { return useApi('/api/slo',             { intervalMs: 
 function useCertsApi()    { return useApi('/api/certs',           { intervalMs: 30000, fallback: null }); }
 function useLatencyApi()  { return useApi('/api/analytics/latency',{ intervalMs: 5000, fallback: null }); }
 function useAnalyticsRoutesApi() { return useApi('/api/analytics/routes',{ intervalMs: 10000, fallback: null }); }
+function useIncidentsApi(){ return useApi('/api/incidents',         { intervalMs: 5000, fallback: null }); }
+function useThreatIntelFeedsApi() { return useApi('/api/threat-intel/feeds', { intervalMs: 30000, fallback: null }); }
+function useGeoipStatusApi() { return useApi('/api/geoip/status',   { intervalMs: 60000, fallback: null }); }
+
+// Phase-3 incident mutations (CSRF-double-submit, POST). Each
+// returns `{ ok, ... }` on success or throws on error.
+async function incidentAck(id, opts) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/incidents/${encodeURIComponent(id)}/ack`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify(opts || {}),
+    credentials: 'same-origin',
+  });
+  if (!r.ok) throw new Error(`ack failed: ${r.status}`);
+  return r.json();
+}
+async function incidentSnooze(id, minutes, note) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/incidents/${encodeURIComponent(id)}/snooze`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify({ minutes, note }),
+    credentials: 'same-origin',
+  });
+  if (!r.ok) throw new Error(`snooze failed: ${r.status}`);
+  return r.json();
+}
+async function incidentResolve(id, note) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/incidents/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify({ note }),
+    credentials: 'same-origin',
+  });
+  if (!r.ok) throw new Error(`resolve failed: ${r.status}`);
+  return r.json();
+}
 function useAlertsApi()   { return useApi('/api/alerts',          { intervalMs: 5000, fallback: null }); }
 function useGitopsApi()   { return useApi('/api/gitops/status',   { intervalMs: 30000, fallback: null }); }
 // HACK-T1 — empty list rather than seeded fixture.
@@ -839,7 +878,10 @@ Object.assign(window, {
   // HACK-T4 — Tier-B config-change timeline + rollback
   useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
-  useClusterApi, useSloApi, useCertsApi, useLatencyApi, useAnalyticsRoutesApi, useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
+  useClusterApi, useSloApi, useCertsApi, useLatencyApi, useAnalyticsRoutesApi,
+  useIncidentsApi, useThreatIntelFeedsApi, useGeoipStatusApi,
+  incidentAck, incidentSnooze, incidentResolve,
+  useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,
   // SC-T2 — Scaling page hooks + drain mutation
   useStateApi, adminDrainPost,
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers

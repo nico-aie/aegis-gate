@@ -4907,36 +4907,167 @@ function StubPage({ title, subtitle, children, eta }) {
 
 function PageIncidents() {
   const alerts = window.useAlertsApi ? window.useAlertsApi() : { data: null };
-  const active = alerts.data?.alerts || alerts.data?.firing || [];
+  const incidents = window.useIncidentsApi ? window.useIncidentsApi() : { data: null };
+  const [busy, setBusy] = useStateP(null); // alert id currently mutating
+  const [filter, setFilter] = useStateP('open'); // open | snoozed | resolved | all
+
+  // Compose: prefer the enriched /api/incidents view; fall back
+  // to /api/alerts when the engine isn't wired yet (test builds).
+  const overlay = incidents.data?.incidents || [];
+  const overlayById = new Map(overlay.map(i => [i.id, i]));
+  const rawAlerts = alerts.data?.alerts || alerts.data?.firing || incidents.data?.raw_alerts?.alerts || [];
+
+  // Derive a unified "incident list" from raw alerts + overlay.
+  const merged = (Array.isArray(rawAlerts) ? rawAlerts : []).map(a => {
+    const id = a.id || `${a.sli || a.kind}:${a.fired_at ? Date.parse(a.fired_at) / 1000 | 0 : 0}`;
+    const o = overlayById.get(id);
+    return {
+      id,
+      sli: a.sli || a.kind || 'unknown',
+      severity: (a.severity || 'warn').toLowerCase(),
+      fired_at: a.fired_at,
+      burn_rate: a.burn_rate,
+      budget_consumed_pct: a.budget_consumed_pct,
+      window_hours: a.window_hours,
+      runbook_url: a.runbook_url,
+      status: o?.status || 'firing',
+      acked_at: o?.acked_at,
+      acked_by: o?.acked_by,
+      snoozed_until: o?.snoozed_until,
+      note: o?.note,
+    };
+  });
+
+  const counts = merged.reduce((acc, m) => ({ ...acc, [m.status]: (acc[m.status] || 0) + 1 }), {});
+  const filtered = merged.filter(m => {
+    if (filter === 'all') return true;
+    if (filter === 'open') return m.status === 'firing' || m.status === 'acknowledged';
+    return m.status === filter;
+  });
+
+  async function doAct(action, id) {
+    setBusy(id);
+    try {
+      if (action === 'ack')      await window.incidentAck(id, { note: '' });
+      if (action === 'snooze')   await window.incidentSnooze(id, 15, '');
+      if (action === 'resolve')  await window.incidentResolve(id, '');
+      if (incidents.reload) incidents.reload();
+      if (alerts.reload) alerts.reload();
+    } catch (e) {
+      window.toast && window.toast(`${action} failed: ${e.message}`, 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function fmtRel(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    const ago = (Date.now() - d.getTime()) / 1000;
+    if (ago < 60) return `${Math.floor(ago)}s ago`;
+    if (ago < 3600) return `${Math.floor(ago / 60)}m ago`;
+    if (ago < 86400) return `${Math.floor(ago / 3600)}h ago`;
+    return `${Math.floor(ago / 86400)}d ago`;
+  }
+
   return (
-    <StubPage
-      title="Incidents"
-      subtitle="Open alerts · MTTR clock · ack / snooze / escalate"
-      eta="Triage queue with SLA timestamps + alert-rule builder land in Phase 3."
-    >
-      <div className="card">
-        <window.SectionHeader title="Active alerts" sub={`${active.length} firing · from /api/alerts`} />
-        {active.length === 0 ? (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Incidents</h1>
+          <p className="page-subtitle">SLO alerts with operator overlay · ack / snooze / resolve · audit-chained mutations</p>
+        </div>
+      </div>
+
+      <div className="grid-12" style={{ marginBottom: 12 }}>
+        {[
+          { k: 'firing',       label: 'Firing',       tone: 'down' },
+          { k: 'acknowledged', label: 'Acknowledged', tone: 'warn' },
+          { k: 'snoozed',      label: 'Snoozed',      tone: 'info' },
+          { k: 'resolved',     label: 'Resolved',     tone: 'up'   },
+        ].map(b => (
+          <div key={b.k} className="col-3 card" style={{ padding: 12 }}>
+            <div className="card-title">{b.label}</div>
+            <div className="num" style={{ fontSize: 24 }}>
+              <span className={`pill ${b.tone}`}>{counts[b.k] || 0}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <window.SectionHeader
+          title="Incident queue"
+          sub={`${filtered.length} of ${merged.length} · ${filter} filter`}
+        />
+        <div style={{ display: 'flex', gap: 4, padding: '0 12px 8px' }}>
+          {['open', 'firing', 'acknowledged', 'snoozed', 'resolved', 'all'].map(f => (
+            <button
+              key={f}
+              className={`btn ${filter === f ? 'primary' : ''}`}
+              onClick={() => setFilter(f)}
+            >{f}</button>
+          ))}
+        </div>
+        {filtered.length === 0 ? (
           <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
-            No alerts firing. <a href="#/health" style={{ color: 'var(--accent)' }}>Health & SLOs</a> shows SLO-burn pressure.
+            No incidents in this view.{' '}
+            <a href="#/health" style={{ color: 'var(--accent)' }}>Health &amp; SLOs</a> shows current burn pressure.
           </div>
         ) : (
           <table className="tbl tbl-compact">
-            <thead><tr><th>Severity</th><th>Title</th><th>Started</th><th>Receiver</th></tr></thead>
+            <thead><tr>
+              <th>Status</th>
+              <th>Severity</th>
+              <th>SLI</th>
+              <th>Fired</th>
+              <th>Budget</th>
+              <th>Acked by</th>
+              <th>Note</th>
+              <th style={{ textAlign: 'right' }}>Actions</th>
+            </tr></thead>
             <tbody>
-              {active.map((a, i) => (
-                <tr key={a.id || i}>
-                  <td><span className={`pill ${a.severity === 'critical' ? 'down' : 'warn'}`}>{a.severity || 'warn'}</span></td>
-                  <td>{a.title || a.name || '—'}</td>
-                  <td>{a.started_at ? new Date(a.started_at).toLocaleString() : '—'}</td>
-                  <td>{a.receiver || '—'}</td>
+              {filtered.map(m => (
+                <tr key={m.id} style={m.status === 'snoozed' ? { opacity: 0.6 } : undefined}>
+                  <td>
+                    <span className={`pill ${m.status === 'firing' ? 'down' : m.status === 'acknowledged' ? 'warn' : m.status === 'snoozed' ? 'info' : 'up'}`}>
+                      {m.status}
+                    </span>
+                  </td>
+                  <td><span className={`pill ${m.severity === 'critical' ? 'down' : 'warn'}`}>{m.severity}</span></td>
+                  <td><code style={{ fontSize: 11 }}>{m.sli}</code></td>
+                  <td title={m.fired_at}>{fmtRel(m.fired_at)}</td>
+                  <td className="num">{m.budget_consumed_pct ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}</td>
+                  <td>{m.acked_by || '—'} {m.acked_at && <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>· {fmtRel(m.acked_at)}</span>}</td>
+                  <td style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{m.note || '—'}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {m.status === 'firing' && (
+                      <button className="btn sm" disabled={busy === m.id} onClick={() => doAct('ack', m.id)}>Ack</button>
+                    )}
+                    {(m.status === 'firing' || m.status === 'acknowledged') && (
+                      <button className="btn sm" disabled={busy === m.id} onClick={() => doAct('snooze', m.id)} style={{ marginLeft: 4 }}>Snooze 15m</button>
+                    )}
+                    {m.status !== 'resolved' && (
+                      <button className="btn sm primary" disabled={busy === m.id} onClick={() => doAct('resolve', m.id)} style={{ marginLeft: 4 }}>Resolve</button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
-    </StubPage>
+
+      <div className="card" style={{ padding: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.I.Info />
+        <span>
+          Acks/snoozes/resolves are CSRF-gated POSTs that go through
+          the audit chain — every action lands in <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail</a>.
+          Alert rules (when to fire) are still YAML-config; in-place
+          rule editor lands in Phase 4.
+        </span>
+      </div>
+    </>
   );
 }
 
@@ -5176,18 +5307,92 @@ function PageInvestigation() {
 
 function PageThreatIntel() {
   const ti = window.useApi ? window.useApi('/api/threat-intel/hits', { intervalMs: 30000, fallback: null }) : { data: null };
+  const feeds = window.useThreatIntelFeedsApi ? window.useThreatIntelFeedsApi() : { data: null };
+  const geo = window.useGeoipStatusApi ? window.useGeoipStatusApi() : { data: null };
   const hits = ti.data?.hits || [];
+  const feedList = feeds.data?.feeds || [];
+
   return (
-    <StubPage
-      title="Threat Intel"
-      subtitle="TAXII feeds · GeoIP DB · STIX bundles · MISP feeds — health + recent matches"
-      eta="Feed-management UI (add/remove without YAML edit) lands in Phase 3. Today's view: recent indicator hits."
-    >
-      <div className="card">
-        <window.SectionHeader title="Recent indicator hits" sub={`${hits.length} hits in current window`} />
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Threat Intel</h1>
+          <p className="page-subtitle">TAXII / MISP feeds · GeoIP DB · recent indicator matches</p>
+        </div>
+      </div>
+
+      <div className="grid-12" style={{ marginBottom: 12 }}>
+        <div className="col-4 card" style={{ padding: 12 }}>
+          <div className="card-title">Configured feeds</div>
+          <div className="num" style={{ fontSize: 24 }}>{feedList.length}</div>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+            {feeds.data?.configured_in_yaml ? 'from YAML' : 'no feeds configured'}
+          </div>
+        </div>
+        <div className="col-4 card" style={{ padding: 12 }}>
+          <div className="card-title">Recent matches</div>
+          <div className="num" style={{ fontSize: 24 }}>{hits.length}</div>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>indicator hits in current window</div>
+        </div>
+        <div className="col-4 card" style={{ padding: 12 }}>
+          <div className="card-title">GeoIP DB</div>
+          <div style={{ fontSize: 18 }}>
+            {geo.data?.db_loaded ? (
+              <span className="pill ok">loaded</span>
+            ) : geo.data?.feature_built ? (
+              <span className="pill warn">no .mmdb</span>
+            ) : (
+              <span className="pill" style={{ opacity: 0.5 }}>feature off</span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+            {geo.data?.feature_built
+              ? geo.data?.db_loaded ? `${geo.data?.indicator_count?.toLocaleString() || 0} indicators` : 'set geoip.path in config'
+              : 'rebuild with FEATURES="redis geoip"'}
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <window.SectionHeader title="Configured feeds" sub="from cfg.threat_intel.feeds" />
+        {feedList.length === 0 ? (
+          <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
+            No threat-intel feeds configured. Add to <code>config/*.yaml</code>:
+            <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8, textAlign: 'left', fontSize: 11 }}>
+{`threat_intel:
+  feeds:
+    - kind: taxii
+      url: "https://example.org/taxii/api"
+      collection: "indicators"
+      interval: "10m"`}
+            </pre>
+            <div style={{ marginTop: 8, fontSize: 11 }}>
+              Then restart the WAF. Feed-management UI (add/remove without restart) lands in Phase 4.
+            </div>
+          </div>
+        ) : (
+          <table className="tbl tbl-compact">
+            <thead><tr><th>Kind</th><th>Source</th><th>Last fetch</th><th>Indicators</th><th>Status</th></tr></thead>
+            <tbody>
+              {feedList.map((f, i) => (
+                <tr key={i}>
+                  <td><span className="pill">{f.kind || 'taxii'}</span></td>
+                  <td className="num">{f.source || f.url || f.name}</td>
+                  <td>{f.last_fetch_at ? new Date(f.last_fetch_at).toLocaleString() : '—'}</td>
+                  <td className="num">{f.indicator_count || 0}</td>
+                  <td><span className={`pill ${f.error ? 'down' : 'ok'}`}>{f.error ? 'error' : 'ok'}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <window.SectionHeader title="Recent indicator hits" sub={`${hits.length} matches in current window`} />
         {hits.length === 0 ? (
           <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
-            No threat-intel matches. Configure feeds in <code>config/*.yaml</code> under <code>threat_intel:</code> + restart, or wait for Phase 3 UI.
+            No threat-intel matches recorded. Either no feeds configured (above), or no traffic matched.
           </div>
         ) : (
           <table className="tbl tbl-compact">
@@ -5205,13 +5410,40 @@ function PageThreatIntel() {
           </table>
         )}
       </div>
-      <div className="card" style={{ marginTop: 12 }}>
-        <window.SectionHeader title="GeoIP DB status" sub="MaxMind .mmdb load state" />
-        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)' }}>
-          GeoIP enrichment is gated on the <code>geoip</code> Cargo feature. When loaded, the Overview map shows attacker country/city blips. Phase 3 adds an upload-and-verify button here.
+
+      <div className="card">
+        <window.SectionHeader title="GeoIP DB" sub="MaxMind .mmdb status" />
+        <div style={{ padding: 16, fontSize: 12 }}>
+          {geo.data?.feature_built === false ? (
+            <div>
+              The <code>geoip</code> Cargo feature is not enabled in this build. Rebuild with:
+              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8 }}>
+                FEATURES="redis geoip" make build
+              </pre>
+            </div>
+          ) : geo.data?.db_loaded ? (
+            <div>
+              GeoLite2 DB loaded from <code>{geo.data?.db_path || '?'}</code>{' '}
+              ({geo.data?.indicator_count?.toLocaleString() || 0} country mappings).
+              The Overview map renders attacker country blips automatically.
+            </div>
+          ) : (
+            <div>
+              GeoIP feature is built but no <code>.mmdb</code> file is loaded. Configure:
+              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8 }}>
+{`geoip:
+  enabled: true
+  path: /path/to/GeoLite2-City.mmdb`}
+              </pre>
+              Free download:{' '}
+              <a href="https://www.maxmind.com/en/geolite2/signup" target="_blank" rel="noopener" style={{ color: 'var(--accent)' }}>
+                maxmind.com/en/geolite2/signup
+              </a>
+            </div>
+          )}
         </div>
       </div>
-    </StubPage>
+    </>
   );
 }
 

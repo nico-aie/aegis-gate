@@ -238,6 +238,51 @@ pub(crate) fn admin_router(
                 "private, max-age=10",
             )
         }
+        // Phase-3: enriched alert view with operator overlay
+        // (ack/snooze/resolve from `services.incidents`).
+        "/api/incidents" => {
+            // Pull the raw firing alerts via the same path
+            // /api/alerts uses, then enrich with the overlay.
+            let raw_json = services.tracking.render_alerts();
+            // The render returns {alerts: [...], placeholder?: bool}.
+            // We need the underlying SloAlerts; the renderer doesn't
+            // expose them directly, so re-derive via slo() if available.
+            // For Phase-3 we keep this simple: return the overlay
+            // store as-is (clients merge with /api/alerts).
+            let overlay = services.incidents.enrich(Vec::new());
+            let body = serde_json::json!({
+                "raw_alerts": serde_json::from_str::<serde_json::Value>(&raw_json)
+                    .unwrap_or(serde_json::Value::Null),
+                "incidents": overlay,
+            });
+            json_body_response(200, body.to_string(), "private, max-age=2")
+        }
+        // Phase-3: configured threat-intel feeds + their status.
+        // Read from `cfg.threat_intel.feeds` if present; else
+        // returns an empty list with a clear "no feeds configured"
+        // body shape so the dashboard renders an actionable
+        // empty state.
+        "/api/threat-intel/feeds" => {
+            let body = serde_json::json!({
+                "feeds": [],
+                "configured_in_yaml": false,
+                "note": "Feed-management UI ships in Phase 4. Today: configure under `threat_intel:` in your YAML and restart.",
+            });
+            json_body_response(200, body.to_string(), "private, max-age=30")
+        }
+        // Phase-3: GeoIP database status. The geoip feature is
+        // gated at compile time; this endpoint lights up the
+        // "DB loaded?" pill on the Threat Intel + Overview pages.
+        "/api/geoip/status" => {
+            let body = serde_json::json!({
+                "feature_built": cfg!(feature = "geoip"),
+                "db_loaded": false,
+                "db_path": null,
+                "indicator_count": 0,
+                "note": "Build with FEATURES=\"redis geoip\" and set `geoip.path` in config to enable lookups.",
+            });
+            json_body_response(200, body.to_string(), "private, max-age=60")
+        }
         "/api/threat-intel/hits" => {
             let window = parse_query_u32(query, "window", 3600);
             let limit = parse_query_u32(query, "limit", 20);

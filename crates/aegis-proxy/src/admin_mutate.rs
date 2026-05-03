@@ -764,6 +764,179 @@ pub(crate) async fn handle_alert_ack(
     }
 }
 
+// Phase-3 Incidents — operator overlay on top of SLO alerts.
+// All three handlers are audit-mutated + CSRF-gated, same shape
+// as handle_alert_ack above.
+
+pub(crate) async fn handle_incident_ack(
+    req: hyper::Request<hyper::body::Incoming>,
+    alert_id: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    let pre = mutation_preamble(&req, "incident-ack");
+    // Drain the body so we can pass `note` into the overlay.
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => bytes::Bytes::new(),
+    };
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).unwrap_or(serde_json::Value::Null);
+    let note = body
+        .get("note")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let resource = format!("/api/incidents/{alert_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "incident_ack",
+        reason: "operator acknowledged incident",
+    };
+    let tracking = services.tracking.clone();
+    let incidents = services.incidents.clone();
+    let alert_id_owned = alert_id.to_string();
+    let actor_owned = pre.actor.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        serde_json::Value::Null,
+        serde_json::json!({"alert_id": alert_id, "status": "acknowledged"}),
+        || {
+            // Keep the legacy tracking.ack store in sync so
+            // /api/alerts continues to return the same view.
+            tracking.ack(&alert_id_owned);
+            incidents.ack(&alert_id_owned, Some(actor_owned.clone()), note.clone());
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "alert_id": alert_id,
+                "status": "acknowledged",
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+pub(crate) async fn handle_incident_snooze(
+    req: hyper::Request<hyper::body::Incoming>,
+    alert_id: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    let pre = mutation_preamble(&req, "incident-snooze");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => bytes::Bytes::new(),
+    };
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).unwrap_or(serde_json::Value::Null);
+    // Default to 15-minute snooze when no field provided.
+    let minutes = body
+        .get("minutes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(15);
+    let note = body.get("note").and_then(|v| v.as_str()).map(String::from);
+    let until = chrono::Utc::now() + chrono::Duration::minutes(minutes as i64);
+
+    let resource = format!("/api/incidents/{alert_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "incident_snooze",
+        reason: "operator snoozed incident",
+    };
+    let incidents = services.incidents.clone();
+    let alert_id_owned = alert_id.to_string();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        serde_json::Value::Null,
+        serde_json::json!({"alert_id": alert_id, "snoozed_until": until.to_rfc3339(), "minutes": minutes}),
+        || {
+            incidents.snooze(&alert_id_owned, until, note.clone());
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "alert_id": alert_id,
+                "snoozed_until": until.to_rfc3339(),
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+pub(crate) async fn handle_incident_resolve(
+    req: hyper::Request<hyper::body::Incoming>,
+    alert_id: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    let pre = mutation_preamble(&req, "incident-resolve");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => bytes::Bytes::new(),
+    };
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).unwrap_or(serde_json::Value::Null);
+    let note = body.get("note").and_then(|v| v.as_str()).map(String::from);
+
+    let resource = format!("/api/incidents/{alert_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "incident_resolve",
+        reason: "operator resolved incident",
+    };
+    let incidents = services.incidents.clone();
+    let alert_id_owned = alert_id.to_string();
+    let actor_owned = pre.actor.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        serde_json::Value::Null,
+        serde_json::json!({"alert_id": alert_id, "status": "resolved"}),
+        || {
+            incidents.resolve(&alert_id_owned, Some(actor_owned.clone()), note.clone());
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "alert_id": alert_id,
+                "status": "resolved",
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 pub(crate) async fn handle_logging_put(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,

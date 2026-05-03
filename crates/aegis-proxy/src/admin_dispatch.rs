@@ -156,6 +156,30 @@ pub(crate) async fn handle_admin_request(
         }
     }
 
+    // Phase-3 Incidents — operator overlay (ack/snooze/resolve)
+    // on top of the SLO engine's firing alerts. Each handler is
+    // audit-mutated + CSRF-gated. The `/ack` path also forwards
+    // to the legacy `services.tracking.ack` store so existing
+    // /api/alerts consumers see the same view.
+    if method == hyper::Method::POST && path.starts_with("/api/incidents/") {
+        let suffix = &path["/api/incidents/".len()..];
+        if let Some(id) = suffix.strip_suffix("/ack") {
+            if !id.is_empty() && !id.contains('/') {
+                return crate::admin_mutate::handle_incident_ack(req, id, services).await;
+            }
+        }
+        if let Some(id) = suffix.strip_suffix("/snooze") {
+            if !id.is_empty() && !id.contains('/') {
+                return crate::admin_mutate::handle_incident_snooze(req, id, services).await;
+            }
+        }
+        if let Some(id) = suffix.strip_suffix("/resolve") {
+            if !id.is_empty() && !id.contains('/') {
+                return crate::admin_mutate::handle_incident_resolve(req, id, services).await;
+            }
+        }
+    }
+
     // CI-T6 — global enforce / log_only toggle (shadow mode).
     // Wraps the interop ModeStore so dashboard mutations and the
     // /__waf_control mutations route through the same global
