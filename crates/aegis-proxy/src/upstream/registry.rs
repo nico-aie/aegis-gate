@@ -96,7 +96,14 @@ impl PoolRegistry {
             let members: Vec<Arc<Member>> = cfg
                 .members
                 .iter()
-                .map(|mc| Arc::new(Member::new(mc.addr, mc.weight, mc.zone.clone())))
+                .map(|mc| {
+                    Arc::new(Member::with_host_override(
+                        mc.addr,
+                        mc.weight,
+                        mc.zone.clone(),
+                        mc.host_header.clone(),
+                    ))
+                })
                 .collect();
             let strategy = match cfg.lb {
                 aegis_core::config::LbStrategy::RoundRobin => {

@@ -17,6 +17,12 @@ pub struct Member {
     pub zone: Option<String>,
     pub healthy: AtomicBool,
     pub inflight: AtomicU64,
+    /// FIX 2026-05-03 — explicit Host-header override mirroring
+    /// `MemberConfig.host_header`. When `Some(host)`,
+    /// `forward()` sends `Host: <host>` upstream instead of
+    /// rewriting it to `<addr>` — required for vhost-routed
+    /// backends.
+    pub host_override: Option<String>,
 }
 
 impl Member {
@@ -27,6 +33,23 @@ impl Member {
             zone,
             healthy: AtomicBool::new(true),
             inflight: AtomicU64::new(0),
+            host_override: None,
+        }
+    }
+
+    pub fn with_host_override(
+        addr: SocketAddr,
+        weight: u32,
+        zone: Option<String>,
+        host_override: Option<String>,
+    ) -> Self {
+        Self {
+            addr,
+            weight,
+            zone,
+            healthy: AtomicBool::new(true),
+            inflight: AtomicU64::new(0),
+            host_override,
         }
     }
 

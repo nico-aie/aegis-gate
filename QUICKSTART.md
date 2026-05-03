@@ -257,22 +257,37 @@ upstreams:
       scheme: https
 ```
 
-### Heads-up — multi-vhost backends
+### Multi-vhost backends — `host_header:` override
 
-The forwarder rewrites `Host` to the upstream IP:port before
-sending (`crates/aegis-proxy/src/upstream/forward.rs:146-149`).
-That's correct for IP-addressed backends but multi-vhost services
-(httpbin.org, Cloudflare-fronted sites, GitHub Pages) reject or
-404 because the Host header doesn't match a configured vhost.
-Workarounds:
+Some upstreams dispatch on the `Host:` header (Cloudflare-fronted
+sites, GitHub Pages, any nginx with multiple `server_name` blocks,
+shared hosts behind a reverse proxy). By default the WAF rewrites
+`Host:` to the member's IP:port — those backends then return 404
+or the wrong vhost. Pin the right Host with `host_header:` on
+the member:
 
-- Run a small `caddy` / `nginx` locally that does the vhost dance
-  for you, point the WAF at the local proxy.
-- Use an upstream you control (`example.com`, your VPS, an ngrok
-  tunnel) where Host doesn't matter.
+```yaml
+upstreams:
+  github-pages:
+    members:
+      - addr: "185.199.108.153:443"   # dig +short your-org.github.io
+        host_header: "your-org.github.io"
+    lb: round_robin
+    connection:
+      scheme: https
+```
 
-A `host_header_override` field on `MemberConfig` is queued as a
-small follow-up.
+The upstream now sees `Host: your-org.github.io` regardless of
+which TCP target the WAF lands on. The original client `Host` is
+preserved in `X-Forwarded-Host`.
+
+**TLS caveat (queued follow-up).** For HTTPS upstreams the SNI +
+cert-validation hostname still come from the URL (the member
+`addr` IP). That works for internal CAs that issue certs to IPs
+or for backends with `accept-any-hostname` certs. For public TLS
+upstreams that strictly validate SNI vs cert CN/SAN you'll either
+need a sidecar (Caddy/nginx) doing the vhost dance OR the queued
+SNI-pinning extension.
 
 ### Live verification
 

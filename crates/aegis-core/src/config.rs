@@ -999,6 +999,25 @@ pub struct MemberConfig {
     pub weight: u32,
     #[serde(default)]
     pub zone: Option<String>,
+    /// FIX 2026-05-03 — explicit `Host:` header override.
+    /// Without this the forwarder rewrites `Host` to the
+    /// member's `addr` (IP:port) which works for IP-addressed
+    /// upstreams but breaks vhost-routed backends — putting the
+    /// WAF in front of `nginx` / Cloudflare / GitHub Pages /
+    /// any service that dispatches on Host returns 404 / wrong
+    /// vhost.  Set this to the hostname the upstream expects.
+    ///
+    /// **TLS note** — for HTTPS upstreams the SNI + cert-
+    /// validation hostname still come from the connection URL
+    /// (the member's `addr` IP).  That works for internal CAs
+    /// that issue certs to IPs; for public TLS upstreams you'll
+    /// either need a sidecar that does the vhost dance OR a
+    /// future `host_header_override` extension that pins SNI to
+    /// the override (queued as a follow-up; today's v1 covers
+    /// the plain-HTTP and IP-cert HTTPS cases which are the
+    /// most common operator surface).
+    #[serde(default)]
+    pub host_header: Option<String>,
 }
 
 fn default_weight() -> u32 {

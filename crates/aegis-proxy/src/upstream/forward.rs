@@ -359,7 +359,15 @@ pub async fn forward(
 ) -> Result<Response<Full<Bytes>>, ForwardError> {
     let client = pooled_client(cfg);
 
-    let upstream_host_header = member.addr.to_string();
+    // FIX 2026-05-03 — when the operator pinned a Host header on
+    // this member (multi-vhost backend support), use it instead
+    // of the addr-derived default.  Backwards-compatible: members
+    // without `host_header:` set keep the legacy addr-rewrite
+    // behaviour.
+    let upstream_host_header = member
+        .host_override
+        .clone()
+        .unwrap_or_else(|| member.addr.to_string());
     let pq = path_and_query(&uri);
     let mut fwd_headers = build_upstream_headers(&headers, &upstream_host_header);
 
@@ -629,6 +637,41 @@ mod tests {
         assert!(!out.contains_key("x-custom-end-to-end"));
         // user-agent unaffected.
         assert!(out.contains_key("user-agent"));
+    }
+
+    #[test]
+    fn build_upstream_honours_host_override_when_set() {
+        // FIX 2026-05-03 — multi-vhost upstream support.
+        // When an operator pins `host_header: example.com` on
+        // a member, the upstream sees that vhost regardless of
+        // the underlying IP-port the connection lands on.
+        let original = hm(&[("host", "client-supplied.example")]);
+        // Caller passes the resolved override string in place
+        // of the addr.toString() default.
+        let out = build_upstream_headers(&original, "vhost.example.com");
+        assert_eq!(out.get("host").unwrap().to_str().unwrap(), "vhost.example.com");
+        // The original Host still rides as X-Forwarded-Host so
+        // the upstream can see what the client asked for.
+        assert_eq!(
+            out.get("x-forwarded-host").unwrap().to_str().unwrap(),
+            "client-supplied.example",
+        );
+    }
+
+    #[test]
+    fn member_runtime_round_trips_host_override() {
+        use crate::upstream::Member;
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "10.0.0.1:8080".parse().unwrap();
+        let with = Member::with_host_override(
+            addr,
+            1,
+            None,
+            Some("api.example.com".into()),
+        );
+        assert_eq!(with.host_override.as_deref(), Some("api.example.com"));
+        let without = Member::new(addr, 1, None);
+        assert!(without.host_override.is_none());
     }
 
     #[test]

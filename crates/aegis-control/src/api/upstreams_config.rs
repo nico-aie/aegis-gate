@@ -68,6 +68,11 @@ pub struct MemberView {
     pub weight: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
+    /// FIX 2026-05-03 — surfaces `MemberConfig.host_header` so
+    /// the dashboard's pool-edit modal can show + roundtrip the
+    /// vhost-routing override.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "host_header")]
+    pub host_header: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -131,6 +136,7 @@ fn member_view(m: &MemberConfig) -> MemberView {
         addr: m.addr.to_string(),
         weight: m.weight,
         zone: m.zone.clone(),
+        host_header: m.host_header.clone(),
     }
 }
 
