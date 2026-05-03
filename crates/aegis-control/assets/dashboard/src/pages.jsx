@@ -410,7 +410,21 @@ function RequestDetail({ data }) {
   const ts = data?.ts || null;
   const geo = data?.geo || null;
   const requestId = data?.request_id || data?.requestId || null;
-  const detectorReason = rules.length > 0 ? rules.join(', ') : (cats.length > 0 ? cats.join(', ') : null);
+  const status = data?.status || null;
+  const latency = data?.latency || data?.latency_ms || null;
+  const reason = data?.reason || null;
+  const auditClass = data?.class || null;
+  const routeId = data?.route_id || data?.fields?.route_id || null;
+  const fields = data?.fields && typeof data.fields === 'object' ? data.fields : null;
+  const detectorReason = rules.length > 0 ? rules.join(', ') : (cats.length > 0 ? cats.join(', ') : reason);
+  // Render any backend-emitted scalar that isn't already covered
+  // by the dedicated rows above. Stable key ordering so the
+  // drawer doesn't reflow on every poll.
+  const extraEntries = fields
+    ? Object.entries(fields)
+        .filter(([k]) => !['method', 'path', 'status', 'region', 'route_id', 'latency_ms'].includes(k))
+        .sort(([a], [b]) => a.localeCompare(b))
+    : [];
 
   // Optional: look the request up in the audit ring so the chain
   // hash + prev hash + sinks reflect reality. Disabled when no
@@ -465,10 +479,38 @@ function RequestDetail({ data }) {
       {(method || path) && (
         <div>
           <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Request</div>
-          <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>
+          <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
             {method && <span style={{ color: 'var(--info)', marginRight: 8 }}>{method}</span>}
             {path && <span style={{ color: 'var(--ink)' }}>{path}</span>}
           </div>
+          {(status || latency || routeId) && (
+            <div style={{ display: 'flex', gap: 12, fontSize: 11, marginTop: 6, flexWrap: 'wrap' }}>
+              {status && (
+                <div>
+                  <span className="dim">status</span>{' '}
+                  <span className={`pill ${status >= 500 ? 'down' : status >= 400 ? 'warn' : 'up'}`}>{status}</span>
+                </div>
+              )}
+              {latency != null && Number.isFinite(latency) && (
+                <div>
+                  <span className="dim">latency</span>{' '}
+                  <span className="num mono">{latency < 1 ? `${(latency * 1000).toFixed(0)} µs` : `${latency.toFixed(2)} ms`}</span>
+                </div>
+              )}
+              {routeId && (
+                <div>
+                  <span className="dim">route</span>{' '}
+                  <code style={{ fontSize: 10 }}>{routeId}</code>
+                </div>
+              )}
+              {auditClass && (
+                <div>
+                  <span className="dim">class</span>{' '}
+                  <span className="pill neutral" style={{ fontSize: 10 }}>{auditClass}</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
       {rules.length > 0 && (
@@ -476,6 +518,21 @@ function RequestDetail({ data }) {
           <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Detection</div>
           <div style={{ fontSize: 12, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {rules.map(r => <span key={r} className="pill neutral" style={{ fontSize: 10 }}>{r}</span>)}
+          </div>
+        </div>
+      )}
+      {extraEntries.length > 0 && (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>Extra fields</div>
+          <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)' }}>
+            {extraEntries.map(([k, v]) => (
+              <div key={k} style={{ display: 'flex', gap: 8 }}>
+                <span className="dim" style={{ minWidth: 100 }}>{k}</span>
+                <span style={{ wordBreak: 'break-all' }}>
+                  {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -492,6 +549,16 @@ function RequestDetail({ data }) {
           ) : (
             <div className="dim" style={{ fontStyle: 'italic', fontSize: 10 }}>
               chain hash + prev surface in /api/audit/since once a request_id is known.
+            </div>
+          )}
+          {requestId && (
+            <div style={{ marginTop: 8 }}>
+              <a
+                href={`#/investigation?pivot=${encodeURIComponent(requestId)}&kind=request_id`}
+                style={{ color: 'var(--accent)', fontSize: 11 }}
+              >
+                Pivot to Investigation →
+              </a>
             </div>
           )}
         </div>
@@ -682,6 +749,9 @@ function PageLiveFeed() {
           method: selected.method, path: selected.path,
           region: selected.region, tier: selected.tier,
           action: selected.action, rules: selected.rules,
+          status: selected.status, latency: selected.latency,
+          reason: selected.reason, class: selected.class,
+          fields: selected.fields,
           ts: selected.ts, request_id: selected.request_id || selected.id,
         }} />}
       </window.Drawer>
@@ -5520,13 +5590,43 @@ function PageIncidents() {
 }
 
 function PageInvestigation() {
+  // 2026-05-03 SOC-UX pass — the page now defaults to a recent-
+  // requests list (last 200 audit events) so operators see signal
+  // immediately on landing.  Filters narrow the view; pivoting
+  // on an IP / request_id / rule_id replaces the list with a
+  // focused timeline + summary panels.  The Attack-Analytics
+  // top strip (detector + bot mix) folded in from the deleted
+  // standalone page lives at the top so it's visible regardless
+  // of pivot state.
   const [pivot, setPivot] = useStateP('');
   const [activePivot, setActivePivot] = useStateP('');
   const [pivotKind, setPivotKind] = useStateP('auto'); // auto | ip | request_id | rule_id
+  const [actionFilter, setActionFilter] = useStateP('all'); // all | block | allow | challenge
+  const [selected, setSelected] = useStateP(null);
+
+  // Honour deep-links from the Live-Feed RequestDetail drawer:
+  // `#/investigation?pivot=<id>&kind=request_id`.
+  useEffectW(() => {
+    if (typeof location === 'undefined') return;
+    const m = location.hash.match(/\?(.+)$/);
+    if (!m) return;
+    const params = new URLSearchParams(m[1]);
+    const p = params.get('pivot');
+    const k = params.get('kind');
+    if (p) {
+      setPivot(p);
+      setActivePivot(p);
+      if (k && ['ip', 'request_id', 'rule_id'].includes(k)) {
+        setPivotKind(k);
+      }
+    }
+  }, []);
+
   // Derive pivot type from the input shape.
   const detectKind = (s) => {
     if (!s) return null;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return 'request_id';
+    if (/^[0-9a-f]{32,}$/i.test(s)) return 'request_id'; // blake3/sha hash
     if (/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(s)) return 'ip';
     if (/^[a-f0-9:]+:[a-f0-9:]+$/i.test(s)) return 'ip'; // ipv6
     if (/^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/i.test(s)) return 'rule_id'; // e.g. owasp.sqli.union
@@ -5554,6 +5654,18 @@ function PageInvestigation() {
   const attackerRow = activePivot && effectiveKind === 'ip'
     ? (topAttackers.data?.attackers || []).find(a => a.identifier === activePivot)
     : null;
+
+  // SOC-UX: detector + bot-mix top strip (folded in from the
+  // deleted Attack-Analytics page).  Hooks live here at the top
+  // level so they obey React's Rules-of-Hooks regardless of
+  // pivot state.  Last-1h window matches the page's "recent
+  // operations" framing.
+  const insightsByDetector = window.useAttacksByDetectorApi
+    ? window.useAttacksByDetectorApi(3600)
+    : { data: null };
+  const insightsBotMix = window.useBotMixApi
+    ? window.useBotMixApi(3600)
+    : { data: null };
 
   // Stats roll-up over the audit window.
   const summary = useMemoP(() => {
@@ -5628,11 +5740,183 @@ function PageInvestigation() {
         )}
       </div>
 
-      {!activePivot && (
-        <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
-          Enter an identifier above and press Enter. The audit ring (last 200 events for the matching filter) is searched in real time.
-        </div>
-      )}
+      {!activePivot && (() => {
+        // Default mode: recent requests + Attack-Analytics top
+        // strip.  All hooks live at the top of the function;
+        // here we just consume them.
+        const detectorBars = (insightsByDetector.data?.detectors ?? [])
+          .map(d => ({ label: d.name, value: d.count, color: detectorColor(d.name) }))
+          .sort((a, b) => b.value - a.value);
+        const totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+        const botCategories = insightsBotMix.data?.categories ?? [];
+        const botColorFor = name => ({
+          verified:  'var(--up)',
+          suspect:   'var(--warn)',
+          malicious: 'var(--down)',
+          unknown:   'var(--ink-faint)',
+        }[name] || 'var(--ink-mute)');
+        const botSegments = botCategories.map(c => ({
+          name: c.name, value: c.count, color: botColorFor(c.name),
+        }));
+
+        const filtered = events.filter(row => {
+          const e = row.event || row;
+          if (actionFilter !== 'all' && e.action !== actionFilter) return false;
+          return true;
+        });
+
+        return (
+          <>
+            <div className="grid-12" style={{ marginBottom: 12 }}>
+              <div className="col-6 card">
+                <window.SectionHeader
+                  title="Detector breakdown"
+                  sub={`${totalDetections.toLocaleString()} detections · last 1h`}
+                />
+                {detectorBars.length === 0 ? (
+                  <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                    No detections in the last hour. Drive traffic with <code>make mock-load-attacks</code>.
+                  </div>
+                ) : (
+                  <window.BarList items={detectorBars} />
+                )}
+              </div>
+              <div className="col-6 card">
+                <window.SectionHeader
+                  title="Bot classification mix"
+                  sub={botCategories.length ? `${botCategories.reduce((s, c) => s + c.count, 0).toLocaleString()} classified · last 1h` : 'no bot signal yet'}
+                />
+                {botSegments.length === 0 ? (
+                  <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                    No bot classifications recorded.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <window.StackedBar segments={botSegments} h={28} />
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, fontSize: 11 }}>
+                      {botCategories.map(c => (
+                        <div key={c.name}>
+                          <span style={{ color: botColorFor(c.name) }}>● {c.name}</span>{' '}
+                          <span className="num">{c.count.toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="card flat" style={{ padding: 12, marginBottom: 12 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Filter:</span>
+                {['all', 'block', 'challenge', 'allow'].map(a => (
+                  <button
+                    key={a}
+                    className={`chip ${actionFilter === a ? 'active' : ''}`}
+                    onClick={() => setActionFilter(a)}
+                  >
+                    {a}
+                  </button>
+                ))}
+                <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
+                  {filtered.length.toLocaleString()} of {events.length.toLocaleString()} · audit ring
+                </span>
+              </div>
+            </div>
+
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <window.SectionHeader
+                title="Recent requests"
+                sub="newest first · click a row for full request detail · audit ring (last 200)"
+              />
+              {events.length === 0 && audit.data ? (
+                <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
+                  Audit ring is empty. Drive some traffic first — try{' '}
+                  <code>make mock-load</code>.
+                </div>
+              ) : !audit.data ? (
+                <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
+                  Loading audit events…
+                </div>
+              ) : (
+                <table className="tbl tbl-compact">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 90 }}>Time</th>
+                      <th>Action</th>
+                      <th style={{ width: 130 }}>IP</th>
+                      <th style={{ width: 70 }}>Method</th>
+                      <th>Path</th>
+                      <th style={{ width: 70 }}>Status</th>
+                      <th style={{ width: 70 }}>Risk</th>
+                      <th>Rule</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.slice(0, 200).map((row, i) => {
+                      const e = row.event || row;
+                      const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+                      return (
+                        <tr key={`${e.request_id || i}`} onClick={() => setSelected(e)} style={{ cursor: 'pointer' }}>
+                          <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                            {e.ts ? new Date(e.ts).toLocaleTimeString() : '—'}
+                          </td>
+                          <td><window.ActionPill value={e.action || '—'} /></td>
+                          <td className="mono">{e.client_ip || '—'}</td>
+                          <td className="mono">{f.method || e.method || '—'}</td>
+                          <td className="mono"><code style={{ fontSize: 11 }}>{(f.path || e.path || '/').slice(0, 80)}</code></td>
+                          <td className="num">{f.status || e.status || '—'}</td>
+                          <td className="num">{e.risk_score ?? '—'}</td>
+                          <td className="mono"><code style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{e.rule_id || e.reason || '—'}</code></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <window.Drawer
+              open={!!selected}
+              onClose={() => setSelected(null)}
+              title={(selected && (selected.fields?.path || selected.path)) || 'Request detail'}
+              footer={selected && selected.client_ip ? (
+                <>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setPivot(selected.client_ip);
+                      setActivePivot(selected.client_ip);
+                      setPivotKind('ip');
+                      setSelected(null);
+                    }}
+                  >
+                    Pivot on this IP
+                  </button>
+                </>
+              ) : null}
+            >
+              {selected && <RequestDetail data={{
+                ip: selected.client_ip,
+                action: selected.action,
+                tier: selected.tier,
+                risk: selected.risk_score,
+                rules: selected.rule_id ? [selected.rule_id] : [],
+                method: selected.fields?.method || selected.method,
+                path: selected.fields?.path || selected.path,
+                status: selected.fields?.status || selected.status,
+                latency: selected.fields?.latency_ms || selected.latency_ms,
+                reason: selected.reason,
+                class: selected.class,
+                route_id: selected.route_id,
+                fields: selected.fields,
+                ts: selected.ts,
+                request_id: selected.request_id,
+              }} />}
+            </window.Drawer>
+          </>
+        );
+      })()}
 
       {activePivot && summary && (
         <>
@@ -5759,6 +6043,8 @@ function PageThreatIntel() {
   const geo = window.useGeoipStatusApi ? window.useGeoipStatusApi() : { data: null };
   const hits = ti.data?.hits || [];
   const feedList = feeds.data?.feeds || [];
+  const featureBuilt = feeds.data?.feature_built !== false; // null = unknown, treat as on
+  const noFeedsAndNoGeo = feedList.length === 0 && !geo.data?.db_loaded;
 
   return (
     <>
@@ -5768,6 +6054,26 @@ function PageThreatIntel() {
           <p className="page-subtitle">TAXII / MISP feeds · GeoIP DB · recent indicator matches</p>
         </div>
       </div>
+
+      {/* SOC-UX: when nothing is wired, lead with a clear "what
+          this page is for + what it needs" panel instead of three
+          empty stat cards.  Hides automatically once any feed or
+          GeoIP DB is configured. */}
+      {noFeedsAndNoGeo && (
+        <div className="card" style={{ padding: 16, marginBottom: 12, borderLeft: '3px solid var(--accent)' }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>What you'll see here</div>
+          <div style={{ fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.6 }}>
+            Threat Intel surfaces three signals once you wire them:
+            <ul style={{ marginTop: 6, paddingLeft: 18 }}>
+              <li><strong>Feeds</strong> — TAXII / MISP indicator subscriptions; hits attribute traffic to known-bad infrastructure.</li>
+              <li><strong>Indicator hits</strong> — every request whose IP / domain matched a feed entry.</li>
+              <li><strong>GeoIP</strong> — country + ASN enrichment on the Overview map and the access-list <code>kind: country</code> matcher.</li>
+            </ul>
+            Until a feed is configured this page reads honestly empty — it is not a bug.
+            See <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Threat Intel setup</a>.
+          </div>
+        </div>
+      )}
 
       <div className="grid-12" style={{ marginBottom: 12 }}>
         <div className="col-4 card" style={{ padding: 12 }}>

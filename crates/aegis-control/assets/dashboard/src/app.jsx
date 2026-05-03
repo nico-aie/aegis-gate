@@ -21,8 +21,7 @@ const NAV = [
     { id: 'live',          label: 'Live Feed',        icon: <window.I.Activity />, badge: 'LIVE', tone: 'live' },
     { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: 'NEW', tone: 'warn' },
     { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: 'NEW', tone: 'warn' },
-    { id: 'attack-analytics', label: 'Attack Analytics', icon: <window.I.BarChart />, badge: null },
-    { id: 'threat-intel',  label: 'Threat Intel',     icon: <window.I.Globe />,    badge: 'NEW', tone: 'warn' },
+    { id: 'threat-intel',  label: 'Threat Intel',     icon: <window.I.Globe />,    badge: null },
   ]},
   { group: 'Policy', items: [
     { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
@@ -368,7 +367,9 @@ function App() {
     case 'live':             page = <window.PageLiveFeed />; break;
     case 'incidents':        page = <window.PageIncidents />; break;
     case 'investigation':    page = <window.PageInvestigation />; break;
-    case 'attack-analytics': page = <window.PageAttackEvents />; break;
+    // Attack-Analytics merged into Investigation (2026-05-03).
+    // Old hash links keep working — redirect to Investigation.
+    case 'attack-analytics': page = <window.PageInvestigation />; break;
     case 'threat-intel':     page = <window.PageThreatIntel />; break;
     case 'rules':            page = <window.PageRuleManager />; break;
     case 'detectors':        page = <window.PageTierConfig />; break;

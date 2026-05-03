@@ -305,26 +305,47 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
       es.onmessage = (e) => {
         try {
           const ev = JSON.parse(e.data);
-          const epoch = ev.ts_ms || Date.now();
+          // FIX 2026-05-03 — the data plane emits AuditEvent with
+          // method / path / status / latency_ms nested under
+          // `fields`; older code read them at the top level which
+          // is why Live Feed showed an empty Path column. Read
+          // from `fields` first and fall back to top-level only
+          // for forward compatibility.
+          const f = (ev.fields && typeof ev.fields === 'object') ? ev.fields : {};
+          const tsRaw = ev.ts || ev.ts_ms;
+          const epoch = typeof tsRaw === 'number'
+            ? tsRaw
+            : (typeof tsRaw === 'string' ? Date.parse(tsRaw) : Date.now());
           const risk = ev.risk_score || 0;
           const action = ev.action || 'allow';
           const ip = ev.client_ip || ev.ip || '0.0.0.0';
+          const ruleId = ev.rule_id || ev.reason || null;
           const mapped = {
             id: ++_realLiveSeq,
             ts: fmtTs(epoch),
             epoch,
             ip,
             geo: null,
-            method: ev.method || 'GET',
-            path: ev.path || '/',
-            region: ev.region || '',
+            method: f.method || ev.method || 'GET',
+            path: f.path || ev.path || '/',
+            region: f.region || ev.region || '',
             tier: ev.tier || tierForRisk(risk),
             risk,
             action,
-            rules: ev.rule_id ? [ev.rule_id] : (ev.rules || []),
+            rules: ruleId ? [ruleId] : (ev.rules || []),
             cat: ev.category || ev.cat || null,
-            status: ev.status || (action === 'block' ? 403 : 200),
-            latency: ev.latency_ms || 0,
+            status: f.status || ev.status || (action === 'block' ? 403 : 200),
+            latency: f.latency_ms || ev.latency_ms || 0,
+            // CQF — surface the canonical request_id + the audit
+            // class so the RequestDetail drawer can deep-link.
+            request_id: ev.request_id || null,
+            class: ev.class || null,
+            reason: ev.reason || null,
+            // Keep the raw fields object so the drawer can render
+            // every backend-emitted scalar (status, route_id,
+            // tier, anything detector-specific) without needing
+            // a frontend schema update each time.
+            fields: f,
           };
           setEvents(prev => [...prev, mapped].slice(-maxLen));
         } catch (_) { /* ignore malformed line */ }
