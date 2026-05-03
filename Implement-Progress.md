@@ -219,9 +219,19 @@ develop.
 
 ### Other queued / parked
 
-- **CC-T3** — i18n / OpenAPI / docs / acceptance round-trip.
-- **B6-T4** (HSM), **B6-T5** (fd-pass) — Phase B production
-  packaging carry-overs (both explicitly deferred).
+- **CC-T3** — i18n + help.jsx slides remain (the test-side slice
+  shipped at `180f6dd`). Both items have outsized scope (i18n
+  needs JSX runtime loader work; help slides need designer
+  input) so they're polish for a future Console-redesign cycle.
+- **B6-T5 (fd-pass)** — design pass shipped at
+  [`plans/binary-handover-fd-pass.md`](./plans/binary-handover-fd-pass.md).
+  6-slice FDP-T1..T6 implementation breakdown (~12h total) +
+  test plan + audit shape + 3 explicitly-deferred items in §9.
+  Ready to implement when the operator pain (deploy drops
+  in-flight connections) becomes priority. Today's
+  `hotbin::HotReloader` is a typed skeleton not wired into boot.
+- **B6-T4** (HSM) — still explicitly deferred; PKCS#11 against a
+  real HSM, no design pass yet.
 - **SC-T4** runtime metrics polish — already wired at boot in
   `run.rs:341-344`; gauges register, sampler ticks; behaviour
   cfg-gated by `--cfg tokio_unstable`. No further work pending
