@@ -209,6 +209,9 @@ pub fn simulate(
         upstream: "simulator".into(),
         tenant_id: None,
         auth_required: Vec::new(),
+        pool_scheme: aegis_core::config::UpstreamScheme::Auto,
+        tcp_destination_allowlist: Vec::new(),
+        max_concurrent_tunnels_per_ip: 0,
     };
     let (tier, _fm) = aegis_security::pipeline::classify_tier(
         Some(&route_ctx),

@@ -227,6 +227,9 @@ mod tests {
             upstream: "pool".into(),
             tenant_id: None,
             auth_required: Vec::new(),
+            pool_scheme: aegis_core::config::UpstreamScheme::Auto,
+            tcp_destination_allowlist: Vec::new(),
+            max_concurrent_tunnels_per_ip: 0,
         };
         let (m, u, h, b) = view_for_path("/static/logo.png");
         let req = make_view(&m, &u, &h, &b);

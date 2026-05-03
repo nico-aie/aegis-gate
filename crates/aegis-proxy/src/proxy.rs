@@ -30,6 +30,10 @@ pub struct ProxyContext {
     /// `handle_request` captures per-stage timings and
     /// stamps `X-Aegis-*` headers on the response.
     pub benchmark: BenchmarkConfig,
+    /// TCP-T3c — shared per-source-IP concurrent-tunnel
+    /// counter for CONNECT-method dispatch on `scheme: tcp`
+    /// routes. Cheap to clone (every clone shares state).
+    pub tunnels: crate::tcp_tunnel::ConcurrentTunnels,
 }
 
 impl ProxyContext {
@@ -45,6 +49,7 @@ impl ProxyContext {
             pools: PoolRegistry::from_pools(pools, breakers),
             pipeline,
             benchmark: BenchmarkConfig::off(),
+            tunnels: crate::tcp_tunnel::ConcurrentTunnels::new(),
         })
     }
 

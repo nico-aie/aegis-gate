@@ -467,7 +467,17 @@ pub(crate) async fn handle_data_request_inner(
             // its outcome onto a status code; we infer the
             // contract action from that (allow on 2xx/3xx,
             // block / circuit_breaker / timeout otherwise).
-            forward_allow_to_upstream(parts, body_bytes, upstream_ctx, identity, route_latency_hist, request_start).await
+            forward_allow_to_upstream(
+                parts,
+                body_bytes,
+                upstream_ctx,
+                identity,
+                route_latency_hist,
+                request_start,
+                peer_ip,
+                bus,
+            )
+            .await
         }
     }
 }
@@ -490,6 +500,7 @@ pub(crate) async fn handle_data_request_inner(
         outcome = tracing::field::Empty,
     ),
 )]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_allow_to_upstream(
     parts: http::request::Parts,
     body_bytes: Bytes,
@@ -497,6 +508,13 @@ pub(crate) async fn forward_allow_to_upstream(
     identity: &aegis_core::ClientIdentity,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
     request_start: std::time::Instant,
+    // TCP-T3c — source IP for the per-IP tunnel cap and for
+    // `tcp_tunnel_open` / `tcp_tunnel_close` audit events.
+    peer_ip: std::net::IpAddr,
+    // TCP-T3c — audit bus for the tunnel-pair events. Cloned
+    // into the spawned bridge task so the close event lands
+    // even after this handler has returned.
+    bus: &AuditBus,
 ) -> (
     Response<Full<Bytes>>,
     aegis_control::interop::headers::DecisionTag,
@@ -585,6 +603,71 @@ pub(crate) async fn forward_allow_to_upstream(
             )))
             .unwrap();
         return (resp, DecisionTag::block("mtls_required"));
+    }
+
+    // TCP-T3c — CONNECT-method dispatch for `scheme: tcp` routes.
+    // Branches BEFORE the circuit breaker / pool member pick
+    // because tunnels don't go through the HTTP forwarder
+    // (different transport entirely). The four explicit error
+    // cases (CONNECT/non-tcp, non-CONNECT/tcp) match
+    // plans/tcp-forwarder-phase-4.md §3 — distinct rule_ids so
+    // operators tell config drift from upstream failure in
+    // audit + metrics.
+    {
+        use aegis_core::config::UpstreamScheme;
+        let is_connect = method == hyper::Method::CONNECT;
+        let pool_is_tcp = route_ctx.pool_scheme == UpstreamScheme::Tcp;
+        match (is_connect, pool_is_tcp) {
+            (true, true) => {
+                let request_id = blake3::hash(
+                    format!(
+                        "{}:{}",
+                        peer_ip,
+                        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                    )
+                    .as_bytes(),
+                )
+                .to_hex()
+                .to_string();
+                return forward_connect_tunnel(
+                    parts,
+                    route_ctx,
+                    ctx,
+                    peer_ip,
+                    bus,
+                    request_id,
+                )
+                .await;
+            }
+            (true, false) => {
+                tracing::Span::current().record("outcome", "connect_to_non_tcp_route");
+                let resp = Response::builder()
+                    .status(hyper::StatusCode::BAD_GATEWAY)
+                    .header("x-waf-rule-id", "connect_to_non_tcp_route")
+                    .header("content-type", "text/plain; charset=utf-8")
+                    .body(Full::new(Bytes::from(
+                        "CONNECT method not allowed on non-tcp route\n",
+                    )))
+                    .unwrap();
+                return (resp, DecisionTag::block("connect_to_non_tcp_route"));
+            }
+            (false, true) => {
+                tracing::Span::current().record("outcome", "non_connect_to_tcp_route");
+                let resp = Response::builder()
+                    .status(hyper::StatusCode::BAD_GATEWAY)
+                    .header("x-waf-rule-id", "non_connect_to_tcp_route")
+                    .header("content-type", "text/plain; charset=utf-8")
+                    .body(Full::new(Bytes::from(
+                        "tcp route requires CONNECT method\n",
+                    )))
+                    .unwrap();
+                return (resp, DecisionTag::block("non_connect_to_tcp_route"));
+            }
+            (false, false) => {
+                // Normal HTTP path — fall through to existing
+                // circuit breaker + pool member pick + forward.
+            }
+        }
     }
 
     if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
@@ -689,6 +772,309 @@ pub(crate) async fn forward_allow_to_upstream(
             (resp, action_tag)
         }
     }
+}
+
+/// TCP-T3c — CONNECT-method tunnel handler. Called from
+/// `forward_allow_to_upstream` when the resolved route's pool
+/// has `scheme: tcp`. Runs the admission gates + (when
+/// admitted) attaches the upgrade hook and spawns the bridge
+/// task.
+async fn forward_connect_tunnel(
+    mut parts: http::request::Parts,
+    route_ctx: aegis_core::context::RouteCtx,
+    ctx: &Arc<crate::proxy::ProxyContext>,
+    peer_ip: std::net::IpAddr,
+    bus: &AuditBus,
+    request_id: String,
+) -> (
+    Response<Full<Bytes>>,
+    aegis_control::interop::headers::DecisionTag,
+) {
+    use aegis_control::interop::headers::DecisionTag;
+    use crate::tcp_tunnel::{
+        bridge_tunnel, connect_admit, ConnectAdmission, ConnectAdmissionRequest,
+        TunnelClosed, TunnelCloseReason,
+    };
+
+    // CONNECT request line carries `host:port` in the URI's
+    // authority slot. HTTP/1.1 puts it there directly; some
+    // older clients / proxies put it in the path. Try both.
+    let raw_authority = parts
+        .uri
+        .authority()
+        .map(|a| a.as_str().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| parts.uri.to_string());
+
+    if raw_authority.is_empty() {
+        return connect_deny_response(
+            400,
+            "connect_authority_missing",
+            "CONNECT request missing authority",
+            bus,
+            &request_id,
+            &route_ctx.route_id,
+            peer_ip,
+        );
+    }
+
+    // DNS resolution if not a literal IP. `parse_authority`
+    // returns Some only for literal IPs; otherwise we resolve
+    // via tokio's lookup_host. Single resolved address is
+    // enough — we don't iterate happy-eyeballs style at this
+    // layer.
+    let admit_authority = if aegis_core::tcp_destination::parse_authority(&raw_authority)
+        .is_some()
+    {
+        raw_authority.clone()
+    } else {
+        match tokio::net::lookup_host(raw_authority.as_str()).await {
+            Ok(mut iter) => match iter.next() {
+                Some(addr) => format!("{}:{}", addr.ip(), addr.port()),
+                None => {
+                    return connect_deny_response(
+                        403,
+                        "connect_dns_no_records",
+                        "CONNECT authority resolved to no addresses",
+                        bus,
+                        &request_id,
+                        &route_ctx.route_id,
+                        peer_ip,
+                    );
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    authority = %raw_authority,
+                    error = %e,
+                    "CONNECT DNS lookup failed",
+                );
+                return connect_deny_response(
+                    503,
+                    "connect_dns_failed",
+                    "CONNECT authority DNS lookup failed",
+                    bus,
+                    &request_id,
+                    &route_ctx.route_id,
+                    peer_ip,
+                );
+            }
+        }
+    };
+
+    let admit = connect_admit(ConnectAdmissionRequest {
+        authority: &admit_authority,
+        allowlist: &route_ctx.tcp_destination_allowlist,
+        max_per_ip: route_ctx.max_concurrent_tunnels_per_ip,
+        peer_ip,
+        tunnels: &ctx.tunnels,
+    });
+
+    let (dest_ip, port, guard) = match admit {
+        ConnectAdmission::Admit { dest, port, guard } => (dest, port, guard),
+        ConnectAdmission::Deny {
+            status,
+            rule_id,
+            message,
+        } => {
+            return connect_deny_response(
+                status,
+                rule_id,
+                message,
+                bus,
+                &request_id,
+                &route_ctx.route_id,
+                peer_ip,
+            );
+        }
+    };
+
+    // Pull the OnUpgrade extension off the request parts —
+    // hyper installed it during connection setup. Absent on
+    // HTTP/2 clients (extended CONNECT not yet supported);
+    // 405 with a clear hint.
+    let on_upgrade = parts.extensions.remove::<hyper::upgrade::OnUpgrade>();
+    let Some(on_upgrade) = on_upgrade else {
+        return connect_deny_response(
+            405,
+            "connect_no_upgrade_support",
+            "CONNECT requires HTTP/1.1 upgrade; HTTP/2 extended CONNECT not yet supported",
+            bus,
+            &request_id,
+            &route_ctx.route_id,
+            peer_ip,
+        );
+    };
+
+    let dest_addr = std::net::SocketAddr::new(dest_ip, port);
+
+    // Emit the open-event before spawning so it lands on the
+    // chain in time-order with subsequent close.
+    emit_tunnel_open_audit(
+        bus,
+        &request_id,
+        &route_ctx.route_id,
+        peer_ip,
+        dest_addr,
+    );
+
+    // Spawn the bridge. Everything captured by move so the
+    // task is independent of this handler's stack.
+    let bus_for_task = bus.clone();
+    let request_id_for_task = request_id.clone();
+    let route_id_for_task = route_ctx.route_id.clone();
+    tokio::spawn(async move {
+        match on_upgrade.await {
+            Ok(upgraded) => {
+                let io = hyper_util::rt::TokioIo::new(upgraded);
+                let _reason = bridge_tunnel(
+                    io,
+                    dest_addr,
+                    std::time::Duration::from_secs(30),
+                    guard,
+                    move |closed| {
+                        emit_tunnel_close_audit(
+                            &bus_for_task,
+                            &request_id_for_task,
+                            &route_id_for_task,
+                            peer_ip,
+                            &closed,
+                        );
+                    },
+                )
+                .await;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    request_id = %request_id_for_task,
+                    "CONNECT upgrade failed; emitting synthetic close",
+                );
+                drop(guard);
+                let synthetic = TunnelClosed {
+                    reason: TunnelCloseReason::Error,
+                    duration: std::time::Duration::ZERO,
+                    bytes_to_upstream: 0,
+                    bytes_from_upstream: 0,
+                };
+                emit_tunnel_close_audit(
+                    &bus_for_task,
+                    &request_id_for_task,
+                    &route_id_for_task,
+                    peer_ip,
+                    &synthetic,
+                );
+            }
+        }
+    });
+
+    // 200 OK with empty body triggers hyper to start the
+    // upgrade and resolve the OnUpgrade future on the spawned
+    // task above. RFC 9110 §9.3.6: the response to a successful
+    // CONNECT carries no body.
+    let resp = Response::builder()
+        .status(200)
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+    (resp, DecisionTag::allow())
+}
+
+/// TCP-T3c — render a CONNECT-deny response + emit the audit
+/// event. Centralised so every deny path uses the same shape
+/// (audit class `Access`, `x-waf-rule-id` response header,
+/// plain-text body with the message).
+fn connect_deny_response(
+    status: u16,
+    rule_id: &'static str,
+    message: &str,
+    bus: &AuditBus,
+    request_id: &str,
+    route_id: &str,
+    peer_ip: std::net::IpAddr,
+) -> (
+    Response<Full<Bytes>>,
+    aegis_control::interop::headers::DecisionTag,
+) {
+    use aegis_control::interop::headers::DecisionTag;
+
+    bus.emit(aegis_core::audit::AuditEvent {
+        schema_version: 1,
+        ts: chrono::Utc::now(),
+        request_id: request_id.to_string(),
+        class: aegis_core::audit::AuditClass::Access,
+        tenant_id: None,
+        tier: None,
+        action: "block".into(),
+        reason: message.to_string(),
+        client_ip: peer_ip.to_string(),
+        route_id: Some(route_id.to_string()),
+        rule_id: Some(rule_id.to_string()),
+        risk_score: None,
+        fields: serde_json::json!({"connect_denied": true}),
+    });
+
+    let resp = Response::builder()
+        .status(status)
+        .header("x-waf-rule-id", rule_id)
+        .header("content-type", "text/plain; charset=utf-8")
+        .body(Full::new(Bytes::from(format!("{message}\n"))))
+        .unwrap();
+    (resp, DecisionTag::block(rule_id))
+}
+
+fn emit_tunnel_open_audit(
+    bus: &AuditBus,
+    request_id: &str,
+    route_id: &str,
+    peer_ip: std::net::IpAddr,
+    dest: std::net::SocketAddr,
+) {
+    bus.emit(aegis_core::audit::AuditEvent {
+        schema_version: 1,
+        ts: chrono::Utc::now(),
+        request_id: request_id.to_string(),
+        class: aegis_core::audit::AuditClass::Access,
+        tenant_id: None,
+        tier: None,
+        action: "tcp_tunnel_open".into(),
+        reason: format!("CONNECT tunnel admitted to {dest}"),
+        client_ip: peer_ip.to_string(),
+        route_id: Some(route_id.to_string()),
+        rule_id: Some("tunnel_admitted".into()),
+        risk_score: None,
+        fields: serde_json::json!({
+            "destination": dest.to_string(),
+        }),
+    });
+}
+
+fn emit_tunnel_close_audit(
+    bus: &AuditBus,
+    request_id: &str,
+    route_id: &str,
+    peer_ip: std::net::IpAddr,
+    closed: &crate::tcp_tunnel::TunnelClosed,
+) {
+    bus.emit(aegis_core::audit::AuditEvent {
+        schema_version: 1,
+        ts: chrono::Utc::now(),
+        request_id: request_id.to_string(),
+        class: aegis_core::audit::AuditClass::Access,
+        tenant_id: None,
+        tier: None,
+        action: "tcp_tunnel_close".into(),
+        reason: format!("CONNECT tunnel closed: {}", closed.reason.as_str()),
+        client_ip: peer_ip.to_string(),
+        route_id: Some(route_id.to_string()),
+        rule_id: Some(closed.reason.rule_id().to_string()),
+        risk_score: None,
+        fields: serde_json::json!({
+            "duration_ms": closed.duration.as_millis() as u64,
+            "bytes_to_upstream": closed.bytes_to_upstream,
+            "bytes_from_upstream": closed.bytes_from_upstream,
+            "close_reason": closed.reason.as_str(),
+        }),
+    });
 }
 
 #[allow(clippy::too_many_arguments)]

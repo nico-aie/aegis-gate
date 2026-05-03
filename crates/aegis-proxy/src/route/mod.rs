@@ -26,6 +26,21 @@ struct CompiledRoute {
     /// to the resolver so the data-plane handler can gate on
     /// client identity. Empty = no gate.
     auth_required: Vec<String>,
+    /// TCP-T3c — resolved at compile time from
+    /// `cfg.upstreams[upstream].connection.scheme`. Lifted
+    /// here so the data-plane CONNECT dispatch is a single
+    /// match rather than a second pool lookup.
+    pool_scheme: aegis_core::config::UpstreamScheme,
+    /// TCP-T3c — pre-parsed CONNECT destination allowlist.
+    /// Empty for non-tcp routes; for tcp routes the config
+    /// validator already proved every entry parses, so we
+    /// `expect` here.
+    tcp_destination_allowlist: Vec<aegis_core::tcp_destination::TcpDestinationRule>,
+    /// TCP-T3c — per-source-IP cap on concurrent open tunnels.
+    /// Routed straight through; `0` is the YAML sentinel for
+    /// "use the boot default" and the data plane resolves it
+    /// via `aegis_proxy::tcp_tunnel::effective_cap`.
+    max_concurrent_tunnels_per_ip: u32,
 }
 
 /// Hot-swappable routing table.
@@ -135,6 +150,29 @@ impl CompiledRouteTable {
                     ms.iter().map(|m| m.to_ascii_uppercase()).collect()
                 });
 
+                // TCP-T3c — resolve the upstream pool's scheme
+                // at compile time + parse the route's
+                // `tcp_destination_allowlist`. The config
+                // validator (aegis_core::config::WafConfig::validate)
+                // has already proved every entry parses for tcp
+                // routes; for non-tcp routes the field is
+                // typically empty. We tolerate parse errors here
+                // by skipping the offending entry rather than
+                // failing the whole table build — the validator
+                // is the source of truth for "is the config sane".
+                let pool_scheme = cfg
+                    .upstreams
+                    .get(&rc.upstream)
+                    .map(|p| p.connection.scheme)
+                    .unwrap_or(aegis_core::config::UpstreamScheme::Auto);
+                let tcp_destination_allowlist: Vec<_> = rc
+                    .tcp_destination_allowlist
+                    .iter()
+                    .filter_map(|s| {
+                        aegis_core::tcp_destination::parse_rule(s).ok()
+                    })
+                    .collect();
+
                 let idx = routes.len();
                 routes.push(CompiledRoute {
                     id: rc.id.clone(),
@@ -144,6 +182,9 @@ impl CompiledRouteTable {
                     tier,
                     failure_mode,
                     auth_required: rc.auth_required.clone(),
+                    pool_scheme,
+                    tcp_destination_allowlist,
+                    max_concurrent_tunnels_per_ip: rc.max_concurrent_tunnels_per_ip,
                 });
 
                 // Insert into trie — a single path node can hold multiple
@@ -228,6 +269,9 @@ impl CompiledRoute {
             upstream: self.upstream.clone(),
             tenant_id: None,
             auth_required: self.auth_required.clone(),
+            pool_scheme: self.pool_scheme,
+            tcp_destination_allowlist: self.tcp_destination_allowlist.clone(),
+            max_concurrent_tunnels_per_ip: self.max_concurrent_tunnels_per_ip,
         }
     }
 }
@@ -566,5 +610,61 @@ state:
             .unwrap();
         assert_eq!(open.route_id, "catch-all");
         assert!(open.auth_required.is_empty());
+    }
+
+    // -----------------------------------------------------------
+    // TCP-T3c — pool_scheme + allowlist propagation
+    // -----------------------------------------------------------
+
+    #[test]
+    fn route_ctx_carries_pool_scheme_and_allowlist_for_tcp_routes() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "127.0.0.1:8080" }]
+  admin: { bind: "127.0.0.1:9090" }
+routes:
+  - id: tcp-tunnel
+    path: "/"
+    upstream: tcp-mesh
+    tcp_destination_allowlist:
+      - "10.0.0.0/8:6379"
+      - "192.168.1.0/24:443"
+    max_concurrent_tunnels_per_ip: 8
+upstreams:
+  tcp-mesh:
+    members: [{ addr: "127.0.0.1:6379" }]
+    connection: { scheme: tcp }
+state:
+  backend: in_memory
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().unwrap();
+        let table = RouteTable::build(&cfg).unwrap();
+        let ctx = table
+            .resolve("api.example.com", "/", &http::Method::GET)
+            .unwrap();
+        assert_eq!(
+            ctx.pool_scheme,
+            aegis_core::config::UpstreamScheme::Tcp,
+            "pool_scheme must lift from cfg.upstreams[upstream].connection.scheme",
+        );
+        assert_eq!(
+            ctx.tcp_destination_allowlist.len(),
+            2,
+            "both allowlist entries should parse + propagate",
+        );
+        assert_eq!(ctx.max_concurrent_tunnels_per_ip, 8);
+    }
+
+    #[test]
+    fn route_ctx_default_scheme_is_auto_for_normal_routes() {
+        let cfg = five_route_config();
+        let table = RouteTable::build(&cfg).unwrap();
+        let ctx = table
+            .resolve("api.example.com", "/api/v1/users", &http::Method::GET)
+            .unwrap();
+        assert_eq!(ctx.pool_scheme, aegis_core::config::UpstreamScheme::Auto);
+        assert!(ctx.tcp_destination_allowlist.is_empty());
+        assert_eq!(ctx.max_concurrent_tunnels_per_ip, 0);
     }
 }

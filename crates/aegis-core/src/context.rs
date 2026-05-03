@@ -46,6 +46,22 @@ pub struct RouteCtx {
     /// checks this after route resolution and 403s on mismatch
     /// (`rule_id = mtls_required`).
     pub auth_required: Vec<String>,
+    /// TCP-T3c — resolved upstream scheme, lifted out of
+    /// `cfg.upstreams[upstream].connection.scheme` at compile
+    /// time so the CONNECT-method dispatch in the data-plane
+    /// handler doesn't need a second pool lookup.
+    pub pool_scheme: crate::config::UpstreamScheme,
+    /// TCP-T3c — pre-parsed CONNECT destination allowlist for
+    /// `pool_scheme == Tcp` routes. Empty for non-tcp routes
+    /// (the dispatch is gated by scheme so the field is
+    /// effectively unused there). Parsed once at config load
+    /// so the hot path is a `policy_admits` lookup, not a
+    /// re-parse.
+    pub tcp_destination_allowlist: Vec<crate::tcp_destination::TcpDestinationRule>,
+    /// TCP-T3c — per-source-IP cap on concurrent open tunnels
+    /// for this route. `0` means "use the boot default of 16"
+    /// (resolved by `aegis_proxy::tcp_tunnel::effective_cap`).
+    pub max_concurrent_tunnels_per_ip: u32,
 }
 
 #[cfg(test)]
@@ -96,6 +112,9 @@ mod tests {
             upstream: "auth-pool".into(),
             tenant_id: None,
             auth_required: Vec::new(),
+            pool_scheme: crate::config::UpstreamScheme::Auto,
+            tcp_destination_allowlist: Vec::new(),
+            max_concurrent_tunnels_per_ip: 0,
         };
         assert_eq!(rctx.tier, Tier::Critical);
         assert_eq!(rctx.failure_mode, FailureMode::FailClose);
