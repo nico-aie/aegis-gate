@@ -202,7 +202,10 @@ pub fn replay_response_status_and_headers<B>(
 /// performs a TLS handshake on `https://`; `http://` URLs use
 /// the inner plain TCP path. One `Client` shape covers both
 /// modes without a duplicated cache.
-type PooledClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
+type PooledClient = Client<
+    HttpsConnector<HttpConnector<crate::upstream::pinned_resolver::PinnedResolver>>,
+    Full<Bytes>,
+>;
 
 /// Build a pooled HTTP client honouring `cfg`. The protocol
 /// selection follows `cfg.scheme` (Phase 3 multi-protocol):
@@ -233,7 +236,14 @@ fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
 
-    let mut http = HttpConnector::new();
+    // 2026-05-03 PM — use the process-global pinned resolver so
+    // upstream URLs that name a host_header'd vhost
+    // (`https://example.com/path`) connect to the configured IP
+    // instead of the system DNS answer.  Unpinned hosts fall
+    // through to GaiResolver — non-pinned destinations behave
+    // exactly as before.
+    let resolver = crate::upstream::pinned_resolver::global().clone();
+    let mut http = HttpConnector::new_with_resolver(resolver);
     http.set_nodelay(true);
     // Allow plain `http://` URLs through the underlying connector
     // — without this, hyper-rustls would refuse them and force
@@ -402,7 +412,22 @@ pub async fn forward(
     // mirrors the legacy behaviour; explicit Https/Grpc force
     // `https://`; H2c stays plaintext.
     let scheme = if cfg.scheme.uses_tls(cfg.tls) { "https" } else { "http" };
-    let target_uri: Uri = format!("{scheme}://{}{}", member.addr, pq)
+    // 2026-05-03 PM — for HTTPS upstreams with a pinned
+    // host_header, the URL host carries the override hostname
+    // (controls SNI + cert validation) while the pinned resolver
+    // routes the actual TCP connection to `member.addr`.  Plain
+    // HTTP keeps the addr-as-host shape since SNI doesn't apply
+    // and a custom Host header rewrite happened at the header
+    // layer.
+    let url_authority = if cfg.scheme.uses_tls(cfg.tls) {
+        match member.host_override.as_deref() {
+            Some(h) => format!("{}:{}", h, member.addr.port()),
+            None => member.addr.to_string(),
+        }
+    } else {
+        member.addr.to_string()
+    };
+    let target_uri: Uri = format!("{scheme}://{url_authority}{pq}")
         .parse()
         .map_err(|e: http::uri::InvalidUri| {
             ForwardError::BadRequest(e.to_string())

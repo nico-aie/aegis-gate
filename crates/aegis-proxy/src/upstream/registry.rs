@@ -97,6 +97,18 @@ impl PoolRegistry {
                 .members
                 .iter()
                 .map(|mc| {
+                    // 2026-05-03 PM — when the operator pinned a
+                    // Host header on this member, register the
+                    // hostname → addr mapping with the global
+                    // pinned resolver so the HTTPS forwarder can
+                    // build URLs using the hostname (correct SNI +
+                    // cert validation) while still connecting to
+                    // the configured IP.  Idempotent — re-running
+                    // boot or reloading cfg simply re-installs.
+                    if let Some(host) = mc.host_header.as_deref() {
+                        crate::upstream::pinned_resolver::global()
+                            .register(host.to_string(), mc.addr);
+                    }
                     Arc::new(Member::with_host_override(
                         mc.addr,
                         mc.weight,

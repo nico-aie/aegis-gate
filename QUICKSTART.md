@@ -281,13 +281,20 @@ The upstream now sees `Host: your-org.github.io` regardless of
 which TCP target the WAF lands on. The original client `Host` is
 preserved in `X-Forwarded-Host`.
 
-**TLS caveat (queued follow-up).** For HTTPS upstreams the SNI +
-cert-validation hostname still come from the URL (the member
-`addr` IP). That works for internal CAs that issue certs to IPs
-or for backends with `accept-any-hostname` certs. For public TLS
-upstreams that strictly validate SNI vs cert CN/SAN you'll either
-need a sidecar (Caddy/nginx) doing the vhost dance OR the queued
-SNI-pinning extension.
+**TLS / SNI handling.** When the upstream is `scheme: https` AND
+`host_header:` is set, the WAF builds the request URL using the
+override hostname so SNI + cert validation match the public name
+(`Host: your-org.github.io`, SNI `your-org.github.io`, cert
+validates against `your-org.github.io`). A process-global pinned
+DNS resolver (`crates/aegis-proxy/src/upstream/pinned_resolver.rs`)
+then routes that hostname's TCP connection back to the configured
+`addr` IP — bypassing system DNS, so the resolver isn't fighting
+your `addr` pinning. Plain HTTP upstreams keep the legacy
+addr-as-host shape since SNI doesn't apply.
+
+That means **public-TLS multi-vhost backends now work directly** —
+point the WAF at `httpbin.org`, GitHub Pages, Cloudflare, etc.
+without a sidecar.
 
 ### Live verification
 
