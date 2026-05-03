@@ -137,6 +137,17 @@ pub async fn run(
         }
     };
 
+    // FDP drain refactor — record (name, RawFd) for every
+    // listener we adopt-or-bind so the SIGUSR2 polling task
+    // can build a `SuccessorPlan` without re-walking the
+    // tokio listener tree. The FDs stay valid for the proxy
+    // lifetime because each accept loop owns the listener
+    // (which holds the FD); we only read the value here for
+    // dup2 in the post-fork child.
+    #[cfg(unix)]
+    let mut listener_fd_registry: Vec<(String, std::os::fd::RawFd)> =
+        Vec::new();
+
     // MTLS-T9 — capture break-glass env-var state at boot.
     // Boot-only by design (a runtime override would defeat the
     // purpose). Subsequent calls to `is_active()` read the
@@ -658,6 +669,11 @@ pub async fn run(
         // the same FDs deterministically.
         let name = format!("data-{data_idx}");
         let tcp = crate::hotbin::adopt_or_bind(&mut inherited_listeners, &name, addr).await?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            listener_fd_registry.push((name.clone(), tcp.as_raw_fd()));
+        }
         let listener_tls = listener_cfg.tls;
         tracing::info!(
             "data-plane listening on {addr} (tls={})",
@@ -854,6 +870,11 @@ pub async fn run(
             addr,
         )
         .await?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            listener_fd_registry.push(("force-https".to_string(), tcp.as_raw_fd()));
+        }
         tracing::info!("force-https redirect listening on {addr}");
         let challenges = challenges.clone();
         handles.push(tokio::spawn(force_https_loop(tcp, status, challenges)));
@@ -867,6 +888,11 @@ pub async fn run(
         admin_addr,
     )
     .await?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        listener_fd_registry.push(("admin".to_string(), admin_tcp.as_raw_fd()));
+    }
 
     // FIX 2026-05-03 — optional admin TLS. `cfg.admin.tls` was
     // always present in the schema but never wired; before this
@@ -938,7 +964,7 @@ pub async fn run(
 
     let admin_cfg = cfg.clone();
     let admin_readiness = readiness.clone();
-    let admin_bus = bus;
+    let admin_bus = bus.clone();
     let admin_mask = mask.clone();
     let admin_risk = risk.clone();
     let admin_ip_rate_limiter = ip_rate_limiter.clone();
@@ -996,17 +1022,56 @@ pub async fn run(
     // FDP-T6 — install the SIGUSR2 listener now that the
     // accept loops are running. The HotReloader's `signal()`
     // is the only thing the handler does; the actual handover
-    // (perform_handover + drain + exit) is invoked when a
-    // future polling loop sees `take_signal()` return true.
-    // That polling loop wires in once the accept-loop drain
-    // refactoring lands — until then this is the listening
-    // primitive operators can `kill -USR2` against, and the
-    // boot log line tells them so.
+    // (perform_handover + drain + exit) runs in the polling
+    // task spawned below.
     let hot_reloader = std::sync::Arc::new(crate::hotbin::HotReloader::new(
         std::time::Duration::from_secs(30),
     ));
     let _sigusr2_handle =
         crate::hotbin::spawn_sigusr2_listener(hot_reloader.clone());
+
+    // FDP drain refactor — polling task that watches
+    // `hot_reloader.take_signal()` and orchestrates the actual
+    // handover when it fires. Lives for the proxy lifetime.
+    // Both procs accept until the parent exits — the kernel's
+    // accept-queue hashing distributes new conns across both
+    // listeners during the drain window. perform_handover
+    // returns when in-flight reaches zero OR drain_grace
+    // expires; either way the parent emits the audit completion
+    // event then process::exit(0)s so the inherited FDs become
+    // child-only.
+    #[cfg(unix)]
+    {
+        let reloader_for_poll = hot_reloader.clone();
+        let inflight_for_poll = upstream_ctx.inflight.clone();
+        let bus_for_poll = bus.clone();
+        let fd_registry = listener_fd_registry.clone();
+        handles.push(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(
+                std::time::Duration::from_millis(500),
+            );
+            tick.set_missed_tick_behavior(
+                tokio::time::MissedTickBehavior::Skip,
+            );
+            loop {
+                tick.tick().await;
+                if !reloader_for_poll.take_signal() {
+                    continue;
+                }
+                run_handover(
+                    &fd_registry,
+                    inflight_for_poll.clone(),
+                    &bus_for_poll,
+                )
+                .await;
+                // run_handover() either calls process::exit on
+                // Drained / DrainTimeout or logs the rollback
+                // and returns. On rollback we resume polling so
+                // a follow-up SIGUSR2 (after the operator
+                // diagnoses the bad child) can try again.
+            }
+        }));
+    }
 
     // FDP-T5 — child-side: signal readiness to a parent that
     // exec'd us. No-op for first-boot. Done as the last step
@@ -1250,4 +1315,158 @@ pub(crate) fn build_interop_runtime(
         modes,
         control,
     }))
+}
+
+/// FDP drain refactor — orchestrate one SIGUSR2-triggered
+/// hot-restart attempt. Called from the polling task spawned
+/// by `run()` once `HotReloader::take_signal()` returns true.
+///
+/// On `HandoverOutcome::Drained` / `DrainTimeout` we
+/// `process::exit(0)` so the inherited listener FDs become
+/// child-only — both procs were accepting briefly during the
+/// drain window; once the parent exits, the kernel routes all
+/// new conns to the child.
+///
+/// On `RolledBack` we log + return so the polling loop resumes
+/// and a follow-up SIGUSR2 (after the operator diagnoses the
+/// bad child) can try again.
+#[cfg(unix)]
+async fn run_handover(
+    listener_fd_registry: &[(String, std::os::fd::RawFd)],
+    inflight: crate::hotbin::InFlightCounter,
+    bus: &aegis_core::AuditBus,
+) {
+    let handover_id = blake3::hash(
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or(0)
+            .to_le_bytes()
+            .as_slice(),
+    )
+    .to_hex()
+    .to_string();
+    let inflight_at_signal = inflight.current();
+    let our_pid = std::process::id();
+    let binary_path = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "FDP drain: current_exe() failed; cannot hot-restart",
+            );
+            return;
+        }
+    };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let pipe = match crate::hotbin::ReadinessPipe::new() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "FDP drain: ReadinessPipe::new() failed; cannot hot-restart",
+            );
+            return;
+        }
+    };
+    let plan = crate::hotbin::SuccessorPlan {
+        binary_path: binary_path.clone(),
+        listeners: listener_fd_registry.to_vec(),
+        extra_env: Vec::new(),
+        args,
+        readiness_write_fd: Some(pipe.write_fd()),
+    };
+
+    bus.emit(aegis_core::audit::AuditEvent {
+        schema_version: 1,
+        ts: chrono::Utc::now(),
+        request_id: handover_id.clone(),
+        class: aegis_core::audit::AuditClass::Access,
+        tenant_id: None,
+        tier: None,
+        action: "binary_handover_started".to_string(),
+        reason: "handover_initiated".to_string(),
+        client_ip: String::new(),
+        route_id: None,
+        rule_id: Some("handover_initiated".to_string()),
+        risk_score: None,
+        fields: serde_json::json!({
+            "handover_id": handover_id,
+            "old_pid": our_pid,
+            "fd_count": listener_fd_registry.len(),
+            "fd_names": listener_fd_registry
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>(),
+        }),
+    });
+
+    let pipe = std::sync::Arc::new(pipe);
+    let pipe_for_poll = pipe.clone();
+    let outcome = crate::hotbin::perform_handover(
+        plan,
+        inflight,
+        crate::hotbin::HandoverConfig::default(),
+        move || {
+            let p = pipe_for_poll.clone();
+            async move { p.try_read_signal().unwrap_or(false) }
+        },
+    )
+    .await;
+
+    let outcome_label = match &outcome {
+        crate::hotbin::HandoverOutcome::Drained { .. } => "drained",
+        crate::hotbin::HandoverOutcome::DrainTimeout { .. } => "drain_timeout",
+        crate::hotbin::HandoverOutcome::RolledBack { .. } => "rolled_back",
+    };
+    bus.emit(aegis_core::audit::AuditEvent {
+        schema_version: 1,
+        ts: chrono::Utc::now(),
+        request_id: handover_id.clone(),
+        class: aegis_core::audit::AuditClass::Access,
+        tenant_id: None,
+        tier: None,
+        action: "binary_handover_completed".to_string(),
+        reason: outcome.rule_id().to_string(),
+        client_ip: String::new(),
+        route_id: None,
+        rule_id: Some(outcome.rule_id().to_string()),
+        risk_score: None,
+        fields: serde_json::json!({
+            "handover_id": handover_id,
+            "outcome": outcome_label,
+            "inflight_at_signal": inflight_at_signal,
+            "details": format!("{outcome:?}"),
+        }),
+    });
+
+    tracing::info!(
+        handover_id = %handover_id,
+        outcome = outcome_label,
+        ?outcome,
+        "FDP handover completed",
+    );
+
+    // On a successful drain (or drain-timeout — operator policy
+    // is to still hand over rather than leak in-flight requests
+    // forever) exit so the child takes over the listener FDs
+    // exclusively. RolledBack is the only branch where we keep
+    // running.
+    match outcome {
+        crate::hotbin::HandoverOutcome::Drained { .. }
+        | crate::hotbin::HandoverOutcome::DrainTimeout { .. } => {
+            // Give the bus subscribers a few ms to flush the
+            // completion event before exit. Audit JSONL sinks
+            // batch every 1s by default; missing the boundary
+            // would lose the completion event.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            std::process::exit(0);
+        }
+        crate::hotbin::HandoverOutcome::RolledBack { ref reason, .. } => {
+            tracing::warn!(
+                handover_id = %handover_id,
+                reason = %reason,
+                "FDP handover rolled back; parent resumes serving",
+            );
+        }
+    }
 }
