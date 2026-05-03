@@ -337,6 +337,12 @@ pub async fn run(
         )?,
     );
 
+    // Spawn live health-check tasks for every pool that carries
+    // a `health:` block. Without this, configured probes never
+    // ran and the dashboard's "members up" stayed at the
+    // boot-time default forever.
+    let _health_handles = upstream_ctx.spawn_health_checks(&cfg, &bus);
+
     // Watcher spawn deferred until after the TLS resolver is
     // built so it can be threaded through. See spawn block
     // below the TLS construction.

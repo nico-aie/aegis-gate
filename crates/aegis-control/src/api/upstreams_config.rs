@@ -297,6 +297,22 @@ pub trait UpstreamWriter: Send + Sync {
         &self,
         new_pools: &std::collections::HashMap<String, PoolConfig>,
     ) -> Result<(), PoolValidationError>;
+
+    /// Live per-pool member health snapshot. Reads each
+    /// `Member.is_healthy()` AtomicBool from the proxy's
+    /// `PoolRegistry`. The dashboard's `/api/upstreams` endpoint
+    /// calls this on every fetch so the "healthy / total" mix
+    /// reflects the live state, not the boot-time YAML.
+    ///
+    /// Default implementation returns an empty snapshot — useful
+    /// for tests + bundles built before the live read landed.
+    fn live_snapshot(
+        &self,
+    ) -> crate::api::upstreams::PoolHealthSnapshot {
+        crate::api::upstreams::PoolHealthSnapshot {
+            pools: Vec::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -739,6 +739,7 @@ mod tests {
             idle_timeout: Duration::from_secs(30),
             keep_alive: true,
             tls: false,
+            scheme: aegis_core::config::UpstreamScheme::Auto,
         };
 
         for _ in 0..5 {
@@ -774,6 +775,7 @@ mod tests {
             idle_timeout: Duration::from_secs(30),
             keep_alive: true,
             tls: false,
+            scheme: aegis_core::config::UpstreamScheme::Auto,
         };
         let https = ConnectionPoolConfig { tls: true, ..http.clone() };
         assert_ne!(super::PoolKey::from(&http), super::PoolKey::from(&https));
@@ -789,6 +791,7 @@ mod tests {
             idle_timeout: Duration::from_secs(30),
             keep_alive: false, // request-side `Connection: close`
             tls: false,
+            scheme: aegis_core::config::UpstreamScheme::Auto,
         };
 
         for _ in 0..3 {

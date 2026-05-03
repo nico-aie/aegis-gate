@@ -47,6 +47,50 @@ impl ProxyContext {
             benchmark: BenchmarkConfig::off(),
         })
     }
+
+    /// Spawn one health-check task per pool that has a `health:`
+    /// block configured. Each task flips `Member.healthy` on every
+    /// probe response (success → true, failure → false) and emits
+    /// an audit event on state transitions. The dashboard's
+    /// `/api/upstreams` then reflects the live state via the
+    /// `live_snapshot` UpstreamWriter trait method.
+    ///
+    /// Returns the handles so the caller can drop / cancel during
+    /// shutdown if needed; in practice the proxy supervisor
+    /// manages the task lifetime.
+    pub fn spawn_health_checks(
+        &self,
+        cfg: &WafConfig,
+        bus: &aegis_core::audit::AuditBus,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        let mut handles = Vec::new();
+        let pools = self.pools.snapshot();
+        for (name, pool) in pools.iter() {
+            let pool_cfg = match cfg.upstreams.get(name) {
+                Some(c) => c,
+                None => continue,
+            };
+            let health = match &pool_cfg.health {
+                Some(h) => h,
+                None => continue,
+            };
+            let h = crate::upstream::health::spawn_health_checker(
+                name.clone(),
+                pool.members.clone(),
+                health.path.clone(),
+                health.interval,
+                health.timeout,
+                bus.clone(),
+            );
+            tracing::info!(
+                pool = %name,
+                interval_ms = health.interval.as_millis() as u64,
+                "upstream health-check task spawned"
+            );
+            handles.push(h);
+        }
+        handles
+    }
 }
 
 /// Handle a single HTTP request: resolve route → pick upstream → forward → respond.

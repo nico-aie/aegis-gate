@@ -209,6 +209,29 @@ impl aegis_control::api::upstreams_config::UpstreamWriter for PoolRegistry {
     ) -> Result<(), PoolValidationError> {
         Self::apply(self, new_pools)
     }
+
+    fn live_snapshot(
+        &self,
+    ) -> aegis_control::api::upstreams::PoolHealthSnapshot {
+        let snap = self.snapshot();
+        let pools = snap
+            .iter()
+            .map(|(name, pool)| {
+                let total = pool.members.len() as u32;
+                let healthy = pool
+                    .members
+                    .iter()
+                    .filter(|m| m.is_healthy())
+                    .count() as u32;
+                aegis_control::api::upstreams::PoolHealthEntry {
+                    name: name.clone(),
+                    healthy,
+                    total,
+                }
+            })
+            .collect();
+        aegis_control::api::upstreams::PoolHealthSnapshot { pools }
+    }
 }
 
 #[cfg(test)]
@@ -429,6 +452,72 @@ circuit_breaker:
         r1.apply(&cfg_v2).unwrap();
         // r2 sees the swap because they share Arc<ArcSwap>.
         assert!(r2.get("b").is_some());
+    }
+
+    #[test]
+    fn live_snapshot_starts_with_all_members_healthy() {
+        use aegis_control::api::upstreams_config::UpstreamWriter;
+        let cfg = cfg_map(&[
+            ("a", pool_cfg("127.0.0.1:3001")),
+            ("b", pool_cfg("127.0.0.1:3002")),
+        ]);
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let registry = PoolRegistry::from_pools(pools, breakers);
+        let snap = registry.live_snapshot();
+        assert_eq!(snap.pools.len(), 2);
+        for pool in &snap.pools {
+            assert_eq!(pool.healthy, pool.total, "{} should be all-healthy at boot", pool.name);
+            assert_eq!(pool.total, 1);
+        }
+    }
+
+    #[test]
+    fn live_snapshot_reflects_member_health_flip() {
+        use aegis_control::api::upstreams_config::UpstreamWriter;
+        use std::sync::atomic::Ordering;
+        let cfg = cfg_map(&[("api", pool_cfg("127.0.0.1:3001"))]);
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let registry = PoolRegistry::from_pools(pools, breakers);
+
+        // Walk the live pool, flip the member's healthy AtomicBool
+        // (same flag the health-checker writes), and confirm the
+        // snapshot reflects it without rebuilding the registry.
+        let live = registry.snapshot();
+        let pool = live.get("api").expect("pool present");
+        pool.members[0].healthy.store(false, Ordering::Relaxed);
+
+        let snap = registry.live_snapshot();
+        let api = snap.pools.iter().find(|p| p.name == "api").unwrap();
+        assert_eq!(api.healthy, 0);
+        assert_eq!(api.total, 1);
+    }
+
+    #[test]
+    fn live_snapshot_counts_partial_pool_health() {
+        use aegis_control::api::upstreams_config::UpstreamWriter;
+        use std::sync::atomic::Ordering;
+        // Two members in one pool — flip only the first.
+        let yaml = r#"
+members:
+  - addr: "127.0.0.1:3001"
+    weight: 1
+  - addr: "127.0.0.1:3002"
+    weight: 1
+lb: round_robin
+"#;
+        let pool_cfg: PoolConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg = cfg_map(&[("mixed", pool_cfg)]);
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg).unwrap();
+        let registry = PoolRegistry::from_pools(pools, breakers);
+
+        let live = registry.snapshot();
+        let pool = live.get("mixed").unwrap();
+        pool.members[0].healthy.store(false, Ordering::Relaxed);
+
+        let snap = registry.live_snapshot();
+        let m = snap.pools.iter().find(|p| p.name == "mixed").unwrap();
+        assert_eq!(m.healthy, 1);
+        assert_eq!(m.total, 2);
     }
 
     // Suppress unused-import warning when no test uses `Duration`.

@@ -82,8 +82,16 @@ pub(crate) async fn admin_accept_loop(
     // Build the dashboard service bundle once at boot. The drain
     // task runs for the lifetime of the admin listener — see
     // `aegis-control::dashboard_services` (D-M2-T2.7).
-    let pool_provider =
-        aegis_control::dashboard_services::pool_snapshot_provider(&cfg);
+    //
+    // Live pool health: the closure captures `upstream_writer`
+    // (which wraps the proxy's PoolRegistry) and reads each
+    // member's AtomicBool on every dashboard fetch. Members
+    // start `healthy: true` and flip to `false` only when the
+    // health probe records a failure — same flag the data plane
+    // routes against.
+    let upstream_writer_for_snapshot = upstream_writer.clone();
+    let pool_provider: aegis_control::dashboard_services::PoolSnapshotProvider =
+        Arc::new(move || upstream_writer_for_snapshot.live_snapshot());
 
     // F-T1 — auth runtime. Session store HMAC key derives from
     // `csrf_secret_ref`; the configured admin identity loads from
