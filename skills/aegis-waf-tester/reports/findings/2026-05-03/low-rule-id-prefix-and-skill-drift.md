@@ -4,7 +4,7 @@ date: 2026-05-03T17:45Z
 severity: LOW
 area: docs
 component: aegis-waf-tester / SKILL.md
-status: open
+status: fixed
 test_mode: full-qc
 ---
 

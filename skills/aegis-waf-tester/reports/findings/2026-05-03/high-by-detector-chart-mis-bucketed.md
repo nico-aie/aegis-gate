@@ -4,7 +4,7 @@ date: 2026-05-03T17:38Z
 severity: HIGH
 area: admin-api
 component: /api/attacks/by-detector + Attack distribution donut
-status: open
+status: fixed
 test_mode: full-qc
 ---
 

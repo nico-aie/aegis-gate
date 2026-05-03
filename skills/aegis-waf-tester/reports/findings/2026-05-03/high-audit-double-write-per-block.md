@@ -4,7 +4,7 @@ date: 2026-05-03T17:40Z
 severity: HIGH
 area: data-plane
 component: audit-chain
-status: open
+status: fixed
 test_mode: full-qc
 ---
 

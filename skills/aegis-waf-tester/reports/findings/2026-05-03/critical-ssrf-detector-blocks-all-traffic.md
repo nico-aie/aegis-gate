@@ -4,7 +4,7 @@ date: 2026-05-03T17:36Z
 severity: CRITICAL
 area: data-plane
 component: detector / ssrf
-status: open
+status: fixed
 test_mode: full-qc
 ---
 

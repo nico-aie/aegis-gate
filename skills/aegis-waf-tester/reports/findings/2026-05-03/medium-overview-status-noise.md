@@ -4,7 +4,7 @@ date: 2026-05-03T17:42Z
 severity: MEDIUM
 area: dashboard
 component: overview / footer / status-badge
-status: open
+status: fixed
 test_mode: full-qc
 ---
 

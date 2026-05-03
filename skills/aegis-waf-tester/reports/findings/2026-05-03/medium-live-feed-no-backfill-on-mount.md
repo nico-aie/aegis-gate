@@ -4,7 +4,7 @@ date: 2026-05-03T17:43Z
 severity: MEDIUM
 area: dashboard
 component: live-feed
-status: open
+status: fixed
 test_mode: full-qc
 ---
 

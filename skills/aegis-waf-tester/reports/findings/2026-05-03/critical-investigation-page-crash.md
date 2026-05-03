@@ -4,7 +4,7 @@ date: 2026-05-03T17:35Z
 severity: CRITICAL
 area: dashboard
 component: investigation-page
-status: open
+status: fixed
 test_mode: full-qc
 ---
 
