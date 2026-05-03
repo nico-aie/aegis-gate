@@ -2270,6 +2270,7 @@ function ListPage({ kind }) {
                 <option value="ip">ip</option>
                 <option value="cidr">cidr</option>
                 <option value="asn">asn</option>
+                <option value="country">country</option>
               </select>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 220 }}>
@@ -2277,9 +2278,19 @@ function ListPage({ kind }) {
               <input
                 type="text"
                 value={draftValue}
-                onChange={e => setDraftValue(e.target.value)}
+                onChange={e => setDraftValue(
+                  // Country codes are stored uppercase ISO-3166-1
+                  // alpha-2; auto-uppercase on input so operators
+                  // don't trip the validator with `cn` vs `CN`.
+                  draftKind === 'country' ? e.target.value.toUpperCase() : e.target.value
+                )}
                 onKeyDown={e => { if (e.key === 'Enter') submitAdd(); }}
-                placeholder={draftKind === 'ip' ? '203.0.113.7' : draftKind === 'cidr' ? '203.0.113.0/24' : 'AS13335'}
+                placeholder={
+                  draftKind === 'ip'      ? '203.0.113.7' :
+                  draftKind === 'cidr'    ? '203.0.113.0/24' :
+                  draftKind === 'asn'     ? 'AS13335' :
+                  /* country */             'CN'
+                }
                 disabled={busy}
                 style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace' }}
               />

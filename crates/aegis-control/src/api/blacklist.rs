@@ -172,7 +172,27 @@ fn validate_entry(e: &AccessListEntry) -> Result<(), String> {
     }
     match e.kind.as_str() {
         "ip" | "cidr" | "asn" => {}
-        other => return Err(format!("unknown kind: {other}")),
+        // FIX 2026-05-03 — country-code support. Operator
+        // populates `value` with an ISO-3166-1 alpha-2 code
+        // (`CN`, `RU`, `KP`, …); the access-list evaluator
+        // resolves the request's source IP via the GeoIP
+        // reader and matches on the resulting country.
+        // Validation here only checks shape (2 letters,
+        // ASCII alpha, uppercase). Whether the country is
+        // resolvable at runtime depends on the loaded
+        // MaxMind DB.
+        "country" => {
+            let cc = e.value.trim();
+            if cc.len() != 2
+                || !cc.bytes().all(|b| b.is_ascii_uppercase())
+            {
+                return Err(format!(
+                    "country code must be ISO-3166-1 alpha-2 (2 uppercase letters), got '{cc}'",
+                ));
+            }
+            return Ok(());
+        }
+        other => return Err(format!("unknown kind: {other} (expected ip / cidr / asn / country)")),
     }
     if e.value.trim().is_empty() {
         return Err("value is required".into());
@@ -208,6 +228,45 @@ mod tests {
         let s = AccessListStore::new();
         let r = s.put(entry("a", "wat", "1.1.1.1"));
         assert!(r.is_err());
+        let msg = r.unwrap_err();
+        assert!(
+            msg.contains("expected ip / cidr / asn / country"),
+            "error should list valid kinds, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn put_accepts_country_kind_with_iso_alpha2() {
+        let s = AccessListStore::new();
+        s.put(entry("cn", "country", "CN")).expect("CN should validate");
+        s.put(entry("ru", "country", "RU")).expect("RU should validate");
+        s.put(entry("kp", "country", "KP")).expect("KP should validate");
+        assert_eq!(s.list().len(), 3);
+    }
+
+    #[test]
+    fn put_rejects_country_kind_with_lowercase_or_wrong_length() {
+        let s = AccessListStore::new();
+        let cases: &[(&str, &str)] = &[
+            ("lower",      "cn"),    // lowercase
+            ("three",      "USA"),   // 3 letters
+            ("one",        "U"),     // 1 letter
+            ("digits",     "12"),    // not alpha
+            ("mixed_case", "Us"),    // mixed case
+            ("empty",      ""),      // empty
+        ];
+        for (id, value) in cases {
+            let r = s.put(entry(id, "country", value));
+            assert!(
+                r.is_err(),
+                "country={value:?} should be rejected by validator",
+            );
+            let msg = r.unwrap_err();
+            assert!(
+                msg.contains("ISO-3166-1 alpha-2"),
+                "error should mention the standard, got: {msg}",
+            );
+        }
     }
 
     #[test]

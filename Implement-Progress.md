@@ -330,6 +330,26 @@ milestone ships you can see exactly which lines to delete. See
 [`plans/phase-b/README.md`](./plans/phase-b/README.md) for the task
 breakdown.
 
+**Access-list runtime enforcement** — surfaced 2026-05-03.
+`/api/blacklist` + `/api/whitelist` accept full CRUD (operators
+add IP / CIDR / ASN / country entries, dashboard renders them,
+audit chain records mutations) but **the data-plane handler
+never consults the lists** — no traffic is actually filtered
+on the basis of these entries today. Bug-shaped, not feature-
+shaped. Fixing it requires:
+  - `AccessListStore::matches(ip)` + `matches_country(cc)`
+    helpers (~50 LOC).
+  - Hook into `data_plane::handle_data_request_inner` after
+    XFF resolution: if peer ∈ blacklist → block; if peer ∈
+    whitelist → skip detector chain.
+  - Wire `services.geoip` into the matcher so country entries
+    actually resolve.
+  - 4-6h of work; see ed45062..0bbe415 for adjacent context.
+The dashboard's country-kind picker (this commit, ed45062 +
+following) is honest about today's CRUD-only behaviour —
+operators can save country entries but they don't filter
+traffic until the runtime evaluator lands.
+
 **B1 — HA & multi-node** ✅ **CLOSED** 2026-04-29 — single-node
 + Redis-primary + local-fallback ships;
 `docs/operations/ha-clustering.md` is Implemented. Two minor
