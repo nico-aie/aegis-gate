@@ -187,6 +187,11 @@ pub struct DashboardServices {
     /// configured value). PUT /api/mtls/mode swaps the override
     /// in-process.
     pub mtls_mode_store: std::sync::Arc<crate::api::mtls_mode::ClientAuthModeStore>,
+    /// MTLS-T10 — operator opt-in for the dashboard's CA bundle
+    /// upload card. Mirrors `cfg.admin.dashboard_auth.allow_ca_upload`.
+    /// Default `false` so trust anchors stay GitOps-managed
+    /// unless the operator explicitly flips it on.
+    pub allow_ca_upload: bool,
     /// HACK-T3 — shared detector list for the `/api/rules/simulate`
     /// preview endpoint (Tier-A bonus). Same `Vec<Box<dyn Detector>>`
     /// the data-plane `accept_loop` runs, so the simulator and live
@@ -446,6 +451,9 @@ impl DashboardServices {
                 mtls_mode_store: std::sync::Arc::new(
                     crate::api::mtls_mode::ClientAuthModeStore::new(),
                 ),
+                // MTLS-T10 — default off; proxy boot path overrides
+                // from cfg.admin.dashboard_auth.allow_ca_upload.
+                allow_ca_upload: false,
                 // HACK-T3 — wired by the proxy boot path. Until then
                 // `/api/rules/simulate` returns 503.
                 detectors: None,

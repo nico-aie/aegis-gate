@@ -2592,6 +2592,130 @@ function MtlsModeCard() {
   );
 }
 
+// MTLS-T10 — CA bundle upload card. Renders only when the
+// operator has set `cfg.admin.dashboard_auth.allow_ca_upload: true`
+// (default off — many operators run trust anchors via GitOps).
+//
+// **Phase 1**: paste / upload PEM → parse + preview metadata
+// (subject / issuer / fingerprint / expiry / is_ca). Audit-emits
+// `mtls_ca_bundle_validated`. The hot-swap of the live trust
+// store ships with the listener-rebuild track (Phase 2).
+function MtlsCaBundleCard() {
+  const cap = window.useApi
+    ? window.useApi('/api/mtls/ca-bundle/capability', { intervalMs: 60000, fallback: { allow_ca_upload: false } })
+    : { data: { allow_ca_upload: false } };
+  const [pem, setPem] = useStateP('');
+  const [preview, setPreview] = useStateP(null);
+  const [busy, setBusy] = useStateP(false);
+  const [errMsg, setErrMsg] = useStateP(null);
+
+  if (cap.data && !cap.data.allow_ca_upload) {
+    // Don't render — operator hasn't opted in. Returning null
+    // keeps the Settings page tidy; the env explanation lives
+    // in the docs.
+    return null;
+  }
+
+  function onFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => setPem(String(reader.result || ''));
+    reader.readAsText(f);
+  }
+
+  async function validate() {
+    if (!pem.trim()) {
+      setErrMsg('paste or select a PEM bundle first');
+      return;
+    }
+    setBusy(true); setErrMsg(null); setPreview(null);
+    try {
+      const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+      const r = await fetch('/api/mtls/ca-bundle', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/x-pem-file', 'x-csrf-token': csrf },
+        body: pem,
+        credentials: 'same-origin',
+      });
+      const body = await r.json();
+      if (!r.ok) {
+        setErrMsg(body.error || `status ${r.status}`);
+        if (body.preview) setPreview(body.preview);
+      } else {
+        setPreview(body.preview);
+      }
+    } catch (e) {
+      setErrMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+      <window.SectionHeader
+        title="CA bundle upload (preview)"
+        sub="Paste a PEM trust bundle → parse + audit-emit. Phase 1: validation only; live swap requires restart."
+      />
+      <div style={{ padding: '8px 0', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <textarea
+          value={pem}
+          onChange={e => setPem(e.target.value)}
+          placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+          rows={8}
+          style={{ fontFamily: 'monospace', fontSize: 11, padding: 8, border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
+        />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
+          <button className="btn primary" disabled={busy || !pem.trim()} onClick={validate}>
+            {busy ? 'Validating…' : 'Validate + audit-emit'}
+          </button>
+          <button className="btn" disabled={busy} onClick={() => { setPem(''); setPreview(null); setErrMsg(null); }}>
+            Clear
+          </button>
+        </div>
+        {errMsg && (
+          <div className="pill warn" style={{ alignSelf: 'flex-start' }}>error: {errMsg}</div>
+        )}
+        {preview && preview.valid && (
+          <div style={{ marginTop: 4 }}>
+            <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 4 }}>
+              {preview.blocks_seen} block{preview.blocks_seen === 1 ? '' : 's'} parsed · {preview.certificates.length} certificates
+            </div>
+            <table className="tbl tbl-compact">
+              <thead><tr><th>Subject</th><th>Issuer</th><th>Fingerprint (SHA-256)</th><th>Expires</th><th>CA?</th></tr></thead>
+              <tbody>
+                {preview.certificates.map((c, i) => (
+                  <tr key={i}>
+                    <td className="mono" style={{ fontSize: 11 }}>{c.subject}</td>
+                    <td className="mono" style={{ fontSize: 11 }}>{c.issuer}</td>
+                    <td className="mono" style={{ fontSize: 10 }}>{c.fingerprint_sha256.slice(0, 23)}…</td>
+                    <td>
+                      {c.expired
+                        ? <span className="pill down">expired</span>
+                        : <span className={`pill ${c.days_to_expiry < 30 ? 'warn' : 'ok'}`}>
+                            {c.days_to_expiry} days
+                          </span>}
+                    </td>
+                    <td>{c.is_ca ? <span className="pill ok">CA</span> : <span className="pill warn">leaf</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {preview && !preview.valid && (
+          <div style={{ marginTop: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+            <strong>Errors:</strong>
+            <ul>{preview.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // MTLS-T7 — Allowed SAN allowlist card. Lives on the Settings
 // page; allows operators to add/remove DNS / wildcard / SPIFFE
 // patterns and test admit decisions without making a real mTLS
@@ -2913,6 +3037,7 @@ function PageSettings() {
       <ConfigVersionsCard />
 
       <MtlsModeCard />
+      <MtlsCaBundleCard />
       <MtlsSansCard />
 
       <div className="card" style={{ marginBottom: 12 }}>

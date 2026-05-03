@@ -433,6 +433,10 @@ pub(crate) async fn admin_accept_loop(
             aegis_control::api::mtls_mode::ClientAuthModeStore::with_configured(configured_mode),
         );
     }
+    // MTLS-T10 — surface the operator's opt-in for the CA bundle
+    // upload card. Default off; flip via
+    // `cfg.admin.dashboard_auth.allow_ca_upload: true`.
+    services.allow_ca_upload = cfg.admin.dashboard_auth.allow_ca_upload;
     // SC-T1 — wire the live `StateBackend` so `/api/state` can
     // call `health()`. The handle is the same metered backend
     // every other consumer reads, so the dashboard sees the same

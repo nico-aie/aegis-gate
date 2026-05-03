@@ -294,6 +294,10 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::PUT && path == "/api/mtls/mode" {
         return crate::admin_mutate::handle_mtls_mode_put(req, services).await;
     }
+    // MTLS-T10 — CA bundle validation + audit-emit (Phase 1).
+    if method == hyper::Method::PUT && path == "/api/mtls/ca-bundle" {
+        return crate::admin_mutate::handle_mtls_ca_bundle_put(req, services).await;
+    }
     if method == hyper::Method::PUT && path == "/api/mtls/sans" {
         return handle_mtls_sans_put(req, services).await;
     }

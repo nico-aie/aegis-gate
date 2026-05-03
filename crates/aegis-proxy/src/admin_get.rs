@@ -566,6 +566,16 @@ pub(crate) fn admin_router(
         // endpoints. Each works with `identity_tracker: None`
         // (returns empty-state body) so the dashboard renders
         // before MTLS-T2's rustls wiring lands.
+        // MTLS-T10 — capability flag read so the dashboard knows
+        // whether to render the CA bundle upload card. Mirrors
+        // `cfg.admin.dashboard_auth.allow_ca_upload`. Distinct
+        // from the actual upload (PUT) so the GET is cheap +
+        // doesn't require auth.
+        "/api/mtls/ca-bundle/capability" => {
+            let allowed = services.allow_ca_upload;
+            let body = serde_json::json!({"allow_ca_upload": allowed});
+            json_body_response(200, body.to_string(), "private, max-age=30")
+        }
         // MTLS-T8 — runtime mode override read. Reports the
         // configured mode (from cfg.tls.client_auth.mode at boot),
         // the current override (or null), the effective mode, and

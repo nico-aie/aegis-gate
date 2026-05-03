@@ -1853,6 +1853,15 @@ pub struct DashboardAuthConfig {
     pub login_rate_limit: LoginRateLimitConfig,
     #[serde(default)]
     pub lockout: LockoutConfig,
+    /// MTLS-T10 — when `true`, the dashboard exposes a card on
+    /// the Settings page that lets operators validate-and-preview
+    /// (and, in a future phase, hot-swap) a CA bundle without
+    /// editing YAML. **Default `false`** — many operators run
+    /// trust anchors through GitOps and don't want them mutable
+    /// from a browser. Flip to `true` only when the dashboard
+    /// is the canonical source of truth for the bundle.
+    #[serde(default)]
+    pub allow_ca_upload: bool,
 }
 
 fn default_session_idle() -> Duration {
@@ -1879,6 +1888,7 @@ impl Default for DashboardAuthConfig {
             totp_enabled: false,
             login_rate_limit: LoginRateLimitConfig::default(),
             lockout: LockoutConfig::default(),
+            allow_ca_upload: false,
         }
     }
 }

@@ -764,6 +764,107 @@ pub(crate) async fn handle_alert_ack(
     }
 }
 
+// MTLS-T10 — CA bundle validation + audit-emit. Audit-mutated,
+// CSRF-gated, gated behind cfg.admin.dashboard_auth.allow_ca_upload.
+//
+// **Phase 1 of T10**: parse + preview + audit. The actual hot-swap
+// of the live `ClientTrustStore` lands with the listener-rebuild
+// track (the listeners' `TlsAcceptor` Arc has to be rotated to
+// pick up new roots; the existing cfg-reload watcher does this
+// for cfg.tls.certificates but not yet for the bundle alone).
+//
+// Request body: raw PEM bytes (`Content-Type: application/x-pem-file`
+// or `text/plain`). Multipart parsing is deliberately avoided —
+// the dashboard reads the file as text + posts it directly.
+//
+// Response: PreviewResponse + diff vs the previously-uploaded
+// preview (we don't read the live trust store here; we only
+// know what a previous upload looked like via the audit ring).
+pub(crate) async fn handle_mtls_ca_bundle_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    if !services.allow_ca_upload {
+        return json_response(
+            403,
+            &serde_json::json!({
+                "error": "feature_disabled",
+                "message": "CA bundle upload is gated behind cfg.admin.dashboard_auth.allow_ca_upload — flip to true and restart to enable.",
+            }),
+        );
+    }
+
+    let pre = mutation_preamble(&req, "mtls-ca-bundle-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => bytes::Bytes::new(),
+    };
+    if body_bytes.is_empty() {
+        return json_response(
+            400,
+            &serde_json::json!({"error": "empty_body", "message": "expected PEM bytes in body"}),
+        );
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let preview = aegis_control::api::mtls_ca_bundle::parse_and_preview(
+        body_bytes.as_ref(),
+        now,
+    );
+
+    if !preview.valid {
+        return json_response(
+            400,
+            &serde_json::json!({
+                "error": "invalid_pem",
+                "preview": preview,
+            }),
+        );
+    }
+
+    // Snapshot the after summary (no raw bytes — operator already
+    // sees these in the response, and they land on the chain).
+    let after_payload = serde_json::json!({
+        "blocks_seen": preview.blocks_seen,
+        "certificates": preview.certificates,
+    });
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/mtls/ca-bundle",
+        action: "mtls_ca_bundle_validated",
+        reason: "operator validated CA bundle (Phase 1 — no live swap yet)",
+    };
+
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        // Phase 1: no "before" — we don't yet read the live trust
+        // store. Phase 2 (hot-swap) will populate this.
+        serde_json::Value::Null,
+        after_payload,
+        || Ok(()),
+    );
+
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "request_id": pre.request_id,
+                "preview": preview,
+                "applied": false,
+                "message": "Bundle parsed + audit-emitted. Phase 1: live swap requires a YAML edit + restart. The Phase 2 hot-swap path lands with the listener-rebuild track.",
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 // MTLS-T8 — runtime mode override. Audit-mutated, CSRF-gated.
 // Body shape: `{"mode": "disabled"|"optional"|"required"}` to
 // set the override; `{"clear": true}` to remove it. `clear` is
