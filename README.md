@@ -75,66 +75,159 @@ p95 **286 µs** (run-12); Nuclei 742 templates / 1 431 requests
 
 ## Quick Start
 
-```sh
-make setup       # generate dev cert + release build
-make run-dev     # boot WAF — Redis auto-starts in the background
-make smoke       # in another terminal: curl data + admin endpoints
-make urls        # print every URL + log path
+The operator path has four phases — **Build → Run → Test → Deploy**.
+Each is one or two `make` targets; everything below is a `cd
+aegis-gate/` away.
 
-# Optional — bring up the full observability stack:
-make obs-up      # Prometheus + Grafana + Jaeger
+### 1 · Build
+
+```sh
+make setup        # one-shot: dev cert + release build
+                  # (cold ~2 min, warm ~10 s)
 ```
 
-Every config (dev / prod / 3 profiles) uses **Redis** as the state
-backend — same shape across all environments. The Makefile
-auto-spins-up the dev Redis on every `run-*` target; you don't need
-to plumb it manually. `make urls` prints all the relevant URLs +
-where logs land.
+`make setup` chains `make cert` (self-signed dev TLS cert under
+`config/certs/`) and `make build` (release binary at
+`./target/release/waf`). Customise the feature set with `FEATURES=`:
 
-Profile picker (4 starting points —
+```sh
+FEATURES="redis geoip alerts taxii http3 etcd otel" make build
+```
+
+| Feature flag | Adds |
+|---|---|
+| `redis` | shared rate-limit + leader-lease state backend |
+| `geoip` | MaxMind GeoLite2 reader (country / ASN enrichment + `kind: country` access-list matcher) |
+| `alerts` | VipTalk delivery for SLO + audit alerts |
+| `taxii` | STIX/TAXII threat-intel auto-fetch |
+| `http3` | QUIC listener (quinn + h3) |
+| `etcd` | `AEGIS_CONFIG_SOURCE=etcd` boot path |
+| `otel` | OpenTelemetry OTLP exporter |
+| `ai` | ML-based detector (operator-supplied ONNX) |
+
+Validate any config without booting:
+
+```sh
+make validate                # default profile
+make validate-all            # dev + 3 production profiles
+```
+
+### 2 · Run
+
+`make run-dev` is for first-light. The Makefile auto-starts the dev
+Redis sidecar + Go mock upstream on `:9999`, so you don't need to
+plumb anything by hand:
+
+```sh
+make run-dev      # config/dev.yaml + Redis + mock upstream
+make urls         # print every URL + log path
+make logs         # tail audit chain + container logs
+```
+
+Listeners after boot: `:8080` (HTTP), `:8443` (HTTPS), `:9443`
+(admin / dashboard / `/metrics`).
+
+For real workloads pick a production profile (decision tree:
 [`docs/operator/profiles.md`](docs/operator/profiles.md)):
 
-```sh
-make run-dev              # config/dev.yaml — local dev (inline test creds)
-make run                  # config/profiles/prod-balanced.yaml — DEFAULT
-make run-strict           # config/profiles/prod-strict.yaml — compliance-tightened
-make run-throughput       # config/profiles/prod-high-throughput.yaml — CDN front-door
+| Target | Config | When |
+|---|---|---|
+| `make run-dev` | `config/dev.yaml` | Local dev (inline creds) |
+| `make run` | `config/profiles/prod-balanced.yaml` | **Production default** |
+| `make run-strict` | `config/profiles/prod-strict.yaml` | PCI / HIPAA / SOC2 / GDPR |
+| `make run-throughput` | `config/profiles/prod-high-throughput.yaml` | CDN front-door, > 5 k RPS |
 
-CONFIG=config/prod.yaml make run                         # legacy template
-FEATURES="redis alerts geoip taxii http3 etcd otel" make build
-make validate-all                                        # validate dev + 3 profiles
-make test                                                # cargo test --workspace
+Pointing at a real backend: edit `upstreams.<pool>.members[*].addr`
+in your chosen YAML, set `connection.scheme: https` for TLS, and
+restart. Walkthrough + caveats (the Host header gets rewritten to
+the upstream's IP):
+[`QUICKSTART.md` § Real upstream](QUICKSTART.md#pointing-at-a-real-upstream).
+
+Boot from etcd instead of a file (with `--features etcd`):
+
+```sh
+AEGIS_CONFIG_SOURCE=etcd \
+AEGIS_ETCD_ENDPOINTS=http://etcd-cluster:2379 \
+  ./target/release/waf run
 ```
 
-Step-by-step setup + tuning + admin auth + URL/logs map:
-[`QUICKSTART.md`](QUICKSTART.md). Production deployment:
-[`deploy/GUIDE.md`](deploy/GUIDE.md). YAML reference:
-[`config/README.md`](config/README.md).
+Same `WafConfig::validate` + same hot-reload watcher path. Key
+layout: [`deploy/etcd/README.md`](deploy/etcd/README.md).
 
-### Three-layer scaling
+### 3 · Test
+
+Three layers — automated, contract, hand-driven.
+
+```sh
+# Automated — runs on every commit (zero warnings, ~1 500 tests)
+make test                  # cargo test --workspace
+make clippy                # cargo clippy --workspace -- -D warnings
+
+# Contract / smoke — assumes `make run-dev` is up in another shell
+make smoke                 # curl data + admin healthz
+make protocols-test        # h1 / h2 / h3 / WS / gRPC
+make openapi-test          # OpenAPI shape contract
+make ci-local              # everything GitHub Actions runs
+
+# Hand-driven — `tests/manual/` validates the recently shipped fixes
+export ADMIN_USER=admin ADMIN_PASS=admin
+export AEGIS_ADMIN=http://127.0.0.1:9443 AEGIS_DATA=http://127.0.0.1:8080
+tests/manual/access-list-roundtrip.sh   # ip / cidr / whitelist roundtrip
+tests/manual/csrf-cookie-flow.sh        # login → CSRF → 403 paths
+tests/manual/fake-country-ips.sh        # spoof XFF from US/CN/RU/DE/JP/BR/GB
+tests/manual/websocket-bridge.sh        # real ws:// session through the WAF
+tests/manual/viptalk-alert-test.sh      # delivered / skipped_feature_off
+```
+
+Stress + load + security:
+
+```sh
+make mock-load             # ~50 RPS legit + crawler + attacker mix
+make mock-load-attacks     # attack-only flood (drives detector hits)
+make mock-load-mix         # ~5 k RPS — stress the WAF
+bash tests/hackathon/run.sh   # 15-min Round-1 mixed-traffic harness
+k6 run tests/load/baseline.js
+nuclei -u http://127.0.0.1:8080/ -tags sqli,xss,traversal -duc
+```
+
+### 4 · Deploy
+
+Production path is build → image → orchestrate. Full walkthrough:
+[`deploy/GUIDE.md`](deploy/GUIDE.md).
+
+```sh
+# Multi-arch image (amd64 + arm64; distroless production base — B6-T1)
+bash deploy/docker-build.sh --tag aegis-gate:0.x
+
+# Helm chart (B6-T2) — 3-replica HA cluster behind a service
+helm upgrade --install aegis deploy/helm/aegis-gate \
+  --set image.tag=0.x \
+  --set redis.url=redis://prod-redis:6379
+
+# Lint + render before pushing
+make helm-lint
+make helm-render
+```
+
+Hot-reload story (cfg edits land without restart) is covered in the
+[Hot-reload story](#hot-reload-story-operator-facing) section
+below — six surfaces reload via the file watcher (~100 ms) or etcd
+watcher (~5 s).
+
+---
+
+Step-by-step setup + tuning + admin auth + URL/logs map:
+[`QUICKSTART.md`](QUICKSTART.md). YAML reference:
+[`config/README.md`](config/README.md). SOC team operations:
+[`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md).
+
+## Three-layer scaling
 
 | Layer | Knob | Doc |
 |---|---|---|
 | 1 — In-node | `runtime.workers`, `cpu_affinity` (tokio worker threads, `affinity` feature) | [`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md) |
 | 2 — Across nodes | `node.id` + an LB in front of N peers | [`docs/operations/ha-clustering.md`](docs/operations/ha-clustering.md) |
 | 3 — State | `state.backend: redis` (counters, leases, block lists) | [`Architecture.md` §12](Architecture.md) |
-
-### Config sources (boot-time selection)
-
-```sh
-# Default — load from a local YAML file (prod-balanced profile)
-./target/release/waf run --config config/profiles/prod-balanced.yaml
-
-# etcd v3 (--features etcd) — load from a key, watch for changes
-AEGIS_CONFIG_SOURCE=etcd \
-AEGIS_ETCD_ENDPOINTS=http://etcd-cluster:2379 \
-  ./target/release/waf run
-```
-
-Both sources flow through the same `WafConfig::validate` and
-the same hot-reload watcher path. See
-[`deploy/etcd/README.md`](deploy/etcd/README.md) for the etcd
-key layout + bootstrap.
 
 ## CLI Overview
 
@@ -359,33 +452,17 @@ stack:
 | Status / cluster | `/api/about`, `/api/cluster`, `/api/runtime`, `/api/loadmode`, `/api/slo`, `/api/certs`, `/api/gitops/status` |
 | Dashboard | `/dashboard/` (12 pages, React 18 SPA, 178 KB bundle, CSP `script-src 'self'`) |
 
-## Testing
+## Testing — quick reference
+
+The Quick Start §3 covers the everyday targets. A few extras:
 
 ```sh
 # Per-crate
 cargo test -p aegis-control
 cargo test -p aegis-proxy --features etcd
 
-# Full workspace
-cargo test --workspace
-
-# Clippy (required: zero warnings on libs)
-cargo clippy --workspace --features etcd --lib -- -D warnings
-
-# API smoke (curl + jq)
-AEGIS_ADMIN=http://127.0.0.1:9443 \
-ADMIN_USER=admin ADMIN_PASS=aegis-test-1234 \
-  bash tests/api/openapi-shape.sh
-
-# Round-1 acceptance
+# Round-1 dashboard acceptance
 bash tests/dashboard/round1-acceptance.sh
-
-# k6 load
-WAF_TARGET=http://127.0.0.1:8080 k6 run tests/load/baseline.js
-
-# Nuclei security scan
-nuclei -u http://127.0.0.1:8080/ -severity critical,high \
-  -tags sqli,xss,traversal -duc
 
 # Per-page screenshots (Playwright)
 node tests/dashboard/capture-screenshots.mjs \
@@ -393,6 +470,9 @@ node tests/dashboard/capture-screenshots.mjs \
   --user=admin --pass='aegis-test-1234' \
   --out=./screenshots
 ```
+
+Test taxonomy lives in [`tests/README.md`](tests/README.md);
+hand-driven scripts in [`tests/manual/README.md`](tests/manual/README.md).
 
 ## Documentation
 

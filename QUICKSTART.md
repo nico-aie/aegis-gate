@@ -213,6 +213,126 @@ abort after `AEGIS_DRAIN_GRACE_MS` (default 5 s).
 
 ---
 
+## Pointing at a real upstream
+
+`config/dev.yaml` ships with a stub upstream on `127.0.0.1:9999`
+(the Go mock under `tests/hackathon/upstream/`). To proxy your own
+backend, edit `upstreams:` in the YAML and bring the WAF back up.
+
+### Your own backend (single-vhost or IP-addressed)
+
+```yaml
+# config/dev.yaml — replace the stub-pool block
+upstreams:
+  stub-pool:
+    members:
+      - addr: "203.0.113.45:443"   # your VPS / staging IP
+    lb: round_robin
+    connection:
+      scheme: https                # or `http` for plain :80
+```
+
+```sh
+pkill aegis-bin || true
+make run-dev
+curl -i http://localhost:8080/some/path
+curl -ik https://localhost:8443/some/path
+make logs                          # audit chain shows the forward
+curl -s http://localhost:9443/api/upstreams | jq '.pools[].members'
+```
+
+### A public hostname (resolve first — `addr:` is `SocketAddr`)
+
+```sh
+dig +short example.com             # → 23.215.0.136 (or similar)
+```
+
+```yaml
+upstreams:
+  stub-pool:
+    members:
+      - addr: "23.215.0.136:443"
+    lb: round_robin
+    connection:
+      scheme: https
+```
+
+### Heads-up — multi-vhost backends
+
+The forwarder rewrites `Host` to the upstream IP:port before
+sending (`crates/aegis-proxy/src/upstream/forward.rs:146-149`).
+That's correct for IP-addressed backends but multi-vhost services
+(httpbin.org, Cloudflare-fronted sites, GitHub Pages) reject or
+404 because the Host header doesn't match a configured vhost.
+Workarounds:
+
+- Run a small `caddy` / `nginx` locally that does the vhost dance
+  for you, point the WAF at the local proxy.
+- Use an upstream you control (`example.com`, your VPS, an ngrok
+  tunnel) where Host doesn't matter.
+
+A `host_header_override` field on `MemberConfig` is queued as a
+small follow-up.
+
+### Live verification
+
+```sh
+# Are we proxying?
+curl -s -o /dev/null -w "status=%{http_code} size=%{size_download}\n" \
+  http://localhost:8080/
+
+# Audit chain — what did the WAF allow / block / forward?
+tail -f /tmp/aegis-dev-audit.jsonl | jq \
+  'select(.action == "allow") | {ts, ip: .client_ip, path: .fields.path, status: .fields.status}'
+
+# Pool health
+curl -s http://localhost:9443/api/upstreams \
+  | jq '.pools[].members[] | {addr, healthy}'
+```
+
+---
+
+## Validating the recent fixes (manual scripts)
+
+`tests/manual/` is a small set of hand-runnable shell scripts so you
+can poke at the recently shipped console fixes without spinning up
+the full CI rig. They build on `tests/api/_common.sh` (login /
+CSRF / cookie jar) and assume `make run-dev` is up.
+
+```sh
+export ADMIN_USER=admin
+export ADMIN_PASS=admin
+export AEGIS_ADMIN=http://127.0.0.1:9443
+export AEGIS_DATA=http://127.0.0.1:8080
+```
+
+| Script | What it covers |
+|---|---|
+| `tests/manual/access-list-roundtrip.sh` | Add / probe / remove blacklist + whitelist entries (`kind: ip`, `cidr`, `whitelist`). Asserts the runtime matcher reads the same `Arc` the dashboard CRUD writes to. |
+| `tests/manual/fake-country-ips.sh` | Drops a `kind: country` blacklist entry, drives the data plane with one known IP per country (US / CN / RU / DE / JP / BR / GB). Needs `make geoip-link`. |
+| `tests/manual/csrf-cookie-flow.sh` | Login → mutation → missing-token → wrong-token paths. Confirms the global fetch interceptor's redirect targets. |
+| `tests/manual/websocket-bridge.sh` | Drives a real `ws://` session through the WAF to a local echo backend with `websocat` / `wscat`. |
+| `tests/manual/viptalk-alert-test.sh` | Posts to `/api/alert-receivers/<id>/test` and inspects `delivered / skipped_feature_off / failed`. |
+
+The fake-country trick: loopback is a trusted proxy in the default
+config, so `curl -H "X-Forwarded-For: 8.8.8.8" http://localhost:8080/`
+is treated as a request from `8.8.8.8` — the strike gate, blacklist
+matcher, GeoIP lookup, and audit log all see the spoofed IP. No
+real cross-country source needed.
+
+For the country-code path you also need MaxMind data:
+
+```sh
+make geoip-link COUNTRY_DB=/path/to/GeoLite2-Country.mmdb
+make geoip-status                                # confirm symlink
+make run-dev                                     # restart so the reader picks up
+tests/manual/fake-country-ips.sh
+```
+
+Full reference: [`tests/manual/README.md`](tests/manual/README.md).
+
+---
+
 ## Tuning Layer-1 workers
 
 The `runtime:` block (commented in
@@ -288,21 +408,130 @@ waf help                               # Built-in help
 
 ## Tests
 
+Three layers — automated, contract / smoke, hand-driven.
+
+### Automated (CI-equivalent)
+
 ```sh
-make test                                                 # full workspace
+make test                                                 # full workspace (~1500 tests)
+make clippy                                               # lint — zero warnings on libs
 cargo test --workspace --features aegis-proxy/redis       # with redis feature
-make clippy                                               # lint (zero warnings)
+cargo test -p <crate>                                     # focused
 ```
 
-The cluster smoke + LB tests live under
-[`tests/cluster/`](tests/cluster/); load tests under
-[`tests/load/`](tests/load/); dashboard acceptance under
-[`tests/dashboard/`](tests/dashboard/); the v2.3 contract gate
-under [`tests/contract/`](tests/contract/); and the Round-1
-Hackathon stress-test harness under
-[`tests/hackathon/`](tests/hackathon/) (15-min mixed-traffic
-run with mock upstream + k6 + post-run summary —
-`bash tests/hackathon/run.sh`).
+### Contract + smoke (assumes `make run-dev` is up)
+
+```sh
+make smoke                # curl data + admin healthz
+make protocols-test       # h1 / h2 / h3 / WS / gRPC
+make openapi-test         # OpenAPI shape contract
+make ci-local             # everything GitHub Actions runs
+```
+
+### Stress + security
+
+```sh
+make mock-load            # ~50 RPS legit + crawler + attacker mix
+make mock-load-attacks    # attack-only flood — drives detector hits
+make mock-load-mix        # ~5 k RPS — stress the WAF
+bash tests/hackathon/run.sh    # 15-min Round-1 mixed-traffic harness
+k6 run tests/load/baseline.js
+nuclei -u http://localhost:8080/ -tags sqli,xss,traversal -duc
+```
+
+### Test catalogue
+
+| Path | What |
+|---|---|
+| [`tests/api/`](tests/api/) | curl + jq smoke (16 scripts: openapi-shape, upstreams-crud, alert-receivers-crud, …) |
+| [`tests/manual/`](tests/manual/) | hand-driven validation of recent fixes — see § "Validating the recent fixes" above |
+| [`tests/contract/`](tests/contract/) | v2.3 contract regression gate (40 numbered §X.Y checks) |
+| [`tests/cluster/`](tests/cluster/) | HA cluster smoke + leader-failover fixtures |
+| [`tests/dashboard/`](tests/dashboard/) | Round-1 acceptance + Playwright per-page screenshots |
+| [`tests/protocols/`](tests/protocols/) | h1 / h2 / h3 / WS / gRPC mix |
+| [`tests/load/`](tests/load/) | k6 scripts (baseline, rate-limit, ddos-burst, risk-strikes, loadmode-degradation) |
+| [`tests/hackathon/`](tests/hackathon/) | 15-min mixed-traffic harness with mock upstream + k6 + post-run summary |
+| [`tests/security/`](tests/security/) | corpus + nuclei + zap runners |
+| [`tests/results/`](tests/results/) | dated run reports (logs + screenshots + REPORT.md) |
+
+---
+
+## Deploy
+
+Production path is **build → image → orchestrate**. Full walkthrough
+with cluster topology, secrets management, and rollout discipline:
+[`deploy/GUIDE.md`](deploy/GUIDE.md).
+
+### Local reproduction of production-like env
+
+```sh
+docker compose -f deploy/docker-compose.dev.yml up -d
+# Spins up: etcd, prometheus, grafana, jaeger, redis, httpbin
+make obs-up                      # if you only want observability
+```
+
+### Multi-arch container image (B6-T1)
+
+```sh
+bash deploy/docker-build.sh --tag aegis-gate:0.x         # amd64 + arm64
+bash deploy/docker-build.sh --tag aegis-gate:0.x --push  # push to registry
+docker run --rm -p 8080:8080 -p 8443:8443 -p 9443:9443 \
+  -v $(pwd)/config/profiles/prod-balanced.yaml:/etc/aegis/waf.yaml \
+  aegis-gate:0.x run --config /etc/aegis/waf.yaml
+```
+
+The base is **distroless** + non-root + multi-stage so the runtime
+layer carries only the binary + libgcc/libssl. Image size: ~70 MB
+release / ~80 MB with `production` features.
+
+### Helm chart (B6-T2)
+
+```sh
+make helm-lint                           # helm lint + kube-linter
+make helm-render                         # render with placeholder values
+helm upgrade --install aegis deploy/helm/aegis-gate \
+  --namespace aegis --create-namespace \
+  --set image.repository=ghcr.io/your-org/aegis-gate \
+  --set image.tag=0.x \
+  --set redis.url=redis://prod-redis:6379 \
+  --set replicas=3
+```
+
+Defaults: 3-replica StatefulSet, PodDisruptionBudget=1, anti-
+affinity per zone, Service ClusterIP for the data plane + LoadBalancer
+hook for the admin port (gate behind a VPN / private LB in
+production).
+
+### Hot-reload from etcd (preferred for cluster deployments)
+
+```sh
+bash deploy/etcd/bootstrap.sh \
+  --endpoints=http://etcd-cluster:2379 \
+  --config=config/profiles/prod-balanced.yaml
+# Pushes the YAML to /aegis/config/waf and prints the verification curl
+
+# Each WAF replica boots with:
+AEGIS_CONFIG_SOURCE=etcd \
+AEGIS_ETCD_ENDPOINTS=http://etcd-cluster:2379 \
+  /usr/local/bin/waf run
+```
+
+`etcdctl put` / `helmfile apply` against the same key triggers an
+atomic reload across every replica within ~5 s. Six surfaces hot-
+reload — see the README's "Hot-reload story" table.
+
+### Production checklist
+
+- [ ] Real CA-issued TLS certs (replace `tls.certificates:` block; or use `tls.acme:`)
+- [ ] Argon2id admin password (`waf admin set-password` → paste hash into `dashboard_auth.password_hash_ref`)
+- [ ] Strong CSRF secret (`dashboard_auth.csrf_secret_ref` ≥ 32 bytes; pull from secret manager via `${secret:vault:...}`)
+- [ ] TOTP enrolled (`waf admin enroll-totp`)
+- [ ] Redis pinned + persistent (RDB + AOF), behind Sentinel or Cluster
+- [ ] Audit chain durable sink (`audit.sinks: jsonl` + retention TTL) — DURABLE-T1
+- [ ] Compliance profile picked (`compliance.modes: pci|hipaa|soc2|gdpr`) — clamp prevents accidental detector disables
+- [ ] Prometheus + Grafana wired against `/metrics` on every node
+- [ ] OTel exporter pointed at your collector if you have one (`--features otel`)
+- [ ] `make ci-local` green before each release
 
 ---
 
