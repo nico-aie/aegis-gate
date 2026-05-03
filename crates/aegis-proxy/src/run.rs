@@ -861,6 +861,10 @@ pub async fn run(
     let admin_request_stage_hist = request_stage_hist.clone();
     let admin_route_latency_hist = route_latency_hist.clone();
     let admin_detector_latency_hist = detector_latency_hist.clone();
+    // MTLS-T10 Phase 2 — share the live trust store with the admin
+    // listener so the audit-mutated PUT /api/mtls/ca-bundle?apply=true
+    // path can hot-swap roots without bouncing the proxy.
+    let admin_client_trust = client_trust.clone();
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -881,6 +885,7 @@ pub async fn run(
         admin_request_stage_hist,
         admin_route_latency_hist,
         admin_detector_latency_hist,
+        admin_client_trust,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

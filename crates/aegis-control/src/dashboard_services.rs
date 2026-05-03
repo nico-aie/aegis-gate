@@ -199,6 +199,14 @@ pub struct DashboardServices {
     /// Default `false` so trust anchors stay GitOps-managed
     /// unless the operator explicitly flips it on.
     pub allow_ca_upload: bool,
+    /// MTLS-T10 Phase 2 — handle on the live trust-anchor store.
+    /// `Some` when `aegis-proxy::run` boots a `ClientTrustStore`;
+    /// `None` for plain-TLS deployments and test bundles. The
+    /// audit-mutated `PUT /api/mtls/ca-bundle?apply=true` handler
+    /// invokes `swap_pem` to hot-swap roots; when the slot is
+    /// `None` it falls back to the Phase 1 preview-only behaviour.
+    pub trust_anchor_writer:
+        Option<std::sync::Arc<dyn crate::api::mtls_ca_bundle::TrustAnchorWriter>>,
     /// HACK-T3 — shared detector list for the `/api/rules/simulate`
     /// preview endpoint (Tier-A bonus). Same `Vec<Box<dyn Detector>>`
     /// the data-plane `accept_loop` runs, so the simulator and live
@@ -462,6 +470,11 @@ impl DashboardServices {
                 // MTLS-T10 — default off; proxy boot path overrides
                 // from cfg.admin.dashboard_auth.allow_ca_upload.
                 allow_ca_upload: false,
+                // MTLS-T10 Phase 2 — wired by the proxy boot path
+                // when a `ClientTrustStore` is built. `None` for
+                // plain-TLS deployments and test bundles — the
+                // PUT handler falls back to preview-only.
+                trust_anchor_writer: None,
                 // HACK-T3 — wired by the proxy boot path. Until then
                 // `/api/rules/simulate` returns 503.
                 detectors: None,

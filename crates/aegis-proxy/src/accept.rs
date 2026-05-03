@@ -78,6 +78,12 @@ pub(crate) async fn admin_accept_loop(
     // Per-detector evaluation-duration histogram. Recorded by
     // the data plane around each `Detector::inspect` call.
     detector_latency_hist: Arc<aegis_control::metrics::detector_latency::DetectorLatencyHistogram>,
+    // MTLS-T10 Phase 2 — live `ClientTrustStore`. Surfaced as
+    // `services.trust_anchor_writer` so the audit-mutated PUT
+    // `/api/mtls/ca-bundle?apply=true` handler can hot-swap roots.
+    // `None` for plain-TLS / no-mTLS deployments — the handler
+    // falls back to Phase 1 preview-only behaviour.
+    client_trust: Option<crate::listener::client_trust::ClientTrustStore>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -440,6 +446,13 @@ pub(crate) async fn admin_accept_loop(
     // upload card. Default off; flip via
     // `cfg.admin.dashboard_auth.allow_ca_upload: true`.
     services.allow_ca_upload = cfg.admin.dashboard_auth.allow_ca_upload;
+    // MTLS-T10 Phase 2 — share the live trust store as a type-erased
+    // writer so the audit-mutated PUT handler can hot-swap roots.
+    services.trust_anchor_writer = client_trust
+        .clone()
+        .map(|store| -> Arc<dyn aegis_control::api::mtls_ca_bundle::TrustAnchorWriter> {
+            Arc::new(store)
+        });
     // SC-T1 — wire the live `StateBackend` so `/api/state` can
     // call `health()`. The handle is the same metered backend
     // every other consumer reads, so the dashboard sees the same

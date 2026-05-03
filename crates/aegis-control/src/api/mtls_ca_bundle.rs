@@ -156,6 +156,32 @@ pub struct PreviewDiff {
     pub kept: Vec<CertPreview>,
 }
 
+/// MTLS-T10 Phase 2 — abstract handle on the live `ClientTrustStore`
+/// in `aegis-proxy`. Defined here (the boundary crate `aegis-control`)
+/// so the admin-mutated PUT handler can swap the live trust anchors
+/// without `aegis-control` depending on `aegis-proxy` types.
+///
+/// The proxy boot path implements this on `ClientTrustStore` and
+/// stashes an `Arc<dyn TrustAnchorWriter>` in `DashboardServices`.
+/// Test bundles can leave the slot `None` — the PUT handler then
+/// falls back to the Phase 1 preview-only behaviour.
+pub trait TrustAnchorWriter: Send + Sync {
+    /// Parse `pem` and atomically replace the live root store.
+    /// Returns the count of trust anchors that were loaded.
+    /// On parse / build failure the old store is left intact and
+    /// the error is surfaced for audit emission.
+    fn swap_pem(&self, pem: &[u8]) -> Result<usize, String>;
+
+    /// Snapshot the PEM bytes the last successful swap was made
+    /// from. Used by the PUT handler so the audit chain can carry
+    /// an exact before/after `PreviewDiff` instead of the lossy
+    /// "what the operator said last upload" view.
+    /// Returns an empty slice when no swap has happened yet (boot
+    /// path that loaded from disk *should* seed this on success;
+    /// returning empty falls through to a Phase-1-style audit).
+    fn current_pem(&self) -> Vec<u8>;
+}
+
 pub fn diff_previews(before: &[CertPreview], after: &[CertPreview]) -> PreviewDiff {
     use std::collections::HashSet;
     let before_fps: HashSet<&str> = before.iter().map(|c| c.fingerprint_sha256.as_str()).collect();

@@ -242,12 +242,30 @@ origins enforce strict `required`.
 
 ### MTLS-T10 — Console mutation, CA bundle upload (Tier 4, opt-in, ~3 h)
 
+> **Status:** Phase 1 (parse + preview + audit) ✅ shipped at
+> `24ab3f9`. Phase 2 (live hot-swap) ✅ shipped at the commit
+> alongside this paragraph.
+
 Gated behind a feature flag (`cfg.dashboard.allow_ca_upload`)
 because some operators run trust anchors through GitOps and
 don't want them mutable from a browser. `PUT /api/mtls/ca-bundle`
 multipart-uploads PEM, validates parse + future expiry,
 **previews affected SANs** before commit, audit chain captures
 diff (subjects + fingerprints, never raw bytes).
+
+**Phase 2 — hot-swap (`?apply=true`):**
+- `PUT /api/mtls/ca-bundle?apply=true` swaps `RootCertStore` via
+  `ClientTrustStore::swap_pem`; new `WebPkiClientVerifier`
+  instances see the new roots immediately, in-flight handshakes
+  complete on the old store.
+- `TrustAnchorWriter` trait in `aegis-control::api::mtls_ca_bundle`
+  is the boundary that lets the audit-mutated handler call into
+  the live store without `aegis-control → aegis-proxy` circularity.
+- Audit emits `mtls_ca_bundle_swapped` with before/after preview
+  + diff (added/removed/kept counts), no raw bytes.
+- 409 when no live trust store (proxy booted without inbound
+  mTLS); 403 when feature flag is off; 400 on invalid PEM with
+  the rustls reason surfaced.
 
 ### MTLS-T11 — Per-route `auth_required` editor (Tier 5, free with route editor, ~30 min)
 

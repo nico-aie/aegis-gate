@@ -780,6 +780,23 @@ pub(crate) async fn handle_alert_ack(
 // Response: PreviewResponse + diff vs the previously-uploaded
 // preview (we don't read the live trust store here; we only
 // know what a previous upload looked like via the audit ring).
+/// MTLS-T10 Phase 2 — read the `apply` query parameter. `apply=1` and
+/// `apply=true` (case-insensitive) flip the PUT handler into hot-swap
+/// mode. Anything else (absent, `0`, `false`, garbage) stays preview-
+/// only so dashboards that fire the endpoint for diff-card preflight
+/// don't accidentally swap roots.
+pub(crate) fn ca_bundle_apply_flag(query: Option<&str>) -> bool {
+    let Some(q) = query else {
+        return false;
+    };
+    q.split('&').any(|pair| {
+        let mut it = pair.splitn(2, '=');
+        let k = it.next().unwrap_or("");
+        let v = it.next().unwrap_or("");
+        k == "apply" && (v == "1" || v.eq_ignore_ascii_case("true"))
+    })
+}
+
 pub(crate) async fn handle_mtls_ca_bundle_put(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
@@ -794,6 +811,12 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
             }),
         );
     }
+
+    // MTLS-T10 Phase 2 — `?apply=true` flips the handler from
+    // preview-only into hot-swap mode. Default (absent / `false`)
+    // stays preview so the dashboard's pre-flight diff card keeps
+    // working without a payload change.
+    let apply = ca_bundle_apply_flag(req.uri().query());
 
     let pre = mutation_preamble(&req, "mtls-ca-bundle-put");
     let body_bytes = match req.into_body().collect().await {
@@ -823,13 +846,88 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
         );
     }
 
-    // Snapshot the after summary (no raw bytes — operator already
-    // sees these in the response, and they land on the chain).
+    // Phase 1 path — preview + audit, no hot-swap. Used by the
+    // dashboard's pre-flight "Save & Apply" confirmation card.
+    if !apply {
+        let after_payload = serde_json::json!({
+            "blocks_seen": preview.blocks_seen,
+            "certificates": preview.certificates,
+        });
+        let req_ctx = aegis_control::api::mutation::MutationRequest {
+            method: "PUT",
+            csrf_cookie: pre.csrf_cookie.as_deref(),
+            csrf_header: pre.csrf_header.as_deref(),
+            actor: &pre.actor,
+            request_id: &pre.request_id,
+            resource: "/api/mtls/ca-bundle",
+            action: "mtls_ca_bundle_validated",
+            reason: "operator previewed CA bundle (no swap)",
+        };
+        let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            serde_json::Value::Null,
+            after_payload,
+            || Ok(()),
+        );
+        return match outcome {
+            Ok(_) => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "request_id": pre.request_id,
+                    "preview": preview,
+                    "applied": false,
+                    "message": "Preview only — re-PUT with ?apply=true to hot-swap roots.",
+                }),
+            ),
+            Err(e) => mutation_error_response(e),
+        };
+    }
+
+    // Phase 2 path — hot-swap. Requires a wired
+    // `trust_anchor_writer`; without it the proxy was booted
+    // without inbound mTLS so there's nothing to swap.
+    let Some(writer) = services.trust_anchor_writer.as_ref() else {
+        return json_response(
+            409,
+            &serde_json::json!({
+                "error": "trust_store_unavailable",
+                "message": "Live trust store is not wired (proxy booted without inbound mTLS). Configure cfg.tls.client_auth + restart to enable hot-swap.",
+            }),
+        );
+    };
+
+    // Snapshot the live PEM (if any) before swapping so the audit
+    // chain can carry an exact before/after `PreviewDiff` instead of
+    // the lossy "what we last uploaded" view.
+    let before_pem = writer.current_pem();
+    let before_preview = if before_pem.is_empty() {
+        Vec::new()
+    } else {
+        aegis_control::api::mtls_ca_bundle::parse_and_preview(&before_pem, now)
+            .certificates
+    };
+    let diff = aegis_control::api::mtls_ca_bundle::diff_previews(
+        &before_preview,
+        &preview.certificates,
+    );
+
+    let before_payload = serde_json::json!({
+        "blocks_seen": before_preview.len(),
+        "certificates": before_preview,
+    });
     let after_payload = serde_json::json!({
         "blocks_seen": preview.blocks_seen,
         "certificates": preview.certificates,
+        "diff": {
+            "added_count": diff.added.len(),
+            "removed_count": diff.removed.len(),
+            "kept_count": diff.kept.len(),
+        },
     });
 
+    let writer_cl = writer.clone();
+    let body_for_swap = body_bytes.clone();
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -837,28 +935,36 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
         actor: &pre.actor,
         request_id: &pre.request_id,
         resource: "/api/mtls/ca-bundle",
-        action: "mtls_ca_bundle_validated",
-        reason: "operator validated CA bundle (Phase 1 — no live swap yet)",
+        action: "mtls_ca_bundle_swapped",
+        reason: "operator hot-swapped CA bundle",
     };
 
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+    let outcome = services.mutate.apply::<_, usize, String>(
         &req_ctx,
-        // Phase 1: no "before" — we don't yet read the live trust
-        // store. Phase 2 (hot-swap) will populate this.
-        serde_json::Value::Null,
+        before_payload,
         after_payload,
-        || Ok(()),
+        || {
+            writer_cl
+                .swap_pem(body_for_swap.as_ref())
+                .map_err(|e| format!("trust anchor swap failed: {e}"))
+        },
     );
 
     match outcome {
-        Ok(_) => json_response(
+        Ok(out) => json_response(
             200,
             &serde_json::json!({
                 "ok": true,
                 "request_id": pre.request_id,
                 "preview": preview,
-                "applied": false,
-                "message": "Bundle parsed + audit-emitted. Phase 1: live swap requires a YAML edit + restart. The Phase 2 hot-swap path lands with the listener-rebuild track.",
+                "applied": true,
+                "cert_count": out.value,
+                "diff": {
+                    "added": diff.added,
+                    "removed": diff.removed,
+                    "kept_count": diff.kept.len(),
+                },
+                "message": "Trust anchors hot-swapped. New verifiers see the new roots immediately; in-flight handshakes complete on the old ones.",
             }),
         ),
         Err(e) => mutation_error_response(e),
@@ -2515,4 +2621,49 @@ fn mask_state_to_json(
         "base": base,
         "overrides": serde_json::Value::Object(overrides),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ca_bundle_apply_flag_default_is_false() {
+        assert!(!ca_bundle_apply_flag(None));
+        assert!(!ca_bundle_apply_flag(Some("")));
+    }
+
+    #[test]
+    fn ca_bundle_apply_flag_recognises_true_and_one() {
+        assert!(ca_bundle_apply_flag(Some("apply=true")));
+        assert!(ca_bundle_apply_flag(Some("apply=TRUE")));
+        assert!(ca_bundle_apply_flag(Some("apply=True")));
+        assert!(ca_bundle_apply_flag(Some("apply=1")));
+    }
+
+    #[test]
+    fn ca_bundle_apply_flag_rejects_other_values() {
+        assert!(!ca_bundle_apply_flag(Some("apply=false")));
+        assert!(!ca_bundle_apply_flag(Some("apply=0")));
+        assert!(!ca_bundle_apply_flag(Some("apply=yes")));
+        assert!(!ca_bundle_apply_flag(Some("apply=")));
+        assert!(!ca_bundle_apply_flag(Some("apply")));
+    }
+
+    #[test]
+    fn ca_bundle_apply_flag_handles_extra_params() {
+        // Apply flag survives sibling params on either side.
+        assert!(ca_bundle_apply_flag(Some("apply=true&dry_run=1")));
+        assert!(ca_bundle_apply_flag(Some("foo=bar&apply=1")));
+        assert!(ca_bundle_apply_flag(Some("a=1&apply=true&b=2")));
+        // No `apply` key anywhere — still false.
+        assert!(!ca_bundle_apply_flag(Some("foo=true&bar=1")));
+    }
+
+    #[test]
+    fn ca_bundle_apply_flag_ignores_other_keys_with_apply_in_name() {
+        // Substring match must NOT match — only exact key `apply`.
+        assert!(!ca_bundle_apply_flag(Some("applyless=true")));
+        assert!(!ca_bundle_apply_flag(Some("preapply=1")));
+    }
 }
