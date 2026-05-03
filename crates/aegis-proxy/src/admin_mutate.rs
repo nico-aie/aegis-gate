@@ -707,10 +707,22 @@ pub(crate) async fn handle_alert_receiver_test(
         for (n, reason) in &summary.failed {
             ring.record_failed(n, now, reason);
         }
+        for n in &summary.skipped_feature_off {
+            ring.record_failed(
+                n,
+                now,
+                "binary built without `alerts` feature — rebuild with FEATURES=\"... alerts\"",
+            );
+        }
     }
 
+    // Honest `ok` flag: dispatch is only OK when nothing
+    // failed AND nothing was silently skipped due to a
+    // feature-off binary. Previous code returned ok=true on
+    // skip — dashboard showed "sent" while no message left
+    // the WAF.
     let body = serde_json::json!({
-        "ok": summary.failed.is_empty(),
+        "ok": summary.failed.is_empty() && summary.skipped_feature_off.is_empty(),
         "name": name,
         "delivered": summary.delivered,
         "external": summary.external,
@@ -718,6 +730,7 @@ pub(crate) async fn handle_alert_receiver_test(
             .iter()
             .map(|(n, r)| serde_json::json!({"name": n, "reason": r}))
             .collect::<Vec<_>>(),
+        "skipped_feature_off": summary.skipped_feature_off,
         "request_id": pre.request_id,
     });
     json_response(200, &body)

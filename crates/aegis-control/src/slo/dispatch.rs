@@ -20,13 +20,22 @@ use crate::slo::{AlertReceiver, ReceiverKind, SloAlert};
 /// Outcome of dispatching one alert across one receiver list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchSummary {
-    /// Receivers we delivered to in-process (today: VipTalk).
+    /// Receivers we actually delivered to in-process (today:
+    /// VipTalk when the binary is built with `--features alerts`).
     pub delivered: Vec<String>,
     /// Receivers skipped because they're operator-side (today:
     /// every receiver kind except VipTalk).
     pub external: Vec<String>,
     /// Receivers that errored — contains the error message.
     pub failed: Vec<(String, String)>,
+    /// Receivers we COULD have delivered to but the binary
+    /// wasn't built with the required Cargo feature (today:
+    /// VipTalk when `--features alerts` is missing).
+    /// Distinct from `failed` because nothing was attempted —
+    /// the dispatch path no-op'd at compile-time.
+    /// Distinct from `delivered` so the dashboard doesn't
+    /// claim a delivery that never happened.
+    pub skipped_feature_off: Vec<String>,
 }
 
 impl DispatchSummary {
@@ -35,11 +44,12 @@ impl DispatchSummary {
             delivered: Vec::new(),
             external: Vec::new(),
             failed: Vec::new(),
+            skipped_feature_off: Vec::new(),
         }
     }
 
     pub fn is_clean(&self) -> bool {
-        self.failed.is_empty()
+        self.failed.is_empty() && self.skipped_feature_off.is_empty()
     }
 }
 
@@ -80,13 +90,23 @@ pub async fn send_alert(
                 #[cfg(not(feature = "alerts"))]
                 {
                     let _ = (bot_token, room_ids);
-                    tracing::info!(
+                    // BUG-FIX 2026-05-03: previous behaviour
+                    // pushed to `delivered` here even though
+                    // the dispatch was a no-op — dashboard +
+                    // /api/alert-receivers/{name}/test reported
+                    // success when nothing left the WAF.
+                    // Surface the skip as its own bucket so
+                    // operators see an honest "build doesn't
+                    // include alerts; deploy with FEATURES=alerts"
+                    // message instead of a phantom green check.
+                    tracing::warn!(
                         receiver = %r.name,
                         sli = ?alert.sli,
                         severity = ?alert.severity,
-                        "viptalk delivery skipped (build is missing the `alerts` feature)",
+                        "viptalk delivery NOT sent — binary missing `alerts` feature; \
+                         rebuild with FEATURES=\"redis geoip alerts\" to enable",
                     );
-                    summary.delivered.push(r.name.clone());
+                    summary.skipped_feature_off.push(r.name.clone());
                 }
             }
             // Every other kind is descriptive-only today —
@@ -247,8 +267,9 @@ mod tests {
         // is what matters for the dispatch summary contract.
         assert!(
             summary.delivered.contains(&"vt".to_string())
-                || summary.failed.iter().any(|(n, _)| n == "vt"),
-            "vt should land in delivered or failed: {summary:?}"
+                || summary.failed.iter().any(|(n, _)| n == "vt")
+                || summary.skipped_feature_off.contains(&"vt".to_string()),
+            "vt should land in delivered, failed, or skipped_feature_off: {summary:?}"
         );
         assert!(summary.external.contains(&"pd".to_string()));
         assert!(summary.external.contains(&"alertmanager".to_string()));
@@ -260,7 +281,33 @@ mod tests {
         assert!(summary.delivered.is_empty());
         assert!(summary.external.is_empty());
         assert!(summary.failed.is_empty());
+        assert!(summary.skipped_feature_off.is_empty());
         assert!(summary.is_clean());
+    }
+
+    #[cfg(not(feature = "alerts"))]
+    #[tokio::test]
+    async fn vt_without_alerts_feature_lands_in_skipped_not_delivered() {
+        // Pin the bug-fix: when the binary is built WITHOUT
+        // `--features alerts`, the dispatch must NOT claim
+        // a delivery — that was the production lie.
+        let receivers = vec![AlertReceiver {
+            name: "vt-no-feat".into(),
+            kind: ReceiverKind::VipTalk {
+                bot_token: "tok".into(),
+                room_ids: vec!["!room:matrix".into()],
+            },
+        }];
+        let summary = send_alert(&fake_alert(), &receivers).await;
+        assert!(
+            summary.skipped_feature_off.contains(&"vt-no-feat".to_string()),
+            "expected receiver in skipped_feature_off, got: {summary:?}",
+        );
+        assert!(
+            !summary.delivered.contains(&"vt-no-feat".to_string()),
+            "feature-off path must not push to delivered (the production lie)",
+        );
+        assert!(!summary.is_clean(), "skipped_feature_off counts as not-clean");
     }
 
     #[cfg(feature = "alerts")]

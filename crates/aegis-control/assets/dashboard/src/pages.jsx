@@ -3413,7 +3413,20 @@ function AlertChannelsCard({ receiversApi }) {
     setBusy(name);
     try {
       const r = await window.alertReceiverTest(name);
-      if (r && r.ok) {
+      // BUG-FIX 2026-05-03: previous code treated r.ok as the
+      // single source of truth, but the backend USED to return
+      // ok=true even when VipTalk silently no-op'd because the
+      // binary was built without --features alerts. Now we also
+      // surface r.skipped_feature_off — that path means
+      // "nothing left the WAF".
+      const skipped = r?.skipped_feature_off?.length || 0;
+      if (skipped > 0) {
+        window.aegisToast(
+          `Test SKIPPED: ${skipped} receiver(s) need rebuild with FEATURES="redis geoip alerts". Nothing was sent.`,
+          'warn',
+        );
+        receiversApi.reload && receiversApi.reload();
+      } else if (r && r.ok) {
         const parts = [];
         if (r.delivered?.length) parts.push(`delivered: ${r.delivered.length}`);
         if (r.external?.length)  parts.push(`external: ${r.external.length}`);

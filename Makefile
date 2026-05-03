@@ -32,11 +32,15 @@ CARGO ?= cargo
 # deployment actually needs; the dev-cert path doesn't depend on any of
 # these. See config/README.md for the resolver / feature mapping.
 #
-# `geoip` is included by default because it's a no-op (paths-unset)
-# when the operator hasn't run `make geoip-link` — costs nothing,
-# saves the "rebuild with geoip" rediscovery cycle. Override with
-# FEATURES="redis" to drop it for slimmer images.
-FEATURES        ?= redis geoip
+# `geoip` and `alerts` are included by default. Both are no-ops
+# when their respective config blocks are unset (`make geoip-link`
+# not yet run; `alert_receivers: []`), so non-users pay nothing.
+# Including `alerts` matters because dispatch silently no-ops
+# when the feature is missing — without it built in, an operator
+# clicks "test alert receiver" and the dashboard reports success
+# while nothing actually leaves the WAF. Override with
+# FEATURES="redis" for slim builds.
+FEATURES        ?= redis geoip alerts
 
 # Default config to run against. The prod-balanced profile is the
 # recommended starting point for production deployments — full detector
