@@ -1,0 +1,28 @@
+# AI-T7 — keep model artefacts out of git.
+#
+# Models are operator-supplied + license-unclear at minimum
+# (~38 MB binary blobs). The dev workflow points the WAF at
+# `data/ai_model/waf_model.onnx` via `make ai-link MODEL=…`,
+# which symlinks an out-of-tree file. The directory itself
+# (with this .gitignore + README + label_map) lives in git so
+# the path stays stable.
+
+# All .onnx blobs (real + symlinked).
+# *.onnx
+
+# Reference text dump from the trainer (52 MB, treat like a
+# binary).
+# *.txt
+
+# Operator-side training pipeline / scratch (the upstream
+# `src/` tree is reference-only; treat as ephemeral).
+src/
+target/
+Cargo.lock
+
+# Allow the ones that DO belong in git.
+!README.md
+!.gitignore
+!label_map.json
+!WAF_DATASET_REPORT_VI.md
+!Cargo.toml

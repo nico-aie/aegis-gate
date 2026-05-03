@@ -1,0 +1,46 @@
+{
+  "mode": "C",
+  "throughput_rps": 400.0,
+  "http_reqs": 8000,
+  "attacks_total": 4778,
+  "attacks_detected": 4437,
+  "detection_rate_pct": 92.9,
+  "clean_total": 3222,
+  "clean_blocked": 339,
+  "false_positive_rate_pct": 10.5,
+  "http_req_duration_ms": {
+    "avg": 0.59,
+    "p50": 0.45,
+    "p90": 1.11,
+    "p95": 1.33,
+    "max": 15.17
+  },
+  "attack_latency_ms": {
+    "avg": 0.5,
+    "p50": 0.34,
+    "p90": 0.89,
+    "p95": 1.01,
+    "max": 12.79
+  },
+  "clean_latency_ms": {
+    "avg": 0.73,
+    "p50": 0.5,
+    "p90": 1.33,
+    "p95": 1.48,
+    "max": 15.17
+  },
+  "rss_kb": 64288,
+  "detector_hits": {
+    "class=\"recon\"": 1300,
+    "class=\"sqli\"": 626,
+    "class=\"body_abuse\"": 612,
+    "class=\"ssrf\"": 605,
+    "class=\"xss\"": 637,
+    "class=\"path_traversal\"": 1273,
+    "class=\"brute_force\"": 339
+  },
+  "ai_hits": 0,
+  "ai_inference_count": 0,
+  "ai_inference_mean_us": 0,
+  "ai_inference_total_ms": 0
+}

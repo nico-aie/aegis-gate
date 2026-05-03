@@ -8,7 +8,6 @@ but no longer guiding new work.
 
 | Track | Plan | Status |
 |---|---|---|
-| **AI detector** integration | [`ai-detector.md`](./ai-detector.md) | Awaiting operator's `.onnx` file before AI-T2 starts. AI-T1 (Cargo feature + `AiConfig` schema) shipped 2026-05-03. Design fully locked-in (operator-supplied .onnx, default-off feature, 0.85 threshold, hybrid `mode: observe \| enforce`). |
 | **Hackathon Round-1 stress test** | [`hackathon-stress-test.md`](./hackathon-stress-test.md) | Harness + mock upstream + 15-min k6 mixed-traffic shipped. Awaiting benchmark team's source-IP fan-out + latency target. |
 | **AI-assistant sweep tooling** | [`ai-assistant-testing-kickoff.md`](./ai-assistant-testing-kickoff.md) | Tooling shipped 2026-05-03 (`tests/sweeps/` + `make sweep-validate`). Awaiting sweep #1 schedule. |
 
@@ -16,6 +15,7 @@ but no longer guiding new work.
 
 | Track | Plan | Notes |
 |---|---|---|
+| **AI detector** integration | [`ai-detector.md`](./ai-detector.md) · [per-detector doc](../docs/security/detectors/ai-detector.md) | **Shipped 2026-05-03** — T1..T9 all live. `ort` 2.0-rc.12, 26-feature extractor, binary attack/normal verdict, hybrid `mode: observe \| enforce`. Mean inference 357 µs, +0.1 ms p95 chained behind regex. Perf comparison: `tests/perf/results/ai-compare-20260503T185335Z/REPORT.md`. |
 | TCP CONNECT tunneling (Phase 4) | [`tcp-forwarder-phase-4.md`](./tcp-forwarder-phase-4.md) | TCP-T1..T6 shipped 2026-05-03. |
 | Binary handover (fd-pass) | [`binary-handover-fd-pass.md`](./binary-handover-fd-pass.md) | FDP-T1..T6 library + accept-loop drain refactor shipped 2026-05-03. |
 | WebSocket bridge | [`websocket-bridge.md`](./websocket-bridge.md) | WS-T1..T6 shipped 2026-05-03 (T5 e2e test, T6 metrics + Live-Feed pill). |

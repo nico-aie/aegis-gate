@@ -378,6 +378,55 @@ geoip-unlink: ## Remove the data/geoip/ symlinks (does NOT touch the source file
 	@rm -f $(GEOIP_DIR)/*.mmdb
 	@echo "geoip-unlink: cleared $(GEOIP_DIR)/*.mmdb"
 
+##@ AI detector
+
+# Override the model path:  make ai-link MODEL=/abs/path/to/waf_model.onnx
+# Defaults to data/ai_model/waf_model.onnx (already-present dev model).
+MODEL    ?=
+AI_DIR   := data/ai_model
+
+ai-link: ## Symlink an .onnx model into data/ai_model/waf_model.onnx (override with MODEL=)
+	@mkdir -p $(AI_DIR)
+	@if [ -n "$(MODEL)" ]; then \
+	    src="$(MODEL)"; \
+	else \
+	    src=$$(ls -t $$HOME/Downloads/waf_model*.onnx 2>/dev/null | head -1); \
+	fi; \
+	if [ -z "$$src" ] || [ ! -f "$$src" ]; then \
+	    echo "ai-link: no .onnx found"; \
+	    echo "  Pass MODEL=/abs/path/to/waf_model.onnx"; \
+	    echo "  or drop your model at ~/Downloads/waf_model*.onnx"; \
+	    exit 1; \
+	fi; \
+	dst_abs=$$(cd "$(AI_DIR)" 2>/dev/null && pwd)/waf_model.onnx; \
+	src_abs=$$(cd "$$(dirname "$$src")" 2>/dev/null && pwd)/$$(basename "$$src"); \
+	if [ "$$src_abs" = "$$dst_abs" ]; then \
+	    echo "ai-link: source and destination resolve to the same path"; \
+	    echo "  $$src_abs"; \
+	    echo "  Already in place — no symlink needed."; \
+	    exit 0; \
+	fi; \
+	ln -sfn "$$src" $(AI_DIR)/waf_model.onnx; \
+	echo "ai-link: $(AI_DIR)/waf_model.onnx -> $$src"
+	@ls -la $(AI_DIR)/waf_model.onnx 2>/dev/null || true
+
+ai-status: ## Show the current AI model symlink + size
+	@echo "AI model layout:"
+	@if [ -e "$(AI_DIR)/waf_model.onnx" ]; then \
+	    target=$$(readlink "$(AI_DIR)/waf_model.onnx" || echo "(plain file)"); \
+	    size=$$(stat -f '%z' "$(AI_DIR)/waf_model.onnx" 2>/dev/null || stat -c '%s' "$(AI_DIR)/waf_model.onnx" 2>/dev/null); \
+	    echo "  $(AI_DIR)/waf_model.onnx -> $$target ($$size bytes)"; \
+	else \
+	    echo "  $(AI_DIR)/waf_model.onnx -> MISSING (run make ai-link)"; \
+	fi
+	@if [ -e "$(AI_DIR)/label_map.json" ]; then \
+	    echo "  $(AI_DIR)/label_map.json -> present"; \
+	fi
+
+ai-unlink: ## Remove the AI model symlink (does NOT touch the source file)
+	@rm -f $(AI_DIR)/waf_model.onnx
+	@echo "ai-unlink: cleared $(AI_DIR)/waf_model.onnx"
+
 ##@ Multi-tester sweeps
 
 sweep-validate: ## Validate one tester's findings.jsonl — usage: make sweep-validate TESTER=path/to/folder-or-jsonl

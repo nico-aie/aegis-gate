@@ -2137,6 +2137,113 @@ function DetectorMaskCard() {
   );
 }
 
+// AI-T9 — AI-detector card.  Reads /metrics directly (the AI
+// surfaces are Prometheus counters + a histogram).  Polls
+// every 5 s — same cadence as the Live Feed buffer — and
+// renders three numbers: total predictions, attack rate,
+// fallback count.  When the binary is built without the
+// `ai` feature the metrics are absent and we render a
+// "feature off" empty state.
+function AiDetectorCard() {
+  const [metrics, setMetrics] = useStateP(null);
+  const [error, setError]     = useStateP(null);
+  useEffectP(() => {
+    let cancelled = false;
+    function load() {
+      fetch('/metrics', { credentials: 'same-origin' })
+        .then(r => (r.ok ? r.text() : null))
+        .then(txt => {
+          if (cancelled || !txt) return;
+          // Tiny parser — pull `aegis_ai_*{verdict|reason="X"} N` lines.
+          const out = { attack: 0, normal: 0, fallback: {}, present: false };
+          for (const line of txt.split('\n')) {
+            if (line.startsWith('#') || !line.startsWith('aegis_ai_')) continue;
+            out.present = true;
+            const m = line.match(/^aegis_ai_predictions_total\{verdict="(\w+)"\}\s+([\d.]+)/);
+            if (m) {
+              if (m[1] === 'attack') out.attack = Number(m[2]);
+              else if (m[1] === 'normal') out.normal = Number(m[2]);
+              continue;
+            }
+            const f = line.match(/^aegis_ai_fallback_total\{reason="(\w+)"\}\s+([\d.]+)/);
+            if (f) {
+              out.fallback[f[1]] = Number(f[2]);
+            }
+          }
+          setMetrics(out);
+          setError(null);
+        })
+        .catch(e => { if (!cancelled) setError(String(e.message || e)); });
+    }
+    load();
+    const id = setInterval(load, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  const present = metrics?.present;
+  const total   = (metrics?.attack || 0) + (metrics?.normal || 0);
+  const attackPct = total > 0 ? ((metrics.attack / total) * 100).toFixed(1) : '0.0';
+  const fbTotal = metrics?.fallback
+    ? Object.values(metrics.fallback).reduce((a, b) => a + b, 0)
+    : 0;
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="AI detector"
+        sub={
+          present
+            ? `${total.toLocaleString()} predictions · ${attackPct}% attack`
+            : 'feature off — rebuild with FEATURES="redis geoip ai" and set cfg.ai.enabled'
+        }
+      />
+      <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
+        <div>
+          <div className="field-label">Predictions</div>
+          <div className="num" style={{ fontSize: 18 }}>
+            {present ? total.toLocaleString() : <span className="dim">—</span>}
+          </div>
+        </div>
+        <div>
+          <div className="field-label">Attack rate</div>
+          <div style={{ fontSize: 18 }}>
+            {present ? (
+              <span className={`pill ${attackPct > 50 ? 'down' : 'ok'}`}>{attackPct}%</span>
+            ) : <span className="dim">—</span>}
+          </div>
+        </div>
+        <div>
+          <div className="field-label">Attack count</div>
+          <div className="num" style={{ fontSize: 18 }}>
+            {present ? (metrics.attack || 0).toLocaleString() : <span className="dim">—</span>}
+          </div>
+        </div>
+        <div>
+          <div className="field-label">Fallbacks</div>
+          <div style={{ fontSize: 18 }}>
+            {present ? (
+              <span className={`pill ${fbTotal > 0 ? 'warn' : 'ok'}`}>{fbTotal}</span>
+            ) : <span className="dim">—</span>}
+          </div>
+        </div>
+      </div>
+      {present && fbTotal > 0 && (
+        <div style={{ padding: '0 16px 12px', fontSize: 11, color: 'var(--ink-mute)' }}>
+          By reason: {Object.entries(metrics.fallback)
+            .filter(([, n]) => n > 0)
+            .map(([k, n]) => `${k}=${n}`)
+            .join(' · ')}
+        </div>
+      )}
+      {error && (
+        <div style={{ padding: '0 16px 12px', fontSize: 11, color: 'var(--down)' }}>
+          /metrics fetch error: {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PageTierConfig() {
   const tiersApi = window.useTiersApi();
   const routesApi = window.useRoutesApi();
@@ -2176,6 +2283,8 @@ function PageTierConfig() {
           </button>
         </div>
       </div>
+
+      <AiDetectorCard />
 
       <DetectorMaskCard />
 

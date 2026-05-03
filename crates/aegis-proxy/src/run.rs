@@ -210,47 +210,16 @@ pub async fn run(
 
     // Build the detector set once, shared across all data-plane listeners.
     //
-    // AI-T5 — when the binary is built `--features ai` AND
-    // `cfg.ai.enabled = true`, push the ML-based detector onto
-    // the chain.  Boot fails loudly when:
-    //   - cfg.ai.enabled is true but the binary was built
-    //     WITHOUT the feature → `WafError::Config`,
-    //   - cfg.ai.model_path is missing or unreadable.
+    // AI-T5 — feature-gated wiring of the ML detector lives
+    // further down (AI metrics need the registry which is built
+    // a few sections later).  We hold the vec mutable here and
+    // append the AI detector after metrics init.
     //
-    // Without the feature flag this branch compiles to a
-    // no-op; without `cfg.ai.enabled` the chain stays exactly
-    // as before.
+    // The `not(feature = "ai")` branch fails boot loudly when
+    // `cfg.ai.enabled = true` on a binary built without the
+    // feature so the misconfiguration is visible.
     #[allow(unused_mut)]
     let mut detector_vec = aegis_security::detectors::default_detectors();
-    #[cfg(feature = "ai")]
-    {
-        if cfg.ai.enabled {
-            let model_path = cfg.ai.model_path.as_ref().ok_or_else(|| {
-                aegis_core::WafError::Config(
-                    "ai.enabled = true but ai.model_path is unset".into(),
-                )
-            })?;
-            let normal_idx = aegis_security::detectors::ai::DEFAULT_NORMAL_CLASS_IDX;
-            let detector = aegis_security::detectors::ai::AiDetector::load(
-                model_path,
-                normal_idx,
-                cfg.ai.confidence_threshold,
-            )
-            .map_err(|e| {
-                aegis_core::WafError::Config(format!(
-                    "ai detector load from {} failed: {e}",
-                    model_path.display(),
-                ))
-            })?;
-            tracing::info!(
-                model_path = %model_path.display(),
-                threshold = cfg.ai.confidence_threshold,
-                mode = ?cfg.ai.mode,
-                "AI detector wired into the chain",
-            );
-            detector_vec.push(Box::new(detector));
-        }
-    }
     #[cfg(not(feature = "ai"))]
     {
         if cfg.ai.enabled {
@@ -261,8 +230,6 @@ pub async fn run(
             ));
         }
     }
-    let detectors: Arc<Vec<Box<dyn aegis_security::detectors::Detector>>> =
-        Arc::new(detector_vec);
 
     // Hot-reloadable detector class mask. Initial state mirrors
     // `cfg.detectors`; the control plane swaps it via PUT
@@ -381,6 +348,50 @@ pub async fn run(
         aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
             .expect("histogram registration failed"),
     );
+
+    // AI-T5 / AI-T6 — push the ML detector onto the chain now
+    // that the metrics registry exists.  Boot fails loudly on
+    // a missing model file or an unreadable .onnx; the
+    // metrics-disabled binary already errored above.
+    #[cfg(feature = "ai")]
+    {
+        if cfg.ai.enabled {
+            let model_path = cfg.ai.model_path.as_ref().ok_or_else(|| {
+                aegis_core::WafError::Config(
+                    "ai.enabled = true but ai.model_path is unset".into(),
+                )
+            })?;
+            let normal_idx = aegis_security::detectors::ai::DEFAULT_NORMAL_CLASS_IDX;
+            let ai_metrics = std::sync::Arc::new(
+                aegis_control::metrics::ai::AiMetrics::register(&metrics).map_err(|e| {
+                    aegis_core::WafError::Config(format!(
+                        "ai metrics registration failed: {e}"
+                    ))
+                })?,
+            );
+            let detector = aegis_security::detectors::ai::AiDetector::load(
+                model_path,
+                normal_idx,
+                cfg.ai.confidence_threshold,
+            )
+            .map_err(|e| {
+                aegis_core::WafError::Config(format!(
+                    "ai detector load from {} failed: {e}",
+                    model_path.display(),
+                ))
+            })?
+            .with_metrics(ai_metrics);
+            tracing::info!(
+                model_path = %model_path.display(),
+                threshold = cfg.ai.confidence_threshold,
+                mode = ?cfg.ai.mode,
+                "AI detector wired into the chain",
+            );
+            detector_vec.push(Box::new(detector));
+        }
+    }
+    let detectors: std::sync::Arc<Vec<Box<dyn aegis_security::detectors::Detector>>> =
+        std::sync::Arc::new(detector_vec);
     // Phase-3 per-route latency. Cardinality bounded by the
     // route_id key space (configured `routes:`); each request
     // records one sample after the route resolves.

@@ -35,7 +35,7 @@ geoip = ["aegis-proxy/geoip"]
 # Operator-supplied ONNX model loaded from `cfg.ai.model_path`
 # at boot. Off by default — enabling adds ~50 MB to the binary
 # and requires the operator to ship a model artifact. AI-T1.
-ai = ["aegis-security/ai", "aegis-proxy/ai"]
+ai = ["aegis-security/ai", "aegis-proxy/ai", "aegis-control/ai"]
 # `vault`, `aws`, `gcp`, `azure` — cloud secret-resolver
 # adapters. Each opts in to a single-cloud SDK. Combine freely.
 vault = ["aegis-proxy/vault"]

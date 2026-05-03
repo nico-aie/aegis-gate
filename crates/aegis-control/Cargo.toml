@@ -11,6 +11,10 @@ rust-version.workspace = true
 # operator-side dispatcher can read the config.
 default = []
 alerts = ["dep:reqwest"]
+# AI-T6 — surfaces the `metrics::ai::AiMetrics` impl that
+# implements the cross-crate `AiMetricsSink` trait.  Pulled
+# transitively when `aegis-bin/ai` or `aegis-proxy/ai` is on.
+ai = ["aegis-security/ai"]
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }

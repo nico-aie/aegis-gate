@@ -22,7 +22,7 @@ geoip = ["aegis-security/geoip"]
 # AI-T5 — pulls the ONNX-runtime-backed detector from
 # aegis-security so the boot path in src/run.rs can wire it
 # into the chain when `cfg.ai.enabled = true`.
-ai = ["aegis-security/ai"]
+ai = ["aegis-security/ai", "aegis-control/ai"]
 # `vault` enables resolution of `${secret:vault:<path>#<field>}`
 # config references against a HashiCorp Vault server. Off by
 # default so single-node + non-Vault deployments stay slim.

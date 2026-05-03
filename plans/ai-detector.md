@@ -1,12 +1,29 @@
 # AI-T — ML-based Detector Integration
 
-> **Status:** design-only, ready to implement. Track ID prefix
-> `AI-T<n>`. Adds an ONNX-runtime-backed multi-class detector
-> alongside the existing regex/heuristic detectors. Built on
-> the dataset + model documented at
+> **Status:** **shipped 2026-05-03** — all 9 slices (T1..T9) live.
+> Per-detector reference page at
+> [`docs/security/detectors/ai-detector.md`](../docs/security/detectors/ai-detector.md).
+> Side-by-side perf comparison run at
+> `tests/perf/results/ai-compare-20260503T185335Z/REPORT.md`.
+>
+> Built on the dataset + model documented at
 > [`data/ai_model/WAF_DATASET_REPORT_VI.md`](../data/ai_model/WAF_DATASET_REPORT_VI.md):
-> 11-class classifier, 36.8 MB ONNX, 4,600 req/s @ batch=1 in
-> Rust, p99 0.5 ms.
+> 11-class classifier, 38 MB ONNX, **mean inference 357 µs
+> chained / 468 µs alone** via `ort` 2.0-rc.12 — runtime
+> swapped from the originally-planned `tract-onnx` because
+> `ort` ships pre-built CPU binaries and is the active
+> upstream.
+>
+> Two implementation deviations worth recording:
+> 1. **Binary verdict**, not per-class. The WAF only needs
+>    "attack vs not-attack" for the hot path, so we emit one
+>    `Signal { tag: "ai" }` when `class != normal_class_idx`
+>    instead of fanning out `ai_injection` / `ai_xss` etc.
+>    A binary-head retrain doesn't require code changes
+>    downstream.
+> 2. **`ort` instead of `tract-onnx`** — same `Detector`
+>    contract, much faster at boot, ships its own ONNX
+>    runtime so the dep tree is smaller.
 
 ## 0 · One-line summary
 

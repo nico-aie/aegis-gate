@@ -261,51 +261,62 @@ Existing intake (still current):
 testers across 4-6 slices, ~2h), name the theme, branch from
 develop.
 
-### AI-T — ML detector integration (design ready)
+### AI-T — ML detector integration (shipped 2026-05-03)
 
-Design pass shipped at
-[`plans/ai-detector.md`](./plans/ai-detector.md). Integrates
-the trained ONNX model from
-[`data/ai_model/WAF_DATASET_REPORT_VI.md`](./data/ai_model/WAF_DATASET_REPORT_VI.md)
-(11 classes, 36.8 MB, 4,600 req/s @ batch=1, p99 0.5 ms) as a
-regular `Detector` impl alongside the existing regex/heuristic
-detectors.
+Full implementation now live — `plans/ai-detector.md` + per-detector
+doc `docs/security/detectors/ai-detector.md`.
 
-**Five-level on/off matrix** (Cargo feature → config flag →
-per-tier scope → existing detector mask → confidence
-threshold) so operators can revert with one config flip
-without a rebuild.
+**Slices delivered** (all 9 closed in one session):
 
-**Hard performance budgets** (≤1 ms p99 added latency, ≤5 ms
-hard timeout with fallback, ≤30% CPU at 5k RPS, model loads
-in <500 ms at boot) — all surfaced as Prometheus metrics + SLO
-alerts so regressions catch themselves.
+- **T1** — `ai` Cargo feature, `WafConfig.ai: AiConfig` schema, default OFF.
+- **T2** — `features.rs`: 26-feature extractor (method ID, URL/path
+  shape, suspicious-keyword counts raw + URL-decoded, Shannon
+  entropy, %XX counts) — byte-for-byte match with the trainer's
+  feature pipeline. 16 unit tests.
+- **T3** — `model.rs`: `Mutex<ort::Session>` wrapper, 1×26 `f32`
+  tensor → `i64` class label out. `ort = "=2.0.0-rc.12"` with
+  `download-binaries` + `ndarray`.
+- **T4** — `AiDetector` impl of the `Detector` trait; binary
+  attack-vs-normal verdict (`class != normal_class_idx`), single
+  `Signal { tag: "ai", score: 60 }`. Body capped at 4 KiB before
+  feature extraction.
+- **T5** — boot wiring in `aegis-proxy/src/run.rs`: load model
+  + register metrics + push into the detector chain when
+  `cfg.ai.enabled = true` and the `ai` feature is on.
+- **T6** — `aegis_ai_predictions_total{verdict}`,
+  `aegis_ai_inference_duration_seconds{verdict}`,
+  `aegis_ai_fallback_total{reason}` Prometheus series via
+  `AiMetricsSink` trait (avoids cyclic dep: trait in
+  aegis-security, impl in aegis-control).
+- **T7** — Makefile targets `ai-link`, `ai-status`, `ai-unlink`
+  with self-link guard; `data/ai_model/.gitignore` keeps the
+  model artefact out of git.
+- **T8** — `crates/aegis-security/tests/ai_e2e.rs` integration
+  test, gated on `AEGIS_AI_MODEL`. Asserts ≥ 8/10 attacks caught
+  + ≤ 25 % FP rate on a fixed corpus.
+- **T9** — Dashboard "AI Detector" card on the Detector tier-config
+  page, reads `/metrics` directly, renders inferences / hit rate
+  / mean latency live. Bundle now 305 058 bytes.
 
-**9-slice AI-T1..T9 implementation breakdown** (~23h total).
-Strict order T1 → T5 (Cargo feature → features.rs → tract
-model loader → AiDetector trait impl → boot wiring); T6, T7,
-T8, T9 are independent follow-ups (metrics, ai-link Make
-targets, integration tests, dashboard surface).
+**Perf measured** (`tests/perf/results/ai-compare-20260503T185335Z/REPORT.md`):
+side-by-side comparison harness, 4 cases × 8 000 requests at
+400 RPS (60 % attack mix):
 
-**Four design decisions locked-in 2026-05-03 (§11):**
+| Case | Detect % | FP % | Attack p95 | Mean inference | RSS |
+|---|---|---|---|---|---|
+| ALL on (regex+AI) | **93.3** | 38.4 | **1.11 ms** | **357 µs** | 222 MB |
+| AI ONLY | 86.3 | 39.6 | 1.85 ms | 468 µs | 502 MB |
+| REGEX ONLY | 92.9 | 10.5 | 1.01 ms | — | 63 MB |
+| NONE (baseline) | 0.0 | 0.0 | 1.19 ms | — | 52 MB |
 
-  1. **Model artifact**: operator-supplied path, mirrors
-     geoip pattern (`make ai-link`, `data/ai_model/.gitignore`,
-     never in repo).
-  2. **Cargo feature**: default OFF. Opt-in via
-     `FEATURES="redis geoip ai"`.
-  3. **Confidence threshold**: 0.85 default. Calibration
-     follow-up (AI-T10) will sweep + may adjust.
-  4. **Verdict semantics**: hybrid `mode: observe | enforce`.
-     `observe` (default) runs inference, emits
-     `would_block` audit + metrics, never blocks. `enforce`
-     actually blocks. Hot-flip between modes for safe
-     rollouts + instant rollback. SAME inference path —
-     zero performance delta between modes.
+AI lifts detection +0.4 pp over regex-only on this corpus, costs
+~0.1 ms p95, +160 MB RSS (38 MB ONNX + arenas). Bundled model
+favours recall: at threshold 0.5 it fires on ~67 % of all
+traffic — `ai.mode: observe` is the right starting position;
+threshold-tightening recipe documented in the per-detector page.
 
-Ready to implement. AI-T1 (Cargo feature + dep wiring + cfg
-block) is the next slice when the operator's `.onnx` file
-arrives.
+**Re-run perf**: `bash tests/perf/ai-compare.sh` (env knobs
+`RPS=`, `DURATION=`, `ONLY="A B"`).
 
 ### Other queued / parked
 

@@ -48,10 +48,12 @@ SOC-first dashboard.
   Per-detector docs in [`docs/security/detectors/`](docs/security/detectors/).
 - **Rule engine** — AST + parser + evaluator with hot-reload,
   custom rule definitions in YAML.
-- **AI detector** (`ai` feature, design ready, AI-T1 stub
-  shipped) — operator-supplied ONNX model, 11-class
-  classification, hybrid `mode: observe | enforce` for safe
-  rollouts.
+- **AI detector** (`ai` feature) — operator-supplied ONNX model
+  loaded via `ort` 2.0-rc.12, 26-feature extractor, binary
+  attack-vs-normal verdict, hybrid `mode: observe | enforce`
+  for safe rollouts. Mean inference 357 µs, +0.1 ms p95 when
+  chained behind the regex detectors. Per-detector doc:
+  [`docs/security/detectors/ai-detector.md`](docs/security/detectors/ai-detector.md).
 - **Risk scoring** — composite IP + JA4/JA3 + HTTP/2 fingerprint
   + bot classification + threat-intel feed lookup, with
   exponential decay and trust recovery.

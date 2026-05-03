@@ -40,6 +40,43 @@ pub mod model;
 
 pub use model::{Model, ModelError, Prediction};
 
+/// Metric-recording surface the AI detector calls per
+/// inference.  Lives in this crate so `aegis-security` doesn't
+/// have to depend on `aegis-control`; the real impl
+/// (`aegis_control::metrics::ai::AiMetrics`) lives there and
+/// implements this trait.
+///
+/// Methods are infallible / cheap — single-digit ns at
+/// production rates.  Fall-back implementations are no-ops.
+pub trait AiMetricsSink: Send + Sync {
+    /// Successful inference — the detector ran the model and
+    /// got back a verdict.  `is_attack` is the binary verdict;
+    /// `latency_seconds` the wall-clock time the inference
+    /// took (for histogram bucketing).
+    fn record_prediction(&self, is_attack: bool, latency_seconds: f64);
+
+    /// Inference / tensor-build error or below-threshold
+    /// confidence.  The detector chain treats it as "no
+    /// signal" and the request flows to the next detector;
+    /// the operator sees the bucket counter rise.
+    fn record_fallback(&self, reason: &'static str);
+}
+
+/// No-op sink used when the binary boots without the metrics
+/// registry wired (e.g. tests, fuzz harnesses).
+pub struct NoopAiMetricsSink;
+impl AiMetricsSink for NoopAiMetricsSink {
+    fn record_prediction(&self, _is_attack: bool, _latency_seconds: f64) {}
+    fn record_fallback(&self, _reason: &'static str) {}
+}
+
+/// Stable label values for [`AiMetricsSink::record_fallback`].
+pub mod fallback_reason {
+    pub const INFERENCE_ERROR: &str = "inference_error";
+    pub const LOW_CONFIDENCE: &str = "low_confidence";
+    pub const TENSOR_BUILD: &str = "tensor_build";
+}
+
 /// Default index of the `Normal` class in the shipped 11-class
 /// model.  See `data/ai_model/label_map.json`.  When a future
 /// model swaps the layout, override at construction.
@@ -64,6 +101,10 @@ pub struct AiDetector {
     /// contribute (50–60 each); set high enough that AI alone
     /// can drive a block when other detectors are silent.
     score: u32,
+    /// Metrics recorder.  Defaults to [`NoopAiMetricsSink`];
+    /// the boot path replaces it with the live AiMetrics
+    /// implementation when /metrics is wired.
+    metrics: Arc<dyn AiMetricsSink>,
 }
 
 impl AiDetector {
@@ -78,6 +119,7 @@ impl AiDetector {
             model: Arc::new(model),
             threshold,
             score: 60,
+            metrics: Arc::new(NoopAiMetricsSink),
         })
     }
 
@@ -89,6 +131,7 @@ impl AiDetector {
             model,
             threshold,
             score: 60,
+            metrics: Arc::new(NoopAiMetricsSink),
         }
     }
 
@@ -98,6 +141,14 @@ impl AiDetector {
     /// down its standalone weight.
     pub fn with_score(mut self, score: u32) -> Self {
         self.score = score;
+        self
+    }
+
+    /// Wire a metrics sink so per-prediction observations
+    /// land on `/metrics`.  Boot path uses this; tests leave
+    /// the no-op default.
+    pub fn with_metrics(mut self, sink: Arc<dyn AiMetricsSink>) -> Self {
+        self.metrics = sink;
         self
     }
 
@@ -137,17 +188,30 @@ impl Detector for AiDetector {
         let request_str = Self::build_request_string(req);
         let feats = features::extract_features(&request_str);
         match self.model.predict(&feats) {
-            Ok(p) if p.is_attack && p.confidence >= self.threshold => vec![Signal {
-                score: self.score,
-                tag: "ai".into(),
-                field: "request".into(),
-            }],
-            Ok(_) => Vec::new(),
+            Ok(p) => {
+                let lat_seconds = (p.latency_us as f64) / 1_000_000.0;
+                self.metrics.record_prediction(p.is_attack, lat_seconds);
+                if p.is_attack && p.confidence >= self.threshold {
+                    vec![Signal {
+                        score: self.score,
+                        tag: "ai".into(),
+                        field: "request".into(),
+                    }]
+                } else {
+                    if p.is_attack {
+                        // Verdict said attack but confidence
+                        // was under threshold — count the
+                        // safety fall-through so operators
+                        // can tune the threshold from data.
+                        self.metrics
+                            .record_fallback(fallback_reason::LOW_CONFIDENCE);
+                    }
+                    Vec::new()
+                }
+            }
             Err(e) => {
-                // Fail-open: log once at trace level and let
-                // the rest of the chain decide.  Production
-                // wiring will increment a fallback counter at
-                // the call site (see AI-T6).
+                self.metrics
+                    .record_fallback(fallback_reason::INFERENCE_ERROR);
                 tracing::trace!(
                     error = %e,
                     "ai detector inference error — fail-open",
