@@ -217,6 +217,38 @@ Existing intake (still current):
 testers across 4-6 slices, ~2h), name the theme, branch from
 develop.
 
+### AI-T — ML detector integration (design ready)
+
+Design pass shipped at
+[`plans/ai-detector.md`](./plans/ai-detector.md). Integrates
+the trained ONNX model from
+[`data/ai_model/WAF_DATASET_REPORT_VI.md`](./data/ai_model/WAF_DATASET_REPORT_VI.md)
+(11 classes, 36.8 MB, 4,600 req/s @ batch=1, p99 0.5 ms) as a
+regular `Detector` impl alongside the existing regex/heuristic
+detectors.
+
+**Five-level on/off matrix** (Cargo feature → config flag →
+per-tier scope → existing detector mask → confidence
+threshold) so operators can revert with one config flip
+without a rebuild.
+
+**Hard performance budgets** (≤1 ms p99 added latency, ≤5 ms
+hard timeout with fallback, ≤30% CPU at 5k RPS, model loads
+in <500 ms at boot) — all surfaced as Prometheus metrics + SLO
+alerts so regressions catch themselves.
+
+**9-slice AI-T1..T9 implementation breakdown** (~23h total).
+Strict order T1 → T5 (Cargo feature → features.rs → tract
+model loader → AiDetector trait impl → boot wiring); T6, T7,
+T8, T9 are independent follow-ups (metrics, ai-link Make
+targets, integration tests, dashboard surface).
+
+**Four open questions** in §11 of the plan that need user
+decisions before implementation: model artifact source
+(download / train / ship per-deployment), default Cargo
+feature on/off, confidence-threshold calibration, and
+advisory-vs-authoritative verdict semantics.
+
 ### Other queued / parked
 
 - **CC-T3** — i18n + help.jsx slides remain (the test-side slice
