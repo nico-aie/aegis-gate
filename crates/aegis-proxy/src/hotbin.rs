@@ -191,6 +191,27 @@ pub fn adopt_inherited_listeners_with_cfg(cfg: &FdPassConfig) -> AdoptOutcome {
     adopt_listeners_from_fds(&names, cfg.base_fd)
 }
 
+/// FDP-T2 — adopt the listener for `name` from `inherited` if
+/// present, else fresh-bind to `addr`. The boot path's
+/// drop-in replacement for `tokio::net::TcpListener::bind`.
+///
+/// Errors propagate: a misconfigured inherited FD that can't be
+/// promoted to a tokio listener fails fast rather than
+/// silently fresh-binding (which would race the parent's
+/// still-alive FD on the same port).
+pub async fn adopt_or_bind(
+    inherited: &mut std::collections::HashMap<String, std::net::TcpListener>,
+    name: &str,
+    addr: std::net::SocketAddr,
+) -> std::io::Result<tokio::net::TcpListener> {
+    if let Some(std_l) = inherited.remove(name) {
+        tracing::info!(name = %name, fd_addr = %std_l.local_addr().ok().map(|a| a.to_string()).unwrap_or_else(|| "?".into()), "listener: adopted inherited FD");
+        return tokio::net::TcpListener::from_std(std_l);
+    }
+    tracing::info!(name = %name, addr = %addr, "listener: fresh bind");
+    tokio::net::TcpListener::bind(addr).await
+}
+
 /// Lower-level: take ownership of FDs `base..base+names.len()`,
 /// promote each into a non-blocking `std::net::TcpListener`,
 /// and return them keyed by `names[i]`.
@@ -480,5 +501,58 @@ mod tests {
         // -1 on failure with errno set. The caller checks the
         // return value.
         unsafe { dup2(oldfd, newfd) }
+    }
+
+    // -----------------------------------------------------------
+    // FDP-T2 — adopt_or_bind
+    // -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn adopt_or_bind_falls_through_to_fresh_bind_when_name_absent() {
+        let mut inherited = std::collections::HashMap::new();
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let tcp = adopt_or_bind(&mut inherited, "admin", addr).await.unwrap();
+        // Fresh bind succeeded; map is unchanged.
+        assert!(tcp.local_addr().is_ok());
+        assert!(inherited.is_empty());
+    }
+
+    #[tokio::test]
+    async fn adopt_or_bind_consumes_inherited_entry_when_name_matches() {
+        let bound = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        bound.set_nonblocking(true).unwrap();
+        let original_addr = bound.local_addr().unwrap();
+        let mut inherited = std::collections::HashMap::new();
+        inherited.insert("admin".to_string(), bound);
+
+        let tcp = adopt_or_bind(&mut inherited, "admin", "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(tcp.local_addr().unwrap(), original_addr);
+        // Adopted entry was removed from the map.
+        assert!(!inherited.contains_key("admin"));
+    }
+
+    #[tokio::test]
+    async fn adopt_or_bind_leaves_unrelated_entries_alone() {
+        let bound1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bound2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        bound1.set_nonblocking(true).unwrap();
+        bound2.set_nonblocking(true).unwrap();
+        let bound2_addr = bound2.local_addr().unwrap();
+
+        let mut inherited = std::collections::HashMap::new();
+        inherited.insert("admin".into(), bound1);
+        inherited.insert("data-0".into(), bound2);
+
+        let _ = adopt_or_bind(&mut inherited, "admin", "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        // data-0 still present.
+        assert!(inherited.contains_key("data-0"));
+        let data = adopt_or_bind(&mut inherited, "data-0", "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(data.local_addr().unwrap(), bound2_addr);
     }
 }

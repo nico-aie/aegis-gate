@@ -112,6 +112,31 @@ pub async fn run(
     let cfg: Arc<WafConfig> = cfg_swap.load_full();
     let mut handles = Vec::new();
 
+    // FDP-T2 — adopt listener FDs from an exec'ing parent if
+    // present. `AEGIS_LISTEN_FDS=N` + `AEGIS_LISTEN_FD_NAMES=...`
+    // signals "first-boot path is fresh-bind" vs "hot-handover
+    // path is adopt". Misconfigured (non-empty count but bad
+    // env shape) fails fast — silent fresh-bind would race the
+    // parent's still-alive FD on the same port.
+    let mut inherited_listeners = match crate::hotbin::adopt_inherited_listeners() {
+        crate::hotbin::AdoptOutcome::NoInheritance => {
+            tracing::info!("hotbin: no inherited listeners — fresh-bind every listener");
+            std::collections::HashMap::new()
+        }
+        crate::hotbin::AdoptOutcome::Inherited(map) => {
+            tracing::info!(
+                names = ?map.keys().cloned().collect::<Vec<_>>(),
+                "hotbin: adopted inherited listener FDs",
+            );
+            map
+        }
+        crate::hotbin::AdoptOutcome::Misconfigured(reason) => {
+            return Err(aegis_core::WafError::Config(format!(
+                "hotbin: AEGIS_LISTEN_FD* env is set but malformed: {reason}",
+            )));
+        }
+    };
+
     // MTLS-T9 — capture break-glass env-var state at boot.
     // Boot-only by design (a runtime override would defeat the
     // purpose). Subsequent calls to `is_active()` read the
@@ -625,9 +650,14 @@ pub async fn run(
     }
 
     // Data-plane listeners.
-    for listener_cfg in &cfg.listeners.data {
+    for (data_idx, listener_cfg) in cfg.listeners.data.iter().enumerate() {
         let addr = listener_cfg.bind;
-        let tcp = tokio::net::TcpListener::bind(addr).await?;
+        // FDP-T2 — adopt-or-bind. Inherited names use a stable
+        // `data-N` suffix matching `cfg.listeners.data` index
+        // order so a hot-restart with the same config reuses
+        // the same FDs deterministically.
+        let name = format!("data-{data_idx}");
+        let tcp = crate::hotbin::adopt_or_bind(&mut inherited_listeners, &name, addr).await?;
         let listener_tls = listener_cfg.tls;
         tracing::info!(
             "data-plane listening on {addr} (tls={})",
@@ -818,7 +848,12 @@ pub async fn run(
     if let Some(redirect_cfg) = cfg.listeners.force_https.as_ref() {
         let addr = redirect_cfg.bind;
         let status = redirect_cfg.status;
-        let tcp = tokio::net::TcpListener::bind(addr).await?;
+        let tcp = crate::hotbin::adopt_or_bind(
+            &mut inherited_listeners,
+            "force-https",
+            addr,
+        )
+        .await?;
         tracing::info!("force-https redirect listening on {addr}");
         let challenges = challenges.clone();
         handles.push(tokio::spawn(force_https_loop(tcp, status, challenges)));
@@ -826,7 +861,12 @@ pub async fn run(
 
     // Admin (control-plane) listener.
     let admin_addr = cfg.listeners.admin.bind;
-    let admin_tcp = tokio::net::TcpListener::bind(admin_addr).await?;
+    let admin_tcp = crate::hotbin::adopt_or_bind(
+        &mut inherited_listeners,
+        "admin",
+        admin_addr,
+    )
+    .await?;
     tracing::info!("admin-plane listening on {admin_addr}");
 
     // Boot-time visibility into cookie hardening — a missed-cookie
