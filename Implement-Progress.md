@@ -243,11 +243,25 @@ model loader → AiDetector trait impl → boot wiring); T6, T7,
 T8, T9 are independent follow-ups (metrics, ai-link Make
 targets, integration tests, dashboard surface).
 
-**Four open questions** in §11 of the plan that need user
-decisions before implementation: model artifact source
-(download / train / ship per-deployment), default Cargo
-feature on/off, confidence-threshold calibration, and
-advisory-vs-authoritative verdict semantics.
+**Four design decisions locked-in 2026-05-03 (§11):**
+
+  1. **Model artifact**: operator-supplied path, mirrors
+     geoip pattern (`make ai-link`, `data/ai_model/.gitignore`,
+     never in repo).
+  2. **Cargo feature**: default OFF. Opt-in via
+     `FEATURES="redis geoip ai"`.
+  3. **Confidence threshold**: 0.85 default. Calibration
+     follow-up (AI-T10) will sweep + may adjust.
+  4. **Verdict semantics**: hybrid `mode: observe | enforce`.
+     `observe` (default) runs inference, emits
+     `would_block` audit + metrics, never blocks. `enforce`
+     actually blocks. Hot-flip between modes for safe
+     rollouts + instant rollback. SAME inference path —
+     zero performance delta between modes.
+
+Ready to implement. AI-T1 (Cargo feature + dep wiring + cfg
+block) is the next slice when the operator's `.onnx` file
+arrives.
 
 ### Other queued / parked
 

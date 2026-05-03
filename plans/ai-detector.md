@@ -28,20 +28,23 @@ Three integration shapes considered:
 
 ## 2 · The on/off matrix (key requirement)
 
-Five independent levels, finest to coarsest:
+Six independent levels, finest to coarsest:
 
 | Level | Knob | Granularity | Restart? | Notes |
 |---|---|---|---|---|
-| 1 | **Cargo feature `ai`** | compile-time | yes (rebuild) | Off → no `tract` dep, no 37 MB model bytes, no AiDetector trait impl. Slim images stay slim. |
+| 1 | **Cargo feature `ai`** | compile-time | yes (rebuild) | Off → no `tract` dep, no 37 MB model bytes, no AiDetector trait impl. Default OFF — see §11.2. |
 | 2 | **Config `ai.enabled: bool`** | per-deployment | no (hot-reload) | When false, the boot path skips loading the model; AiDetector returns `mask::Off` semantics. |
-| 3 | **Per-tier scope `ai.tiers: [critical, high]`** | per-route via tier | no (hot-reload) | Inference only runs on requests resolving to listed tiers. Default: `[critical, high]` — Tier-Lite skipped to save CPU on bulk traffic. |
-| 4 | **Detector mask `/api/detectors`** | per-class runtime | no (live) | Existing UI; `ai_*` rule_ids muted via `mute_class("ai_injection")` etc. Same plumbing as muting `sqli`. |
-| 5 | **Confidence threshold `ai.confidence_threshold: 0.85`** | per-deployment | no (hot-reload) | Predictions below threshold → no-op (don't override regex detector verdicts on low-confidence calls). |
+| 3 | **Mode `ai.mode: observe \| enforce`** | per-deployment | no (hot-reload) | `observe` (default): run inference, emit metrics + `would_block` audit, **never block**. `enforce`: same path, blocks when `confidence ≥ threshold`. Hot-flip between modes for safe rollouts + instant rollback. See §11.4. |
+| 4 | **Per-tier scope `ai.tiers: [critical, high]`** | per-route via tier | no (hot-reload) | Inference only runs on requests resolving to listed tiers. Default: `[critical, high]` — Tier-Lite skipped to save CPU on bulk traffic. |
+| 5 | **Detector mask `/api/detectors`** | per-class runtime | no (live) | Existing UI; `ai_*` rule_ids muted via `mute_class("ai_injection")` etc. Same plumbing as muting `sqli`. |
+| 6 | **Confidence threshold `ai.confidence_threshold: 0.85`** | per-deployment | no (hot-reload) | Predictions below threshold → no-op (don't override regex detector verdicts on low-confidence calls). |
 
-**Default deployment:** Cargo feature off. Operators flip
-`FEATURES="redis geoip ai"` at build time + `ai.enabled: true`
-in YAML. Two flips between "no AI in the binary" and "AI live
-on all critical routes" — symmetric off → on and on → off.
+**Default deployment:** Cargo feature off. Operators opt in
+via `FEATURES="redis geoip ai"` at build time + `ai.enabled: true`
++ `ai.mode: observe` in YAML. After burn-in, flip
+`ai.mode: enforce`. Two YAML edits (enabled → observe → enforce)
+between "no AI in the binary" and "AI actively blocking" —
+symmetric and reversible at every step.
 
 ## 3 · Performance budget (key requirement)
 
@@ -162,8 +165,10 @@ The 11 classes from the dataset report:
 | Dictionary Attack | `ai_dictionary_attack` | 429 | yes |
 | SSTI | `ai_ssti` | 403 | yes |
 
-**Audit shape** (existing AuditEvent):
+**Audit shape** depends on the mode:
+
 ```jsonc
+// mode: enforce  — actually blocked
 {
   "action": "block",
   "rule_id": "ai_injection",
@@ -171,10 +176,28 @@ The 11 classes from the dataset report:
     "ai_class": "Injection",
     "ai_confidence": 0.97,
     "ai_inference_us": 412,
-    "ai_features_top3": ["len_url", "ratio_special", "n_unicode_escape"]
+    "ai_features_top3": ["len_url", "ratio_special", "n_unicode_escape"],
+    "ai_mode": "enforce"
+  }
+}
+
+// mode: observe — would-have-blocked
+{
+  "action": "would_block",
+  "rule_id": "ai_injection",
+  "fields": {
+    "ai_class": "Injection",
+    "ai_confidence": 0.97,
+    "ai_inference_us": 412,
+    "ai_mode": "observe"
   }
 }
 ```
+
+The `would_block` action is distinct from `block` so the audit
+chain doesn't claim a block that never happened. Dashboards
+filter on `action == "would_block"` to surface the "what AI
+would have done" set during burn-in.
 
 The `ai_features_top3` field surfaces the top-3 contributing
 features (by absolute SHAP-like score from a one-step
@@ -191,7 +214,7 @@ adds ~50 µs per request.
 | **AI-T3** | `model.rs` — `Model::load(path) -> Result<Self>` via tract; `Model::predict(&[f32; 26]) -> Prediction { class, confidence, all_probs }`. Includes the 5ms timeout wrapper. | ~3h |
 | **AI-T4** | `AiDetector` struct + `Detector` trait impl. Wires the per-tier gate, threshold check, and audit field emission. | ~3h |
 | **AI-T5** | Boot wiring in `aegis-proxy::run` — read `cfg.ai`, build `AiDetector`, push into `detectors` vec. Behind `#[cfg(feature = "ai")]`. | ~2h |
-| **AI-T6** | Metrics: `aegis_ai_inference_duration_seconds` (histogram), `aegis_ai_predictions_total{class}`, `aegis_ai_fallback_total{reason}` (timeout / threshold-too-low / model-error). Same Prometheus registry as the other latency histograms. | ~2h |
+| **AI-T6** | Metrics: `aegis_ai_inference_duration_seconds` (histogram), `aegis_ai_predictions_total{class}`, `aegis_ai_blocks_total{class}` (enforce-mode actual blocks), `aegis_ai_would_block_total{class}` (observe-mode counterfactual — the load-bearing one for the safe-rollout story), `aegis_ai_fallback_total{reason}` (timeout / threshold-too-low / model-error). Same Prometheus registry as the other latency histograms. | ~2h |
 | **AI-T7** | `make ai-link`, `data/ai_model/.gitignore`, `data/ai_model/README.md` operator-docs. Mirrors geoip pattern. | ~1h |
 | **AI-T8** | Integration test: load real ONNX, fire 100 known-bad payloads, assert ≥ 90% blocked with correct class. Plus a perf test that asserts p99 latency ≤ 1 ms over 1000 inferences. | ~3h |
 | **AI-T9** | Dashboard surface: AI Detector card on the Detectors page (toggle, threshold slider, prediction-class breakdown bar chart from `/api/detectors/ai/stats`). | ~3h |
@@ -271,32 +294,112 @@ Total: ~23h. Slice order is strict — T1 → T2 → T3 → T4 → T5 are sequen
 - `Implement-Progress.md` flips AI-T from open → closed with
   the SHA of AI-T8.
 
-## 11 · Open questions for the user
+## 11 · Resolved decisions (locked-in for v1)
 
-1. **Model artifact source.** The report describes the
-   training pipeline (`build_dataset.py`, `train.py`) but the
-   `.onnx` file isn't in the repo and isn't referenced as a
-   downloadable artifact. Where does the operator get it?
-   - Option A: ship it via a make target that downloads from
-     a release URL (S3 / GitHub release).
-   - Option B: require operators to train themselves
-     (`make ai-train` runs the python pipeline).
-   - Option C: hand-shipped per-deployment (USB stick / S3
-     bucket per customer).
-2. **Default Cargo feature?** Mirroring the geoip choice
-   (default-on, no-op when disabled), or default-off (slim
-   image, opt-in)? My instinct is **default-off** because of
-   the 37 MB binary bloat, but the geoip-style tradeoff could
-   apply if the model becomes mandatory.
-3. **Confidence threshold default.** 0.85 in this design;
-   the dataset report's overall accuracy is 94.3% but doesn't
-   give a precision/recall curve at varying thresholds.
-   Need a calibration pass to pick the operating point that
-   balances false-positive rate against detection rate.
-4. **Should AI verdicts be advisory or authoritative?**
-   Advisory: AI emits a low-priority signal that contributes
-   to the risk score (existing P6 risk subsystem); the
-   request gets blocked only if the cumulative risk crosses
-   threshold. Authoritative: AI verdict triggers an immediate
-   block. This design assumes authoritative; the advisory
-   alternative needs a separate plan.
+User answered all four open questions on 2026-05-03. Captured
+here so the implementation slices don't re-litigate them.
+
+### 11.1 — Model artifact source: operator-supplied path
+
+The operator builds + ships their own `.onnx` (training
+pipeline lives in their own ML repo). The WAF references it
+by path; the file is never in git. Mirrors the geoip pattern
+exactly:
+
+  - `data/ai_model/` directory with a `.gitignore` excluding
+    `*.onnx` and a `README.md` explaining the setup.
+  - `make ai-link MODEL=/path/to/waf_model.onnx` symlinks the
+    operator's file into `data/ai_model/waf_model.onnx`.
+  - Config block points at the symlink:
+    ```yaml
+    ai:
+      enabled: true
+      model_path: "data/ai_model/waf_model.onnx"
+    ```
+  - Boot fails loudly with `WafError::Config("ai.model_path
+    'X' not found")` when the file is missing AND
+    `ai.enabled: true`. Never silent.
+
+### 11.2 — Default Cargo feature: OFF
+
+`ai = []` is **off in the default `FEATURES`** (current
+default is `redis geoip`; AI does NOT join unless an operator
+opts in). Reasoning:
+
+  - 37 MB binary bloat is real (vs. geoip's ~50 KB of code).
+  - tract pulls a non-trivial dep tree.
+  - Most deployments don't run AI; making them pay for it by
+    default is wrong.
+  - Symmetric to the user's other "must be opt-in" features
+    (`http3`, `vault`, `aws`, etc).
+
+Operator opts in: `make build FEATURES="redis geoip ai"`.
+
+### 11.3 — Confidence threshold default: 0.85
+
+Locked at 0.85 in the schema. The dataset report's
+overall 94.3% accuracy implies a typical operating point
+around 0.80-0.90; 0.85 is the conservative middle. Operators
+re-tune via `ai.confidence_threshold` after observing real
+traffic with the AI in `mode: observe` (see §11.4).
+
+A calibration follow-up (AI-T10) will sweep thresholds against
+the test set and produce a precision/recall curve; the result
+may shift the default in a future release.
+
+### 11.4 — Verdict semantics: hybrid `mode: observe | enforce`
+
+Strict superset of both authoritative and advisory. The
+mode is a YAML field, hot-reloadable, no rebuild needed.
+
+| Mode | Behaviour | When to use |
+|---|---|---|
+| **`observe`** *(default)* | Inference runs, predictions emit to metrics + audit, **no request is ever blocked by AI**. Operator watches the false-positive rate against real traffic. | Day-1 deploys, threshold calibration, "AI watcher" deployments where the operator wants telemetry without enforcement risk. |
+| **`enforce`** | Same path; predictions with `confidence ≥ threshold` AND `class != Normal` block the request. | Production deploys after observe-mode burn-in. |
+
+Reasoning for picking hybrid over the two alternatives:
+
+  - **Pure authoritative:** only way to test threshold is to
+    block real users. Reverting means "raise threshold",
+    which is fragile (a single payload can drop confidence
+    below threshold and stop blocking).
+  - **Pure advisory** (feed P6 risk score): adds two-step
+    mental model, requires risk-tracker integration, harder
+    to roll back (tracing risk math).
+  - **Hybrid:** SAME path either way — model still runs,
+    only the action branch changes. No performance delta
+    between modes. Operator gets a symmetric flip:
+    `mode: observe` ↔ `mode: enforce` is one YAML edit, no
+    rebuild, no restart, hot-reloaded.
+
+Operability story:
+1. Operator deploys with `mode: observe`. Dashboard shows
+   `aegis_ai_predictions_total{class}` and
+   `aegis_ai_would_block_total{class}` populating.
+2. Two weeks of clean observation → flip to `mode: enforce`.
+3. First false-positive incident → flip back to `mode:
+   observe` in 5 seconds. Same model, same metrics, just no
+   blocks.
+4. (Future, not v1) `mode: advisory` adds the P6 risk-score
+   path if an operator asks. The schema reserves the variant.
+
+Audit emission in `observe` mode uses `action: "would_block"`
+(distinct from `block` so the audit chain doesn't claim a
+block that didn't happen). Action verb appears in the
+dashboard's audit table; operators filter on it to find the
+"AI would have blocked" set.
+
+Performance impact is zero: the inference path is identical
+in both modes. Only the post-prediction decision branch
+differs (return Block vs. return Pass with audit emit).
+
+### 11.5 — Open follow-up questions (NOT blocking AI-T1)
+
+- Per-route confidence threshold overrides — global threshold
+  for v1; per-route YAML field is a CC-track follow-up.
+- Hot-reload of the model file (notify-watch on
+  `model_path`) — restart-only in v1.
+- Multi-model ensembles / per-language models — single model
+  in v1.
+- ROC-curve calibration tool / CLI (`waf ai calibrate`) —
+  AI-T10 follow-up.
