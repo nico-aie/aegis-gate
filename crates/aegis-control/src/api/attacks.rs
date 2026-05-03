@@ -79,6 +79,15 @@ pub struct TopResponse {
     pub window_seconds: u32,
     pub limit: u32,
     pub attackers: Vec<Attacker>,
+    /// `true` when the AttacksHandler has a GeoIP reader wired
+    /// (boot path called `set_geo_lookup`). Lets the dashboard
+    /// distinguish "DB not loaded" (real backend gap) from
+    /// "DB loaded but no resolvable source IPs yet" (the
+    /// localhost-dev case where every source is 127.0.0.1).
+    /// `false` for the renderer-side default; the handler
+    /// flips it in `render_top` when `self.geo.is_some()`.
+    #[serde(default)]
+    pub geoip_loaded: bool,
 }
 
 /// One row of `/api/attacks/by-detector`.
@@ -303,6 +312,10 @@ impl AttacksAggregator {
             window_seconds: window,
             limit,
             attackers,
+            // Aggregator doesn't know about the geo lookup —
+            // the handler's `render_top` flips this flag when
+            // `self.geo.is_some()` before serialising.
+            geoip_loaded: false,
         }
     }
 
@@ -651,6 +664,15 @@ impl AttacksHandler {
 
         let mut response = self.agg.top(window_seconds, limit);
         self.enrich_attackers(&mut response.attackers);
+        // Flip the wire-level signal for the dashboard. We
+        // can't read `self.geo` from inside `agg.top()` (the
+        // aggregator doesn't own the lookup); set it here once
+        // we own both halves.
+        response.geoip_loaded = self
+            .geo
+            .lock()
+            .expect("attacks geo slot poisoned")
+            .is_some();
         let body = serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
         let mut cache = self.top_cache.lock().expect("attacks cache poisoned");
         *cache = Some((now, window_seconds, limit, response));
@@ -1107,7 +1129,7 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         let obj = json.as_object().expect("top object");
-        for key in ["window_seconds", "limit", "attackers"] {
+        for key in ["window_seconds", "limit", "attackers", "geoip_loaded"] {
             assert!(obj.contains_key(key), "top response missing {key}");
         }
         let attackers = obj["attackers"].as_array().unwrap();
@@ -1115,6 +1137,50 @@ mod tests {
         for key in ["identifier", "hits", "categories", "risk", "last_seen"] {
             assert!(a.contains_key(key), "attacker missing {key}");
         }
+    }
+
+    #[test]
+    fn top_response_geoip_loaded_defaults_false_without_lookup_wired() {
+        // Aggregator path returns false; the handler flips it
+        // when its `geo` slot is Some.
+        let agg = std::sync::Arc::new(AttacksAggregator::new());
+        agg.record(&det_event_full("8.8.8.8", Some("sqli"), None, 80));
+        let h = AttacksHandler::with_ttl(agg, std::time::Duration::from_millis(1));
+        let body = h.render_top(900, 5);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            v["geoip_loaded"].as_bool(),
+            Some(false),
+            "geoip_loaded must be false when no lookup is wired",
+        );
+    }
+
+    #[test]
+    fn top_response_geoip_loaded_true_after_set_geo_lookup() {
+        // Stub GeoIpLookup that returns nothing — we only care
+        // that the handler observes its presence + flips the
+        // flag, not what it resolves.
+        struct StubGeo;
+        impl aegis_security::geoip::GeoIpLookup for StubGeo {
+            fn country(&self, _ip: std::net::IpAddr) -> Option<String> {
+                None
+            }
+            fn asn(&self, _ip: std::net::IpAddr) -> Option<u32> {
+                None
+            }
+        }
+
+        let agg = std::sync::Arc::new(AttacksAggregator::new());
+        agg.record(&det_event_full("8.8.8.8", Some("sqli"), None, 80));
+        let h = AttacksHandler::with_ttl(agg, std::time::Duration::from_millis(1));
+        h.set_geo_lookup(std::sync::Arc::new(StubGeo));
+        let body = h.render_top(900, 5);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            v["geoip_loaded"].as_bool(),
+            Some(true),
+            "geoip_loaded must flip to true after set_geo_lookup",
+        );
     }
 
     #[test]

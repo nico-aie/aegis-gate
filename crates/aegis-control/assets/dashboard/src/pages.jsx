@@ -132,6 +132,14 @@ function PageOverview() {
       ip: a.id, label: a.country, show: i < 5,
     }));
 
+  // Backend signal — `geoip_loaded` flips to true when the
+  // server's AttacksHandler has a MaxMind reader wired (boot
+  // path called `set_geo_lookup`). Lets us distinguish "DB
+  // not loaded" (real backend gap) from "DB loaded but no
+  // resolvable source IPs" (the localhost-dev case where every
+  // attacker is 127.0.0.1, which MaxMind doesn't resolve).
+  const geoipLoaded = topApi.data?.geoip_loaded === true;
+
   return (
     <>
       <div className="page-head">
@@ -223,20 +231,32 @@ function PageOverview() {
           <div style={{ display: 'flex', gap: 8 }}>
             <span className="pill block">{topAttackers.length} active sources</span>
             <span
-              className={`pill ${blips.length > 0 ? 'ok' : 'warn'}`}
-              title={blips.length > 0
-                ? `${blips.length} sources have country lookups`
-                : "GeoIP MaxMind DB not loaded — see docs/operator/geoip-setup.md"}
+              className={`pill ${
+                blips.length > 0 ? 'ok' : geoipLoaded ? 'info' : 'warn'
+              }`}
+              title={
+                blips.length > 0
+                  ? `${blips.length} sources have country lookups`
+                  : geoipLoaded
+                    ? 'GeoIP DB loaded; no current attackers have a public IP MaxMind can resolve (e.g. localhost dev traffic). The pill flips when public-IP attackers arrive.'
+                    : 'GeoIP MaxMind DB not loaded — see docs/security/geoip-filtering.md'
+              }
               style={{ cursor: blips.length === 0 ? 'help' : 'default' }}
             >
-              {blips.length > 0 ? `${blips.length} geo-tagged` : 'GeoIP DB not loaded'}
+              {blips.length > 0
+                ? `${blips.length} geo-tagged`
+                : geoipLoaded
+                  ? 'no resolvable IPs'
+                  : 'GeoIP DB not loaded'}
             </span>
           </div>
         </div>
         {blips.length === 0 && topAttackers.length > 0 && (
           <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--ink-dim)', borderBottom: '1px solid var(--hairline)' }}>
-            Map empty because GeoIP DB isn't loaded. The Top Attackers table below still shows every IP.
-            {' '}<a href="#/help" style={{ color: 'var(--accent)' }}>How to install GeoIP →</a>
+            {geoipLoaded
+              ? 'Map empty because none of the current attackers have a public IP MaxMind can resolve (e.g. localhost). The Top Attackers table below still shows every IP.'
+              : <>Map empty because GeoIP DB isn't loaded. The Top Attackers table below still shows every IP.{' '}<a href="#/help" style={{ color: 'var(--accent)' }}>How to install GeoIP →</a></>
+            }
           </div>
         )}
         <window.WorldMap blips={blips} h={300} />
