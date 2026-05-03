@@ -1,7 +1,8 @@
 # Operations (day-2)
 
-Day-2 concerns: HA topology, compliance modes, residency, DR. Owner:
-**M3** ([`../../plans/member-3-control-plane.md`](../../plans/member-3-control-plane.md)).
+Day-2 concerns: HA topology, compliance modes, residency, DR.
+Implementation lives in `crates/aegis-control/src/{ha,compliance,residency,…}`;
+per-feature plans are tracked in [`../../plans/`](../../plans/).
 
 | Doc | Summary |
 |---|---|

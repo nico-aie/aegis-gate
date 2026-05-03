@@ -351,9 +351,10 @@ waf help
 | **Detectors** (per-class behaviour + tags) | [`docs/security/detectors/README.md`](docs/security/detectors/README.md) |
 | **Upstream pools (full schema)** | [`docs/data-plane/upstream-pools.md`](docs/data-plane/upstream-pools.md) |
 | **Reverse proxy + tunneling** | [`docs/data-plane/reverse-proxy.md`](docs/data-plane/reverse-proxy.md) |
-| **mTLS deployment** | [`docs/security/mtls.md`](docs/security/mtls.md) |
-| **API contract** | [`docs/control-plane/api.openapi.yaml`](docs/control-plane/api.openapi.yaml) |
-| **Dashboard design spec** | [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) |
+| **TLS termination + mTLS** | [`docs/data-plane/tls-termination.md`](docs/data-plane/tls-termination.md) |
+| **API contract** (OpenAPI) | [`docs/control-plane/api.openapi.yaml`](docs/control-plane/api.openapi.yaml) |
+| **Dashboard reference** (page inventory + REST/SSE) | [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) |
+| **AI Detector** (perf, config, observability) | [`docs/security/detectors/ai-detector.md`](docs/security/detectors/ai-detector.md) |
 | **HA clustering** | [`docs/operations/ha-clustering.md`](docs/operations/ha-clustering.md) |
 | **Runtime tuning** | [`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md) |
 | **Deployment guide** | [`deploy/GUIDE.md`](deploy/GUIDE.md) |

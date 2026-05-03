@@ -14,6 +14,7 @@ historical comparison but not needed for everyday work.
 |---|---|---|
 | [`run-perf-5krps-prod-balanced-2026-05-02-v3/`](./run-perf-5krps-prod-balanced-2026-05-02-v3/) | 2026-05-02 | **Sustained throughput baseline** — `prod-balanced` profile @ 5 k+ RPS for 2 min, k6 4 891 RPS / WAF-internal 6 392 RPS, legit p99 1.03 ms / median 0.13 ms / 100 % OK, 80 % attack detection. All three k6 thresholds passed. Compare new perf runs against this. |
 | [`run-perf-15min-2026-05-02-v2/`](./run-perf-15min-2026-05-02-v2/) | 2026-05-02 | **Detection-coverage baseline** — 15-min mixed-traffic harness post detector-coverage sprint. Detection rose 33 % → 80 % from the v1 result. Use to verify regression coverage when adding / changing detectors. |
+| [`run-ai-compare-2026-05-03/`](./run-ai-compare-2026-05-03/) | 2026-05-03 | **AI Detector A/B/C/D baseline** — side-by-side regex+AI / AI-only / regex-only / none, 4 × 8 000 reqs at 400 rps. Headline: AI lifts detection 92.9 % → 93.3 % at +0.1 ms p95 / +357 µs mean inference / +160 MB RSS. **All four cases meet the p99 < 5 ms target.** Reproduces with `bash tests/perf/ai-compare.sh`. |
 | [`run-cqa-round3-20260502/`](./run-cqa-round3-20260502/) | 2026-05-02 | **Dashboard CQA baseline** — Round-3 control-panel acceptance after the SOC-UX pass. 12 fresh screenshots, every page renders, OpenAPI shape green. |
 | [`run-soc-sweep-202605030612/`](./run-soc-sweep-202605030612/) | 2026-05-03 | **SOC sweep baseline** — most recent multi-tester SOC walkthrough. Use as the comparison row for the next AI-assistant sweep. |
 

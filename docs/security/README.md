@@ -1,8 +1,8 @@
 # Security pipeline (M2)
 
 The decision pipeline: rule engine, detectors, risk scoring, challenge
-engine. Owner: **M2** —
-[`../../plans/member-2-security-pipeline.md`](../../plans/member-2-security-pipeline.md).
+engine. Implementation lives in `crates/aegis-security/`; per-feature
+plans are tracked in [`../../plans/`](../../plans/).
 
 ## Reading order
 

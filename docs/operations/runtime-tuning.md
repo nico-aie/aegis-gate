@@ -219,7 +219,7 @@ the standard graceful pattern:
   for back-link compatibility).
 - [`ha-clustering.md`](./ha-clustering.md) — Layer-2 cross-node
   scaling.
-- [`zero-downtime-ops.md`](./zero-downtime-ops.md) — drain pattern,
+- [`../control-plane/zero-downtime-ops.md`](../control-plane/zero-downtime-ops.md) — drain pattern,
   SIGTERM grace period.
 - [`config/prod.yaml`](../../config/prod.yaml) — example YAML with
   the `runtime:` block commented out.

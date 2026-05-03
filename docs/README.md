@@ -5,8 +5,10 @@ authoritative top-level specs live at the repository root:
 
 - [`../Requirement.md`](../Requirement.md) — requirements (the "what")
 - [`../Architecture.md`](../Architecture.md) — architecture (the "how")
-- [`../plans/shared-contract.md`](../plans/shared-contract.md) — shared
-  types and cross-crate traits used by the three member plans
+- [`../plans/README.md`](../plans/README.md) — index of active and
+  recently-shipped tracks (per-feature plans + the implementation
+  matrix that flips them between *Implemented* / *Partial* /
+  *Designed-only*)
 
 Each doc in this folder is scoped to a single subsystem and is
 implementation-agnostic; the owning member plan (M1/M2/M3) points back
@@ -25,7 +27,7 @@ docs/
 ├── security/                  M2 — rules, detectors, risk, challenge engine
 │   └── detectors/             Per-attack-class detector specs
 ├── control-plane/             M3 — dashboard, admin API, hot-reload, secrets
-│   └── enterprise/            Enterprise dashboard SPA spec
+│   └── enterprise/            Aegis WAF Console — page inventory + REST/SSE contract
 ├── observability/             Metrics, tracing, audit, SIEM, SLO/SLI
 ├── operations/                Day-2: HA, compliance, residency, DR
 └── future/                    Phase-B intake + deferred designs
@@ -117,6 +119,7 @@ each category.
 | [header-injection.md](./security/detectors/header-injection.md) | Header injection |
 | [recon.md](./security/detectors/recon.md) | Scanner / probe detection |
 | [brute-force.md](./security/detectors/brute-force.md) | Auth brute-force |
+| [ai-detector.md](./security/detectors/ai-detector.md) | ML-based binary attack/normal verdict (operator-supplied ONNX, `ort` runtime, `ai` Cargo feature) |
 | [body-abuse.md](./security/detectors/body-abuse.md) | Body size / nesting abuse |
 
 ## Control plane
@@ -129,7 +132,7 @@ each category.
 | [gitops-change-management.md](./control-plane/gitops-change-management.md) | Git source of truth, signed commits |
 | [secrets-management.md](./control-plane/secrets-management.md) | Vault / AWS SM / GCP SM / Azure KV / HSM |
 | [zero-downtime-ops.md](./control-plane/zero-downtime-ops.md) | SO_REUSEPORT, drain, hot reload |
-| [enterprise/](./control-plane/enterprise/) | Enterprise dashboard SPA — design system, pages, API |
+| [enterprise/](./control-plane/enterprise/) | Aegis WAF Console — live page inventory + REST/SSE contract + front-end CSP |
 
 ## Observability
 
@@ -164,7 +167,7 @@ each category.
 
 1. `../Requirement.md` — the "what"
 2. `../Architecture.md` — the "how"
-3. `../plans/shared-contract.md` — the cross-crate interfaces
+3. `../plans/README.md` — the active + recently-shipped track index
 4. `data-plane/reverse-proxy.md` → `data-plane/routing-ingress.md` →
    `data-plane/upstream-pools.md` — request flow
 5. `security/tiered-protection.md` → `security/rule-engine.md` → any
@@ -193,10 +196,12 @@ each category.
 Tracks landing here:
 
 1. **Dashboard redesign** — closed (DD-T0..T8 shipped in run-10).
-   See [`../plans/dashboard-redesign.md`](../plans/dashboard-redesign.md)
-   and [`control-plane/enterprise/`](./control-plane/enterprise/) for
-   the design spec.
-2. **Phase B (advanced features)** — open intake. Use
+   The bundled SPA is now the source of truth — see
+   [`control-plane/enterprise/`](./control-plane/enterprise/) for
+   the live page inventory + REST/SSE contract.
+2. **AI Detector** — closed 2026-05-03 (AI-T1..T9). See
+   [`security/detectors/ai-detector.md`](./security/detectors/ai-detector.md).
+3. **Phase B (advanced features)** — open intake. Use
    [`future/advanced-features.md`](./future/advanced-features.md) to
    propose, score, and triage requests. Once a feature is accepted it
    moves into the appropriate category folder with its own doc.

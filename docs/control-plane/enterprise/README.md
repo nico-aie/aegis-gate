@@ -1,109 +1,74 @@
-# Enterprise Dashboard — Design Spec
+# Aegis WAF Console — Dashboard Reference
 
-> **Status.** Shipped. The Aegis WAF Console (DD-T0..T8) bundles
-> this design into `crates/aegis-control/assets/dashboard/app.js`.
-> See [`../../../plans/dashboard-redesign.md`](../../../plans/dashboard-redesign.md)
-> for the redesign plan and
-> [`../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md`](../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md)
-> for the closing run. The earlier milestone-paced execution plan
-> (D-M1..D-M6) is archived under
-> [`../../../plans/archive/dashboard-enterprise/README.md`](../../../plans/archive/dashboard-enterprise/README.md).
+> **Status.** Shipped — pre-compiled React 18 SPA, bundled into
+> `crates/aegis-control/assets/dashboard/app.js` (~305 KB), served
+> from `/dashboard/` on the admin listener.
+>
+> Live source — [`crates/aegis-control/assets/dashboard/src/`](../../../crates/aegis-control/assets/dashboard/src/).
+> Auth + listener contract — [`../dashboard.md`](../dashboard.md) · [`../dashboard-auth.md`](../dashboard-auth.md).
+> REST + SSE contract — [`./api.md`](./api.md).
+> Front-end CSP / threat model — [`./security.md`](./security.md).
 
-> **Reference.** This work upgrades the existing v1 dashboard
-> (single-page event tail at `/dashboard/`, see
-> [`../dashboard.md`](../dashboard.md)) into a multi-page operator
-> console comparable to Cloudflare / Imperva / F5 BIG-IP ASM consoles.
-> The `dashboard.md` contract (control-plane listener, auth model,
-> deferred RBAC/multi-tenancy) is **unchanged** — this work only
-> reshapes the UI surface served from `crates/aegis-control/src/dashboard/`.
+The earlier vanilla-HTML / Chart.js-CDN design (D-M1..D-M6, 11
+pages) was superseded — the per-page specs and design-token docs
+that lived alongside this README have been removed in favour of
+the live React source as the single source of truth. The archived
+milestone plan still lives at
+[`../../../plans/archive/dashboard-enterprise/`](../../../plans/archive/dashboard-enterprise/)
+for historical context.
 
-## Goals
+## Page inventory (live)
 
-1. **Operator-grade.** A single pane of glass: traffic, attacks,
-   rules, configuration, audit, health — without a terminal.
-2. **No external build step.** Vanilla HTML/CSS/JS embedded in the
-   `aegis-control` crate via `include_bytes!`. Charts via Chart.js
-   loaded from a pinned CDN (offline fallback documented in
-   [`assets.md`](assets.md)).
-3. **No regression.** Existing endpoints — `/dashboard/sse`,
-   `/api/config`, `/healthz/*`, `/metrics` — keep their contracts.
-   New endpoints sit alongside them.
-4. **Auth unchanged.** Every non-`open` path stays behind the
-   argon2id + HMAC session + CSRF + IP allowlist + optional TOTP/mTLS
-   stack defined in [`../dashboard-auth.md`](../dashboard-auth.md).
-5. **Single-tenant only.** RBAC, OIDC/SSO, multi-tenant scoping
-   remain deferred — see [`../../future/rbac-sso.md`](../../future/rbac-sso.md)
-   and [`../../future/multi-tenancy.md`](../../future/multi-tenancy.md).
+The bundled SPA exposes the following pages — the inventory is
+sourced from `crates/aegis-control/assets/dashboard/src/pages.jsx`:
 
-## Non-goals
+| Section | Pages |
+|---|---|
+| **Operator views** | Overview · Live Feed · Investigation · Top Attackers · Threat Intel |
+| **Configuration** | Rules · Detectors · Access Lists · Routing & Upstreams · Compliance |
+| **Health & telemetry** | Performance · Health & SLOs · Audit Trail · Scaling |
+| **Settings** | Settings · Reports · Help |
 
-- Switching the front-end to React / Vue / Svelte. Decided against:
-  adds a Node.js build to the Rust workflow, fights the existing
-  `include_bytes!` embedding pattern, doubles asset surface area.
-- Multi-tenant scoping in the UI. v1 ships one admin principal.
-- Replacing Prometheus or Grafana. Operators retain those for
-  long-term metrics; the dashboard is for live incident response.
+Each page is a React component wrapped in an `ErrorBoundary` so a
+single component crash never blanks the shell.
 
-## Document map
+## Architecture (one-line summary)
 
-| File | Purpose |
-|------|---------|
-| [`overview.md`](overview.md) | Why this exists, design principles, what it replaces |
-| [`layout.md`](layout.md) | Sidebar + header + content frame, breakpoints, navigation model |
-| [`theme.md`](theme.md) | Design tokens — color, typography, spacing, motion |
-| [`components.md`](components.md) | Reusable widgets (stat card, chart, table, badge, modal, toast) |
-| [`pages/`](pages/) | One file per sidebar page: data shape, layout, interactions |
-| [`api.md`](api.md) | New REST endpoints + SSE events the UI consumes |
-| [`assets.md`](assets.md) | Embedding strategy, third-party deps, CSP, offline mode |
-| [`accessibility.md`](accessibility.md) | Keyboard nav, ARIA, contrast, screen-reader expectations |
-| [`security.md`](security.md) | CSP, CSRF, XSS hardening, supply-chain notes |
+- **No build step in the runtime.** The pre-compiled bundle and
+  asset map are checked in; `aegis-control` re-exports them via
+  `include_bytes!` so the binary ships everything it needs.
+- **No CDN.** All scripts and styles are first-party — `script-src
+  'self'`. Charts use a vendored library, not a third-party CDN.
+- **No new auth.** Every non-`open` route on the admin listener
+  goes through the same argon2id + HMAC session + CSRF + IP
+  allow-list stack documented in
+  [`../dashboard-auth.md`](../dashboard-auth.md).
+- **Read-mostly with audited mutations.** Every write hits an
+  audit-mutated endpoint (`PUT /api/detectors`, `POST /api/rules`,
+  `PUT /api/upstreams`, …) which records a `config_reload` audit
+  entry before swapping the live config.
 
-## Page inventory (sidebar order)
+## REST + SSE contract
 
-The example screenshot drives the sidebar. The ten pages below are
-grouped into three sections in [`layout.md`](layout.md).
+Endpoint inventory and request / response shapes:
+[`api.md`](./api.md). Every mutating endpoint requires the session
+cookie + the CSRF double-submit token; read-only endpoints just
+need the session. SSE stream `/dashboard/sse` carries every audit
+event and is the source for the Live Feed / Investigation pages.
 
-**Operator views (core)**
+## Security model
 
-1. **Overview** — top-level KPIs + traffic/attack visualization
-2. **Live Feed** — SSE-driven request stream with filters
-3. **Attack Events** — detector breakdown, top rules, threat-intel hits
-4. **Analytics** — historical trends, Prometheus-backed
-5. **Audit Log** — searchable audit chain with verification status
+Front-end threat model + CSP + supply-chain notes:
+[`security.md`](./security.md). The front-end is the most
+privileged surface in the product — session cookies on the
+admin's browser can mutate every WAF setting — and the bar for
+shipping client-side code is correspondingly high.
 
-**Configuration management**
+## When to read what
 
-6. **Rule Manager** — rule CRUD + diff editor + dry-run
-7. **Tier Config** — tier definitions and pipeline assignment
-8. **Blacklist** — IP / CIDR / ASN deny lists
-9. **Whitelist** — IP / CIDR / ASN allow lists
-10. **Settings** — admin password, TOTP, session policy, theme
-
-**Tracking** (a single Tracking section consolidates the live operator
-state that does not fit cleanly into the operator or config buckets)
-
-11. **Tracking** — SLO burn rate, upstream pool health, cluster peer
-    list, certificate freshness, GitOps sync status. See
-    [`pages/tracking.md`](pages/tracking.md).
-
-## Out-of-band reading
-
-- [`../dashboard.md`](../dashboard.md) — control-plane contract
-- [`../dashboard-auth.md`](../dashboard-auth.md) — auth flow
-- [`../slo-sli-alerting.md`](../slo-sli-alerting.md) — SLO data source
-- [`../audit-logging.md`](../audit-logging.md) — audit chain & sinks
-- [`../rule-engine.md`](../rule-engine.md) — rule schema
-- [`../../observability/prometheus-otel.md`](../../observability/prometheus-otel.md) — metrics surface
-- [`../benchmark-mode.md`](../benchmark-mode.md) — benchmark mode
-  spec (gates, headers, panels under Tracking + Analytics)
-
-## Open questions to resolve before M1
-
-- Charting library pin: Chart.js 4.x vs uPlot. Defer to
-  [`assets.md`](assets.md).
-- Whether to surface a `/api/stats` aggregate endpoint or have each
-  page hit its own dedicated endpoint. Current lean: aggregate at
-  `/api/stats` for the Overview page only; per-page endpoints
-  elsewhere. See [`api.md`](api.md).
-- CSP `script-src` hash list vs nonce — see
-  [`security.md`](security.md).
+| You're trying to … | Start here |
+|---|---|
+| Wire up a new page or change layout | `crates/aegis-control/assets/dashboard/src/pages.jsx` (and the per-page modules it imports) |
+| Add a new admin endpoint | [`api.md`](./api.md) — pick the section, add the row, then implement in `crates/aegis-control/src/api/` |
+| Adjust the auth or CSP | [`../dashboard-auth.md`](../dashboard-auth.md) · [`security.md`](./security.md) |
+| Investigate a live incident from the UI | [`../../operator/soc-runbook.md`](../../operator/soc-runbook.md) |

@@ -4,15 +4,15 @@
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
-> **Status.** The dashboard now ships as the multi-page enterprise
-> SPA documented in [`enterprise/`](./enterprise/)
-> — see that subdirectory for the design spec, page-by-page behaviour,
-> API surface, and accessibility / security notes. The contract
-> below (control-plane listener, single-tenant auth, deferred RBAC /
+> **SPA shape.** The dashboard ships as a pre-compiled React 18 SPA
+> bundled into the binary (~305 KB, `script-src 'self'`, no CDN).
+> Page inventory + REST/SSE contract live at
+> [`enterprise/`](./enterprise/). Source:
+> `crates/aegis-control/assets/dashboard/src/`. The contract below
+> (control-plane listener, single-tenant auth, deferred RBAC /
 > multi-tenancy) is unchanged. The legacy single-file shell was
-> removed in D-M6-T6.9; operators previously running with the
-> `admin.dashboard.legacy_shell: true` flag should drop the field
-> from `waf.yaml`.
+> removed in D-M6-T6.9 — drop `admin.dashboard.legacy_shell: true`
+> from `waf.yaml` if present.
 
 > **v1 scope.** The dashboard is served by the **control-plane listener**
 > (separate from data-plane traffic). Authentication is local

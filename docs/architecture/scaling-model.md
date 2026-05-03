@@ -158,5 +158,5 @@ These are deliberate exclusions, not roadmap items:
   — L1 sizing recipes and verification.
 - [Operations · HA clustering](../operations/ha-clustering.md)
   — L2 roster, leader election, LB patterns.
-- [Control plane · API reference](../control-plane/api.md) —
+- [Control plane · API reference](../control-plane/enterprise/api.md) —
   HTTP shapes for `/api/runtime`, `/api/cluster`, `/api/state`.

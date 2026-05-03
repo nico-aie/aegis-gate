@@ -1,7 +1,8 @@
 # Observability
 
-Metrics, audit, SIEM forwarding, and SLO/SLI alerting. Owner:
-**M3** ([`../../plans/member-3-control-plane.md`](../../plans/member-3-control-plane.md)).
+Metrics, audit, SIEM forwarding, and SLO/SLI alerting. Implementation
+lives in `crates/aegis-control/src/{metrics,audit,slo,…}`; per-feature
+plans are tracked in [`../../plans/`](../../plans/).
 
 | Doc | Summary |
 |---|---|

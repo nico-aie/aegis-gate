@@ -13,7 +13,7 @@
 # (constant-arrival-rate, attack+clean mix), capture /metrics
 # before/after, and roll up to a Markdown report.
 #
-# Output: tests/perf/results/ai-compare-<UTC>/REPORT.md
+# Output: tests/results/run-ai-compare-<UTC-date>/REPORT.md
 #
 # Usage:
 #   bash tests/perf/ai-compare.sh
@@ -35,8 +35,8 @@ cd "$REPO_ROOT"
 RPS="${RPS:-500}"
 DURATION="${DURATION:-30s}"
 ATTACK_PCT="${ATTACK_PCT:-60}"
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT_DIR="$REPO_ROOT/tests/perf/results/ai-compare-$RUN_ID"
+RUN_ID="$(date -u +%Y-%m-%d-%H%M%S)"
+OUT_DIR="$REPO_ROOT/tests/results/run-ai-compare-$RUN_ID"
 ONLY="${ONLY:-A B C D}"
 mkdir -p "$OUT_DIR"
 
@@ -220,8 +220,10 @@ run_case() {
 
   echo "  driving k6 @ $RPS rps for $DURATION ($ATTACK_PCT% attack)…"
   RPS="$RPS" DURATION="$DURATION" ATTACK_PCT="$ATTACK_PCT" TARGET="$DATA" \
-    k6 run --quiet --summary-export="$case_dir/k6-summary.json" \
-    "$K6_SCRIPT" > "$case_dir/k6.log" 2>&1 || true
+    k6 run --quiet \
+      --summary-export="$case_dir/k6-summary.json" \
+      --summary-trend-stats="avg,min,med,max,p(90),p(95),p(99)" \
+      "$K6_SCRIPT" > "$case_dir/k6.log" 2>&1 || true
 
   scrape_metrics > "$case_dir/metrics-after.txt"
 
@@ -258,6 +260,7 @@ def trend(name):
         "p50": round(v.get("med", 0), 2),
         "p90": round(v.get("p(90)", 0), 2),
         "p95": round(v.get("p(95)", 0), 2),
+        "p99": round(v.get("p(99)", 0), 2),
         "max": round(v.get("max", 0), 2),
     }
 

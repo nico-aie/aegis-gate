@@ -276,7 +276,9 @@ data when benchmark mode is off.
 
 ### Tracking page — Benchmark panel
 
-A new tile on [`pages/tracking.md`](../control-plane/enterprise/pages/tracking.md):
+A new tile on the **Performance** page (the "Tracking" sidebar
+section in the v1 design — page list lives at
+[`../control-plane/enterprise/`](../control-plane/enterprise/)):
 
 - Current state (`disabled` | `headers` | `verbose`) + remaining TTL
   countdown.
@@ -288,9 +290,9 @@ A new tile on [`pages/tracking.md`](../control-plane/enterprise/pages/tracking.m
 
 ### Analytics → Benchmarks subpage
 
-A new entry under the Analytics page (no extra sidebar slot — keeps
-the v1 sidebar at 11 items per
-[`control-plane/enterprise/layout.md`](../control-plane/enterprise/layout.md)):
+A new entry under the Analytics page (no extra sidebar slot — the
+live page list is in
+[`../control-plane/enterprise/`](../control-plane/enterprise/)):
 
 - p50 / p95 / p99 overhead by tier (multi-series line chart).
 - Per-detector cost heatmap (rows = detectors, columns = 1 min
@@ -345,7 +347,7 @@ them from scratch.
 - Performance target — [`../Requirement.md`](../Requirement.md) §3
 - Pipeline — [`../Architecture.md`](../Architecture.md) §5
 - Observability surface — [`observability-prometheus-otel.md`](../observability/prometheus-otel.md)
-- Dashboard panels — [`control-plane/enterprise/pages/tracking.md`](../control-plane/enterprise/pages/tracking.md),
-  [`control-plane/enterprise/pages/analytics.md`](../control-plane/enterprise/pages/analytics.md)
+- Dashboard panels — Performance + Analytics pages
+  (page inventory at [`control-plane/enterprise/`](../control-plane/enterprise/))
 - API surface — [`control-plane/enterprise/api.md`](../control-plane/enterprise/api.md) §benchmark
 - Audit chain — [`audit-logging.md`](../observability/audit-logging.md)
