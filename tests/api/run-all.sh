@@ -43,4 +43,7 @@ echo
 echo "==> tests/api/upstreams-crud.sh (CC-T1.audit)"
 "$HERE/upstreams-crud.sh"
 echo
+echo "==> tests/api/connect-tunnel.sh (TCP-T5 dispatch smoke)"
+"$HERE/connect-tunnel.sh"
+echo
 echo "all admin-API smoke tests passed"

@@ -33,6 +33,7 @@ tests/
 │   ├── tls-ciphers.sh            cipher-suite negotiation + weak-suite reject (P4)
 │   ├── tls-data.sh               TLS hardening on the data plane (skips when :8443 not bound)
 │   ├── auth.sh                   admin login + lockout + CSRF reject (P1)
+│   ├── connect-tunnel.sh         TCP-T5 — CONNECT-method dispatch smoke (deny path)
 │   └── run-all.sh                drive everything in dependency order
 ├── cluster/                      HA two-node smoke tests (Phase B B1)
 │   ├── README.md                 orchestration + bring-up notes
