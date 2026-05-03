@@ -214,7 +214,8 @@ type PooledClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 /// | `Https` | TLS               | ALPN h1+h2 (same as Auto+TLS)   |
 /// | `H2c`   | plaintext         | HTTP/2 prior knowledge          |
 /// | `Grpc`  | TLS               | HTTP/2 only (ALPN h2)           |
-/// | `Tcp`   | (Phase 4)         | n/a — handler returns 502       |
+/// | `Tcp`   | raw byte stream   | CONNECT-method tunnel via       |
+/// |         |                   | `data_plane::forward_connect_tunnel` |
 ///
 /// `max_idle_per_host = 0` OR `keep_alive = false` disables
 /// pooling at the connector layer (pre-UP-T1 behaviour). The
@@ -374,13 +375,18 @@ pub async fn forward(
         );
     }
 
-    // Phase-3 multi-protocol: TCP forwarding is reserved for
-    // Phase 4 (raw byte stream — needs an entirely different
-    // path that doesn't go through hyper). Short-circuit with
-    // a 502 + clear x-waf-rule-id so operators see the gap.
+    // TCP-T6 — `scheme: tcp` routes do NOT flow through this
+    // HTTP forwarder. The data-plane handler
+    // (`data_plane::forward_allow_to_upstream`) dispatches
+    // CONNECT-method requests to `forward_connect_tunnel`
+    // before reaching here, and rejects non-CONNECT methods
+    // to tcp routes with a 502 `non_connect_to_tcp_route`.
+    // Reaching this point with `scheme: tcp` would mean the
+    // dispatcher upstream of us is broken — surface a loud
+    // configuration error so the regression is obvious.
     if cfg.scheme == aegis_core::config::UpstreamScheme::Tcp {
         return Err(ForwardError::BadRequest(
-            "scheme=tcp is reserved for Phase 4 (raw byte forwarding)".into(),
+            "internal: HTTP forwarder reached with scheme=tcp — dispatch in data_plane.rs is broken".into(),
         ));
     }
 

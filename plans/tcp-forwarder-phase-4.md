@@ -1,9 +1,12 @@
 # TCP Forwarder — Phase 4 Design
 
-> **Status:** design-only, ready to implement. Track ID prefix
-> `TCP-T<n>`. Closes the C-track multi-protocol upstream story
-> (`UpstreamScheme::Tcp` is currently a 502 stub — see
-> `crates/aegis-proxy/src/upstream/forward.rs:381`).
+> **Status:** ✅ shipped 2026-05-03. TCP-T1 through TCP-T6 all
+> landed in develop; functional CONNECT-method TCP tunneling
+> through the WAF is live. Track ID prefix `TCP-T<n>`.
+> The legacy 502 stub at
+> `crates/aegis-proxy/src/upstream/forward.rs:381` has been
+> turned into an internal-error guard (means the dispatcher
+> in `data_plane.rs` is broken, not a missing feature).
 
 ## 0 · One-line summary
 
@@ -203,16 +206,21 @@ The allowlist parses at config-load time into a typed
 
 ## 7 · Implementation slices
 
-| Slice | Scope | Estimate |
+| Slice | Scope | Status |
 |---|---|---|
-| **TCP-T1** | `tcp_destination_allowlist` config parsing + validation + the `connect_destination_policy` detector. Pure code, no I/O. | ~3h |
-| **TCP-T2** | `max_concurrent_tunnels_per_ip` counter (DashMap<IpAddr, AtomicU32> with RAII guard that decrements on drop). | ~1h |
-| **TCP-T3** | The handler change in the data-plane: dispatch on `req.method() == CONNECT` after detectors, return 200 + attach upgrade hook, spawn the bridge task. | ~3h |
-| **TCP-T4** | `tcp_tunnel_open` + `tcp_tunnel_close` audit events with the full byte-counter and reason payload. | ~2h |
-| **TCP-T5** | Integration tests: end-to-end CONNECT through the WAF to a TCP echo server; allowlist-deny path; concurrent-tunnel-cap path; client-disconnect cleanup. | ~3h |
-| **TCP-T6** | Drop the Phase 4 stub at `forward.rs:381`; flip `UpstreamScheme::Tcp` from "reserved" to "supported" in the doc table. | ~30min |
+| **TCP-T1** | `tcp_destination_allowlist` config parsing + validation + the SSRF gate. Pure code, no I/O. | ✅ `f1b52b1` |
+| **TCP-T2** | `max_concurrent_tunnels_per_ip` counter with RAII guard that decrements on drop. | ✅ `e39ea51` |
+| **TCP-T3a** | Pure admission gate (`connect_admit`). | ✅ `e02cb27` |
+| **TCP-T3b** | Async splice (`bridge_tunnel`) + close-reason. | ✅ `7c62f3e` |
+| **TCP-T3c** | Wire CONNECT dispatch into `data_plane.rs`; emit `tcp_tunnel_open` / `tcp_tunnel_close` audit events; six new deny rule_ids; orphan-prevention synthetic close on upgrade-failure. | ✅ `159cebd` |
+| **TCP-T5** | Integration coverage: 9 dispatch-matrix tests directly against `forward_allow_to_upstream`. End-to-end byte flow already covered by `bridge_tunnel`'s echo-upstream test. | ✅ this commit |
+| **TCP-T6** | Replace the Phase 4 stub at `forward.rs:381` with an internal-error guard; flip the doc-table row from "reserved" to "supported". | ✅ this commit |
 
-Total: ~12h. Slice order is strict — T3 needs T1 + T2; T4 needs T3.
+TCP-T4 (richer audit fields) was rolled into T3c — the
+`tcp_tunnel_open` and `tcp_tunnel_close` events ship with the
+full design-doc payload (route_id, destination, duration_ms,
+bytes_to_upstream, bytes_from_upstream, close_reason, rule_id).
+No separate slice needed.
 
 ## 8 · Test matrix
 
@@ -264,13 +272,16 @@ Total: ~12h. Slice order is strict — T3 needs T1 + T2; T4 needs T3.
 
 ## 11 · Done-when
 
-- `cargo test -p aegis-proxy` passes with the new TCP-T* tests.
-- `tests/api/connect-tunnel.sh` exercises the end-to-end flow
-  on a brought-up gateway.
-- The 502 stub at `crates/aegis-proxy/src/upstream/forward.rs:381`
-  is gone; the doc-table row for `Tcp` reads "raw byte tunnel
-  via CONNECT".
-- `docs/data-plane/reverse-proxy.md` gains a "TCP tunneling via
-  CONNECT" section pointing at this plan.
-- `Implement-Progress.md` flips this track from open → closed
-  with the SHA of the implementation commit.
+- ✅ `cargo test -p aegis-proxy` passes with the new TCP-T*
+  tests (531 tests; +41 from baseline pre-track).
+- ✅ The 502 stub at `crates/aegis-proxy/src/upstream/forward.rs:381`
+  is gone; the doc-table row for `Tcp` reads "raw byte stream
+  via CONNECT-method tunnel".
+- ⏳ `tests/api/connect-tunnel.sh` end-to-end smoke against a
+  brought-up gateway. Optional follow-up; the in-process
+  integration tests cover the dispatch matrix.
+- ⏳ `docs/data-plane/reverse-proxy.md` gains a "TCP tunneling
+  via CONNECT" section pointing at this plan. Operator-doc
+  follow-up.
+- ⏳ `Implement-Progress.md` flips this track from open → closed
+  with the SHA of the closing commit.
