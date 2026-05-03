@@ -84,6 +84,11 @@ pub(crate) async fn admin_accept_loop(
     // `None` for plain-TLS / no-mTLS deployments — the handler
     // falls back to Phase 1 preview-only behaviour.
     client_trust: Option<crate::listener::client_trust::ClientTrustStore>,
+    // FDP-T4 wiring — shared in-flight counter. Each accepted
+    // admin connection admits a guard; the guard lives for the
+    // connection's full task lifetime so the SIGUSR2 handover's
+    // drain phase can wait for in-flight=0 before exiting.
+    inflight: crate::hotbin::InFlightCounter,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -727,8 +732,14 @@ pub(crate) async fn admin_accept_loop(
         let startup = startup.clone();
         let metrics = metrics.clone();
         let services = services.clone();
+        let conn_inflight = inflight.clone();
 
         tokio::spawn(async move {
+            // FDP-T4 — admit one in-flight slot for this admin
+            // connection. Guard drops when the spawned task
+            // ends (clean close OR panic); drain reads the
+            // counter to know when in-flight=0.
+            let _admit = conn_inflight.admit();
             let io = TokioIo::new(stream);
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let cfg = cfg.clone();
@@ -823,7 +834,14 @@ pub(crate) async fn accept_loop(
         let decision_metrics = decision_metrics.clone();
         let detector_hit_metrics = detector_hit_metrics.clone();
         let identity_tracker = identity_tracker.clone();
+        // FDP-T4 — admit a slot in the shared in-flight counter
+        // for this data-plane connection. Cloned out here so it
+        // moves into the spawned task; guard drops when the
+        // task ends. Used by the SIGUSR2 handover's drain
+        // phase to know when in-flight=0.
+        let conn_inflight = upstream_ctx.inflight.clone();
         tokio::spawn(async move {
+            let _admit = conn_inflight.admit();
             // MTLS-T3 — per-connection identity. We set it from
             // the TLS handshake (when a TLS acceptor is wired)
             // before the service_fn is built; plain-HTTP

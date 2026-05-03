@@ -905,6 +905,10 @@ pub async fn run(
     // listener so the audit-mutated PUT /api/mtls/ca-bundle?apply=true
     // path can hot-swap roots without bouncing the proxy.
     let admin_client_trust = client_trust.clone();
+    // FDP-T4 — share the data-plane's inflight counter so admin
+    // connections also count toward the drain. SIGUSR2 handover
+    // exits when BOTH planes are quiet.
+    let admin_inflight = upstream_ctx.inflight.clone();
     handles.push(tokio::spawn(admin_accept_loop(
         admin_tcp,
         admin_cfg,
@@ -926,6 +930,7 @@ pub async fn run(
         admin_route_latency_hist,
         admin_detector_latency_hist,
         admin_client_trust,
+        admin_inflight,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

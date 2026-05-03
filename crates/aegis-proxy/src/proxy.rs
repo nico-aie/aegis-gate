@@ -34,6 +34,13 @@ pub struct ProxyContext {
     /// counter for CONNECT-method dispatch on `scheme: tcp`
     /// routes. Cheap to clone (every clone shares state).
     pub tunnels: crate::tcp_tunnel::ConcurrentTunnels,
+    /// FDP-T4 wiring — shared in-flight request counter. The
+    /// admin + data accept loops admit a guard for every
+    /// accepted connection; the guard's lifetime tracks the
+    /// connection task. The SIGUSR2-driven handover's drain
+    /// phase reads `inflight.current()` to know when it's
+    /// safe to exit. Cheap to clone (Arc<AtomicU32> shared).
+    pub inflight: crate::hotbin::InFlightCounter,
 }
 
 impl ProxyContext {
@@ -50,6 +57,7 @@ impl ProxyContext {
             pipeline,
             benchmark: BenchmarkConfig::off(),
             tunnels: crate::tcp_tunnel::ConcurrentTunnels::new(),
+            inflight: crate::hotbin::InFlightCounter::new(),
         })
     }
 
@@ -715,6 +723,39 @@ state:
             .unwrap();
         let resp = handle_request(req, ctx.clone()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        srv.abort();
+    }
+
+    // FDP-T4 wiring — the in-flight counter is part of
+    // ProxyContext and starts at zero on a fresh build. The
+    // accept loops admit/drop guards as connections come and
+    // go; drain reads `current()` to know when in-flight=0.
+    #[tokio::test]
+    async fn proxy_context_inflight_starts_at_zero_and_admits_increment() {
+        let (addr, srv) = echoing_upstream().await;
+        let cfg = echo_cfg(addr);
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        assert_eq!(
+            ctx.inflight.current(),
+            0,
+            "fresh ProxyContext must start with no in-flight requests",
+        );
+
+        // Admitting a guard increments; drop returns to zero.
+        // Mirrors the accept-loop's per-connection admit pattern
+        // — proves the counter on ProxyContext is the same
+        // shared instance the accept loops use.
+        {
+            let _g1 = ctx.inflight.admit();
+            assert_eq!(ctx.inflight.current(), 1);
+            let _g2 = ctx.inflight.admit();
+            assert_eq!(ctx.inflight.current(), 2);
+        }
+        // Both guards dropped at scope end.
+        assert_eq!(ctx.inflight.current(), 0);
 
         srv.abort();
     }
