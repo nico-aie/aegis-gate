@@ -965,14 +965,49 @@ function PageAnalytics() {
           )}
         </div>
         <div className="col-6 card">
-          <window.SectionHeader
-            title="Error rate by route"
-            sub="Per-route block volumes"
-          />
-          <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
-            <span>Per-route aggregation ships in a follow-up.</span>
-            <span style={{ fontSize: 11 }}>For now: <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Log</a> shows every block with its <code>path</code>; <a href="#/attacks" style={{ color: 'var(--accent)' }}>Attack Events</a> shows top attackers.</span>
-          </div>
+          {(() => {
+            const rows = routes.data?.routes || [];
+            return (
+              <>
+                <window.SectionHeader
+                  title="Error rate by route"
+                  sub={rows.length > 0
+                    ? `${rows.length} route${rows.length === 1 ? '' : 's'} · audit-ring window`
+                    : 'no traffic in window'}
+                />
+                {rows.length === 0 ? (
+                  <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    Drive traffic with <code>make mock-load</code> to populate.
+                  </div>
+                ) : (
+                  <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
+                    <thead><tr>
+                      <th>Route</th>
+                      <th style={{ textAlign: 'right' }}>Total</th>
+                      <th style={{ textAlign: 'right' }}>Blocked</th>
+                      <th style={{ textAlign: 'right' }}>5xx</th>
+                      <th style={{ textAlign: 'right' }}>Error %</th>
+                    </tr></thead>
+                    <tbody>
+                      {rows.slice(0, 10).map(r => (
+                        <tr key={r.route}>
+                          <td><code style={{ fontSize: 11 }}>{r.route}</code></td>
+                          <td className="num" style={{ textAlign: 'right' }}>{r.total}</td>
+                          <td className="num" style={{ textAlign: 'right' }}>{r.blocked}</td>
+                          <td className="num" style={{ textAlign: 'right' }}>{r.errors_5xx}</td>
+                          <td className="num" style={{ textAlign: 'right' }}>
+                            <span className={`pill ${r.error_rate_pct > 50 ? 'down' : r.error_rate_pct > 10 ? 'warn' : 'up'}`}>
+                              {r.error_rate_pct.toFixed(1)}%
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </>
+            );
+          })()}
         </div>
       </div>
 

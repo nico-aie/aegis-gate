@@ -77,6 +77,34 @@ pub struct AuditRing {
     inner: Arc<Mutex<RingState>>,
 }
 
+/// One row of `GET /api/analytics/routes` — per-route activity
+/// over the in-process audit ring window.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RouteStatsEntry {
+    pub route: String,
+    pub total: u64,
+    pub blocked: u64,
+    pub challenged: u64,
+    pub errors_5xx: u64,
+    pub error_rate_pct: f64,
+    pub block_rate_pct: f64,
+}
+
+/// First non-empty path segment, prefixed with `/`. Used as a
+/// route bucket fallback when the audit event lacks `route_id`.
+/// Examples:
+///   "/api/transactions?limit=20" → "/api"
+///   "/login"                     → "/login"
+///   "/"                          → "/"
+fn first_path_segment(path: &str) -> String {
+    let p = path.split('?').next().unwrap_or("/");
+    let mut parts = p.trim_start_matches('/').split('/');
+    match parts.next() {
+        None | Some("") => "/".into(),
+        Some(seg) => format!("/{seg}"),
+    }
+}
+
 impl AuditRing {
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_CAPACITY)
@@ -156,6 +184,84 @@ impl AuditRing {
 
     /// Current high-water-mark sequence (next seq about to be
     /// assigned, minus one). Useful for tests + monitoring.
+    /// Phase-3 per-route stats — walks the ring and aggregates by
+    /// `route_id` (or the `fields.path` first segment when route_id
+    /// is absent). Returns up to `limit` rows sorted by total
+    /// requests descending. Each row carries `total / blocked /
+    /// challenged / errors_5xx / error_rate_pct` so the Performance
+    /// page can render per-route latency *and* error attribution
+    /// without scraping `/metrics` directly.
+    ///
+    /// Cardinality is bounded by the ring capacity; every
+    /// distinct `route_id` seen in the window appears at most
+    /// once. Cost: one pass through the ring (default cap 5000)
+    /// + one HashMap insert per entry.
+    pub fn route_stats(&self, limit: u32) -> Vec<RouteStatsEntry> {
+        use std::collections::HashMap;
+        #[derive(Default)]
+        struct Acc {
+            total: u64,
+            blocked: u64,
+            challenged: u64,
+            errors_5xx: u64,
+        }
+        let state = self.inner.lock().expect("audit ring poisoned");
+        let mut by_route: HashMap<String, Acc> = HashMap::new();
+        for (_seq, ev) in state.entries.iter() {
+            // Prefer the explicit route_id; fall back to a coarse
+            // bucket from the path's first non-trivial segment so
+            // requests without a matched route still attribute
+            // somewhere.
+            let key = ev.route_id.clone().unwrap_or_else(|| {
+                let path = ev
+                    .fields
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("/");
+                first_path_segment(path)
+            });
+            let acc = by_route.entry(key).or_default();
+            acc.total = acc.total.saturating_add(1);
+            // The action string is the canonical wire shape: see
+            // `interop::headers::Action::as_str` (allow / block /
+            // challenge / rate_limit / timeout / circuit_breaker).
+            match ev.action.as_str() {
+                "block" => acc.blocked = acc.blocked.saturating_add(1),
+                "challenge" => acc.challenged = acc.challenged.saturating_add(1),
+                _ => {}
+            }
+            // 5xx is encoded in `fields.status` when present.
+            if let Some(status) = ev
+                .fields
+                .get("status")
+                .and_then(|v| v.as_u64())
+            {
+                if (500..600).contains(&status) {
+                    acc.errors_5xx = acc.errors_5xx.saturating_add(1);
+                }
+            }
+        }
+        let mut rows: Vec<RouteStatsEntry> = by_route
+            .into_iter()
+            .map(|(route, acc)| {
+                let denom = acc.total.max(1) as f64;
+                RouteStatsEntry {
+                    route,
+                    total: acc.total,
+                    blocked: acc.blocked,
+                    challenged: acc.challenged,
+                    errors_5xx: acc.errors_5xx,
+                    error_rate_pct: ((acc.blocked + acc.errors_5xx) as f64 / denom) * 100.0,
+                    block_rate_pct: (acc.blocked as f64 / denom) * 100.0,
+                }
+            })
+            .collect();
+        rows.sort_by(|a, b| b.total.cmp(&a.total));
+        let limit = limit.max(1) as usize;
+        rows.truncate(limit);
+        rows
+    }
+
     pub fn high_water(&self) -> u64 {
         let s = self.inner.lock().expect("audit ring poisoned");
         s.next_seq.saturating_sub(1)
@@ -601,5 +707,108 @@ mod tests {
             serde_json::from_str(&h.render()).unwrap();
         assert!(v["last_signature_ts"].is_null());
         assert!(v["lag_seconds"].is_null());
+    }
+
+    fn ev_with(action: &str, route: Option<&str>, path: Option<&str>, status: Option<u64>) -> AuditEvent {
+        let mut fields = serde_json::Map::new();
+        if let Some(p) = path {
+            fields.insert("path".into(), serde_json::Value::String(p.into()));
+        }
+        if let Some(s) = status {
+            fields.insert("status".into(), serde_json::json!(s));
+        }
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "test".into(),
+            class: AuditClass::Access,
+            tenant_id: None,
+            tier: None,
+            action: action.into(),
+            reason: String::new(),
+            client_ip: "1.1.1.1".into(),
+            route_id: route.map(String::from),
+            rule_id: None,
+            risk_score: None,
+            fields: serde_json::Value::Object(fields),
+        }
+    }
+
+    #[test]
+    fn first_path_segment_handles_common_shapes() {
+        assert_eq!(first_path_segment("/"),                          "/");
+        assert_eq!(first_path_segment("/login"),                     "/login");
+        assert_eq!(first_path_segment("/api/transactions?limit=20"), "/api");
+        assert_eq!(first_path_segment("/api/transactions"),          "/api");
+        assert_eq!(first_path_segment(""),                           "/");
+    }
+
+    #[test]
+    fn route_stats_groups_by_route_id_when_present() {
+        let r = AuditRing::new();
+        r.record(ev_with("allow", Some("login"), Some("/login"), Some(200)));
+        r.record(ev_with("allow", Some("login"), Some("/login"), Some(200)));
+        r.record(ev_with("block", Some("api"),   Some("/api/x"), None));
+        let rows = r.route_stats(10);
+        assert_eq!(rows.len(), 2);
+        let login = rows.iter().find(|x| x.route == "login").unwrap();
+        assert_eq!(login.total, 2);
+        assert_eq!(login.blocked, 0);
+        let api = rows.iter().find(|x| x.route == "api").unwrap();
+        assert_eq!(api.total, 1);
+        assert_eq!(api.blocked, 1);
+        assert!((api.block_rate_pct - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn route_stats_falls_back_to_path_first_segment() {
+        let r = AuditRing::new();
+        r.record(ev_with("allow", None, Some("/api/transactions"), Some(200)));
+        r.record(ev_with("allow", None, Some("/api/profile"),     Some(200)));
+        r.record(ev_with("allow", None, Some("/health"),          Some(200)));
+        let rows = r.route_stats(10);
+        let api = rows.iter().find(|x| x.route == "/api").unwrap();
+        assert_eq!(api.total, 2);
+        let health = rows.iter().find(|x| x.route == "/health").unwrap();
+        assert_eq!(health.total, 1);
+    }
+
+    #[test]
+    fn route_stats_counts_5xx_into_errors_field() {
+        let r = AuditRing::new();
+        r.record(ev_with("allow", Some("api"), Some("/api/x"), Some(200)));
+        r.record(ev_with("allow", Some("api"), Some("/api/x"), Some(503)));
+        r.record(ev_with("allow", Some("api"), Some("/api/x"), Some(500)));
+        let rows = r.route_stats(10);
+        let api = rows.iter().find(|x| x.route == "api").unwrap();
+        assert_eq!(api.total, 3);
+        assert_eq!(api.errors_5xx, 2);
+        assert!((api.error_rate_pct - (2.0 / 3.0 * 100.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn route_stats_orders_by_total_descending() {
+        let r = AuditRing::new();
+        for _ in 0..5 { r.record(ev_with("allow", Some("hot"),  Some("/h"), Some(200))); }
+        for _ in 0..2 { r.record(ev_with("allow", Some("cold"), Some("/c"), Some(200))); }
+        let rows = r.route_stats(10);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].route, "hot");
+        assert_eq!(rows[1].route, "cold");
+    }
+
+    #[test]
+    fn route_stats_respects_limit() {
+        let r = AuditRing::new();
+        for i in 0..20 {
+            r.record(ev_with(
+                "allow",
+                Some(&format!("r{i}")),
+                Some("/x"),
+                Some(200),
+            ));
+        }
+        let rows = r.route_stats(5);
+        assert_eq!(rows.len(), 5);
     }
 }

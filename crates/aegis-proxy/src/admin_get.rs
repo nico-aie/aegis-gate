@@ -333,16 +333,18 @@ pub(crate) fn admin_router(
             );
             json_body_response(r.status, r.body, "private, max-age=30")
         }
-        // Phase-1 placeholder: per-route error rate. Wired on the
-        // dashboard but the in-process counter that backs it ships
-        // in Phase 4 (per-route counters threaded through the data
-        // plane). Returns an empty list with a `partial: true`
-        // flag so the UI can show a "ships in Phase 4" empty state
-        // instead of treating the 404 as a hard failure.
+        // Per-route error rate, computed on demand from the
+        // in-process audit ring. Cardinality is bounded by
+        // `route_id` distinct values; pages without an explicit
+        // route fall back to the first path segment so requests
+        // still attribute somewhere. ?limit=N caps the row count
+        // (default 20).
         "/api/analytics/routes" => {
+            let limit = parse_query_u32(query, "limit", 20);
+            let rows = services.audit_ring.route_stats(limit);
             json_body_response(
                 200,
-                serde_json::json!({"routes": [], "partial": true}).to_string(),
+                serde_json::json!({"routes": rows}).to_string(),
                 "private, max-age=10",
             )
         }
