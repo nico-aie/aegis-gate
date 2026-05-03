@@ -215,6 +215,27 @@ geoip:
 # ---------------------------------------------------------------------------
 admin:
   bind: "127.0.0.1:9443"
+  # FIX 2026-05-03 — admin TLS is now wired (was always plain
+  # HTTP regardless of cert config before this commit). Default
+  # for `make run-dev` is unset → plain HTTP (matches the
+  # AEGIS_INSECURE_COOKIES=1 flag the run target sets, since
+  # browsers reject `Secure` cookies on http://). To boot dev
+  # with admin HTTPS instead:
+  #
+  #   1. Comment out AEGIS_INSECURE_COOKIES=1 in Makefile's
+  #      run-dev target (or use `make run` which doesn't set it).
+  #   2. Uncomment the `tls:` block below.
+  #   3. Trust the self-signed dev cert in your browser
+  #      (already at config/certs/dev.crt; `make cert` regens
+  #      it).
+  #   4. Open https://localhost:9443/dashboard.
+  #
+  # tls:
+  #   min_version: "1.2"
+  #   certificates:
+  #     - cert_path: "config/certs/dev.crt"
+  #       key_ref:   "config/certs/dev.key"
+  #       hosts:     ["localhost", "127.0.0.1"]
   dashboard_auth:
     password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
     csrf_secret_ref:   "test-csrf-secret-do-not-use-in-production-32b"

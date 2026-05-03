@@ -867,7 +867,61 @@ pub async fn run(
         admin_addr,
     )
     .await?;
-    tracing::info!("admin-plane listening on {admin_addr}");
+
+    // FIX 2026-05-03 — optional admin TLS. `cfg.admin.tls` was
+    // always present in the schema but never wired; before this
+    // commit the admin port was always plain HTTP, regardless
+    // of cert config. Now: when `admin.tls.certificates` is
+    // configured, we build a rustls ServerConfig the same way
+    // the data-plane does and hand the acceptor to the admin
+    // accept loop. Operators wanting plain HTTP in dev leave
+    // `admin.tls` unset → None → existing behaviour.
+    let admin_tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>> =
+        match cfg.admin.tls.as_ref() {
+            None => None,
+            Some(tls_cfg) if tls_cfg.certificates.is_empty() => None,
+            Some(tls_cfg) => {
+                let entries: Vec<(_, _, &[String])> = tls_cfg
+                    .certificates
+                    .iter()
+                    .map(|c| {
+                        let hosts: &[String] = &c.hosts;
+                        (
+                            c.cert_path.clone(),
+                            std::path::PathBuf::from(&c.key_ref),
+                            hosts,
+                        )
+                    })
+                    .collect();
+                let store =
+                    crate::listener::tls::CertStore::load(&entries).map_err(|e| {
+                        aegis_core::WafError::Config(format!(
+                            "admin.tls.certificates: failed to load cert/key pairs: {e}"
+                        ))
+                    })?;
+                let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(
+                    Arc::new(arc_swap::ArcSwap::from_pointee(store)),
+                ));
+                let mut server_cfg =
+                    crate::listener::tls_policy::build_hardened_server_config(
+                        resolver,
+                        tls_cfg.min_version.as_deref(),
+                    )
+                    .map_err(|e| {
+                        aegis_core::WafError::Config(format!(
+                            "admin.tls: rustls server config build failed: {e}"
+                        ))
+                    })?;
+                // Admin is HTTP/1.1 only — dashboard SPA is
+                // h1-served. Force ALPN to skip h2.
+                server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+                Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(
+                    server_cfg,
+                ))))
+            }
+        };
+    let admin_scheme = if admin_tls_acceptor.is_some() { "https" } else { "http" };
+    tracing::info!("admin-plane listening on {admin_addr} ({admin_scheme})");
 
     // Boot-time visibility into cookie hardening — a missed-cookie
     // CSRF rejection without this line takes hours to debug.
@@ -931,6 +985,7 @@ pub async fn run(
         admin_detector_latency_hist,
         admin_client_trust,
         admin_inflight,
+        admin_tls_acceptor,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

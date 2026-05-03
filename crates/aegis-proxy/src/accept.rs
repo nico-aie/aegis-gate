@@ -89,6 +89,14 @@ pub(crate) async fn admin_accept_loop(
     // connection's full task lifetime so the SIGUSR2 handover's
     // drain phase can wait for in-flight=0 before exiting.
     inflight: crate::hotbin::InFlightCounter,
+    // FIX 2026-05-03 — optional TLS acceptor for the admin
+    // listener. When `Some`, every admin connection completes
+    // a TLS handshake before the HTTP service runs.
+    // `cfg.admin.tls` controls whether this is wired at boot;
+    // operators wanting plain HTTP on the admin port (dev
+    // setups) leave `cfg.admin.tls` unset → None → existing
+    // plain-HTTP path.
+    admin_tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -733,6 +741,7 @@ pub(crate) async fn admin_accept_loop(
         let metrics = metrics.clone();
         let services = services.clone();
         let conn_inflight = inflight.clone();
+        let conn_tls_acceptor = admin_tls_acceptor.clone();
 
         tokio::spawn(async move {
             // FDP-T4 — admit one in-flight slot for this admin
@@ -740,7 +749,27 @@ pub(crate) async fn admin_accept_loop(
             // ends (clean close OR panic); drain reads the
             // counter to know when in-flight=0.
             let _admit = conn_inflight.admit();
-            let io = TokioIo::new(stream);
+            // Optional TLS handshake — when admin_tls is
+            // configured, complete the rustls handshake before
+            // the HTTP service runs. Plain-HTTP path is the
+            // legacy default for dev setups.
+            enum AdminIo {
+                Plain(tokio::net::TcpStream),
+                Tls(tokio_rustls::server::TlsStream<tokio::net::TcpStream>),
+            }
+            let io = match conn_tls_acceptor.as_ref() {
+                Some(acceptor) => match acceptor.accept(stream).await {
+                    Ok(tls_stream) => AdminIo::Tls(tls_stream),
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %e,
+                            "admin TLS handshake failed from {peer}",
+                        );
+                        return;
+                    }
+                },
+                None => AdminIo::Plain(stream),
+            };
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let cfg = cfg.clone();
                 let readiness = readiness.clone();
@@ -769,8 +798,19 @@ pub(crate) async fn admin_accept_loop(
                 }
             });
 
-            if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
-                tracing::debug!("admin connection from {peer} closed: {e}");
+            match io {
+                AdminIo::Tls(tls_stream) => {
+                    let io = TokioIo::new(tls_stream);
+                    if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                        tracing::debug!("admin TLS connection from {peer} closed: {e}");
+                    }
+                }
+                AdminIo::Plain(stream) => {
+                    let io = TokioIo::new(stream);
+                    if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                        tracing::debug!("admin connection from {peer} closed: {e}");
+                    }
+                }
             }
         });
     }
