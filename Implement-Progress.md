@@ -166,37 +166,52 @@ For full chronological detail see `git log` and `docs/progress/completed-tasks-l
 
 ## Next Task
 
-### AI-Assistant-driven testing track (next week's focus)
+### TCP forwarder Phase 4 — design done, ready to implement
 
-Define how AI assistants (Claude / Cursor / Copilot) help write
-new tests, review existing ones, and avoid the well-known
-failure modes of LLM-generated tests (overfit-to-mock,
-brittle-on-coverage-stat, snapshot-everything, etc).
+Closes the C-track multi-protocol upstream story. `UpstreamScheme::Tcp`
+is currently a 502 stub at `crates/aegis-proxy/src/upstream/forward.rs:381`.
+Design pass shipped at [`plans/tcp-forwarder-phase-4.md`](./plans/tcp-forwarder-phase-4.md)
+with the lifecycle, error matrix, security gates, audit shape,
+test matrix, and a 6-slice TCP-T1..T6 implementation breakdown
+(~12h total).
 
-**Intake**:
-- `tests/AI-ASSISTANT-GUIDE.md` — workflow, what to generate
-  vs. write by hand, review checklist, common pitfalls.
-- `tests/AI-ASSISTANT-RULES.md` — terse do/don't sheet that
-  any AI agent should read first when invoked in `tests/`.
+**Trigger:** HTTP CONNECT method + route's pool has `scheme: tcp`.
+Reuses the existing WebSocket upgrade primitive
+(`hyper::upgrade::on` + `tokio::io::copy_bidirectional`) instead
+of growing a parallel listener path.
 
-**Open questions for the user when they pick this up**:
-- Do you want the AI-assisted track to focus on **expanding
-  test coverage** (new tests for existing features) or
-  **regression hardening** (more assertions on critical
-  paths)? The guide today is general — flip it to a focused
-  RFC if the answer is "specific gap".
-- Any test families that are **off-limits** to AI generation
-  (e.g. cryptographic correctness, audit-chain tamper checks)?
+**Slice order:** TCP-T1 (config + detector) → TCP-T2 (concurrent-tunnel
+counter) → TCP-T3 (handler dispatch + upgrade) → TCP-T4 (audit
+open/close events) → TCP-T5 (integration tests) → TCP-T6 (drop
+the 502 stub).
+
+### AI-Assistant testing track — kicked off
+
+Sweep tooling shipped at `1356409`:
+- `plans/ai-assistant-testing-kickoff.md` — design (8 slices,
+  schema, anti-patterns, SWEEP-T1..T5).
+- `tests/sweeps/{README.md, CLAIMS.template.md, template/, consolidate.sh}`
+  — runnable scaffolding.
+- `make sweep-validate TESTER=...` and
+  `make sweep-consolidate SWEEP=...` — ops one-liners.
+
+Existing intake (still current):
+- `tests/AI-ASSISTANT-GUIDE.md` — workflow + review checklist.
+- `tests/AI-ASSISTANT-RULES.md` — terse do/don't sheet.
+
+**Open for user when picking up:** schedule sweep #1 (4-6
+testers across 4-6 slices, ~2h), name the theme, branch from
+develop.
 
 ### Other queued / parked
 
-- **MTLS-T8..T11** — break-glass, CA upload, per-route mTLS
-  editor (`plans/mtls-tls.md`).
-- **CC-T1.1.b** — upstream PUT/DELETE + proxy hot-swap
-  (`plans/console-config-pages.md`).
 - **CC-T3** — i18n / OpenAPI / docs / acceptance round-trip.
 - **B6-T4** (HSM), **B6-T5** (fd-pass) — Phase B production
-  packaging carry-overs.
+  packaging carry-overs (both explicitly deferred).
+- **SC-T4** runtime metrics polish — already wired at boot in
+  `run.rs:341-344`; gauges register, sampler ticks; behaviour
+  cfg-gated by `--cfg tokio_unstable`. No further work pending
+  unless an operator asks for documentation.
 - **Rollback v6+** — rule CRUD, risk_reset, alert receivers,
   upstream pools (each requires audit-shape changes that
   pre-date the rollback dispatcher).
