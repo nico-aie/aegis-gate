@@ -290,6 +290,10 @@ pub(crate) async fn handle_admin_request(
     //   PUT    /api/mtls/sans              whole-list replace
     //   DELETE /api/mtls/sans/{san}        single remove
     //   POST   /api/mtls/sans/{san}/test   synthetic admit check
+    // MTLS-T8 — runtime mode override.
+    if method == hyper::Method::PUT && path == "/api/mtls/mode" {
+        return crate::admin_mutate::handle_mtls_mode_put(req, services).await;
+    }
     if method == hyper::Method::PUT && path == "/api/mtls/sans" {
         return handle_mtls_sans_put(req, services).await;
     }

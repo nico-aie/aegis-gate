@@ -2492,6 +2492,106 @@ function ConfigVersionsCard() {
   );
 }
 
+// MTLS-T8 — runtime client_auth.mode override. Lets operators
+// flip between disabled / optional / required without editing
+// YAML. Upgrades to `required` show a confirm prompt because
+// they're destructive (clients without certs will fail TLS).
+// Setting an override that differs from the configured value
+// surfaces a "restart required" pill — the TLS acceptor only
+// rebuilds on cfg.tls swaps today.
+function MtlsModeCard() {
+  const api = window.useApi
+    ? window.useApi('/api/mtls/mode', { intervalMs: 10000, fallback: null })
+    : { data: null };
+  const [busy, setBusy] = useStateP(false);
+
+  if (!api.data) {
+    return (
+      <div className="card" style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)' }}>
+        Loading mTLS mode…
+      </div>
+    );
+  }
+  const { configured, override: ovr, effective, requires_restart } = api.data;
+
+  async function setMode(target) {
+    if (target === 'required') {
+      const ok = window.confirm(
+        `Switch effective mTLS mode to REQUIRED?\n\nClients that don't present a valid client certificate will fail the TLS handshake. This affects every active session. Type OK in the next prompt to confirm.`
+      );
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+      const r = await fetch('/api/mtls/mode', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({ mode: target }),
+        credentials: 'same-origin',
+      });
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      if (api.reload) api.reload();
+    } catch (e) {
+      window.toast && window.toast(`mTLS mode set failed: ${e.message}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function clearOverride() {
+    setBusy(true);
+    try {
+      const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+      const r = await fetch('/api/mtls/mode', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+        body: JSON.stringify({ clear: true }),
+        credentials: 'same-origin',
+      });
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      if (api.reload) api.reload();
+    } catch (e) {
+      window.toast && window.toast(`mTLS mode clear failed: ${e.message}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+      <window.SectionHeader
+        title="mTLS mode"
+        sub={`configured: ${configured} · effective: ${effective}${ovr ? ' · override active' : ''}`}
+      />
+      <div style={{ padding: '8px 0', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        {['disabled', 'optional', 'required'].map(m => (
+          <button
+            key={m}
+            className={`btn ${effective === m ? 'primary' : ''}`}
+            disabled={busy || effective === m}
+            onClick={() => setMode(m)}
+            title={`Set runtime override to ${m}`}
+          >{m}</button>
+        ))}
+        {ovr && (
+          <button className="btn" disabled={busy} onClick={clearOverride}>
+            Clear override (revert to {configured})
+          </button>
+        )}
+        {requires_restart && (
+          <span className="pill warn" title="The TLS acceptor only rebuilds on cfg.tls hot-reload; this override is logged + visible everywhere it's read, but the handshake layer needs a process restart to fully apply.">
+            restart required
+          </span>
+        )}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
+        Mutations are CSRF-gated + audit-chained. <code>required</code>{' '}
+        rejects clients without a valid client cert at TLS handshake — confirm before applying.
+      </div>
+    </div>
+  );
+}
+
 // MTLS-T7 — Allowed SAN allowlist card. Lives on the Settings
 // page; allows operators to add/remove DNS / wildcard / SPIFFE
 // patterns and test admit decisions without making a real mTLS
@@ -2812,6 +2912,7 @@ function PageSettings() {
 
       <ConfigVersionsCard />
 
+      <MtlsModeCard />
       <MtlsSansCard />
 
       <div className="card" style={{ marginBottom: 12 }}>

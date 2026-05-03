@@ -419,6 +419,20 @@ pub(crate) async fn admin_accept_loop(
         }
     }
     services.identity_tracker = Some(identity_tracker);
+    // MTLS-T8 — seed the runtime mode store with the configured
+    // `cfg.tls.client_auth.mode` so `/api/mtls/mode` can render
+    // the configured / override / effective triple correctly.
+    {
+        let configured_mode = cfg
+            .tls
+            .as_ref()
+            .and_then(|t| t.client_auth.as_ref())
+            .map(|ca| ca.mode)
+            .unwrap_or(aegis_core::config::ClientAuthMode::Disabled);
+        services.mtls_mode_store = Arc::new(
+            aegis_control::api::mtls_mode::ClientAuthModeStore::with_configured(configured_mode),
+        );
+    }
     // SC-T1 — wire the live `StateBackend` so `/api/state` can
     // call `health()`. The handle is the same metered backend
     // every other consumer reads, so the dashboard sees the same

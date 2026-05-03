@@ -15,6 +15,7 @@ pub mod load_mode;
 pub mod logging;
 pub mod login;
 pub mod mtls;
+pub mod mtls_mode;
 pub mod mutation;
 pub mod risk;
 pub mod rollback;

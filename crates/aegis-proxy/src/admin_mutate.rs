@@ -764,6 +764,125 @@ pub(crate) async fn handle_alert_ack(
     }
 }
 
+// MTLS-T8 — runtime mode override. Audit-mutated, CSRF-gated.
+// Body shape: `{"mode": "disabled"|"optional"|"required"}` to
+// set the override; `{"clear": true}` to remove it. `clear` is
+// also accepted as the only key — both forms supported because
+// the dashboard's confirm modal is easier to wire as one shape.
+
+pub(crate) async fn handle_mtls_mode_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    let pre = mutation_preamble(&req, "mtls-mode-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => bytes::Bytes::new(),
+    };
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).unwrap_or(serde_json::Value::Null);
+
+    // Decide the requested operation: clear or set.
+    let clear = body.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mode_str = body.get("mode").and_then(|v| v.as_str());
+
+    let store = services.mtls_mode_store.clone();
+    let configured = store.configured();
+    let prev_override = store.current();
+
+    let (action_label, before_payload, after_payload, applier): (
+        &'static str,
+        serde_json::Value,
+        serde_json::Value,
+        Box<dyn FnOnce() -> Result<(), aegis_control::api::mutation::MutationError> + Send>,
+    ) = if clear {
+        let store_cl = store.clone();
+        (
+            "mtls_mode_clear",
+            serde_json::json!({
+                "configured": aegis_control::api::mtls_mode::mode_label(configured),
+                "override": prev_override.map(aegis_control::api::mtls_mode::mode_label),
+            }),
+            serde_json::json!({
+                "configured": aegis_control::api::mtls_mode::mode_label(configured),
+                "override": serde_json::Value::Null,
+            }),
+            Box::new(move || {
+                store_cl.clear();
+                Ok(())
+            }),
+        )
+    } else {
+        let parsed = match mode_str.and_then(aegis_control::api::mtls_mode::parse_mode) {
+            Some(m) => m,
+            None => {
+                return json_response(
+                    400,
+                    &serde_json::json!({
+                        "error": "invalid_mode",
+                        "message": "expected `mode` ∈ {disabled, optional, required} or `clear: true`",
+                    }),
+                );
+            }
+        };
+        let store_cl = store.clone();
+        (
+            "mtls_mode_set",
+            serde_json::json!({
+                "configured": aegis_control::api::mtls_mode::mode_label(configured),
+                "override": prev_override.map(aegis_control::api::mtls_mode::mode_label),
+            }),
+            serde_json::json!({
+                "configured": aegis_control::api::mtls_mode::mode_label(configured),
+                "override": aegis_control::api::mtls_mode::mode_label(parsed),
+            }),
+            Box::new(move || {
+                store_cl.set(parsed);
+                Ok(())
+            }),
+        )
+    };
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/mtls/mode",
+        action: action_label,
+        reason: "operator changed mtls mode override",
+    };
+
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before_payload,
+        after_payload.clone(),
+        applier,
+    );
+
+    match outcome {
+        Ok(_) => {
+            // Echo the new effective state in the response so the
+            // dashboard doesn't need an immediate GET round-trip.
+            let body = aegis_control::api::mtls_mode::render_mode_response(
+                configured,
+                store.current(),
+            );
+            json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "request_id": pre.request_id,
+                    "mode": body,
+                }),
+            )
+        }
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 // Phase-3 Incidents — operator overlay on top of SLO alerts.
 // All three handlers are audit-mutated + CSRF-gated, same shape
 // as handle_alert_ack above.

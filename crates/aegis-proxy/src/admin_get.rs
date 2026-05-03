@@ -566,6 +566,21 @@ pub(crate) fn admin_router(
         // endpoints. Each works with `identity_tracker: None`
         // (returns empty-state body) so the dashboard renders
         // before MTLS-T2's rustls wiring lands.
+        // MTLS-T8 — runtime mode override read. Reports the
+        // configured mode (from cfg.tls.client_auth.mode at boot),
+        // the current override (or null), the effective mode, and
+        // a `requires_restart` flag set when the override differs
+        // from the configured value (the TLS acceptor rebuilds
+        // only on cfg.tls swaps today; mode flips alone need a
+        // process restart to land at the handshake layer).
+        "/api/mtls/mode" => {
+            let store = &services.mtls_mode_store;
+            let body = aegis_control::api::mtls_mode::render_mode_response(
+                store.configured(),
+                store.current(),
+            );
+            json_body_response(200, body.to_string(), "private, max-age=2")
+        }
         "/api/mtls" => json_body_response(
             200,
             aegis_control::api::mtls::MtlsConfigView::from_config(cfg).render(),
