@@ -89,6 +89,11 @@ pub struct ConnectionView {
     pub idle_timeout_ms: u64,
     pub keep_alive: bool,
     pub tls: bool,
+    /// Phase-3 multi-protocol selector. One of
+    /// `auto | http | https | h2c | grpc | tcp`. `auto` (default)
+    /// preserves the legacy `tls` semantics; explicit values
+    /// override.
+    pub scheme: &'static str,
 }
 
 impl UpstreamsConfigView {
@@ -160,6 +165,7 @@ fn connection_view(c: &ConnectionPoolConfig) -> ConnectionView {
         idle_timeout_ms: c.idle_timeout.as_millis() as u64,
         keep_alive: c.keep_alive,
         tls: c.tls,
+        scheme: c.scheme.as_str(),
     }
 }
 

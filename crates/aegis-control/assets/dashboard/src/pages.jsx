@@ -4446,16 +4446,36 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                     connection: { ...prev.connection, tls: e.target.checked },
                   }))}
                 />
-                <span className="field-label" style={{ marginBottom: 0 }}>Upstream TLS (https)</span>
+                <span className="field-label" style={{ marginBottom: 0 }}>Upstream TLS (legacy `tls` flag)</span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span className="field-label" style={{ marginBottom: 0 }}>Scheme</span>
+                <select
+                  value={d.connection.scheme || 'auto'}
+                  onChange={e => setD(prev => ({
+                    ...prev,
+                    connection: { ...prev.connection, scheme: e.target.value },
+                  }))}
+                  style={{ padding: '4px 6px', borderRadius: 4, border: '1px solid var(--hairline)', fontSize: 12 }}
+                >
+                  <option value="auto">auto (TLS toggle decides)</option>
+                  <option value="http">http (plaintext h1)</option>
+                  <option value="https">https (TLS + ALPN h1/h2)</option>
+                  <option value="h2c">h2c (HTTP/2 cleartext)</option>
+                  <option value="grpc">grpc (HTTPS, ALPN h2 only)</option>
+                  <option value="tcp">tcp (raw — Phase 4, returns 502)</option>
+                </select>
               </label>
             </div>
             <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--surface-2)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
               <window.I.Info />
               <span>
-                <strong>Protocol:</strong> currently HTTP / HTTPS only.
-                gRPC, h2c, and TCP forwarders ship in <a href="#/help" style={{ color: 'var(--accent)' }}>Phase 3</a>.
-                For now, gRPC over HTTP/2 works if your upstream
-                negotiates h2 via ALPN (TLS on, modern client).
+                <strong>Protocol picker:</strong> <code>auto</code> mirrors the
+                legacy <code>tls</code> flag (h1/h2 ALPN-negotiated).
+                {' '}<code>grpc</code> forces ALPN h2-only and skips
+                HTTP/1.1 fallback. <code>h2c</code> is HTTP/2 over plain TCP
+                — useful for service-mesh sidecars. <code>tcp</code> raw byte
+                forwarding ships in Phase 4.
               </span>
             </div>
           </fieldset>

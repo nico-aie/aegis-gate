@@ -204,7 +204,17 @@ pub fn replay_response_status_and_headers<B>(
 /// modes without a duplicated cache.
 type PooledClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
-/// Build a pooled HTTP/1.1 client honouring `cfg`.
+/// Build a pooled HTTP client honouring `cfg`. The protocol
+/// selection follows `cfg.scheme` (Phase 3 multi-protocol):
+///
+/// | Scheme  | Transport         | Wire framing                    |
+/// |---------|-------------------|---------------------------------|
+/// | `Auto`  | TLS iff `tls`     | ALPN negotiation (h1 or h2)     |
+/// | `Http`  | plaintext         | HTTP/1.1                        |
+/// | `Https` | TLS               | ALPN h1+h2 (same as Auto+TLS)   |
+/// | `H2c`   | plaintext         | HTTP/2 prior knowledge          |
+/// | `Grpc`  | TLS               | HTTP/2 only (ALPN h2)           |
+/// | `Tcp`   | (Phase 4)         | n/a — handler returns 502       |
 ///
 /// `max_idle_per_host = 0` OR `keep_alive = false` disables
 /// pooling at the connector layer (pre-UP-T1 behaviour). The
@@ -212,6 +222,7 @@ type PooledClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 /// `Connection: close` header so the upstream sees the intent;
 /// the actual reuse decision lives in the pool ceiling.
 fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
+    use aegis_core::config::UpstreamScheme;
     // rustls 0.23 requires an explicit CryptoProvider when more
     // than one cipher backend feature is reachable. Install
     // the ring provider once per process; subsequent calls
@@ -228,33 +239,48 @@ fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
     // every member to be `https://`.
     http.enforce_http(false);
 
-    // Enable both HTTP/1.1 and HTTP/2 ALPN. The connector
-    // negotiates which one the upstream actually speaks; gRPC
-    // rides on HTTP/2 so this is the same path that lets us
-    // forward gRPC upstreams. WebSocket upgrade is separate
-    // (the data-plane handler doesn't currently forward
-    // upgrade frames — strips them as hop-by-hop). HTTP/3
-    // upstream lives behind the inbound `http3` Cargo feature
-    // and isn't in this pool yet.
-    let connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_webpki_roots()
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .wrap_connector(http);
+    // ALPN advertisement depends on the scheme. The hyper-rustls
+    // builder uses typestate transitions (`WantsProtocols2` →
+    // `WantsProtocols3`), so we can't conditionally call
+    // `.enable_http2()` on a single bound; build either
+    // [h1] or [h1+h2] via separate branches.
+    let advertise_h2 = matches!(
+        cfg.scheme,
+        UpstreamScheme::Auto | UpstreamScheme::Https | UpstreamScheme::Grpc
+    );
+    let connector = if advertise_h2 {
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .wrap_connector(http)
+    } else {
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_or_http()
+            .enable_http1()
+            .wrap_connector(http)
+    };
 
     let effective_pool_size = if cfg.keep_alive {
         cfg.max_idle_per_host
     } else {
         0
     };
-    Client::builder(TokioExecutor::new())
+    let mut client_builder = Client::builder(TokioExecutor::new());
+    client_builder
         .pool_max_idle_per_host(effective_pool_size)
         .pool_idle_timeout(cfg.idle_timeout)
         .pool_timer(hyper_util::rt::TokioTimer::new())
         .http1_preserve_header_case(true)
-        .http1_title_case_headers(false)
-        .build(connector)
+        .http1_title_case_headers(false);
+    // HTTP/2-only schemes flip `http2_only` so the client uses
+    // HTTP/2 prior-knowledge framing (no h1 negotiation).
+    if cfg.scheme.forces_http2() {
+        client_builder.http2_only(true);
+    }
+    client_builder.build(connector)
 }
 
 /// Stable signature of a [`ConnectionPoolConfig`] used to dedupe
@@ -348,7 +374,20 @@ pub async fn forward(
         );
     }
 
-    let scheme = if cfg.tls { "https" } else { "http" };
+    // Phase-3 multi-protocol: TCP forwarding is reserved for
+    // Phase 4 (raw byte stream — needs an entirely different
+    // path that doesn't go through hyper). Short-circuit with
+    // a 502 + clear x-waf-rule-id so operators see the gap.
+    if cfg.scheme == aegis_core::config::UpstreamScheme::Tcp {
+        return Err(ForwardError::BadRequest(
+            "scheme=tcp is reserved for Phase 4 (raw byte forwarding)".into(),
+        ));
+    }
+
+    // URL scheme follows the protocol selector. Auto + tls=true
+    // mirrors the legacy behaviour; explicit Https/Grpc force
+    // `https://`; H2c stays plaintext.
+    let scheme = if cfg.scheme.uses_tls(cfg.tls) { "https" } else { "http" };
     let target_uri: Uri = format!("{scheme}://{}{}", member.addr, pq)
         .parse()
         .map_err(|e: http::uri::InvalidUri| {

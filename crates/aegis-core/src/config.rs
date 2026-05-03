@@ -655,8 +655,81 @@ pub struct ConnectionPoolConfig {
     /// webpki root certificates. Default `false` (plain HTTP).
     /// The TLS session pool is shared by every member of a
     /// pool that has the same connection signature.
+    ///
+    /// **Back-compat note:** when `scheme` is `Auto` (the default),
+    /// `tls: true` ⇒ Https, `tls: false` ⇒ Auto-Http. When `scheme`
+    /// is set explicitly (Https/H2c/Grpc/etc.), `tls` is ignored.
     #[serde(default)]
     pub tls: bool,
+    /// Explicit upstream protocol selector. `Auto` (default)
+    /// preserves the pre-Phase-3 behaviour: ALPN negotiates
+    /// HTTP/1.1 vs HTTP/2 between the connector and upstream.
+    /// Operators force a specific protocol by setting this.
+    #[serde(default)]
+    pub scheme: UpstreamScheme,
+}
+
+/// Upstream protocol selector for `ConnectionPoolConfig.scheme`.
+/// See `aegis-proxy/src/upstream/forward.rs::build_client` for
+/// how each variant maps to the hyper connector.
+#[derive(Copy, Clone, Debug, Default, serde::Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamScheme {
+    /// ALPN auto-negotiation. The TLS toggle (`tls: bool`)
+    /// decides plaintext vs encrypted. Either H1 or H2 may
+    /// land depending on what the upstream advertises.
+    #[default]
+    Auto,
+    /// Plain HTTP/1.1 over TCP. Equivalent to `tls: false` on
+    /// the legacy schema. No TLS handshake.
+    Http,
+    /// HTTPS — TLS with ALPN preference for both h1 and h2.
+    /// Equivalent to `tls: true` on the legacy schema.
+    Https,
+    /// HTTP/2 cleartext (h2c). Forces HTTP/2 over plain TCP —
+    /// no TLS handshake. Useful for service-mesh sidecars and
+    /// gRPC over loopback.
+    H2c,
+    /// gRPC over HTTPS. Identical wire shape to `Https` but
+    /// forces ALPN to `h2` only (no HTTP/1.1 fallback) — gRPC
+    /// strictly requires HTTP/2.
+    Grpc,
+    /// Raw TCP byte forwarding (no HTTP framing). Phase 4 work —
+    /// when set today the forwarder logs an error and returns
+    /// 502 Bad Gateway with `x-waf-rule-id: tcp-not-implemented`.
+    Tcp,
+}
+
+impl UpstreamScheme {
+    /// Human-readable label used by `/api/upstreams/config`
+    /// and the dashboard's PoolEditModal.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Http => "http",
+            Self::Https => "https",
+            Self::H2c => "h2c",
+            Self::Grpc => "grpc",
+            Self::Tcp => "tcp",
+        }
+    }
+
+    /// True when this scheme should drive the TLS handshake
+    /// path. Used by `build_client` to decide between
+    /// `HttpsConnector` and the plain `HttpConnector`.
+    pub fn uses_tls(self, tls_legacy: bool) -> bool {
+        match self {
+            Self::Auto => tls_legacy,
+            Self::Http | Self::H2c | Self::Tcp => false,
+            Self::Https | Self::Grpc => true,
+        }
+    }
+
+    /// True when this scheme requires HTTP/2 wire framing
+    /// (used to flip `http2_only` on the hyper Client builder).
+    pub fn forces_http2(self) -> bool {
+        matches!(self, Self::H2c | Self::Grpc)
+    }
 }
 
 impl Default for ConnectionPoolConfig {
@@ -666,7 +739,81 @@ impl Default for ConnectionPoolConfig {
             idle_timeout: default_pool_idle_timeout(),
             keep_alive: default_keep_alive(),
             tls: false,
+            scheme: UpstreamScheme::Auto,
         }
+    }
+}
+
+#[cfg(test)]
+mod upstream_scheme_tests {
+    use super::*;
+
+    #[test]
+    fn auto_scheme_inherits_tls_flag() {
+        let mut c = ConnectionPoolConfig::default();
+        c.tls = true;
+        assert!(c.scheme.uses_tls(c.tls));
+        c.tls = false;
+        assert!(!c.scheme.uses_tls(c.tls));
+    }
+
+    #[test]
+    fn explicit_https_uses_tls_regardless_of_legacy_flag() {
+        let mut c = ConnectionPoolConfig::default();
+        c.scheme = UpstreamScheme::Https;
+        c.tls = false;
+        assert!(c.scheme.uses_tls(c.tls));
+    }
+
+    #[test]
+    fn explicit_http_skips_tls_regardless_of_legacy_flag() {
+        let mut c = ConnectionPoolConfig::default();
+        c.scheme = UpstreamScheme::Http;
+        c.tls = true;
+        assert!(!c.scheme.uses_tls(c.tls));
+    }
+
+    #[test]
+    fn h2c_is_plaintext_with_http2_only() {
+        assert!(!UpstreamScheme::H2c.uses_tls(true));
+        assert!(UpstreamScheme::H2c.forces_http2());
+    }
+
+    #[test]
+    fn grpc_is_tls_with_http2_only() {
+        assert!(UpstreamScheme::Grpc.uses_tls(false));
+        assert!(UpstreamScheme::Grpc.forces_http2());
+    }
+
+    #[test]
+    fn http_and_https_do_not_force_http2() {
+        assert!(!UpstreamScheme::Http.forces_http2());
+        assert!(!UpstreamScheme::Https.forces_http2());
+        assert!(!UpstreamScheme::Auto.forces_http2());
+    }
+
+    #[test]
+    fn as_str_renders_snake_case() {
+        assert_eq!(UpstreamScheme::Auto.as_str(),  "auto");
+        assert_eq!(UpstreamScheme::Http.as_str(),  "http");
+        assert_eq!(UpstreamScheme::Https.as_str(), "https");
+        assert_eq!(UpstreamScheme::H2c.as_str(),   "h2c");
+        assert_eq!(UpstreamScheme::Grpc.as_str(),  "grpc");
+        assert_eq!(UpstreamScheme::Tcp.as_str(),   "tcp");
+    }
+
+    #[test]
+    fn scheme_round_trips_via_yaml() {
+        let yaml = "scheme: grpc\n";
+        let c: ConnectionPoolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(c.scheme, UpstreamScheme::Grpc);
+    }
+
+    #[test]
+    fn missing_scheme_defaults_to_auto() {
+        let yaml = "tls: false\n";
+        let c: ConnectionPoolConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(c.scheme, UpstreamScheme::Auto);
     }
 }
 
@@ -2126,11 +2273,15 @@ path: /var/log/waf/audit.jsonl
                 cfg.load_mode.critical_rps, 2_000,
                 "loadmode-degradation.js stage C expects critical_rps=2000",
             );
-            // Self-contained config — no Redis, no compliance clamp.
+            // Post-2026-05 refactor: dev.yaml uses Redis state by
+            // default (matches prod profiles) so the dev experience
+            // mirrors production. Test harness configs that need
+            // self-contained state live under
+            // `tests/hackathon/configs/*` and override there.
             assert_eq!(
                 cfg.state.backend,
-                StateBackendKind::InMemory,
-                "dev config must be self-contained (no Redis)",
+                StateBackendKind::Redis,
+                "dev config uses Redis state — matches the 3 prod profiles",
             );
             assert!(
                 cfg.compliance.is_none(),
@@ -2140,9 +2291,13 @@ path: /var/log/waf/audit.jsonl
             let strikes = cfg.risk.strikes.as_ref().expect(
                 "dev config must declare risk.strikes for risk-strikes.js",
             );
+            // Strike threshold raised to 1M for shared-IP synthetic
+            // load (`make mock-load`). Real attackers fan out across
+            // many IPs in production; the threshold is per-IP.
             assert_eq!(
-                strikes.block_at, 50,
-                "must match STRIKE_LIMIT default in tests/load/risk-strikes.js",
+                strikes.block_at, 1_000_000,
+                "shared-IP-friendly tweak — `make mock-load` puts \
+                 legit + attacker traffic on 127.0.0.1",
             );
             assert!(
                 cfg.risk.trust_recovery.is_some(),
