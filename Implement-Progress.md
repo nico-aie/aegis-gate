@@ -52,26 +52,42 @@
   - AI-T1 stub (`d8660a9`) — `ai` Cargo feature + tract-onnx
     workspace dep + `WafConfig.ai: AiConfig` schema.
   - FDP accept-loop drain refactor (`faee699`) — SIGUSR2 polling
-    task wired to `perform_handover`; closes the one gap from the
-    AM FDP commits.
-  - WebSocket bridge (`d612d4b` WS-T2/T3/T4 + `6f2730f` WS-T6) —
-    end-to-end raw-TCP forwarder + `OnUpgrade` bridge + audit
-    pair + Prometheus metrics + Live-Feed proto pill.
-  - Manual validation scripts (`9585c7e`) — `tests/manual/` for
-    access-list / CSRF / fake-country / WS / VipTalk.
-  - README + QUICKSTART rewrite (`ef1fdaa`) — Build → Run → Test
-    → Deploy spine.
+    task wired to `perform_handover`.
+  - WebSocket bridge (`d612d4b` WS-T2/T3/T4 + `6f2730f` WS-T6 +
+    `b3f61cb` WS-T5 e2e) — end-to-end raw-TCP forwarder +
+    `OnUpgrade` bridge + audit pair + Prometheus metrics +
+    Live-Feed proto pill + real round-trip integration test.
+  - Manual validation scripts (`9585c7e`) — `tests/manual/`.
+  - README + QUICKSTART rewrite (`ef1fdaa` + `b559922`) —
+    Build → Run → Configure-upstream → Test → Deploy spine.
   - Login page fix (`01695f0`) — GET `/admin/login` now serves
-    the standalone form; closes the operator's "page not found"
-    + session-expired dead-end.
+    the standalone form.
   - Console SOC-UX pass (`c854617`) — Live Feed path/method/status
     fixed; Investigation defaults to recent-requests list +
     absorbs Attack Analytics; RequestDetail drawer shows
     status/latency/route/extra fields.
-  - Multi-vhost upstream support (`062d602`) — `MemberConfig.host_header`
-    override unlocks vhost-routed backends.
+  - Multi-vhost upstream — `host_header` (`062d602`) + HTTPS
+    SNI pinning (`c6098ae`) — vhost-routed backends including
+    public TLS services (httpbin.org, GitHub Pages,
+    Cloudflare-fronted) work without a sidecar.
   - Top Attackers page (`674c86f`) — first-class SOC view of
     `/api/attacks/top` with one-click pivot + block.
+  - aegis-waf-tester Claude Skill (`cb95934` + `4d4f408` first
+    run) — importable Claude Skill with 4 graded checklists +
+    structured findings template; smoke run surfaced 7 findings.
+  - All 4 skill findings closed (`405b2b8`) — GeoIP country
+    fall-back to registered_country, detector_name() refactored
+    to drop `detector:` prefix + preserve `path_traversal`,
+    `unknown` filtered out of by-detector chart, bot mix shows
+    honest empty state. PageErrorBoundary added so a single
+    component crash never blanks the dashboard
+    (closes operator-reported white-page bug).
+  - Protocol-aware upstream UI + cookbook (`b559922`) —
+    Members table gains Host-header column, Scheme dropdown
+    surfaces Protocol matrix card, new
+    docs/operator/upstream-cookbook.md with 8 per-protocol
+    recipes, body-abuse detector doc updated for XXE +
+    mass-assignment.
 - **Operator UX simplified 2026-05-02:** every config (dev / prod /
   3 profiles) defaults to **Redis state**; the Makefile auto-starts
   the dev Redis on every `run-*` target. New `make obs-up` / `make urls`
@@ -179,7 +195,8 @@ hot-restart works end-to-end via SIGUSR2".
 
 | Date | Task | Outcome |
 |---|---|---|
-| 2026-05-03 PM | Open-tracks closeout + UX pass | Access-list runtime, AI-T1 stub, FDP drain refactor, WS bridge (T2/T3/T4/T6), login page fix, multi-vhost upstream (`host_header`), Investigation default-list + Attack-Analytics merge, Top Attackers page. ~2 200 LOC + ~30 new tests; bundle 294 KB. 11 commits. |
+| 2026-05-03 PM (late) | Skill run + finding closeout + UI/docs | All 4 skill findings closed (geoip country fall-back, detector_name refactor, by-detector unknown filter, bot-mix honest empty), PageErrorBoundary closes white-page bug, Members table gains Host-header column, Protocol matrix card, upstream-cookbook.md with 8 per-protocol recipes, README features-first rewrite, body-abuse doc covers XXE + mass-assignment. ~700 LOC + 4 new tests; bundle 300 KB. 4 commits. |
+| 2026-05-03 PM | Open-tracks closeout + UX pass | Access-list runtime, AI-T1 stub, FDP drain refactor, WS bridge (T2/T3/T4/T5/T6), login page fix, multi-vhost upstream (`host_header` + SNI pinning), Investigation default-list + Attack-Analytics merge, Top Attackers page, aegis-waf-tester Skill. ~2 700 LOC + ~40 new tests; bundle 296 KB. 13 commits. |
 | 2026-05-03 AM | TCP-T + FDP-T + SWEEP-T + AI-T design + geoip XFF | ~3500 LOC + 320 new tests. CONNECT tunneling live; binary-handover library; multi-tester sweep tooling. |
 | 2026-05-02 (PM) | Operator UX simplification + Redis-default + obs stack + AI-testing scaffold | `make setup && make run-dev` boots a Redis-backed dev profile in 2 commands. AI-Assistant testing rules + guide live under `tests/`. |
 | 2026-05-02 (mid) | prod-balanced @ 5 k+ RPS sustained (3 iterative runs) | v3 = 4 891 RPS k6 / 6 392 RPS WAF-internal, legit p99 1.03 ms, legit OK 100 %, 80 % detection. Surfaced 7 improvements; identified Python upstream as the prior 600-RPS ceiling. |

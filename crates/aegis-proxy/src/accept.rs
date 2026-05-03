@@ -1014,6 +1014,22 @@ pub(crate) async fn accept_loop(
                 async move {
                     let method = req.method().clone();
                     let path = req.uri().path().to_string();
+                    // 2026-05-03 — capture bot-classification
+                    // signals BEFORE handle_data_request consumes
+                    // the request. Cheap (~5 string lookups), no
+                    // body reads. Used in the audit emit below so
+                    // the Investigation page's BotMix card lights
+                    // up with real signal instead of 100 %
+                    // "unknown".
+                    let user_agent = req
+                        .headers()
+                        .get(hyper::header::USER_AGENT)
+                        .and_then(|h| h.to_str().ok())
+                        .map(|s| s.to_string());
+                    let has_cookies = req
+                        .headers()
+                        .get(hyper::header::COOKIE)
+                        .is_some();
                     let (resp, decision) = handle_data_request(
                         req,
                         peer,
@@ -1085,6 +1101,33 @@ pub(crate) async fn accept_loop(
                     )
                     .to_hex()
                     .to_string();
+                    // 2026-05-03 — classify the request's bot tier
+                    // and stash it on `fields.bot_category` so the
+                    // AttacksAggregator (`bot_category_from_fields`)
+                    // groups it for the BotMix dashboard card.
+                    // Skip the field when the verdict is Human or
+                    // Unknown — only actual bot tiers count toward
+                    // bot-mix.  The classifier is stateless +
+                    // cheap (~10 string ops), so no shared instance
+                    // needed.
+                    let bot_signals = aegis_security::bots::BotSignals {
+                        ja4_fingerprint: None,
+                        h2_fingerprint: None,
+                        user_agent: user_agent.clone(),
+                        has_cookies,
+                        has_js_challenge_pass: false,
+                        failed_challenges: 0,
+                        reverse_dns: None,
+                    };
+                    let bot_category = match aegis_security::bots::BotClassifier::default()
+                        .classify(&bot_signals)
+                    {
+                        aegis_security::bots::BotTier::GoodBot   => Some("verified"),
+                        aegis_security::bots::BotTier::LikelyBot => Some("suspect"),
+                        aegis_security::bots::BotTier::KnownBad  => Some("malicious"),
+                        // Human + Unknown do not count toward bot-mix.
+                        _ => None,
+                    };
                     let event = aegis_core::audit::AuditEvent {
                         schema_version: 1,
                         ts: chrono::Utc::now(),
@@ -1104,6 +1147,11 @@ pub(crate) async fn accept_loop(
                         fields: serde_json::json!({
                             "method": method.as_str(),
                             "path": path,
+                            // Only present when classifier returns
+                            // a real bot tier — Human / Unknown
+                            // are skipped so they don't count
+                            // toward the bot-mix chart.
+                            "bot_category": bot_category,
                             "status": resp.status().as_u16(),
                         }),
                     };

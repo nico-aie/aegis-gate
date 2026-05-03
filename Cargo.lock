@@ -143,6 +143,7 @@ dependencies = [
  "tokio-rustls 0.26.4",
  "tokio-stream",
  "tokio-tungstenite",
+ "tower-service",
  "tracing",
  "webpki-roots 0.26.11",
  "x509-parser",
