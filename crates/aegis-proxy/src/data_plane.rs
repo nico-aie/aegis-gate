@@ -176,7 +176,27 @@ pub(crate) async fn handle_data_request_inner(
     // exactly once.
     const MAX_BODY_BYTES: usize = 1 * 1024 * 1024; // 1 MiB
 
-    let peer_ip = peer.ip();
+    // Resolve the effective client IP: walk X-Forwarded-For
+    // backwards through the trusted-proxy CIDR list and return
+    // the first untrusted hop. When the WAF is at the edge,
+    // there's no XFF and this collapses to the TCP peer. When
+    // the WAF is behind a load balancer, the LB's XFF tells us
+    // the real client. Used for everything downstream — rate
+    // limit, risk tracking, audit events, geoip — so the
+    // dashboard's "live attack origins" map shows the actual
+    // origin country, not the LB's private IP.
+    //
+    // Default trusted_proxies covers RFC1918 + loopback (the
+    // common deployment); operator-configurable list lands in
+    // a follow-up that plumbs `cfg.ip_lists` into the handler.
+    let peer_ip = {
+        let xff = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok());
+        let trusted = default_trusted_proxies();
+        aegis_security::ip_rep::xff::resolve_client_ip(peer.ip(), xff, &trusted)
+    };
     // P6 short-circuit: lifetime-strike block runs before any
     // body or detector cost so a flooding known-bad source can't
     // burn CPU.
@@ -1078,6 +1098,24 @@ fn emit_tunnel_close_audit(
             "close_reason": closed.reason.as_str(),
         }),
     });
+}
+
+/// Default set of trusted-proxy CIDRs for XFF resolution. Mirrors
+/// `aegis_security::ip_rep::IpLists::default().trusted_proxies` —
+/// loopback + RFC1918 + IPv6 link-local. Operators behind an LB
+/// in a private subnet (the typical case) get correct XFF
+/// resolution out of the box. Operator-configurable list via
+/// `cfg.ip_lists.trusted_proxies` is a follow-up that plumbs
+/// the cfg into the handler.
+fn default_trusted_proxies() -> Vec<ipnet::IpNet> {
+    vec![
+        "127.0.0.0/8".parse().unwrap(),
+        "10.0.0.0/8".parse().unwrap(),
+        "172.16.0.0/12".parse().unwrap(),
+        "192.168.0.0/16".parse().unwrap(),
+        "::1/128".parse().unwrap(),
+        "fc00::/7".parse().unwrap(),
+    ]
 }
 
 #[allow(clippy::too_many_arguments)]

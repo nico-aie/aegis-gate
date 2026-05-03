@@ -273,13 +273,34 @@ pub(crate) fn admin_router(
         // Phase-3: GeoIP database status. The geoip feature is
         // gated at compile time; this endpoint lights up the
         // "DB loaded?" pill on the Threat Intel + Overview pages.
+        // Reads `feature_built` from cfg + `db_loaded` from the
+        // live AttacksHandler (which got the lookup wired at
+        // boot via `set_geo_lookup`).
         "/api/geoip/status" => {
+            let db_loaded = services.attacks.geoip_loaded();
+            let country_path = cfg
+                .geoip
+                .country_db
+                .as_ref()
+                .map(|p| p.display().to_string());
+            let asn_path = cfg
+                .geoip
+                .asn_db
+                .as_ref()
+                .map(|p| p.display().to_string());
             let body = serde_json::json!({
                 "feature_built": cfg!(feature = "geoip"),
-                "db_loaded": false,
-                "db_path": null,
+                "db_loaded": db_loaded,
+                "db_path": country_path,
+                "asn_db_path": asn_path,
                 "indicator_count": 0,
-                "note": "Build with FEATURES=\"redis geoip\" and set `geoip.path` in config to enable lookups.",
+                "note": if db_loaded {
+                    "GeoIP reader live. /api/attacks/top rows carry country + asn."
+                } else if cfg!(feature = "geoip") {
+                    "GeoIP feature built but no reader wired — set `geoip.country_db` (and optionally `asn_db`) in config and restart."
+                } else {
+                    "Build with FEATURES=\"redis geoip\" and set geoip.country_db in config."
+                },
             });
             json_body_response(200, body.to_string(), "private, max-age=60")
         }

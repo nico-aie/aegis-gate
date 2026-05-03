@@ -596,6 +596,17 @@ impl AttacksHandler {
         *self.geo.lock().expect("attacks geo slot poisoned") = Some(lookup);
     }
 
+    /// `true` when [`set_geo_lookup`] has populated the slot.
+    /// Read by `/api/geoip/status` and the new top_response
+    /// `geoip_loaded` flag so the dashboard can distinguish
+    /// "DB not loaded" from "DB loaded but no resolvable IPs".
+    pub fn geoip_loaded(&self) -> bool {
+        self.geo
+            .lock()
+            .expect("attacks geo slot poisoned")
+            .is_some()
+    }
+
     fn enrich_attackers(&self, attackers: &mut [Attacker]) {
         let Some(geo) = self
             .geo
@@ -664,15 +675,8 @@ impl AttacksHandler {
 
         let mut response = self.agg.top(window_seconds, limit);
         self.enrich_attackers(&mut response.attackers);
-        // Flip the wire-level signal for the dashboard. We
-        // can't read `self.geo` from inside `agg.top()` (the
-        // aggregator doesn't own the lookup); set it here once
-        // we own both halves.
-        response.geoip_loaded = self
-            .geo
-            .lock()
-            .expect("attacks geo slot poisoned")
-            .is_some();
+        // Flip the wire-level signal for the dashboard.
+        response.geoip_loaded = self.geoip_loaded();
         let body = serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
         let mut cache = self.top_cache.lock().expect("attacks cache poisoned");
         *cache = Some((now, window_seconds, limit, response));
