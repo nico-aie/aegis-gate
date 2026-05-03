@@ -6373,6 +6373,172 @@ function PageReports() {
   );
 }
 
+// SOC-UX 2026-05-03 — Top Attackers page reads /api/attacks/top
+// and shows a sortable, action-rich table.  This is the SOC
+// analyst's morning-coffee view: who hammered us in the last
+// window, where they're from, what they tripped, and one-click
+// pivots into Investigation or block-the-IP.
+const TOP_ATTACKERS_WINDOWS = {
+  '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400,
+};
+
+function PageTopAttackers() {
+  const [win, setWin] = useStateP('1h');
+  const windowSeconds = TOP_ATTACKERS_WINDOWS[win] ?? 3600;
+  const top = window.useApi
+    ? window.useApi(
+        `/api/attacks/top?window=${windowSeconds}&limit=50`,
+        { intervalMs: 5000, fallback: null },
+      )
+    : { data: null };
+  const attackers = top.data?.attackers ?? [];
+  const geoLoaded = top.data?.geoip_loaded === true;
+  const [busyId, setBusyId] = useStateP(null);
+
+  async function blockAttacker(identifier) {
+    if (!identifier) return;
+    if (!confirm(`Block ${identifier}? Adds to /api/blacklist · audit-chained.`)) return;
+    setBusyId(identifier);
+    try {
+      const id = `top-attacker-${identifier.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+      const body = identifier.startsWith('fp:')
+        ? { id, kind: 'fingerprint', value: identifier, note: `blocked from Top Attackers · last 1h` }
+        : { id, kind: identifier.includes('/') ? 'cidr' : 'ip', value: identifier, note: `blocked from Top Attackers · last 1h` };
+      const r = await window.accessListAdd('blacklist', body);
+      if (r.ok) {
+        window.aegisToast(`Blocked ${identifier}`, 'ok');
+        top.reload && top.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        window.aegisToast(`Block failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Block error: ${e.message || e}`, 'err');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Top Attackers</h1>
+          <p className="page-subtitle">
+            Ranked by hits in the last {win} · pivot or block in one click
+            {geoLoaded ? '' : ' · GeoIP DB not loaded — country / ASN columns will be empty until make geoip-link runs'}
+          </p>
+        </div>
+        <div className="page-actions">
+          <select
+            className="input select"
+            value={win}
+            onChange={e => setWin(e.target.value)}
+            style={{ width: 90 }}
+          >
+            {Object.keys(TOP_ATTACKERS_WINDOWS).map(v => <option key={v}>{v}</option>)}
+          </select>
+          <button className="btn" onClick={() => top.reload && top.reload()}>
+            <window.I.Refresh />
+          </button>
+        </div>
+      </div>
+
+      {/* Empty state: lead with the same "what you'll see here"
+          framing the Threat-Intel page uses, so a fresh boot
+          isn't visually broken. */}
+      {attackers.length === 0 ? (
+        <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
+          {top.data === null ? (
+            <>Loading top attackers…</>
+          ) : (
+            <>
+              No attackers ranked in the last {win}. Drive synthetic load with{' '}
+              <code>make mock-load-attacks</code> to see the table populate.
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <table className="tbl tbl-compact">
+            <thead>
+              <tr>
+                <th style={{ width: 220 }}>Identifier</th>
+                <th style={{ width: 70 }}>Country</th>
+                <th style={{ width: 80 }}>ASN</th>
+                <th style={{ width: 80 }}>Hits</th>
+                <th style={{ width: 70 }}>Risk</th>
+                <th>Detectors</th>
+                <th style={{ width: 110 }}>Last seen</th>
+                <th style={{ width: 180 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {attackers.map(a => {
+                const isFp = a.identifier.startsWith('fp:');
+                return (
+                  <tr key={a.identifier}>
+                    <td className="mono" style={{ wordBreak: 'break-all' }}>
+                      {isFp ? (
+                        <span className="dim mono" title="ja4 fingerprint identifier — no IP available">{a.identifier}</span>
+                      ) : (
+                        <a
+                          href={`#/investigation?pivot=${encodeURIComponent(a.identifier)}&kind=ip`}
+                          style={{ color: 'var(--accent)' }}
+                        >{a.identifier}</a>
+                      )}
+                    </td>
+                    <td>{a.country ? <span className="pill">{a.country}</span> : <span className="dim mono">—</span>}</td>
+                    <td className="mono">{a.asn ? `AS${a.asn}` : <span className="dim">—</span>}</td>
+                    <td className="num">{a.hits.toLocaleString()}</td>
+                    <td className="num">
+                      <window.RiskMeter value={a.risk} />
+                    </td>
+                    <td className="mono" style={{ fontSize: 11 }}>
+                      {Array.isArray(a.categories) && a.categories.length > 0
+                        ? a.categories.slice(0, 5).join(', ') + (a.categories.length > 5 ? '…' : '')
+                        : <span className="dim">—</span>}
+                    </td>
+                    <td className="dim mono" style={{ fontSize: 11 }}>
+                      {a.last_seen ? new Date(a.last_seen).toLocaleTimeString() : '—'}
+                    </td>
+                    <td>
+                      <a
+                        className="btn"
+                        href={`#/investigation?pivot=${encodeURIComponent(a.identifier)}&kind=ip`}
+                        style={{ marginRight: 6, fontSize: 11 }}
+                        title="Open Investigation pivoted on this attacker"
+                      >Pivot</a>
+                      <button
+                        className="btn danger"
+                        style={{ fontSize: 11 }}
+                        disabled={busyId === a.identifier}
+                        onClick={() => blockAttacker(a.identifier)}
+                      >{busyId === a.identifier ? '…' : 'Block'}</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 12, marginTop: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <window.I.Info />
+        <span>
+          Top Attackers ranks by detector hits + risk over the chosen
+          window.  Block adds the identifier to <code>/api/blacklist</code>;
+          Pivot opens <a href="#/investigation" style={{ color: 'var(--accent)' }}>Investigation</a>{' '}
+          filtered to that attacker's audit timeline.
+          GeoIP enrichment requires the <code>geoip</code> Cargo
+          feature plus a configured <code>cfg.geoip.country_db</code>.
+        </span>
+      </div>
+    </>
+  );
+}
+
 Object.assign(window, {
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
@@ -6383,5 +6549,6 @@ Object.assign(window, {
   // PageHelp is owned by help.jsx (loaded after this file).
   PageAccessLists,
   PageIncidents, PageInvestigation, PageThreatIntel,
+  PageTopAttackers,
   PageCompliance, PageReports,
 });

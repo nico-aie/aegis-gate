@@ -21,6 +21,7 @@ const NAV = [
     { id: 'live',          label: 'Live Feed',        icon: <window.I.Activity />, badge: 'LIVE', tone: 'live' },
     { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: 'NEW', tone: 'warn' },
     { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: 'NEW', tone: 'warn' },
+    { id: 'top-attackers', label: 'Top Attackers',    icon: <window.I.Siren />,    badge: null },
     { id: 'threat-intel',  label: 'Threat Intel',     icon: <window.I.Globe />,    badge: null },
   ]},
   { group: 'Policy', items: [
@@ -367,6 +368,7 @@ function App() {
     case 'live':             page = <window.PageLiveFeed />; break;
     case 'incidents':        page = <window.PageIncidents />; break;
     case 'investigation':    page = <window.PageInvestigation />; break;
+    case 'top-attackers':    page = <window.PageTopAttackers />; break;
     // Attack-Analytics merged into Investigation (2026-05-03).
     // Old hash links keep working — redirect to Investigation.
     case 'attack-analytics': page = <window.PageInvestigation />; break;
