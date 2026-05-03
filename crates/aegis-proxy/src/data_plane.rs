@@ -690,6 +690,51 @@ pub(crate) async fn forward_allow_to_upstream(
         }
     }
 
+    // WS-T1 — WebSocket upgrade detection. The full bridge
+    // (WS-T2..T6 — see plans/websocket-bridge.md) is its own
+    // implementation track; this stub fires before the HTTP
+    // forwarder so operators get a clear signal in audit +
+    // dashboard that WebSocket traffic is being attempted but
+    // not yet bridged. Better than the previous silent failure
+    // (the 101 went through hyper's pooled HTTP client which
+    // dropped the upgrade hook on the floor).
+    //
+    // Reconstruct the HeaderMap into a synthetic Request for
+    // the existing detector — `is_websocket_upgrade` only
+    // reads headers + Connection, doesn't touch the body.
+    {
+        let synthetic = hyper::Request::builder()
+            .method(parts.method.clone())
+            .uri(parts.uri.clone())
+            .body(())
+            .map(|mut r| {
+                *r.headers_mut() = parts.headers.clone();
+                r
+            });
+        let is_ws = synthetic
+            .as_ref()
+            .map(crate::proto::ws::is_websocket_upgrade)
+            .unwrap_or(false);
+        if is_ws {
+            tracing::Span::current().record("outcome", "websocket_not_yet_implemented");
+            tracing::warn!(
+                route_id = %route_ctx.route_id,
+                upstream = %route_ctx.upstream,
+                "WebSocket upgrade detected — bridge implementation lands in WS-T2..T6 \
+                 (see plans/websocket-bridge.md); request rejected so operator sees the gap",
+            );
+            let resp = Response::builder()
+                .status(hyper::StatusCode::BAD_GATEWAY)
+                .header("x-waf-rule-id", "websocket_not_yet_implemented")
+                .header("content-type", "text/plain; charset=utf-8")
+                .body(Full::new(Bytes::from(
+                    "WebSocket upgrade not yet bridged — see WS-T plan in plans/websocket-bridge.md\n",
+                )))
+                .unwrap();
+            return (resp, DecisionTag::block("websocket_not_yet_implemented"));
+        }
+    }
+
     if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
         if !cb.allow_request() {
             tracing::Span::current().record("outcome", "circuit-open");
@@ -1568,6 +1613,50 @@ state: { backend: in_memory }
         }
         assert_eq!(ctx.tunnels.count(peer), 0, "no slot leaks across 5 calls");
         assert_eq!(ctx.tunnels.distinct_ips(), 0);
+    }
+
+    #[tokio::test]
+    async fn websocket_upgrade_request_returns_502_with_documented_rule_id() {
+        // WS-T1 — until the full bridge lands (WS-T2..T6), a
+        // GET with `Upgrade: websocket` + `Connection: Upgrade`
+        // should NOT silently fail. It must return 502 with
+        // `x-waf-rule-id: websocket_not_yet_implemented` so
+        // the dashboard surfaces the gap.
+        let cfg = http_route_cfg();
+        let ctx = build_ctx(&cfg);
+        let bus = AuditBus::new(16);
+        let rh = route_latency();
+
+        let req = hyper::Request::builder()
+            .method(hyper::Method::GET)
+            .uri("/ws")
+            .header("host", "any")
+            .header("upgrade", "websocket")
+            .header("connection", "Upgrade")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .body(http_body_util::Empty::<Bytes>::new())
+            .unwrap();
+        let (parts, _) = req.into_parts();
+
+        let (resp, tag) = super::forward_allow_to_upstream(
+            parts,
+            Bytes::new(),
+            &ctx,
+            &ClientIdentity::Anonymous,
+            &rh,
+            Instant::now(),
+            "198.51.100.1".parse().unwrap(),
+            &bus,
+        )
+        .await;
+
+        assert_eq!(resp.status(), 502);
+        assert_eq!(
+            rule_id_header(&resp),
+            Some("websocket_not_yet_implemented"),
+        );
+        assert_eq!(tag.action.as_str(), "block");
     }
 
     #[tokio::test]
