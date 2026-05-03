@@ -706,6 +706,7 @@ function PageLiveFeed() {
                 <th style={{ width: 80 }}>Time</th>
                 <th style={{ width: 130 }}>IP</th>
                 <th style={{ width: 70 }}>Method</th>
+                <th style={{ width: 70 }}>Proto</th>
                 <th>Path</th>
                 <th style={{ width: 110 }}>Region</th>
                 <th style={{ width: 70 }}>Tier</th>
@@ -721,6 +722,21 @@ function PageLiveFeed() {
                   <td className="num dim">{e.ts}</td>
                   <td className="mono">{e.ip}</td>
                   <td><span className="mono" style={{ color: e.method === 'POST' ? 'var(--info)' : e.method === 'DELETE' ? 'var(--down)' : 'var(--ink-mute)' }}>{e.method}</span></td>
+                  <td>
+                    {e.protocol && e.protocol !== 'http' ? (
+                      <span
+                        className="pill"
+                        title={`tunnel event: ${e.protocol}`}
+                        style={{
+                          fontSize: 10,
+                          background: e.protocol.startsWith('ws') ? 'rgba(96, 165, 250, 0.15)' : 'rgba(244, 196, 48, 0.15)',
+                          color: e.protocol.startsWith('ws') ? '#60A5FA' : 'var(--accent)',
+                        }}
+                      >{e.protocol}</span>
+                    ) : (
+                      <span className="dim mono" style={{ fontSize: 10 }}>http</span>
+                    )}
+                  </td>
                   <td className="mono" style={{ color: 'var(--ink)' }}>{e.path}</td>
                   <td><span className="dim" style={{ fontSize: 11 }}>{e.region}</span></td>
                   <td><window.TierPill value={e.tier} /></td>

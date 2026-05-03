@@ -8,6 +8,7 @@ pub mod route_latency;
 pub mod runtime;
 pub mod state_ops;
 pub mod upstream_pools;
+pub mod websocket;
 
 use prometheus::Registry;
 use std::sync::Arc;

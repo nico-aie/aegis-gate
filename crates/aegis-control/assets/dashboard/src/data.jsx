@@ -320,6 +320,17 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
           const action = ev.action || 'allow';
           const ip = ev.client_ip || ev.ip || '0.0.0.0';
           const ruleId = ev.rule_id || ev.reason || null;
+          // WS-T6 — surface the application protocol so the
+          // Live Feed table can pill websocket open / close
+          // events distinctly from plain HTTP.  WAF emits
+          // `websocket_open` and `websocket_close` actions for
+          // the bridged tunnel pair; everything else is HTTP.
+          const protocol =
+            action === 'websocket_open' ? 'ws-open' :
+            action === 'websocket_close' ? 'ws-close' :
+            action === 'tcp_tunnel_open' ? 'tcp-open' :
+            action === 'tcp_tunnel_close' ? 'tcp-close' :
+            'http';
           const mapped = {
             id: ++_realLiveSeq,
             ts: fmtTs(epoch),
@@ -341,6 +352,7 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
             request_id: ev.request_id || null,
             class: ev.class || null,
             reason: ev.reason || null,
+            protocol,
             // Keep the raw fields object so the drawer can render
             // every backend-emitted scalar (status, route_id,
             // tier, anything detector-specific) without needing

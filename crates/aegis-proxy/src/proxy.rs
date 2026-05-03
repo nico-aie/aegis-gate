@@ -63,6 +63,12 @@ pub struct ProxyContext {
     pub access_list_country_lookup: std::sync::OnceLock<
         Arc<dyn aegis_control::api::blacklist::AccessListCountryLookup>,
     >,
+    /// WS-T6 — WebSocket bridge metrics.  `None` for tests
+    /// that don't wire a metrics registry; the data-plane
+    /// bridge code uses `if let Some(m) = ...` so the cost is
+    /// nil when absent.  Production boot path installs this
+    /// once at registration time.
+    pub websocket_metrics: Option<Arc<aegis_control::metrics::websocket::WebSocketMetrics>>,
 }
 
 impl ProxyContext {
@@ -91,6 +97,7 @@ impl ProxyContext {
                 aegis_control::api::blacklist::AccessListStore::new(),
             ),
             access_list_country_lookup: std::sync::OnceLock::new(),
+            websocket_metrics: None,
         })
     }
 

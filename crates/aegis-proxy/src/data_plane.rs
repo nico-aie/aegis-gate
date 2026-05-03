@@ -868,6 +868,15 @@ pub(crate) async fn forward_allow_to_upstream(
             let bus_for_task = bus.clone();
             let route_id_for_task = route_ctx.route_id.clone();
             let upstream_addr = member.addr;
+            // WS-T6 — record bridge open before spawning the task.
+            // The matching close is recorded inside the task after
+            // `copy_bidirectional` returns.  None when the binary
+            // boots without metrics wiring (tests).
+            let ws_metrics = ctx.websocket_metrics.clone();
+            if let Some(m) = ws_metrics.as_ref() {
+                m.record_open();
+            }
+            let ws_metrics_for_task = ws_metrics.clone();
             tokio::spawn(async move {
                 let started = std::time::Instant::now();
                 match on_upgrade.await {
@@ -937,6 +946,13 @@ pub(crate) async fn forward_allow_to_upstream(
                             "websocket: client OnUpgrade failed",
                         );
                     }
+                }
+                // WS-T6 — bridge ended (any branch above).  Record
+                // close so `aegis_websocket_active` returns to
+                // baseline and `aegis_websocket_close_total`
+                // increments.
+                if let Some(m) = ws_metrics_for_task.as_ref() {
+                    m.record_close();
                 }
             });
 

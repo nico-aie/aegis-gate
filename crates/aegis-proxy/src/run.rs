@@ -349,6 +349,14 @@ pub async fn run(
         aegis_control::metrics::decisions::DecisionMetrics::register(&metrics)
             .expect("decision metrics registration failed"),
     );
+    // WS-T6 — WebSocket bridge metrics (open / close totals,
+    // active gauge).  Stashed onto ProxyContext below so the
+    // bridge code can call `record_open` / `record_close`
+    // without threading through every parameter.
+    let websocket_metrics = std::sync::Arc::new(
+        aegis_control::metrics::websocket::WebSocketMetrics::register(&metrics)
+            .expect("websocket metrics registration failed"),
+    );
     // PROM-T1 — upstream pool health gauges
     // `waf_upstream_members_healthy{pool}` /
     // `waf_upstream_members_total{pool}`. Synced once at boot
@@ -440,12 +448,17 @@ pub async fn run(
     // field on ProxyContext is unused by the forward path,
     // so passing the workspace `NoopPipeline` here is a
     // placeholder until the parallel pipelines converge.
-    let upstream_ctx = Arc::new(
-        crate::proxy::ProxyContext::build(
+    let upstream_ctx = Arc::new({
+        let mut ctx = crate::proxy::ProxyContext::build(
             &cfg,
             Arc::new(aegis_security::NoopPipeline),
-        )?,
-    );
+        )?;
+        // WS-T6 — share the registered metrics with the data-
+        // plane bridge code.  Done before Arc-wrap so the field
+        // can stay non-OnceLock (it never changes after boot).
+        ctx.websocket_metrics = Some(websocket_metrics.clone());
+        ctx
+    });
 
     // Spawn live health-check tasks for every pool that carries
     // a `health:` block. Without this, configured probes never
