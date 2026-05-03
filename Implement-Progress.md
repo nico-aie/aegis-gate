@@ -166,24 +166,38 @@ For full chronological detail see `git log` and `docs/progress/completed-tasks-l
 
 ## Next Task
 
-### TCP forwarder Phase 4 — design done, ready to implement
+### TCP forwarder Phase 4 — ✅ shipped 2026-05-03
 
-Closes the C-track multi-protocol upstream story. `UpstreamScheme::Tcp`
-is currently a 502 stub at `crates/aegis-proxy/src/upstream/forward.rs:381`.
-Design pass shipped at [`plans/tcp-forwarder-phase-4.md`](./plans/tcp-forwarder-phase-4.md)
-with the lifecycle, error matrix, security gates, audit shape,
-test matrix, and a 6-slice TCP-T1..T6 implementation breakdown
-(~12h total).
+CONNECT-method TCP tunneling is live and tested. Track closed
+across 7 commits totalling ~1900 LOC + 41 new tests. Design at
+[`plans/tcp-forwarder-phase-4.md`](./plans/tcp-forwarder-phase-4.md);
+operator docs at [`docs/data-plane/reverse-proxy.md`](./docs/data-plane/reverse-proxy.md)
+§ "TCP tunneling via CONNECT".
 
-**Trigger:** HTTP CONNECT method + route's pool has `scheme: tcp`.
-Reuses the existing WebSocket upgrade primitive
-(`hyper::upgrade::on` + `tokio::io::copy_bidirectional`) instead
-of growing a parallel listener path.
+**Slice landing log:**
 
-**Slice order:** TCP-T1 (config + detector) → TCP-T2 (concurrent-tunnel
-counter) → TCP-T3 (handler dispatch + upgrade) → TCP-T4 (audit
-open/close events) → TCP-T5 (integration tests) → TCP-T6 (drop
-the 502 stub).
+| Slice | Commit | Scope |
+|---|---|---|
+| TCP-T1 | `f1b52b1` | Destination policy + RouteConfig allowlist + SSRF gate |
+| TCP-T2 | `e39ea51` | Per-IP concurrent-tunnel counter with RAII guard |
+| TCP-T3a | `e02cb27` | `connect_admit` pure admission gate |
+| TCP-T3b | `7c62f3e` | `bridge_tunnel` async splice + close-reason |
+| TCP-T3c | `159cebd` | Data-plane wiring + audit pair + 6 deny rule_ids |
+| TCP-T5+T6 | `15b378c` | 9 dispatch-matrix tests + retire 502 stub |
+
+TCP-T4 (richer audit field shape) was rolled into T3c — the
+`tcp_tunnel_open` / `tcp_tunnel_close` events ship the full
+design-doc payload (route_id, destination, duration_ms,
+bytes counters, close_reason).
+
+**What's left as polish (not blocking):**
+
+- `tests/api/connect-tunnel.sh` end-to-end smoke — optional;
+  in-process integration tests already cover the dispatch
+  matrix and the bridge byte-flow.
+- HTTP/2 extended CONNECT (RFC 8441) — rare in the wild;
+  current build returns 405 `connect_no_upgrade_support` for
+  h2 clients. Pick up if/when an operator asks.
 
 ### AI-Assistant testing track — kicked off
 
