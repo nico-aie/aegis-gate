@@ -28,6 +28,10 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
+use aegis_core::tcp_destination::{
+    is_internal_address, parse_authority, policy_admits, TcpDestinationRule,
+};
+
 /// Default per-IP cap when [`RouteConfig::max_concurrent_tunnels_per_ip`]
 /// is unset (`0` in YAML). Tunnels are heavy; 16 is generous
 /// for legitimate proxy clients (one per browser tab) and
@@ -171,12 +175,126 @@ impl Drop for TunnelGuard {
     }
 }
 
+/// TCP-T3a — admission decision for a CONNECT request that
+/// resolved to a `scheme: tcp` route. Pure function; the data-
+/// plane handler (TCP-T3c) calls this after route resolution
+/// and before attaching the upgrade hook.
+///
+/// The caller is responsible for **DNS resolution** when the
+/// authority isn't a literal IP. We deliberately don't resolve
+/// here so the function stays sync + side-effect-free; T3c uses
+/// `tokio::net::lookup_host` and re-enters this admit with the
+/// resolved literal address.
+///
+/// Returns one of:
+/// - [`ConnectAdmission::Admit`] — caller returns 200 OK and
+///   spawns the bridge task; the embedded [`TunnelGuard`] must
+///   be moved into that task to keep the per-IP slot alive.
+/// - [`ConnectAdmission::Deny`] — caller renders the response
+///   from the `status` + `rule_id` + `message` fields. The
+///   `rule_id`s match plans/tcp-forwarder-phase-4.md §3.
+pub fn connect_admit(req: ConnectAdmissionRequest<'_>) -> ConnectAdmission {
+    let Some((dest, port)) = parse_authority(req.authority) else {
+        return ConnectAdmission::Deny {
+            status: 400,
+            rule_id: "connect_authority_unparseable",
+            message:
+                "CONNECT authority must be host:port with a literal IP \
+                 (DNS resolution is the caller's responsibility)",
+        };
+    };
+    if is_internal_address(dest) {
+        // Bypass via env var lives at the parse-time gate so a
+        // route with `127.0.0.0/8:*` in its allowlist would have
+        // been rejected at config-load. At runtime we always
+        // refuse internal targets.
+        return ConnectAdmission::Deny {
+            status: 403,
+            rule_id: "connect_destination_internal",
+            message: "CONNECT destination is internal-only address space",
+        };
+    }
+    if !policy_admits(req.allowlist, dest, port) {
+        return ConnectAdmission::Deny {
+            status: 403,
+            rule_id: "connect_destination_denied",
+            message: "CONNECT destination not in route's allowlist",
+        };
+    }
+    let limit = effective_cap(req.max_per_ip);
+    let Some(guard) = req.tunnels.try_admit(req.peer_ip, limit) else {
+        return ConnectAdmission::Deny {
+            status: 429,
+            rule_id: "connect_concurrent_tunnel_cap",
+            message: "per-source-IP concurrent CONNECT tunnel cap reached",
+        };
+    };
+    ConnectAdmission::Admit { dest, port, guard }
+}
+
+/// Inputs to [`connect_admit`].
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectAdmissionRequest<'a> {
+    /// CONNECT request authority (`host:port`). For HTTP/1.1
+    /// CONNECT requests this is `req.uri().authority().as_str()`.
+    /// MUST be a literal IP at this layer — see fn doc.
+    pub authority: &'a str,
+    /// Pre-parsed allowlist rules from the resolved route's
+    /// `tcp_destination_allowlist`. Empty = closed.
+    pub allowlist: &'a [TcpDestinationRule],
+    /// Resolved per-route cap from
+    /// `RouteConfig.max_concurrent_tunnels_per_ip`. `0` falls
+    /// back to [`DEFAULT_MAX_CONCURRENT_TUNNELS_PER_IP`].
+    pub max_per_ip: u32,
+    /// Source IP of the request, post-XFF validation.
+    pub peer_ip: IpAddr,
+    /// The shared per-IP counter map. Cheap to clone and pass
+    /// in (every clone shares state).
+    pub tunnels: &'a ConcurrentTunnels,
+}
+
+/// Outcome of [`connect_admit`].
+#[derive(Debug)]
+pub enum ConnectAdmission {
+    Admit {
+        dest: IpAddr,
+        port: u16,
+        guard: TunnelGuard,
+    },
+    Deny {
+        status: u16,
+        rule_id: &'static str,
+        message: &'static str,
+    },
+}
+
+impl ConnectAdmission {
+    pub fn is_admit(&self) -> bool {
+        matches!(self, Self::Admit { .. })
+    }
+
+    /// Convenience for tests + the future audit emitter — pull
+    /// the rule_id out of either branch (Admit reports
+    /// `tunnel_admitted`).
+    pub fn rule_id(&self) -> &'static str {
+        match self {
+            Self::Admit { .. } => "tunnel_admitted",
+            Self::Deny { rule_id, .. } => rule_id,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aegis_core::tcp_destination::parse_rule;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    fn rule(s: &str) -> TcpDestinationRule {
+        parse_rule(s).expect("parse")
     }
 
     #[test]
@@ -342,5 +460,232 @@ mod tests {
         drop(admits);
         assert_eq!(tunnels.count(target), 0);
         assert_eq!(tunnels.distinct_ips(), 0);
+    }
+
+    // -----------------------------------------------------------
+    // TCP-T3a — connect_admit
+    // -----------------------------------------------------------
+
+    fn admit_req<'a>(
+        authority: &'a str,
+        allowlist: &'a [TcpDestinationRule],
+        peer_ip: IpAddr,
+        tunnels: &'a ConcurrentTunnels,
+    ) -> ConnectAdmissionRequest<'a> {
+        ConnectAdmissionRequest {
+            authority,
+            allowlist,
+            max_per_ip: 4,
+            peer_ip,
+            tunnels,
+        }
+    }
+
+    #[test]
+    fn connect_admit_admits_allowed_destination() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("203.0.113.0/24:443")];
+        let outcome = connect_admit(admit_req(
+            "203.0.113.42:443",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        match outcome {
+            ConnectAdmission::Admit { dest, port, .. } => {
+                assert_eq!(dest, ip("203.0.113.42"));
+                assert_eq!(port, 443);
+            }
+            ConnectAdmission::Deny { rule_id, .. } => {
+                panic!("expected admit, got deny: {rule_id}")
+            }
+        }
+        // Guard still alive inside the Admit value → counter is 1.
+        // (We pattern-matched but didn't drop.)
+        // Wait — the match dropped the guard at end of arm. Verify.
+    }
+
+    #[test]
+    fn connect_admit_keeps_guard_alive_until_drop() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("203.0.113.0/24:443")];
+        let outcome = connect_admit(admit_req(
+            "203.0.113.42:443",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        // Hold the outcome (and thus the guard) — counter = 1.
+        assert!(outcome.is_admit());
+        assert_eq!(tunnels.count(ip("198.51.100.1")), 1);
+        drop(outcome);
+        assert_eq!(tunnels.count(ip("198.51.100.1")), 0);
+    }
+
+    #[test]
+    fn connect_admit_rejects_unparseable_authority() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("203.0.113.0/24:443")];
+        let outcome = connect_admit(admit_req(
+            "not-a-host-port",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        match outcome {
+            ConnectAdmission::Deny { status, rule_id, .. } => {
+                assert_eq!(status, 400);
+                assert_eq!(rule_id, "connect_authority_unparseable");
+            }
+            _ => panic!("expected deny"),
+        }
+        // No counter touch on early reject.
+        assert_eq!(tunnels.count(ip("198.51.100.1")), 0);
+    }
+
+    #[test]
+    fn connect_admit_rejects_dns_name_authority() {
+        // DNS names go through `parse_authority` → None; the
+        // caller is expected to resolve before calling
+        // `connect_admit`. Until they do, we deny.
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("203.0.113.0/24:443")];
+        let outcome = connect_admit(admit_req(
+            "api.example.com:443",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        assert!(!outcome.is_admit());
+        assert_eq!(outcome.rule_id(), "connect_authority_unparseable");
+    }
+
+    #[test]
+    fn connect_admit_rejects_internal_destination() {
+        // Internal destinations are blocked even if the operator
+        // tried to put them in the allowlist (they couldn't —
+        // parse_rule rejects internal CIDRs at config load).
+        // Belt-and-braces.
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist: Vec<TcpDestinationRule> = vec![]; // empty doesn't matter — internal gate fires first
+        let outcome = connect_admit(admit_req(
+            "127.0.0.1:443",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        match outcome {
+            ConnectAdmission::Deny { status, rule_id, .. } => {
+                assert_eq!(status, 403);
+                assert_eq!(rule_id, "connect_destination_internal");
+            }
+            _ => panic!("expected internal deny"),
+        }
+    }
+
+    #[test]
+    fn connect_admit_rejects_outside_allowlist() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("203.0.113.0/24:443")];
+        let outcome = connect_admit(admit_req(
+            "198.18.0.1:443",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        match outcome {
+            ConnectAdmission::Deny { status, rule_id, .. } => {
+                assert_eq!(status, 403);
+                assert_eq!(rule_id, "connect_destination_denied");
+            }
+            _ => panic!("expected destination_denied"),
+        }
+    }
+
+    #[test]
+    fn connect_admit_rejects_outside_allowlist_port() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("203.0.113.0/24:443")];
+        let outcome = connect_admit(admit_req(
+            "203.0.113.5:6379",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        assert_eq!(outcome.rule_id(), "connect_destination_denied");
+    }
+
+    #[test]
+    fn connect_admit_empty_allowlist_rejects_everything() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist: Vec<TcpDestinationRule> = vec![];
+        let outcome = connect_admit(admit_req(
+            "203.0.113.5:443",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        assert_eq!(outcome.rule_id(), "connect_destination_denied");
+    }
+
+    #[test]
+    fn connect_admit_rejects_when_per_ip_cap_full() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("203.0.113.0/24:443")];
+        let peer = ip("198.51.100.1");
+        // Saturate to limit=2.
+        let mut req = admit_req("203.0.113.5:443", &allowlist, peer, &tunnels);
+        req.max_per_ip = 2;
+        let _g1 = match connect_admit(req) {
+            ConnectAdmission::Admit { guard, .. } => guard,
+            other => panic!("first admit failed: {other:?}"),
+        };
+        let _g2 = match connect_admit(req) {
+            ConnectAdmission::Admit { guard, .. } => guard,
+            other => panic!("second admit failed: {other:?}"),
+        };
+        // Third attempt exceeds the cap.
+        let outcome = connect_admit(req);
+        match outcome {
+            ConnectAdmission::Deny { status, rule_id, .. } => {
+                assert_eq!(status, 429);
+                assert_eq!(rule_id, "connect_concurrent_tunnel_cap");
+            }
+            _ => panic!("expected concurrent-tunnel-cap deny"),
+        }
+        // Cap rejection didn't leave the counter overshooting.
+        assert_eq!(tunnels.count(peer), 2);
+    }
+
+    #[test]
+    fn connect_admit_v6_authority_round_trip() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("2001:db8::/32:443")];
+        let outcome = connect_admit(admit_req(
+            "[2001:db8::1]:443",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        match outcome {
+            ConnectAdmission::Admit { dest, port, .. } => {
+                assert_eq!(dest, ip("2001:db8::1"));
+                assert_eq!(port, 443);
+            }
+            other => panic!("expected admit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_admit_rule_id_for_admit_branch() {
+        let tunnels = ConcurrentTunnels::new();
+        let allowlist = vec![rule("203.0.113.0/24:443")];
+        let outcome = connect_admit(admit_req(
+            "203.0.113.5:443",
+            &allowlist,
+            ip("198.51.100.1"),
+            &tunnels,
+        ));
+        assert_eq!(outcome.rule_id(), "tunnel_admitted");
     }
 }
