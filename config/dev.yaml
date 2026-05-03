@@ -197,6 +197,17 @@ observability:
     sink: stdout
 
 # ---------------------------------------------------------------------------
+# GeoIP — MaxMind .mmdb readers. Both fields optional; this block is a
+# no-op when neither path resolves AND when the binary isn't built with
+# the `geoip` Cargo feature. Operators populate `data/geoip/` locally
+# via `make geoip-link` (see data/geoip/README.md). Build with
+# `--features geoip` (or `--features production`) to activate the reader.
+# ---------------------------------------------------------------------------
+geoip:
+  country_db: "data/geoip/GeoLite2-Country.mmdb"
+  asn_db: "data/geoip/GeoLite2-ASN.mmdb"
+
+# ---------------------------------------------------------------------------
 # Admin — inline literal credentials (test harness only)
 # user:     admin
 # password: aegis-test-1234

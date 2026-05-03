@@ -314,6 +314,61 @@ helm-render: ## Render the chart with placeholder values (no install)
 	    --set admin.password.hash='$$argon2id$$placeholder' \
 	    --set admin.csrf.secret='deadbeef'
 
+##@ GeoIP databases
+
+# Override either side via env, e.g.:
+#   make geoip-link COUNTRY_DB=/path/to/Country.mmdb ASN_DB=/path/to/ASN.mmdb
+COUNTRY_DB ?=
+ASN_DB     ?=
+GEOIP_DIR  := data/geoip
+
+# Auto-discover the most-recent MaxMind extract in ~/Downloads when
+# COUNTRY_DB / ASN_DB aren't passed explicitly. The default zip layout
+# is `GeoLite2-{Country,ASN}_<YYYYMMDD>/GeoLite2-*.mmdb`.
+geoip-link: ## Symlink MaxMind .mmdb files into data/geoip/ (override with COUNTRY_DB=, ASN_DB=)
+	@mkdir -p $(GEOIP_DIR)
+	@if [ -n "$(COUNTRY_DB)" ]; then \
+	    src="$(COUNTRY_DB)"; \
+	else \
+	    src=$$(ls -t $$HOME/Downloads/GeoLite2-Country_*/GeoLite2-Country.mmdb 2>/dev/null | head -1); \
+	fi; \
+	if [ -z "$$src" ] || [ ! -f "$$src" ]; then \
+	    echo "geoip-link: no Country DB found"; \
+	    echo "  Pass COUNTRY_DB=/path/to/GeoLite2-Country.mmdb"; \
+	    echo "  or drop the MaxMind extract into ~/Downloads/GeoLite2-Country_<date>/"; \
+	    exit 1; \
+	fi; \
+	ln -sfn "$$src" $(GEOIP_DIR)/GeoLite2-Country.mmdb; \
+	echo "geoip-link: Country -> $$src"
+	@if [ -n "$(ASN_DB)" ]; then \
+	    src="$(ASN_DB)"; \
+	else \
+	    src=$$(ls -t $$HOME/Downloads/GeoLite2-ASN_*/GeoLite2-ASN.mmdb 2>/dev/null | head -1); \
+	fi; \
+	if [ -z "$$src" ] || [ ! -f "$$src" ]; then \
+	    echo "geoip-link: no ASN DB found (optional — skipping)"; \
+	else \
+	    ln -sfn "$$src" $(GEOIP_DIR)/GeoLite2-ASN.mmdb; \
+	    echo "geoip-link: ASN     -> $$src"; \
+	fi
+	@ls -la $(GEOIP_DIR)/*.mmdb 2>/dev/null || true
+
+geoip-status: ## Show current GeoIP DB symlinks + their resolved targets
+	@echo "GeoIP DB layout:"
+	@for f in $(GEOIP_DIR)/GeoLite2-Country.mmdb $(GEOIP_DIR)/GeoLite2-ASN.mmdb; do \
+	    if [ -e "$$f" ]; then \
+	        target=$$(readlink "$$f" || echo "(plain file)"); \
+	        size=$$(ls -la "$$f" | awk '{print $$5}'); \
+	        echo "  $$f -> $$target ($$size bytes)"; \
+	    else \
+	        echo "  $$f -> MISSING"; \
+	    fi; \
+	done
+
+geoip-unlink: ## Remove the data/geoip/ symlinks (does NOT touch the source files)
+	@rm -f $(GEOIP_DIR)/*.mmdb
+	@echo "geoip-unlink: cleared $(GEOIP_DIR)/*.mmdb"
+
 ##@ Multi-tester sweeps
 
 sweep-validate: ## Validate one tester's findings.jsonl — usage: make sweep-validate TESTER=path/to/folder-or-jsonl

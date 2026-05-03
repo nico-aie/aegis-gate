@@ -1,0 +1,11 @@
+# Never commit MaxMind .mmdb files. They're large (10-20 MB
+# combined), licensed under MaxMind's GeoLite2 terms (which
+# require updating every 30 days), and would bloat git
+# history forever.
+#
+# Operators populate this directory locally via
+# `make geoip-link` — see README.md.
+
+*.mmdb
+*.tar.gz
+GeoLite2-*/

@@ -70,3 +70,12 @@ release/
 # real certs (or wire ACME) before production use.
 /config/certs/
 .claude/
+
+# =========================
+# MaxMind GeoIP databases
+# =========================
+# Each operator populates `data/geoip/` locally via
+# `make geoip-link`. See data/geoip/README.md for the why.
+/data/geoip/*.mmdb
+/data/geoip/*.tar.gz
+/data/geoip/GeoLite2-*/
