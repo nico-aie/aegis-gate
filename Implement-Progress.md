@@ -23,130 +23,131 @@
 
 ## Status (snapshot)
 
-- **As of:** 2026-05-02
-- **Workspace tests:** ~2 500 across 17 binaries (all green; clippy
-  clean under `-D warnings` for `aegis-control` + `aegis-proxy` libs).
-- **Dashboard bundle:** 178 KB (`crates/aegis-control/assets/dashboard/`)
+- **As of:** 2026-05-03
+- **Workspace tests:** ~2 823 across 17 binaries (all green;
+  baseline 2 500 + ~320 from TCP-T + FDP-T + SWEEP-T + geoip
+  + dashboard fix tracks shipped 2026-05-03).
+- **Dashboard bundle:** ~278 KB
+  (`crates/aegis-control/assets/dashboard/app.js`).
 - **Headline perf** (`tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/`):
   prod-balanced profile sustained **4 891 RPS k6 / 6 392 RPS WAF-internal**
   for 2 min with **legit p99 1.03 ms, legit median 0.13 ms, legit OK 100 %,
-  detection 80 %**. All three k6 thresholds passed. WAF inspection cost is
-  essentially free at this load on M-class hardware.
+  detection 80 %**. All three k6 thresholds passed.
 - **Earlier headline** (`tests/results/run-perf-15min-2026-05-02-v2/`):
   15-min mixed-traffic harness, post-detector-coverage sprint —
   **80 % detection** (was 33 % v1), legit p99 4.52 ms, 100 % of
   detected attacks prevented.
-- **Active tracks (next week)**: **AI-Assistant-driven testing track** —
-  see `tests/AI-ASSISTANT-GUIDE.md` (defines rules + workflow for
-  generating, running, and reviewing tests with AI help).
-- **Operator UX simplified 2026-05-02**: every config (dev / prod /
+- **Active track (this week):** **AI detector** — design pass shipped at
+  [`plans/ai-detector.md`](./plans/ai-detector.md) with all 4 decisions
+  locked-in (operator-supplied .onnx, default-off Cargo feature, 0.85
+  threshold, hybrid `mode: observe | enforce`). 9-slice AI-T1..T9
+  breakdown awaiting the operator's .onnx file before AI-T1 starts.
+- **Closed 2026-05-03:** TCP forwarder Phase 4 (TCP-T1..T6 — CONNECT
+  tunneling via `scheme: tcp` routes), Binary handover via fd-passing
+  (FDP-T1..T6 — library primitives; accept-loop drain refactor
+  remaining), SWEEP-T multi-tester sweep tooling, MTLS-T10 Phase 2
+  (live CA bundle hot-swap), B5 benchmark two-factor gating, geoip
+  XFF wiring + 3-state dashboard pill.
+- **Operator UX simplified 2026-05-02:** every config (dev / prod /
   3 profiles) defaults to **Redis state**; the Makefile auto-starts
   the dev Redis on every `run-*` target. New `make obs-up` / `make urls`
   / `make logs` targets surface Prometheus + Grafana + Jaeger + audit
-  paths in one command. First-light is now `make setup && make run-dev`.
+  paths in one command. First-light is `make setup && make run-dev`.
 
 ---
 
 ## Last Completed
 
-**Task:** End-of-sprint operator UX simplification — Redis-default
-across every operator-facing config, observability stack as one make
-target, refreshed QUICKSTART/README, AI-Assistant testing scaffold for
-next week.
+**Task:** 2026-05-03 multi-track sprint — TCP-T Phase 4 + FDP-T1..T6
+binary handover primitives + SWEEP-T multi-tester sweep tooling +
+MTLS-T10 Phase 2 + B5 benchmark gating + geoip XFF wiring + dashboard
+3-state pill + AI-T design pass.
 
 ### What shipped
 
-1. **Redis as the default state backend everywhere.**
-   `config/dev.yaml` and `config/prod.yaml` switched from
-   `state.backend: in_memory` to `redis` (matching the 3 profiles
-   under `config/profiles/`). The 4 operator-facing configs are now
-   identical in shape — only thresholds differ. Stress-test infra
-   (`tests/hackathon/configs/*`) keeps `in_memory` and documents
-   why inline (synthetic load, single source IP, no Redis hop to
-   measure).
+1. **TCP forwarder Phase 4 — CONNECT-method tunneling** (8 commits
+   `e15d3fb` → `d903d7f`, ~2400 LOC, 41 new tests). `scheme: tcp`
+   routes now open real TCP tunnels via `hyper::upgrade::on` +
+   `tokio::io::copy_bidirectional`. Per-IP concurrent-tunnel cap +
+   SSRF gate (loopback / link-local hardcoded-deny) + paired
+   `tcp_tunnel_open` / `tcp_tunnel_close` audit events with byte
+   counters. Operator docs at `docs/data-plane/reverse-proxy.md`
+   § "TCP tunneling via CONNECT".
 
-2. **Auto-start Redis from the Makefile.** Every `run-*` target
-   gained `redis-up` as a dependency; `redis-up` is idempotent
-   (checks `docker ps` first, starts the existing container if
-   present, runs `docker compose up -d redis` only when needed).
-   First-light now collapses from "build → start Redis → run" to
-   `make setup && make run-dev`.
+2. **Binary handover via fd-passing — library** (FDP-T1..T6, 6
+   commits `6d98c5d` → `ad5540f`, ~1100 LOC, 26 new tests).
+   `adopt_inherited_listeners` (RFC1918 default + systemd
+   `LISTEN_FDS` compat + colon-separated names support) +
+   `spawn_successor` with FD pre-placement + CLOEXEC clear +
+   `bridge_tunnel` async splice + `InFlightCounter` RAII +
+   `perform_handover` orchestration + `ReadinessPipe` single-byte
+   signal + SIGUSR2 listener wired into boot path. **Library
+   complete; one gap remains:** the accept-loop drain refactor
+   that lets SIGUSR2 actually invoke `perform_handover`.
 
-3. **Observability stack one-shot.** New targets:
-   - `make obs-up` — boots Prometheus + Grafana + Jaeger.
-   - `make urls` — prints every URL + log-file path the
-     dev/devops would want.
-   - `make logs` — tails audit chain + redis container together.
+3. **Multi-tester AI-assistant sweep tooling** (commit `1356409`).
+   `tests/sweeps/{README, CLAIMS.template.md, template/, consolidate.sh}`
+   + `make sweep-validate` / `sweep-consolidate`. 8-slice claim
+   catalogue + `findings.jsonl` schema + auto-dedup + ranking by
+   severity × distinct-tester count. Plan at
+   [`plans/ai-assistant-testing-kickoff.md`](./plans/ai-assistant-testing-kickoff.md).
 
-4. **prod-balanced @ 5 k+ RPS sustained run committed**
-   (`tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/REPORT.md`).
-   Three iterative runs preserved (v1 = harness saturated, v2 =
-   Python upstream choked, v3 = clean run with Go upstream). Adds
-   `tests/hackathon/configs/prod-balanced-5k.yaml`,
-   `tests/hackathon/k6/prod-balanced-5k-v2.js` (constant-arrival-rate),
-   `tests/hackathon/upstream/fast-upstream.go` (50 k+ RPS Go mock),
-   `tests/hackathon/run-prod-balanced-5k.sh`. Seven actionable
-   improvements documented in REPORT.md §"What to improve".
+4. **MTLS-T10 Phase 2 — live CA bundle hot-swap** (commit `95deaef`).
+   `PUT /api/mtls/ca-bundle?apply=true` swaps `RootCertStore` via
+   `ClientTrustStore::swap_pem`; new `WebPkiClientVerifier`
+   instances see the new roots immediately, in-flight handshakes
+   complete on the old store. `TrustAnchorWriter` trait at the
+   aegis-control boundary so the audit-mutated handler doesn't
+   pull aegis-proxy types.
 
-5. **Profile picker shipped earlier in the session**: 3 production
-   profiles under `config/profiles/` (balanced / strict / high-throughput),
-   `docs/operator/profiles.md` decision tree, Makefile `run-strict` /
-   `run-throughput` / `validate-all` targets.
+5. **B5 benchmark mode two-factor gating** (commit `8ae951a`).
+   Optional source-IP allowlist + HMAC-SHA256 token gating for
+   the `x-aegis-*` headers; both fail-closed; AND-composed.
+   Production-safe for `enabled: true` deployments without leaking
+   timing or rule-id signal to the public.
 
-6. **Detector-coverage sprint earlier**: BodyPeek fix, mass-assignment
-   + XXE detectors, brute-force detector on auth paths, SSRF body-IP
-   scan. Detection rate 33 % → 80 % across the hackathon corpus.
+6. **geoip XFF wiring + dashboard 3-state pill** (commits `a166e3f`,
+   `c908fe8`, `f6c0a04`, `86bcc01`). Local `data/geoip/` with
+   `make geoip-link` (mirrors `make ai-link` from the AI-T design),
+   `geoip` joins default `FEATURES`, the data-plane handler
+   resolves XFF before recording `client_ip`, dashboard pill
+   distinguishes "DB not loaded" / "DB loaded but no resolvable
+   IPs" / "N geo-tagged".
 
-7. **HACK-T4 rollback dispatcher v2..v5 + MTLS-T7 SAN allowlist
-   earlier**: rollback now covers 11 of 18 audit-mutated actions
-   (mode, risk thresholds, mTLS SANs add/remove, blacklist, whitelist,
-   detector mask, verbosity, loadmode). SAN allowlist with RFC 6125
-   single-label wildcard support live-verified end-to-end.
-
-8. **SC-T4 tokio runtime metrics earlier**: 4 Prometheus gauges
-   (`aegis_runtime_active_workers`, `_blocking_threads`,
-   `_blocking_queue_depth`, `_io_driver_fd_count`) gated on
-   `--cfg tokio_unstable`; gauges always registered, populated only
-   when feature is on.
+7. **AI-T design pass shipped** (commits `4beb4a3`, `70b8985`).
+   `plans/ai-detector.md` covers the full integration of the
+   trained ONNX model with all 4 user-locked decisions (operator-
+   supplied .onnx, default-off Cargo feature, 0.85 threshold,
+   hybrid `mode: observe | enforce`). 9-slice AI-T1..T9 breakdown.
+   Awaiting the operator's .onnx file before AI-T1 starts.
 
 ### Verification
 
-- `make validate-all` → all 4 configs (dev + 3 profiles) PASS.
-- `./target/release/waf run --config config/dev.yaml` boots clean
-  with Redis backend; `/healthz/ready` reports
-  `state_backend_up: true`; cluster-leader lease acquired in 7 ms.
-- `make redis-up` is idempotent (existing container reused; no
-  duplicate-name conflicts).
-- `make help` renders cleanly with the new `obs-up` / `urls` / `logs`
-  targets visible.
-- `make urls` output shows the full URL + log-path map.
-
-### Files changed (this session — multi-day)
-
-- **Configs**: `config/dev.yaml`, `config/prod.yaml`,
-  `config/profiles/{prod-balanced,prod-strict,prod-high-throughput}.yaml`
-- **Makefile**: profile-aware run targets; `redis-up` idempotency;
-  `obs-up`, `obs-down`, `urls`, `logs` targets
-- **Docs**: `QUICKSTART.md` (rewritten), `README.md` (status section
-  refreshed + 5k+ RPS row added), `docs/operator/profiles.md` (new),
-  `Implement-Progress.md` (this file, slimmed)
-- **Test infra**: `tests/hackathon/configs/prod-balanced-5k.yaml`,
-  `tests/hackathon/k6/prod-balanced-5k{,-v2}.js`,
-  `tests/hackathon/upstream/fast-upstream.go`,
-  `tests/hackathon/run-prod-balanced-5k.sh`
-- **Results**: 3 stress-test run dirs +
-  `run-perf-5krps-prod-balanced-2026-05-02-v3/REPORT.md`
-- **AI Assistant testing track**: `tests/AI-ASSISTANT-GUIDE.md`
-  (new — picks up next week)
+- `cargo test --workspace` → all green (~2 823 tests across 17
+  binaries; +320 from the 2026-05-03 work over the 2 500 baseline).
+- `cargo build` (default features) byte-stable across the sprint;
+  no unconditional dep growth.
+- TCP track: `tests/api/connect-tunnel.sh` deny-path smoke,
+  `bridge_tunnel_round_trips_bytes_through_an_echo_upstream`
+  full-flow integration, 9-test dispatch matrix.
+- FDP track: `adopt_real_listener_round_trips_an_accept` proves
+  `from_raw_fd` round-trips a working socket; the load-bearing
+  `spawn_successor_places_fd_at_slot_3` proves `dup2 + CLOEXEC`
+  clear actually plumbs an FD into a forked-and-exec'd child.
+- geoip: end-to-end verified in 3-attack postman scenario;
+  `geoip_loaded: true` in `/api/attacks/top` response;
+  `8.8.8.8 → US`, `202.12.27.33 → JP` country resolutions confirmed.
 
 ### Next-session hand-off
 
-The AI-Assistant-driven testing track is the next user-driven
-focus area. Intake docs:
-- `tests/AI-ASSISTANT-GUIDE.md` — rules, workflow, what to
-  generate vs. what to write by hand, review checklist.
-- `tests/AI-ASSISTANT-RULES.md` — terse do/don't sheet for any
-  AI assistant working in `tests/`.
+The user is building the .onnx model for AI-T. AI-T1 (Cargo feature
++ tract dep + AiConfig in aegis-core; ~2h) is the next sliceable
+unit when the model artifact arrives. The AI-T design has zero
+open questions.
+
+The accept-loop drain refactor for FDP is also a viable pickup —
+it's the one gap between "FDP library shipped" and "production
+hot-restart works end-to-end via SIGUSR2".
 
 ---
 
@@ -154,7 +155,8 @@ focus area. Intake docs:
 
 | Date | Task | Outcome |
 |---|---|---|
-| 2026-05-02 (PM) | Operator UX simplification + Redis-default + obs stack + AI-testing scaffold | This entry. `make setup && make run-dev` now boots a Redis-backed dev profile in 2 commands. AI-Assistant testing rules + guide live under `tests/`. |
+| 2026-05-03 | TCP-T + FDP-T + SWEEP-T + AI-T design + geoip XFF | This entry. ~3500 LOC + 320 new tests. CONNECT tunneling live; binary-handover library shipped (one gap); multi-tester sweep tooling ready; AI-T design with all 4 decisions locked-in awaits .onnx file. |
+| 2026-05-02 (PM) | Operator UX simplification + Redis-default + obs stack + AI-testing scaffold | `make setup && make run-dev` boots a Redis-backed dev profile in 2 commands. AI-Assistant testing rules + guide live under `tests/`. |
 | 2026-05-02 (mid) | prod-balanced @ 5 k+ RPS sustained (3 iterative runs) | v3 = 4 891 RPS k6 / 6 392 RPS WAF-internal, legit p99 1.03 ms, legit OK 100 %, 80 % detection. Surfaced 7 improvements; identified Python upstream as the prior 600-RPS ceiling. |
 | 2026-05-02 (early) | Profile picker + Makefile profile-aware run targets | 3 profiles (balanced/strict/high-throughput) + `docs/operator/profiles.md` decision tree + `run-strict`/`run-throughput`/`validate-all` make targets. |
 | 2026-05-02 | Detector-coverage sprint + rollback v2..v5 + SC-T4 | Detection 33 % → 80 % via BodyPeek fix + mass-assignment + XXE + brute-force + SSRF body. Rollback covers 11 of 18 audit-mutated actions. SC-T4 tokio runtime gauges live (gated on `--cfg tokio_unstable`). |

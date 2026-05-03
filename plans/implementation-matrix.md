@@ -8,7 +8,7 @@ specified in `docs/`". Each doc carries a one-line `> **Status:**`
 banner that mirrors a row here; the banner is generated from this
 table — keep them in sync.
 
-**As of:** 2026-05-02 (post HACK-T1..T5 + rollback v2..v5 + SAN allowlist + SC-T4 runtime metrics + detector-coverage sprint + CQF-T1..T16 + B6-T2/T3 + production profiles + Makefile profile picker).
+**As of:** 2026-05-03 (post HACK-T1..T5 + rollback v6 + MTLS-T7..T11 + TCP-T1..T6 CONNECT tunneling + FDP-T1..T6 binary-handover primitives + SWEEP-T tooling + AI-T design lock-in + geoip XFF + dashboard 3-state pill).
 
 > **Verify before relying on a row.** Codebase moves; before acting
 > on any "Implemented" claim, check the named module path. When
@@ -43,7 +43,7 @@ table — keep them in sync.
 
 | Doc | Status | Notes / module path |
 |---|---|---|
-| [`reverse-proxy.md`](../docs/data-plane/reverse-proxy.md) | **Implemented** | `aegis-proxy/src/{lib,proxy,supervisor}.rs`. |
+| [`reverse-proxy.md`](../docs/data-plane/reverse-proxy.md) | **Implemented** | `aegis-proxy/src/{lib,proxy,supervisor}.rs`. Multi-protocol upstream complete 2026-05-03 (HTTP/HTTPS/H2c/gRPC/CONNECT-tunneling-via-`scheme:tcp`); see plan [`tcp-forwarder-phase-4.md`](./tcp-forwarder-phase-4.md). |
 | [`routing-ingress.md`](../docs/data-plane/routing-ingress.md) | **Implemented** | `aegis-proxy/src/route/{host,path,mod}.rs`. |
 | [`upstream-pools.md`](../docs/data-plane/upstream-pools.md) | **Implemented** | `aegis-proxy/src/upstream/{lb,health,circuit,tls,mod}.rs`. 5 LB strategies, health checks, circuit breaker. |
 | [`traffic-management.md`](../docs/data-plane/traffic-management.md) | **Implemented** | `aegis-proxy/src/traffic.rs` — canary, steering, shadow mirror, retries. |
@@ -101,7 +101,7 @@ table — keep them in sync.
 | [`config-hot-reload.md`](../docs/control-plane/config-hot-reload.md) | **Implemented** | `gitops::dry_run_validate` + `secrets.rs` resolver + reload signal. |
 | [`gitops-change-management.md`](../docs/control-plane/gitops-change-management.md) | **Partial** | `GitClient` trait + signature verify + dry-run + `GitOpsLoader`. **No concrete git poll-and-pull driver** — Phase B **B3-T1**. |
 | [`secrets-management.md`](../docs/control-plane/secrets-management.md) | **Implemented** (cloud quartet) | B2-T1..T4 closed: `env` + `file` (sync) + feature-gated `vault` / `aws` / `gcp` / `azure` resolvers. **HSM** still returns `NotImplemented` — B6-T4. |
-| [`zero-downtime-ops.md`](../docs/control-plane/zero-downtime-ops.md) | **Partial** | `supervisor.rs` + `hotbin.rs` + drain; SO_REUSEPORT in the listener layer. **No live binary-handover via fd-passing** — Phase B **B6-T5**. |
+| [`zero-downtime-ops.md`](../docs/control-plane/zero-downtime-ops.md) | **Partial** | `supervisor.rs` + `hotbin.rs` + drain. **B6-T5 fd-pass library shipped 2026-05-03** (FDP-T1..T6: `adopt_inherited_listeners` / `spawn_successor` / `bridge_tunnel` / `InFlightCounter` / `perform_handover` / `ReadinessPipe` / SIGUSR2 listener / systemd `LISTEN_FDS` compat — 26 new tests). One gap: accept-loop drain refactor that lets SIGUSR2 actually invoke `perform_handover` — see [`binary-handover-fd-pass.md`](./binary-handover-fd-pass.md) §11. |
 | [`enterprise/`](../docs/control-plane/enterprise/) | **Implemented** | D-M1..D-M6 closed; SPA bundled into the binary, served from `/dashboard/`. Dashboard-redesign track is queued behind Phase B. |
 
 ## 6. Observability
