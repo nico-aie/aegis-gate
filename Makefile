@@ -314,6 +314,22 @@ helm-render: ## Render the chart with placeholder values (no install)
 	    --set admin.password.hash='$$argon2id$$placeholder' \
 	    --set admin.csrf.secret='deadbeef'
 
+##@ Multi-tester sweeps
+
+sweep-validate: ## Validate one tester's findings.jsonl — usage: make sweep-validate TESTER=path/to/folder-or-jsonl
+	@if [ -z "$(TESTER)" ]; then \
+	    echo "usage: make sweep-validate TESTER=tests/sweeps/<sweep-id>/tester-<id>"; \
+	    exit 2; \
+	fi
+	@./tests/sweeps/consolidate.sh --validate "$(TESTER)"
+
+sweep-consolidate: ## Run consolidate pass for a sweep — usage: make sweep-consolidate SWEEP=run-sweep-NN-...
+	@if [ -z "$(SWEEP)" ]; then \
+	    echo "usage: make sweep-consolidate SWEEP=run-sweep-NN-YYYY-MM-DD-<theme>"; \
+	    exit 2; \
+	fi
+	@./tests/sweeps/consolidate.sh "$(SWEEP)"
+
 ##@ Cleanup
 
 clean: ## cargo clean (does NOT delete dev certs)
