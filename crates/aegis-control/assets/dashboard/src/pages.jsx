@@ -2033,23 +2033,42 @@ function PageTierConfig() {
                   Routes assigned to <span className="mono">{selected.name}</span> ({routesForSelected.length})
                 </div>
                 <table className="tbl tbl-compact">
-                  <thead><tr><th>Route ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th></tr></thead>
+                  <thead><tr><th>Route ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th><th title="MTLS-T11 — required client-identity kinds">Auth</th></tr></thead>
                   <tbody>
                     {routesForSelected.length === 0 && (
-                      <tr><td colSpan={6} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                      <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
                         No routes assigned to this tier.
                       </td></tr>
                     )}
-                    {routesForSelected.map(r => (
-                      <tr key={r.id}>
-                        <td className="mono">{r.id}</td>
-                        <td className="mono dim">{r.host || '*'}</td>
-                        <td className="mono">{r.path}</td>
-                        <td><span className="pill neutral">{r.match_type}</span></td>
-                        <td className="mono dim">{r.methods.length === 0 ? 'ANY' : r.methods.join(', ')}</td>
-                        <td className="mono">{r.upstream}</td>
-                      </tr>
-                    ))}
+                    {routesForSelected.map(r => {
+                      const auth = r.auth_required || [];
+                      return (
+                        <tr key={r.id}>
+                          <td className="mono">{r.id}</td>
+                          <td className="mono dim">{r.host || '*'}</td>
+                          <td className="mono">{r.path}</td>
+                          <td><span className="pill neutral">{r.match_type}</span></td>
+                          <td className="mono dim">{r.methods.length === 0 ? 'ANY' : r.methods.join(', ')}</td>
+                          <td className="mono">{r.upstream}</td>
+                          <td>
+                            {auth.length === 0 ? (
+                              <span className="pill" style={{ opacity: 0.5 }} title="Any identity admitted (default open)">open</span>
+                            ) : (
+                              auth.map(k => (
+                                <span
+                                  key={k}
+                                  className={`pill ${k === 'mtls' || k === 'spiffe' ? 'ok' : 'warn'}`}
+                                  style={{ marginRight: 4, fontSize: 10 }}
+                                  title={`auth_required includes "${k}" — only ${k} clients are admitted`}
+                                >
+                                  {k}
+                                </span>
+                              ))
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

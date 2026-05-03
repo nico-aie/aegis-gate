@@ -290,6 +290,7 @@ pub(crate) async fn admin_accept_loop(
                     aegis_core::tier::Tier::CatchAll => "catch_all",
                 }
                 .to_string()),
+                auth_required: r.auth_required.clone(),
             })
             .collect(),
     );

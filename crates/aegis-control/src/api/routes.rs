@@ -50,6 +50,13 @@ pub struct RouteSummary {
     pub upstream: String,
     /// `None` when the route inherits its tier from the global default.
     pub tier_override: Option<String>,
+    /// MTLS-T11 — required client-identity kinds for this route.
+    /// Empty = "any identity admitted" (default open). Non-empty
+    /// acts as an allow-list against
+    /// [`aegis_core::ClientIdentity::kind()`]. Mirrors
+    /// [`aegis_core::config::RouteConfig::auth_required`].
+    #[serde(default)]
+    pub auth_required: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -110,6 +117,7 @@ mod tests {
                 methods: vec!["POST".into()],
                 upstream: "auth-pool".into(),
                 tier_override: Some("critical".into()),
+                auth_required: vec!["mtls".into()],
             },
             RouteSummary {
                 id: "catch-all".into(),
@@ -119,6 +127,7 @@ mod tests {
                 methods: vec![],
                 upstream: "backend-pool".into(),
                 tier_override: None,
+                auth_required: vec![],
             },
         ]
     }
