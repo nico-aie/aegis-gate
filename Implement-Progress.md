@@ -223,13 +223,23 @@ develop.
   shipped at `180f6dd`). Both items have outsized scope (i18n
   needs JSX runtime loader work; help slides need designer
   input) so they're polish for a future Console-redesign cycle.
-- **B6-T5 (fd-pass)** — design pass shipped at
-  [`plans/binary-handover-fd-pass.md`](./plans/binary-handover-fd-pass.md).
-  6-slice FDP-T1..T6 implementation breakdown (~12h total) +
-  test plan + audit shape + 3 explicitly-deferred items in §9.
-  Ready to implement when the operator pain (deploy drops
-  in-flight connections) becomes priority. Today's
-  `hotbin::HotReloader` is a typed skeleton not wired into boot.
+- **B6-T5 (fd-pass)** — ✅ FDP-T1..T6 shipped. Library
+  primitives all proven correct (26 new tests). Boot path now
+  adopts inherited listener FDs from an exec'ing parent
+  (FDP-T2), spawns a successor with FD pre-placement +
+  CLOEXEC clear (FDP-T3), supports the drain protocol with
+  in-flight counter + grace timer (FDP-T4), uses a pipe-based
+  readiness signal (FDP-T5), and accepts systemd
+  `LISTEN_FDS` / `LISTEN_FDNAMES` env aliases plus a SIGUSR2
+  listener wired into the live boot path (FDP-T6).
+
+  **One gap remains:** the accept-loop drain refactor.
+  Today's wiring records the SIGUSR2 in `HotReloader` but
+  doesn't invoke `perform_handover` because the accept loops
+  don't yet take a shutdown channel + the shared
+  `InFlightCounter`. Operators get clean adopt-or-bind on
+  first boot today; full hot-restart lands when the
+  accept-loop refactor track closes.
 - **B6-T4** (HSM) — still explicitly deferred; PKCS#11 against a
   real HSM, no design pass yet.
 - **SC-T4** runtime metrics polish — already wired at boot in

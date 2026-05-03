@@ -1,10 +1,15 @@
 # B6-T5 — Binary Handover via FD-Passing
 
-> **Status:** design-only, ready to implement. Track ID prefix
-> `FDP-T<n>`. Un-defers the `B6-T5` row of
-> [`plans/phase-b/README.md`](./phase-b/README.md) — operators
-> can deploy a new `waf` binary without dropping in-flight
-> connections.
+> **Status:** ✅ FDP-T1..T6 shipped. Track ID prefix
+> `FDP-T<n>`. The library primitives are landed and tested;
+> SIGUSR2 listening + parent-to-child readiness signalling are
+> wired into the live boot path. The final accept-loop drain
+> + handover-trigger glue (the `polling loop` referenced in
+> §4) is the one remaining gap: SIGUSR2 sets the reloader
+> flag today but the `perform_handover` invocation needs an
+> accept-loop refactor that's a separate track. Operators
+> get clean adopt-or-bind on first boot today; full hot-
+> restart lands when the accept-loop refactor closes.
 
 ## 0 · One-line summary
 
@@ -194,17 +199,24 @@ case.
 
 | Slice | Scope | Estimate |
 |---|---|---|
-| **FDP-T1** | `hotbin::adopt_inherited_listeners()` — pure FD-adopt logic + tests against synthetic env vars + a real kernel-allocated FD pair via `socketpair`. | ~2h |
-| **FDP-T2** | Wire `adopt_inherited_listeners` into `run.rs` — every `TcpListener::bind` becomes "adopt-or-bind". Pure code + integration test that drives a child boot from a parent's FD via `Command::spawn` with FD inheritance. | ~3h |
-| **FDP-T3** | Parent-side handover: SIGUSR2 handler, CLOEXEC clear, `Command::new("/proc/self/exe")` with FD pre-population, env-var setup. | ~3h |
-| **FDP-T4** | Drain protocol: in-flight counter + grace timer + clean exit. Already-half-done in `hotbin::HotReloader`; this slice fills in the live state-machine wiring. | ~2h |
-| **FDP-T5** | Pipe-based readiness signal between parent and child (the "single byte to pipe FD" path from §4.1). Replaces the HTTP-poll fallback. | ~1h |
-| **FDP-T6** | systemd socket-activation compat — accept FDs from `LISTEN_FDS` (systemd's env name) in addition to `AEGIS_LISTEN_FDS`. Trivial alias. | ~1h |
+| **FDP-T1** | `hotbin::adopt_inherited_listeners()` — pure FD-adopt logic + real-kernel test | ✅ `6d98c5d` |
+| **FDP-T2** | Wire `adopt_or_bind` into `run.rs` at every bind site | ✅ `d2bc935` |
+| **FDP-T3** | `spawn_successor` with FD pre-placement + CLOEXEC clear | ✅ `24a9f9f` |
+| **FDP-T4** | Drain protocol: `InFlightCounter` + `perform_handover` orchestration | ✅ `de63985` |
+| **FDP-T5** | Pipe-based readiness signal (single-byte) | ✅ `827b144` |
+| **FDP-T6** | systemd `LISTEN_FDS` / `LISTEN_FDNAMES` compat (with colon-separator support) + SIGUSR2 listener wired into boot path | ✅ this commit |
 | **FDP-T7** | Persist audit-chain state across handover (separate track, here for completeness — *not* in this design). | (deferred) |
 
-Total: ~12h for FDP-T1..T6. Slice order is strict — T2 depends
-on T1; T3 needs T2; T4 needs T3; T5 + T6 are independent
-follow-ups.
+26 tests total across FDP-T1..T6.
+
+**One gap remains** — the accept-loop drain refactor. Today's
+wiring records the SIGUSR2 in `HotReloader` but doesn't invoke
+`perform_handover` because the accept loops don't yet accept a
+shutdown channel + the shared `InFlightCounter`. Library
+primitives are all proven correct in tests; the refactor to
+wire them into a live SIGUSR2-driven handover is its own
+track. Operators get clean adopt-or-bind on first boot today;
+full hot-restart lands when the accept-loop refactor closes.
 
 ## 7 · Test plan
 

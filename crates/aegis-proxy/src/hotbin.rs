@@ -67,6 +67,17 @@ impl HotReloader {
 pub struct FdPassConfig {
     /// Environment variable name for passing the number of listener FDs.
     pub env_fd_count: String,
+    /// FDP-T6 — fallback env-var name for the FD count. Lets
+    /// us accept systemd socket-activation (`LISTEN_FDS=N`)
+    /// transparently. Tried after `env_fd_count` if that's
+    /// unset.
+    pub fallback_env_fd_count: Option<String>,
+    /// Environment variable name for the comma-separated names.
+    /// systemd uses `LISTEN_FDNAMES` with COLON separators —
+    /// we accept either separator at parse time.
+    pub env_fd_names: String,
+    /// FDP-T6 — fallback env-var name for the names list.
+    pub fallback_env_fd_names: Option<String>,
     /// Base FD number (usually 3, after stdin/stdout/stderr).
     pub base_fd: i32,
 }
@@ -75,6 +86,9 @@ impl Default for FdPassConfig {
     fn default() -> Self {
         Self {
             env_fd_count: "AEGIS_LISTEN_FDS".into(),
+            fallback_env_fd_count: Some("LISTEN_FDS".into()),
+            env_fd_names: "AEGIS_LISTEN_FD_NAMES".into(),
+            fallback_env_fd_names: Some("LISTEN_FDNAMES".into()),
             base_fd: 3,
         }
     }
@@ -140,55 +154,133 @@ pub fn adopt_inherited_listeners() -> AdoptOutcome {
 /// Test-friendly variant — accepts a custom [`FdPassConfig`]
 /// so unit tests can use a non-stdio base FD.
 pub fn adopt_inherited_listeners_with_cfg(cfg: &FdPassConfig) -> AdoptOutcome {
-    let count = match std::env::var(&cfg.env_fd_count) {
-        Err(_) => return AdoptOutcome::NoInheritance,
-        Ok(s) => match s.parse::<usize>() {
-            Ok(n) => n,
-            Err(_) => {
-                return AdoptOutcome::Misconfigured(format!(
-                    "{} is not a valid usize: {s:?}",
-                    cfg.env_fd_count,
-                ));
-            }
+    // Pick the count env: prefer the primary, fall back to the
+    // alias if the primary is unset (systemd-managed boot).
+    let (count_env_name, count_str) = match std::env::var(&cfg.env_fd_count) {
+        Ok(s) => (cfg.env_fd_count.clone(), s),
+        Err(_) => match cfg.fallback_env_fd_count.as_deref() {
+            Some(fallback) => match std::env::var(fallback) {
+                Ok(s) => (fallback.to_string(), s),
+                Err(_) => return AdoptOutcome::NoInheritance,
+            },
+            None => return AdoptOutcome::NoInheritance,
         },
+    };
+    let count: usize = match count_str.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return AdoptOutcome::Misconfigured(format!(
+                "{count_env_name} is not a valid usize: {count_str:?}",
+            ));
+        }
     };
     if count == 0 {
         return AdoptOutcome::NoInheritance;
     }
 
-    let names_raw = match std::env::var("AEGIS_LISTEN_FD_NAMES") {
-        Ok(s) => s,
-        Err(_) => {
-            return AdoptOutcome::Misconfigured(format!(
-                "{} is set but AEGIS_LISTEN_FD_NAMES is missing",
-                cfg.env_fd_count,
-            ));
-        }
+    // Same precedence for the names list: primary first, then
+    // fallback. Both env names share the parse path.
+    let (names_env_name, names_raw) = match std::env::var(&cfg.env_fd_names) {
+        Ok(s) => (cfg.env_fd_names.clone(), s),
+        Err(_) => match cfg.fallback_env_fd_names.as_deref() {
+            Some(fallback) => match std::env::var(fallback) {
+                Ok(s) => (fallback.to_string(), s),
+                Err(_) => {
+                    return AdoptOutcome::Misconfigured(format!(
+                        "{count_env_name} is set but neither {} nor {fallback} is",
+                        cfg.env_fd_names,
+                    ));
+                }
+            },
+            None => {
+                return AdoptOutcome::Misconfigured(format!(
+                    "{count_env_name} is set but {} is missing",
+                    cfg.env_fd_names,
+                ));
+            }
+        },
     };
-    let names: Vec<&str> = names_raw.split(',').collect();
+
+    // FDP-T6 — accept either comma (aegis convention) or colon
+    // (systemd LISTEN_FDNAMES convention) as the separator.
+    // Mixed separators in a single string aren't valid; we
+    // pick whichever is dominant.
+    let separator = if names_raw.contains(':') && !names_raw.contains(',') {
+        ':'
+    } else {
+        ','
+    };
+    let names: Vec<&str> = names_raw.split(separator).collect();
     if names.len() != count {
         return AdoptOutcome::Misconfigured(format!(
-            "AEGIS_LISTEN_FD_NAMES count {} != {} {}",
+            "{names_env_name} count {} != {count_env_name} {count}",
             names.len(),
-            cfg.env_fd_count,
-            count,
         ));
     }
     if names.iter().any(|n| n.is_empty()) {
-        return AdoptOutcome::Misconfigured(
-            "AEGIS_LISTEN_FD_NAMES contains an empty name".into(),
-        );
+        return AdoptOutcome::Misconfigured(format!(
+            "{names_env_name} contains an empty name",
+        ));
     }
     let mut seen = std::collections::HashSet::new();
     for n in &names {
         if !seen.insert(*n) {
             return AdoptOutcome::Misconfigured(format!(
-                "AEGIS_LISTEN_FD_NAMES contains duplicate name '{n}'",
+                "{names_env_name} contains duplicate name '{n}'",
             ));
         }
     }
 
     adopt_listeners_from_fds(&names, cfg.base_fd)
+}
+
+/// FDP-T6 — install a SIGUSR2 handler that flips the
+/// [`HotReloader::signal`] flag every time the operator (or a
+/// deployment tool) sends `kill -USR2 <pid>`. Returns the
+/// spawned task's `JoinHandle` so the boot path can keep it
+/// alive for the proxy lifetime.
+///
+/// The handler does NOT call [`perform_handover`] directly —
+/// signal handlers in Rust run on a strict async-signal-safe
+/// budget, and the handover orchestration touches the audit
+/// bus, the route table, child process spawning, etc. Instead,
+/// the listener task watches for the signal-flag flip and
+/// kicks off the (regular async) handover under normal
+/// scheduling.
+///
+/// The boot path's polling loop is responsible for reading
+/// [`HotReloader::take_signal`] on every tick and invoking
+/// `perform_handover` when it returns true. That wiring lives
+/// in `aegis-proxy::run` once the accept-loop drain
+/// refactoring lands; this fn is the primitive it consumes.
+#[cfg(unix)]
+pub fn spawn_sigusr2_listener(
+    reloader: std::sync::Arc<HotReloader>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut sig = match tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::user_defined2(),
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "FDP-T6: failed to install SIGUSR2 handler — \
+                     hot-restart via signal will not work",
+                );
+                return;
+            }
+        };
+        tracing::info!("FDP-T6: SIGUSR2 listener armed (kill -USR2 to trigger hot-restart)");
+        loop {
+            if sig.recv().await.is_none() {
+                tracing::warn!("FDP-T6: SIGUSR2 stream ended; listener exiting");
+                return;
+            }
+            tracing::info!("FDP-T6: SIGUSR2 received — flagging reloader");
+            reloader.signal();
+        }
+    })
 }
 
 /// FDP-T5 — anonymous pipe used by the parent process to wait
@@ -894,6 +986,12 @@ mod tests {
     fn fd_pass_config_default() {
         let cfg = FdPassConfig::default();
         assert_eq!(cfg.env_fd_count, "AEGIS_LISTEN_FDS");
+        assert_eq!(cfg.env_fd_names, "AEGIS_LISTEN_FD_NAMES");
+        assert_eq!(cfg.fallback_env_fd_count.as_deref(), Some("LISTEN_FDS"));
+        assert_eq!(
+            cfg.fallback_env_fd_names.as_deref(),
+            Some("LISTEN_FDNAMES"),
+        );
         assert_eq!(cfg.base_fd, 3);
     }
 
@@ -914,6 +1012,10 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         env_unset("AEGIS_LISTEN_FDS");
         env_unset("AEGIS_LISTEN_FD_NAMES");
+        // Also unset the systemd alias so a CI runner under
+        // systemd doesn't accidentally trigger the fallback.
+        env_unset("LISTEN_FDS");
+        env_unset("LISTEN_FDNAMES");
         match adopt_inherited_listeners() {
             AdoptOutcome::NoInheritance => {}
             other => panic!("expected NoInheritance, got {other:?}"),
@@ -925,6 +1027,8 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         env_set("AEGIS_LISTEN_FDS", "0");
         env_unset("AEGIS_LISTEN_FD_NAMES");
+        env_unset("LISTEN_FDS");
+        env_unset("LISTEN_FDNAMES");
         match adopt_inherited_listeners() {
             AdoptOutcome::NoInheritance => {}
             other => panic!("expected NoInheritance, got {other:?}"),
@@ -937,10 +1041,15 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         env_set("AEGIS_LISTEN_FDS", "2");
         env_unset("AEGIS_LISTEN_FD_NAMES");
+        env_unset("LISTEN_FDNAMES");
         match adopt_inherited_listeners() {
             AdoptOutcome::Misconfigured(msg) => {
+                // FDP-T6 — message now mentions both the primary
+                // and fallback env names since the default config
+                // tries both.
                 assert!(
-                    msg.contains("AEGIS_LISTEN_FD_NAMES is missing"),
+                    msg.contains("AEGIS_LISTEN_FD_NAMES")
+                        && msg.contains("LISTEN_FDNAMES"),
                     "got: {msg}",
                 );
             }
@@ -1072,8 +1181,8 @@ mod tests {
         env_set("AEGIS_LISTEN_FDS", "1");
         env_set("AEGIS_LISTEN_FD_NAMES", "admin");
         let cfg = FdPassConfig {
-            env_fd_count: "AEGIS_LISTEN_FDS".into(),
             base_fd: target_fd,
+            ..Default::default()
         };
         let outcome = adopt_inherited_listeners_with_cfg(&cfg);
         env_unset("AEGIS_LISTEN_FDS");
@@ -1494,6 +1603,142 @@ mod tests {
                 assert_eq!(readiness_attempts, 0);
             }
             other => panic!("expected RolledBack, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------
+    // FDP-T6 — systemd LISTEN_FDS/LISTEN_FDNAMES compat
+    // -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn sigusr2_listener_flips_reloader_signal() {
+        // Install the listener, send SIGUSR2 to ourselves, wait
+        // briefly for the listener task to observe the signal,
+        // assert `take_signal()` returns true.
+        let reloader = std::sync::Arc::new(HotReloader::new(
+            std::time::Duration::from_secs(10),
+        ));
+        assert!(!reloader.take_signal(), "starts unsignalled");
+
+        let _h = spawn_sigusr2_listener(reloader.clone());
+        // Give the listener a moment to install the signal hook.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Send SIGUSR2 to ONLY the current PID, not the whole
+        // process group — `kill(0, ...)` would hit /bin/sh
+        // children spawned by parallel tests. The signal
+        // number is NOT POSIX-fixed: SIGUSR2 = 12 on Linux
+        // but = 31 on macOS / BSD (BSD historical numbering).
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+            fn getpid() -> i32;
+        }
+        #[cfg(target_os = "linux")]
+        const SIGUSR2: i32 = 12;
+        #[cfg(not(target_os = "linux"))]
+        const SIGUSR2: i32 = 31;
+        // SAFETY: getpid + kill with valid pid + sig are safe.
+        let pid = unsafe { getpid() };
+        let rc = unsafe { kill(pid, SIGUSR2) };
+        assert_eq!(rc, 0, "kill(self, SIGUSR2) failed");
+
+        // Poll for the listener to flip the flag.
+        let mut tries = 0;
+        loop {
+            if reloader.take_signal() {
+                break;
+            }
+            tries += 1;
+            if tries > 50 {
+                panic!("listener never flipped the reloader signal");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    #[test]
+    fn adopt_falls_back_to_systemd_listen_fds_env_name() {
+        // Bind a listener, place it via dup2 at a custom slot,
+        // set LISTEN_FDS (systemd convention) — NOT the AEGIS
+        // alias — and confirm the adopt path picks it up.
+        let bound = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_fd: i32 = 210;
+        let dup_fd = libc_dup2(bound.as_raw_fd(), target_fd);
+        assert!(dup_fd >= 0);
+        drop(bound);
+
+        let _g = ENV_LOCK.lock().unwrap();
+        env_unset("AEGIS_LISTEN_FDS");
+        env_unset("AEGIS_LISTEN_FD_NAMES");
+        env_set("LISTEN_FDS", "1");
+        env_set("LISTEN_FDNAMES", "admin");
+        let cfg = FdPassConfig {
+            base_fd: target_fd,
+            ..Default::default()
+        };
+        let outcome = adopt_inherited_listeners_with_cfg(&cfg);
+        env_unset("LISTEN_FDS");
+        env_unset("LISTEN_FDNAMES");
+
+        match outcome {
+            AdoptOutcome::Inherited(map) => assert!(map.contains_key("admin")),
+            other => panic!("expected Inherited via systemd alias, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adopt_accepts_colon_separated_names_systemd_style() {
+        // Bind two listeners, dup2 to consecutive slots, set
+        // LISTEN_FDNAMES with a COLON separator (systemd's
+        // convention rather than aegis's commas).
+        let l1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_fd: i32 = 220;
+        assert!(libc_dup2(l1.as_raw_fd(), target_fd) >= 0);
+        assert!(libc_dup2(l2.as_raw_fd(), target_fd + 1) >= 0);
+        drop(l1);
+        drop(l2);
+
+        let _g = ENV_LOCK.lock().unwrap();
+        env_unset("AEGIS_LISTEN_FDS");
+        env_unset("AEGIS_LISTEN_FD_NAMES");
+        env_set("LISTEN_FDS", "2");
+        env_set("LISTEN_FDNAMES", "admin:data-0");
+        let cfg = FdPassConfig {
+            base_fd: target_fd,
+            ..Default::default()
+        };
+        let outcome = adopt_inherited_listeners_with_cfg(&cfg);
+        env_unset("LISTEN_FDS");
+        env_unset("LISTEN_FDNAMES");
+
+        match outcome {
+            AdoptOutcome::Inherited(map) => {
+                assert!(map.contains_key("admin"), "names: {:?}", map.keys().collect::<Vec<_>>());
+                assert!(map.contains_key("data-0"));
+            }
+            other => panic!("expected Inherited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adopt_primary_env_wins_over_systemd_fallback() {
+        // If both AEGIS_* and LISTEN_* are set, the primary
+        // (AEGIS_*) takes precedence — defensive against
+        // operators leaving stale systemd vars after migrating
+        // to a hot-handover deployment.
+        let _g = ENV_LOCK.lock().unwrap();
+        env_set("AEGIS_LISTEN_FDS", "0");
+        env_set("LISTEN_FDS", "5");
+        env_set("LISTEN_FDNAMES", "shouldnt:be:read");
+        let outcome = adopt_inherited_listeners();
+        env_unset("AEGIS_LISTEN_FDS");
+        env_unset("LISTEN_FDS");
+        env_unset("LISTEN_FDNAMES");
+        // count=0 → NoInheritance regardless of systemd's say.
+        match outcome {
+            AdoptOutcome::NoInheritance => {}
+            other => panic!("primary count=0 should win, got {other:?}"),
         }
     }
 

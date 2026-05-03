@@ -932,6 +932,33 @@ pub async fn run(
     readiness.certs_loaded.store(true, Ordering::Relaxed);
     readiness.pool_has_healthy.store(true, Ordering::Relaxed);
 
+    // FDP-T6 — install the SIGUSR2 listener now that the
+    // accept loops are running. The HotReloader's `signal()`
+    // is the only thing the handler does; the actual handover
+    // (perform_handover + drain + exit) is invoked when a
+    // future polling loop sees `take_signal()` return true.
+    // That polling loop wires in once the accept-loop drain
+    // refactoring lands — until then this is the listening
+    // primitive operators can `kill -USR2` against, and the
+    // boot log line tells them so.
+    let hot_reloader = std::sync::Arc::new(crate::hotbin::HotReloader::new(
+        std::time::Duration::from_secs(30),
+    ));
+    let _sigusr2_handle =
+        crate::hotbin::spawn_sigusr2_listener(hot_reloader.clone());
+
+    // FDP-T5 — child-side: signal readiness to a parent that
+    // exec'd us. No-op for first-boot. Done as the last step
+    // of the boot path so the parent only sees us as ready
+    // when the listeners are committed.
+    if let Err(e) = crate::hotbin::signal_readiness_to_parent() {
+        tracing::warn!(
+            error = %e,
+            "FDP-T5: signal_readiness_to_parent failed — \
+             parent's hot-handover will time out and roll back",
+        );
+    }
+
     // B1-T5 — readiness gate. Hold `state_backend_up` at false
     // until the rehydrate probe round-trips through the
     // `StateBackend`. While that flag is false, the existing
