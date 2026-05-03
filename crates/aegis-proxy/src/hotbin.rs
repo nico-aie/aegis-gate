@@ -212,6 +212,149 @@ pub async fn adopt_or_bind(
     tokio::net::TcpListener::bind(addr).await
 }
 
+/// FDP-T3 — plan for spawning a successor process via
+/// `Command::new(binary_path)` with the listener FDs pre-placed
+/// into slots `3..3+listeners.len()` so the child's
+/// `adopt_inherited_listeners()` finds them.
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct SuccessorPlan {
+    /// Path to the binary to exec. Typically the parent's own
+    /// `current_exe()` for hot-restart, but separable so tests
+    /// can spawn `/bin/sh` for verification.
+    pub binary_path: std::path::PathBuf,
+    /// Live listener FDs to pass to the child. The order
+    /// determines slot assignment: `listeners[0]` lands at
+    /// FD 3, `listeners[1]` at FD 4, etc. Names also drive
+    /// `AEGIS_LISTEN_FD_NAMES`.
+    pub listeners: Vec<(String, std::os::fd::RawFd)>,
+    /// Additional env-var pairs to set on the child. Use for
+    /// boot config (`--config`, `RUST_LOG`, etc) without
+    /// needing an extra arg-vector field.
+    pub extra_env: Vec<(String, String)>,
+    /// Args to pass after the binary path. Forwarded verbatim
+    /// to the child process.
+    pub args: Vec<String>,
+}
+
+/// FDP-T3 — build a `std::process::Command` that, when spawned,
+/// fork+execs a successor with listener FDs pre-placed into
+/// slots `3..3+N`. Caller can set stdio (`Stdio::piped()`,
+/// `Stdio::inherit()`, etc) before calling `.spawn()`.
+///
+/// Default stdio is `Stdio::inherit()` — the production
+/// hot-restart path wants the child's logs to flow wherever
+/// the parent's were going (typically a journal / file). Tests
+/// override with piped stdio for output capture.
+///
+/// CLOEXEC: we clear `FD_CLOEXEC` on each pre-placed slot
+/// inside the post-fork pre-exec closure so the FD survives
+/// the exec. The original FDs in the parent process keep
+/// their CLOEXEC state — this is a child-only mutation.
+#[cfg(unix)]
+pub fn build_successor_command(plan: SuccessorPlan) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+
+    let mut cmd = std::process::Command::new(&plan.binary_path);
+    cmd.args(&plan.args);
+
+    let n = plan.listeners.len();
+    cmd.env("AEGIS_LISTEN_FDS", n.to_string());
+    let names = plan
+        .listeners
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    cmd.env("AEGIS_LISTEN_FD_NAMES", names);
+    for (k, v) in &plan.extra_env {
+        cmd.env(k, v);
+    }
+
+    // Capture the FD list for the post-fork closure. The
+    // closure runs in the forked child between fork() and
+    // exec() — only async-signal-safe operations are valid
+    // here. dup2 + fcntl are both AS-safe.
+    let fds: Vec<std::os::fd::RawFd> =
+        plan.listeners.iter().map(|(_, fd)| *fd).collect();
+
+    // SAFETY: pre_exec runs post-fork in the child; calls in
+    // the closure must be async-signal-safe. dup2 + fcntl with
+    // F_GETFD / F_SETFD are AS-safe per POSIX. We don't
+    // allocate, take locks, or call into Rust runtime here —
+    // the only work is FD slot juggling.
+    unsafe {
+        cmd.pre_exec(move || {
+            for (i, &src_fd) in fds.iter().enumerate() {
+                let target_fd: std::os::fd::RawFd = 3 + i as std::os::fd::RawFd;
+                if libc_dup2(src_fd, target_fd) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Clear FD_CLOEXEC on the target slot so the
+                // FD survives exec. We could also pass
+                // O_CLOEXEC=false to dup2 (Linux-specific
+                // dup3) but the F_SETFD path is portable.
+                let flags = libc_fcntl_getfd(target_fd);
+                if flags < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc_fcntl_setfd(target_fd, flags & !FD_CLOEXEC_VALUE) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+
+    cmd
+}
+
+/// FDP-T3 — sugar wrapper that builds the command + spawns it
+/// with default (inherited) stdio. Returns the
+/// [`std::process::Child`] handle so the caller (FDP-T4 drain
+/// protocol) can poll readiness + wait for exit code.
+#[cfg(unix)]
+pub fn spawn_successor(plan: SuccessorPlan) -> std::io::Result<std::process::Child> {
+    build_successor_command(plan).spawn()
+}
+
+/// `FD_CLOEXEC` constant. Defined inline to avoid a libc dep;
+/// the value is `1` on every Unix platform that defines it.
+#[cfg(unix)]
+const FD_CLOEXEC_VALUE: i32 = 1;
+
+/// `F_GETFD` and `F_SETFD` are 1 and 2 respectively on every
+/// modern Unix (Linux + macOS + BSDs). Defined inline.
+#[cfg(unix)]
+const F_GETFD_VALUE: i32 = 1;
+#[cfg(unix)]
+const F_SETFD_VALUE: i32 = 2;
+
+#[cfg(unix)]
+extern "C" {
+    fn dup2(oldfd: i32, newfd: i32) -> i32;
+    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+}
+
+#[cfg(unix)]
+fn libc_dup2(oldfd: std::os::fd::RawFd, newfd: std::os::fd::RawFd) -> std::os::fd::RawFd {
+    // SAFETY: dup2 with valid FDs is always safe; -1 + errno on failure.
+    unsafe { dup2(oldfd, newfd) }
+}
+
+#[cfg(unix)]
+fn libc_fcntl_getfd(fd: std::os::fd::RawFd) -> i32 {
+    // SAFETY: F_GETFD is the no-arg variant; passing the
+    // varargs as 0 is the convention.
+    unsafe { fcntl(fd, F_GETFD_VALUE) }
+}
+
+#[cfg(unix)]
+fn libc_fcntl_setfd(fd: std::os::fd::RawFd, flags: i32) -> i32 {
+    // SAFETY: F_SETFD takes one int via varargs.
+    unsafe { fcntl(fd, F_SETFD_VALUE, flags) }
+}
+
 /// Lower-level: take ownership of FDs `base..base+names.len()`,
 /// promote each into a non-blocking `std::net::TcpListener`,
 /// and return them keyed by `names[i]`.
@@ -490,18 +633,8 @@ mod tests {
         }
     }
 
-    /// Minimal libc shim — we only need dup2, the rest of the
-    /// crate doesn't depend on libc and we don't want to add a
-    /// crate-level dep just for one test.
-    extern "C" {
-        fn dup2(oldfd: i32, newfd: i32) -> i32;
-    }
-    fn libc_dup2(oldfd: i32, newfd: i32) -> i32 {
-        // SAFETY: dup2 with valid FDs is always safe; it returns
-        // -1 on failure with errno set. The caller checks the
-        // return value.
-        unsafe { dup2(oldfd, newfd) }
-    }
+    // libc_dup2 lives at module level (FDP-T3 helpers); use it
+    // directly instead of redeclaring.
 
     // -----------------------------------------------------------
     // FDP-T2 — adopt_or_bind
@@ -531,6 +664,124 @@ mod tests {
         assert_eq!(tcp.local_addr().unwrap(), original_addr);
         // Adopted entry was removed from the map.
         assert!(!inherited.contains_key("admin"));
+    }
+
+    // -----------------------------------------------------------
+    // FDP-T3 — spawn_successor
+    // -----------------------------------------------------------
+
+    /// Spawn a /bin/sh under the FDP-T3 plan, capturing stdout
+    /// for assertion. Pulled out so each test stays focused on
+    /// what it's asserting.
+    fn run_sh_and_capture(plan: SuccessorPlan) -> (std::process::ExitStatus, String) {
+        let mut cmd = build_successor_command(plan);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let child = cmd.spawn().expect("spawn");
+        let output = child.wait_with_output().expect("wait");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        (output.status, stdout)
+    }
+
+    #[test]
+    fn spawn_successor_env_carries_listen_fd_count_and_names() {
+        // Spawn /bin/sh to print the env vars we set, capture
+        // stdout, assert the contract. We plumb one real
+        // listener so the FD-placement path is exercised too.
+        let bound = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        bound.set_nonblocking(true).unwrap();
+        let raw_fd = bound.as_raw_fd();
+
+        let plan = SuccessorPlan {
+            binary_path: std::path::PathBuf::from("/bin/sh"),
+            listeners: vec![("admin".to_string(), raw_fd)],
+            extra_env: vec![],
+            args: vec![
+                "-c".to_string(),
+                "printf '%s\\n%s\\n' \"$AEGIS_LISTEN_FDS\" \"$AEGIS_LISTEN_FD_NAMES\"".to_string(),
+            ],
+        };
+        let (status, stdout) = run_sh_and_capture(plan);
+        assert!(status.success(), "sh exited non-zero");
+        let lines: Vec<&str> = stdout.trim_end().split('\n').collect();
+        assert_eq!(lines.len(), 2, "expected 2 lines, got: {stdout:?}");
+        assert_eq!(lines[0], "1", "AEGIS_LISTEN_FDS should be 1");
+        assert_eq!(lines[1], "admin", "AEGIS_LISTEN_FD_NAMES should be 'admin'");
+
+        drop(bound);
+    }
+
+    #[test]
+    fn spawn_successor_with_two_listeners_sets_comma_separated_names() {
+        let l1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l1.set_nonblocking(true).unwrap();
+        l2.set_nonblocking(true).unwrap();
+
+        let plan = SuccessorPlan {
+            binary_path: std::path::PathBuf::from("/bin/sh"),
+            listeners: vec![
+                ("admin".to_string(), l1.as_raw_fd()),
+                ("data-0".to_string(), l2.as_raw_fd()),
+            ],
+            extra_env: vec![],
+            args: vec![
+                "-c".to_string(),
+                "echo \"$AEGIS_LISTEN_FDS|$AEGIS_LISTEN_FD_NAMES\"".to_string(),
+            ],
+        };
+        let (status, stdout) = run_sh_and_capture(plan);
+        assert!(status.success());
+        assert_eq!(
+            stdout.trim_end(),
+            "2|admin,data-0",
+            "got: {stdout:?}",
+        );
+
+        drop(l1);
+        drop(l2);
+    }
+
+    #[test]
+    fn spawn_successor_passes_extra_env_through() {
+        let plan = SuccessorPlan {
+            binary_path: std::path::PathBuf::from("/bin/sh"),
+            listeners: vec![],
+            extra_env: vec![("AEGIS_TEST_KEY".into(), "test-value-42".into())],
+            args: vec!["-c".into(), "echo \"$AEGIS_TEST_KEY\"".into()],
+        };
+        let (status, stdout) = run_sh_and_capture(plan);
+        assert!(status.success());
+        assert_eq!(stdout.trim_end(), "test-value-42");
+    }
+
+    #[test]
+    fn spawn_successor_places_fd_at_slot_3() {
+        // Bind a listener, spawn /bin/sh, have it inspect
+        // /dev/fd/3 to prove the FD landed at slot 3. Verifies:
+        // dup2(src_fd, 3) ran in the post-fork closure, AND
+        // FD_CLOEXEC was cleared so the FD survived exec.
+        // Without the CLOEXEC clear the slot would be empty.
+        let bound = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        bound.set_nonblocking(true).unwrap();
+
+        let plan = SuccessorPlan {
+            binary_path: std::path::PathBuf::from("/bin/sh"),
+            listeners: vec![("admin".into(), bound.as_raw_fd())],
+            extra_env: vec![],
+            args: vec![
+                "-c".into(),
+                "if [ -e /dev/fd/3 ]; then echo HAVE_FD3; else echo NO_FD3; fi".into(),
+            ],
+        };
+        let (status, stdout) = run_sh_and_capture(plan);
+        assert!(status.success(), "shell exited non-zero");
+        assert!(
+            stdout.contains("HAVE_FD3"),
+            "expected /dev/fd/3 to exist in child, got: {stdout:?}",
+        );
+
+        drop(bound);
     }
 
     #[tokio::test]
