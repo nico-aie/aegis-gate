@@ -528,8 +528,9 @@ pub struct RouteConfig {
     /// - `["mtls", "spiffe"]` — either authenticated kind.
     /// - Including `"anonymous"` is equivalent to leaving the
     ///   list empty; validation flags it as a likely typo.
-    /// Mismatches return 403 with an audit reason; the contract
-    /// `action` is `block`, `rule_id = mtls_required`.
+    ///
+    ///   Mismatches return 403 with an audit reason; the contract
+    ///   `action` is `block`, `rule_id = mtls_required`.
     #[serde(default)]
     pub auth_required: Vec<String>,
 }

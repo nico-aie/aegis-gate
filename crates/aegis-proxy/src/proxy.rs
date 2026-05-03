@@ -592,6 +592,7 @@ state:
         ctx.benchmark = crate::benchmark::BenchmarkConfig {
             enabled: true,
             expose_rule_ids: false,
+            ..Default::default()
         };
         let ctx = Arc::new(ctx);
 

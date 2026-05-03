@@ -64,6 +64,19 @@ pub struct BenchmarkConfig {
     /// rule IDs leaks internal policy structure to clients
     /// in production.
     pub expose_rule_ids: bool,
+    /// B5 follow-up — IP allowlist gate. When non-empty, the
+    /// caller's peer IP must fall within at least one CIDR for
+    /// benchmark headers to be emitted. Empty list means "no
+    /// IP gate" (back-compat).
+    pub source_allowlist: Vec<ipnet::IpNet>,
+    /// B5 follow-up — HMAC token secret. When `Some`, the
+    /// caller must present an `X-Aegis-Bench-Token` header
+    /// signed with this secret over `unix_seconds` within
+    /// `signing_window`. `None` means "no HMAC gate".
+    pub hmac_secret: Option<String>,
+    /// HMAC token validity window. Tokens older than this are
+    /// rejected. Defaults to 60s when `hmac_secret` is set.
+    pub signing_window: Duration,
 }
 
 impl BenchmarkConfig {
@@ -79,6 +92,111 @@ impl BenchmarkConfig {
     pub fn is_on(&self) -> bool {
         self.enabled
     }
+
+    /// Two-factor gate for benchmark headers. Returns true
+    /// when `enabled` AND every configured factor admits the
+    /// caller. Factors are AND-composed:
+    ///
+    /// - `source_allowlist` empty → IP factor admits
+    ///   everyone; non-empty → peer must match a CIDR.
+    /// - `hmac_secret` None → HMAC factor admits everyone;
+    ///   Some → header `X-Aegis-Bench-Token` must validate
+    ///   against `now ± signing_window`.
+    ///
+    /// Operators with neither factor set get the legacy
+    /// "always on when enabled" behaviour. Operators who set
+    /// at least one factor opt into strict gating.
+    pub fn admits(
+        &self,
+        peer_ip: std::net::IpAddr,
+        headers: &http::HeaderMap,
+        now_unix_seconds: i64,
+    ) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        if !self.source_allowlist.is_empty()
+            && !self.source_allowlist.iter().any(|net| net.contains(&peer_ip))
+        {
+            return false;
+        }
+        if let Some(secret) = self.hmac_secret.as_deref() {
+            let header = headers
+                .get("x-aegis-bench-token")
+                .and_then(|v| v.to_str().ok());
+            let Some(token) = header else { return false; };
+            let window = if self.signing_window.is_zero() {
+                Duration::from_secs(60)
+            } else {
+                self.signing_window
+            };
+            if !validate_hmac_token(token, secret, now_unix_seconds, window) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Verify an `X-Aegis-Bench-Token: <unix_seconds>:<hex_mac>`
+/// against `secret`. The MAC is HMAC-SHA256 over the
+/// `unix_seconds` ASCII bytes. Returns true iff the timestamp
+/// is within `now ± window` AND the MAC matches in constant
+/// time.
+fn validate_hmac_token(
+    token: &str,
+    secret: &str,
+    now_unix_seconds: i64,
+    window: Duration,
+) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let (ts_str, mac_hex) = match token.split_once(':') {
+        Some((a, b)) => (a, b),
+        None => return false,
+    };
+    let ts: i64 = match ts_str.parse() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let window_secs = window.as_secs() as i64;
+    if (now_unix_seconds - ts).abs() > window_secs {
+        return false;
+    }
+    let mac_bytes = match (0..mac_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&mac_hex[i..i + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let mut mac = match <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(ts_str.as_bytes());
+    mac.verify_slice(&mac_bytes).is_ok()
+}
+
+/// Compute the HMAC token an authorised caller would send.
+/// Useful for tests + operator tooling. The format mirrors
+/// what `validate_hmac_token` accepts:
+/// `<unix_seconds>:<hex_mac>`.
+pub fn sign_hmac_token(secret: &str, now_unix_seconds: i64) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts any key length");
+    let ts_str = now_unix_seconds.to_string();
+    mac.update(ts_str.as_bytes());
+    let hex: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+    format!("{ts_str}:{hex}")
 }
 
 /// Captured per-request timing. Cheap to construct; only
@@ -304,6 +422,7 @@ mod tests {
         let cfg = BenchmarkConfig {
             enabled: true,
             expose_rule_ids: false,
+            ..Default::default()
         };
         let headers = build_aegis_headers(&timings_full(), &cfg);
         assert!(!headers.contains_key(hdr::RULE_ID));
@@ -314,6 +433,7 @@ mod tests {
         let cfg = BenchmarkConfig {
             enabled: true,
             expose_rule_ids: true,
+            ..Default::default()
         };
         let headers = build_aegis_headers(&timings_full(), &cfg);
         assert_eq!(
@@ -468,5 +588,168 @@ mod tests {
         ] {
             assert_eq!(*c, c.to_lowercase(), "{c} should be lowercase");
         }
+    }
+
+    // ============== Gate (B5 follow-up) ==============
+
+    use std::str::FromStr;
+
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
+    }
+    fn cidr(s: &str) -> ipnet::IpNet {
+        ipnet::IpNet::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn admits_rejects_when_master_switch_off() {
+        let cfg = BenchmarkConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(!cfg.admits(ip("127.0.0.1"), &http::HeaderMap::new(), 1700000000));
+    }
+
+    #[test]
+    fn admits_back_compat_when_no_factors_set() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(cfg.admits(ip("127.0.0.1"), &http::HeaderMap::new(), 1700000000));
+        assert!(cfg.admits(ip("203.0.113.7"), &http::HeaderMap::new(), 1700000000));
+    }
+
+    #[test]
+    fn admits_only_allowlisted_ips() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            source_allowlist: vec![cidr("127.0.0.1/32"), cidr("10.0.0.0/8")],
+            ..Default::default()
+        };
+        assert!(cfg.admits(ip("127.0.0.1"), &http::HeaderMap::new(), 1700000000));
+        assert!(cfg.admits(ip("10.5.5.5"), &http::HeaderMap::new(), 1700000000));
+        assert!(!cfg.admits(ip("192.168.1.1"), &http::HeaderMap::new(), 1700000000));
+        assert!(!cfg.admits(ip("203.0.113.7"), &http::HeaderMap::new(), 1700000000));
+    }
+
+    #[test]
+    fn admits_requires_valid_hmac_token() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            hmac_secret: Some("test-secret-32b".into()),
+            signing_window: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let now = 1700000000;
+        let token = sign_hmac_token("test-secret-32b", now);
+        let mut h = http::HeaderMap::new();
+        h.insert("x-aegis-bench-token", token.parse().unwrap());
+        assert!(cfg.admits(ip("127.0.0.1"), &h, now));
+    }
+
+    #[test]
+    fn admits_rejects_missing_hmac_token() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            hmac_secret: Some("test-secret-32b".into()),
+            signing_window: Duration::from_secs(60),
+            ..Default::default()
+        };
+        assert!(!cfg.admits(ip("127.0.0.1"), &http::HeaderMap::new(), 1700000000));
+    }
+
+    #[test]
+    fn admits_rejects_expired_hmac_token() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            hmac_secret: Some("test-secret-32b".into()),
+            signing_window: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let token = sign_hmac_token("test-secret-32b", 1700000000);
+        let mut h = http::HeaderMap::new();
+        h.insert("x-aegis-bench-token", token.parse().unwrap());
+        // 5 minutes later — outside 60s window.
+        assert!(!cfg.admits(ip("127.0.0.1"), &h, 1700000300));
+    }
+
+    #[test]
+    fn admits_rejects_wrong_secret() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            hmac_secret: Some("real-secret".into()),
+            signing_window: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let token = sign_hmac_token("forged-secret", 1700000000);
+        let mut h = http::HeaderMap::new();
+        h.insert("x-aegis-bench-token", token.parse().unwrap());
+        assert!(!cfg.admits(ip("127.0.0.1"), &h, 1700000000));
+    }
+
+    #[test]
+    fn admits_rejects_malformed_token() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            hmac_secret: Some("test-secret".into()),
+            signing_window: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let mut h = http::HeaderMap::new();
+        h.insert("x-aegis-bench-token", "garbage".parse().unwrap());
+        assert!(!cfg.admits(ip("127.0.0.1"), &h, 1700000000));
+        h.insert("x-aegis-bench-token", "1700000000:notHex".parse().unwrap());
+        assert!(!cfg.admits(ip("127.0.0.1"), &h, 1700000000));
+    }
+
+    #[test]
+    fn admits_factors_compose_via_and() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            source_allowlist: vec![cidr("127.0.0.1/32")],
+            hmac_secret: Some("secret".into()),
+            signing_window: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let now = 1700000000;
+        let token = sign_hmac_token("secret", now);
+        let mut h = http::HeaderMap::new();
+        h.insert("x-aegis-bench-token", token.parse().unwrap());
+        // Both factors satisfied.
+        assert!(cfg.admits(ip("127.0.0.1"), &h, now));
+        // IP factor fails.
+        assert!(!cfg.admits(ip("8.8.8.8"), &h, now));
+        // HMAC factor fails.
+        assert!(!cfg.admits(ip("127.0.0.1"), &http::HeaderMap::new(), now));
+    }
+
+    #[test]
+    fn sign_then_validate_round_trip() {
+        let secret = "operator-supplied-secret";
+        let now = 1700000000;
+        let token = sign_hmac_token(secret, now);
+        assert!(validate_hmac_token(token.as_str(), secret, now, Duration::from_secs(60)));
+        // Same window after a few seconds — still valid.
+        assert!(validate_hmac_token(token.as_str(), secret, now + 30, Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn signing_window_zero_falls_back_to_60s_default() {
+        let cfg = BenchmarkConfig {
+            enabled: true,
+            hmac_secret: Some("s".into()),
+            // signing_window left at zero; should treat as 60s.
+            ..Default::default()
+        };
+        let now = 1700000000;
+        let token = sign_hmac_token("s", now);
+        let mut h = http::HeaderMap::new();
+        h.insert("x-aegis-bench-token", token.parse().unwrap());
+        assert!(cfg.admits(ip("127.0.0.1"), &h, now));
+        // 30s later — still in 60s window.
+        assert!(cfg.admits(ip("127.0.0.1"), &h, now + 30));
+        // 90s later — outside.
+        assert!(!cfg.admits(ip("127.0.0.1"), &h, now + 90));
     }
 }

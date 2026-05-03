@@ -6,10 +6,8 @@
 //! - `aegis_runtime_blocking_threads`       (`num_blocking_threads`)
 //! - `aegis_runtime_blocking_queue_depth`   (`blocking_queue_depth`)
 //! - `aegis_runtime_io_driver_fd_count`     (`io_driver_fd_count` —
-//!                                            requires `--cfg tokio_unstable`
-//!                                            *and* tokio's `io-driver-metrics`
-//!                                            cfg gate; falls back to 0 when
-//!                                            unavailable)
+//!   requires `--cfg tokio_unstable` *and* tokio's `io-driver-metrics`
+//!   cfg gate; falls back to 0 when unavailable)
 //!
 //! ## Why this is feature-gated
 //!
