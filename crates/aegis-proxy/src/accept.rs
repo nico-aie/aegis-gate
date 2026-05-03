@@ -75,6 +75,9 @@ pub(crate) async fn admin_accept_loop(
     // Phase-3 per-route latency. Same histogram the data plane
     // records into; admin reads percentiles from it.
     route_latency_hist: Arc<aegis_control::metrics::route_latency::RouteLatencyHistogram>,
+    // Per-detector evaluation-duration histogram. Recorded by
+    // the data plane around each `Detector::inspect` call.
+    detector_latency_hist: Arc<aegis_control::metrics::detector_latency::DetectorLatencyHistogram>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -447,6 +450,7 @@ pub(crate) async fn admin_accept_loop(
     // the same series the data plane records.
     services.request_stage_hist = Some(request_stage_hist.clone());
     services.route_latency_hist = Some(route_latency_hist.clone());
+    services.detector_latency_hist = Some(detector_latency_hist.clone());
     // HACK-T3 — wire the same detector list the data plane
     // runs so `/api/rules/simulate` can evaluate against an
     // identical chain.
@@ -759,6 +763,7 @@ pub(crate) async fn accept_loop(
     verbosity: aegis_core::SharedVerbosity,
     request_stage_hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     route_latency_hist: Arc<aegis_control::metrics::route_latency::RouteLatencyHistogram>,
+    detector_latency_hist: Arc<aegis_control::metrics::detector_latency::DetectorLatencyHistogram>,
     bus: AuditBus,
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
     tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
@@ -792,6 +797,7 @@ pub(crate) async fn accept_loop(
         let verbosity = verbosity.clone();
         let request_stage_hist = request_stage_hist.clone();
         let route_latency_hist = route_latency_hist.clone();
+        let detector_latency_hist = detector_latency_hist.clone();
         let bus = bus.clone();
         let upstream_ctx = upstream_ctx.clone();
         let interop = interop.clone();
@@ -875,6 +881,7 @@ pub(crate) async fn accept_loop(
                 let verbosity = verbosity.clone();
                 let request_stage_hist = request_stage_hist.clone();
                 let route_latency_hist = route_latency_hist.clone();
+                let detector_latency_hist = detector_latency_hist.clone();
                 let bus = bus.clone();
                 let upstream_ctx = upstream_ctx.clone();
                 let interop = interop.clone();
@@ -894,6 +901,7 @@ pub(crate) async fn accept_loop(
                         &verbosity,
                         &request_stage_hist,
                         &route_latency_hist,
+                        &detector_latency_hist,
                         &bus,
                         &upstream_ctx,
                         &detector_hit_metrics,

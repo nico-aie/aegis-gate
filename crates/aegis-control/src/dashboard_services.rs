@@ -177,6 +177,13 @@ pub struct DashboardServices {
     /// `GET /api/analytics/latency/routes`.
     pub route_latency_hist:
         Option<std::sync::Arc<crate::metrics::route_latency::RouteLatencyHistogram>>,
+    /// Per-detector evaluation-duration histogram. Same wiring
+    /// pattern as `route_latency_hist`. `Some` once
+    /// `aegis-proxy::run` has registered it; populated by the
+    /// data plane around each `Detector::inspect` call. Read by
+    /// `GET /api/analytics/latency/detectors`.
+    pub detector_latency_hist:
+        Option<std::sync::Arc<crate::metrics::detector_latency::DetectorLatencyHistogram>>,
     /// Phase-3 incident overlay — operator ack/snooze/resolve
     /// state on top of the SLO engine's firing alerts. Always
     /// present; the tracker starts empty and grows as operators
@@ -441,6 +448,7 @@ impl DashboardServices {
                 // don't drive real requests so this stays None.
                 request_stage_hist: None,
                 route_latency_hist: None,
+                detector_latency_hist: None,
                 // Phase-3 incident overlay — empty at boot, fills
                 // as operators ack/snooze/resolve via the dashboard.
                 incidents: std::sync::Arc::new(

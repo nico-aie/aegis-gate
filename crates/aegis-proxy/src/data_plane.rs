@@ -63,6 +63,7 @@ pub(crate) async fn handle_data_request(
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    detector_latency_hist: &aegis_control::metrics::detector_latency::DetectorLatencyHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
@@ -86,6 +87,7 @@ pub(crate) async fn handle_data_request(
         verbosity,
         request_stage_hist,
         route_latency_hist,
+        detector_latency_hist,
         bus,
         upstream_ctx,
         detector_hit_metrics,
@@ -107,6 +109,7 @@ pub(crate) async fn handle_data_request_inner(
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    detector_latency_hist: &aegis_control::metrics::detector_latency::DetectorLatencyHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
@@ -328,8 +331,12 @@ pub(crate) async fn handle_data_request_inner(
     // runs.
     let effective = mask.resolve(Some(tier));
     let detect_t0 = std::time::Instant::now();
-    let (signals, fired_classes) =
-        aegis_security::detectors::run_all_filtered_observed(detectors, effective, &view);
+    let (signals, fired_classes) = aegis_security::detectors::run_all_filtered_timed(
+        detectors,
+        effective,
+        &view,
+        |class, elapsed| detector_latency_hist.record(class, elapsed),
+    );
     request_stage_hist.record(stages::DETECT, detect_t0.elapsed());
     // PROM-T2 — record one increment per detector that emitted a
     // signal. Cost: one CounterVec inc per fired class (~30 ns).

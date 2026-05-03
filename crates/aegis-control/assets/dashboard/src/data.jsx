@@ -611,6 +611,7 @@ function useSloApi()      { return useApi('/api/slo',             { intervalMs: 
 function useCertsApi()    { return useApi('/api/certs',           { intervalMs: 30000, fallback: null }); }
 function useLatencyApi()  { return useApi('/api/analytics/latency',{ intervalMs: 5000, fallback: null }); }
 function useRouteLatencyApi() { return useApi('/api/analytics/latency/routes',{ intervalMs: 5000, fallback: null }); }
+function useDetectorLatencyApi() { return useApi('/api/analytics/latency/detectors',{ intervalMs: 5000, fallback: null }); }
 function useAnalyticsRoutesApi() { return useApi('/api/analytics/routes',{ intervalMs: 10000, fallback: null }); }
 function useIncidentsApi(){ return useApi('/api/incidents',         { intervalMs: 5000, fallback: null }); }
 function useThreatIntelFeedsApi() { return useApi('/api/threat-intel/feeds', { intervalMs: 30000, fallback: null }); }
@@ -883,7 +884,7 @@ Object.assign(window, {
   // HACK-T4 — Tier-B config-change timeline + rollback
   useConfigVersionsApi, configRollback, ROLLBACKABLE_ACTIONS,
   useAuditLogApi,
-  useClusterApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useAnalyticsRoutesApi,
+  useClusterApi, useSloApi, useCertsApi, useLatencyApi, useRouteLatencyApi, useDetectorLatencyApi, useAnalyticsRoutesApi,
   useIncidentsApi, useThreatIntelFeedsApi, useGeoipStatusApi,
   incidentAck, incidentSnooze, incidentResolve,
   useAlertsApi, useGitopsApi, useUpstreamsApi, useRuntimeApi,

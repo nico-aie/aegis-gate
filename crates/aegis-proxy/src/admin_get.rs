@@ -348,6 +348,38 @@ pub(crate) fn admin_router(
                 "private, max-age=10",
             )
         }
+        // Per-detector p50/p95/p99 from the dedicated
+        // `DetectorLatencyHistogram`. Populated by the data plane
+        // around each `Detector::inspect` call. Returns
+        // `{detectors: [{class, p50_ms, p95_ms, p99_ms, samples}]}`
+        // sorted by samples descending.
+        "/api/analytics/latency/detectors" => {
+            let body = match services.detector_latency_hist.as_ref() {
+                None => serde_json::json!({"detectors": []}).to_string(),
+                Some(h) => {
+                    let mut rows: Vec<serde_json::Value> = h
+                        .known_classes()
+                        .into_iter()
+                        .filter_map(|c| {
+                            let p = h.percentiles_ms(&c)?;
+                            Some(serde_json::json!({
+                                "class": c,
+                                "p50_ms": p.p50_ms,
+                                "p95_ms": p.p95_ms,
+                                "p99_ms": p.p99_ms,
+                                "samples": p.samples,
+                            }))
+                        })
+                        .collect();
+                    rows.sort_by(|a, b| {
+                        b.get("samples").and_then(|v| v.as_u64()).unwrap_or(0)
+                            .cmp(&a.get("samples").and_then(|v| v.as_u64()).unwrap_or(0))
+                    });
+                    serde_json::json!({"detectors": rows}).to_string()
+                }
+            };
+            json_body_response(200, body, "private, max-age=2")
+        }
         // Phase-3: per-route p50/p95/p99 from the dedicated
         // `RouteLatencyHistogram`. Returns
         // `{routes: [{route, p50_ms, p95_ms, p99_ms, samples}]}`

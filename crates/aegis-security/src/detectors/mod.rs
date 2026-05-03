@@ -118,6 +118,36 @@ pub fn run_all_filtered_observed(
     (signals, fired)
 }
 
+/// Same as [`run_all_filtered_observed`] but invokes `record(class,
+/// elapsed)` once per detector run. Used by the data plane to
+/// populate the per-detector latency histogram without a separate
+/// pass through the chain. The closure is `&mut dyn FnMut` so the
+/// caller can hold its histogram by reference; cost when the
+/// closure is a no-op is one branch + one Instant pair per
+/// detector.
+pub fn run_all_filtered_timed(
+    detectors: &[Box<dyn Detector>],
+    mask: DetectorMask,
+    req: &RequestView<'_>,
+    mut record: impl FnMut(&'static str, std::time::Duration),
+) -> (Vec<Signal>, Vec<&'static str>) {
+    let mut signals = Vec::new();
+    let mut fired: Vec<&'static str> = Vec::new();
+    for d in detectors {
+        if !mask.is_enabled_id(d.id()) {
+            continue;
+        }
+        let t0 = std::time::Instant::now();
+        let s = d.inspect(req);
+        record(d.id(), t0.elapsed());
+        if !s.is_empty() {
+            fired.push(d.id());
+        }
+        signals.extend(s);
+    }
+    (signals, fired)
+}
+
 /// Create the default set of detectors.
 pub fn default_detectors() -> Vec<Box<dyn Detector>> {
     vec![
