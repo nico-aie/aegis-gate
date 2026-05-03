@@ -137,12 +137,14 @@ base64 = "0.22"
 # GeoLite2-ASN.
 maxminddb = "0.24"
 
-# Tract ONNX runtime (AI-T1). Pulled only via the
-# `aegis-security/ai` feature so default builds don't bloat by
-# ~50 MB. Pure-Rust CPU inference — no CUDA, no system blas.
-# Pinned to a release that builds cleanly against the
-# workspace's Rust 2021 edition + MSRV.
-tract-onnx = { version = "0.21", default-features = false }
+# ONNX Runtime (AI-T) — Microsoft's native ORT shipped via the
+# `ort` Rust crate.  Pulled only when `aegis-security/ai` is
+# enabled.  Downloads the platform-native ORT binary on first
+# build (~50 MB).  Faster + broader op-set support than the
+# pure-Rust alternatives, matches the runtime the operator
+# validated their model against.
+ort = { version = "=2.0.0-rc.12", features = ["download-binaries", "ndarray"] }
+ndarray = "0.17"
 
 # HTTP/3 stack (B5-T1 — Phase B). Pulled only via the
 # `aegis-proxy/http3` feature so the QUIC dep tree (quinn + h3)

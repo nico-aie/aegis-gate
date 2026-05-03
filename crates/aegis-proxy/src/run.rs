@@ -209,8 +209,60 @@ pub async fn run(
     }
 
     // Build the detector set once, shared across all data-plane listeners.
+    //
+    // AI-T5 — when the binary is built `--features ai` AND
+    // `cfg.ai.enabled = true`, push the ML-based detector onto
+    // the chain.  Boot fails loudly when:
+    //   - cfg.ai.enabled is true but the binary was built
+    //     WITHOUT the feature → `WafError::Config`,
+    //   - cfg.ai.model_path is missing or unreadable.
+    //
+    // Without the feature flag this branch compiles to a
+    // no-op; without `cfg.ai.enabled` the chain stays exactly
+    // as before.
+    #[allow(unused_mut)]
+    let mut detector_vec = aegis_security::detectors::default_detectors();
+    #[cfg(feature = "ai")]
+    {
+        if cfg.ai.enabled {
+            let model_path = cfg.ai.model_path.as_ref().ok_or_else(|| {
+                aegis_core::WafError::Config(
+                    "ai.enabled = true but ai.model_path is unset".into(),
+                )
+            })?;
+            let normal_idx = aegis_security::detectors::ai::DEFAULT_NORMAL_CLASS_IDX;
+            let detector = aegis_security::detectors::ai::AiDetector::load(
+                model_path,
+                normal_idx,
+                cfg.ai.confidence_threshold,
+            )
+            .map_err(|e| {
+                aegis_core::WafError::Config(format!(
+                    "ai detector load from {} failed: {e}",
+                    model_path.display(),
+                ))
+            })?;
+            tracing::info!(
+                model_path = %model_path.display(),
+                threshold = cfg.ai.confidence_threshold,
+                mode = ?cfg.ai.mode,
+                "AI detector wired into the chain",
+            );
+            detector_vec.push(Box::new(detector));
+        }
+    }
+    #[cfg(not(feature = "ai"))]
+    {
+        if cfg.ai.enabled {
+            return Err(aegis_core::WafError::Config(
+                "ai.enabled = true but the binary was built without `--features ai` \
+                 (rebuild with `FEATURES=\"redis geoip ai\" make build`)"
+                    .into(),
+            ));
+        }
+    }
     let detectors: Arc<Vec<Box<dyn aegis_security::detectors::Detector>>> =
-        Arc::new(aegis_security::detectors::default_detectors());
+        Arc::new(detector_vec);
 
     // Hot-reloadable detector class mask. Initial state mirrors
     // `cfg.detectors`; the control plane swaps it via PUT

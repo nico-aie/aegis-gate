@@ -8,6 +8,14 @@ pub mod sqli;
 pub mod ssrf;
 pub mod xss;
 
+// AI-T4 — ML-based detector.  Compiled in only when the `ai`
+// feature is enabled (pulls the ONNX Runtime binary).  Without
+// the feature the module is absent; `cfg.ai.enabled = true` on
+// such a build fails boot loudly so the misconfiguration is
+// visible.
+#[cfg(feature = "ai")]
+pub mod ai;
+
 pub use mask::{
     tier_index, tier_str, DetectorClass, DetectorMask, DetectorMaskBody, MaskState,
     SharedDetectorMask, ALL_TIERS,
