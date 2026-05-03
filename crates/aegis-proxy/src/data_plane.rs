@@ -423,7 +423,25 @@ pub(crate) async fn handle_data_request_inner(
     if !signals.is_empty() {
         let total_score: u32 = signals.iter().map(|s| s.score).sum();
         let post_state = risk.record_malicious(peer_ip, total_score);
-        let tags: Vec<&str> = signals.iter().map(|s| s.tag.as_str()).collect();
+        // 2026-05-03 — dedup detector tags before emitting them
+        // anywhere (audit fields, rule_id, response header).
+        // Multiple signals from one detector class (e.g. two
+        // path_traversal hits — one in path, one in body) used
+        // to surface as `detector:path_traversal,path_traversal`
+        // and pollute the by-detector chart with duplicates.
+        // Order is preserved so the most-suspicious tag stays
+        // first.
+        let tags: Vec<&str> = {
+            let mut seen = std::collections::HashSet::new();
+            let mut out: Vec<&str> = Vec::with_capacity(signals.len());
+            for s in &signals {
+                let t = s.tag.as_str();
+                if seen.insert(t) {
+                    out.push(t);
+                }
+            }
+            out
+        };
         let reason = format!("blocked by detectors: {} (score: {})", tags.join(", "), post_state.score);
         tracing::warn!(
             peer = %peer,
@@ -473,10 +491,16 @@ pub(crate) async fn handle_data_request_inner(
             bus.emit(ev);
         }
 
+        // 2026-05-03 — drop the legacy `detector:` prefix so the
+        // rule_id rendered on the response header (X-WAF-Rule-Id)
+        // and on /api/audit/since matches the bare class names in
+        // fields.detectors[] AND the by-detector chart.  Single
+        // class → "sqli"; multiple → "sqli,xss".  Operators read
+        // one canonical label everywhere.
         let detector_rule = if tags.is_empty() {
             "detectors".to_string()
         } else {
-            format!("detector:{}", tags.join(","))
+            tags.join(",")
         };
         let resp = Response::builder()
             .status(403)

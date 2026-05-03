@@ -1087,7 +1087,49 @@ pub(crate) async fn accept_loop(
                     // truly live. The bus subscriber count drives
                     // whether send() actually reaches anyone; this
                     // is a cheap fire-and-forget on the hot path.
+                    //
+                    // 2026-05-03 — skip the listener-side emit on
+                    // BLOCK actions: the data-plane block path
+                    // (`forward_allow_to_upstream` → detector
+                    // chain) already emitted a richer Detection
+                    // event with `fields.detectors[]` + `strikes`
+                    // + `load_mode` + the XFF-resolved
+                    // `client_ip`.  Double-writing here was
+                    // creating two audit rows per blocked
+                    // request — one with peer-IP + bot_category,
+                    // one with XFF-resolved client_ip + detectors
+                    // — which inflated /api/attacks/top with a
+                    // phantom loopback attacker and doubled the
+                    // by-detector counts.  For allow / challenge
+                    // we keep the listener emit (no data-plane
+                    // block path runs there).
                     let action = decision.action.as_str();
+                    if action == "block" {
+                        // Update MTLS tracker + interop response
+                        // stamping below, but skip the
+                        // bus.emit() entirely — the data plane
+                        // already audited this block.
+                        if let (Some(tracker), Some(principal)) = (
+                            identity_tracker.as_ref(),
+                            conn_identity.principal(),
+                        ) {
+                            tracker.record_request(
+                                principal,
+                                conn_identity.kind(),
+                                decision.action.as_str(),
+                            );
+                        }
+                        let resp = stamp_interop_response(
+                            resp,
+                            decision,
+                            interop.as_ref(),
+                            peer,
+                            &method,
+                            &path,
+                            risk_score,
+                        );
+                        return Ok::<_, Infallible>(resp);
+                    }
                     let class = match action {
                         "allow" => aegis_core::audit::AuditClass::Access,
                         _      => aegis_core::audit::AuditClass::Detection,

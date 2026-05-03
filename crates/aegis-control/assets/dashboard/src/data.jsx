@@ -292,9 +292,87 @@ function fmtTs(epoch) {
   const s = String(d.getSeconds()).padStart(2, '0');
   return `${h}:${m}:${s}`;
 }
+// 2026-05-03 — backfill Live Feed from /api/audit/since on mount
+// so an analyst landing on the page mid-incident sees recent
+// events instead of "1 of 1 events" + the SSE connect handshake.
+// We read the audit ring once, render those rows immediately,
+// then layer the SSE stream on top for real-time follow-up.
+// Fields go through the same mapper the SSE branch uses so the
+// table shape is identical.
+function mapAuditToLiveRow(ev, seq) {
+  const f = (ev.fields && typeof ev.fields === 'object') ? ev.fields : {};
+  const tsRaw = ev.ts || ev.ts_ms;
+  const epoch = typeof tsRaw === 'number'
+    ? tsRaw
+    : (typeof tsRaw === 'string' ? Date.parse(tsRaw) : Date.now());
+  const risk = ev.risk_score || 0;
+  const action = ev.action || 'allow';
+  const ip = ev.client_ip || ev.ip || '0.0.0.0';
+  const ruleId = ev.rule_id || ev.reason || null;
+  const protocol =
+    action === 'websocket_open' ? 'ws-open' :
+    action === 'websocket_close' ? 'ws-close' :
+    action === 'tcp_tunnel_open' ? 'tcp-open' :
+    action === 'tcp_tunnel_close' ? 'tcp-close' :
+    'http';
+  return {
+    id: seq,
+    ts: fmtTs(epoch),
+    epoch,
+    ip,
+    geo: null,
+    method: f.method || ev.method || 'GET',
+    path: f.path || ev.path || '/',
+    region: f.region || ev.region || '',
+    tier: ev.tier || tierForRisk(risk),
+    risk,
+    action,
+    rules: ruleId ? [ruleId] : (ev.rules || []),
+    cat: ev.category || ev.cat || null,
+    status: f.status || ev.status || (action === 'block' ? 403 : 200),
+    latency: f.latency_ms || ev.latency_ms || 0,
+    request_id: ev.request_id || null,
+    class: ev.class || null,
+    reason: ev.reason || null,
+    protocol,
+    fields: f,
+  };
+}
+
 function useRealLiveFeed(maxLen = 60, paused = false) {
   const [events, setEvents] = useState([]);
   const [connected, setConnected] = useState(false);
+
+  // Backfill once on mount.  Filter to real request decisions
+  // (block / allow / challenge / rate_limit / timeout /
+  // circuit_breaker) so the SSE-internal connect / heartbeat
+  // events don't pad the visible buffer.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/audit/since?limit=${maxLen}`, { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (cancelled || !data || !Array.isArray(data.events)) return;
+        const REAL_ACTIONS = new Set([
+          'allow', 'block', 'challenge', 'rate_limit',
+          'timeout', 'circuit_breaker',
+        ]);
+        const backfilled = data.events
+          .filter(ev => REAL_ACTIONS.has(ev.action))
+          .map(ev => mapAuditToLiveRow(ev, ++_realLiveSeq));
+        if (backfilled.length > 0) {
+          setEvents(prev => {
+            // Preserve any SSE rows that already arrived; merge by epoch.
+            const merged = [...backfilled, ...prev]
+              .sort((a, b) => a.epoch - b.epoch);
+            return merged.slice(-maxLen);
+          });
+        }
+      })
+      .catch(() => { /* backfill failed — SSE alone is fine */ });
+    return () => { cancelled = true; };
+  }, [maxLen]);
+
   useEffect(() => {
     if (paused) return;
     let es;

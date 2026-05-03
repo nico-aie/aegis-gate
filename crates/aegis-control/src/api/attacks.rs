@@ -143,7 +143,19 @@ pub struct BotMixResponse {
 struct AttackEntry {
     when: Instant,
     ts: chrono::DateTime<chrono::Utc>,
+    /// Single canonical detector class — the FIRST tag from
+    /// `fields.detectors[]`, or the rule_id-derived prefix.
+    /// Kept for back-compat with the `top` + `distribution`
+    /// aggregators that bucket per-attacker by their dominant
+    /// class.
     detector: String,
+    /// 2026-05-03 — every detector class that fired on this
+    /// event, deduped.  by_detector() expands this into one
+    /// count per tag so a request that fires both sqli AND xss
+    /// counts toward both buckets, instead of only the first.
+    /// Empty when the event had no detector array (legacy
+    /// rule_id-only path).
+    detectors: Vec<String>,
     identifier: String,
     risk: u32,
     /// Feed name from `event.fields.threat_intel.feed` if present.
@@ -182,10 +194,27 @@ impl AttacksAggregator {
         }
         let (threat_intel_feed, threat_intel_indicator) = threat_intel_from_fields(&ev.fields);
         let bot_category = bot_category_from_fields(&ev.fields);
+        // Pull every detector tag from the event's
+        // fields.detectors[] array, deduped + filtered to non-
+        // empty.  by_detector() iterates over this list so a
+        // multi-detector event counts toward EVERY class that
+        // fired on it.
+        let mut detectors_all: Vec<String> = Vec::new();
+        if let Some(arr) = ev.fields.get("detectors").and_then(|v| v.as_array()) {
+            let mut seen = std::collections::HashSet::new();
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    if !s.is_empty() && seen.insert(s.to_string()) {
+                        detectors_all.push(s.to_string());
+                    }
+                }
+            }
+        }
         let entry = AttackEntry {
             when: Instant::now(),
             ts: ev.ts,
             detector: detector_name(ev),
+            detectors: detectors_all,
             identifier: attacker_identifier(ev),
             risk: ev.risk_score.unwrap_or(0),
             threat_intel_feed,
@@ -323,26 +352,55 @@ impl AttacksAggregator {
     /// Slimmer projection of `distribution()` — no percentages, sorted
     /// by count desc.
     pub fn by_detector(&self, window_seconds: u32) -> ByDetectorResponse {
-        let dist = self.distribution(window_seconds);
-        // 2026-05-03 fix — filter the synthetic `unknown` bucket
-        // out.  detector_name() falls back to "unknown" for
-        // malformed detection events (missing both
-        // fields.detectors and rule_id); those shouldn't appear
-        // on the Investigation page's per-detector chart because
-        // they're not really detector firings, they're dropped
-        // signals.  Filtering keeps the chart focused on real
-        // classes (sqli / xss / path_traversal / …).
-        let detectors = dist
-            .categories
+        // 2026-05-03 fix — bucket by detector CLASS, not by
+        // combination string.  Old behaviour: each event's
+        // detector list was joined with "," and used as the
+        // bucket key, producing rows like
+        // `path_traversal,path_traversal,ssrf` and putting
+        // `sqli` in two separate buckets when a request fired
+        // both `sqli` and `ssrf`.
+        //
+        // New behaviour: walk every event in the window,
+        // explode `detectors[]` into one count per class, and
+        // sort largest-bucket-first.  When the deduped list is
+        // empty (legacy rule_id-only event) we fall back to
+        // `entry.detector` so back-compat callers still see
+        // SOMETHING — but only when the array is genuinely
+        // empty, never as a duplicate alongside the array.
+        let retention_secs = RETENTION.as_secs() as u32;
+        let window = window_seconds.clamp(1, retention_secs);
+        let window_dur = Duration::from_secs(u64::from(window));
+
+        let state = self.inner.lock().expect("attacks mutex poisoned");
+        let now = Instant::now();
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for entry in state.events.iter().rev() {
+            if now.duration_since(entry.when) > window_dur {
+                break;
+            }
+            if !entry.detectors.is_empty() {
+                for class in &entry.detectors {
+                    *counts.entry(class.clone()).or_insert(0) += 1;
+                }
+            } else if entry.detector != "unknown" {
+                *counts.entry(entry.detector.clone()).or_insert(0) += 1;
+            }
+        }
+
+        // Filter the synthetic `unknown` bucket — it represents
+        // malformed detection events with neither detectors[]
+        // nor a parseable rule_id, NOT real detector activity.
+        let mut detectors: Vec<DetectorCount> = counts
             .into_iter()
-            .filter(|c| c.name != "unknown")
-            .map(|c| DetectorCount {
-                name: c.name,
-                count: c.count,
-            })
+            .filter(|(name, _)| name != "unknown")
+            .map(|(name, count)| DetectorCount { name, count })
             .collect();
+        detectors.sort_by(|a, b| {
+            b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name))
+        });
+
         ByDetectorResponse {
-            window_seconds: dist.window_seconds,
+            window_seconds: window,
             detectors,
         }
     }

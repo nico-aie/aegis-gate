@@ -301,10 +301,21 @@ function StatusBar({ tick }) {
   const peers = cluster.data?.peers || [];
   const healthy = peers.filter(p => p.healthy !== false).length;
   const total = peers.length;
-  const gitopsState = gitops.data?.state || gitops.data?.status;
+  // 2026-05-03 — soften the GitOps tone when the operator
+  // hasn't configured the integration at all.  Previously
+  // `gitopsState || 'unknown'` rendered as red "UNKNOWN" on
+  // every fresh dev WAF, indistinguishable from a real failure.
+  // Now: configured + healthy = ok, configured + drift = warn,
+  // configured + unknown = info, not configured at all = muted
+  // "off" pill (neutral grey, not red).
+  const gitopsConfigured = Boolean(gitops.data?.repo) || Boolean(gitops.data?.repo_url);
+  const rawState = gitops.data?.state || gitops.data?.status;
+  const gitopsState = rawState
+    || (gitopsConfigured ? 'unknown' : 'off');
   const gitopsTone = gitopsState === 'in_sync' || gitopsState === 'in-sync' ? 'ok'
                    : gitopsState === 'drift' ? 'warn'
-                   : gitopsState ? 'info' : 'neutral';
+                   : gitopsState === 'off' ? 'neutral'
+                   : rawState ? 'info' : 'neutral';
   const version = status.data?.version || '—';
   const buildSha = status.data?.build_sha;
   const buildLabel = buildSha ? `${version}-${String(buildSha).slice(0, 4)}` : version;
@@ -315,13 +326,15 @@ function StatusBar({ tick }) {
         <span className="led warn"></span> SSE (demo)
       </span>
       <span className="dim">|</span>
-      <span>Cluster <span className="num">{total === 0 ? 'standalone' : `${healthy}/${total}`}</span></span>
+      <span>Cluster <span className={`num ${total === 0 ? 'dim' : ''}`}>
+        {total === 0 ? 'single-node' : `${healthy}/${total}`}
+      </span></span>
       <span className="dim">|</span>
       <span title="Demo indicator — chain verify isn't exposed in realtime; use `waf audit verify`">
         Audit chain <span className="pill warn">demo</span>
       </span>
       <span className="dim">|</span>
-      <span>GitOps <span className={`pill ${gitopsTone}`}>{gitopsState || 'unknown'}</span></span>
+      <span>GitOps <span className={`pill ${gitopsTone}`}>{gitopsState}</span></span>
       <span style={{ marginLeft: 'auto' }}>Build <span className="num">{buildLabel}</span> · session {tick}s</span>
     </div>
   );

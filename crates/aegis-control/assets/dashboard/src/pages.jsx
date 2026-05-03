@@ -40,6 +40,15 @@ function RiskHeatmapLive() {
 
 function PageOverview() {
   const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
+  // 2026-05-03 — Overview Upstream card used to read
+  // `stats.upstream` (a stale rollup that often reported "no
+  // members configured" on a healthy single-node dev WAF).
+  // /api/upstreams returns the same per-pool live snapshot the
+  // Routing & Upstreams page uses, so source from there
+  // instead.  Sum healthy / total across pools.
+  const upstreamsLive = window.useUpstreamsApi
+    ? window.useUpstreamsApi()
+    : { data: null };
   const tsApi = window.useTimeseriesApi(60, 1);    // /api/stats/timeseries — 60s window, 1s buckets
   const distApi = window.useAttacksDistributionApi(900); // /api/attacks/distribution — 15m
   const topApi = window.useAttacksTopApi(900, 5);  // /api/attacks/top — 5 attackers, 15m
@@ -90,7 +99,21 @@ function PageOverview() {
   const blocksTotal = stats.data?.blocks_total ?? 0;
   const blockRate = stats.data?.block_rate_pct;
   const activeThreats = stats.data?.active_threats ?? 0;
-  const upstream = stats.data?.upstream;
+  // Roll up healthy / total across every live pool.  Falls
+  // back to the legacy stats.upstream shape when /api/upstreams
+  // hasn't responded yet (pre-API-ready first paint).
+  const upstream = (() => {
+    const pools = upstreamsLive.data?.pools;
+    if (Array.isArray(pools)) {
+      let healthy = 0, total = 0;
+      for (const p of pools) {
+        healthy += Number(p.healthy_members ?? 0);
+        total   += Number(p.total_members ?? p.members_total ?? 0);
+      }
+      return { healthy, unhealthy: Math.max(total - healthy, 0) };
+    }
+    return stats.data?.upstream;
+  })();
 
   // Adapt /api/attacks/distribution → donut slices (name + color + value).
   const dist = useMemoP(() => {
@@ -5715,7 +5738,7 @@ function PageInvestigation() {
 
   // Honour deep-links from the Live-Feed RequestDetail drawer:
   // `#/investigation?pivot=<id>&kind=request_id`.
-  useEffectW(() => {
+  useEffectP(() => {
     if (typeof location === 'undefined') return;
     const m = location.hash.match(/\?(.+)$/);
     if (!m) return;
