@@ -137,6 +137,13 @@ base64 = "0.22"
 # GeoLite2-ASN.
 maxminddb = "0.24"
 
+# Tract ONNX runtime (AI-T1). Pulled only via the
+# `aegis-security/ai` feature so default builds don't bloat by
+# ~50 MB. Pure-Rust CPU inference — no CUDA, no system blas.
+# Pinned to a release that builds cleanly against the
+# workspace's Rust 2021 edition + MSRV.
+tract-onnx = { version = "0.21", default-features = false }
+
 # HTTP/3 stack (B5-T1 — Phase B). Pulled only via the
 # `aegis-proxy/http3` feature so the QUIC dep tree (quinn + h3)
 # stays out of single-protocol builds. Versions pinned to the

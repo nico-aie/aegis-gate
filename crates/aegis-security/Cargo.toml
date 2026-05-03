@@ -17,6 +17,12 @@ taxii = ["dep:reqwest"]
 # `country` / `asn` conditions still parse — they just
 # evaluate to false when no reader is wired.
 geoip = ["dep:maxminddb"]
+# Off by default. With `ai`, `detectors::ai::AiDetector` is
+# compiled in and the `tract-onnx` runtime is pulled. Without
+# it, the AI detector module is absent and `cfg.ai.enabled =
+# true` triggers a boot-time error so operators see the
+# misconfiguration loudly. Adds ~50 MB to the release binary.
+ai = ["dep:tract-onnx"]
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
@@ -40,6 +46,9 @@ reqwest = { workspace = true, optional = true }
 
 # Optional — gated by the `geoip` feature.
 maxminddb = { workspace = true, optional = true }
+
+# Optional — gated by the `ai` feature.
+tract-onnx = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

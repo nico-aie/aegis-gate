@@ -117,6 +117,15 @@ pub struct WafConfig {
     /// entirely (e.g. in test fixtures).
     #[serde(default)]
     pub interop: InteropConfig,
+    /// AI-T1 — ML-based detector. Off by default. With
+    /// `ai.enabled: true` AND a binary built `--features ai`,
+    /// the [`crate::config::AiConfig::model_path`] ONNX is
+    /// loaded at boot and `AiDetector` joins the detector
+    /// chain. `enabled: true` against a binary built without
+    /// the feature is a boot-time error so misconfiguration
+    /// is loud, not silent.
+    #[serde(default)]
+    pub ai: AiConfig,
 }
 
 /// External interop surface configuration. Always-on by default.
@@ -180,6 +189,102 @@ pub struct GeoIpConfig {
     /// Path to a MaxMind `GeoLite2-ASN.mmdb` (or compatible).
     #[serde(default)]
     pub asn_db: Option<PathBuf>,
+}
+
+/// AI-T1 — ML-based detector configuration. Path-only model
+/// reference (the operator builds + ships their own ONNX from
+/// their training pipeline). Mirrors [`GeoIpConfig`]: the
+/// reader/runtime lives in `aegis-security` behind the `ai`
+/// Cargo feature; without the feature, `enabled: true` is a
+/// boot-time error so the misconfiguration is loud.
+///
+/// Default: disabled. The detector joins the chain only when
+/// the operator opts in AND the binary carries the feature.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AiConfig {
+    /// Master toggle. Default `false` — opt-in. With `true`
+    /// against a feature-disabled binary, boot fails with a
+    /// `WafError::Config` containing the build-feature hint.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the operator-supplied `.onnx` model artifact.
+    /// Required when `enabled: true`; ignored otherwise.
+    /// Mirrors `geoip.country_db` (path-only, never embedded
+    /// in git). The training pipeline + license belongs to
+    /// the operator's ML repo.
+    #[serde(default)]
+    pub model_path: Option<PathBuf>,
+    /// Softmax-confidence threshold above which a non-Normal
+    /// class is treated as a verdict. Default `0.85` — high
+    /// enough to keep false-positive rate low, low enough to
+    /// catch the SQLi/XSS classes the dataset report shows
+    /// resolving > 0.95 in practice. Boot logs a warning if
+    /// `< 0.7` (operator footgun guard).
+    #[serde(default = "default_ai_confidence_threshold")]
+    pub confidence_threshold: f32,
+    /// Per-tier opt-in. Empty = "all tiers". Most deployments
+    /// run AI only on Critical / High tiers because those are
+    /// the surfaces where a 1-ms inference cost is justified.
+    #[serde(default)]
+    pub tiers: Vec<Tier>,
+    /// Verdict semantics. `observe` = log a `would_block`
+    /// audit entry but pass the request through; `enforce` =
+    /// actual 403/429. Hybrid is intentional — operators run
+    /// `observe` for ~1 week of burn-in before flipping to
+    /// `enforce`. Default `observe` so the safer rollout is
+    /// the default outcome.
+    #[serde(default)]
+    pub mode: AiMode,
+    /// Per-prediction inference timeout. Default 5 ms. The
+    /// dataset report shows 0.5 ms p50; 5 ms is 10× headroom
+    /// before the fallback path fires (and increments
+    /// `aegis_ai_fallback_total{reason=timeout}`).
+    #[serde(default = "default_ai_timeout", with = "humantime_serde")]
+    pub timeout: Duration,
+    /// Optional explainability surface. With `true`, the audit
+    /// event carries `ai_features_top3` (top-3 contributing
+    /// features by absolute one-step finite-difference). Adds
+    /// ~50 µs per request — opt-in. Default `false`.
+    #[serde(default)]
+    pub explain: bool,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model_path: None,
+            confidence_threshold: default_ai_confidence_threshold(),
+            tiers: Vec::new(),
+            mode: AiMode::default(),
+            timeout: default_ai_timeout(),
+            explain: false,
+        }
+    }
+}
+
+fn default_ai_confidence_threshold() -> f32 {
+    0.85
+}
+
+fn default_ai_timeout() -> Duration {
+    Duration::from_millis(5)
+}
+
+/// Verdict semantics for [`AiConfig`]. `Observe` is the
+/// default so the safer rollout (audit-only) is the default
+/// outcome — operators flip to `Enforce` after burn-in.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiMode {
+    /// Log a `would_block` audit entry but pass the request
+    /// through. The data plane reads `decision.action ==
+    /// "would_block"` so dashboards filter on it without
+    /// claiming a block that never happened.
+    #[default]
+    Observe,
+    /// Actual 403/429 — the verdict reaches the client.
+    Enforce,
 }
 
 /// In-process runtime sizing — Layer-1 of the three-layer scaling
