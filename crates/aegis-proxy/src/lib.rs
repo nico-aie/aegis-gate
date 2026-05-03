@@ -43,6 +43,7 @@ pub mod session;
 pub mod shed;
 pub mod state;
 pub mod supervisor;
+pub mod tcp_tunnel;
 pub mod traffic;
 pub mod transform;
 pub mod upstream;
