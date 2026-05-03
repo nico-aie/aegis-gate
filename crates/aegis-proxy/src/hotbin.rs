@@ -191,6 +191,207 @@ pub fn adopt_inherited_listeners_with_cfg(cfg: &FdPassConfig) -> AdoptOutcome {
     adopt_listeners_from_fds(&names, cfg.base_fd)
 }
 
+/// FDP-T5 — anonymous pipe used by the parent process to wait
+/// for the child's readiness signal. The parent retains the
+/// read end; the write end's FD is passed to the child via
+/// the same FD-inheritance mechanism used for listeners
+/// (env var `AEGIS_READINESS_FD=<fd>`).
+///
+/// Race-free over the HTTP-poll fallback because the child
+/// publishes readiness with a single `write(fd, "R")` AFTER
+/// its accept loops are running. The parent's read returns
+/// exactly one byte and only at that point — no probe-and-
+/// hope timing.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct ReadinessPipe {
+    read_fd: std::os::fd::RawFd,
+    write_fd: std::os::fd::RawFd,
+}
+
+#[cfg(unix)]
+impl ReadinessPipe {
+    /// Create the pipe. Both ends are non-blocking so the
+    /// parent's polling read never stalls the runtime.
+    /// CLOEXEC is set so the parent's read end doesn't leak
+    /// into the child via exec; the write-end CLOEXEC gets
+    /// explicitly cleared by `build_successor_command`'s
+    /// pre_exec closure.
+    pub fn new() -> std::io::Result<Self> {
+        let mut fds: [i32; 2] = [0, 0];
+        // SAFETY: pipe() with a 2-int array always safe;
+        // returns 0 on success, -1 on failure with errno set.
+        // We use plain pipe() + manual fcntl rather than pipe2()
+        // because macOS doesn't ship pipe2 in libSystem (it's
+        // Linux-only).
+        let rc = unsafe { pipe(fds.as_mut_ptr()) };
+        if rc < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let read_fd = fds[0];
+        let write_fd = fds[1];
+
+        // Set O_NONBLOCK + FD_CLOEXEC on both ends.
+        const F_GETFL: i32 = 3;
+        const F_SETFL: i32 = 4;
+        for fd in [read_fd, write_fd] {
+            // SAFETY: fcntl on a valid FD is always safe.
+            let cur_fl = unsafe { fcntl(fd, F_GETFL) };
+            if cur_fl < 0 {
+                let e = std::io::Error::last_os_error();
+                unsafe { close(read_fd) };
+                unsafe { close(write_fd) };
+                return Err(e);
+            }
+            if unsafe { fcntl(fd, F_SETFL, cur_fl | O_NONBLOCK_VALUE) } < 0 {
+                let e = std::io::Error::last_os_error();
+                unsafe { close(read_fd) };
+                unsafe { close(write_fd) };
+                return Err(e);
+            }
+            let cur_fd = unsafe { fcntl(fd, F_GETFD_VALUE) };
+            if cur_fd < 0 {
+                let e = std::io::Error::last_os_error();
+                unsafe { close(read_fd) };
+                unsafe { close(write_fd) };
+                return Err(e);
+            }
+            if unsafe { fcntl(fd, F_SETFD_VALUE, cur_fd | FD_CLOEXEC_VALUE) } < 0 {
+                let e = std::io::Error::last_os_error();
+                unsafe { close(read_fd) };
+                unsafe { close(write_fd) };
+                return Err(e);
+            }
+        }
+
+        Ok(Self { read_fd, write_fd })
+    }
+
+    /// Raw FD of the write end. Pass to the child via
+    /// `SuccessorPlan.readiness_write_fd`.
+    pub fn write_fd(&self) -> std::os::fd::RawFd {
+        self.write_fd
+    }
+
+    /// Non-blocking read of one byte from the pipe. Returns
+    /// `Ok(true)` when a byte was read (the readiness signal),
+    /// `Ok(false)` when the pipe is empty (would-block), and
+    /// `Err` for other I/O failures.
+    pub fn try_read_signal(&self) -> std::io::Result<bool> {
+        let mut buf = [0u8; 1];
+        // SAFETY: read from a valid FD into a 1-byte buffer
+        // is always safe; the kernel handles non-blocking
+        // semantics for us.
+        let n = unsafe {
+            libc_read(self.read_fd, buf.as_mut_ptr() as *mut std::ffi::c_void, 1)
+        };
+        if n == 1 {
+            return Ok(true);
+        }
+        if n == 0 {
+            // EOF — the child closed the write end without
+            // signalling. Treat as "not ready" so the polling
+            // loop times out cleanly; the rolled-back path
+            // catches the broken child via try_wait.
+            return Ok(false);
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::WouldBlock {
+            return Ok(false);
+        }
+        Err(err)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ReadinessPipe {
+    fn drop(&mut self) {
+        // SAFETY: closing FDs we own is always safe.
+        unsafe {
+            libc_close(self.read_fd);
+            libc_close(self.write_fd);
+        }
+    }
+}
+
+/// FDP-T5 — child-side readiness emitter. Reads
+/// `AEGIS_READINESS_FD` from the environment, writes a single
+/// byte to it, and returns. No-op (Ok) when the env var isn't
+/// set (first-boot path — no parent waiting on us).
+///
+/// Call this from the boot path AFTER the accept loops are
+/// running and the child is committed to serving requests. The
+/// write side has CLOEXEC cleared by the parent's pre_exec, so
+/// the FD survives into the child intact.
+#[cfg(unix)]
+pub fn signal_readiness_to_parent() -> std::io::Result<()> {
+    let fd: std::os::fd::RawFd = match std::env::var("AEGIS_READINESS_FD") {
+        Err(_) => return Ok(()), // first-boot, no parent
+        Ok(s) => match s.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("AEGIS_READINESS_FD is not a valid FD: {s:?}"),
+                ));
+            }
+        },
+    };
+    let buf = [b'R'];
+    // SAFETY: write to a valid FD with a known-size buffer is
+    // always safe; the kernel returns the count or -1+errno.
+    let n = unsafe { libc_write(fd, buf.as_ptr() as *const std::ffi::c_void, 1) };
+    if n != 1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // Close the FD so the parent's read sees EOF cleanly when
+    // it next polls — defensive in case the parent reads more
+    // than one byte (it shouldn't, but the close makes the
+    // contract explicit).
+    // SAFETY: closing an FD we own is always safe.
+    unsafe { libc_close(fd) };
+    // Clear the env var so a child of THIS process (e.g., a
+    // future re-handover) doesn't accidentally inherit a stale
+    // FD number. Best-effort.
+    // SAFETY: documented unsafe in Rust 2024; we accept the
+    // race risk because this only runs once at boot.
+    unsafe { std::env::remove_var("AEGIS_READINESS_FD") };
+    Ok(())
+}
+
+/// `O_NONBLOCK = 0o4000` (Linux) / `0x0004` (macOS / BSD).
+/// We don't need `O_CLOEXEC` as a flag value because we set it
+/// via `fcntl(F_SETFD, FD_CLOEXEC)` in `ReadinessPipe::new()` —
+/// portable across all Unixes without per-platform consts.
+#[cfg(all(unix, target_os = "linux"))]
+const O_NONBLOCK_VALUE: i32 = 0o4000;
+#[cfg(all(unix, not(target_os = "linux")))]
+const O_NONBLOCK_VALUE: i32 = 0x0004;
+
+#[cfg(unix)]
+extern "C" {
+    fn pipe(fds: *mut i32) -> i32;
+    fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
+    fn write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize;
+    fn close(fd: i32) -> i32;
+}
+
+#[cfg(unix)]
+unsafe fn libc_read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize {
+    // SAFETY: caller's contract.
+    unsafe { read(fd, buf, count) }
+}
+#[cfg(unix)]
+unsafe fn libc_write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize {
+    // SAFETY: caller's contract.
+    unsafe { write(fd, buf, count) }
+}
+#[cfg(unix)]
+unsafe fn libc_close(fd: i32) -> i32 {
+    // SAFETY: caller's contract.
+    unsafe { close(fd) }
+}
+
 /// FDP-T4 — in-flight request counter for the drain protocol.
 /// The accept loop wraps every accepted connection in an
 /// `InFlightGuard`; on drop the counter decrements. The drain
@@ -472,6 +673,12 @@ pub struct SuccessorPlan {
     /// Args to pass after the binary path. Forwarded verbatim
     /// to the child process.
     pub args: Vec<String>,
+    /// FDP-T5 — optional readiness pipe write end. When `Some`,
+    /// we land it at FD slot `3 + listeners.len()` and set
+    /// `AEGIS_READINESS_FD=<slot>` in the child env so
+    /// `signal_readiness_to_parent()` can write the byte.
+    /// CLOEXEC is cleared on this slot too.
+    pub readiness_write_fd: Option<std::os::fd::RawFd>,
 }
 
 /// FDP-T3 — build a `std::process::Command` that, when spawned,
@@ -508,12 +715,22 @@ pub fn build_successor_command(plan: SuccessorPlan) -> std::process::Command {
         cmd.env(k, v);
     }
 
+    // FDP-T5 — readiness FD, when present, lands at the slot
+    // immediately after the last listener.
+    if plan.readiness_write_fd.is_some() {
+        let slot = (3 + n) as i32;
+        cmd.env("AEGIS_READINESS_FD", slot.to_string());
+    }
+
     // Capture the FD list for the post-fork closure. The
     // closure runs in the forked child between fork() and
     // exec() — only async-signal-safe operations are valid
     // here. dup2 + fcntl are both AS-safe.
-    let fds: Vec<std::os::fd::RawFd> =
+    let mut fds: Vec<std::os::fd::RawFd> =
         plan.listeners.iter().map(|(_, fd)| *fd).collect();
+    if let Some(rfd) = plan.readiness_write_fd {
+        fds.push(rfd);
+    }
 
     // SAFETY: pre_exec runs post-fork in the child; calls in
     // the closure must be async-signal-safe. dup2 + fcntl with
@@ -937,6 +1154,7 @@ mod tests {
                 "-c".to_string(),
                 "printf '%s\\n%s\\n' \"$AEGIS_LISTEN_FDS\" \"$AEGIS_LISTEN_FD_NAMES\"".to_string(),
             ],
+            readiness_write_fd: None,
         };
         let (status, stdout) = run_sh_and_capture(plan);
         assert!(status.success(), "sh exited non-zero");
@@ -966,6 +1184,7 @@ mod tests {
                 "-c".to_string(),
                 "echo \"$AEGIS_LISTEN_FDS|$AEGIS_LISTEN_FD_NAMES\"".to_string(),
             ],
+            readiness_write_fd: None,
         };
         let (status, stdout) = run_sh_and_capture(plan);
         assert!(status.success());
@@ -986,6 +1205,7 @@ mod tests {
             listeners: vec![],
             extra_env: vec![("AEGIS_TEST_KEY".into(), "test-value-42".into())],
             args: vec!["-c".into(), "echo \"$AEGIS_TEST_KEY\"".into()],
+            readiness_write_fd: None,
         };
         let (status, stdout) = run_sh_and_capture(plan);
         assert!(status.success());
@@ -1078,6 +1298,7 @@ mod tests {
             listeners: vec![],
             extra_env: vec![],
             args: vec!["-c".into(), format!("sleep {seconds}; exit 0")],
+            readiness_write_fd: None,
         }
     }
 
@@ -1223,6 +1444,7 @@ mod tests {
                 listeners: vec![],
                 extra_env: vec![],
                 args: vec!["-c".into(), "exit 1".into()],
+                readiness_write_fd: None,
             },
             InFlightCounter::new(),
             HandoverConfig {
@@ -1253,6 +1475,7 @@ mod tests {
             listeners: vec![],
             extra_env: vec![],
             args: vec![],
+            readiness_write_fd: None,
         };
         let outcome = perform_handover(
             plan,
@@ -1274,6 +1497,102 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------
+    // FDP-T5 — readiness pipe + signal_readiness_to_parent
+    // -----------------------------------------------------------
+
+    #[test]
+    fn readiness_pipe_round_trips_one_byte_via_signal_helper() {
+        // Parent creates pipe, sets the env var to the WRITE end
+        // (we're cheating: child + parent are the same process
+        // here, which is fine for testing the helper API
+        // contract — no exec involved).
+        let _g = ENV_LOCK.lock().unwrap();
+        let pipe = ReadinessPipe::new().expect("pipe");
+        let write_fd = pipe.write_fd();
+
+        // Initial read: pipe is empty → WouldBlock → false.
+        assert!(matches!(pipe.try_read_signal(), Ok(false)));
+
+        env_set("AEGIS_READINESS_FD", &write_fd.to_string());
+        signal_readiness_to_parent().expect("signal");
+        // signal_readiness_to_parent removes the env on success.
+        assert!(std::env::var("AEGIS_READINESS_FD").is_err());
+
+        // Now the pipe has one byte.
+        assert!(matches!(pipe.try_read_signal(), Ok(true)));
+        // Subsequent reads return false (EOF after close, or
+        // WouldBlock if not closed; either way "no signal").
+        assert!(matches!(pipe.try_read_signal(), Ok(false)));
+    }
+
+    #[test]
+    fn signal_readiness_no_op_when_env_unset() {
+        let _g = ENV_LOCK.lock().unwrap();
+        env_unset("AEGIS_READINESS_FD");
+        // Should be Ok(()) — first-boot path.
+        signal_readiness_to_parent().expect("no env -> no-op");
+    }
+
+    #[test]
+    fn signal_readiness_errors_on_unparseable_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        env_set("AEGIS_READINESS_FD", "not-a-number");
+        let err = signal_readiness_to_parent().expect_err("expected err");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        env_unset("AEGIS_READINESS_FD");
+    }
+
+    #[test]
+    fn try_read_signal_returns_false_on_empty_pipe() {
+        let pipe = ReadinessPipe::new().expect("pipe");
+        // No write happened — pipe is empty.
+        assert!(matches!(pipe.try_read_signal(), Ok(false)));
+    }
+
+    #[test]
+    fn spawn_successor_with_readiness_fd_sets_env_and_places_at_correct_slot() {
+        // FDP-T5 integration: spawn /bin/sh with a readiness
+        // pipe and one listener; child should see
+        // AEGIS_READINESS_FD=4 (slot 3 = listener, slot 4 =
+        // readiness). Have the child write to /dev/fd/$AEGIS_READINESS_FD;
+        // parent reads + asserts the byte arrived.
+        let bound = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let pipe = ReadinessPipe::new().expect("pipe");
+
+        let plan = SuccessorPlan {
+            binary_path: std::path::PathBuf::from("/bin/sh"),
+            listeners: vec![("admin".into(), bound.as_raw_fd())],
+            extra_env: vec![],
+            args: vec![
+                "-c".into(),
+                // Echo the env value, then write 'R' to the pipe.
+                // `>&\"$N\"` closes the FD on shells that support
+                // it; we use `printf 'R' >/dev/fd/$N` for portability.
+                "echo \"$AEGIS_READINESS_FD\"; printf 'R' > /dev/fd/$AEGIS_READINESS_FD".into(),
+            ],
+            readiness_write_fd: Some(pipe.write_fd()),
+        };
+        let mut cmd = build_successor_command(plan);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let child = cmd.spawn().expect("spawn");
+        let output = child.wait_with_output().expect("wait");
+        assert!(output.status.success(), "shell exited non-zero");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.trim_end(), "4", "expected AEGIS_READINESS_FD=4");
+
+        // Parent reads the byte the child wrote.
+        // Give the kernel a moment to flush.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            matches!(pipe.try_read_signal(), Ok(true)),
+            "parent should have received the readiness byte",
+        );
+
+        drop(bound);
+    }
+
     #[test]
     fn spawn_successor_places_fd_at_slot_3() {
         // Bind a listener, spawn /bin/sh, have it inspect
@@ -1292,6 +1611,7 @@ mod tests {
                 "-c".into(),
                 "if [ -e /dev/fd/3 ]; then echo HAVE_FD3; else echo NO_FD3; fi".into(),
             ],
+            readiness_write_fd: None,
         };
         let (status, stdout) = run_sh_and_capture(plan);
         assert!(status.success(), "shell exited non-zero");
