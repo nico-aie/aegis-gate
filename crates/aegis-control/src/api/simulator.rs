@@ -204,7 +204,7 @@ pub fn simulate(
     // Tier classification mirrors the live data-plane heuristic.
     let route_ctx = RouteCtx {
         route_id: "simulator".into(),
-        tier: Tier::CatchAll,
+        tier: Tier::Low,
         failure_mode: aegis_core::tier::FailureMode::FailOpen,
         upstream: "simulator".into(),
         tenant_id: None,

@@ -84,7 +84,7 @@ impl TierOverrides {
             Tier::Critical => self.critical.clone(),
             Tier::High => self.high.clone(),
             Tier::Medium => self.medium.clone(),
-            Tier::CatchAll => self.catch_all.clone(),
+            Tier::Low => self.catch_all.clone(),
         }
     }
 
@@ -93,7 +93,7 @@ impl TierOverrides {
             Tier::Critical => self.critical = body,
             Tier::High => self.high = body,
             Tier::Medium => self.medium = body,
-            Tier::CatchAll => self.catch_all = body,
+            Tier::Low => self.catch_all = body,
         }
     }
 }
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!(back.override_for(Tier::Critical), state.override_for(Tier::Critical));
         assert_eq!(back.override_for(Tier::Medium), state.override_for(Tier::Medium));
         assert!(back.override_for(Tier::High).is_none());
-        assert!(back.override_for(Tier::CatchAll).is_none());
+        assert!(back.override_for(Tier::Low).is_none());
     }
 
     #[test]

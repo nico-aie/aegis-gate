@@ -109,7 +109,7 @@ fn tier_ttl(tier: &Tier, cache_control: Option<&str>) -> Duration {
             // Conservative: use max-age if present, else 5 seconds.
             max_age.map_or(Duration::from_secs(5), Duration::from_secs)
         }
-        Tier::Medium | Tier::CatchAll => {
+        Tier::Medium | Tier::Low => {
             // Aggressive: use max-age if present, else 5 minutes.
             max_age.map_or(Duration::from_secs(300), Duration::from_secs)
         }

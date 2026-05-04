@@ -126,7 +126,8 @@ pub fn parse_tier_str(raw: &str) -> Option<Tier> {
         "critical" => Some(Tier::Critical),
         "high" => Some(Tier::High),
         "medium" => Some(Tier::Medium),
-        "catch_all" => Some(Tier::CatchAll),
+        // `catch_all` / `catchall` kept as legacy aliases.
+        "low" | "catch_all" | "catchall" => Some(Tier::Low),
         _ => None,
     }
 }

@@ -7418,8 +7418,8 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                           : <span style={{ color: 'var(--ink-dim)' }}>* · </span>}
                         <span>{r.path}</span>
                         {isCatchall && <span className="pill" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }}>catch-all</span>}
-                        {r.default && <span className="pill ok" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Fallback for this host scope">default</span>}
-                        {r.enabled === false && <span className="pill warn" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Skipped from request matching">disabled</span>}
+                        {r.default && <span className="pill ok" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Catches unmatched traffic for this host">fallback</span>}
+                        {r.enabled === false && <span className="pill warn" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Skipped from request matching">paused</span>}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
                         <span className="mono">{r.id}</span> · <span className="pill neutral" style={{ fontSize: 9, padding: '0 6px' }}>{r.match_type}</span>
@@ -7441,9 +7441,14 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                       )}
                     </td>
                     <td style={{ fontSize: 11 }}>
-                      <div>{r.tier_override
-                        ? <span className="pill" style={{ fontSize: 10 }}>{r.tier_override}</span>
-                        : <span style={{ color: 'var(--ink-dim)' }}>default</span>}</div>
+                      <div>{(() => {
+                        // Normalize legacy `catch_all` → `low` for display.
+                        const t = r.tier_override === 'catch_all' || r.tier_override === 'catchall'
+                          ? 'low' : r.tier_override;
+                        return t
+                          ? <span className="pill" style={{ fontSize: 10 }}>{t}</span>
+                          : <span style={{ color: 'var(--ink-dim)' }}>low</span>;
+                      })()}</div>
                       <div style={{ marginTop: 2 }}>
                         {(r.auth_required || []).length === 0
                           ? <span style={{ color: 'var(--ink-dim)' }}>open</span>
@@ -7593,6 +7598,13 @@ function poolBodyFromInlineForm(np) {
 // write them naturally. `routeBodyFromDraft` accepts either
 // shape (legacy comma-string OR fresh array) so older callers
 // keep working.
+// Translate the legacy "catch_all" tier name (still accepted by the
+// backend as a serde alias) into the canonical "low" so the modal
+// dropdown's selected-value logic picks the right option.
+function normalizeTier(t) {
+  if (t === 'catch_all' || t === 'catchall') return 'low';
+  return t || 'low';
+}
 function emptyRouteDraft() {
   return {
     id: '',
@@ -7601,7 +7613,7 @@ function emptyRouteDraft() {
     match_type: 'prefix',
     methods: [],
     upstream: '',
-    tier_override: '',
+    tier_override: 'low',
     auth_required: [],
     default: false,
     enabled: true,
@@ -7615,7 +7627,7 @@ function routeToDraft(r) {
     match_type: r.match_type || 'prefix',
     methods: r.methods || [],
     upstream: r.upstream || '',
-    tier_override: r.tier_override || '',
+    tier_override: normalizeTier(r.tier_override),
     auth_required: r.auth_required || [],
     default: !!r.default,
     enabled: r.enabled !== false, // default to true if missing
@@ -7640,6 +7652,9 @@ function routeBodyFromDraft(d) {
   };
   if (d.host.trim()) body.host = d.host.trim();
   if (methods.length > 0) body.methods = methods;
+  // PR2/tier-rename — tier_override is always set in the modal
+  // (defaulting to 'low'), so always send it. Backend accepts
+  // critical | high | medium | low (with catch_all kept as alias).
   if (d.tier_override) body.tier_override = d.tier_override;
   if (auth_required.length > 0) body.auth_required = auth_required;
   return body;
@@ -7848,13 +7863,12 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                   </select>
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 11 }}>Tier override</label>
-                  <select className="ip" value={d.tier_override} onChange={e => set('tier_override', e.target.value)}>
-                    <option value="">default</option>
+                  <label style={{ fontSize: 11 }}>Tier (risk level)</label>
+                  <select className="ip" value={d.tier_override || 'low'} onChange={e => set('tier_override', e.target.value)}>
                     <option value="critical">critical</option>
                     <option value="high">high</option>
                     <option value="medium">medium</option>
-                    <option value="catch_all">catch_all</option>
+                    <option value="low">low</option>
                   </select>
                 </div>
               </div>
@@ -7885,7 +7899,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
 
               {/* PR2 — default + enabled toggles. */}
               <div className="form-row" style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginTop: 8 }}>
-                <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer' }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer', flex: 1 }}>
                   <input
                     type="checkbox"
                     checked={!!d.default}
@@ -7893,13 +7907,16 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                     style={{ marginTop: 2 }}
                   />
                   <span>
-                    <strong>Default route</strong> for this host scope
-                    <div style={{ color: 'var(--ink-dim)', fontWeight: 400, marginTop: 2 }}>
-                      Fallback when no other route matches. At most one default per host scope.
+                    <strong>Catch unmatched traffic</strong>
+                    <div style={{ color: 'var(--ink-dim)', fontWeight: 400, marginTop: 2, lineHeight: 1.4 }}>
+                      Make this the fallback for any request to this host
+                      that doesn't match a more specific route. Without a
+                      fallback, unmatched requests get a 404. Each host
+                      can have one fallback.
                     </div>
                   </span>
                 </label>
-                <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer' }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer', flex: 1 }}>
                   <input
                     type="checkbox"
                     checked={d.enabled !== false}
@@ -7907,9 +7924,12 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                     style={{ marginTop: 2 }}
                   />
                   <span>
-                    <strong>Enabled</strong>
-                    <div style={{ color: 'var(--ink-dim)', fontWeight: 400, marginTop: 2 }}>
-                      Disabled routes stay in config but skip request matching.
+                    <strong>Active in routing</strong>
+                    <div style={{ color: 'var(--ink-dim)', fontWeight: 400, marginTop: 2, lineHeight: 1.4 }}>
+                      Uncheck to <em>pause</em> this route without deleting
+                      it — config stays, request matching skips it. Handy
+                      for staging variants or pulling a misbehaving route
+                      fast.
                     </div>
                   </span>
                 </label>

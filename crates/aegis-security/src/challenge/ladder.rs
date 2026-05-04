@@ -47,7 +47,7 @@ pub fn next_level(
         Tier::Critical => escalate_critical(risk),
         Tier::High => escalate_high(risk),
         Tier::Medium => escalate_medium(risk),
-        Tier::CatchAll => escalate_catchall(risk),
+        Tier::Low => escalate_catchall(risk),
     }
 }
 
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn catchall_tier_more_lenient() {
         // At risk 65 catchall still Pow, high would be Captcha.
-        let catchall = next_level(65, 50, &BotClass::Unknown, &Tier::CatchAll);
+        let catchall = next_level(65, 50, &BotClass::Unknown, &Tier::Low);
         let high = next_level(65, 50, &BotClass::Unknown, &Tier::High);
         assert!(matches!(catchall, Some(ChallengeLevel::Pow)));
         assert!(matches!(high, Some(ChallengeLevel::Captcha)));

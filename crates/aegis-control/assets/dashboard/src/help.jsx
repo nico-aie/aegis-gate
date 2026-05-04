@@ -138,7 +138,7 @@ function TabHowItWorks() {
             <li><strong>Route resolution</strong> matches the request's host + path + method against the route table (first-match-wins, top to bottom).</li>
             <li><strong>Access list</strong> (blacklist / whitelist) — IP / CIDR / ASN / country filters short-circuit before the detector chain.</li>
             <li><strong>Detector chain</strong> — every detector enabled in the mask runs on the request: SQLi, XSS, path traversal, SSRF, header injection, body abuse, recon, plus the AI detector if it's on.</li>
-            <li><strong>Risk + tier gate</strong> — detector signals add to a per-request composite score; if it crosses the route's tier threshold (critical 50 / high 70 / medium 80 / catch_all 90), the request is blocked (HTTP 403 / 429). Separately, every detector hit also increments the client IP's <em>cumulative IP risk score</em>, which has its own thresholds in Settings → "Cumulative IP risk thresholds".</li>
+            <li><strong>Risk + tier gate</strong> — detector signals add to a per-request composite score; if it crosses the route's tier threshold (critical 50 / high 70 / medium 80 / low 90), the request is blocked (HTTP 403 / 429). Separately, every detector hit also increments the client IP's <em>cumulative IP risk score</em>, which has its own thresholds in Settings → "Cumulative IP risk thresholds".</li>
             <li><strong>Forward</strong> — if allowed, the request is proxied to the route's upstream pool with the configured scheme, load-balancing, host-header rewrite, etc.</li>
             <li><strong>Audit + metrics</strong> — every decision lands as a hash-chained audit event and one entry per Prometheus histogram bucket.</li>
           </ol>
@@ -235,10 +235,12 @@ function TabGlossary() {
       'Global enforce / log-only switch (Settings page). Log-only emits all detections to audit + metrics but never blocks — used for burn-in of new rules.'],
     ['Hash-chained',
       'Each audit entry carries the SHA-256 of the previous entry. Tampering detectable: re-hash the chain and compare to the witness sign-off.'],
-    ['First-match-wins',
-      'Routes are evaluated top to bottom; the first one whose host + path + method matches handles the request. Order routes from most-specific to catch-all.'],
-    ['Catch-all route',
-      'A route with path `/` and no host pin (or host `*`). Required — `RouteTable::build` rejects a config without one. The dashboard refuses to delete the last catch-all (HTTP 409).'],
+    ['Specificity-based resolution',
+      'Routes are evaluated by specificity, not YAML order: most-specific host first (exact > wildcard > default), then longest path prefix, then explicit method filters. Add/edit order does not affect resolution; the routes table is sorted by effective priority desc.'],
+    ['Fallback route (`default: true`)',
+      'Marks a route as the catch-all for its host scope — handles requests that no other route matches. Each host can have one fallback. Without any fallback, unmatched traffic returns 404 (deny-by-default). Replaces the rigid pre-PR2 invariant that required a `path: "/"` route with no host pin.'],
+    ['Paused route (`enabled: false`)',
+      'A route that stays in config but skips request matching, as if it didn\'t exist. Useful for staging variants, A/B switches, or quickly pulling a misbehaving route without losing the configuration. Visible in `/api/routes` and the dashboard table (dimmed) so the operator sees what\'s paused.'],
     ['Host header override',
       'Per-member `host_header:` field. Drives both the outbound `Host` AND the TLS SNI for HTTPS upstreams. Required for multi-vhost backends (Cloudflare-fronted, GitHub Pages, shared nginx).'],
     ['Cumulative IP risk score',

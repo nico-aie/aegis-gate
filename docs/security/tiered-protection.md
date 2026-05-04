@@ -103,7 +103,7 @@ tiers:
     failure_mode: fail_open
     # …
 
-  - name: catchall
+  - name: low
     routes: ["/**"]
     match_type: wildcard
     failure_mode: fail_open

@@ -151,7 +151,7 @@ fn tier_str(t: &Tier) -> &'static str {
         Tier::Critical => "critical",
         Tier::High => "high",
         Tier::Medium => "medium",
-        Tier::CatchAll => "catch_all",
+        Tier::Low => "low",
     }
 }
 
@@ -160,7 +160,9 @@ fn parse_tier(s: &str) -> Result<Tier, String> {
         "critical" => Ok(Tier::Critical),
         "high" => Ok(Tier::High),
         "medium" => Ok(Tier::Medium),
-        "catch_all" | "catchall" => Ok(Tier::CatchAll),
+        // `catch_all` / `catchall` kept as accepted aliases so old
+        // YAML configs and old API clients keep parsing.
+        "low" | "catch_all" | "catchall" => Ok(Tier::Low),
         other => Err(other.to_string()),
     }
 }

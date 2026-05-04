@@ -295,7 +295,7 @@ pub fn route_summaries(
                     aegis_core::tier::Tier::Critical => "critical",
                     aegis_core::tier::Tier::High => "high",
                     aegis_core::tier::Tier::Medium => "medium",
-                    aegis_core::tier::Tier::CatchAll => "catch_all",
+                    aegis_core::tier::Tier::Low => "low",
                 }
                 .to_string()),
                 auth_required: r.auth_required.clone(),
@@ -430,7 +430,7 @@ impl CompiledRouteTable {
             let mut routes = Vec::new();
 
             for (_, prio, rc) in &entries {
-                let tier = rc.tier_override.unwrap_or(Tier::CatchAll);
+                let tier = rc.tier_override.unwrap_or(Tier::Low);
                 let failure_mode = match &rc.failure_mode {
                     Some(FailureModeConfig::FailClose) => FailureMode::FailClose,
                     Some(FailureModeConfig::FailOpen) => FailureMode::FailOpen,

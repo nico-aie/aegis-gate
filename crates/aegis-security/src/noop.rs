@@ -69,7 +69,7 @@ mod tests {
     fn make_route() -> RouteCtx {
         RouteCtx {
             route_id: "test".into(),
-            tier: Tier::CatchAll,
+            tier: Tier::Low,
             failure_mode: FailureMode::FailOpen,
             upstream: "default".into(),
             tenant_id: None,

@@ -229,7 +229,7 @@ The **tier risk threshold** comes from the resolved route's tier:
 | `critical` | 50 — blocks on a single sqli or xss |
 | `high` | 70 — blocks on a single hit by default |
 | `medium` | 80 — needs more signal to block |
-| `catch_all` (default for unmarked routes) | 90 — most permissive |
+| `low` (default for unmarked routes) | 90 — most permissive |
 
 Edit the thresholds from the **Detectors page → Edit tier** modal
 (audit-mutated). Reference: [`tiered-protection.md`](tiered-protection.md).
@@ -264,7 +264,7 @@ so the distinction matters.
 
 Sum of every signal that fired on **this single request**. Compared
 against the matched route's tier `risk_threshold` (critical 50 / high
-70 / medium 80 / catch_all 90 by default) to decide block vs allow.
+70 / medium 80 / low 90 by default) to decide block vs allow.
 
 **Where to edit:** the dashboard **Detectors page → Edit tier** modal
 (audit-mutated `PUT /api/tiers/{name}`). YAML equivalent in
@@ -386,14 +386,14 @@ Host: localhost:8080
 
 1. **Listener** parses the request.
 2. **Route table** matches `catch-all` (no host pin, prefix `/`).
-   Tier = `catch_all` (threshold 90). Upstream = `stub-pool`.
+   Tier = `low` (threshold 90). Upstream = `stub-pool`.
 3. **Access gate**: source IP not blacklisted, not rate-limited.
    Strike score = 0. Pass.
 4. **Detector chain** runs all enabled detectors. The sqli detector's
    Aho-Corasick catches `OR '1'='1` plus the `'` opener — emits
    `Signal { tag: "sqli", score: 60 }`.
 5. **Rule engine** has no operator rule matching this URL. No-op.
-6. **Risk + tier gate**: `composite = 60`. Threshold for `catch_all` is
+6. **Risk + tier gate**: `composite = 60`. Threshold for `low` is
    90 — 60 < 90 means **the WAF would NOT block**. But: the **bundled
    sqli detector's score weight is 60** in dev, so single hits don't
    block on the catch-all tier by default. Same request against a

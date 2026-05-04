@@ -95,7 +95,7 @@ impl LoadShedder {
         let headroom = match tier {
             Tier::High => (limit as f64 * 0.1) as u64,    // 10% headroom
             Tier::Medium => 0,                              // no headroom
-            Tier::CatchAll => 0,                            // first to shed
+            Tier::Low => 0,                            // first to shed
             Tier::Critical => unreachable!(),
         };
 
@@ -140,7 +140,7 @@ impl LoadShedder {
 
 /// Which tiers to shed and in what order.
 pub fn shed_order() -> [Tier; 3] {
-    [Tier::CatchAll, Tier::Medium, Tier::High]
+    [Tier::Low, Tier::Medium, Tier::High]
 }
 
 #[cfg(test)]
@@ -164,7 +164,7 @@ mod tests {
             s.acquire();
         }
         // At limit — CatchAll should be shed.
-        assert!(!s.should_admit(&Tier::CatchAll));
+        assert!(!s.should_admit(&Tier::Low));
         // High gets 10% headroom (2 slots).
         assert!(s.should_admit(&Tier::High));
     }
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn under_limit_all_admitted() {
         let s = LoadShedder::new(100, 1);
-        assert!(s.should_admit(&Tier::CatchAll));
+        assert!(s.should_admit(&Tier::Low));
         assert!(s.should_admit(&Tier::Medium));
         assert!(s.should_admit(&Tier::High));
         assert!(s.should_admit(&Tier::Critical));
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn shed_order_priority() {
         let order = shed_order();
-        assert_eq!(order[0], Tier::CatchAll);
+        assert_eq!(order[0], Tier::Low);
         assert_eq!(order[1], Tier::Medium);
         assert_eq!(order[2], Tier::High);
     }
@@ -249,7 +249,7 @@ mod tests {
             if s.should_admit(&Tier::Critical) {
                 critical_ok += 1;
             }
-            if s.should_admit(&Tier::CatchAll) {
+            if s.should_admit(&Tier::Low) {
                 catchall_ok += 1;
             }
         }

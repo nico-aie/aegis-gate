@@ -308,13 +308,13 @@ pub const fn tier_index(tier: Tier) -> usize {
         Tier::Critical => 0,
         Tier::High => 1,
         Tier::Medium => 2,
-        Tier::CatchAll => 3,
+        Tier::Low => 3,
     }
 }
 
 /// All tier variants in [`tier_index`] order — used for stable
 /// iteration in JSON serialization.
-pub const ALL_TIERS: [Tier; 4] = [Tier::Critical, Tier::High, Tier::Medium, Tier::CatchAll];
+pub const ALL_TIERS: [Tier; 4] = [Tier::Critical, Tier::High, Tier::Medium, Tier::Low];
 
 /// Wire-compatible string codes for `Tier`. Mirrors
 /// `#[serde(rename_all = "snake_case")]` so dashboards and YAML
@@ -324,7 +324,7 @@ pub const fn tier_str(tier: Tier) -> &'static str {
         Tier::Critical => "critical",
         Tier::High => "high",
         Tier::Medium => "medium",
-        Tier::CatchAll => "catch_all",
+        Tier::Low => "low",
     }
 }
 
@@ -541,13 +541,13 @@ mod tests {
         assert_eq!(tier_index(Tier::Critical), 0);
         assert_eq!(tier_index(Tier::High), 1);
         assert_eq!(tier_index(Tier::Medium), 2);
-        assert_eq!(tier_index(Tier::CatchAll), 3);
+        assert_eq!(tier_index(Tier::Low), 3);
     }
 
     #[test]
     fn tier_str_matches_serde_snake_case() {
         assert_eq!(tier_str(Tier::Critical), "critical");
-        assert_eq!(tier_str(Tier::CatchAll), "catch_all");
+        assert_eq!(tier_str(Tier::Low), "low");
     }
 
     #[test]
@@ -576,15 +576,15 @@ mod tests {
     fn shared_mask_set_override_is_visible_via_resolve() {
         let s = SharedDetectorMask::default();
         let override_mask = DetectorMask::none();
-        s.set_override(Tier::CatchAll, Some(override_mask));
+        s.set_override(Tier::Low, Some(override_mask));
 
         // CatchAll requests now run no detectors; other tiers untouched.
-        assert_eq!(s.resolve(Some(Tier::CatchAll)), DetectorMask::none());
+        assert_eq!(s.resolve(Some(Tier::Low)), DetectorMask::none());
         assert_eq!(s.resolve(Some(Tier::High)), DetectorMask::all_enabled());
 
         // Clearing the override reverts to base.
-        s.set_override(Tier::CatchAll, None);
-        assert_eq!(s.resolve(Some(Tier::CatchAll)), DetectorMask::all_enabled());
+        s.set_override(Tier::Low, None);
+        assert_eq!(s.resolve(Some(Tier::Low)), DetectorMask::all_enabled());
     }
 
     #[test]

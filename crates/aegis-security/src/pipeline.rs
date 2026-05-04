@@ -58,7 +58,7 @@ fn path_heuristic(path: &str) -> (Tier, FailureMode) {
         return (Tier::Medium, FailureMode::FailOpen);
     }
 
-    (Tier::CatchAll, FailureMode::FailOpen)
+    (Tier::Low, FailureMode::FailOpen)
 }
 
 /// Stub pipeline that wires the rule engine into `SecurityPipeline`.
@@ -206,7 +206,7 @@ mod tests {
         let (m, u, h, b) = view_for_path("/static/logo.png");
         let req = make_view(&m, &u, &h, &b);
         let (tier, fm) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::CatchAll);
+        assert_eq!(tier, Tier::Low);
         assert_eq!(fm, FailureMode::FailOpen);
     }
 
@@ -215,7 +215,7 @@ mod tests {
         let (m, u, h, b) = view_for_path("/");
         let req = make_view(&m, &u, &h, &b);
         let (tier, _) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::CatchAll);
+        assert_eq!(tier, Tier::Low);
     }
 
     #[test]
