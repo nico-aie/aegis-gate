@@ -67,6 +67,25 @@ done
 Expected: every line says `port N free`. If anything is held, kill
 the holder or change the WAF / compose port mapping before going on.
 
+### Track B (Let's Encrypt cert) extras
+
+If your bench team requires a public-CA cert (Let's Encrypt) instead
+of the self-signed dev cert, add these prereqs — see §3 Track B for
+the full ACME flow:
+
+- **Public DNS A/AAAA record** pointing the staging host's hostname
+  at the bench host's public IP (e.g. `staging-waf.example.com →
+  203.0.113.45`). LE refuses to issue for IP literals, `.local`, or
+  unresolvable names.
+- **Inbound port 80 reachable** from the public internet (HTTP-01
+  challenge default), **or** inbound 443 (TLS-ALPN-01), **or** API
+  credentials for your DNS provider (DNS-01).
+- **TOS agreed** — the operator must read and accept the LE
+  Subscriber Agreement (`tls.acme.terms_of_service_agreed: true` in
+  the config is the legal acknowledgement).
+
+Add port 80 to the free-port check loop above when running Track B.
+
 ---
 
 ## 1 · Get the code
@@ -110,7 +129,13 @@ If the build fails:
 
 ---
 
-## 3 · Generate a self-signed staging cert
+## 3 · TLS certificate
+
+Pick **one** track. Track A is offline-friendly (self-signed); Track
+B satisfies "cert must be issued by a public CA" rules (Let's
+Encrypt, via the WAF's built-in ACME manager).
+
+### Track A — self-signed (fastest, offline-friendly)
 
 ```sh
 make cert
@@ -121,6 +146,148 @@ ls config/certs/
 127.0.0.1, ::1, aegis-gate.local` — fine for staging from `127.0.0.1`
 or the box's hostname. For benchmark from another machine, regenerate
 with that hostname in the SAN list (edit `config/gen-cert.sh`).
+
+### Track B — Let's Encrypt (public CA, ACME-issued)
+
+The WAF ships a leader-gated ACME manager (`tls.acme` config block,
+`crates/aegis-proxy/src/acme.rs`). Issuance + renewal happen in
+process — no certbot, no acme.sh. Cert hot-swap on rotation.
+
+**Prereqs that the bench host must satisfy:**
+
+| Prereq | HTTP-01 (default) | TLS-ALPN-01 | DNS-01 |
+|---|---|---|---|
+| Public DNS name resolving to this host | **Required** (e.g. `staging-waf.example.com`) | Required | Required |
+| Inbound port 80 reachable from internet | **Required** | not needed | not needed |
+| Inbound port 443 reachable from internet | not needed | **Required** | not needed |
+| DNS provider API credentials | not needed | not needed | **Required** |
+| Wildcard cert (`*.example.com`) supported | no | no | yes |
+
+`make cert` (the Track A target) is **not** run for Track B — the
+ACME manager produces the cert. Skip it.
+
+#### B.1 — pre-flight: confirm reachability
+
+```sh
+# Replace STAGING_HOST with the public DNS name. Run from another machine.
+STAGING_HOST="staging-waf.example.com"
+
+# DNS resolves to the bench host
+dig +short "$STAGING_HOST"
+
+# (HTTP-01 only) port 80 is reachable
+curl -fsS -o /dev/null -w '%{http_code}\n' "http://$STAGING_HOST/.well-known/acme-challenge/probe"
+# → 200 / 404 / 308 are all fine — what matters is that the connection succeeds
+# → "Connection refused" / "timed out" means the firewall / port-forward isn't open
+```
+
+If port 80 must remain firewalled, switch `tls.acme.challenge` to
+`tls_alpn01` (probe :443 instead) or `dns01` (no inbound ports
+required, but you'll need API creds for your DNS provider).
+
+#### B.2 — set up the ACME state directories
+
+```sh
+sudo mkdir -p /var/lib/aegis/acme /var/lib/aegis/certs
+sudo chown -R $USER /var/lib/aegis
+```
+
+`account_key_path` (`/var/lib/aegis/acme/account.json`, written
+`0600`) persists the LE account so re-issuance doesn't churn the
+account. `cert_dir` (`/var/lib/aegis/certs/`) is where issued certs
+land — one sub-dir per domain.
+
+#### B.3 — pick the directory URL (staging first!)
+
+| Use | URL |
+|---|---|
+| **Bring-up & smoke (always start here)** | `https://acme-staging-v02.api.letsencrypt.org/directory` |
+| Production benchmark | `https://acme-v02.api.letsencrypt.org/directory` |
+
+LE prod has hard rate limits (50 certs/registered-domain/week, 5
+duplicates/week); the staging endpoint has none and issues from a
+fake CA root your tools won't trust by default — that's the
+expected behaviour for the smoke step. Flip to prod only after a
+clean staging round trip.
+
+#### B.4 — config block
+
+In step 5 (`config/staging.yaml`), use this `listeners` + `tls`
+shape instead of the default. Substitute `STAGING_HOST` for your
+real public DNS name.
+
+```yaml
+listeners:
+  data:
+    - bind: "0.0.0.0:8443"
+      tls: true
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+  # HTTP-01 challenge listener — also serves the force-https
+  # redirect for non-challenge paths.
+  force_https:
+    bind: "0.0.0.0:80"
+    status: 308
+
+tls:
+  min_version: "1.2"
+  hsts:
+    max_age: 31536000
+    include_subdomains: true
+    preload: false
+
+  # No `certificates:` block — the acme block below provides the
+  # cert. (You CAN ship both for fallback; the manual cert is used
+  # until ACME issuance succeeds.)
+
+  acme:
+    # ⚠️ Start on STAGING; flip to prod only after a clean round trip.
+    directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory"
+    contacts:        ["mailto:ops@example.com"]   # REPLACE
+    domains:         ["staging-waf.example.com"]   # REPLACE
+    account_key_path: "/var/lib/aegis/acme/account.json"
+    cert_dir:         "/var/lib/aegis/certs"
+    renew_before:     30d
+    terms_of_service_agreed: true
+    challenge: http01      # http01 | tls_alpn01 | dns01
+```
+
+#### B.5 — verify after boot
+
+After §6 boots the WAF, watch the issuance:
+
+```sh
+journalctl -u aegis-gate -f | grep -i acme
+# Expected sequence over ~30 s:
+#   acme: registered account against https://acme-staging-v02.api.letsencrypt.org/directory
+#   acme: order placed for domains=[staging-waf.example.com]
+#   acme: HTTP-01 challenge published token=...
+#   acme: challenge validated by directory
+#   acme: cert issued and persisted to disk path=/var/lib/aegis/certs/staging-waf.example.com/
+#   acme: cert hot-swapped into live store
+
+ls -la /var/lib/aegis/certs/staging-waf.example.com/
+# → cert.pem, key.pem (mode 0600)
+
+# From another machine — confirm the served cert is LE-issued:
+echo | openssl s_client -connect "$STAGING_HOST:8443" -servername "$STAGING_HOST" 2>/dev/null \
+  | openssl x509 -noout -issuer -dates
+# Expected (staging endpoint):
+#   issuer=CN=(STAGING) Pretend Pear X1, O=(STAGING) Let's Encrypt, C=US
+# Expected (prod endpoint):
+#   issuer=CN=R3, O=Let's Encrypt, C=US     (or current LE intermediate)
+```
+
+#### B.6 — flip to prod LE
+
+After Track B staging works end-to-end, in `config/staging.yaml`:
+
+1. `directory_url:` → `https://acme-v02.api.letsencrypt.org/directory`
+2. `account_key_path:` → a **different** file (e.g. `account-prod.json`) — staging and prod accounts are separate
+3. Restart: `sudo systemctl restart aegis-gate` (graceful drain; in-flight requests finish)
+4. Re-run the openssl verify in B.5 — issuer should now be the real LE intermediate
 
 ---
 
@@ -173,8 +340,10 @@ Edit `config/staging.yaml`:
 |---|---|---|
 | `state.backend` | `redis` | uses the Docker Redis above |
 | `state.redis.urls` | `["redis://127.0.0.1:6379"]` | Docker forwarded the port to host |
-| `tls.certificates[0].cert_path` | `/opt/aegis-gate/config/certs/dev.crt` | absolute path required |
-| `tls.certificates[0].key_ref` | `/opt/aegis-gate/config/certs/dev.key` | same |
+| `tls.certificates[0].cert_path` | `/opt/aegis-gate/config/certs/dev.crt` (Track A only) | absolute path required; **Track B uses `tls.acme:` instead — see §3.B.4** |
+| `tls.certificates[0].key_ref` | `/opt/aegis-gate/config/certs/dev.key` (Track A only) | same |
+| `tls.acme` | populated **only on Track B** — block from §3.B.4 | leader-gated ACME issuance + renewal |
+| `listeners.force_https` | `{ bind: "0.0.0.0:80", status: 308 }` **only on Track B + HTTP-01** | serves `/.well-known/acme-challenge/` |
 | `admin.bind` | `127.0.0.1:9443` | dashboard not exposed to the internet |
 | `admin.dashboard_auth.password_hash` | output of `./target/release/waf admin set-password` | fresh password, NOT the dev hash |
 | `admin.dashboard_auth.csrf_secret_ref` | `${secret:env:AEGIS_CSRF_SECRET}` (32+ random bytes) | env-injected, not in YAML |
@@ -418,6 +587,13 @@ Add `-v` to the `down` command to drop them too.
 | Benchmark stalls at low RPS | upstream is the bottleneck, not the WAF | swap to the bundled httpbin OR use the Go fast-upstream from `tests/hackathon/upstream/` |
 | Audit chain not growing | sink mis-configured | `journalctl -u aegis-gate \| grep audit` should show the sink wire-up at boot |
 | Prometheus shows no data for the WAF | scrape target unreachable | check `deploy/prometheus/prometheus.yml` — `host.docker.internal` resolves on Mac; on Linux use `extra_hosts: ["host.docker.internal:host-gateway"]` (already set in the compose file) |
+| **Track B**: `acme: terms_of_service_agreed must be true` at boot | TOS field unset | set `tls.acme.terms_of_service_agreed: true` in the config (it is your legal acknowledgement of the LE Subscriber Agreement) |
+| **Track B**: `acme: challenge validation failed` (HTTP-01) | LE couldn't reach `:80` from the public internet | confirm `listeners.force_https.bind: "0.0.0.0:80"` is set, the OS firewall allows inbound 80 (`sudo ufw allow 80/tcp` on Ubuntu), and DNS for the `domains:` entry resolves to the bench host's public IP. Re-run the §3.B.1 reachability probe |
+| **Track B**: `acme: challenge validation failed` (TLS-ALPN-01) | LE couldn't reach `:443` | same as above but for port 443. Confirm `listeners.data` includes a `tls: true` listener on `0.0.0.0:443` (not `:8443`) for the duration of issuance |
+| **Track B**: `acme: rate limit exceeded` from LE | hit the 5 duplicates / 50 certs per registered domain per week limit on the prod endpoint | switch `directory_url` back to `acme-staging-v02` for further iteration; the 7-day window resets automatically. Don't re-flip to prod until the staging round trip is clean |
+| **Track B**: `acme: account key mismatch` after switching staging↔prod | both endpoints reused the same `account_key_path` | use **separate** `account_key_path` files for staging vs prod (e.g. `account-staging.json` and `account-prod.json`) |
+| **Track B**: cert issued but browser/curl still sees old self-signed | manual `tls.certificates[]` block still present and the boot precedence kept it | remove the manual `certificates:` block (or accept the fallback behaviour — it's used only until ACME succeeds, then the live cert store hot-swaps to the LE cert; check `journalctl ... \| grep "cert hot-swapped"`) |
+| **Track B**: only one node in a cluster issues a cert | by design — issuance is gated on the `leader:acme` lease so multi-node deploys don't double-issue | confirm with `grep "leader lease acquired" journalctl` on the issuing node; followers replay the cert from `cert_dir` once it lands. For staging benchmark this is a single-node deploy so it's a non-issue |
 
 ---
 
