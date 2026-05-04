@@ -1404,4 +1404,93 @@ state: { backend: in_memory }
         let ids: Vec<_> = rows.iter().map(|r| r.route_id.as_str()).collect();
         assert_eq!(ids, vec!["api", "local", "catch-all"]);
     }
+
+    /// PR1 microbench — measures the cost of `RouteTable::resolve`
+    /// on a realistic 9-route table. Run with:
+    /// `cargo test -p aegis-proxy --release route_resolve_microbench
+    /// -- --nocapture --ignored`. Gated `#[ignore]` so the regular
+    /// test suite stays fast.
+    #[test]
+    #[ignore]
+    fn route_resolve_microbench() {
+        use std::time::Instant;
+
+        let yaml = r#"
+listeners:
+  data:    [{ bind: "127.0.0.1:8080" }]
+  admin:   { bind: "127.0.0.1:9090" }
+routes:
+  - { id: api-v1-search, host: "api.example.com",  path: "/v1/search",  methods: ["POST"], upstream: api-pool }
+  - { id: api-v1-users,  host: "api.example.com",  path: "/v1/users",                      upstream: api-pool }
+  - { id: api-v2-search, host: "api.example.com",  path: "/v2/search",  methods: ["POST"], upstream: api-pool }
+  - { id: api-v2-users,  host: "api.example.com",  path: "/v2/users",                      upstream: api-pool }
+  - { id: api-v2-orders, host: "api.example.com",  path: "/v2/orders",  methods: ["GET", "POST"], upstream: api-pool }
+  - { id: cdn-images,    host: "*.cdn.example.com", path: "/images",                       upstream: cdn-pool }
+  - { id: cdn-static,    host: "*.cdn.example.com", path: "/static",                       upstream: cdn-pool }
+  - { id: web-default,                              path: "/web",                          upstream: web-pool }
+  - { id: catch-all,                                path: "/",                             upstream: stub-pool }
+upstreams:
+  api-pool:  { members: [{ addr: "127.0.0.1:3000" }] }
+  cdn-pool:  { members: [{ addr: "127.0.0.1:3001" }] }
+  web-pool:  { members: [{ addr: "127.0.0.1:3002" }] }
+  stub-pool: { members: [{ addr: "127.0.0.1:9999" }] }
+state: { backend: in_memory }
+"#;
+        let cfg = aegis_core::load_config_str(yaml).unwrap();
+        let table = RouteTable::build(&cfg).unwrap();
+
+        let workload: Vec<(&str, &str, http::Method)> = vec![
+            ("api.example.com",     "/v2/search",       http::Method::POST),
+            ("api.example.com",     "/v2/users",        http::Method::GET),
+            ("api.example.com",     "/v2/orders/123",   http::Method::GET),
+            ("api.example.com",     "/v1/search",       http::Method::POST),
+            // Method fallthrough — `/v2/orders` only takes GET/POST,
+            // so PUT walks back to the catch-all. Exercises the new
+            // `find_all_prefixes` code path.
+            ("api.example.com",     "/v2/orders/123",   http::Method::PUT),
+            ("img.cdn.example.com", "/images/logo.png", http::Method::GET),
+            ("img.cdn.example.com", "/static/main.css", http::Method::GET),
+            ("anything.com",        "/web/page",        http::Method::GET),
+            ("anything.com",        "/random",          http::Method::GET),
+            ("any",                 "/",                http::Method::GET),
+        ];
+
+        // Warmup
+        for _ in 0..10_000 {
+            for (h, p, m) in &workload {
+                let _ = std::hint::black_box(table.resolve(h, p, m));
+            }
+        }
+
+        let iterations = 100_000;
+        let start = Instant::now();
+        for _ in 0..iterations {
+            for (h, p, m) in &workload {
+                let r = table.resolve(h, p, m);
+                std::hint::black_box(r);
+            }
+        }
+        let elapsed = start.elapsed();
+        let total = iterations * workload.len();
+        let ns_per = elapsed.as_nanos() as u64 / total as u64;
+        let per_sec = total as f64 / elapsed.as_secs_f64();
+
+        println!();
+        println!("=== route resolve microbench (release-mode) ===");
+        println!("routes in table:     {}", cfg.routes.len());
+        println!("workload mix:        {} request shapes", workload.len());
+        println!("total resolves:      {}", total);
+        println!("elapsed:             {:?}", elapsed);
+        println!("ns per resolve:      {} ns", ns_per);
+        println!("resolves per second: {:.0}", per_sec);
+        println!();
+
+        // Sanity gate — even on a bad day, resolve must stay sub-µs.
+        // Pre-PR1 baseline was ~150-300 ns; PR1 adds a small Vec
+        // allocation per resolve via find_all_prefixes.
+        assert!(
+            ns_per < 2_000,
+            "route resolve regressed past 2µs/op: {ns_per} ns",
+        );
+    }
 }
