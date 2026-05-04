@@ -1338,14 +1338,16 @@ function PageAuditLog() {
   const [ipFilter, setIpFilter] = useStateP('');
   const [ruleIdFilter, setRuleIdFilter] = useStateP('');
   const [requestIdFilter, setRequestIdFilter] = useStateP('');
-  // CQF-T11 — time-range chip + load-more pagination.
-  // `windowKey` ∈ '1h' | '24h' | '7d' | 'all'. Backend
-  // /api/audit/since takes `cursor` not `since_ts`, so we
-  // filter client-side after fetch — bounded by the
-  // already-shipped 200-row server cap.
   const [windowKey, setWindowKey] = useStateP('all');
   const [pageLimit, setPageLimit] = useStateP(200);
   const [debouncedQ, setDebouncedQ] = useStateP({ ip: '', ruleId: '', requestId: '' });
+  // FIX 2026-05-04 — Audit Trail page now defaults to admin /
+  // access / system events, hiding per-request `detection`
+  // events. Operators reading this page want config history,
+  // not the request firehose; per-request data lives on the
+  // Investigation page's "Recent requests" table. Toggle group
+  // lets them re-enable the firehose if they need it.
+  const [classFilter, setClassFilter] = useStateP('non-detection');
 
   // Debounce filter inputs so the API isn't hit on every keystroke.
   useEffectP(() => {
@@ -1364,17 +1366,30 @@ function PageAuditLog() {
   const rawEvents = audit.data?.events || [];
   const gap = audit.data?.gap;
 
-  // CQF-T11 — time-range filter applied client-side.
+  // CQF-T11 — time-range filter applied client-side. Plus the
+  // class filter (admin / detection / access / system /
+  // non-detection / all) so the page focuses on config history
+  // by default.
   const events = useMemoP(() => {
-    if (windowKey === 'all') return rawEvents;
-    const sec = windowKey === '1h' ? 3600 : windowKey === '24h' ? 86400 : 604800;
-    const cutoff = Date.now() - sec * 1000;
-    return rawEvents.filter(row => {
-      const e = row.event || row;
-      const ts = e.ts ? Date.parse(e.ts) : NaN;
-      return Number.isFinite(ts) ? ts >= cutoff : true;
-    });
-  }, [rawEvents, windowKey]);
+    let out = rawEvents;
+    if (windowKey !== 'all') {
+      const sec = windowKey === '1h' ? 3600 : windowKey === '24h' ? 86400 : 604800;
+      const cutoff = Date.now() - sec * 1000;
+      out = out.filter(row => {
+        const e = row.event || row;
+        const ts = e.ts ? Date.parse(e.ts) : NaN;
+        return Number.isFinite(ts) ? ts >= cutoff : true;
+      });
+    }
+    if (classFilter !== 'all') {
+      out = out.filter(row => {
+        const c = (row.event || row).class || 'unknown';
+        if (classFilter === 'non-detection') return c !== 'detection';
+        return c === classFilter;
+      });
+    }
+    return out;
+  }, [rawEvents, windowKey, classFilter]);
 
   function fmt(ts) {
     try {
@@ -1421,10 +1436,13 @@ function PageAuditLog() {
       <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
         <window.I.Book />
         <span>
-          <strong>Audit Log</strong> is the hash-chained durable trail of
-          everything: request decisions <em>plus</em> configuration
-          mutations (rules, modes, blocklists). For only live request
-          events without config noise, see <a href="#/live" style={{ color: 'var(--accent)' }}>Live Feed →</a>.
+          <strong>Audit Trail</strong> is the hash-chained durable trail of
+          operator + system events. The default view shows
+          configuration mutations, logins, and system events
+          (boot, drain, hot-reload). Per-request decisions are
+          on the <a href="#/investigation" style={{ color: 'var(--accent)' }}>Investigation page →</a> ("Recent requests"
+          table) and the <a href="#/live" style={{ color: 'var(--accent)' }}>Live Feed →</a>. Flip the class filter
+          below to <code>detection</code> or <code>all</code> to bring them back here.
         </span>
       </div>
 
@@ -1436,8 +1454,29 @@ function PageAuditLog() {
                  value={ruleIdFilter} onChange={e => setRuleIdFilter(e.target.value)} />
           <input className="input" style={{ flex: 1, maxWidth: 320 }} placeholder="request_id"
                  value={requestIdFilter} onChange={e => setRequestIdFilter(e.target.value)} />
-          {/* CQF-T11 — time-range chip group */}
-          <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+          {/* Class filter — defaults to non-detection so the page
+              focuses on config history. */}
+          <div style={{ display: 'flex', gap: 4, marginLeft: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Class:</span>
+            {[
+              { k: 'non-detection', l: 'admin + sys' },
+              { k: 'admin',         l: 'admin' },
+              { k: 'access',        l: 'access' },
+              { k: 'system',        l: 'system' },
+              { k: 'detection',     l: 'requests' },
+              { k: 'all',           l: 'all' },
+            ].map(({ k, l }) => (
+              <button
+                key={k}
+                className={`btn ${classFilter === k ? 'primary' : ''}`}
+                style={{ padding: '4px 10px', fontSize: 11 }}
+                onClick={() => setClassFilter(k)}
+              >{l}</button>
+            ))}
+          </div>
+          {/* Time-range chip group */}
+          <div style={{ display: 'flex', gap: 4, marginLeft: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Window:</span>
             {[
               { k: '1h',  l: '1h' },
               { k: '24h', l: '24h' },
@@ -6130,8 +6169,8 @@ function PageIncidents() {
         <span>
           Acks/snoozes/resolves are CSRF-gated POSTs that go through
           the audit chain — every action lands in <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail</a>.
-          Alert rules (when to fire) are still YAML-config; in-place
-          rule editor lands in Phase 4.
+          Alert <em>rules</em> (when to fire) are still configured via YAML
+          (<code>cfg.alerts</code>); the in-place rule editor isn't built yet.
         </span>
       </div>
     </>
@@ -6308,11 +6347,23 @@ function PageInvestigation() {
           name: c.name, value: c.count, color: botColorFor(c.name),
         }));
 
-        const filtered = events.filter(row => {
-          const e = row.event || row;
-          if (actionFilter !== 'all' && e.action !== actionFilter) return false;
-          return true;
-        });
+        // FIX 2026-05-04 — sort desc by `ts` so the table matches
+        // the "newest first" subtitle. `/api/audit/since` returns
+        // events in insertion order (oldest → newest); we flip
+        // here so the user sees today's events at the top.
+        const filtered = events
+          .filter(row => {
+            const e = row.event || row;
+            if (actionFilter !== 'all' && e.action !== actionFilter) return false;
+            return true;
+          })
+          .slice()
+          .sort((a, b) => {
+            const ea = a.event || a, eb = b.event || b;
+            const ta = ea.ts ? Date.parse(ea.ts) : 0;
+            const tb = eb.ts ? Date.parse(eb.ts) : 0;
+            return tb - ta;
+          });
 
         return (
           <>
@@ -6407,7 +6458,10 @@ function PageInvestigation() {
                       <th style={{ width: 70 }}>Method</th>
                       <th>Path</th>
                       <th style={{ width: 70 }}>Status</th>
-                      <th style={{ width: 70 }}>Risk</th>
+                      <th
+                        style={{ width: 80 }}
+                        title="Cumulative risk score for this client IP (decays over time). NOT the score of this single request — a request can be allowed even when its IP carries high risk if the request itself didn't trigger any detector."
+                      >IP risk</th>
                       <th>Rule</th>
                     </tr>
                   </thead>
@@ -6680,7 +6734,7 @@ function PageThreatIntel() {
       interval: "10m"`}
             </pre>
             <div style={{ marginTop: 8, fontSize: 11 }}>
-              Then restart the WAF. Feed-management UI (add/remove without restart) lands in Phase 4.
+              Then restart the WAF. A feed-management UI (add/remove without restart) isn't built yet — for now this page is read-only.
             </div>
           </div>
         ) : (
@@ -6781,7 +6835,7 @@ function PageCompliance() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Compliance Profile</h1>
-          <p className="page-subtitle">PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator (read-only; editor in Phase 4)</p>
+          <p className="page-subtitle">PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator (read-only · YAML-driven)</p>
         </div>
       </div>
 
@@ -6848,7 +6902,8 @@ function PageCompliance() {
       <div className="card" style={{ marginTop: 12, padding: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
         <window.I.Info />
         <span>
-          The clamp editor (toggle modes without YAML edit + restart) ships in Phase 4.
+          The runtime clamp editor (toggle modes without YAML + restart) isn't built yet —
+          edit <code>cfg.compliance.modes</code> and restart for now.
           Detector tier overrides remain editable on the <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors</a> page.
         </span>
       </div>
@@ -6857,8 +6912,9 @@ function PageCompliance() {
 }
 
 function PageReports() {
-  // Only the audit CSV is wired today; the rest are placeholders.
-  // Phase 4 adds PDF + scheduled delivery.
+  // Only the audit CSV is wired today. The other report shapes
+  // are placeholders — the data is available via /api/* but no
+  // CSV/PDF renderer is plumbed yet.
   const cards = [
     {
       title: 'Audit trail (last 200 events)',
@@ -6874,13 +6930,13 @@ function PageReports() {
     },
     {
       title: 'Top attackers (last 7d)',
-      sub: 'IP / ASN / country / hits / first seen — Phase 4',
+      sub: 'IP / ASN / country / hits / first seen — not wired yet (data lives at /api/attacks/top)',
       href: null,
       ready: false,
     },
     {
       title: 'Compliance snapshot',
-      sub: 'Active modes + clamped detectors — Phase 4',
+      sub: 'Active modes + clamped detectors — not wired yet (read live state via /api/compliance + /api/detectors)',
       href: null,
       ready: false,
     },
@@ -6890,7 +6946,7 @@ function PageReports() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Reports</h1>
-          <p className="page-subtitle">CSV exports · compliance digests · scheduled delivery (Phase 4)</p>
+          <p className="page-subtitle">CSV exports of audit + summary data · scheduled delivery not built yet</p>
         </div>
       </div>
       <div className="card" style={{ padding: 16 }}>
@@ -6905,7 +6961,7 @@ function PageReports() {
                 </a>
               ) : (
                 <button className="btn" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                  <window.I.Download /> Phase 4
+                  <window.I.Download /> not wired yet
                 </button>
               )}
             </div>

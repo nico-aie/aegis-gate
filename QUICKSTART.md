@@ -217,6 +217,7 @@ Full troubleshooting: [`docs/operator/usage.md`](docs/operator/usage.md).
 
 | You want to … | Doc |
 |---|---|
+| **Verify every feature works** (QC playbook · one row per feature) | [`docs/FEATURES.md`](docs/FEATURES.md) |
 | Wire a real upstream (per-protocol recipes) | [`docs/operator/upstream-cookbook.md`](docs/operator/upstream-cookbook.md) |
 | Pick a production profile | [`docs/operator/profiles.md`](docs/operator/profiles.md) |
 | Read every config field | [`config/README.md`](config/README.md) |

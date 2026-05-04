@@ -242,6 +242,7 @@ waf help
 | Topic | Doc |
 |---|---|
 | **Operator quick start** | [`QUICKSTART.md`](QUICKSTART.md) |
+| **Feature playbook** (one row per feature, how to verify each) | [`docs/FEATURES.md`](docs/FEATURES.md) |
 | **Upstream cookbook (per-protocol recipes)** | [`docs/operator/upstream-cookbook.md`](docs/operator/upstream-cookbook.md) |
 | **Profile picker** | [`docs/operator/profiles.md`](docs/operator/profiles.md) |
 | **SOC runbook** | [`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md) |
