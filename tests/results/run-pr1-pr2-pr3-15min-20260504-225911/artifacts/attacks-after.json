@@ -1,0 +1,1 @@
+{"window_seconds":900,"categories":[{"name":"upstream","count":709990,"pct":72.6},{"name":"path_traversal","count":111697,"pct":11.4},{"name":"sqli","count":67002,"pct":6.9},{"name":"xss","count":44663,"pct":4.6},{"name":"ssrf","count":22340,"pct":2.3},{"name":"mass_assignment","count":22339,"pct":2.3}]}
