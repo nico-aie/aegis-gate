@@ -32,15 +32,19 @@ CARGO ?= cargo
 # deployment actually needs; the dev-cert path doesn't depend on any of
 # these. See config/README.md for the resolver / feature mapping.
 #
-# `geoip` and `alerts` are included by default. Both are no-ops
-# when their respective config blocks are unset (`make geoip-link`
-# not yet run; `alert_receivers: []`), so non-users pay nothing.
+# `geoip`, `alerts`, and `ai` are included by default. All three
+# are no-ops when their respective config blocks are unset
+# (`make geoip-link` not yet run; `alert_receivers: []`;
+# `ai.enabled: false`), so non-users pay nothing at runtime —
+# but the binary needs to be built with the feature so the
+# config knob is honoured. Without `ai`, a config that sets
+# `ai.enabled: true` (which `config/dev.yaml` does) fails boot.
 # Including `alerts` matters because dispatch silently no-ops
 # when the feature is missing — without it built in, an operator
 # clicks "test alert receiver" and the dashboard reports success
 # while nothing actually leaves the WAF. Override with
 # FEATURES="redis" for slim builds.
-FEATURES        ?= redis geoip alerts
+FEATURES        ?= redis geoip alerts ai
 
 # Default config to run against. The prod-balanced profile is the
 # recommended starting point for production deployments — full detector

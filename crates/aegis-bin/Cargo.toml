@@ -83,6 +83,7 @@ production = [
     "redis",
     "alerts",
     "geoip",
+    "ai",
     "taxii",
     "http3",
     "vault",
