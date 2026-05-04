@@ -45,7 +45,8 @@ use crate::admin_mutate::{
     handle_ai_enabled_get, handle_ai_enabled_put, handle_pool_upsert,
     handle_risk_reset, handle_risk_thresholds_put, handle_route_delete,
     handle_route_upsert, handle_rules_delete, handle_rules_post,
-    handle_rules_put, handle_rules_toggle, handle_upstreams_config_put,
+    handle_rules_put, handle_rules_toggle, handle_tier_put,
+    handle_upstreams_config_put,
 };
 use crate::responses::{json_body_response, json_response};
 
@@ -266,6 +267,17 @@ pub(crate) async fn handle_admin_request(
         }
         if method == hyper::Method::PUT {
             return handle_ai_enabled_put(req, services).await;
+        }
+    }
+
+    // TI-T — audit-mutated tier edits. Tier names are constrained
+    // (`critical | high | medium | low`); the handler rejects
+    // anything else with a `validation` reason.
+    if let Some(suffix) = path.strip_prefix("/api/tiers/") {
+        if !suffix.is_empty() && !suffix.contains('/') {
+            if method == hyper::Method::PUT {
+                return handle_tier_put(req, suffix, services).await;
+            }
         }
     }
 

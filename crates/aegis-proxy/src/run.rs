@@ -393,7 +393,6 @@ pub async fn run(
             tracing::info!(
                 model_path = %model_path.display(),
                 threshold = cfg.ai.confidence_threshold,
-                mode = ?cfg.ai.mode,
                 "AI detector wired into the chain",
             );
             detector_vec.push(Box::new(detector));

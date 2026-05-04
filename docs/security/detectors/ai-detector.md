@@ -70,34 +70,30 @@ ai:
   enabled: true                                  # runtime on/off
   model_path: data/ai_model/waf_model.onnx       # 38 MB ONNX file
   confidence_threshold: 0.5                      # below: no-op
-  mode: observe                                  # observe | enforce
-  timeout: 5ms                                   # inference budget
 ```
 
-Knobs (finest to coarsest):
+Simplified 2026-05-04 — AI is treated like any other detector
+class now. The earlier `mode: observe | enforce`, `tiers:`,
+`timeout:`, and `explain:` knobs were declared but never read
+in the runtime; they're gone.
+
+Knobs:
 
 | Knob | Granularity | Restart? | Notes |
 |---|---|---|---|
-| Cargo feature `ai` | compile-time | yes (rebuild) | Off by default — adds the `ort` runtime + 38 MB model bytes |
-| `ai.enabled` | per-deployment | hot-reload | When false, the boot path skips loading the model entirely |
-| `ai.mode: observe \| enforce` | per-deployment | hot-reload | `observe` (recommended for burn-in): emit metrics + `would_block` audit, **never block**. `enforce`: block when `class != normal`. |
-| `ai.confidence_threshold` | per-deployment | hot-reload | Minimum verdict confidence — below threshold the detector returns no signal so it can't override regex verdicts on low-confidence calls |
-| `ai.timeout` | per-deployment | hot-reload | Hard wall-clock budget for inference — exceeding emits `aegis_ai_fallback_total{reason=inference_error}` and skips the verdict |
-| `/api/detectors` mask | runtime, per-tier | live | Same UI as muting `sqli` — set `class="ai"` to off and the chain skips it without restart |
-
-The `ai.mode: observe` default is the right starting point: every
-operator's traffic mix is different, model thresholds need
-tuning before they enforce, and the `would_block` audit gives
-a calibration trail.
+| Cargo feature `ai` | compile-time | yes (rebuild) | Adds `ort` runtime + 38 MB model bytes. Included in the default `make build` target. |
+| `ai.enabled` (YAML) | per-deployment | restart for first wire | Boot wires the AiDetector into the chain when `true` AND the feature is on. |
+| `PUT /api/ai/enabled` | runtime | hot | Audit-mutated runtime toggle. Shipped as the **Detectors** page Enable/Disable button. When off, `inspect()` short-circuits — zero inference cost. |
+| `ai.confidence_threshold` | per-deployment | restart | Minimum verdict confidence — below threshold the detector returns no signal so it can't override regex verdicts on low-confidence calls. |
 
 ## Actions on detection
 
 - Emit a `Signal` with `tag: "ai"` and `score: 60` — feeds the
   same scoring path as every other detector class.
-- In `enforce` mode, the request is blocked (HTTP 403) once the
-  composite score crosses the route's tier threshold.
-- In `observe` mode, the audit event records `would_block: true`
-  but the request flows through.
+- The route's tier threshold + composite request score decide
+  whether the request is blocked (403) or just risk-scored.
+  Same flow as every other detector — there's no AI-specific
+  block path.
 
 ## Performance (measured)
 
@@ -127,7 +123,7 @@ hardware before promoting to enforce.**
   warm-cache earlier run; the value moves with system load
   and ONNX arena state
 - 783 µs mean when AI runs alone (case B)
-- p95 inference well inside the 5 ms `ai.timeout` ceiling
+- p95 inference comfortably inside the 5 ms request budget
 
 **Memory cost**: +500 MB RSS on top of the regex chain in this
 run (65 → 562 MB) — the 38 MB ONNX session plus arenas the
@@ -148,19 +144,22 @@ favour recall over precision). At threshold 0.5 it fires on
 about two-thirds of all traffic in our mixed corpus — far too
 aggressive for `enforce`. **Tightening recipe**:
 
-1. Run `ai.mode: observe` for at least a week on production
-   shape — collect `would_block` audit events into the SOC bus.
-2. Inspect by-class FP rate from the dashboard's AI Detector
-   card (rendered when `metrics-after.txt` carries `class="ai"`
-   labels).
-3. Bump `ai.confidence_threshold` until the FP rate matches your
-   tolerance (0.7 / 0.85 / 0.95 are common pre-commit gates),
-   then flip `mode: enforce`.
-4. Operators with a stricter false-positive ceiling can either
-   retrain on their own corpus (the trainer at
-   `data/ai_model/src/` is a stub kept for reference, not an
-   in-repo build target) or run AI in `observe` indefinitely as
-   a tripwire.
+1. Bump `ai.confidence_threshold` to a high value (start at
+   `0.95`) so only high-confidence verdicts contribute score.
+   Every below-threshold prediction increments the
+   `low_confidence` fallback counter so you can watch the
+   rejection rate.
+2. Watch `aegis_detector_hits_total{class="ai"}` against
+   real traffic for a week. Compare against
+   `aegis_ai_predictions_total` to see how often the model
+   fires vs how often the threshold gates suppress it.
+3. Tighten or loosen the threshold based on what you see.
+4. If the false-positive rate stays high regardless, retrain on
+   your own corpus (the trainer at `data/ai_model/src/` is a
+   stub kept for reference, not an in-repo build target) — or
+   leave AI on but lower its `score:` (config knob, defaults to
+   60) so it contributes risk without pushing requests across
+   the block threshold on its own.
 
 ## Observability
 

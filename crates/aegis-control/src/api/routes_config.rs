@@ -286,6 +286,19 @@ pub trait RouteWriter: Send + Sync {
     /// upsert / delete, then calls this. Validates first; on
     /// error the live table is untouched.
     fn apply(&self, new_cfg: &WafConfig) -> Result<(), RouteApplyError>;
+
+    /// Return the route list currently live in the proxy.
+    /// Used by audit-mutated handlers to start from the live
+    /// state instead of the boot-time `cfg.routes` snapshot —
+    /// without this, two consecutive runtime upserts would lose
+    /// the first one because each handler builds `next_routes`
+    /// from the (stale) boot cfg.
+    ///
+    /// Default returns an empty list — implementations should
+    /// override with the live shape.
+    fn current_routes(&self) -> Vec<RouteConfig> {
+        Vec::new()
+    }
 }
 
 /// Failure modes returned by [`RouteWriter::apply`]. Mirrors

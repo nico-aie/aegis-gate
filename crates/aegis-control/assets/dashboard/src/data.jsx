@@ -255,47 +255,56 @@ function useTicking(intervalMs = 1000) {
 // dashboard rendering even when a backend handler crashes mid-
 // session. Returns `{ data, loading, error, reload }`.
 function useApi(url, { intervalMs = 5000, fallback = null } = {}) {
-  // FIX 2026-05-04 — the pill across the dashboard reads
-  // `api.error` to decide between "live" / "fetch failed".
-  // Old behaviour: any single failed poll set `error`, and the
-  // pill flipped to "fetch failed" until the *next* successful
-  // poll cleared it. On long-interval endpoints (30 s
-  // /api/upstreams/config, 60 s /api/runtime, …) a single blip
-  // pinned the warn pill for tens of seconds even though the
-  // page was rendering perfectly good cached data. Operators
-  // perceive this as "FETCH FAILED label even have data".
+  // FIX 2026-05-04 (round 2) — the page-head subtitle was
+  // "flashing continuously" because `useApi` was caught in a
+  // re-render storm: every caller passes fresh `{ intervalMs,
+  // fallback: { pools: {} } }` object literals, so the
+  // destructured values changed identity on every render →
+  // `reload` was recreated → `useEffect` cleanup+re-arm fired
+  // → setInterval started a fresh timer that fired within ms
+  // → setState bumped a new render → repeat. The cumulative
+  // effect was a setState every animation frame, which the
+  // user perceives as a flickering subtitle.
   //
-  // New behaviour: track `lastFetchOk` separately. `error` is
-  // suppressed once we've ever fetched non-fallback data — the
-  // pill keys off `error` so it now answers the more useful
-  // question "do we have data?" instead of "did the last poll
-  // succeed?". Pages that genuinely need staleness (e.g. an SLO
-  // dashboard) can opt into the per-poll signal via
-  // `lastFetchOk` directly.
+  // Fix: stabilise via refs. `useEffect` depends only on the
+  // URL; the interval and fallback are read from refs so they
+  // can change without re-arming the timer.
+  //
+  // (Also kept from round 1 — `error` is suppressed once we've
+  // ever successfully fetched, so the "fetch failed" pill
+  // doesn't flap on transient blips.)
+  const optsRef = useRef({ intervalMs, fallback });
+  optsRef.current = { intervalMs, fallback };
+  const everOkRef = useRef(false);
+
   const [state, setState] = useState({
     data: fallback, loading: true, error: null, lastFetchOk: false,
   });
+
   const reload = useCallback(() => {
     fetch(url, { credentials: 'same-origin', cache: 'no-store' })
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then(data => setState({ data, loading: false, error: null, lastFetchOk: true }))
+      .then(data => {
+        everOkRef.current = true;
+        setState({ data, loading: false, error: null, lastFetchOk: true });
+      })
       .catch(error => setState(s => ({
-        data: s.data ?? fallback,
+        data: s.data ?? optsRef.current.fallback,
         loading: false,
-        // Suppress `error` once we have data so the pill stops
-        // flapping on transient blips. `lastFetchOk` carries the
-        // raw signal for pages that want it.
-        error: s.lastFetchOk ? null : error,
+        error: everOkRef.current ? null : error,
         lastFetchOk: false,
       })));
-  }, [url, fallback]);
+  }, [url]);
+
   useEffect(() => {
     reload();
-    if (intervalMs > 0) {
-      const id = setInterval(reload, intervalMs);
+    const ms = optsRef.current.intervalMs ?? 5000;
+    if (ms > 0) {
+      const id = setInterval(reload, ms);
       return () => clearInterval(id);
     }
-  }, [reload, intervalMs]);
+  }, [reload]);
+
   return { ...state, reload };
 }
 
@@ -783,39 +792,35 @@ function useIncidentsApi(){ return useApi('/api/incidents',         { intervalMs
 function useThreatIntelFeedsApi() { return useApi('/api/threat-intel/feeds', { intervalMs: 30000, fallback: null }); }
 function useGeoipStatusApi() { return useApi('/api/geoip/status',   { intervalMs: 60000, fallback: null }); }
 
-// Phase-3 incident mutations (CSRF-double-submit, POST). Each
-// returns `{ ok, ... }` on success or throws on error.
+// Phase-3 incident mutations (CSRF-double-submit, POST). All
+// three route through `csrfMutate` so the CSRF cookie + header
+// + 403 session-expiry redirect are handled uniformly.
+//
+// FIX 2026-05-04 — `incidentAck` was broken: it called
+// `csrfMutate` (correct) but the call's `headers` object
+// referenced a `csrf` variable that wasn't in scope, and the
+// dead `if (!r.ok)` lines after `return` would never run.
+// Calling Ack threw a `ReferenceError` that doAct swallowed
+// because it called `window.toast` (typo for aegisToast).
+// All three now follow the same shape — small, lockstep,
+// returns `{ status, ...body }` per the csrfMutate contract.
 async function incidentAck(id, opts) {
   return csrfMutate(`/api/incidents/${encodeURIComponent(id)}/ack`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
     body: JSON.stringify(opts || {}),
-    credentials: 'same-origin',
   });
-  if (!r.ok) throw new Error(`ack failed: ${r.status}`);
-  return r.json();
 }
 async function incidentSnooze(id, minutes, note) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch(`/api/incidents/${encodeURIComponent(id)}/snooze`, {
+  return csrfMutate(`/api/incidents/${encodeURIComponent(id)}/snooze`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
     body: JSON.stringify({ minutes, note }),
-    credentials: 'same-origin',
   });
-  if (!r.ok) throw new Error(`snooze failed: ${r.status}`);
-  return r.json();
 }
 async function incidentResolve(id, note) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch(`/api/incidents/${encodeURIComponent(id)}/resolve`, {
+  return csrfMutate(`/api/incidents/${encodeURIComponent(id)}/resolve`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
     body: JSON.stringify({ note }),
-    credentials: 'same-origin',
   });
-  if (!r.ok) throw new Error(`resolve failed: ${r.status}`);
-  return r.json();
 }
 function useAlertsApi()   { return useApi('/api/alerts',          { intervalMs: 5000, fallback: null }); }
 function useGitopsApi()   { return useApi('/api/gitops/status',   { intervalMs: 30000, fallback: null }); }
@@ -862,6 +867,17 @@ async function poolDelete(name) {
   // 409 with referenced_by_routes payload is normal — caller renders it.
   const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
   return { status: r.status, ...json };
+}
+
+// TI-T — tier mutation. Updates pipeline + thresholds for one
+// of the four canonical tiers (critical / high / medium / low).
+// Backend constrains the tier name to that enum; an unknown
+// name returns 400 `validation`.
+async function tierPut(name, body) {
+  return csrfMutate(`/api/tiers/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
 }
 
 // AI-T10 — runtime on/off for the AI detector. GET is open-on-
@@ -1100,6 +1116,8 @@ Object.assign(window, {
   routeUpsert, routeDelete,
   // AI-T10 — AI detector runtime on/off
   useAiEnabledApi, aiEnabledPut,
+  // TI-T — audit-mutated tier edits
+  tierPut,
   useRoutesApi, useTiersApi,
   rulesPost, rulesPut, rulesDelete, rulesToggle, waitForVersion,
   // CI-T6 — settings mutations

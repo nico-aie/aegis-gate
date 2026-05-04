@@ -70,6 +70,52 @@
   --radius-pill: 9999px;
 }
 
+/* Light mode — flips canvas + ink + hairline tokens. The brand,
+   trading semantics (up/down/warn), and tier colours stay
+   identical so dashboards keep their meaning across themes.
+   Activated by `<html data-theme="light">` (set at boot by the
+   inline script in index.html based on localStorage / OS pref). */
+html[data-theme="light"] {
+  /* Canvas — stacked light surfaces */
+  --canvas:        #F8FAFC;   /* page background */
+  --canvas-2:      #F1F4F8;   /* nested surfaces, modal body */
+  --surface:       #FFFFFF;   /* primary card */
+  --surface-2:     #F4F6FA;   /* secondary card / table head */
+  --surface-3:     #E5E9F0;   /* hover / pill background */
+  --surface-hover: #ECEFF4;
+  --surface-active: #FFF5C2;  /* selected row — soft brand-yellow tint */
+
+  /* Hairlines */
+  --hairline:        #E1E5EC;
+  --hairline-strong: #C9CFD8;
+
+  /* Text — inverse of dark, with WCAG AA contrast on --canvas */
+  --ink:        #14181D;
+  --ink-strong: #000000;
+  --ink-mute:   #3A4250;
+  --ink-dim:    #5E6673;
+  --ink-faint:  #8A93A0;
+  /* on-yellow already #181A20 — same in both themes (yellow is yellow) */
+
+  /* Brand-yellow soft / line — slightly more opaque against light bg */
+  --brand-yellow-soft: rgba(252, 213, 53, 0.22);
+  --brand-yellow-line: rgba(240, 185, 11, 0.55);
+}
+
+/* Light-mode niceties — these classes use specific dark literals
+   in a few places; lift them via `var(...)` defaults in the rule
+   block below so a future contributor can tune one place. */
+html[data-theme="light"] body {
+  background: var(--canvas);
+  color: var(--ink);
+}
+html[data-theme="light"] .modal-backdrop {
+  background: rgba(20, 24, 29, 0.45);
+}
+html[data-theme="light"] .modal {
+  box-shadow: 0 16px 40px rgba(20, 24, 29, 0.18);
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 
 html, body, #root {
@@ -85,17 +131,142 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* FIX 2026-05-04 — operators reported the dashboard text too
+   small at default zoom and bumped browser zoom 10% manually.
+   Bake that in via CSS zoom on the body so the page renders at
+   the more readable scale out of the box. Supported in Chrome,
+   Edge, Safari, Opera, Firefox 126+. The few absolute pixel
+   sizes inside cards / pills stay legible because everything
+   scales together. */
+body { zoom: 1.1; }
+
+/* FIX 2026-05-04 — `.modal-backdrop` and `.modal` were used in
+   pages.jsx but never defined in CSS, so the route edit form
+   rendered inline below the routes table instead of as a
+   floating dialog. Define the styles properly. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 11, 16, 0.72);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+  animation: modalFadeIn 120ms ease-out;
+}
+.modal {
+  background: var(--surface-1, #161A20);
+  border: 1px solid var(--hairline, #2B3139);
+  border-radius: 8px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 64px);
+  width: 100%;
+  max-width: 560px;
+  overflow: hidden;
+  animation: modalSlideIn 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--hairline, #2B3139);
+  background: var(--surface-2, #1E2329);
+}
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.modal-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  flex: 1;
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--hairline, #2B3139);
+  background: var(--surface-2, #1E2329);
+}
+.modal .form-row {
+  margin-bottom: 12px;
+}
+.modal .form-row:last-child {
+  margin-bottom: 0;
+}
+.modal label {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-dim);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+.modal .req {
+  color: var(--down, #F6465D);
+}
+.modal .form-hint {
+  font-size: 11px;
+  color: var(--ink-dim);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.modal .form-hint.warn {
+  color: var(--warn, #FCD535);
+}
+.modal .form-hint .warn {
+  color: var(--warn, #FCD535);
+}
+.modal input.ip,
+.modal select.ip,
+.modal textarea.ip {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--canvas-2, #0F1217);
+  border: 1px solid var(--hairline, #2B3139);
+  border-radius: 4px;
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.modal input.ip:focus,
+.modal select.ip:focus,
+.modal textarea.ip:focus {
+  border-color: var(--brand-yellow, #FCD535);
+}
+.modal input.ip:disabled,
+.modal select.ip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+@keyframes modalFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes modalSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 button { font-family: inherit; }
 
 /* Numbers always tabular */
 .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .mono { font-family: var(--font-mono); }
 
-/* Scrollbar */
+/* Scrollbar — driven by tokens so light mode gets light grays. */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb { background: #2B3139; border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
-*::-webkit-scrollbar-thumb:hover { background: #3a4150; background-clip: padding-box; border: 2px solid transparent; }
+*::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); background-clip: padding-box; border: 2px solid transparent; }
 
 /* ===== Shell ===== */
 .app {

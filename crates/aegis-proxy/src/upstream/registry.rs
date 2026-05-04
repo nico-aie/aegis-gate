@@ -54,6 +54,15 @@ pub type BuiltPools = (
 pub struct PoolRegistry {
     pools: Arc<ArcSwap<HashMap<String, Arc<Pool>>>>,
     breakers: Arc<ArcSwap<HashMap<String, Arc<CircuitBreaker>>>>,
+    /// FIX 2026-05-04 — admin-side `/api/upstreams/config` GET +
+    /// the route handler's pool-existence check both want the
+    /// *config* shape (`PoolConfig` with full members,
+    /// connection settings, host_header overrides). The compiled
+    /// `Pool` map throws that detail away — it's stored as
+    /// `Arc<Member>` etc. We shadow the raw config alongside so
+    /// readers can get the post-runtime-mutation truth without
+    /// having to reconstruct it from the compiled Pool.
+    raw: Arc<ArcSwap<HashMap<String, PoolConfig>>>,
 }
 
 impl PoolRegistry {
@@ -63,6 +72,7 @@ impl PoolRegistry {
         Self {
             pools: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             breakers: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            raw: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         }
     }
 
@@ -76,7 +86,25 @@ impl PoolRegistry {
         Self {
             pools: Arc::new(ArcSwap::from_pointee(pools)),
             breakers: Arc::new(ArcSwap::from_pointee(breakers)),
+            // Boot path also calls `seed_raw` after this — until
+            // it does, the GET endpoint will see an empty map
+            // and fall back to the cfg snapshot.
+            raw: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         }
+    }
+
+    /// Boot path uses this to seed the raw config shadow with
+    /// the boot snapshot. After boot, `apply` keeps it in sync.
+    pub fn seed_raw(&self, raw: HashMap<String, PoolConfig>) {
+        self.raw.store(Arc::new(raw));
+    }
+
+    /// Snapshot of the live raw pool configs — used by the
+    /// admin GET endpoint and the route handler so they see
+    /// runtime-added pools with their full member detail (not
+    /// the empty placeholder we used to insert).
+    pub fn current_pools(&self) -> HashMap<String, PoolConfig> {
+        (**self.raw.load()).clone()
     }
 
     /// Build a new registry from a config map. Pure: doesn't read
@@ -213,6 +241,9 @@ impl PoolRegistry {
         let (pools, breakers) = Self::build_pools(new_pools)?;
         self.pools.store(Arc::new(pools));
         self.breakers.store(Arc::new(breakers));
+        // Keep the raw shadow in lock-step so admin reads see
+        // the latest runtime-applied pool config.
+        self.raw.store(Arc::new(new_pools.clone()));
         Ok(())
     }
 }
@@ -227,6 +258,10 @@ impl aegis_control::api::upstreams_config::UpstreamWriter for PoolRegistry {
         new_pools: &HashMap<String, PoolConfig>,
     ) -> Result<(), PoolValidationError> {
         Self::apply(self, new_pools)
+    }
+
+    fn current_pools(&self) -> HashMap<String, PoolConfig> {
+        PoolRegistry::current_pools(self)
     }
 
     fn live_snapshot(

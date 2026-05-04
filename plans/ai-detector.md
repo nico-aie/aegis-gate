@@ -16,7 +16,7 @@
 > upstream. Inference cost moves with system load (a warm-cache
 > earlier run measured 357 µs).
 >
-> Two implementation deviations worth recording:
+> Three implementation deviations worth recording:
 > 1. **Binary verdict**, not per-class. The WAF only needs
 >    "attack vs not-attack" for the hot path, so we emit one
 >    `Signal { tag: "ai" }` when `class != normal_class_idx`
@@ -26,6 +26,16 @@
 > 2. **`ort` instead of `tract-onnx`** — same `Detector`
 >    contract, much faster at boot, ships its own ONNX
 >    runtime so the dep tree is smaller.
+> 3. **No `mode: observe | enforce`** (simplified 2026-05-04).
+>    The hybrid-mode design in §11.4 below was never enforced
+>    in code — the field only ever ended up in a boot log line.
+>    AI is now treated like any other detector: `enabled`/`disabled`
+>    via the Detectors page (audit-mutated `PUT /api/ai/enabled`),
+>    and the verdict feeds the same scoring path as `sqli` / `xss`.
+>    "Burn-in" is done by tightening `confidence_threshold`, not
+>    by gating block actions per-mode. `tiers:`, `timeout:`, and
+>    `explain:` config knobs were dropped at the same time —
+>    they were declared but never read.
 
 ## 0 · One-line summary
 

@@ -692,7 +692,30 @@ pub(crate) fn admin_router(
         // handlers ship in CC-T1.1.b once the proxy hot-swap of
         // `ProxyContext.pools` lands.
         "/api/upstreams/config" => {
-            let view = aegis_control::api::upstreams_config::UpstreamsConfigView::from_config(cfg);
+            // FIX 2026-05-04 (round 2) — read the live raw pool
+            // configs from the writer's shadow map so runtime-
+            // added pools render with their full member detail.
+            // Round 1 inserted EMPTY placeholders for live-only
+            // pools, which made the dashboard show "0 members"
+            // for any pool created via the inline-add flow.
+            //
+            // Also pull the live routes so `referenced_by_routes`
+            // reflects runtime-added route → pool relationships
+            // (was always empty for pools wired up via the inline
+            // route + pool flow).
+            let mut effective_cfg = cfg.clone();
+            if let Some(writer) = services.upstream_writer.as_ref() {
+                for (name, pool_cfg) in writer.current_pools() {
+                    effective_cfg.upstreams.insert(name, pool_cfg);
+                }
+            }
+            if let Some(writer) = services.route_writer.as_ref() {
+                let live_routes = writer.current_routes();
+                if !live_routes.is_empty() {
+                    effective_cfg.routes = live_routes;
+                }
+            }
+            let view = aegis_control::api::upstreams_config::UpstreamsConfigView::from_config(&effective_cfg);
             json_body_response(200, view.render(), "private, max-age=2")
         }
         "/api/tracking/snapshot" => json_body_response(

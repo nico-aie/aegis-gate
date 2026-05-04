@@ -109,12 +109,16 @@ fn bundle_under_documented_budget() {
 #[test]
 fn app_js_under_per_bundle_budget() {
     // The pre-compiled app.js holds every page + every widget. Cap
-    // at 320 KB to catch accidental dependency bloat — v1 was ~158 KB,
+    // at 360 KB to catch accidental dependency bloat — v1 was ~158 KB,
     // post-Phase-3 (Investigation pivot, Incidents queue with
     // ack/snooze/resolve, Threat Intel, Compliance, Reports CSV) is
-    // ~263 KB. Real dependency growth (new React lib, etc.) needs
-    // an explicit budget bump + comment here, not a silent overrun.
-    const APP_JS_BUDGET: usize = 320_000;
+    // ~263 KB. Bumped 2026-05-04 from 320 → 360 KB after the
+    // Routing & Upstreams page was restructured: routes are now
+    // the primary list with a click-to-detail RouteDetailPanel
+    // and a redesigned Add-route modal with inline pool create.
+    // Real dependency growth (new React lib, etc.) needs an
+    // explicit budget bump + comment here, not a silent overrun.
+    const APP_JS_BUDGET: usize = 360_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,

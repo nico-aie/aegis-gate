@@ -54,6 +54,13 @@ struct CompiledRoute {
 #[derive(Debug, Clone)]
 pub struct RouteTable {
     inner: Arc<ArcSwap<CompiledRouteTable>>,
+    /// FIX 2026-05-04 — RT-T audit-mutated handlers in
+    /// `admin_mutate.rs` need to know the *current* route list
+    /// (boot snapshot + every runtime upsert/delete so far) to
+    /// build the next candidate. The compiled table doesn't keep
+    /// the raw `RouteConfig` around, so we shadow it here. Each
+    /// successful `apply` swaps both atomically.
+    raw: Arc<ArcSwap<Vec<RouteConfig>>>,
 }
 
 /// Immutable compiled-route content held inside the [`RouteTable`]
@@ -82,6 +89,7 @@ impl RouteTable {
         let compiled = CompiledRouteTable::build(cfg)?;
         Ok(Self {
             inner: Arc::new(ArcSwap::from_pointee(compiled)),
+            raw: Arc::new(ArcSwap::from_pointee(cfg.routes.clone())),
         })
     }
 
@@ -96,7 +104,16 @@ impl RouteTable {
     pub fn apply(&self, cfg: &WafConfig) -> aegis_core::Result<()> {
         let compiled = CompiledRouteTable::build(cfg)?;
         self.inner.store(Arc::new(compiled));
+        // Shadow the raw list — order matters (first-match-wins).
+        self.raw.store(Arc::new(cfg.routes.clone()));
         Ok(())
+    }
+
+    /// Snapshot of the current route list — used by the
+    /// audit-mutated handlers so each upsert/delete starts from
+    /// the live state instead of the stale boot snapshot.
+    pub fn current_routes(&self) -> Vec<RouteConfig> {
+        (**self.raw.load()).clone()
     }
 
     /// Resolve a request to a [`RouteCtx`].
@@ -124,6 +141,10 @@ impl aegis_control::api::routes_config::RouteWriter for RouteTable {
         RouteTable::apply(self, new_cfg).map_err(|e| {
             aegis_control::api::routes_config::RouteApplyError::Build(e.to_string())
         })
+    }
+
+    fn current_routes(&self) -> Vec<RouteConfig> {
+        RouteTable::current_routes(self)
     }
 }
 

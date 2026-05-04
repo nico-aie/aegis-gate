@@ -150,6 +150,7 @@ function TopBar() {
             </button>
           );
         })()}
+        <ThemeToggle />
         <div className="user-chip">
           <div className="avatar">AD</div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -221,6 +222,44 @@ function TopBar() {
 // the API returns. Falls back to em-dashes when the API is
 // unreachable so the footer never lies about a value it doesn't
 // have.
+// Theme toggle — flips the `data-theme` attribute on <html> and
+// persists the choice to localStorage. The pre-paint script in
+// index.html reads localStorage on next page load so the choice
+// sticks.
+function ThemeToggle() {
+  const [theme, setTheme] = useState(() => {
+    try { return document.documentElement.dataset.theme || 'dark'; }
+    catch (_) { return 'dark'; }
+  });
+  const flip = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('aegis_theme', next); } catch (_) {}
+    setTheme(next);
+  };
+  return (
+    <button
+      className="icon-btn"
+      onClick={flip}
+      title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      style={{ marginRight: 4 }}
+    >
+      {theme === 'dark' ? (
+        // Sun (currently dark → click for light)
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+        </svg>
+      ) : (
+        // Moon (currently light → click for dark)
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function fmtUptimeFromMs(deltaMs) {
   if (!Number.isFinite(deltaMs) || deltaMs < 0) return '—';
   const sec = Math.floor(deltaMs / 1000);

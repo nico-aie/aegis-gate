@@ -146,24 +146,31 @@ function PageOverview() {
     risk: a.risk,
     country: a.country || null,
     asn: a.asn || null,
-    // The WorldMap renderer wants `{cc, city, lat, lon}`. We
-    // only have `country` from the backend right now; lat/lon
-    // would need a city DB. Pass partial geo so the map can
-    // place a country-level blip; full lat/lon arrives when
-    // the operator ships a GeoLite2-City.mmdb (follow-up).
-    geo: a.country ? { cc: a.country, city: '', lat: 0, lon: 0 } : null,
+    // The WorldMap renderer wants `{cc, city, lat, lon}`. The
+    // backend gives us a country code; we look up a country
+    // centroid for the lat/lon. City-level pins arrive when the
+    // operator ships a GeoLite2-City.mmdb (the backend will then
+    // populate `lat` / `lon` directly).
+    geo: a.country
+      ? (() => {
+          const c = window.centroidFor && window.centroidFor(a.country);
+          return c ? { cc: a.country, city: '', lat: c[0], lon: c[1] } : null;
+        })()
+      : null,
   }));
 
-  // Map blips — real country codes when available, else hide
-  // the layer (the page used to fall back to mock fixtures
-  // here, which lied about live state).
+  // Map blips — country-centroid lookup so each origin lands
+  // somewhere on the right country tile (not stacked at 0,0
+  // off the African coast like the earlier hard-coded version).
+  // Drops countries the centroid table doesn't know about
+  // rather than piling them on a single pixel.
   const blips = topAttackers
-    .filter(a => a.country)
+    .filter(a => a.country && window.centroidFor && window.centroidFor(a.country))
     .slice(0, 12)
-    .map((a, i) => ({
-      cc: a.country, city: '', lat: 0, lon: 0,
-      ip: a.id, label: a.country, show: i < 5,
-    }));
+    .map((a, i) => {
+      const [lat, lon] = window.centroidFor(a.country);
+      return { cc: a.country, city: '', lat, lon, ip: a.id, label: a.country, show: i < 5 };
+    });
 
   // Backend signal — `geoip_loaded` flips to true when the
   // server's AttacksHandler has a MaxMind reader wired (boot
@@ -2025,6 +2032,16 @@ function DetectorMaskCard() {
     setDraft({ ...current });
   }
 
+  // FIX 2026-05-04 — the old code checked `r.ok` after a PUT,
+  // but `/api/detectors` responds with the NEW MASK STATE on
+  // success (not an `{ok: true}` envelope like routes/pools),
+  // so `r.ok` was always undefined and every save toasted
+  // "Save failed: status 200". Switch the success criterion to
+  // a 2xx HTTP status. Same fix in `clearOverride`.
+  function isHttpOk(r) {
+    return r && typeof r.status === 'number' && r.status >= 200 && r.status < 300;
+  }
+
   async function saveEdit() {
     if (busy) return;
     setBusy(true);
@@ -2033,12 +2050,12 @@ function DetectorMaskCard() {
         ? { mask: draft }
         : { overrides: { [editing]: draft } };
       const r = await window.detectorsPut(body);
-      if (r.ok) {
+      if (isHttpOk(r)) {
         window.aegisToast(`Saved detector mask · ${editing}`, 'ok');
         setEditing(null);
         api.reload && api.reload();
       } else {
-        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
         window.aegisToast(`Save failed: ${msg}`, 'err');
       }
     } catch (e) {
@@ -2054,11 +2071,11 @@ function DetectorMaskCard() {
     setBusy(true);
     try {
       const r = await window.detectorsPut({ overrides: { [tierName]: null } });
-      if (r.ok) {
+      if (isHttpOk(r)) {
         window.aegisToast(`Cleared ${tierName} override`, 'ok');
         api.reload && api.reload();
       } else {
-        const msg = (r && (r.message || r.error || r.reason)) || `status ${r.status}`;
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
         window.aegisToast(`Clear failed: ${msg}`, 'err');
       }
     } catch (e) {
@@ -2126,9 +2143,8 @@ function DetectorMaskCard() {
         <div>
           <div className="card-title">Detectors</div>
           <div className="card-subtitle">
-            Per-class on/off mask + AI-detector observability.
-            Edit the base mask or per-tier overrides. Locked classes
-            (🔒) are pinned by active compliance modes
+            Per-class on/off mask. Locked classes (🔒) are pinned by
+            active compliance modes
             {complianceModes.length > 0 && (
               <> ({complianceModes.join(', ')})</>
             )}
@@ -2136,57 +2152,49 @@ function DetectorMaskCard() {
           </div>
         </div>
       </div>
-      {/* AI detector observability — bare mode so it composes
-          inside this card without nested borders. The runtime
-          on/off for AI is still `cfg.ai.enabled` (boot-time) for
-          now — a `PUT /api/ai/enabled` knob is queued. */}
-      <div style={{ borderTop: '1px solid var(--hairline)' }}>
-        <AiDetectorPanel bare />
-      </div>
-      {/* Mask grid — base + per-tier overrides */}
-      <div style={{ borderTop: '1px solid var(--hairline)', padding: '8px 12px 0', fontSize: 11, color: 'var(--ink-dim)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-        Mask
-      </div>
-      {renderRow('base', baseMask, 'base')}
+
+      {/* Mask grid — base + per-tier overrides. */}
+      {renderRow('Base', baseMask, 'base')}
       {Object.keys(overrides).length === 0 ? (
-        <div style={{ borderTop: '1px solid var(--hairline)', padding: 10, fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
-          No per-tier overrides configured. Use Edit on a tier-specific row below to add one — or PUT a JSON body with the desired tier name to /api/detectors.
+        <div style={{ borderTop: '1px solid var(--hairline)', padding: '8px 12px', fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+          No per-tier overrides — base mask applies to every tier.
         </div>
       ) : (
         Object.entries(overrides).map(([tier, mask]) => renderRow(tier, mask, tier))
       )}
+
+      {/* AI detector — folded into the same card. AI lives outside
+          the bitmask (separate AtomicBool flipped via PUT
+          /api/ai/enabled) but operators read this whole page as
+          "the detector inventory", so it slots in here. */}
+      <AiDetectorRow />
     </div>
   );
 }
 
-// AI-T9 — AI-detector observability panel. Reads /metrics
-// directly (the AI surfaces are Prometheus counters + a
-// histogram). Polls every 5 s — same cadence as the Live Feed
-// buffer — and renders three numbers: total predictions, attack
-// rate, fallback count. When the binary is built without the
-// `ai` feature the metrics are absent and we render a "feature
-// off" empty state.
-//
-// FIX 2026-05-04 — `bare` prop renders the inner content
-// without the outer card wrapper so it composes inside
-// `DetectorsCard` (the merged AI + Mask panel) without nested
-// borders. The standalone-card form is preserved for callers
-// that want it on its own (currently none — the Detectors page
-// uses the merged form).
-function AiDetectorPanel({ bare = false } = {}) {
+// Compact AI-detector row inside the Detectors card. Replaces
+// the earlier full-width `AiDetectorPanel` that lived above the
+// mask grid. Shows the same controls (Enable/Disable, status
+// pill) inline with the mask rows, with an expand toggle to
+// reveal the detailed metrics tiles.
+function AiDetectorRow() {
+  const aiEnabledApi = window.useAiEnabledApi();
+  const [busy, setBusy] = useStateP(false);
+  const [expanded, setExpanded] = useStateP(false);
   const [metrics, setMetrics] = useStateP(null);
-  const [error, setError]     = useStateP(null);
-  const aiEnabledApi          = window.useAiEnabledApi();
-  const [busy, setBusy]       = useStateP(false);
+
+  // Lazy-load the metrics only when the row is expanded — saves
+  // a /metrics scrape per 5 s for operators who never expand it.
   useEffectP(() => {
+    if (!expanded) return;
     let cancelled = false;
-    function load() {
+    const load = () => {
       fetch('/metrics', { credentials: 'same-origin' })
-        .then(r => (r.ok ? r.text() : null))
+        .then(r => r.ok ? r.text() : null)
         .then(txt => {
           if (cancelled || !txt) return;
-          // Tiny parser — pull `aegis_ai_*{verdict|reason="X"} N` lines.
-          const out = { attack: 0, normal: 0, fallback: {}, present: false };
+          const out = { attack: 0, normal: 0, fallback: {}, present: false, mean_inf_us: null };
+          let lat_sum = 0, lat_count = 0;
           for (const line of txt.split('\n')) {
             if (line.startsWith('#') || !line.startsWith('aegis_ai_')) continue;
             out.present = true;
@@ -2197,130 +2205,130 @@ function AiDetectorPanel({ bare = false } = {}) {
               continue;
             }
             const f = line.match(/^aegis_ai_fallback_total\{reason="(\w+)"\}\s+([\d.]+)/);
-            if (f) {
-              out.fallback[f[1]] = Number(f[2]);
-            }
+            if (f) { out.fallback[f[1]] = Number(f[2]); continue; }
+            const ls = line.match(/^aegis_ai_inference_duration_seconds_sum\{[^}]*\}\s+([\d.]+)/);
+            if (ls) { lat_sum += Number(ls[1]); continue; }
+            const lc = line.match(/^aegis_ai_inference_duration_seconds_count\{[^}]*\}\s+([\d.]+)/);
+            if (lc) { lat_count += Number(lc[1]); continue; }
           }
+          if (lat_count > 0) out.mean_inf_us = (lat_sum / lat_count) * 1_000_000;
           setMetrics(out);
-          setError(null);
         })
-        .catch(e => { if (!cancelled) setError(String(e.message || e)); });
-    }
+        .catch(() => {});
+    };
     load();
     const id = setInterval(load, 5000);
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [expanded]);
 
-  const present = metrics?.present;
-  const total   = (metrics?.attack || 0) + (metrics?.normal || 0);
+  const featurePresent = !!aiEnabledApi.data?.feature_present;
+  const runtimeOn = !!aiEnabledApi.data?.enabled;
+  const total = (metrics?.attack || 0) + (metrics?.normal || 0);
   const attackPct = total > 0 ? ((metrics.attack / total) * 100).toFixed(1) : '0.0';
-  const fbTotal = metrics?.fallback
-    ? Object.values(metrics.fallback).reduce((a, b) => a + b, 0)
-    : 0;
+  const fbTotal = metrics?.fallback ? Object.values(metrics.fallback).reduce((a, b) => a + b, 0) : 0;
 
-  const inner = (
+  async function flip() {
+    if (busy || !featurePresent) return;
+    setBusy(true);
+    try {
+      const r = await window.aiEnabledPut(!runtimeOn);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`AI detector ${r.enabled ? 'enabled' : 'disabled'}`, 'ok');
+        aiEnabledApi.reload && aiEnabledApi.reload();
+      } else if (r.status === 409 && r.reason === 'feature_off') {
+        window.aegisToast('AI detector feature not built — rebuild with `--features ai`', 'warn');
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Toggle failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
     <>
-      {!bare && (
-        <window.SectionHeader
-          title="AI detector"
-          sub={
-            present
-              ? `${total.toLocaleString()} predictions · ${attackPct}% attack`
-              : 'feature off — rebuild with FEATURES="redis geoip ai" and set cfg.ai.enabled'
-          }
-        />
-      )}
-      {bare && (() => {
-        const featurePresent = !!aiEnabledApi.data?.feature_present;
-        const runtimeOn      = !!aiEnabledApi.data?.enabled;
-        async function flip() {
-          if (busy || !featurePresent) return;
-          setBusy(true);
-          try {
-            const r = await window.aiEnabledPut(!runtimeOn);
-            if (r.status === 200 && r.ok) {
-              window.aegisToast(`AI detector ${r.enabled ? 'enabled' : 'disabled'}`, 'ok');
-              aiEnabledApi.reload && aiEnabledApi.reload();
-            } else if (r.status === 409 && r.reason === 'feature_off') {
-              window.aegisToast('AI detector feature not built — rebuild with `--features ai`', 'warn');
-            } else {
-              const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
-              window.aegisToast(`Toggle failed: ${msg}`, 'err');
-            }
-          } finally {
-            setBusy(false);
-          }
-        }
-        return (
-          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600 }}>AI detector</span>
-            <span className={`pill ${featurePresent ? (runtimeOn ? 'ok' : 'warn') : 'neutral'}`} style={{ fontSize: 10 }}>
-              {!featurePresent ? 'feature off' : (runtimeOn ? 'enabled' : 'disabled')}
+      <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>
+          AI{' '}
+          <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }}>(ml)</span>
+        </div>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--ink-dim)' }}>
+          <span className={`pill ${featurePresent ? (runtimeOn ? 'ok' : 'neutral') : 'neutral'}`} style={{ fontSize: 10 }}>
+            {!featurePresent ? '🔒 feature off' : (runtimeOn ? 'enabled' : 'disabled')}
+          </span>
+          {featurePresent && (
+            <span>
+              ML-based detector · ONNX classifier
+              {runtimeOn && total > 0 && (
+                <> · <span className="num">{total.toLocaleString()}</span> predictions · {attackPct}% attack</>
+              )}
             </span>
-            <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 8 }}>
-              {present
-                ? `${total.toLocaleString()} predictions · ${attackPct}% attack`
-                : 'no traffic yet'}
-            </span>
-            <button
-              className="btn btn-sm"
-              onClick={flip}
-              disabled={!featurePresent || busy}
-              title={!featurePresent ? 'rebuild with `--features ai` and set `cfg.ai.enabled = true`' : (runtimeOn ? 'click to disable inference (audit-mutated)' : 'click to enable inference')}
-              style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px' }}
-            >
-              {busy ? '…' : (runtimeOn ? 'Disable' : 'Enable')}
-            </button>
-          </div>
-        );
-      })()}
-      <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
-        <div>
-          <div className="field-label">Predictions</div>
-          <div className="num" style={{ fontSize: 18 }}>
-            {present ? total.toLocaleString() : <span className="dim">—</span>}
-          </div>
+          )}
+          {!featurePresent && (
+            <span>rebuild with <code>--features ai</code> + set <code>cfg.ai.enabled = true</code></span>
+          )}
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            disabled={!featurePresent}
+            style={{ background: 'transparent', border: 'none', color: 'var(--ink-dim)', cursor: featurePresent ? 'pointer' : 'default', fontSize: 11, padding: 0 }}
+          >
+            {expanded ? '▾ hide details' : '▸ details'}
+          </button>
         </div>
-        <div>
-          <div className="field-label">Attack rate</div>
-          <div style={{ fontSize: 18 }}>
-            {present ? (
-              <span className={`pill ${attackPct > 50 ? 'down' : 'ok'}`}>{attackPct}%</span>
-            ) : <span className="dim">—</span>}
-          </div>
-        </div>
-        <div>
-          <div className="field-label">Attack count</div>
-          <div className="num" style={{ fontSize: 18 }}>
-            {present ? (metrics.attack || 0).toLocaleString() : <span className="dim">—</span>}
-          </div>
-        </div>
-        <div>
-          <div className="field-label">Fallbacks</div>
-          <div style={{ fontSize: 18 }}>
-            {present ? (
-              <span className={`pill ${fbTotal > 0 ? 'warn' : 'ok'}`}>{fbTotal}</span>
-            ) : <span className="dim">—</span>}
-          </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            className="btn"
+            onClick={flip}
+            disabled={!featurePresent || busy}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+          >
+            {busy ? '…' : (runtimeOn ? 'Disable' : 'Enable')}
+          </button>
         </div>
       </div>
-      {present && fbTotal > 0 && (
-        <div style={{ padding: '0 16px 12px', fontSize: 11, color: 'var(--ink-mute)' }}>
-          By reason: {Object.entries(metrics.fallback)
-            .filter(([, n]) => n > 0)
-            .map(([k, n]) => `${k}=${n}`)
-            .join(' · ')}
-        </div>
-      )}
-      {error && (
-        <div style={{ padding: '0 16px 12px', fontSize: 11, color: 'var(--down)' }}>
-          /metrics fetch error: {error}
+      {expanded && featurePresent && (
+        <div style={{ borderTop: '1px solid var(--hairline)', padding: '12px 16px', background: 'var(--canvas-2)' }}>
+          {metrics && metrics.present ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
+              <div>
+                <div className="field-label">Predictions</div>
+                <div className="num" style={{ fontSize: 18 }}>{total.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="field-label">Attack rate</div>
+                <div style={{ fontSize: 18 }}>
+                  <span className={`pill ${attackPct > 50 ? 'down' : 'ok'}`}>{attackPct}%</span>
+                </div>
+              </div>
+              <div>
+                <div className="field-label">Mean inference</div>
+                <div className="num" style={{ fontSize: 18 }}>
+                  {metrics.mean_inf_us != null ? `${metrics.mean_inf_us.toFixed(0)} µs` : '—'}
+                </div>
+              </div>
+              <div>
+                <div className="field-label">Fallbacks</div>
+                <div style={{ fontSize: 18 }}>
+                  <span className={`pill ${fbTotal > 0 ? 'warn' : 'ok'}`}>{fbTotal}</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+              {runtimeOn ? 'No traffic yet — drive a request through the data plane to see metrics.' : 'Detector is disabled. Enable to start collecting metrics.'}
+            </div>
+          )}
+          {metrics && fbTotal > 0 && (
+            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--ink-mute)' }}>
+              Fallbacks by reason: {Object.entries(metrics.fallback).filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n}`).join(' · ')}
+            </div>
+          )}
         </div>
       )}
     </>
   );
-  if (bare) return inner;
-  return <div className="card" style={{ marginBottom: 12 }}>{inner}</div>;
 }
 
 function PageTierConfig() {
@@ -2329,6 +2337,25 @@ function PageTierConfig() {
   const tiers = tiersApi.data?.tiers || [];
   const routes = routesApi.data?.routes || [];
   const [selectedName, setSelectedName] = useStateP(null);
+  const [tierEditor, setTierEditor] = useStateP(null);  // null | tier object
+  const [busy, setBusy] = useStateP(false);
+
+  async function saveTier(name, body) {
+    setBusy(true);
+    try {
+      const r = await window.tierPut(name, body);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Tier "${name}" updated`, 'ok');
+        tiersApi.reload && tiersApi.reload();
+        setTierEditor(null);
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        window.aegisToast(`Save failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Auto-select the first tier when data lands.
   useEffectP(() => {
@@ -2363,11 +2390,11 @@ function PageTierConfig() {
         </div>
       </div>
 
-      {/* FIX 2026-05-04 — AI panel was a separate card on top
-          of the Detector Mask. Merged: `DetectorMaskCard` now
-          renders a single "Detectors" card containing the AI
-          observability panel (top) + the mask grid (bottom).
-          See `AiDetectorPanel({ bare: true })`. */}
+      {/* `DetectorMaskCard` renders the unified Detectors card —
+          base mask + per-tier overrides + an `AiDetectorRow`
+          folded in at the bottom (separate runtime knob, same
+          card so operators see the full detector inventory in
+          one place). */}
       <DetectorMaskCard />
 
       <div className="split-list">
@@ -2403,13 +2430,16 @@ function PageTierConfig() {
         <div className="right" style={{ padding: 16 }}>
           {selected ? (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14 }}>
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-                    {(selected.pipeline || []).length} pipeline stages · risk threshold <span className="num">{selected.risk_threshold}</span>
+                    {(selected.pipeline || []).length} pipeline stages · risk threshold <span className="num">{selected.risk_threshold}</span> · block <span className="num">{selected.block_threshold}</span>/s
                   </div>
                 </div>
+                <button className="btn" onClick={() => setTierEditor(selected)} disabled={busy}>
+                  Edit tier
+                </button>
               </div>
 
               <div style={{ background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 12, marginBottom: 16 }}>
@@ -2471,7 +2501,132 @@ function PageTierConfig() {
           )}
         </div>
       </div>
+
+      {tierEditor && (
+        <TierEditModal
+          tier={tierEditor}
+          onCancel={() => setTierEditor(null)}
+          onSave={(body) => saveTier(tierEditor.name, body)}
+          busy={busy}
+        />
+      )}
     </>
+  );
+}
+
+// Pipeline stages the four canonical tiers use today. Order
+// matters for the canonical sort below. Heads up — this list
+// is **descriptive metadata** today: the data plane gates
+// detectors via the global detector mask (PUT /api/detectors),
+// not by walking this list. Toggling a stage off here surfaces
+// the change in the audit chain + the tier list, but doesn't
+// currently disable the detector at runtime. Real tier-scoped
+// execution is a follow-up.
+const TIER_PIPELINE_STAGES = [
+  ['rate', 'Rate-limit gate'],
+  ['rules', 'Custom rule engine'],
+  ['sqli', 'SQL injection detector'],
+  ['xss', 'Cross-site scripting detector'],
+  ['ssrf', 'SSRF detector'],
+  ['path_traversal', 'Path traversal detector'],
+  ['header_inj', 'Header injection / CRLF'],
+  ['bots', 'Bot management'],
+  ['ai', 'AI-based attack detector (ML / ONNX)'],
+  ['risk', 'Composite risk scoring'],
+  ['challenge', 'JS / CAPTCHA challenge ladder'],
+];
+
+function TierEditModal({ tier, onCancel, onSave, busy }) {
+  const [pipelineSet, setPipelineSet] = useStateP(() => new Set(tier.pipeline || []));
+  const [risk, setRisk] = useStateP(tier.risk_threshold || 50);
+  const [block, setBlock] = useStateP(tier.block_threshold || 100);
+
+  const togglePipeline = (s) => {
+    const next = new Set(pipelineSet);
+    next.has(s) ? next.delete(s) : next.add(s);
+    setPipelineSet(next);
+  };
+  const orderedPipeline = TIER_PIPELINE_STAGES
+    .map(([s]) => s)
+    .filter(s => pipelineSet.has(s));
+
+  const riskValid = risk >= 0 && risk <= 100;
+  const blockValid = block >= 1;
+  const pipelineValid = orderedPipeline.length > 0;
+  const canSave = riskValid && blockValid && pipelineValid && !busy;
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <div className="modal-head">
+          <div className="modal-title">Edit tier · {tier.name}</div>
+          <button className="btn btn-sm" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-row">
+            <label>Pipeline stages <span className="req">*</span></label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+              {TIER_PIPELINE_STAGES.map(([s, label]) => {
+                const on = pipelineSet.has(s);
+                return (
+                  <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}>
+                    <input type="checkbox" checked={on} onChange={() => togglePipeline(s)} />
+                    <code style={{ minWidth: 110 }}>{s}</code>
+                    <span style={{ color: 'var(--ink-dim)' }}>— {label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="form-hint">
+              <strong>Heads up.</strong> This list is descriptive metadata today —
+              the data plane gates detectors via the <strong>Detectors mask</strong> at
+              the top of this page, not by walking this list. Edit the mask there to
+              actually disable a detector. Per-tier execution is a follow-up.
+            </div>
+            {!pipelineValid && (
+              <div className="form-hint warn">Pipeline must have at least one stage.</div>
+            )}
+          </div>
+
+          <div className="form-row" style={{ display: 'flex', gap: 8, marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+            <div style={{ flex: 1 }}>
+              <label>Risk threshold (0-100) <span className="req">*</span></label>
+              <input className="ip" type="number" min="0" max="100"
+                value={risk}
+                onChange={e => setRisk(parseInt(e.target.value, 10) || 0)} />
+              <div className="form-hint">Composite score that triggers a block. Lower = stricter.</div>
+              {!riskValid && (
+                <div className="form-hint warn">Must be between 0 and 100.</div>
+              )}
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Block threshold (req/s) <span className="req">*</span></label>
+              <input className="ip" type="number" min="1"
+                value={block}
+                onChange={e => setBlock(parseInt(e.target.value, 10) || 0)} />
+              <div className="form-hint">Per-second rate cap. Above this, fail-close kicks in.</div>
+              {!blockValid && (
+                <div className="form-hint warn">Must be at least 1.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
+            {tier.name}: pipeline=[{orderedPipeline.join(', ')}], risk≥{risk}, block≥{block}/s
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn primary" disabled={!canSave} onClick={() => onSave({
+            pipeline: orderedPipeline,
+            risk_threshold: risk,
+            block_threshold: block,
+          })}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -4596,22 +4751,30 @@ function PoolDetail({ name, pool, onEdit, onDelete, busy }) {
   );
 }
 
+// Routing page — restructured 2026-05-04 around the operator's
+// mental model: routes are the primary list (because that's what
+// they think about — "where does /news go?"), pools are the
+// backend a route happens to point at. Click a route → see the
+// pool inline with its members, scheme, host_header, health.
+// "+ Add route" can create a new pool in the same step.
+//
+// (Function name kept as `PageUpstreams` for router compat; the
+// sidebar label is "Routing & Upstreams".)
 function PageUpstreams() {
   const cfgApi = window.useUpstreamsConfigApi();
   const summaryApi = window.useUpstreamsApi();
+  const routesApi = window.useRoutesApi();
   const pools = cfgApi.data?.pools || {};
   const names = Object.keys(pools).sort();
   const summary = summaryApi.data?.pools || [];
+  const routes = routesApi.data?.routes || [];
 
-  const [selected, setSelected] = useStateP(null);
-  const [editor, setEditor] = useStateP(null); // null | { mode: 'add'|'edit', name?, pool? }
-  const [deleteModal, setDeleteModal] = useStateP(null); // null | { name, refs }
+  const [editor, setEditor] = useStateP(null); // null | { kind: 'pool', mode: 'add'|'edit', ... }
+  const [deleteModal, setDeleteModal] = useStateP(null); // pool delete only — route delete lives in RoutesTable
   const [busy, setBusy] = useStateP(false);
+  const [showOrphans, setShowOrphans] = useStateP(false);
 
-  // Auto-select first pool when data lands.
-  useEffectP(() => {
-    if (!selected && names.length > 0) setSelected(names[0]);
-  }, [names.length, selected]);
+  const orphanPoolNames = names.filter(n => (pools[n]?.referenced_by_routes || []).length === 0);
 
   // Defensive — `pools[n]` can be undefined transiently between
   // a mutation landing and the next reload completing; without
@@ -4626,8 +4789,11 @@ function PageUpstreams() {
     n => (pools[n]?.referenced_by_routes || []).length === 0,
   ).length;
 
-  const openAdd = () => setEditor({ mode: 'add' });
-  const openEdit = (name, pool) => setEditor({ mode: 'edit', name, pool });
+  // Pool-side handlers (used by the route-detail panel's
+  // "Edit pool" / "Delete pool" buttons and by the route-add
+  // modal when it creates a fresh pool inline).
+  const openPoolEdit = (name, pool) => setEditor({ kind: 'pool', mode: 'edit', name, pool });
+  const openPoolAdd  = () => setEditor({ kind: 'pool', mode: 'add' });
 
   async function savePool({ name, body }) {
     setBusy(true);
@@ -4637,7 +4803,6 @@ function PageUpstreams() {
         window.aegisToast(`Pool "${name}" saved`, 'ok');
         cfgApi.reload && cfgApi.reload();
         setEditor(null);
-        setSelected(name);
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         window.aegisToast(`Save failed: ${msg}`, 'err');
@@ -4651,7 +4816,7 @@ function PageUpstreams() {
     setDeleteModal({ name, refs: refs || [] });
   }
 
-  async function confirmDelete() {
+  async function confirmPoolDelete() {
     if (!deleteModal) return;
     const { name } = deleteModal;
     setBusy(true);
@@ -4661,12 +4826,7 @@ function PageUpstreams() {
         window.aegisToast(`Pool "${name}" removed`, 'ok');
         cfgApi.reload && cfgApi.reload();
         setDeleteModal(null);
-        // Pick a different pool, since the current selection just disappeared.
-        const remaining = names.filter(n => n !== name);
-        setSelected(remaining[0] || null);
       } else if (r.status === 409 && Array.isArray(r.referenced_by_routes)) {
-        // Backend returned the route-reference list — surface it
-        // in the modal so the operator sees what's blocking.
         setDeleteModal({ name, refs: r.referenced_by_routes });
         window.aegisToast(`Pool "${name}" has ${r.referenced_by_routes.length} route reference(s)`, 'warn');
       } else {
@@ -4684,64 +4844,115 @@ function PageUpstreams() {
         <div>
           <h1 className="page-title">Routing &amp; Upstreams</h1>
           <p className="page-subtitle">
-            <span className="num">{names.length}</span> pool{names.length === 1 ? '' : 's'} ·
-            <span className="num"> {totalMembers}</span> total members ·
-            <span className="num"> {orphaned}</span> unreferenced
-            <span style={{ marginLeft: 8 }}>
-              <span className={`pill ${cfgApi.error ? 'warn' : 'ok'}`}>
-                {cfgApi.error ? 'fetch failed' : 'live'}
-              </span>
-            </span>
-            <span style={{ marginLeft: 8 }}>
-              <span className="pill ok" title="CC-T1.1.b shipped — PUT/DELETE land via the audit-mutated pipeline; the proxy hot-swaps without restart.">audit-mutated CRUD</span>
+            <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} →
+            <span className="num"> {names.length}</span> pool{names.length === 1 ? '' : 's'}
+            {' '}({totalMembers} member{totalMembers === 1 ? '' : 's'}{orphaned ? `, ${orphaned} unreferenced` : ''}){' · '}
+            <span
+              className={`pill ${cfgApi.error ? 'warn' : 'ok'}`}
+              title="Routes + pools land via the audit-mutated pipeline; the proxy hot-swaps without restart."
+            >
+              {cfgApi.error ? 'fetch failed' : 'live · audit-mutated'}
             </span>
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn primary" onClick={openAdd}>+ Add pool</button>
           <button className="btn" onClick={() => {
             cfgApi.reload && cfgApi.reload();
             summaryApi.reload && summaryApi.reload();
+            routesApi.reload && routesApi.reload();
           }}>
             <window.I.Refresh /> Refresh
           </button>
         </div>
       </div>
 
-      <RoutesSection poolNames={names} />
-
-      <div className="grid-12">
-        <div className="col-4">
-          <div className="card" style={{ padding: 8 }}>
-            {names.length === 0 && (
-              <div style={{ padding: 16, textAlign: 'center', fontSize: 12, color: 'var(--ink-dim)' }}>
-                No upstream pools configured. Click <strong>+ Add pool</strong> or edit <span className="mono">upstreams:</span> in waf.yaml.
-              </div>
-            )}
-            {names.map(n => (
-              <PoolListRow
-                key={n}
-                name={n}
-                pool={pools[n]}
-                summary={summary}
-                isSelected={n === selected}
-                onSelect={setSelected}
-              />
-            ))}
-          </div>
-        </div>
-        <div className="col-8">
-          <PoolDetail
-            name={selected}
-            pool={selected ? pools[selected] : null}
-            onEdit={openEdit}
-            onDelete={openDelete}
-            busy={busy}
-          />
-        </div>
+      {/* How it works — one-line orientation. */}
+      <div style={{
+        background: 'var(--canvas-2)',
+        border: '1px solid var(--hairline)',
+        borderRadius: 6,
+        padding: '10px 14px',
+        marginBottom: 12,
+        fontSize: 12,
+        color: 'var(--ink-dim)',
+        lineHeight: 1.5,
+      }}>
+        <strong style={{ color: 'var(--ink)' }}>How it works.</strong>{' '}
+        Each <strong style={{ color: 'var(--ink)' }}>route</strong> matches incoming traffic
+        (host + path + method) and forwards it to <strong style={{ color: 'var(--ink)' }}>one upstream pool</strong>.
+        A pool can have one or more backend members (load-balanced) and the same pool can be reused by several routes.
+        First-match-wins, top to bottom.
       </div>
 
-      {editor && (
+      <RoutesTable
+        poolNames={names}
+        routesApi={routesApi}
+        pools={pools}
+        onEditPool={openPoolEdit}
+        onDeletePool={(n) => setDeleteModal({ name: n, refs: pools[n]?.referenced_by_routes || [] })}
+        cfgReload={cfgApi.reload}
+      />
+
+      {/* Orphan pools — collapsed by default. Pools that no
+          route currently points at, kept around so operators
+          can clean them up or re-attach. */}
+      {orphanPoolNames.length > 0 && (
+        <div className="card" style={{ marginTop: 12, padding: 0 }}>
+          <button
+            type="button"
+            onClick={() => setShowOrphans(!showOrphans)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              width: '100%', background: 'transparent', border: 'none', color: 'inherit',
+              padding: '10px 14px', cursor: 'pointer', textAlign: 'left',
+            }}
+          >
+            <span style={{ fontSize: 12 }}>
+              <strong>Pools without routes</strong>{' '}
+              <span className="pill warn" style={{ fontSize: 10, marginLeft: 6 }}>
+                {orphanPoolNames.length} unreferenced
+              </span>
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+              {showOrphans ? '▴ hide' : '▾ show'}
+            </span>
+          </button>
+          {showOrphans && (
+            <div style={{ borderTop: '1px solid var(--hairline)', padding: 8 }}>
+              <table className="tbl tbl-compact">
+                <thead><tr><th>Pool</th><th>Members</th><th>Scheme</th><th style={{ width: 160 }}></th></tr></thead>
+                <tbody>
+                  {orphanPoolNames.map(n => {
+                    const p = pools[n] || {};
+                    return (
+                      <tr key={n}>
+                        <td className="mono">{n}</td>
+                        <td>{(p.members || []).length}</td>
+                        <td className="mono" style={{ fontSize: 11 }}>{p.connection?.scheme || 'auto'}</td>
+                        <td style={{ textAlign: 'right' }}>
+                          <button className="btn btn-sm" onClick={() => openPoolEdit(n, p)}>Edit</button>
+                          <button
+                            className="btn btn-sm"
+                            style={{ marginLeft: 4 }}
+                            onClick={() => setDeleteModal({ name: n, refs: [] })}
+                          >Delete</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div style={{ padding: '6px 8px 0', fontSize: 11, color: 'var(--ink-dim)' }}>
+                Or use <strong>+ Add pool</strong>{' '}
+                <button className="btn btn-sm" onClick={openPoolAdd} style={{ marginLeft: 4 }}>+ Add pool</button>
+                {' '}to create one without a route.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {editor && editor.kind === 'pool' && (
         <PoolEditModal
           mode={editor.mode}
           existingNames={names}
@@ -4758,7 +4969,7 @@ function PageUpstreams() {
           name={deleteModal.name}
           refs={deleteModal.refs}
           onCancel={() => setDeleteModal(null)}
-          onConfirm={confirmDelete}
+          onConfirm={confirmPoolDelete}
           busy={busy}
         />
       )}
@@ -5791,13 +6002,26 @@ function PageIncidents() {
   async function doAct(action, id) {
     setBusy(id);
     try {
-      if (action === 'ack')      await window.incidentAck(id, { note: '' });
-      if (action === 'snooze')   await window.incidentSnooze(id, 15, '');
-      if (action === 'resolve')  await window.incidentResolve(id, '');
-      if (incidents.reload) incidents.reload();
-      if (alerts.reload) alerts.reload();
+      let r;
+      if (action === 'ack')      r = await window.incidentAck(id, { note: '' });
+      if (action === 'snooze')   r = await window.incidentSnooze(id, 15, '');
+      if (action === 'resolve')  r = await window.incidentResolve(id, '');
+      // FIX 2026-05-04 — the previous code used `window.toast`
+      // (which doesn't exist; the project's toast is
+      // `aegisToast`), so every failure was silently swallowed
+      // and operators saw a click that did nothing. Surface
+      // the result either way: success → green toast + reload;
+      // failure → red toast with the backend reason.
+      if (r && r.status >= 200 && r.status < 300) {
+        window.aegisToast(`Incident ${action} ok`, 'ok');
+        if (incidents.reload) incidents.reload();
+        if (alerts.reload) alerts.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        window.aegisToast(`${action} failed: ${msg}`, 'err');
+      }
     } catch (e) {
-      window.toast && window.toast(`${action} failed: ${e.message}`, 'err');
+      window.aegisToast(`${action} error: ${e.message || e}`, 'err');
     } finally {
       setBusy(null);
     }
@@ -6867,12 +7091,24 @@ function PageTopAttackers() {
 // `poolNames` is passed in from the parent page so the upstream
 // dropdown stays consistent with the live pool list.
 // ---------------------------------------------------------------------------
-function RoutesSection({ poolNames }) {
-  const routesApi = window.useRoutesApi();
+function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cfgReload }) {
   const routes = routesApi.data?.routes || [];
   const [editor, setEditor] = useStateP(null);
   const [deleteModal, setDeleteModal] = useStateP(null);
   const [busy, setBusy] = useStateP(false);
+  const [search, setSearch] = useStateP('');
+  const [expandedRouteId, setExpandedRouteId] = useStateP(null);
+
+  const filteredRoutes = (() => {
+    const q = (search || '').trim().toLowerCase();
+    if (!q) return routes;
+    return routes.filter(r =>
+      (r.id || '').toLowerCase().includes(q) ||
+      (r.host || '').toLowerCase().includes(q) ||
+      (r.path || '').toLowerCase().includes(q) ||
+      (r.upstream || '').toLowerCase().includes(q)
+    );
+  })();
 
   const openAdd = () => setEditor({ mode: 'add', draft: emptyRouteDraft() });
   const openEdit = (route) => setEditor({ mode: 'edit', draft: routeToDraft(route) });
@@ -6880,6 +7116,20 @@ function RoutesSection({ poolNames }) {
   async function saveRoute(draft) {
     setBusy(true);
     try {
+      // Inline pool create — modal sets draft.newPool when the
+      // operator typed a backend address instead of picking an
+      // existing pool. Pool name = route id in that flow.
+      if (draft.newPool && draft.newPool.addr) {
+        const poolName = draft.upstream;
+        const poolBody = poolBodyFromInlineForm(draft.newPool);
+        const pr = await window.poolUpsert(poolName, poolBody);
+        if (!(pr.status === 200 && pr.ok)) {
+          const msg = pr.message || pr.error || pr.reason || `HTTP ${pr.status}`;
+          window.aegisToast(`Pool create failed: ${msg}`, 'err');
+          return;
+        }
+        cfgReload && cfgReload();
+      }
       const body = routeBodyFromDraft(draft);
       const r = await window.routeUpsert(draft.id, body);
       if (r.status === 200 && r.ok) {
@@ -6906,8 +7156,6 @@ function RoutesSection({ poolNames }) {
         routesApi.reload && routesApi.reload();
         setDeleteModal(null);
       } else if (r.status === 409 && r.reason === 'last_catchall') {
-        // Surface the "last catch-all" guard so the operator
-        // knows what's blocking the delete.
         setDeleteModal({ id, blocker: r.message || 'last catch-all' });
         window.aegisToast(`Cannot delete "${id}": last catch-all`, 'warn');
       } else {
@@ -6921,58 +7169,177 @@ function RoutesSection({ poolNames }) {
 
   return (
     <>
-      <div className="card" style={{ padding: 0, marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--hairline)' }}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>Routes</div>
-            <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-              <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} ·
-              first-match-wins ·
-              <span className="pill ok" style={{ marginLeft: 6 }} title="RT-T3 — PUT/DELETE land via the audit-mutated pipeline; the proxy hot-swaps without restart.">audit-mutated CRUD</span>
-            </div>
-          </div>
-          <div>
-            <button className="btn primary" onClick={openAdd} disabled={poolNames.length === 0}
-              title={poolNames.length === 0 ? 'Add an upstream pool first — every route must point at one' : ''}>
-              + Add route
-            </button>
-          </div>
+      <div className="card" style={{ padding: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px', borderBottom: '1px solid var(--hairline)', gap: 8 }}>
+          <input
+            type="search"
+            className="ip"
+            placeholder="filter routes — id / host / path / pool"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ flex: 1, fontSize: 12, maxWidth: 360 }}
+          />
+          <div style={{ flex: 1 }} />
+          <button className="btn primary" onClick={openAdd}>
+            + Add route
+          </button>
         </div>
         <table className="tbl tbl-compact">
-          <thead><tr><th>ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th><th>Tier</th><th style={{ width: 120 }}></th></tr></thead>
+          <thead>
+            <tr>
+              <th style={{ width: 32, textAlign: 'right' }} title="Match order — first match wins">#</th>
+              <th>Match (host · path)</th>
+              <th style={{ width: 80 }}>Methods</th>
+              <th>Forwards to</th>
+              <th style={{ width: 130 }}>Tier · Auth</th>
+              <th style={{ width: 130, textAlign: 'right' }}></th>
+            </tr>
+          </thead>
           <tbody>
-            {routes.length === 0 && (
-              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
-                No routes configured. Click <strong>+ Add route</strong> to add one.
+            {filteredRoutes.length === 0 && (
+              <tr><td colSpan={6} style={{ textAlign: 'center', padding: 28, color: 'var(--ink-dim)', fontSize: 12 }}>
+                {routes.length === 0
+                  ? <>No routes yet. Click <strong>+ Add route</strong> — you can create the backend in the same step.</>
+                  : <>No routes match <code>{search}</code>. <button className="btn btn-sm" onClick={() => setSearch('')}>Clear</button></>}
               </td></tr>
             )}
-            {routes.map(r => (
-              <tr key={r.id}>
-                <td className="mono" style={{ fontSize: 12 }}>{r.id}</td>
-                <td className="mono" style={{ fontSize: 12, color: r.host ? 'inherit' : 'var(--ink-dim)' }}>
-                  {r.host || '*'}
-                </td>
-                <td className="mono" style={{ fontSize: 12 }}>{r.path}</td>
-                <td><span className="pill neutral" style={{ fontSize: 10 }}>{r.match_type}</span></td>
-                <td style={{ fontSize: 11 }}>
-                  {(r.methods || []).length === 0 ? <span style={{ color: 'var(--ink-dim)' }}>any</span> :
-                    (r.methods || []).map(m => (
-                      <span key={m} className="pill neutral" style={{ fontSize: 10, marginRight: 4 }}>{m}</span>
-                    ))}
-                </td>
-                <td className="mono" style={{ fontSize: 12 }}>{r.upstream}</td>
-                <td>
-                  {r.tier_override
-                    ? <span className="pill" style={{ fontSize: 10 }}>{r.tier_override}</span>
-                    : <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>default</span>}
-                </td>
-                <td style={{ textAlign: 'right' }}>
-                  <button className="btn btn-sm" onClick={() => openEdit(r)}>Edit</button>
-                  <button className="btn btn-sm" style={{ marginLeft: 4 }}
-                    onClick={() => setDeleteModal({ id: r.id })}>Delete</button>
-                </td>
-              </tr>
-            ))}
+            {filteredRoutes.map((r) => {
+              const origIdx = routes.indexOf(r);
+              const isCatchall = !r.host && r.path === '/';
+              const isExpanded = expandedRouteId === r.id;
+              const pool = pools[r.upstream];
+              const members = pool?.members || [];
+              const scheme = pool?.connection?.scheme || 'auto';
+              const methodLabel = (r.methods && r.methods.length > 0) ? r.methods.join(',') : 'any';
+              return (
+                <React.Fragment key={r.id}>
+                  <tr
+                    style={{
+                      cursor: 'pointer',
+                      background: isExpanded ? 'var(--surface-active)' : undefined,
+                    }}
+                    onClick={() => setExpandedRouteId(isExpanded ? null : r.id)}
+                  >
+                    <td className="num" style={{ textAlign: 'right', color: 'var(--ink-dim)', fontSize: 11 }}>{origIdx + 1}</td>
+                    <td>
+                      <div className="mono" style={{ fontSize: 12, fontWeight: 600 }}>
+                        {r.host
+                          ? <><span style={{ color: 'var(--ink-dim)' }}>{r.host}</span><span style={{ color: 'var(--ink-dim)' }}> · </span></>
+                          : <span style={{ color: 'var(--ink-dim)' }}>* · </span>}
+                        <span>{r.path}</span>
+                        {isCatchall && <span className="pill" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }}>catch-all</span>}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                        <span className="mono">{r.id}</span> · <span className="pill neutral" style={{ fontSize: 9, padding: '0 6px' }}>{r.match_type}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className="pill neutral" style={{ fontSize: 10 }}>{methodLabel}</span>
+                    </td>
+                    <td>
+                      <div className="mono" style={{ fontSize: 12 }}>
+                        {poolNames.includes(r.upstream)
+                          ? <>{r.upstream}{' '}<span style={{ color: 'var(--ink-dim)', fontSize: 11 }}>({scheme} · {members.length} member{members.length === 1 ? '' : 's'})</span></>
+                          : <span title="Pool not found" style={{ color: 'var(--down)' }}>{r.upstream} ⚠</span>}
+                      </div>
+                      {!isExpanded && members.length > 0 && (
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          ↳ {members.slice(0, 2).map(m => m.addr).join(', ')}{members.length > 2 ? ` +${members.length - 2} more` : ''}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ fontSize: 11 }}>
+                      <div>{r.tier_override
+                        ? <span className="pill" style={{ fontSize: 10 }}>{r.tier_override}</span>
+                        : <span style={{ color: 'var(--ink-dim)' }}>default</span>}</div>
+                      <div style={{ marginTop: 2 }}>
+                        {(r.auth_required || []).length === 0
+                          ? <span style={{ color: 'var(--ink-dim)' }}>open</span>
+                          : (r.auth_required || []).map(a => (
+                            <span key={a} className="pill" style={{ fontSize: 9, padding: '0 6px', marginRight: 3 }}>{a}</span>
+                          ))}
+                      </div>
+                    </td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
+                      <button className="btn btn-sm" onClick={() => openEdit(r)}>Edit</button>{' '}
+                      <button className="btn btn-sm" style={{ color: 'var(--down)' }}
+                        onClick={() => setDeleteModal({ id: r.id })}>Delete</button>
+                    </td>
+                  </tr>
+
+                  {/* Expanded row — full pool detail. */}
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={6} style={{ background: 'var(--canvas-2)', padding: 0, borderBottom: '1px solid var(--hairline)' }}>
+                        <div style={{ padding: '12px 16px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600 }}>
+                              Upstream pool <span className="mono">{r.upstream}</span>
+                              <span style={{ color: 'var(--ink-dim)', fontWeight: 400, marginLeft: 8 }}>
+                                · scheme <code>{scheme}</code> · lb <code>{pool?.lb || '—'}</code>
+                              </span>
+                            </div>
+                            {pool && (
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                <button className="btn btn-sm" onClick={() => onEditPool(r.upstream, pool)}>Edit pool</button>
+                                <button className="btn btn-sm" style={{ color: 'var(--down)' }}
+                                  onClick={() => onDeletePool(r.upstream)}>Delete pool</button>
+                              </div>
+                            )}
+                          </div>
+                          {!pool && (
+                            <div style={{ fontSize: 12, color: 'var(--down)' }}>
+                              Pool <code>{r.upstream}</code> is missing — fix the route or recreate the pool.
+                            </div>
+                          )}
+                          {pool && members.length === 0 && (
+                            <div style={{ fontSize: 12, color: 'var(--down)' }}>
+                              No members configured. Every request through this route will fail upstream.
+                            </div>
+                          )}
+                          {pool && members.length > 0 && (
+                            <table className="tbl tbl-compact" style={{ background: 'var(--canvas)' }}>
+                              <thead>
+                                <tr>
+                                  <th>Member</th>
+                                  <th title="`host_header:` override drives outbound Host + TLS SNI">Host header</th>
+                                  <th style={{ width: 60 }}>Weight</th>
+                                  <th style={{ width: 80 }}>Zone</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {members.map((m, i) => (
+                                  <tr key={`${m.addr}-${i}`}>
+                                    <td className="mono" style={{ fontSize: 12 }}>{m.addr}</td>
+                                    <td className="mono" style={{ fontSize: 11, color: m.host_header ? 'inherit' : 'var(--ink-dim)' }}>
+                                      {m.host_header || '—'}
+                                    </td>
+                                    <td className="num">{m.weight ?? 1}</td>
+                                    <td style={{ color: 'var(--ink-dim)', fontSize: 11 }}>{m.zone || '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                          {pool?.health && (
+                            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-dim)' }}>
+                              Health probe: <code>{pool.health.path}</code> every {fmtMs(pool.health.interval_ms)} (timeout {fmtMs(pool.health.timeout_ms)})
+                            </div>
+                          )}
+                          {pool && (pool.referenced_by_routes || []).length > 1 && (
+                            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-dim)' }}>
+                              Shared with: {pool.referenced_by_routes.filter(id => id !== r.id).map(id => (
+                                <span key={id} className="pill neutral" style={{ fontSize: 10, marginRight: 4 }}>{id}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -7002,18 +7369,48 @@ function RoutesSection({ poolNames }) {
   );
 }
 
-// Form-shape helpers — keep the UI state shape decoupled from the
-// wire shape so the dropdowns / chips have predictable defaults.
+// Right-side panel — when a route is selected on the left, this
+// shows everything an operator needs to understand where the
+// traffic goes: route shape on top, then the pool with members
+// + scheme + host_header + health, plus an "Other routes using
+// this pool" reminder so they know who else they'd affect by
+// editing the pool.
+// Build a `PoolConfig` body from the inline-add-pool form
+// fields the RouteEditModal collects when the operator chooses
+// "+ Create new pool". Mirrors `poolConfigFromForm` for the
+// fields that are exposed inline (rest take server defaults).
+function poolBodyFromInlineForm(np) {
+  return {
+    members: [{
+      addr: (np.addr || '').trim(),
+      weight: 1,
+      ...(np.host_header && np.host_header.trim() ? { host_header: np.host_header.trim() } : {}),
+    }],
+    lb: 'round_robin',
+    connection: {
+      scheme: np.scheme || 'auto',
+      keep_alive: true,
+      max_idle_per_host: 32,
+      idle_timeout: '30s',
+    },
+  };
+}
+
+// Form-shape helpers — `methods` and `auth_required` are
+// **arrays** in the form draft so the checkbox UI can read /
+// write them naturally. `routeBodyFromDraft` accepts either
+// shape (legacy comma-string OR fresh array) so older callers
+// keep working.
 function emptyRouteDraft() {
   return {
     id: '',
     host: '',
     path: '/',
     match_type: 'prefix',
-    methods: '',          // comma-separated; empty = "any"
+    methods: [],
     upstream: '',
-    tier_override: '',    // empty = "default tier"
-    auth_required: '',    // comma-separated
+    tier_override: '',
+    auth_required: [],
   };
 }
 function routeToDraft(r) {
@@ -7022,15 +7419,21 @@ function routeToDraft(r) {
     host: r.host || '',
     path: r.path || '/',
     match_type: r.match_type || 'prefix',
-    methods: (r.methods || []).join(','),
+    methods: r.methods || [],
     upstream: r.upstream || '',
     tier_override: r.tier_override || '',
-    auth_required: (r.auth_required || []).join(','),
+    auth_required: r.auth_required || [],
   };
 }
 function routeBodyFromDraft(d) {
-  const methods = d.methods.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-  const auth_required = d.auth_required.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  // Accept either the old comma-string or the new array shape so
+  // both code paths keep working during the transition.
+  const toArray = (v, lc) => {
+    const a = Array.isArray(v) ? v : (typeof v === 'string' ? v.split(',') : []);
+    return a.map(s => s.trim()).filter(Boolean).map(s => lc ? s.toLowerCase() : s.toUpperCase());
+  };
+  const methods = toArray(d.methods, false);
+  const auth_required = toArray(d.auth_required, true);
   const body = {
     id: d.id.trim(),
     path: d.path.trim() || '/',
@@ -7044,103 +7447,264 @@ function routeBodyFromDraft(d) {
   return body;
 }
 
+// HTTP methods to expose as checkboxes — covers the practical
+// surface (GET / POST / PUT / DELETE / PATCH / HEAD / OPTIONS).
+// Operators rarely need anything else; if they do, fall back to
+// editing YAML.
+const ROUTE_METHOD_CHOICES = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'];
+const ROUTE_AUTH_CHOICES = [
+  ['mtls',      'mTLS — require an mTLS-authenticated client'],
+  ['spiffe',    'SPIFFE — require a SPIFFE-id client'],
+  ['anonymous', 'Anonymous — admit unauthenticated clients (note: making the route public)'],
+];
+
 function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy }) {
-  const [d, setD] = useStateP(initial);
+  const [d, setD] = useStateP(() => ({
+    ...initial,
+    methods: typeof initial.methods === 'string'
+      ? initial.methods.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+      : (initial.methods || []),
+    auth_required: typeof initial.auth_required === 'string'
+      ? initial.auth_required.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+      : (initial.auth_required || []),
+  }));
   const isAdd = mode === 'add';
   const idClash = isAdd && existingIds.includes(d.id.trim());
 
+  // The "Forward to" target is decided by what the operator
+  // types: empty address field → use the dropdown (existing
+  // pool); typing an address → create a new pool. No toggle.
+  const [newPool, setNewPool] = useStateP({
+    addr: '', scheme: 'https', host_header: '',
+  });
+  const usingNewPool = newPool.addr.trim().length > 0;
+
+  const [showAdvanced, setShowAdvanced] = useStateP(
+    !isAdd && (
+      (d.match_type && d.match_type !== 'prefix') ||
+      d.tier_override ||
+      (d.auth_required && d.auth_required.length > 0)
+    )
+  );
+
   const idValid = d.id.trim().length > 0 && !idClash;
-  const pathValid = d.path.trim().length > 0;
-  const upstreamValid = poolNames.includes(d.upstream);
+  const pathValid = d.path.trim().startsWith('/');
+  const upstreamValid = usingNewPool
+    ? (d.id.trim().length > 0 && !poolNames.includes(d.id.trim()))
+    : poolNames.includes(d.upstream);
   const canSave = idValid && pathValid && upstreamValid && !busy;
 
   const set = (k, v) => setD({ ...d, [k]: v });
+  const toggleSet = (k, v) => {
+    const cur = new Set(d[k] || []);
+    cur.has(v) ? cur.delete(v) : cur.add(v);
+    setD({ ...d, [k]: Array.from(cur) });
+  };
+
+  // One-line preview always visible at the bottom of the form.
+  const matchPreview = (() => {
+    const ms = (d.methods || []).length > 0 ? d.methods.join(',') : 'ANY';
+    const host = d.host.trim() || '*';
+    const path = d.path.trim() || '/';
+    return `${ms}  ${host}${path}  →  ${
+      usingNewPool ? `${d.id.trim() || '<route-id>'} (new · ${newPool.addr})`
+                   : (d.upstream || '<pick a pool>')
+    }`;
+  })();
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 540 }}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
         <div className="modal-head">
-          <div className="modal-title">{isAdd ? 'Add route' : `Edit route — ${d.id}`}</div>
+          <div className="modal-title">{isAdd ? 'Add route' : `Edit route · ${d.id}`}</div>
           <button className="btn btn-sm" onClick={onCancel}>×</button>
         </div>
         <div className="modal-body">
 
+          {/* Top — required basics, all visible. */}
           <div className="form-row">
-            <label>ID <span className="req">*</span></label>
+            <label>Route ID <span className="req">*</span></label>
             <input className="ip" value={d.id} disabled={!isAdd}
               onChange={e => set('id', e.target.value)}
               placeholder="vnexpress" />
             {idClash && <div className="form-hint warn">A route with this ID already exists.</div>}
-            {!isAdd && <div className="form-hint">ID is immutable — to rename, delete and recreate.</div>}
-          </div>
-
-          <div className="form-row">
-            <label>Host (optional)</label>
-            <input className="ip" value={d.host}
-              onChange={e => set('host', e.target.value)}
-              placeholder="api.example.com (leave blank for any host)" />
-            <div className="form-hint">Leave blank for a host-agnostic route. Wildcards (`*.example.com`) supported.</div>
-          </div>
-
-          <div className="form-row">
-            <label>Path <span className="req">*</span></label>
-            <input className="ip" value={d.path}
-              onChange={e => set('path', e.target.value)}
-              placeholder="/api/v1" />
           </div>
 
           <div className="form-row" style={{ display: 'flex', gap: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label>Match type</label>
-              <select className="ip" value={d.match_type} onChange={e => set('match_type', e.target.value)}>
-                <option value="prefix">prefix</option>
-                <option value="exact">exact</option>
-                <option value="regex">regex</option>
-                <option value="glob">glob</option>
-              </select>
+            <div style={{ flex: 2 }}>
+              <label>Path <span className="req">*</span></label>
+              <input className="ip" value={d.path}
+                onChange={e => set('path', e.target.value)}
+                placeholder="/news" />
+              {!pathValid && d.path && (
+                <div className="form-hint warn">Path must start with <code>/</code>.</div>
+              )}
             </div>
-            <div style={{ flex: 1 }}>
-              <label>Tier override</label>
-              <select className="ip" value={d.tier_override} onChange={e => set('tier_override', e.target.value)}>
-                <option value="">default</option>
-                <option value="critical">critical</option>
-                <option value="high">high</option>
-                <option value="medium">medium</option>
-                <option value="catch_all">catch_all</option>
-              </select>
+            <div style={{ flex: 2 }}>
+              <label>Host <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(optional)</span></label>
+              <input className="ip" value={d.host}
+                onChange={e => set('host', e.target.value)}
+                placeholder="any host" />
             </div>
           </div>
 
           <div className="form-row">
-            <label>Methods (comma-separated, blank = any)</label>
-            <input className="ip" value={d.methods}
-              onChange={e => set('methods', e.target.value)}
-              placeholder="GET,POST" />
+            <label>
+              Methods{' '}
+              <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>
+                ({d.methods.length === 0 ? 'any method' : d.methods.join(', ')})
+              </span>
+            </label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+              {ROUTE_METHOD_CHOICES.map(m => {
+                const on = (d.methods || []).includes(m);
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => toggleSet('methods', m)}
+                    className={`pill ${on ? 'ok' : 'neutral'}`}
+                    style={{ fontSize: 11, padding: '3px 10px', cursor: 'pointer' }}
+                  >
+                    {on && '✓ '}{m}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          <div className="form-row">
-            <label>Upstream <span className="req">*</span></label>
-            <select className="ip" value={d.upstream} onChange={e => set('upstream', e.target.value)}>
-              <option value="">— pick a pool —</option>
+          {/* Forward to — combined: dropdown OR type a new address. */}
+          <div className="form-row" style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+            <label>Forward to <span className="req">*</span></label>
+            <select className="ip"
+              value={usingNewPool ? '' : d.upstream}
+              disabled={usingNewPool}
+              onChange={e => set('upstream', e.target.value)}>
+              <option value="">{poolNames.length === 0 ? '— no pools yet —' : '— pick an existing pool —'}</option>
               {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
-            {!upstreamValid && d.upstream && (
-              <div className="form-hint warn">Pool not found in current upstreams.</div>
+            <div style={{ fontSize: 11, color: 'var(--ink-dim)', textAlign: 'center', margin: '6px 0' }}>— or —</div>
+            <input
+              className="ip"
+              value={newPool.addr}
+              onChange={e => setNewPool({ ...newPool, addr: e.target.value })}
+              placeholder="Type a new backend: IP:port  (e.g. 10.0.1.10:8080)"
+            />
+            {usingNewPool && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11 }}>Scheme</label>
+                  <select className="ip" value={newPool.scheme}
+                    onChange={e => setNewPool({ ...newPool, scheme: e.target.value })}>
+                    <option value="auto">auto</option>
+                    <option value="http">http</option>
+                    <option value="https">https</option>
+                    <option value="h2c">h2c</option>
+                    <option value="grpc">grpc</option>
+                    <option value="tcp">tcp</option>
+                  </select>
+                </div>
+                <div style={{ flex: 2 }}>
+                  <label style={{ fontSize: 11 }}>
+                    Host header <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(SNI override · optional)</span>
+                  </label>
+                  <input className="ip" value={newPool.host_header}
+                    onChange={e => setNewPool({ ...newPool, host_header: e.target.value })}
+                    placeholder="vnexpress.net (for multi-vhost / public TLS)" />
+                </div>
+              </div>
+            )}
+            {usingNewPool && (
+              <div className="form-hint">
+                Will create pool <code>{d.id.trim() || '<route-id>'}</code> with this single member.
+                {poolNames.includes(d.id.trim()) && (
+                  <span className="warn"> — that pool name already exists; pick it from the dropdown above instead.</span>
+                )}
+              </div>
             )}
           </div>
 
-          <div className="form-row">
-            <label>Required auth kinds (comma-separated)</label>
-            <input className="ip" value={d.auth_required}
-              onChange={e => set('auth_required', e.target.value)}
-              placeholder="mtls (leave blank to admit any identity)" />
-            <div className="form-hint">Allowed values: <code>mtls</code>, <code>spiffe</code>, <code>anonymous</code>.</div>
+          {/* Advanced — collapsed by default. */}
+          <div style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              style={{
+                background: 'transparent', border: 'none', color: 'var(--ink-dim)',
+                fontSize: 11, cursor: 'pointer', padding: 0,
+              }}
+            >
+              {showAdvanced ? '▾' : '▸'} Advanced (match type, tier, auth)
+            </button>
+          </div>
+          {showAdvanced && (
+            <div style={{ marginTop: 8, paddingTop: 10, borderTop: '1px dashed var(--hairline)' }}>
+              <div className="form-row" style={{ display: 'flex', gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11 }}>Match type</label>
+                  <select className="ip" value={d.match_type} onChange={e => set('match_type', e.target.value)}>
+                    <option value="prefix">prefix (begins with)</option>
+                    <option value="exact">exact</option>
+                    <option value="regex">regex</option>
+                    <option value="glob">glob</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11 }}>Tier override</label>
+                  <select className="ip" value={d.tier_override} onChange={e => set('tier_override', e.target.value)}>
+                    <option value="">default</option>
+                    <option value="critical">critical</option>
+                    <option value="high">high</option>
+                    <option value="medium">medium</option>
+                    <option value="catch_all">catch_all</option>
+                  </select>
+                </div>
+              </div>
+              <div className="form-row">
+                <label style={{ fontSize: 11 }}>
+                  Required client identity{' '}
+                  <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>
+                    (none = open route)
+                  </span>
+                </label>
+                <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                  {ROUTE_AUTH_CHOICES.map(([k]) => {
+                    const on = (d.auth_required || []).includes(k);
+                    return (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => toggleSet('auth_required', k)}
+                        className={`pill ${on ? 'ok' : 'neutral'}`}
+                        style={{ fontSize: 11, padding: '3px 10px', cursor: 'pointer' }}
+                      >
+                        {on && '✓ '}{k}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* One-line live preview pinned at the bottom. */}
+          <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
+            {matchPreview}
           </div>
 
         </div>
         <div className="modal-foot">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn primary" disabled={!canSave} onClick={() => onSave(d)}>
+          <button className="btn primary" disabled={!canSave} onClick={() => {
+            const out = { ...d };
+            if (usingNewPool) {
+              out.upstream = d.id.trim();
+              out.newPool = newPool;
+            } else {
+              out.newPool = null;
+            }
+            onSave(out);
+          }}>
             {busy ? 'Saving…' : (isAdd ? 'Create route' : 'Save')}
           </button>
         </div>

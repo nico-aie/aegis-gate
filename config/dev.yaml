@@ -107,23 +107,24 @@ detectors:
   brute_force:      { enabled: false }
 
 # ---------------------------------------------------------------------------
-# AI detector (AI-T) — operator-supplied ONNX classifier.  Off by default;
-# `make run-dev` boots without it.  To enable:
+# AI detector — operator-supplied ONNX classifier. Treated like any other
+# detector class once on: a non-Normal verdict above `confidence_threshold`
+# emits a Signal that contributes to the request's risk score (same path
+# as sqli / xss / etc). To enable:
 #
-#   1. Build with the feature:  FEATURES="redis geoip ai" make build
-#   2. Symlink your model:       make ai-link MODEL=/abs/path/to/waf_model.onnx
-#   3. Flip the toggle below:    enabled: true
+#   1. Build with the feature:  FEATURES="redis geoip alerts ai" make build
+#      (the default Makefile target now includes `ai`)
+#   2. Symlink your model:      make ai-link MODEL=/abs/path/to/waf_model.onnx
+#   3. Flip the toggle below:   enabled: true
 #
-# `mode: observe` (default) emits `would_block` audit entries without
-# actually blocking — safe burn-in.  Flip to `enforce` once you trust
-# the detector on your traffic.
+# Hot-flippable at runtime via the Detectors page (audit-mutated PUT
+# /api/ai/enabled). Tighten `confidence_threshold` (0.7 / 0.85 / 0.95)
+# before promoting the detector to a route's blocking budget.
 # ---------------------------------------------------------------------------
 ai:
   enabled: true
   model_path: data/ai_model/waf_model.onnx
   confidence_threshold: 0.5
-  mode: observe
-  timeout: 5ms
 
 # ---------------------------------------------------------------------------
 # Risk scoring — tuned for the P6 k6 scenario (`risk-strikes.js`)

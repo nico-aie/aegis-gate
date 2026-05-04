@@ -79,9 +79,14 @@ impl ProxyContext {
         let route_table = RouteTable::build(cfg)?;
         let (pools, breakers) = PoolRegistry::build_pools(&cfg.upstreams)
             .map_err(|e| aegis_core::WafError::Config(e.to_string()))?;
+        let pool_registry = PoolRegistry::from_pools(pools, breakers);
+        // FIX 2026-05-04 — seed the raw shadow with the boot map
+        // so admin reads see the boot config before any runtime
+        // mutation has landed.
+        pool_registry.seed_raw(cfg.upstreams.clone());
         Ok(Self {
             route_table,
-            pools: PoolRegistry::from_pools(pools, breakers),
+            pools: pool_registry,
             pipeline,
             benchmark: BenchmarkConfig::off(),
             tunnels: crate::tcp_tunnel::ConcurrentTunnels::new(),

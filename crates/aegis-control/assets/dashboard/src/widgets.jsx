@@ -151,6 +151,60 @@ function project(lat, lon, w, h) {
   return [(lon + 180) * (w / 360), (90 - lat) * (h / 180)];
 }
 
+// FIX 2026-05-04 — when the operator's GeoIP only resolves to
+// country (no City DB), the backend returns `country` but no
+// lat/lon, so every blip fell on (0,0) — the Atlantic off the
+// coast of Africa. The previous code hard-coded lat/lon to 0.
+//
+// Replace with a country-centroid lookup. Coordinates are rough
+// population-weighted centroids — good enough for a "blip
+// somewhere on this country" tile, which is all the WorldMap
+// shows. Operators who need city-level pins ship a GeoLite2-
+// City.mmdb and let the backend fill in the real coords.
+//
+// Top ~50 countries by likely-attacker traffic (covers > 95 %
+// of what `/api/attacks/top` will surface in practice). Anything
+// not in the table falls back to (0,0) so it doesn't crash —
+// but the operator will see all unmapped traffic stack on one
+// pixel, which is the cue to either extend the table or ship
+// the city DB.
+const COUNTRY_CENTROIDS = {
+  // North America
+  US: [39.5, -98.4], CA: [56.1, -106.3], MX: [23.6, -102.5],
+  // South America
+  BR: [-14.2, -51.9], AR: [-38.4, -63.6], CO: [4.6, -74.3], CL: [-35.7, -71.5],
+  PE: [-9.2, -75.0], VE: [6.4, -66.6],
+  // Europe
+  GB: [55.4, -3.4], DE: [51.2, 10.5], FR: [46.6, 2.2], NL: [52.1, 5.3],
+  ES: [40.5, -3.7], IT: [41.9, 12.6], SE: [60.1, 18.6], FI: [61.9, 25.7],
+  PL: [51.9, 19.1], RO: [45.9, 24.9], CH: [46.8, 8.2], BE: [50.5, 4.5],
+  CZ: [49.8, 15.5], DK: [56.3, 9.5], NO: [60.5, 8.5], AT: [47.5, 14.6],
+  IE: [53.4, -8.2], PT: [39.4, -8.2], GR: [39.1, 21.8], TR: [38.9, 35.2],
+  HU: [47.2, 19.5], BG: [42.7, 25.5], UA: [48.4, 31.2], RU: [61.5, 105.3],
+  // Middle East
+  AE: [23.4, 53.8], SA: [23.9, 45.1], IL: [31.0, 34.9], IR: [32.4, 53.7],
+  EG: [26.8, 30.8], QA: [25.4, 51.2],
+  // Asia
+  CN: [35.9, 104.2], JP: [36.2, 138.3], KR: [35.9, 127.8], IN: [20.6, 78.9],
+  ID: [-0.8, 113.9], TH: [15.9, 100.9], VN: [14.1, 108.3], MY: [4.2, 101.9],
+  SG: [1.4, 103.8], HK: [22.4, 114.1], TW: [23.7, 121.0], PH: [12.9, 121.8],
+  PK: [30.4, 69.3], BD: [23.7, 90.4],
+  // Oceania
+  AU: [-25.3, 133.8], NZ: [-40.9, 174.9],
+  // Africa
+  ZA: [-30.6, 22.9], NG: [9.1, 8.7], KE: [-0.0, 37.9], MA: [31.8, -7.1],
+  DZ: [28.0, 1.7], TN: [33.9, 9.6],
+};
+
+/// Resolve a country code to a `[lat, lon]` centroid. Returns
+/// `null` when the code isn't in the table — the WorldMap caller
+/// drops blips with null coords rather than stacking them on
+/// (0, 0).
+function centroidFor(cc) {
+  if (!cc) return null;
+  return COUNTRY_CENTROIDS[cc.toUpperCase()] || null;
+}
+
 function WorldMap({ blips = [], h = 320 }) {
   const w = 720;
   const [tick, setTick] = useStateW(0);
@@ -446,4 +500,7 @@ Object.assign(window, {
   I, Sparkline, StatTile, TrafficChart, Donut, WorldMap, RiskHeatmap,
   RiskMeter, ActionPill, TierPill, Drawer, StackedBar, BarList, SectionHeader,
   ToastContainer, aegisToast,
+  // FIX 2026-05-04 — exposed so PageOverview can resolve country
+  // codes to centroid coords before passing blips to WorldMap.
+  centroidFor,
 });

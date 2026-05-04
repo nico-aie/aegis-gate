@@ -124,6 +124,92 @@ This combination unlocks pointing the WAF at any public TLS service without a si
 
 ---
 
+## Recipe 3.5 — route by **incoming** host header
+
+Sister recipe to Recipe 3. That one rewrites the host on the **upstream** side; this one matches incoming requests by their `Host` header so different vhosts go to different pools.
+
+Use case: you front several services behind one WAF and dispatch by hostname — `vnexpress.localhost`, `payments.localhost`, `staging.example.com`, etc.
+
+### From the dashboard
+
+**Routing & Upstreams** → **+ Add route** with:
+
+| Field | Value |
+|---|---|
+| Route ID | `vnexpress` |
+| Path | `/` *(or any prefix you only want under that host)* |
+| **Host** | `vnexpress.localhost`  ← this is the matcher |
+| Match type | `prefix` |
+| Forward to | pick a pool, or create `vnexpress` inline |
+
+Order it **above** the catch-all (the route table is first-match-wins, top to bottom).
+
+### From YAML
+
+```yaml
+routes:
+  - id: vnexpress
+    host: "vnexpress.localhost"          # exact host match (case-insensitive)
+    path: "/"
+    match_type: prefix
+    upstream: vnexpress-pool
+
+  - id: catch-all                        # leave this last
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+```
+
+### Host-pattern syntax
+
+The `host:` field accepts four shapes (see `crates/aegis-proxy/src/route/host.rs`):
+
+| Pattern | Type | Matches | Tie-break priority |
+|---|---|---|---|
+| `vnexpress.localhost` | Exact (case-insensitive) | `Host: vnexpress.localhost` and `Host: vnexpress.localhost:8080` | **0 (highest)** |
+| `*.example.com` | Wildcard suffix | any `*.example.com` (any sub-domain) | 2 |
+| `/api-[0-9]+\.example\.com/` | Regex (slash-delimited, anchored) | `api-1.example.com`, `api-42.example.com` | 1 |
+| `*` *or omit the field* | Catch-all | any host | 3 (lowest) |
+
+Port is **stripped before matching** — `vnexpress.localhost:8080` and `vnexpress.localhost` both match the exact pattern. Both HTTP/1.1 (`Host:`) and HTTP/2 (`:authority`) are normalised before the matcher runs.
+
+### Make `vnexpress.localhost` resolve to the WAF
+
+```sh
+echo "127.0.0.1  vnexpress.localhost" | sudo tee -a /etc/hosts
+```
+
+### Verify
+
+```sh
+# Route 'vnexpress' wins because the Host header matches.
+curl -i http://vnexpress.localhost:8080/
+
+# Anything else hits the catch-all.
+curl -i http://localhost:8080/
+```
+
+The original client `Host:` is preserved in `X-Forwarded-Host` regardless of any `host_header:` rewrite on the upstream side. So Recipe 3 (override outgoing host) and this recipe (match incoming host) **compose** — common pattern: incoming `vnexpress.localhost` → forwarded with `Host: vnexpress.net` so the upstream's vhost dispatcher sees the real name.
+
+### TLS for vhost on `:8443`
+
+The dev cert SAN list is hard-coded to `localhost / 127.0.0.1 / aegis-gate.local`. Browsing `https://vnexpress.localhost:8443/` will show a cert mismatch warning. Two ways out:
+
+1. **Dev**: add the vhost to the dev cert SAN list (edit `config/gen-cert.sh`, then `make reset-cert && make run-dev`).
+2. **Prod**: configure `tls.certificates:` with one cert per host (or a wildcard). The TLS resolver picks the right cert via SNI:
+   ```yaml
+   tls:
+     certificates:
+       - cert_path: certs/vnexpress.crt
+         key_ref:   certs/vnexpress.key
+         hosts:     ["vnexpress.localhost", "*.vnexpress.localhost"]
+       - cert_path: certs/stub.crt
+         key_ref:   certs/stub.key
+         hosts:     ["localhost", "127.0.0.1"]
+   ```
+
+---
+
 ## Recipe 4 — gRPC backend
 
 gRPC needs HTTP/2 only — no h1 fallback. Set `scheme: grpc` and the WAF forces ALPN to `h2`.

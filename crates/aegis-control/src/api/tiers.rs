@@ -25,15 +25,24 @@ pub struct Tier {
 }
 
 impl Tier {
+    // FIX 2026-05-04 — `ai` joined the canonical pipeline list.
+    // Note that the pipeline field today is **descriptive
+    // metadata only** — the data plane gates detectors via the
+    // detector mask (`is_enabled_id`), not by walking this
+    // string list. The list still drives the dashboard's
+    // tier-edit checkboxes so operators see a complete set of
+    // detectors per tier; flipping a stage off here doesn't
+    // currently disable the detector at runtime. Real
+    // tier-scoped execution is a follow-up.
     fn defaults_for(name: &str) -> Self {
         let (pipeline, risk, block) = match name {
             "critical" => (
-                vec!["rate", "rules", "sqli", "xss", "ssrf", "path_traversal", "header_inj", "bots", "risk", "challenge"],
+                vec!["rate", "rules", "sqli", "xss", "ssrf", "path_traversal", "header_inj", "bots", "ai", "risk", "challenge"],
                 50,
                 10,
             ),
             "high" => (
-                vec!["rate", "rules", "sqli", "xss", "ssrf", "bots", "risk"],
+                vec!["rate", "rules", "sqli", "xss", "ssrf", "bots", "ai", "risk"],
                 70,
                 100,
             ),

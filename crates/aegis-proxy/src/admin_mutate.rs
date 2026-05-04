@@ -2636,6 +2636,133 @@ fn mask_state_to_json(
     })
 }
 
+// FIX 2026-05-04 — convert a `&[RouteConfig]` to the
+// `RouteSummary` shape `services.routes` exposes via
+// `/api/routes`. The boot path does this from `accept.rs`; we
+// re-invoke after a successful route upsert/delete so the read
+// endpoint stays in sync with the live RouteTable.
+fn route_summaries(
+    routes: &[aegis_core::config::RouteConfig],
+) -> Vec<aegis_control::api::routes::RouteSummary> {
+    routes
+        .iter()
+        .map(|r| aegis_control::api::routes::RouteSummary {
+            id: r.id.clone(),
+            host: r.host.clone(),
+            path: r.path.clone(),
+            match_type: match r.match_type {
+                aegis_core::config::MatchType::Exact => "exact",
+                aegis_core::config::MatchType::Prefix => "prefix",
+                aegis_core::config::MatchType::Regex => "regex",
+                aegis_core::config::MatchType::Glob => "glob",
+            }
+            .to_string(),
+            methods: r.methods.clone().unwrap_or_default(),
+            upstream: r.upstream.clone(),
+            tier_override: r.tier_override.map(|t| match t {
+                aegis_core::tier::Tier::Critical => "critical",
+                aegis_core::tier::Tier::High => "high",
+                aegis_core::tier::Tier::Medium => "medium",
+                aegis_core::tier::Tier::CatchAll => "catch_all",
+            }
+            .to_string()),
+            auth_required: r.auth_required.clone(),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// TI-T — audit-mutated tier definitions
+// ---------------------------------------------------------------------------
+
+/// PUT /api/tiers/{name} — update one tier's pipeline + thresholds.
+///
+/// Audit-mutated, CSRF-gated. The tier `name` must be one of
+/// the four canonical names (`critical | high | medium | low`)
+/// — operators can edit thresholds + pipeline, not invent new
+/// tiers (the type-level enum on `RouteConfig.tier_override`
+/// pins this).
+pub(crate) async fn handle_tier_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    tier_name: &str,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "tier-put");
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    #[derive(serde::Deserialize)]
+    struct TierPatch {
+        pipeline: Vec<String>,
+        risk_threshold: u32,
+        block_threshold: u32,
+    }
+    let patch: TierPatch = match serde_json::from_str(body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    // before/after via the public `get()` API — emits enough
+    // detail for the audit chain to surface the diff.
+    let before = serde_json::to_value(services.tiers.get(tier_name))
+        .unwrap_or(serde_json::Value::Null);
+    let after = serde_json::json!({
+        "name": tier_name,
+        "pipeline": patch.pipeline,
+        "risk_threshold": patch.risk_threshold,
+        "block_threshold": patch.block_threshold,
+    });
+    let resource = format!("/api/tiers/{tier_name}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "tier_set",
+        reason: "operator updated tier",
+    };
+
+    let tiers = services.tiers.clone();
+    let tier_name_owned = tier_name.to_string();
+    let outcome = services.mutate.apply::<_, aegis_control::api::tiers::Tier, String>(
+        &req_ctx,
+        before,
+        after,
+        move || tiers.put(
+            &tier_name_owned,
+            patch.pipeline,
+            patch.risk_threshold,
+            patch.block_threshold,
+        ),
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "tier": tier_name,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AI-T10 — runtime toggle for the AI detector
 // ---------------------------------------------------------------------------
@@ -2784,7 +2911,20 @@ pub(crate) async fn handle_route_upsert(
     // `handle_pool_upsert` keys off the URL.
     patch.id = route_id.to_string();
 
-    if let Err(e) = validate_route(&patch, cfg) {
+    // FIX 2026-05-04 — `validate_route` checks
+    // `cfg.upstreams.contains_key(...)`, but the boot-time
+    // `cfg` doesn't reflect pools added at runtime via
+    // `PUT /api/upstreams/pool/{id}`. Read the live pool map
+    // from the writer's shadow so routes pointing at a freshly-
+    // added pool validate cleanly.
+    let mut effective_cfg = cfg.clone();
+    if let Some(writer) = services.upstream_writer.as_ref() {
+        for (name, pool_cfg) in writer.current_pools() {
+            effective_cfg.upstreams.insert(name, pool_cfg);
+        }
+    }
+
+    if let Err(e) = validate_route(&patch, &effective_cfg) {
         return mutation_error_response(
             aegis_control::api::mutation::MutationError::Validation(e.to_string()),
         );
@@ -2803,7 +2943,18 @@ pub(crate) async fn handle_route_upsert(
     // one with this id (if present), plus the new entry. Order
     // matters for first-match-wins resolution: replace-in-place
     // when updating, append when creating.
-    let mut next_routes = cfg.routes.clone();
+    //
+    // FIX 2026-05-04 — read from the live writer's `current_routes`
+    // (boot snapshot + every prior runtime upsert/delete) instead
+    // of the stale `cfg.routes` boot snapshot. Without this, two
+    // consecutive runtime upserts would silently lose the first
+    // because each handler would rebuild from the boot list.
+    let mut next_routes = writer.current_routes();
+    if next_routes.is_empty() {
+        // Default-impl fallback (test bundles / writers that
+        // didn't override `current_routes`).
+        next_routes = cfg.routes.clone();
+    }
     let existing_idx = next_routes.iter().position(|r| r.id == route_id);
     match existing_idx {
         Some(i) => next_routes[i] = new_route,
@@ -2830,6 +2981,10 @@ pub(crate) async fn handle_route_upsert(
 
     let writer_for_apply = Arc::clone(&writer);
     let route_id_owned = route_id.to_string();
+    // Snapshot the routes we're about to swap into the RouteTable
+    // so we can seed `services.routes` once apply succeeds — keeps
+    // the GET /api/routes cache in sync with the live table.
+    let next_routes_for_cache = next_cfg.routes.clone();
     let outcome = services.mutate.apply(
         &req_ctx,
         before,
@@ -2837,14 +2992,17 @@ pub(crate) async fn handle_route_upsert(
         move || writer_for_apply.apply(&next_cfg),
     );
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "route": route_id_owned,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(_) => {
+            services.routes.set(route_summaries(&next_routes_for_cache));
+            json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "route": route_id_owned,
+                    "request_id": pre.request_id,
+                }),
+            )
+        }
         Err(e) => mutation_error_response(e),
     }
 }
@@ -2866,7 +3024,11 @@ pub(crate) async fn handle_route_delete(
         );
     };
 
-    if !cfg.routes.iter().any(|r| r.id == route_id) {
+    // FIX 2026-05-04 — read from live writer state, not the
+    // boot snapshot, so route deletes work after runtime upserts.
+    let live_routes = writer.current_routes();
+    let live_routes = if live_routes.is_empty() { cfg.routes.clone() } else { live_routes };
+    if !live_routes.iter().any(|r| r.id == route_id) {
         return mutation_error_response(
             aegis_control::api::mutation::MutationError::Validation(format!(
                 "no route with id '{route_id}'"
@@ -2880,7 +3042,12 @@ pub(crate) async fn handle_route_delete(
     // outright. 409 with a clear message so the dashboard can
     // surface "you must add another catch-all first" without
     // round-tripping a build error.
-    if is_only_catchall(cfg, route_id) {
+    //
+    // Build a synthetic cfg with the live route list so the
+    // catch-all check sees runtime-added routes too.
+    let mut effective_cfg = cfg.clone();
+    effective_cfg.routes = live_routes.clone();
+    if is_only_catchall(&effective_cfg, route_id) {
         let body = serde_json::json!({
             "ok": false,
             "reason": "last_catchall",
@@ -2891,7 +3058,7 @@ pub(crate) async fn handle_route_delete(
         return json_body_response(409, body.to_string(), "private, no-store");
     }
 
-    let mut next_routes = cfg.routes.clone();
+    let mut next_routes = live_routes;
     next_routes.retain(|r| r.id != route_id);
 
     let before = routes_audit_view(&cfg.routes);
@@ -2913,6 +3080,7 @@ pub(crate) async fn handle_route_delete(
 
     let writer_for_apply = Arc::clone(&writer);
     let route_id_owned = route_id.to_string();
+    let next_routes_for_cache = next_cfg.routes.clone();
     let outcome = services.mutate.apply(
         &req_ctx,
         before,
@@ -2920,14 +3088,17 @@ pub(crate) async fn handle_route_delete(
         move || writer_for_apply.apply(&next_cfg),
     );
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "removed": route_id_owned,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(_) => {
+            services.routes.set(route_summaries(&next_routes_for_cache));
+            json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "removed": route_id_owned,
+                    "request_id": pre.request_id,
+                }),
+            )
+        }
         Err(e) => mutation_error_response(e),
     }
 }

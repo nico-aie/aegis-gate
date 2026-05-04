@@ -319,6 +319,22 @@ pub trait UpstreamWriter: Send + Sync {
             pools: Vec::new(),
         }
     }
+
+    /// FIX 2026-05-04 — return the live raw pool configs
+    /// (mirrors `RouteWriter::current_routes`). The admin GET
+    /// endpoint and the route handler's pool-existence check
+    /// both need the *full* PoolConfig (members, scheme,
+    /// host_header, …), not just the names from
+    /// `live_snapshot()`. Without this, runtime-added pools
+    /// rendered with empty members in the dashboard.
+    ///
+    /// Default returns an empty map — implementations should
+    /// override.
+    fn current_pools(
+        &self,
+    ) -> std::collections::HashMap<String, PoolConfig> {
+        std::collections::HashMap::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
