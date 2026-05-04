@@ -655,12 +655,17 @@ pub(crate) async fn forward_allow_to_upstream(
     let route_ctx = match ctx.route_table.resolve(&host, &path, &method) {
         Some(r) => r,
         None => {
-            tracing::Span::current().record("outcome", "no-route");
+            // PR3 — deny-by-default. Configs without a `default: true`
+            // route reach this branch for unmatched traffic. The
+            // request is rejected with 404 + the audit chain records
+            // `action=block, rule_id=unmatched_route` so operators can
+            // see what's hitting the WAF that they haven't routed yet.
+            tracing::Span::current().record("outcome", "unmatched-route");
             let resp = Response::builder()
                 .status(hyper::StatusCode::NOT_FOUND)
                 .body(Full::new(Bytes::from("no matching route\n")))
                 .unwrap();
-            return (resp, DecisionTag::block("no-route"));
+            return (resp, DecisionTag::block("unmatched_route"));
         }
     };
     tracing::Span::current().record("upstream", route_ctx.upstream.as_str());

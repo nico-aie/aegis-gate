@@ -315,33 +315,11 @@ pub(crate) async fn admin_accept_loop(
     // /api/routes returns the live routing trie. Hot-reload
     // re-invokes this through `cfg_swap` (TODO when route
     // hot-reload lands; today routes are boot-time only).
-    services.routes.set(
-        cfg.routes
-            .iter()
-            .map(|r| aegis_control::api::routes::RouteSummary {
-                id: r.id.clone(),
-                host: r.host.clone(),
-                path: r.path.clone(),
-                match_type: match r.match_type {
-                    aegis_core::config::MatchType::Exact => "exact",
-                    aegis_core::config::MatchType::Prefix => "prefix",
-                    aegis_core::config::MatchType::Regex => "regex",
-                    aegis_core::config::MatchType::Glob => "glob",
-                }
-                .to_string(),
-                methods: r.methods.clone().unwrap_or_default(),
-                upstream: r.upstream.clone(),
-                tier_override: r.tier_override.map(|t| match t {
-                    aegis_core::tier::Tier::Critical => "critical",
-                    aegis_core::tier::Tier::High => "high",
-                    aegis_core::tier::Tier::Medium => "medium",
-                    aegis_core::tier::Tier::CatchAll => "catch_all",
-                }
-                .to_string()),
-                auth_required: r.auth_required.clone(),
-            })
-            .collect(),
-    );
+    // PR1: priority is computed from the same routes the trie
+    // sees, so dashboard ordering matches resolution.
+    services
+        .routes
+        .set(crate::route::route_summaries(&cfg.routes));
 
     // CI-T4 — wire the SLO engine. `default_objectives()` covers
     // availability + audit delivery + overhead. The engine is

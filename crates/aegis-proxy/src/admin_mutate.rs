@@ -2644,31 +2644,7 @@ fn mask_state_to_json(
 fn route_summaries(
     routes: &[aegis_core::config::RouteConfig],
 ) -> Vec<aegis_control::api::routes::RouteSummary> {
-    routes
-        .iter()
-        .map(|r| aegis_control::api::routes::RouteSummary {
-            id: r.id.clone(),
-            host: r.host.clone(),
-            path: r.path.clone(),
-            match_type: match r.match_type {
-                aegis_core::config::MatchType::Exact => "exact",
-                aegis_core::config::MatchType::Prefix => "prefix",
-                aegis_core::config::MatchType::Regex => "regex",
-                aegis_core::config::MatchType::Glob => "glob",
-            }
-            .to_string(),
-            methods: r.methods.clone().unwrap_or_default(),
-            upstream: r.upstream.clone(),
-            tier_override: r.tier_override.map(|t| match t {
-                aegis_core::tier::Tier::Critical => "critical",
-                aegis_core::tier::Tier::High => "high",
-                aegis_core::tier::Tier::Medium => "medium",
-                aegis_core::tier::Tier::CatchAll => "catch_all",
-            }
-            .to_string()),
-            auth_required: r.auth_required.clone(),
-        })
-        .collect()
+    crate::route::route_summaries(routes)
 }
 
 // ---------------------------------------------------------------------------

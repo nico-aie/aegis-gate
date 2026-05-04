@@ -639,6 +639,32 @@ pub struct RouteConfig {
     /// client otherwise drains FDs.
     #[serde(default)]
     pub max_concurrent_tunnels_per_ip: u32,
+    /// PR2 — marks this route as the **default fallback** for its
+    /// host scope. Exactly one default route is allowed per host
+    /// scope. Auto-migration on boot tags any `path: "/"` no-host
+    /// route as `default: true` if no explicit default exists yet
+    /// (idempotent — only fills the gap). When no default exists
+    /// at all, unmatched requests get a 404 through the security
+    /// pipeline (PR3 — deny-by-default).
+    ///
+    /// Replaces the rigid pre-PR2 invariant *"the route table must
+    /// contain a route with `path: "/"` and no host"* — which broke
+    /// edits to the catch-all because the validator rebuilt with
+    /// the new path **before** the operator could swap which route
+    /// holds the default role.
+    #[serde(default)]
+    pub default: bool,
+    /// PR2 — `false` skips this route from trie registration so
+    /// the operator can pull a misbehaving route without deleting
+    /// it. Defaults to `true` (enabled). Disabled routes still
+    /// appear in `/api/routes` (dimmed in the UI) so config
+    /// integrity is preserved across the toggle.
+    #[serde(default = "default_route_enabled")]
+    pub enabled: bool,
+}
+
+fn default_route_enabled() -> bool {
+    true
 }
 
 /// Per-route request/response quotas.

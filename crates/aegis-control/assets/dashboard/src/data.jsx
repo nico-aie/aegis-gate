@@ -913,6 +913,19 @@ async function routeUpsert(id, body) {
   const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
   return { status: r.status, ...json };
 }
+// PR3 — Test route tool. Read-only; CSRF-gated. Body shape:
+// `{ host, method, path }`. Response: `{ matched: {...} | null, reason }`.
+async function routeTest(host, method, path) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/routes/test', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ host: host || '', method, path }),
+  });
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
 async function routeDelete(id) {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
   const r = await fetch(`/api/routes/${encodeURIComponent(id)}`, {
@@ -1113,7 +1126,7 @@ Object.assign(window, {
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers
   useUpstreamsConfigApi, upstreamsConfigPut, poolUpsert, poolDelete,
   // RT-T6 — route mutations
-  routeUpsert, routeDelete,
+  routeUpsert, routeDelete, routeTest,
   // AI-T10 — AI detector runtime on/off
   useAiEnabledApi, aiEnabledPut,
   // TI-T — audit-mutated tier edits

@@ -859,18 +859,27 @@ state:
         handle.abort();
     }
 
-    fn yaml_no_catch_all(id: &str, path: &str) -> String {
-        format!(
-            r#"
+    /// PR2: pre-PR2 this returned a config without any catch-all
+    /// (which used to fail the build). Post-PR2 the build accepts
+    /// such configs (deny-by-default), so to test the
+    /// `routes_reload_failed` audit path we instead return a config
+    /// that has TWO `default: true` routes in the same host scope —
+    /// the new build-time invariant rejects that.
+    fn yaml_no_catch_all(_id: &str, _path: &str) -> String {
+        r#"
 listeners:
   data:
     - bind: "127.0.0.1:8080"
   admin:
     bind: "127.0.0.1:9090"
 routes:
-  - id: {id}
-    host: "api.example.com"
-    path: "{path}"
+  - id: a
+    path: "/api"
+    default: true
+    upstream: pool
+  - id: b
+    path: "/web"
+    default: true
     upstream: pool
 upstreams:
   pool:
@@ -878,8 +887,7 @@ upstreams:
       - addr: "127.0.0.1:3000"
 state:
   backend: in_memory
-"#
-        )
+"#.to_string()
     }
 
     #[tokio::test]
@@ -935,12 +943,16 @@ state:
         while let Ok(ev) = rx.try_recv() {
             if ev.action == "routes_reload_failed" {
                 saw_routes_failed = true;
-                assert!(ev.reason.contains("catch-all"));
+                assert!(
+                    ev.reason.contains("default") && ev.reason.contains("at most one"),
+                    "expected double-default rejection, got: {}",
+                    ev.reason
+                );
             }
         }
         assert!(
             saw_routes_failed,
-            "expected routes_reload_failed event since rebuild rejects no-catch-all",
+            "expected routes_reload_failed event since rebuild rejects double-default",
         );
 
         handle.abort();

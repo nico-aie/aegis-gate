@@ -4930,7 +4930,9 @@ function PageUpstreams() {
         Each <strong style={{ color: 'var(--ink)' }}>route</strong> matches incoming traffic
         (host + path + method) and forwards it to <strong style={{ color: 'var(--ink)' }}>one upstream pool</strong>.
         A pool can have one or more backend members (load-balanced) and the same pool can be reused by several routes.
-        First-match-wins, top to bottom.
+        Routes are evaluated by <strong style={{ color: 'var(--ink)' }}>specificity</strong> — most-specific host first,
+        then longest path prefix, then explicit method filters. Add/edit order doesn't affect resolution; the table
+        below is sorted by effective <strong style={{ color: 'var(--ink)' }}>priority</strong> (highest first).
       </div>
 
       <RoutesTable
@@ -7164,6 +7166,27 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
   const [busy, setBusy] = useStateP(false);
   const [search, setSearch] = useStateP('');
   const [expandedRouteId, setExpandedRouteId] = useStateP(null);
+  // PR3 — Test route tool state.
+  const [testOpen, setTestOpen] = useStateP(false);
+  const [testHost, setTestHost] = useStateP('');
+  const [testMethod, setTestMethod] = useStateP('GET');
+  const [testPath, setTestPath] = useStateP('/');
+  const [testResult, setTestResult] = useStateP(null);
+  const [testBusy, setTestBusy] = useStateP(false);
+  async function runRouteTest() {
+    setTestBusy(true);
+    try {
+      const r = await window.routeTest(testHost, testMethod, testPath);
+      if (r.status === 200) {
+        setTestResult(r);
+      } else {
+        const msg = r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Test failed: ${msg}`, 'err');
+      }
+    } finally {
+      setTestBusy(false);
+    }
+  }
 
   const filteredRoutes = (() => {
     const q = (search || '').trim().toLowerCase();
@@ -7246,14 +7269,101 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
             style={{ flex: 1, fontSize: 12, maxWidth: 360 }}
           />
           <div style={{ flex: 1 }} />
+          <button
+            className="btn"
+            onClick={() => setTestOpen(!testOpen)}
+            title="Paste host + method + path; see which route the live config would resolve to"
+          >
+            {testOpen ? '▲ Hide test tool' : '▼ Test route'}
+          </button>
           <button className="btn primary" onClick={openAdd}>
             + Add route
           </button>
         </div>
+        {/* PR3 — Test route tool */}
+        {testOpen && (
+          <div style={{ padding: '12px 12px', borderBottom: '1px solid var(--hairline)', background: 'var(--canvas-2)' }}>
+            <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginBottom: 8 }}>
+              Test which route a synthetic request would resolve to. Read-only — no audit entry.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--ink-dim)', display: 'block' }}>Host</label>
+                <input
+                  type="text"
+                  className="ip"
+                  value={testHost}
+                  onChange={e => setTestHost(e.target.value)}
+                  placeholder="api.example.com (empty = any)"
+                  style={{ fontSize: 12, width: 240 }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--ink-dim)', display: 'block' }}>Method</label>
+                <select
+                  className="ip"
+                  value={testMethod}
+                  onChange={e => setTestMethod(e.target.value)}
+                  style={{ fontSize: 12, width: 90 }}
+                >
+                  {ROUTE_METHOD_CHOICES.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <label style={{ fontSize: 11, color: 'var(--ink-dim)', display: 'block' }}>Path</label>
+                <input
+                  type="text"
+                  className="ip mono"
+                  value={testPath}
+                  onChange={e => setTestPath(e.target.value)}
+                  placeholder="/local/game"
+                  style={{ fontSize: 12, width: '100%' }}
+                />
+              </div>
+              <button
+                className="btn primary"
+                onClick={runRouteTest}
+                disabled={testBusy || !testPath}
+                style={{ fontSize: 12 }}
+              >
+                {testBusy ? 'Testing…' : 'Resolve'}
+              </button>
+            </div>
+            {testResult && (
+              <div style={{ marginTop: 12, padding: 10, background: 'var(--canvas)', borderRadius: 4, border: '1px solid var(--hairline)' }}>
+                {testResult.matched ? (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                      ✓ Matched <span className="mono" style={{ color: 'var(--up)' }}>{testResult.matched.route_id}</span>
+                      {' '}<span className="pill ok" style={{ fontSize: 10, padding: '1px 6px' }}>{testResult.matched.tier}</span>
+                      {testResult.matched.default && <span className="pill" style={{ fontSize: 10, padding: '1px 6px', marginLeft: 4 }}>default</span>}
+                    </div>
+                    <table className="tbl tbl-compact" style={{ fontSize: 11 }}>
+                      <tbody>
+                        <tr><td style={{ color: 'var(--ink-dim)' }}>Forwards to</td><td className="mono">{testResult.matched.upstream}</td></tr>
+                        <tr><td style={{ color: 'var(--ink-dim)' }}>Match</td><td className="mono">{testResult.matched.host || '*'} · {testResult.matched.path}</td></tr>
+                        <tr><td style={{ color: 'var(--ink-dim)' }}>Methods</td><td className="mono">{(testResult.matched.methods && testResult.matched.methods.length > 0) ? testResult.matched.methods.join(',') : 'any'}</td></tr>
+                        <tr>
+                          <td style={{ color: 'var(--ink-dim)' }} title="host.path-kind.path-segments.method.declared.yaml-position">Priority tuple</td>
+                          <td className="mono">{testResult.matched.priority}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: 'var(--down)', fontWeight: 600 }}>✗ Unmatched</span>{' '}
+                    <span style={{ color: 'var(--ink-dim)' }}>— {testResult.reason}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <table className="tbl tbl-compact">
           <thead>
             <tr>
-              <th style={{ width: 32, textAlign: 'right' }} title="Match order — first match wins">#</th>
+              <th style={{ width: 86 }} title="Effective evaluation priority — derived from host / path / method specificity. Higher matches first.">Priority</th>
               <th>Match (host · path)</th>
               <th style={{ width: 80 }}>Methods</th>
               <th>Forwards to</th>
@@ -7269,14 +7379,23 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                   : <>No routes match <code>{search}</code>. <button className="btn btn-sm" onClick={() => setSearch('')}>Clear</button></>}
               </td></tr>
             )}
-            {filteredRoutes.map((r) => {
-              const origIdx = routes.indexOf(r);
+            {filteredRoutes.map((r, rowIdx) => {
               const isCatchall = !r.host && r.path === '/';
               const isExpanded = expandedRouteId === r.id;
               const pool = pools[r.upstream];
               const members = pool?.members || [];
               const scheme = pool?.connection?.scheme || 'auto';
               const methodLabel = (r.methods && r.methods.length > 0) ? r.methods.join(',') : 'any';
+              // PR1 — priority is server-sorted (desc); rank = row+1.
+              // Compact priority string is shown in a tooltip for
+              // operators who want the full host/path/method/yaml-pos
+              // breakdown.
+              const priorityLabel = r.priority
+                ? `#${rowIdx + 1}`
+                : '—';
+              const priorityTooltip = r.priority
+                ? `priority tuple: ${r.priority}\nhost.path-kind.segs.method.declared.yaml-pos\nhigher matches first`
+                : 'priority not yet computed for this route';
               return (
                 <React.Fragment key={r.id}>
                   <tr
@@ -7286,14 +7405,21 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                     }}
                     onClick={() => setExpandedRouteId(isExpanded ? null : r.id)}
                   >
-                    <td className="num" style={{ textAlign: 'right', color: 'var(--ink-dim)', fontSize: 11 }}>{origIdx + 1}</td>
-                    <td>
+                    <td title={priorityTooltip}>
+                      <span className="pill" style={{ fontSize: 10, fontWeight: 600 }}>{priorityLabel}</span>
+                      <div className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)', marginTop: 2 }}>
+                        {r.priority || ''}
+                      </div>
+                    </td>
+                    <td style={r.enabled === false ? { opacity: 0.55 } : undefined}>
                       <div className="mono" style={{ fontSize: 12, fontWeight: 600 }}>
                         {r.host
                           ? <><span style={{ color: 'var(--ink-dim)' }}>{r.host}</span><span style={{ color: 'var(--ink-dim)' }}> · </span></>
                           : <span style={{ color: 'var(--ink-dim)' }}>* · </span>}
                         <span>{r.path}</span>
                         {isCatchall && <span className="pill" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }}>catch-all</span>}
+                        {r.default && <span className="pill ok" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Fallback for this host scope">default</span>}
+                        {r.enabled === false && <span className="pill warn" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Skipped from request matching">disabled</span>}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
                         <span className="mono">{r.id}</span> · <span className="pill neutral" style={{ fontSize: 9, padding: '0 6px' }}>{r.match_type}</span>
@@ -7477,6 +7603,8 @@ function emptyRouteDraft() {
     upstream: '',
     tier_override: '',
     auth_required: [],
+    default: false,
+    enabled: true,
   };
 }
 function routeToDraft(r) {
@@ -7489,6 +7617,8 @@ function routeToDraft(r) {
     upstream: r.upstream || '',
     tier_override: r.tier_override || '',
     auth_required: r.auth_required || [],
+    default: !!r.default,
+    enabled: r.enabled !== false, // default to true if missing
   };
 }
 function routeBodyFromDraft(d) {
@@ -7505,6 +7635,8 @@ function routeBodyFromDraft(d) {
     path: d.path.trim() || '/',
     match_type: d.match_type,
     upstream: d.upstream,
+    default: !!d.default,
+    enabled: d.enabled !== false,
   };
   if (d.host.trim()) body.host = d.host.trim();
   if (methods.length > 0) body.methods = methods;
@@ -7749,6 +7881,38 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                     );
                   })}
                 </div>
+              </div>
+
+              {/* PR2 — default + enabled toggles. */}
+              <div className="form-row" style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginTop: 8 }}>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={!!d.default}
+                    onChange={e => set('default', e.target.checked)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <strong>Default route</strong> for this host scope
+                    <div style={{ color: 'var(--ink-dim)', fontWeight: 400, marginTop: 2 }}>
+                      Fallback when no other route matches. At most one default per host scope.
+                    </div>
+                  </span>
+                </label>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={d.enabled !== false}
+                    onChange={e => set('enabled', e.target.checked)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <strong>Enabled</strong>
+                    <div style={{ color: 'var(--ink-dim)', fontWeight: 400, marginTop: 2 }}>
+                      Disabled routes stay in config but skip request matching.
+                    </div>
+                  </span>
+                </label>
               </div>
             </div>
           )}

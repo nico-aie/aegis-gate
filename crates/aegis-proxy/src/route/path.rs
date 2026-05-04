@@ -45,6 +45,12 @@ impl<V> PathTrie<V> {
     /// Find the value associated with the **longest prefix** that matches
     /// `path`.  Returns `None` only if the root itself has no value and no
     /// prefix matches.
+    ///
+    /// Use this for **runtime resolution**. For build-time same-path
+    /// lookups (e.g. merging method-specific routes that share a path),
+    /// use [`find_exact`](Self::find_exact) instead — `find` would
+    /// incorrectly return an ancestor's value, which historically caused
+    /// the catch-all to bleed into more specific paths' index lists.
     pub fn find(&self, path: &str) -> Option<&V> {
         let segments = Self::split(path);
         let mut node = self;
@@ -63,6 +69,51 @@ impl<V> PathTrie<V> {
         }
 
         best
+    }
+
+    /// Find the value at the **exact** path. Returns `None` if no entry
+    /// has been inserted at this exact node, even if an ancestor has a
+    /// value. Use this only for build-time same-path merges — runtime
+    /// resolution always uses [`find`](Self::find).
+    pub fn find_exact(&self, path: &str) -> Option<&V> {
+        let segments = Self::split(path);
+        let mut node = self;
+        for seg in segments {
+            match node.children.get(seg) {
+                Some(child) => node = child,
+                None => return None,
+            }
+        }
+        node.value.as_ref()
+    }
+
+    /// Walk the trie along `path` and emit every value encountered,
+    /// **longest prefix first**. Used by route resolution to support
+    /// method-filter fallthrough: if the longest-prefix node has only
+    /// method-filtered routes that don't match, the resolver retries
+    /// at progressively shorter prefixes until something matches —
+    /// e.g. `PUT /api` falls through to the catch-all `/` when the
+    /// only routes at `/api` are `GET` and `POST`.
+    pub fn find_all_prefixes(&self, path: &str) -> Vec<&V> {
+        let segments = Self::split(path);
+        let mut node = self;
+        let mut hits: Vec<&V> = Vec::new();
+        if let Some(v) = node.value.as_ref() {
+            hits.push(v);
+        }
+        for seg in segments {
+            match node.children.get(seg) {
+                Some(child) => {
+                    node = child;
+                    if let Some(v) = node.value.as_ref() {
+                        hits.push(v);
+                    }
+                }
+                None => break,
+            }
+        }
+        hits.reverse(); // longest first
+        hits
     }
 
     fn split(path: &str) -> Vec<&str> {
@@ -155,5 +206,75 @@ mod tests {
         trie.insert("/api", "first");
         trie.insert("/api", "second");
         assert_eq!(trie.find("/api"), Some(&"second"));
+    }
+
+    #[test]
+    fn find_exact_returns_value_at_exact_node() {
+        let mut trie = PathTrie::new();
+        trie.insert("/api", "api");
+        assert_eq!(trie.find_exact("/api"), Some(&"api"));
+        assert_eq!(trie.find_exact("/api/"), Some(&"api"));
+    }
+
+    #[test]
+    fn find_exact_returns_none_for_descendants() {
+        let mut trie = PathTrie::new();
+        trie.insert("/api", "api");
+        // `/api/v2` walks past `/api`'s node but `v2` child doesn't
+        // exist — find_exact must NOT fall back to the ancestor value
+        // (this is the bug `find` would mask at build time).
+        assert_eq!(trie.find_exact("/api/v2"), None);
+    }
+
+    #[test]
+    fn find_exact_returns_none_for_missing_root_value() {
+        let mut trie = PathTrie::new();
+        trie.insert("/api", "api");
+        // Root `/` has no value of its own — find_exact must return None
+        // even though the catch-all `find` would have walked here.
+        assert_eq!(trie.find_exact("/"), None);
+    }
+
+    #[test]
+    fn find_exact_distinguishes_root_from_descendants() {
+        let mut trie = PathTrie::new();
+        trie.insert("/", "root");
+        trie.insert("/api", "api");
+        assert_eq!(trie.find_exact("/"), Some(&"root"));
+        assert_eq!(trie.find_exact("/api"), Some(&"api"));
+        assert_eq!(trie.find_exact("/other"), None);
+        assert_eq!(trie.find_exact("/api/v2"), None);
+    }
+
+    #[test]
+    fn find_exact_empty_trie_returns_none() {
+        let trie: PathTrie<&str> = PathTrie::new();
+        assert_eq!(trie.find_exact("/anything"), None);
+        assert_eq!(trie.find_exact("/"), None);
+    }
+
+    #[test]
+    fn find_all_prefixes_returns_longest_first() {
+        let mut trie = PathTrie::new();
+        trie.insert("/", "root");
+        trie.insert("/api", "api");
+        trie.insert("/api/v2", "api-v2");
+
+        let hits = trie.find_all_prefixes("/api/v2/users");
+        assert_eq!(hits, vec![&"api-v2", &"api", &"root"]);
+
+        let hits = trie.find_all_prefixes("/api/v3/users");
+        assert_eq!(hits, vec![&"api", &"root"]);
+
+        let hits = trie.find_all_prefixes("/totally/unrelated");
+        assert_eq!(hits, vec![&"root"]);
+    }
+
+    #[test]
+    fn find_all_prefixes_empty_when_no_match() {
+        let mut trie = PathTrie::new();
+        trie.insert("/api", "api"); // no root value
+        let hits = trie.find_all_prefixes("/totally/unrelated");
+        assert!(hits.is_empty());
     }
 }

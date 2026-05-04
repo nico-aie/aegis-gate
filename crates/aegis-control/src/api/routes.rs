@@ -57,6 +57,27 @@ pub struct RouteSummary {
     /// [`aegis_core::config::RouteConfig::auth_required`].
     #[serde(default)]
     pub auth_required: Vec<String>,
+    /// PR1 — effective evaluation priority computed from the
+    /// route's host / path / method / position. Compact tuple
+    /// rendered as `<host>.<path-kind>.<segs>.<method>.<declared>.<yaml-pos>`.
+    /// Empty string `""` for legacy callers that don't compute it.
+    /// Higher matches first; the dashboard sorts by this string
+    /// descending. **Additive**: existing clients that ignore the
+    /// field still work.
+    #[serde(default)]
+    pub priority: String,
+    /// PR2 — `true` when this route is the default fallback for
+    /// its host scope. The dashboard renders a "default" pill.
+    #[serde(default)]
+    pub default: bool,
+    /// PR2 — `false` when the route is admin-disabled (still in
+    /// config, skipped from trie). The dashboard dims the row.
+    #[serde(default = "default_route_summary_enabled")]
+    pub enabled: bool,
+}
+
+fn default_route_summary_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -118,6 +139,9 @@ mod tests {
                 upstream: "auth-pool".into(),
                 tier_override: Some("critical".into()),
                 auth_required: vec!["mtls".into()],
+                priority: "3.4.1.1.0.0".into(),
+                default: false,
+                enabled: true,
             },
             RouteSummary {
                 id: "catch-all".into(),
@@ -128,6 +152,9 @@ mod tests {
                 upstream: "backend-pool".into(),
                 tier_override: None,
                 auth_required: vec![],
+                priority: "0.0.0.0.0.1".into(),
+                default: true,
+                enabled: true,
             },
         ]
     }

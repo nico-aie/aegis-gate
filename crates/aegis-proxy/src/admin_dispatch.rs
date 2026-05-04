@@ -258,6 +258,15 @@ pub(crate) async fn handle_admin_request(
         }
     }
 
+    // PR3 — Test route tool. Lets operators paste host + method
+    // + path and see which route the live config would resolve to
+    // (with priority breakdown) without sending real traffic.
+    // Read-only — no audit chain entry — but session-gated so
+    // only admins can run it.
+    if method == hyper::Method::POST && path == "/api/routes/test" {
+        return handle_route_test(req, services).await;
+    }
+
     // AI-T10 — runtime on/off for the AI detector. Audit-mutated
     // PUT; CSRF-gated. GET is open-on-session so the dashboard's
     // Detectors page can render the toggle state without a write.
@@ -525,6 +534,93 @@ async fn handle_simulate(
     );
     let body = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
     json_body_response(200, body, "private, no-store")
+}
+
+/// PR3 — `POST /api/routes/test`. Lets operators paste a synthetic
+/// `(host, method, path)` and see which route the live config would
+/// resolve to, with the priority tuple breakdown. Read-only; no
+/// audit entry; session-gated by the dispatcher.
+///
+/// Request body: `{ "host": "...", "method": "GET", "path": "/foo" }`.
+/// Response body: `{ "matched": { route_id, host, path, method, tier,
+/// upstream, priority } | null, "reason": "matched" | "unmatched" }`.
+async fn handle_route_test(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    #[derive(serde::Deserialize)]
+    struct TestRequest {
+        #[serde(default)]
+        host: String,
+        method: String,
+        path: String,
+    }
+
+    let Some(writer) = services.route_writer.as_ref().cloned() else {
+        return json_response(
+            503,
+            &serde_json::json!({ "error": "route writer not wired (test bundle?)" }),
+        );
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("body read failed: {e}") }),
+            );
+        }
+    };
+    if body_bytes.len() > 4 * 1024 {
+        return json_response(
+            413,
+            &serde_json::json!({ "error": "request body too large (max 4 KiB)" }),
+        );
+    }
+
+    let parsed: TestRequest = match serde_json::from_slice(&body_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("invalid test body: {e}") }),
+            );
+        }
+    };
+
+    // Validate the method early so a typo gets a clear error.
+    if parsed.method.parse::<hyper::Method>().is_err() {
+        return json_response(
+            400,
+            &serde_json::json!({ "error": format!("invalid HTTP method: {}", parsed.method) }),
+        );
+    }
+
+    let body = match writer.resolve_for_test(&parsed.host, &parsed.path, &parsed.method) {
+        Some(r) => serde_json::json!({
+            "matched": {
+                "route_id": r.route_id,
+                "host":     r.host,
+                "path":     r.path,
+                "methods":  r.methods,
+                "tier":     r.tier,
+                "upstream": r.upstream,
+                "priority": r.priority,
+                "default":  r.default,
+                "enabled":  r.enabled,
+            },
+            "reason": "matched",
+        }),
+        None => serde_json::json!({
+            "matched": null,
+            "reason": "unmatched — would 404 (deny-by-default; configure a `default: true` route to catch unmatched traffic)",
+        }),
+    };
+
+    json_response(200, &body)
 }
 
 /// SC-T1 — render the live state-backend health snapshot as

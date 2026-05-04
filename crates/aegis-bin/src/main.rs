@@ -344,6 +344,8 @@ fn apply_cpu_affinity(
 
 fn cmd_validate(args: &[String]) -> i32 {
     let config_path = parse_config_flag(args);
+    let print_priority = args.iter().any(|a| a == "--print-route-priority");
+
     match aegis_core::load_config(&config_path) {
         Ok(mut cfg) => {
             println!("config OK: {}", config_path.display());
@@ -365,12 +367,63 @@ fn cmd_validate(args: &[String]) -> i32 {
                     }
                 }
             }
+            if print_priority {
+                if let Err(e) = print_route_priority(&cfg) {
+                    eprintln!("route table build failed: {e}");
+                    return 1;
+                }
+            }
             0
         }
         Err(e) => {
             eprintln!("config error: {e}");
             1
         }
+    }
+}
+
+// PR1 — `--print-route-priority` audit. Builds the route table from a
+// validated config and emits one row per route in descending priority
+// order: `<priority>  <host>  <path>  <method>  <tier>  <upstream>
+// <route-id>`. Lets operators diff effective routing order before/after
+// PR1 lands without bouncing the proxy.
+fn print_route_priority(cfg: &aegis_core::config::WafConfig) -> aegis_core::Result<()> {
+    let table = aegis_proxy::route::RouteTable::build(cfg)?;
+    let rows = table.priorities();
+
+    println!();
+    println!(
+        "{:>16}  {:<24}  {:<28}  {:<10}  {:<9}  {:<20}  {}",
+        "PRIORITY", "HOST", "PATH", "METHOD", "TIER", "UPSTREAM", "ROUTE_ID"
+    );
+    println!("{}", "─".repeat(150));
+    for r in &rows {
+        let methods = match &r.methods {
+            Some(ms) if !ms.is_empty() => ms.join(","),
+            _ => "*".to_string(),
+        };
+        let tier = format!("{:?}", r.tier).to_lowercase();
+        println!(
+            "{:>16}  {:<24}  {:<28}  {:<10}  {:<9}  {:<20}  {}",
+            r.priority.fmt_compact(),
+            truncate(&r.host, 24),
+            truncate(&r.path, 28),
+            truncate(&methods, 10),
+            truncate(&tier, 9),
+            truncate(&r.upstream, 20),
+            r.route_id,
+        );
+    }
+    println!();
+    println!("{} route(s) — sorted descending by effective priority", rows.len());
+    Ok(())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
     }
 }
 
@@ -546,6 +599,7 @@ fn print_help() {
     println!("COMMANDS:");
     println!("    run       --config <path>      Start the WAF gateway");
     println!("    validate  --config <path>      Dry-run config validation + compliance check");
+    println!("              [--print-route-priority]   Also print the effective route eval order (PR1)");
     println!("    audit     verify --from <path> Verify audit chain integrity");
     println!("    admin     set-password          Hash admin password (argon2id)");
     println!("    admin     enroll-totp           Generate TOTP secret + recovery codes");

@@ -57,6 +57,20 @@ pub struct RouteConfigPatch {
     pub tier_override: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auth_required: Vec<String>,
+    /// PR2 — explicit "this route is the default fallback for its
+    /// host scope". Defaults to false; auto-migration on boot
+    /// promotes legacy `path: "/"` no-host routes when no explicit
+    /// default exists.
+    #[serde(default)]
+    pub default: bool,
+    /// PR2 — `false` removes this route from trie registration so
+    /// the operator can pull it without deleting. Defaults to true.
+    #[serde(default = "default_route_enabled_patch")]
+    pub enabled: bool,
+}
+
+fn default_route_enabled_patch() -> bool {
+    true
 }
 
 fn default_match_type_str() -> String {
@@ -77,6 +91,8 @@ impl RouteConfigPatch {
             upstream: r.upstream.clone(),
             tier_override: r.tier_override.as_ref().map(tier_str).map(String::from),
             auth_required: r.auth_required.clone(),
+            default: r.default,
+            enabled: r.enabled,
         }
     }
 
@@ -105,6 +121,8 @@ impl RouteConfigPatch {
             auth_required: self.auth_required,
             tcp_destination_allowlist: Vec::new(),
             max_concurrent_tunnels_per_ip: 0,
+            default: self.default,
+            enabled: self.enabled,
         })
     }
 }
@@ -299,6 +317,37 @@ pub trait RouteWriter: Send + Sync {
     fn current_routes(&self) -> Vec<RouteConfig> {
         Vec::new()
     }
+
+    /// PR3 — drives the "Test route" tool. Asks the live router
+    /// "which route would this synthetic request hit?" without
+    /// sending real traffic. Returns the matched route id and the
+    /// effective priority string, or `None` if the request would
+    /// fall through to deny-by-default (404). Default returns
+    /// `None` for test bundles that don't wire a router.
+    fn resolve_for_test(
+        &self,
+        _host: &str,
+        _path: &str,
+        _method: &str,
+    ) -> Option<RouteResolveResult> {
+        None
+    }
+}
+
+/// PR3 — flat result of a Test-route call. Mirrors the JSON shape
+/// the dashboard renders so the route_id + priority + tier round-trip
+/// is unambiguous.
+#[derive(Debug, Clone)]
+pub struct RouteResolveResult {
+    pub route_id: String,
+    pub host: Option<String>,
+    pub path: String,
+    pub methods: Vec<String>,
+    pub tier: String,
+    pub upstream: String,
+    pub priority: String,
+    pub default: bool,
+    pub enabled: bool,
 }
 
 /// Failure modes returned by [`RouteWriter::apply`]. Mirrors
@@ -371,6 +420,8 @@ state:
             upstream: "api-pool".into(),
             tier_override: None,
             auth_required: Vec::new(),
+            default: false,
+            enabled: true,
         }
     }
 

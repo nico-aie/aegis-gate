@@ -861,7 +861,10 @@ state:
     fn route_reload_keeps_old_table_on_validation_error() {
         let ctx = boot_ctx(&yaml_with_route("v1", "/api/v1"));
 
-        // Build a YAML with no catch-all — RouteTable::build rejects.
+        // PR2: "no catch-all" no longer fails — deny-by-default
+        // covers it. To exercise the validation-error path use the
+        // new invariant: two `default: true` routes in the same
+        // host scope is rejected.
         let bad_yaml = r#"
 listeners:
   data:
@@ -869,9 +872,13 @@ listeners:
   admin:
     bind: "127.0.0.1:9090"
 routes:
-  - id: only
-    host: "api.example.com"
-    path: "/foo"
+  - id: a
+    path: "/api"
+    default: true
+    upstream: pool
+  - id: b
+    path: "/web"
+    default: true
     upstream: pool
 upstreams:
   pool:
@@ -884,7 +891,10 @@ state:
         let outcome = apply_cfg_change_to_routes(&bad_cfg, Some(&ctx));
         match outcome {
             RouteReloadOutcome::Failed { reason } => {
-                assert!(reason.contains("catch-all"));
+                assert!(
+                    reason.contains("default") && reason.contains("at most one"),
+                    "expected double-default error, got: {reason}"
+                );
             }
             other => panic!("expected Failed, got {other:?}"),
         }
