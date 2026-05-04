@@ -3546,7 +3546,7 @@ function PageSettings() {
       };
       const r = await window.settingsRiskThresholdsPut(body);
       if (r && r.ok) {
-        window.aegisToast(`Risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
+        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
         riskApi.reload && riskApi.reload();
       } else {
         const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
@@ -3655,7 +3655,7 @@ function PageSettings() {
 
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Risk thresholds</div>
+          <div className="card-title">Cumulative IP risk thresholds</div>
           <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`}>
             {riskApi.error ? 'fetch failed' : 'live'}
           </span>
@@ -3665,22 +3665,32 @@ function PageSettings() {
             </span>
           )}
         </div>
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 10, lineHeight: 1.5 }}>
+          Per-source-IP score that <strong>accumulates across requests</strong> and decays exponentially
+          (half-life <span className="num">{riskApi.data?.decay_half_life || '5m'}</span> from <code>risk.decay_half_life</code>).
+          Gates the challenge ladder for <em>future</em> requests from this IP.
+          {' '}
+          <strong>Distinct from</strong> the per-request <em>tier risk threshold</em> (50 / 70 / 80 / 90 by tier)
+          which blocks <em>this</em> request based on its detector hits — that one lives on the Detectors page → Edit tier.
+          {' '}
+          See <a href="/docs/security/security-engine.md" target="_blank" rel="noreferrer">security-engine.md § Risk model</a>.
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Allow (0 – {allow})</span><span className="num">{allow}</span>
+              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
             </div>
             <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
           </div>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Challenge ({allow + 1} – {challenge})</span><span className="num">{challenge}</span>
+              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
             </div>
             <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-              Block threshold: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span>
+              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
             </div>
             <button
               className="btn primary"

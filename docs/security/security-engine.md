@@ -81,10 +81,12 @@ clean.
             │   if composite_score ≥ tier.risk_threshold → BLOCK (403)           │
             │   else                                     → forward to upstream   │
             │                                                                    │
-            │   ALSO: ip_strike_score += composite_score (decays half-life 5m)   │
-            │         if ip_strike_score ≥ risk.thresholds.block_threshold,      │
-            │         the IP is auto-blocked at the access gate above for        │
-            │         subsequent requests until it decays.                       │
+            │   ALSO: cumulative IP risk score += per-request composite_score    │
+            │         (per-IP, decays exp. half-life risk.decay_half_life=5m)    │
+            │         if score ≥ risk.thresholds.block_at  → access-gate block   │
+            │         if score ≥ risk.thresholds.challenge_at → challenge ladder │
+            │         (edited live from Settings → "Cumulative IP risk           │
+            │          thresholds")                                              │
             └────────────────────────────────────────────────────────────────────┘
                                          │   allowed
                                          ▼
@@ -258,10 +260,17 @@ There are **two** numbers that look similar but answer different
 questions. This is the most-asked confusion on the Investigation page,
 so the distinction matters.
 
-### Per-request score (composite)
+### Per-request score (this request only, composite)
 
 Sum of every signal that fired on **this single request**. Compared
-against the matched tier's `risk_threshold` to decide block vs allow.
+against the matched route's tier `risk_threshold` (critical 50 / high
+70 / medium 80 / catch_all 90 by default) to decide block vs allow.
+
+**Where to edit:** the dashboard **Detectors page → Edit tier** modal
+(audit-mutated `PUT /api/tiers/{name}`). YAML equivalent in
+`cfg.tiers.<name>.risk_threshold`. **Not** the Settings page — that
+card edits the cumulative IP score described below.
+
 Visible in:
 
 - The Live Feed row's `risk` field
@@ -271,15 +280,34 @@ Visible in:
 Reset to 0 at the start of every request — independent of any other
 request.
 
-### Per-IP strike score (cumulative)
+### Cumulative IP risk score (per-IP, sticky)
 
-A second number tracked **per source IP**, updated in the state backend
-(`StateBackend::add_risk` → Redis). Every detector hit AND every
-explicit `RaiseRisk` rule contributes to this. **Decays exponentially**
-with `risk.decay_half_life` (default 5 min). When the score crosses
-`risk.thresholds.block_threshold`, the IP is auto-blocked at the **access
-gate** for `risk.thresholds.block_ttl` (default 10 min); subsequent
-requests from that IP are rejected before any detector runs.
+A second number tracked **per source IP**, persisted in the state
+backend (`StateBackend::add_risk` → Redis). Every detector hit AND
+every explicit `RaiseRisk` rule contributes to this. **Decays
+exponentially** with `risk.decay_half_life` (default 5 min) — so a
+clean stretch of requests claws score back down. Two thresholds gate
+the challenge ladder, both editable live:
+
+| Threshold | YAML key | Default | Meaning |
+|---|---|---|---|
+| **Allow ceiling** | `risk.thresholds.challenge_at − 1` | 39 | score ≤ this → request goes through normally |
+| **Challenge floor** | `risk.thresholds.challenge_at` | 40 | score ≥ this → JS / CAPTCHA / PoW challenge before allow |
+| **Block floor** | `risk.thresholds.block_at` | 80 | score ≥ this → reject **all** requests from this IP at the access gate, before any detector runs, until decay drops the score back below `block_at` |
+| **Score cap** | `risk.thresholds.max` | 100 | score saturates here so a single mega-burst can't permanently doom an IP |
+
+**Where to edit:** the dashboard **Settings page → "Cumulative IP
+risk thresholds"** card. The two sliders set `challenge_at` and
+`block_at`; saves go through the audit-mutated `PUT /api/risk/thresholds`
+endpoint with CSRF + capability check, hot-swap to the live tracker (no
+restart). YAML equivalent in `cfg.risk.thresholds`.
+
+**A separate `strikes.block_at`** counter (config: `risk.strikes.block_at`,
+default 50) tracks **lifetime malicious-event count per IP** and never
+decays. When it reaches the limit, the IP is permanently blocked until
+an operator runs `PUT /api/risk/{ip}/reset`. This is the "you've been
+bad enough times that decay won't save you" gate, distinct from the
+score-based gate above.
 
 Visible in:
 
@@ -293,12 +321,14 @@ A request can show **`IP risk = 100` and `action = ALLOW`** when:
 - The IP got hammered earlier (detectors fired, score climbed).
 - The current request happens to not match any detector.
 - Per-request score = 0; route's tier threshold not crossed.
-- Strike-gate threshold also not crossed (or already cleared).
+- Score-gate `block_at` also not crossed (or already cleared by decay).
 
 That's expected behaviour, not a bug. To **block on cumulative IP
-strike alone** (i.e. "if this client has been bad, refuse them
-regardless"), lower `risk.thresholds.block_threshold`. The trade-off:
-false positives if a legitimate user briefly trips a detector.
+score alone** (i.e. "if this client has been bad, refuse them
+regardless of what this single request looks like"), lower
+`risk.thresholds.block_at` from the Settings card. The trade-off:
+false positives if a legitimate user briefly trips a detector and
+shares an IP (NAT / corporate proxy / shared loopback in dev).
 
 ### What contributes to score
 
@@ -371,10 +401,13 @@ Host: localhost:8080
    block.
 7. **Audit + metrics**: `action: "allow"` (or "block" if critical),
    `fields.detectors: ["sqli"]`, `fields.risk_score: 60`.
-8. **Per-IP strike** climbs by 60. Three more hits in 5 min →
-   cumulative 240 → crosses `risk.thresholds.block_threshold` (default
-   100 in dev) → **auto-blocked at the access gate** for the next
-   10 min, even for benign requests.
+8. **Cumulative IP risk score** climbs by 60. Two more hits in 5 min
+   → score saturates at `risk.thresholds.max` (100 in prod) → crosses
+   `risk.thresholds.block_at` (default **80** in prod, deliberately
+   pushed to 99999 in `config/dev.yaml` so shared-loopback dev traffic
+   doesn't self-block) → **auto-blocked at the access gate** for
+   subsequent requests, even benign ones, until exponential decay
+   (`risk.decay_half_life`, default 5 min) drops the score back below.
 
 ### Example 2 — Allowed despite high IP risk
 
@@ -428,8 +461,11 @@ curl -H 'X-Forwarded-For: 8.8.8.8' http://localhost:8080/anything
 | Blacklist / whitelist | `blacklist: []`, `whitelist: []` | Access Lists |
 | Rate limit | `rate_limit.{ip, session, route, global}` | (read-only — Settings) |
 | DDoS thresholds | `ddos.{spike_multiplier, ...}` | (read-only) |
-| Risk weights | `risk.weights.{bad_asn, bad_ja4, ...}` | (read-only) |
-| Strike gate threshold | `risk.thresholds.block_threshold` | (read-only) |
+| Risk weights | `risk.weights.{bad_asn, bad_ja4, ...}` | (read-only — YAML restart) |
+| Tier `risk_threshold` (per-request gate) | `tiers.<name>.risk_threshold` | Detectors page → Edit tier (audit-mutated) |
+| Cumulative IP score thresholds | `risk.thresholds.{challenge_at, block_at, max}` | Settings page → "Cumulative IP risk thresholds" card (audit-mutated) |
+| IP strike count limit | `risk.strikes.block_at` | (read-only — YAML restart; reset per IP via `PUT /api/risk/{ip}/reset`) |
+| Risk decay | `risk.decay_half_life`, `risk.trust_recovery.per_hour` | (read-only — YAML restart) |
 | Compliance clamp | `compliance.modes: [pci|hipaa|soc2|gdpr|fips]` | Compliance page (read-only) |
 | Mode (enforce / log_only) | `mode: enforce` | Settings → Mode toggle |
 | Audit sinks | `audit.sinks: [jsonl, syslog, cef, leef, ocsf, splunk_hec, kafka]` | (read-only) |

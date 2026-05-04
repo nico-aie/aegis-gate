@@ -49,7 +49,7 @@ AI detector wired into the chain  model_path=…/waf_model.onnx
 
 ## 3 · Open the dashboard
 
-Browse to **<https://127.0.0.1:9443/>** (self-signed cert — accept
+Browse to **<http://127.0.0.1:9443/>** (https://127.0.0.1:9443 - self-signed cert — accept
 the warning, or use `--insecure` on curl).
 
 | Field | Value |
