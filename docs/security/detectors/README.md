@@ -32,5 +32,12 @@ controls which of these are active per tier — see
 [`/api/detectors`](../../control-plane/enterprise/api.md) admin
 endpoint.
 
+In the dashboard, the **Detectors** page shows the merged view —
+AI observability panel (predictions / attack rate / fallbacks) on
+top, the per-class mask grid (base + per-tier overrides) below.
+Audit-mutated; flips take effect within one hot-reload tick. The
+AI detector itself is gated by `cfg.ai.enabled` at boot time
+today (a runtime `PUT /api/ai/enabled` knob is queued).
+
 For corpus-based regression testing, see
 [`../../../tests/security/corpus/`](../../../tests/security/corpus/).

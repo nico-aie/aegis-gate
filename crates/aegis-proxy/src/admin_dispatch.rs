@@ -42,9 +42,10 @@ use crate::admin_mutate::{
     handle_alert_receivers_put, handle_detectors_put, handle_loadmode_put,
     handle_logging_put, handle_mode_put, handle_mtls_sans_delete,
     handle_mtls_sans_put, handle_mtls_sans_test, handle_pool_delete,
-    handle_pool_upsert, handle_risk_reset, handle_risk_thresholds_put,
-    handle_rules_delete, handle_rules_post, handle_rules_put,
-    handle_rules_toggle, handle_upstreams_config_put,
+    handle_ai_enabled_get, handle_ai_enabled_put, handle_pool_upsert,
+    handle_risk_reset, handle_risk_thresholds_put, handle_route_delete,
+    handle_route_upsert, handle_rules_delete, handle_rules_post,
+    handle_rules_put, handle_rules_toggle, handle_upstreams_config_put,
 };
 use crate::responses::{json_body_response, json_response};
 
@@ -237,6 +238,34 @@ pub(crate) async fn handle_admin_request(
             if method == hyper::Method::DELETE {
                 return handle_pool_delete(req, suffix, cfg, services).await;
             }
+        }
+    }
+
+    // RT-T4 — route writes. Audit-mutated; CSRF-gated. Mirrors
+    // the pool path so the dashboard's RouteEditModal +
+    // DeleteRouteModal flow has the same shape.
+    //   PUT    /api/routes/{id}    upsert (create or replace)
+    //   DELETE /api/routes/{id}    delete (last-catch-all guarded)
+    if let Some(suffix) = path.strip_prefix("/api/routes/") {
+        if !suffix.is_empty() && !suffix.contains('/') {
+            if method == hyper::Method::PUT {
+                return handle_route_upsert(req, suffix, cfg, services).await;
+            }
+            if method == hyper::Method::DELETE {
+                return handle_route_delete(req, suffix, cfg, services).await;
+            }
+        }
+    }
+
+    // AI-T10 — runtime on/off for the AI detector. Audit-mutated
+    // PUT; CSRF-gated. GET is open-on-session so the dashboard's
+    // Detectors page can render the toggle state without a write.
+    if path == "/api/ai/enabled" {
+        if method == hyper::Method::GET {
+            return handle_ai_enabled_get(services).await;
+        }
+        if method == hyper::Method::PUT {
+            return handle_ai_enabled_put(req, services).await;
         }
     }
 

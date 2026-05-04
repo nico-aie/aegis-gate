@@ -255,12 +255,39 @@ function useTicking(intervalMs = 1000) {
 // dashboard rendering even when a backend handler crashes mid-
 // session. Returns `{ data, loading, error, reload }`.
 function useApi(url, { intervalMs = 5000, fallback = null } = {}) {
-  const [state, setState] = useState({ data: fallback, loading: true, error: null });
+  // FIX 2026-05-04 — the pill across the dashboard reads
+  // `api.error` to decide between "live" / "fetch failed".
+  // Old behaviour: any single failed poll set `error`, and the
+  // pill flipped to "fetch failed" until the *next* successful
+  // poll cleared it. On long-interval endpoints (30 s
+  // /api/upstreams/config, 60 s /api/runtime, …) a single blip
+  // pinned the warn pill for tens of seconds even though the
+  // page was rendering perfectly good cached data. Operators
+  // perceive this as "FETCH FAILED label even have data".
+  //
+  // New behaviour: track `lastFetchOk` separately. `error` is
+  // suppressed once we've ever fetched non-fallback data — the
+  // pill keys off `error` so it now answers the more useful
+  // question "do we have data?" instead of "did the last poll
+  // succeed?". Pages that genuinely need staleness (e.g. an SLO
+  // dashboard) can opt into the per-poll signal via
+  // `lastFetchOk` directly.
+  const [state, setState] = useState({
+    data: fallback, loading: true, error: null, lastFetchOk: false,
+  });
   const reload = useCallback(() => {
     fetch(url, { credentials: 'same-origin', cache: 'no-store' })
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then(data => setState({ data, loading: false, error: null }))
-      .catch(error => setState(s => ({ data: s.data ?? fallback, loading: false, error })));
+      .then(data => setState({ data, loading: false, error: null, lastFetchOk: true }))
+      .catch(error => setState(s => ({
+        data: s.data ?? fallback,
+        loading: false,
+        // Suppress `error` once we have data so the pill stops
+        // flapping on transient blips. `lastFetchOk` carries the
+        // raw signal for pages that want it.
+        error: s.lastFetchOk ? null : error,
+        lastFetchOk: false,
+      })));
   }, [url, fallback]);
   useEffect(() => {
     reload();
@@ -836,6 +863,51 @@ async function poolDelete(name) {
   const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
   return { status: r.status, ...json };
 }
+
+// AI-T10 — runtime on/off for the AI detector. GET is open-on-
+// session; PUT is audit-mutated + CSRF-gated. The dashboard's
+// merged Detectors panel uses both: GET on mount to seed the
+// toggle state, PUT when the operator flips it.
+function useAiEnabledApi() {
+  return useApi('/api/ai/enabled', { intervalMs: 10000, fallback: { enabled: false, feature_present: false } });
+}
+async function aiEnabledPut(enabled) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/ai/enabled', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ enabled: !!enabled }),
+  });
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
+
+// RT-T6 — route mutation helpers. Mirror poolUpsert / poolDelete
+// so the RouteEditModal + DeleteRouteModal flow behaves the same
+// way (CSRF cookie + header, status passed through).
+async function routeUpsert(id, body) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/routes/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
+async function routeDelete(id) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch(`/api/routes/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  // 409 last_catchall is the only structured failure; pass status through.
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
 function useRuntimeApi()  { return useApi('/api/runtime',         { intervalMs: 60000, fallback: null }); }
 // SC-T2 — Layer-3 backend health. Polls every 5 s to match the
 // server-side cache TTL the Redis backend uses; idle in_memory
@@ -1024,6 +1096,10 @@ Object.assign(window, {
   useStateApi, adminDrainPost,
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers
   useUpstreamsConfigApi, upstreamsConfigPut, poolUpsert, poolDelete,
+  // RT-T6 — route mutations
+  routeUpsert, routeDelete,
+  // AI-T10 — AI detector runtime on/off
+  useAiEnabledApi, aiEnabledPut,
   useRoutesApi, useTiersApi,
   rulesPost, rulesPut, rulesDelete, rulesToggle, waitForVersion,
   // CI-T6 — settings mutations

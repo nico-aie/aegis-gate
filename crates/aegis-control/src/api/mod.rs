@@ -1,5 +1,6 @@
 pub mod about;
 pub mod admin;
+pub mod ai_toggle;
 pub mod alert_receivers;
 pub mod analytics;
 pub mod attacks;
@@ -21,6 +22,7 @@ pub mod mutation;
 pub mod risk;
 pub mod rollback;
 pub mod routes;
+pub mod routes_config;
 pub mod rules;
 pub mod runtime;
 pub mod simulator;

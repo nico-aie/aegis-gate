@@ -29,6 +29,7 @@
 //! caller increments around the `inspect()` call.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use aegis_core::pipeline::RequestView;
@@ -105,6 +106,14 @@ pub struct AiDetector {
     /// the boot path replaces it with the live AiMetrics
     /// implementation when /metrics is wired.
     metrics: Arc<dyn AiMetricsSink>,
+    /// Runtime on/off — flipped by the audit-mutated
+    /// `PUT /api/ai/enabled` handler. When `false`,
+    /// [`Detector::inspect`] short-circuits and returns no
+    /// signals (and skips inference entirely so AI cost is
+    /// genuinely zero). Initialised to `cfg.ai.enabled` at boot.
+    /// Wrapped in `Arc<AtomicBool>` so the dashboard's writer
+    /// can flip the same handle the data plane reads.
+    runtime_enabled: Arc<AtomicBool>,
 }
 
 impl AiDetector {
@@ -120,6 +129,7 @@ impl AiDetector {
             threshold,
             score: 60,
             metrics: Arc::new(NoopAiMetricsSink),
+            runtime_enabled: Arc::new(AtomicBool::new(true)),
         })
     }
 
@@ -132,7 +142,25 @@ impl AiDetector {
             threshold,
             score: 60,
             metrics: Arc::new(NoopAiMetricsSink),
+            runtime_enabled: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Get a clone of the runtime-toggle handle. The control
+    /// plane stashes this on `DashboardServices` so the
+    /// audit-mutated `PUT /api/ai/enabled` handler can flip it
+    /// hot. The data plane reads the same `AtomicBool` per
+    /// inference — no lock, single relaxed load.
+    pub fn runtime_toggle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.runtime_enabled)
+    }
+
+    /// Override the initial runtime-toggle value (defaults to
+    /// `true` — same as the boot config). Useful for tests that
+    /// want to verify the short-circuit path without a writer.
+    pub fn with_runtime_enabled(self, enabled: bool) -> Self {
+        self.runtime_enabled.store(enabled, Ordering::Relaxed);
+        self
     }
 
     /// Override the per-hit score (default 60).  A request
@@ -185,6 +213,16 @@ impl Detector for AiDetector {
     }
 
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
+        // Runtime gate — same shape as the existing class mask
+        // for sqli/xss/etc. but a separate AtomicBool because
+        // AI isn't in the `DetectorClass` enum (the bitmask
+        // lives in aegis-security; AI is feature-gated and
+        // bolted on). Flipped by `PUT /api/ai/enabled`. When
+        // off we skip inference entirely so the cost is
+        // genuinely zero, not just "no signal emitted".
+        if !self.runtime_enabled.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
         let request_str = Self::build_request_string(req);
         let feats = features::extract_features(&request_str);
         match self.model.predict(&feats) {

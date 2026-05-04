@@ -99,16 +99,26 @@ function PageOverview() {
   const blocksTotal = stats.data?.blocks_total ?? 0;
   const blockRate = stats.data?.block_rate_pct;
   const activeThreats = stats.data?.active_threats ?? 0;
-  // Roll up healthy / total across every live pool.  Falls
-  // back to the legacy stats.upstream shape when /api/upstreams
-  // hasn't responded yet (pre-API-ready first paint).
+  // Roll up healthy / total across every live pool. The
+  // `/api/upstreams` response shape is:
+  //   { healthy_members, total_members, pools: [{name, healthy, total}, ...] }
+  // We prefer the top-level aggregate (computed server-side); when
+  // it's missing (or `pools` is the only thing populated), fall
+  // back to summing the per-pool entries. Fix 2026-05-04: the
+  // earlier code looked for per-pool `healthy_members` /
+  // `total_members` keys that don't exist, so the rollup was
+  // always 0 and the Overview tile reported "no members
+  // configured" even with a pool defined.
   const upstream = (() => {
-    const pools = upstreamsLive.data?.pools;
-    if (Array.isArray(pools)) {
-      let healthy = 0, total = 0;
-      for (const p of pools) {
-        healthy += Number(p.healthy_members ?? 0);
-        total   += Number(p.total_members ?? p.members_total ?? 0);
+    const live = upstreamsLive.data;
+    if (live && (Number(live.total_members ?? -1) >= 0 || Array.isArray(live.pools))) {
+      let healthy = Number(live.healthy_members ?? 0);
+      let total   = Number(live.total_members ?? 0);
+      if (total === 0 && Array.isArray(live.pools)) {
+        for (const p of live.pools) {
+          healthy += Number(p.healthy ?? 0);
+          total   += Number(p.total ?? 0);
+        }
       }
       return { healthy, unhealthy: Math.max(total - healthy, 0) };
     }
@@ -2114,8 +2124,9 @@ function DetectorMaskCard() {
     <div className="card" style={{ marginBottom: 12, padding: 0 }}>
       <div className="card-head" style={{ padding: 12 }}>
         <div>
-          <div className="card-title">Detector Mask</div>
+          <div className="card-title">Detectors</div>
           <div className="card-subtitle">
+            Per-class on/off mask + AI-detector observability.
             Edit the base mask or per-tier overrides. Locked classes
             (🔒) are pinned by active compliance modes
             {complianceModes.length > 0 && (
@@ -2124,6 +2135,17 @@ function DetectorMaskCard() {
             . Audit-mutated; takes effect within one hot-reload tick.
           </div>
         </div>
+      </div>
+      {/* AI detector observability — bare mode so it composes
+          inside this card without nested borders. The runtime
+          on/off for AI is still `cfg.ai.enabled` (boot-time) for
+          now — a `PUT /api/ai/enabled` knob is queued. */}
+      <div style={{ borderTop: '1px solid var(--hairline)' }}>
+        <AiDetectorPanel bare />
+      </div>
+      {/* Mask grid — base + per-tier overrides */}
+      <div style={{ borderTop: '1px solid var(--hairline)', padding: '8px 12px 0', fontSize: 11, color: 'var(--ink-dim)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        Mask
       </div>
       {renderRow('base', baseMask, 'base')}
       {Object.keys(overrides).length === 0 ? (
@@ -2137,16 +2159,25 @@ function DetectorMaskCard() {
   );
 }
 
-// AI-T9 — AI-detector card.  Reads /metrics directly (the AI
-// surfaces are Prometheus counters + a histogram).  Polls
-// every 5 s — same cadence as the Live Feed buffer — and
-// renders three numbers: total predictions, attack rate,
-// fallback count.  When the binary is built without the
-// `ai` feature the metrics are absent and we render a
-// "feature off" empty state.
-function AiDetectorCard() {
+// AI-T9 — AI-detector observability panel. Reads /metrics
+// directly (the AI surfaces are Prometheus counters + a
+// histogram). Polls every 5 s — same cadence as the Live Feed
+// buffer — and renders three numbers: total predictions, attack
+// rate, fallback count. When the binary is built without the
+// `ai` feature the metrics are absent and we render a "feature
+// off" empty state.
+//
+// FIX 2026-05-04 — `bare` prop renders the inner content
+// without the outer card wrapper so it composes inside
+// `DetectorsCard` (the merged AI + Mask panel) without nested
+// borders. The standalone-card form is preserved for callers
+// that want it on its own (currently none — the Detectors page
+// uses the merged form).
+function AiDetectorPanel({ bare = false } = {}) {
   const [metrics, setMetrics] = useStateP(null);
   const [error, setError]     = useStateP(null);
+  const aiEnabledApi          = window.useAiEnabledApi();
+  const [busy, setBusy]       = useStateP(false);
   useEffectP(() => {
     let cancelled = false;
     function load() {
@@ -2187,16 +2218,62 @@ function AiDetectorCard() {
     ? Object.values(metrics.fallback).reduce((a, b) => a + b, 0)
     : 0;
 
-  return (
-    <div className="card" style={{ marginBottom: 12 }}>
-      <window.SectionHeader
-        title="AI detector"
-        sub={
-          present
-            ? `${total.toLocaleString()} predictions · ${attackPct}% attack`
-            : 'feature off — rebuild with FEATURES="redis geoip ai" and set cfg.ai.enabled'
+  const inner = (
+    <>
+      {!bare && (
+        <window.SectionHeader
+          title="AI detector"
+          sub={
+            present
+              ? `${total.toLocaleString()} predictions · ${attackPct}% attack`
+              : 'feature off — rebuild with FEATURES="redis geoip ai" and set cfg.ai.enabled'
+          }
+        />
+      )}
+      {bare && (() => {
+        const featurePresent = !!aiEnabledApi.data?.feature_present;
+        const runtimeOn      = !!aiEnabledApi.data?.enabled;
+        async function flip() {
+          if (busy || !featurePresent) return;
+          setBusy(true);
+          try {
+            const r = await window.aiEnabledPut(!runtimeOn);
+            if (r.status === 200 && r.ok) {
+              window.aegisToast(`AI detector ${r.enabled ? 'enabled' : 'disabled'}`, 'ok');
+              aiEnabledApi.reload && aiEnabledApi.reload();
+            } else if (r.status === 409 && r.reason === 'feature_off') {
+              window.aegisToast('AI detector feature not built — rebuild with `--features ai`', 'warn');
+            } else {
+              const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+              window.aegisToast(`Toggle failed: ${msg}`, 'err');
+            }
+          } finally {
+            setBusy(false);
+          }
         }
-      />
+        return (
+          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--hairline)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>AI detector</span>
+            <span className={`pill ${featurePresent ? (runtimeOn ? 'ok' : 'warn') : 'neutral'}`} style={{ fontSize: 10 }}>
+              {!featurePresent ? 'feature off' : (runtimeOn ? 'enabled' : 'disabled')}
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 8 }}>
+              {present
+                ? `${total.toLocaleString()} predictions · ${attackPct}% attack`
+                : 'no traffic yet'}
+            </span>
+            <button
+              className="btn btn-sm"
+              onClick={flip}
+              disabled={!featurePresent || busy}
+              title={!featurePresent ? 'rebuild with `--features ai` and set `cfg.ai.enabled = true`' : (runtimeOn ? 'click to disable inference (audit-mutated)' : 'click to enable inference')}
+              style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px' }}
+            >
+              {busy ? '…' : (runtimeOn ? 'Disable' : 'Enable')}
+            </button>
+          </div>
+        );
+      })()}
       <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
         <div>
           <div className="field-label">Predictions</div>
@@ -2240,8 +2317,10 @@ function AiDetectorCard() {
           /metrics fetch error: {error}
         </div>
       )}
-    </div>
+    </>
   );
+  if (bare) return inner;
+  return <div className="card" style={{ marginBottom: 12 }}>{inner}</div>;
 }
 
 function PageTierConfig() {
@@ -2284,8 +2363,11 @@ function PageTierConfig() {
         </div>
       </div>
 
-      <AiDetectorCard />
-
+      {/* FIX 2026-05-04 — AI panel was a separate card on top
+          of the Detector Mask. Merged: `DetectorMaskCard` now
+          renders a single "Detectors" card containing the AI
+          observability panel (top) + the mask grid (bottom).
+          See `AiDetectorPanel({ bare: true })`. */}
       <DetectorMaskCard />
 
       <div className="split-list">
@@ -4626,6 +4708,8 @@ function PageUpstreams() {
         </div>
       </div>
 
+      <RoutesSection poolNames={names} />
+
       <div className="grid-12">
         <div className="col-4">
           <div className="card" style={{ padding: 8 }}>
@@ -6771,6 +6855,334 @@ function PageTopAttackers() {
         </span>
       </div>
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RT-T6 — Routes panel inside the Routing & Upstreams page.
+//
+// Mirrors the existing pool-CRUD shape (list + Edit / Delete modal).
+// Reads from `/api/routes`, writes via `routeUpsert` / `routeDelete`
+// — which hit the audit-mutated PUT/DELETE handlers landed in RT-T3.
+// `poolNames` is passed in from the parent page so the upstream
+// dropdown stays consistent with the live pool list.
+// ---------------------------------------------------------------------------
+function RoutesSection({ poolNames }) {
+  const routesApi = window.useRoutesApi();
+  const routes = routesApi.data?.routes || [];
+  const [editor, setEditor] = useStateP(null);
+  const [deleteModal, setDeleteModal] = useStateP(null);
+  const [busy, setBusy] = useStateP(false);
+
+  const openAdd = () => setEditor({ mode: 'add', draft: emptyRouteDraft() });
+  const openEdit = (route) => setEditor({ mode: 'edit', draft: routeToDraft(route) });
+
+  async function saveRoute(draft) {
+    setBusy(true);
+    try {
+      const body = routeBodyFromDraft(draft);
+      const r = await window.routeUpsert(draft.id, body);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Route "${draft.id}" saved`, 'ok');
+        routesApi.reload && routesApi.reload();
+        setEditor(null);
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Save failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteModal) return;
+    const { id } = deleteModal;
+    setBusy(true);
+    try {
+      const r = await window.routeDelete(id);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Route "${id}" removed`, 'ok');
+        routesApi.reload && routesApi.reload();
+        setDeleteModal(null);
+      } else if (r.status === 409 && r.reason === 'last_catchall') {
+        // Surface the "last catch-all" guard so the operator
+        // knows what's blocking the delete.
+        setDeleteModal({ id, blocker: r.message || 'last catch-all' });
+        window.aegisToast(`Cannot delete "${id}": last catch-all`, 'warn');
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Delete failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="card" style={{ padding: 0, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--hairline)' }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Routes</div>
+            <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} ·
+              first-match-wins ·
+              <span className="pill ok" style={{ marginLeft: 6 }} title="RT-T3 — PUT/DELETE land via the audit-mutated pipeline; the proxy hot-swaps without restart.">audit-mutated CRUD</span>
+            </div>
+          </div>
+          <div>
+            <button className="btn primary" onClick={openAdd} disabled={poolNames.length === 0}
+              title={poolNames.length === 0 ? 'Add an upstream pool first — every route must point at one' : ''}>
+              + Add route
+            </button>
+          </div>
+        </div>
+        <table className="tbl tbl-compact">
+          <thead><tr><th>ID</th><th>Host</th><th>Path</th><th>Match</th><th>Methods</th><th>Upstream</th><th>Tier</th><th style={{ width: 120 }}></th></tr></thead>
+          <tbody>
+            {routes.length === 0 && (
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+                No routes configured. Click <strong>+ Add route</strong> to add one.
+              </td></tr>
+            )}
+            {routes.map(r => (
+              <tr key={r.id}>
+                <td className="mono" style={{ fontSize: 12 }}>{r.id}</td>
+                <td className="mono" style={{ fontSize: 12, color: r.host ? 'inherit' : 'var(--ink-dim)' }}>
+                  {r.host || '*'}
+                </td>
+                <td className="mono" style={{ fontSize: 12 }}>{r.path}</td>
+                <td><span className="pill neutral" style={{ fontSize: 10 }}>{r.match_type}</span></td>
+                <td style={{ fontSize: 11 }}>
+                  {(r.methods || []).length === 0 ? <span style={{ color: 'var(--ink-dim)' }}>any</span> :
+                    (r.methods || []).map(m => (
+                      <span key={m} className="pill neutral" style={{ fontSize: 10, marginRight: 4 }}>{m}</span>
+                    ))}
+                </td>
+                <td className="mono" style={{ fontSize: 12 }}>{r.upstream}</td>
+                <td>
+                  {r.tier_override
+                    ? <span className="pill" style={{ fontSize: 10 }}>{r.tier_override}</span>
+                    : <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>default</span>}
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  <button className="btn btn-sm" onClick={() => openEdit(r)}>Edit</button>
+                  <button className="btn btn-sm" style={{ marginLeft: 4 }}
+                    onClick={() => setDeleteModal({ id: r.id })}>Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {editor && (
+        <RouteEditModal
+          mode={editor.mode}
+          draft={editor.draft}
+          existingIds={routes.map(r => r.id)}
+          poolNames={poolNames}
+          onSave={saveRoute}
+          onCancel={() => setEditor(null)}
+          busy={busy}
+        />
+      )}
+
+      {deleteModal && (
+        <DeleteRouteModal
+          id={deleteModal.id}
+          blocker={deleteModal.blocker}
+          onCancel={() => setDeleteModal(null)}
+          onConfirm={confirmDelete}
+          busy={busy}
+        />
+      )}
+    </>
+  );
+}
+
+// Form-shape helpers — keep the UI state shape decoupled from the
+// wire shape so the dropdowns / chips have predictable defaults.
+function emptyRouteDraft() {
+  return {
+    id: '',
+    host: '',
+    path: '/',
+    match_type: 'prefix',
+    methods: '',          // comma-separated; empty = "any"
+    upstream: '',
+    tier_override: '',    // empty = "default tier"
+    auth_required: '',    // comma-separated
+  };
+}
+function routeToDraft(r) {
+  return {
+    id: r.id || '',
+    host: r.host || '',
+    path: r.path || '/',
+    match_type: r.match_type || 'prefix',
+    methods: (r.methods || []).join(','),
+    upstream: r.upstream || '',
+    tier_override: r.tier_override || '',
+    auth_required: (r.auth_required || []).join(','),
+  };
+}
+function routeBodyFromDraft(d) {
+  const methods = d.methods.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  const auth_required = d.auth_required.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  const body = {
+    id: d.id.trim(),
+    path: d.path.trim() || '/',
+    match_type: d.match_type,
+    upstream: d.upstream,
+  };
+  if (d.host.trim()) body.host = d.host.trim();
+  if (methods.length > 0) body.methods = methods;
+  if (d.tier_override) body.tier_override = d.tier_override;
+  if (auth_required.length > 0) body.auth_required = auth_required;
+  return body;
+}
+
+function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy }) {
+  const [d, setD] = useStateP(initial);
+  const isAdd = mode === 'add';
+  const idClash = isAdd && existingIds.includes(d.id.trim());
+
+  const idValid = d.id.trim().length > 0 && !idClash;
+  const pathValid = d.path.trim().length > 0;
+  const upstreamValid = poolNames.includes(d.upstream);
+  const canSave = idValid && pathValid && upstreamValid && !busy;
+
+  const set = (k, v) => setD({ ...d, [k]: v });
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 540 }}>
+        <div className="modal-head">
+          <div className="modal-title">{isAdd ? 'Add route' : `Edit route — ${d.id}`}</div>
+          <button className="btn btn-sm" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+
+          <div className="form-row">
+            <label>ID <span className="req">*</span></label>
+            <input className="ip" value={d.id} disabled={!isAdd}
+              onChange={e => set('id', e.target.value)}
+              placeholder="vnexpress" />
+            {idClash && <div className="form-hint warn">A route with this ID already exists.</div>}
+            {!isAdd && <div className="form-hint">ID is immutable — to rename, delete and recreate.</div>}
+          </div>
+
+          <div className="form-row">
+            <label>Host (optional)</label>
+            <input className="ip" value={d.host}
+              onChange={e => set('host', e.target.value)}
+              placeholder="api.example.com (leave blank for any host)" />
+            <div className="form-hint">Leave blank for a host-agnostic route. Wildcards (`*.example.com`) supported.</div>
+          </div>
+
+          <div className="form-row">
+            <label>Path <span className="req">*</span></label>
+            <input className="ip" value={d.path}
+              onChange={e => set('path', e.target.value)}
+              placeholder="/api/v1" />
+          </div>
+
+          <div className="form-row" style={{ display: 'flex', gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <label>Match type</label>
+              <select className="ip" value={d.match_type} onChange={e => set('match_type', e.target.value)}>
+                <option value="prefix">prefix</option>
+                <option value="exact">exact</option>
+                <option value="regex">regex</option>
+                <option value="glob">glob</option>
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Tier override</label>
+              <select className="ip" value={d.tier_override} onChange={e => set('tier_override', e.target.value)}>
+                <option value="">default</option>
+                <option value="critical">critical</option>
+                <option value="high">high</option>
+                <option value="medium">medium</option>
+                <option value="catch_all">catch_all</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="form-row">
+            <label>Methods (comma-separated, blank = any)</label>
+            <input className="ip" value={d.methods}
+              onChange={e => set('methods', e.target.value)}
+              placeholder="GET,POST" />
+          </div>
+
+          <div className="form-row">
+            <label>Upstream <span className="req">*</span></label>
+            <select className="ip" value={d.upstream} onChange={e => set('upstream', e.target.value)}>
+              <option value="">— pick a pool —</option>
+              {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            {!upstreamValid && d.upstream && (
+              <div className="form-hint warn">Pool not found in current upstreams.</div>
+            )}
+          </div>
+
+          <div className="form-row">
+            <label>Required auth kinds (comma-separated)</label>
+            <input className="ip" value={d.auth_required}
+              onChange={e => set('auth_required', e.target.value)}
+              placeholder="mtls (leave blank to admit any identity)" />
+            <div className="form-hint">Allowed values: <code>mtls</code>, <code>spiffe</code>, <code>anonymous</code>.</div>
+          </div>
+
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn primary" disabled={!canSave} onClick={() => onSave(d)}>
+            {busy ? 'Saving…' : (isAdd ? 'Create route' : 'Save')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteRouteModal({ id, blocker, onCancel, onConfirm, busy }) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="modal-head">
+          <div className="modal-title">Delete route {id}?</div>
+          <button className="btn btn-sm" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          {blocker
+            ? (
+              <div className="callout warn">
+                <strong>Blocked.</strong> {blocker}
+              </div>
+            )
+            : (
+              <p style={{ fontSize: 13, lineHeight: 1.5 }}>
+                Removing <code>{id}</code> is hot — in-flight requests
+                finish on the old route table; new requests see the
+                updated table immediately. The change is recorded
+                in the audit chain.
+              </p>
+            )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          {!blocker && (
+            <button className="btn danger" onClick={onConfirm} disabled={busy}>
+              {busy ? 'Removing…' : 'Delete route'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

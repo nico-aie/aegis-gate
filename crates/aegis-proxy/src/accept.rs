@@ -53,6 +53,16 @@ pub(crate) async fn admin_accept_loop(
     // `/api/upstreams/config` PUT/DELETE handlers can hot-swap the
     // pool table.
     upstream_writer: Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>,
+    // RT-T5 — same indirection for the live route table. Wired by
+    // `run()` from `upstream_ctx.route_table` so the audit-mutated
+    // PUT/DELETE `/api/routes/{id}` handlers can hot-swap routes.
+    route_writer: Arc<dyn aegis_control::api::routes_config::RouteWriter>,
+    // AI-T10 — runtime on/off handle for the AI detector. `None`
+    // when the binary boots without `--features ai` OR
+    // `cfg.ai.enabled = false`. The audit-mutated
+    // `PUT /api/ai/enabled` handler in `admin_mutate.rs` reads
+    // it from `services.ai_toggle` (set further down).
+    ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
     // SC-T1 — typed-erased state backend handle so the
     // `/api/state` endpoint can call `health()` without a separate
     // provider closure. Passed through to `services.state_backend`.
@@ -458,6 +468,12 @@ pub(crate) async fn admin_accept_loop(
     // while in-flight requests finish on their already-grabbed
     // Arc<Pool>.
     services.upstream_writer = Some(upstream_writer);
+    services.route_writer = Some(route_writer);
+    if let Some(toggle) = ai_toggle {
+        services.ai_toggle = Some(
+            toggle as Arc<dyn aegis_control::api::ai_toggle::AiToggleWriter>,
+        );
+    }
 
     // MTLS-T6 — wire the IdentityTracker so the read-only
     // /api/mtls/* endpoints have a live data source. MTLS-T3

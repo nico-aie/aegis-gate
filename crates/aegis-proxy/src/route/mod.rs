@@ -110,6 +110,23 @@ impl RouteTable {
     }
 }
 
+// RT-T2 — bridge to the audit-mutated PUT/DELETE handlers in
+// `admin_mutate.rs`. `aegis-control` defines the trait; the proxy
+// implements it on the live route table so dashboard mutations
+// can hot-swap routes through the same atomic ArcSwap that
+// boot-time hot-reload uses. No new plumbing — `apply` already
+// handles validation + atomic swap.
+impl aegis_control::api::routes_config::RouteWriter for RouteTable {
+    fn apply(
+        &self,
+        new_cfg: &WafConfig,
+    ) -> Result<(), aegis_control::api::routes_config::RouteApplyError> {
+        RouteTable::apply(self, new_cfg).map_err(|e| {
+            aegis_control::api::routes_config::RouteApplyError::Build(e.to_string())
+        })
+    }
+}
+
 impl CompiledRouteTable {
     fn build(cfg: &WafConfig) -> aegis_core::Result<Self> {
         // Group routes by host pattern.

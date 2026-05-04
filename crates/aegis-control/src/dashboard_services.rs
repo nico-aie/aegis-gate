@@ -142,6 +142,22 @@ pub struct DashboardServices {
     /// in that case.
     pub upstream_writer:
         Option<std::sync::Arc<dyn crate::api::upstreams_config::UpstreamWriter>>,
+    /// RT-T5 — writer handle for the live route table, mirroring
+    /// `upstream_writer` for routes. Wired by the proxy boot path
+    /// (`Arc<RouteTable>`), consumed by the audit-mutated
+    /// `PUT/DELETE /api/routes/{id}` handlers in `admin_mutate.rs`.
+    /// `None` for test bundles that don't boot the proxy — those
+    /// handlers return `Internal` until it's wired.
+    pub route_writer:
+        Option<std::sync::Arc<dyn crate::api::routes_config::RouteWriter>>,
+    /// AI runtime toggle — flipped by `PUT /api/ai/enabled`,
+    /// read by the AiDetector on every request. `None` when the
+    /// binary boots without the `ai` feature OR `cfg.ai.enabled
+    /// = false` at boot — in either case the handler returns
+    /// 409 `feature_off` so the dashboard can render the
+    /// "feature not present" banner instead of a misleading 500.
+    pub ai_toggle:
+        Option<std::sync::Arc<dyn crate::api::ai_toggle::AiToggleWriter>>,
     /// MTLS-T6 — live per-identity sliding-window tracker. The
     /// `/api/mtls/connections` and `/api/mtls/failures`
     /// endpoints read snapshots from this. `None` for test
@@ -444,6 +460,14 @@ impl DashboardServices {
                 // CC-T1.1.b — wired by the proxy boot path once
                 // `ProxyContext.pools` (PoolRegistry) is built.
                 upstream_writer: None,
+                // RT-T5 — wired by the proxy boot path once
+                // the route table is built.
+                route_writer: None,
+                // AI-T10 — wired by the proxy boot path once
+                // the AiDetector is constructed (only when the
+                // `ai` feature is on AND `cfg.ai.enabled` is
+                // true).
+                ai_toggle: None,
                 // MTLS-T6 — wired by the proxy boot path. Until
                 // then `/api/mtls/connections` + `/api/mtls/failures`
                 // serve empty-state bodies.

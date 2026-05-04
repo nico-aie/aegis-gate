@@ -354,8 +354,12 @@ pub async fn run(
     // a missing model file or an unreadable .onnx; the
     // metrics-disabled binary already errored above.
     #[cfg(feature = "ai")]
+    let ai_runtime_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>;
+    #[cfg(not(feature = "ai"))]
+    let ai_runtime_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+    #[cfg(feature = "ai")]
     {
-        if cfg.ai.enabled {
+        ai_runtime_toggle = if cfg.ai.enabled {
             let model_path = cfg.ai.model_path.as_ref().ok_or_else(|| {
                 aegis_core::WafError::Config(
                     "ai.enabled = true but ai.model_path is unset".into(),
@@ -381,6 +385,11 @@ pub async fn run(
                 ))
             })?
             .with_metrics(ai_metrics);
+            // AI-T10 — grab the runtime-toggle handle BEFORE we
+            // box the detector. Both the data plane (via the
+            // detector chain) and the control plane (via
+            // `services.ai_toggle`) read the same `AtomicBool`.
+            let toggle = detector.runtime_toggle();
             tracing::info!(
                 model_path = %model_path.display(),
                 threshold = cfg.ai.confidence_threshold,
@@ -388,7 +397,10 @@ pub async fn run(
                 "AI detector wired into the chain",
             );
             detector_vec.push(Box::new(detector));
-        }
+            Some(toggle)
+        } else {
+            None
+        };
     }
     let detectors: std::sync::Arc<Vec<Box<dyn aegis_security::detectors::Detector>>> =
         std::sync::Arc::new(detector_vec);
@@ -1051,6 +1063,12 @@ pub async fn run(
     let admin_interop = interop_runtime.clone();
     let admin_upstream_writer: Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter> =
         Arc::new(upstream_ctx.pools.clone());
+    // RT-T5 — share the live route table with the admin listener so the
+    // audit-mutated PUT/DELETE /api/routes/{id} handlers can hot-swap
+    // routes through the same atomic ArcSwap the data plane resolves
+    // against.
+    let admin_route_writer: Arc<dyn aegis_control::api::routes_config::RouteWriter> =
+        Arc::new(upstream_ctx.route_table.clone());
     let admin_state_backend = state.clone();
     let admin_identity_tracker = identity_tracker.clone();
     let admin_detectors = detectors.clone();
@@ -1079,6 +1097,8 @@ pub async fn run(
         admin_lease_store,
         admin_interop,
         admin_upstream_writer,
+        admin_route_writer,
+        ai_runtime_toggle.clone(),
         admin_state_backend,
         admin_identity_tracker,
         admin_detectors,

@@ -6,6 +6,6 @@
 # Operators populate this directory locally via
 # `make geoip-link` — see README.md.
 
-*.mmdb
-*.tar.gz
-GeoLite2-*/
+# *.mmdb
+# *.tar.gz
+# GeoLite2-*/

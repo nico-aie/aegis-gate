@@ -1307,6 +1307,207 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RoutesResponse' }
 
+  /api/ai/enabled:
+    get:
+      tags: [Lists]
+      summary: AI detector runtime on/off (AI-T10)
+      description: |
+        Returns the live runtime state of the AI detector.
+        `feature_present` is `false` when the binary was built
+        without `--features ai` OR `cfg.ai.enabled = false` at
+        boot — the toggle is inert in that case and the dashboard
+        renders a "feature off" banner.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, feature_present]
+                properties:
+                  enabled:        { type: boolean }
+                  feature_present: { type: boolean }
+    put:
+      tags: [Configuration]
+      summary: Audit-mutated AI on/off (AI-T10)
+      description: |
+        Hot-flip the AI detector at runtime. Reads the same
+        `AtomicBool` the data plane consults per request so the
+        flip takes effect on the next inference. Returns 409
+        `feature_off` when the binary lacks `--features ai` or
+        `cfg.ai.enabled = false` at boot.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      enabled: { type: boolean }
+        '403':
+          description: CSRF token missing or mismatched.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: |
+            `{ ok: false, reason: "feature_off", message: "..." }` —
+            binary built without `--features ai` or AI detector
+            disabled at boot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/routes/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, example: "vnexpress" }
+    put:
+      tags: [Configuration]
+      summary: Audit-mutated route upsert (RT-T3)
+      description: |
+        Create or replace a single route in the live route table.
+        Validation runs first (id non-empty, path non-empty,
+        match_type ∈ {exact, prefix, regex, glob}, upstream
+        references an existing pool, auth_required ⊆ {mtls, spiffe,
+        anonymous}). On Err the table is untouched and a
+        `validation` error is returned. On success the proxy
+        hot-swaps the route table via atomic ArcSwap — in-flight
+        requests finish on the old table; new requests see the
+        new one. The path-param `id` is authoritative — operators
+        can omit `id` from the body without breaking the upsert.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, match_type, upstream]
+              properties:
+                id:
+                  type: string
+                  description: Optional — overridden by the path-param.
+                  example: "vnexpress"
+                host:
+                  type: string
+                  nullable: true
+                  description: Host pattern (`*.example.com` supported); empty for any host.
+                  example: "api.example.com"
+                path:
+                  type: string
+                  example: "/api/v1"
+                match_type:
+                  type: string
+                  enum: [exact, prefix, regex, glob]
+                  example: "prefix"
+                methods:
+                  type: array
+                  items: { type: string }
+                  description: Empty / omitted = match every method.
+                  example: ["GET", "POST"]
+                upstream:
+                  type: string
+                  description: Must exist in the live pool registry.
+                  example: "vnexpress"
+                tier_override:
+                  type: string
+                  nullable: true
+                  enum: [critical, high, medium, catch_all]
+                auth_required:
+                  type: array
+                  items:
+                    type: string
+                    enum: [mtls, spiffe, anonymous]
+                  description: Empty = "any identity admitted" (open route).
+      responses:
+        '200':
+          description: OK. Route upserted; audit chain advanced; proxy hot-swap complete.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      route: { type: string }
+        '400':
+          description: |
+            Validation failed. Body shape is
+            `{ ok: false, reason: "validation", message: "..." }`.
+            Common reasons: `empty_id`, `empty_path`, `bad_match_type`,
+            `bad_tier`, `unknown_upstream`, `bad_auth_required`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: CSRF token missing or mismatched.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Configuration]
+      summary: Audit-mutated route delete (RT-T3)
+      description: |
+        Removes the named route from the live table. Refuses with
+        409 `last_catchall` if `id` is the only route whose `path`
+        is `"/"` and `host` is unset — deleting it would brick
+        traffic the more-specific routes don't cover, and
+        `RouteTable::build` rejects the resulting config. Add
+        another catch-all before deleting.
+      security:
+        - cookieSession: []
+          csrfHeader: []
+      responses:
+        '200':
+          description: OK. Route removed; audit chain advanced; proxy hot-swap complete.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/MutationOk'
+                  - type: object
+                    properties:
+                      removed: { type: string }
+        '400':
+          description: |
+            Body shape `{ ok: false, reason: "validation", message: "no route with id 'X'" }`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: |
+            Last catch-all guard fired. Body shape:
+            `{ ok: false, reason: "last_catchall", message: "..." }`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: CSRF token missing or mismatched.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   # ----------------------------------------------------------------- Tracking
   /api/upstreams:
     get:

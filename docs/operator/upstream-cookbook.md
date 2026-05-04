@@ -262,7 +262,13 @@ The same fields are editable from the **Routing & Upstreams** page:
 
 - **Members** table now carries an explicit `Host header (vhost)` column for vhost / SNI override.
 - The **Scheme** dropdown surfaces the same six options as YAML, with a **Protocol matrix** card underneath that maps each scheme to which protocols it carries (HTTP/1.1, HTTP/2, WebSocket, gRPC, raw TCP).
-- Pool changes go through the audit-mutated PUT path — every save lands as a `pools_updated` audit chain entry, hot-swaps within ~5 s, no restart.
+- Pool changes go through the audit-mutated PUT path — every save lands as a `pool_upsert` audit chain entry, hot-swaps within ~5 s, no restart.
+
+**Routes** are now editable from the same page (RT-T3, shipped 2026-05-04). The Routes table at the top of **Routing & Upstreams** has `+ Add route`, **Edit**, and **Delete** controls:
+
+- **Add / Edit** opens a form with ID, host (optional), path, match type (`exact` / `prefix` / `regex` / `glob`), HTTP methods, upstream pool dropdown, tier override, and required auth kinds. Validation happens server-side — unknown upstream returns 400, the modal surfaces the toast.
+- **Delete** is hot. Refused with 409 if you try to remove the last catch-all (the route whose path is `/` with no host) — add another catch-all first.
+- Every save / delete lands as a `route_upsert` / `route_delete` audit-chain entry. Endpoints: `PUT /api/routes/{id}` and `DELETE /api/routes/{id}` — full schema in [`../control-plane/api.openapi.yaml`](../control-plane/api.openapi.yaml).
 
 ---
 

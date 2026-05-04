@@ -142,185 +142,82 @@ SOC-first dashboard.
 
 ## Quick Start
 
-The operator path has four phases — **Build → Run → Test → Deploy**.
-
-### 1 · Build
-
 ```sh
-make setup        # one-shot: dev cert + release build
-                  # (cold ~2 min, warm ~10 s)
+make setup       # dev cert + release build (cold ~2 min, warm ~10 s)
+make run-dev     # boots WAF + Redis + mock upstream
+make urls        # prints every URL + log path
 ```
 
-Customise the feature set with `FEATURES=`:
+Open <https://127.0.0.1:9443/> · login `admin` / `aegis-test-1234`.
 
-```sh
-FEATURES="redis geoip alerts taxii http3 etcd otel" make build
-```
+> **Full happy-path walkthrough** (dashboard tour, traffic
+> generation, real-upstream wiring, troubleshooting): →
+> [`QUICKSTART.md`](QUICKSTART.md).
 
-| Feature flag | Adds |
+### Feature flags
+
+`make build` defaults to `FEATURES="redis geoip alerts ai"`. Add
+more at build time:
+
+| Flag | Adds |
 |---|---|
 | `redis` | shared rate-limit + leader-lease state backend |
 | `geoip` | MaxMind GeoLite2 reader (country / ASN enrichment + `kind: country` access-list) |
 | `alerts` | VipTalk delivery for SLO + audit alerts |
+| `ai` | ML-based detector (operator-supplied ONNX, `ort` runtime) |
 | `taxii` | STIX/TAXII threat-intel auto-fetch |
 | `http3` | QUIC listener (quinn + h3) |
 | `etcd` | `AEGIS_CONFIG_SOURCE=etcd` boot path |
 | `otel` | OpenTelemetry OTLP exporter |
-| `ai` | ML-based detector (operator-supplied ONNX) |
-
-Validate any config without booting:
-
-```sh
-make validate
-make validate-all      # dev + 3 production profiles
-```
-
-### 2 · Run
+| `vault` / `aws` / `gcp` / `azure` | cloud-secret resolvers |
+| `consul` / `etcd` / `k8s` | service-discovery watchers |
 
 ```sh
-make run-dev      # config/dev.yaml + Redis + mock upstream
-make urls         # print every URL + log path
-make logs         # tail audit chain + container logs
+FEATURES="redis geoip alerts ai taxii http3 otel" make build
 ```
 
-Listeners after boot: `:8080` (HTTP), `:8443` (HTTPS), `:9443`
-(admin / dashboard / `/metrics`).
+### Profiles
 
-For real workloads pick a production profile:
-
-| Target | Config | When |
+| Make target | Config | When |
 |---|---|---|
-| `make run-dev` | `config/dev.yaml` | Local dev (inline creds) |
-| `make run` | `config/profiles/prod-balanced.yaml` | **Production default** |
-| `make run-strict` | `config/profiles/prod-strict.yaml` | PCI / HIPAA / SOC2 / GDPR |
+| `make run-dev` | `config/dev.yaml` | local dev (inline creds, loose limits) |
+| `make run` | `config/profiles/prod-balanced.yaml` | **production default** |
+| `make run-strict` | `config/profiles/prod-strict.yaml` | PCI / HIPAA / SOC 2 / GDPR |
 | `make run-throughput` | `config/profiles/prod-high-throughput.yaml` | CDN front-door, > 5 k RPS |
 
-Decision tree: [`docs/operator/profiles.md`](docs/operator/profiles.md).
+Decision tree + measured perf comparison: [`docs/operator/profiles.md`](docs/operator/profiles.md).
 
-### 3 · Configure your upstream
+### Upstreams (the one config you'll always touch)
 
-This is the one config you'll always touch. **Recipe-driven
-guide** with copy-paste blocks per protocol:
-**[`docs/operator/upstream-cookbook.md`](docs/operator/upstream-cookbook.md)**.
+Per-protocol recipes (plain HTTP, HTTPS+WSS, multi-vhost,
+h2c / gRPC, raw TCP via CONNECT): [`docs/operator/upstream-cookbook.md`](docs/operator/upstream-cookbook.md).
+Both routes and pools are editable from the dashboard's
+**Routing & Upstreams** page — audit-mutated, hot-swap, no
+restart.
 
-Quick decision:
-
-| Backend | Pick `connection.scheme:` | Note |
-|---|---|---|
-| Plain HTTP/1.1 | `http` | Auto-bridges WebSocket. |
-| TLS-terminated HTTPS | `https` | Auto-bridges WSS. |
-| Multi-vhost / public TLS | `https` + `host_header:` | Vhost name drives Host header AND TLS SNI. |
-| HTTP/2 cleartext (h2c) | `h2c` | Service-mesh sidecars. |
-| gRPC | `grpc` | Forces ALPN h2 only. |
-| Raw TCP (SSH / custom) | `tcp` | Requires CONNECT method. |
-
-Smallest possible config:
-
-```yaml
-# config/dev.yaml — replace the stub-pool block
-upstreams:
-  api-pool:
-    members:
-      - addr: "10.0.1.10:3001"
-    lb: round_robin
-    connection:
-      scheme: http
-```
-
-Multi-vhost public-TLS backend (e.g. GitHub Pages):
-
-```yaml
-upstreams:
-  github-pages:
-    members:
-      - addr: "185.199.108.153:443"
-        host_header: "your-org.github.io"
-    connection:
-      scheme: https
-```
-
-Same set of fields is editable from the dashboard's
-**Routing & Upstreams** page — including the new Host-header
-column for vhost / SNI override and the **Protocol matrix**
-card that maps each scheme to which protocols it carries
-(HTTP/1.1, HTTP/2, WebSocket, gRPC, raw TCP).
-
-Reference for every field: [`docs/data-plane/upstream-pools.md`](docs/data-plane/upstream-pools.md).
-
-Boot from etcd instead of a file (`--features etcd`):
+### Tests
 
 ```sh
-AEGIS_CONFIG_SOURCE=etcd \
-AEGIS_ETCD_ENDPOINTS=http://etcd-cluster:2379 \
-  ./target/release/waf run
+make test        # cargo test --workspace (~2 800 tests, zero warnings)
+make clippy      # cargo clippy -- -D warnings
+make smoke       # curl data + admin healthz (assumes `make run-dev` up)
+make ci-local    # everything GitHub Actions runs
 ```
 
-Same `WafConfig::validate` + same hot-reload watcher path. Key
-layout: [`deploy/etcd/README.md`](deploy/etcd/README.md).
+Full test catalogue (smoke / contract / load / cluster / dashboard /
+hackathon stress / security corpus): [`tests/`](tests/) — every
+subfolder has its own README.
 
-### 4 · Test
-
-Three layers — automated, contract, hand-driven.
-
-```sh
-# Automated (~1 500 unit tests, zero warnings)
-make test
-make clippy
-
-# Contract / smoke (assumes `make run-dev` is up)
-make smoke              # curl data + admin healthz
-make protocols-test     # h1 / h2 / h3 / WS / gRPC
-make openapi-test       # OpenAPI shape contract
-make ci-local           # everything GitHub Actions runs
-
-# Hand-driven validation of recently-shipped fixes
-export ADMIN_USER=admin ADMIN_PASS=admin
-export AEGIS_ADMIN=http://127.0.0.1:9443 AEGIS_DATA=http://127.0.0.1:8080
-tests/manual/access-list-roundtrip.sh
-tests/manual/csrf-cookie-flow.sh
-tests/manual/fake-country-ips.sh
-tests/manual/websocket-bridge.sh
-tests/manual/viptalk-alert-test.sh
-```
-
-**Stress + load + security:**
+### Deploy
 
 ```sh
-make mock-load             # ~50 RPS legit + crawler + attacker mix
-make mock-load-attacks     # attack-only flood (drives detector hits)
-make mock-load-mix         # ~5 k RPS — stress the WAF
-bash tests/hackathon/run.sh
-k6 run tests/load/baseline.js
-nuclei -u http://127.0.0.1:8080/ -tags sqli,xss,traversal -duc
-```
-
-**End-to-end QA via Claude Skill** —
-[`skills/aegis-waf-tester/`](skills/aegis-waf-tester/) is a
-self-contained Claude Skill that drives the WAF as a real QA
-engineer (browser via Playwright + curl + structured findings).
-
-```sh
-cp -R skills/aegis-waf-tester ~/.claude/skills/
-# Then in Claude Desktop:
-# "Use the aegis-waf-tester skill in smoke mode"
-```
-
-### 5 · Deploy
-
-```sh
-# Multi-arch image
-bash deploy/docker-build.sh --tag aegis-gate:0.x
-
-# Helm chart (3-replica HA)
+bash deploy/docker-build.sh --tag aegis-gate:0.x      # multi-arch image (amd64 + arm64)
 helm upgrade --install aegis deploy/helm/aegis-gate \
-  --set image.tag=0.x \
-  --set redis.url=redis://prod-redis:6379
-
-make helm-lint
-make helm-render
+  --set image.tag=0.x --set redis.url=redis://prod-redis:6379
 ```
 
-Full walkthrough: [`deploy/GUIDE.md`](deploy/GUIDE.md).
+Full walkthrough (image, systemd, Helm, etcd hot-reload, prod
+checklist): [`deploy/GUIDE.md`](deploy/GUIDE.md).
 
 ---
 

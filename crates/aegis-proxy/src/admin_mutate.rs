@@ -2636,6 +2636,302 @@ fn mask_state_to_json(
     })
 }
 
+// ---------------------------------------------------------------------------
+// AI-T10 — runtime toggle for the AI detector
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn handle_ai_enabled_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::ai_toggle::AiEnabledPatch;
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "ai-enabled-put");
+
+    // Distinct shape from the "writer not wired" Internal: when
+    // the binary lacks the `ai` feature (or `cfg.ai.enabled` was
+    // false at boot), we want the dashboard to render a clear
+    // "feature off" banner — not a generic 500.
+    let Some(toggle) = services.ai_toggle.as_ref().cloned() else {
+        let body = serde_json::json!({
+            "ok": false,
+            "reason": "feature_off",
+            "message": "AI detector not wired — rebuild with FEATURES=\"… ai\" and set cfg.ai.enabled = true",
+        });
+        return json_body_response(409, body.to_string(), "private, no-store");
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let patch: AiEnabledPatch = match serde_json::from_str(body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    let before = serde_json::json!({ "enabled": toggle.get() });
+    let after = serde_json::json!({ "enabled": patch.enabled });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/ai/enabled",
+        action: "ai_enabled_put",
+        reason: if patch.enabled { "operator enabled AI detector" } else { "operator disabled AI detector" },
+    };
+
+    let toggle_for_apply = Arc::clone(&toggle);
+    let outcome = services.mutate.apply::<_, (), &'static str>(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            toggle_for_apply.set(patch.enabled);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "enabled": patch.enabled,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+pub(crate) async fn handle_ai_enabled_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let body = match services.ai_toggle.as_ref() {
+        Some(t) => serde_json::json!({ "enabled": t.get(), "feature_present": true }),
+        None    => serde_json::json!({ "enabled": false,    "feature_present": false }),
+    };
+    json_response(200, &body)
+}
+
+// ---------------------------------------------------------------------------
+// RT-T3 — audit-mutated route CRUD
+// ---------------------------------------------------------------------------
+
+/// Project the route list of a (possibly-modified) `WafConfig`
+/// into the audit-chain `before` / `after` shape — same approach
+/// as `upstreams_audit_view`, but driven off `RouteConfigPatch`
+/// (the Serialize+Deserialize wire shape) so the diff lands in
+/// the audit log without leaking internal enum reprs.
+fn routes_audit_view(routes: &[aegis_core::config::RouteConfig]) -> serde_json::Value {
+    use aegis_control::api::routes_config::RouteConfigPatch;
+    let patches: Vec<RouteConfigPatch> = routes.iter().map(RouteConfigPatch::from_route).collect();
+    serde_json::to_value(&serde_json::json!({ "routes": patches }))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+pub(crate) async fn handle_route_upsert(
+    req: hyper::Request<hyper::body::Incoming>,
+    route_id: &str,
+    cfg: &aegis_core::config::WafConfig,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::routes_config::{validate_route, RouteConfigPatch};
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "route-upsert");
+    let Some(writer) = services.route_writer.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "route writer not wired".into(),
+            ),
+        );
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let mut patch: RouteConfigPatch = match serde_json::from_str(body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    // The path-param `route_id` is authoritative — operators can
+    // PUT to /api/routes/foo with a body that omits `id` (or
+    // contains a typo). Force consistency the same way
+    // `handle_pool_upsert` keys off the URL.
+    patch.id = route_id.to_string();
+
+    if let Err(e) = validate_route(&patch, cfg) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+        );
+    }
+
+    let new_route = match patch.into_route() {
+        Ok(r) => r,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    // Build the candidate route list: existing routes minus the
+    // one with this id (if present), plus the new entry. Order
+    // matters for first-match-wins resolution: replace-in-place
+    // when updating, append when creating.
+    let mut next_routes = cfg.routes.clone();
+    let existing_idx = next_routes.iter().position(|r| r.id == route_id);
+    match existing_idx {
+        Some(i) => next_routes[i] = new_route,
+        None => next_routes.push(new_route),
+    }
+
+    let before = routes_audit_view(&cfg.routes);
+    let after = routes_audit_view(&next_routes);
+    let resource = format!("/api/routes/{route_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "route_upsert",
+        reason: "operator upserted route",
+    };
+
+    // Build a candidate WafConfig for the writer to compile.
+    let mut next_cfg = cfg.clone();
+    next_cfg.routes = next_routes;
+
+    let writer_for_apply = Arc::clone(&writer);
+    let route_id_owned = route_id.to_string();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        after,
+        move || writer_for_apply.apply(&next_cfg),
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "route": route_id_owned,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+pub(crate) async fn handle_route_delete(
+    req: hyper::Request<hyper::body::Incoming>,
+    route_id: &str,
+    cfg: &aegis_core::config::WafConfig,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::routes_config::is_only_catchall;
+
+    let pre = mutation_preamble(&req, "route-delete");
+    let Some(writer) = services.route_writer.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "route writer not wired".into(),
+            ),
+        );
+    };
+
+    if !cfg.routes.iter().any(|r| r.id == route_id) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "no route with id '{route_id}'"
+            )),
+        );
+    }
+
+    // Refuse to remove the last catch-all — it would brick
+    // traffic on every path the more-specific routes don't cover,
+    // and `RouteTable::build` rejects the resulting config
+    // outright. 409 with a clear message so the dashboard can
+    // surface "you must add another catch-all first" without
+    // round-tripping a build error.
+    if is_only_catchall(cfg, route_id) {
+        let body = serde_json::json!({
+            "ok": false,
+            "reason": "last_catchall",
+            "message": format!(
+                "route '{route_id}' is the only catch-all (path: '/' with no host) — add another catch-all before deleting"
+            ),
+        });
+        return json_body_response(409, body.to_string(), "private, no-store");
+    }
+
+    let mut next_routes = cfg.routes.clone();
+    next_routes.retain(|r| r.id != route_id);
+
+    let before = routes_audit_view(&cfg.routes);
+    let after = routes_audit_view(&next_routes);
+    let resource = format!("/api/routes/{route_id}");
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "DELETE",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: &resource,
+        action: "route_delete",
+        reason: "operator removed route",
+    };
+
+    let mut next_cfg = cfg.clone();
+    next_cfg.routes = next_routes;
+
+    let writer_for_apply = Arc::clone(&writer);
+    let route_id_owned = route_id.to_string();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        after,
+        move || writer_for_apply.apply(&next_cfg),
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "removed": route_id_owned,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
