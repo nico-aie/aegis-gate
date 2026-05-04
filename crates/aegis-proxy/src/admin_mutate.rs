@@ -2654,10 +2654,10 @@ fn route_summaries(
 /// PUT /api/tiers/{name} — update one tier's pipeline + thresholds.
 ///
 /// Audit-mutated, CSRF-gated. The tier `name` must be one of
-/// the four canonical names (`critical | high | medium | low`)
-/// — operators can edit thresholds + pipeline, not invent new
-/// tiers (the type-level enum on `RouteConfig.tier_override`
-/// pins this).
+/// the four canonical names (`critical | high | medium | catch_all`)
+/// — these match `aegis_core::tier::Tier`, so a route's
+/// `tier_override: catch_all` correctly links to the same row.
+/// Operators can edit thresholds + pipeline, not invent new tiers.
 pub(crate) async fn handle_tier_put(
     req: hyper::Request<hyper::body::Incoming>,
     tier_name: &str,

@@ -1,9 +1,17 @@
 //! `/api/tiers` (D-M4-T4.4).
 //!
 //! Tier definition CRUD. Backed by an in-memory store seeded with
-//! the four canonical tiers (`critical`, `high`, `medium`, `low`).
-//! Real config persistence is wired when the M3 audit-mutation
-//! pipeline lands.
+//! the four canonical tiers (`critical`, `high`, `medium`, `catch_all`)
+//! — the same names the `aegis_core::tier::Tier` enum uses, so a
+//! route's `tier_override: catch_all` correctly links to the
+//! `catch_all` row in the dashboard's Detectors page.
+//!
+//! 2026-05-04 fix — pre-fix the seed list used `"low"` for the
+//! fourth tier, which mismatched the enum's `CatchAll` variant +
+//! the route editor's `catch_all` option. Routes flagged
+//! `tier_override: catch_all` would silently fail to link to any
+//! visible tier in the Detectors page. The store now uses the
+//! canonical name everywhere.
 
 #![allow(dead_code)]
 
@@ -47,6 +55,11 @@ impl Tier {
                 100,
             ),
             "medium" => (vec!["rate", "rules", "sqli", "xss"], 80, 1000),
+            // `catch_all` is the canonical default tier — most
+            // permissive, smallest pipeline. Anything unknown also
+            // falls here defensively (validators reject unknown
+            // names elsewhere, but `defaults_for` is also called
+            // from the migration path for forward-compat).
             _ => (vec!["rate", "rules"], 90, 10_000),
         };
         Tier {
@@ -85,7 +98,8 @@ pub struct TierStore {
 impl Default for TierStore {
     fn default() -> Self {
         let mut tiers = HashMap::new();
-        for name in ["critical", "high", "medium", "low"] {
+        // Canonical names match `aegis_core::tier::Tier` (snake_case).
+        for name in ["critical", "high", "medium", "catch_all"] {
             tiers.insert(name.to_string(), Tier::defaults_for(name));
         }
         Self {
@@ -120,7 +134,7 @@ impl TierStore {
         risk_threshold: u32,
         block_threshold: u32,
     ) -> Result<Tier, String> {
-        if !matches!(name, "critical" | "high" | "medium" | "low") {
+        if !matches!(name, "critical" | "high" | "medium" | "catch_all") {
             return Err(format!("unknown tier: {name}"));
         }
         if pipeline.is_empty() {
@@ -147,7 +161,7 @@ fn tier_order(name: &str) -> u32 {
         "critical" => 0,
         "high" => 1,
         "medium" => 2,
-        "low" => 3,
+        "catch_all" => 3,
         _ => 99,
     }
 }
@@ -160,7 +174,18 @@ mod tests {
     fn store_seeds_four_canonical_tiers() {
         let s = TierStore::new();
         let names: Vec<String> = s.list().into_iter().map(|t| t.name).collect();
-        assert_eq!(names, vec!["critical", "high", "medium", "low"]);
+        assert_eq!(names, vec!["critical", "high", "medium", "catch_all"]);
+    }
+
+    /// Regression — the seed names must match `aegis_core::tier::Tier`
+    /// (snake_case) so a route's `tier_override: catch_all` correctly
+    /// links to the `catch_all` row in the dashboard. Pre-fix the
+    /// seed used `low`, breaking that link silently.
+    #[test]
+    fn seed_names_match_canonical_tier_enum() {
+        let s = TierStore::new();
+        assert!(s.get("catch_all").is_some(), "catch_all row must exist");
+        assert!(s.get("low").is_none(), "legacy `low` name must not be seeded");
     }
 
     #[test]
@@ -187,9 +212,19 @@ mod tests {
     #[test]
     fn put_persists_change() {
         let s = TierStore::new();
-        s.put("low", vec!["rules".into(), "rate".into()], 95, 50_000).unwrap();
-        let t = s.get("low").unwrap();
+        s.put("catch_all", vec!["rules".into(), "rate".into()], 95, 50_000).unwrap();
+        let t = s.get("catch_all").unwrap();
         assert_eq!(t.risk_threshold, 95);
         assert_eq!(t.pipeline.len(), 2);
+    }
+
+    /// Regression — `low` is no longer a valid tier name. Operators
+    /// updating from old configs/scripts will get a clear "unknown
+    /// tier" error rather than a silent miss.
+    #[test]
+    fn put_rejects_legacy_low_name() {
+        let s = TierStore::new();
+        let r = s.put("low", vec!["rules".into()], 50, 100);
+        assert!(r.is_err(), "`low` must be rejected — use `catch_all` instead");
     }
 }
