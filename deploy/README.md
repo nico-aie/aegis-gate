@@ -5,12 +5,17 @@ running Aegis-Gate and its dependencies locally. **Not production
 manifests.**
 
 For dev setup steps see [`../QUICKSTART.md`](../QUICKSTART.md).
-For production deployment see [`./GUIDE.md`](./GUIDE.md).
+For a benchmark-ready single Linux host (Docker infra + native
+WAF, AI-assistant-driven) see
+[`./STAGING-BENCHMARK.md`](./STAGING-BENCHMARK.md).
+For multi-node production deployment see [`./GUIDE.md`](./GUIDE.md).
 
 ## Contents
 
 | File | Purpose |
 |---|---|
+| `STAGING-BENCHMARK.md` | **Single-Linux-host staging deploy** — Docker infra + native WAF, mechanical step-by-step (Verify / Expected pairs), AI-assistant-driveable |
+| `GUIDE.md` | **Production deploy** — multi-node, image, Helm, etcd hot-reload |
 | `docker-compose.dev.yml` | Default dev stack — etcd, Prometheus, Grafana, Jaeger, Redis (+exporter), httpbin |
 | `grafana/` | Grafana provisioning + dashboards (datasources auto-loaded, three dashboards file-provisioned) |
 | `docker-compose.test.yml` | Adds attacker / k6 / nuclei / etcdctl for the test pyramid |

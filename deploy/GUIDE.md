@@ -6,6 +6,14 @@ in [`./README.md`](./README.md). This guide covers what changes
 when you move from `cargo run` on a laptop to a multi-node
 deployment behind a load balancer.
 
+> **Just need a single Linux box for benchmarking?** Use
+> [`./STAGING-BENCHMARK.md`](./STAGING-BENCHMARK.md) instead — it
+> runs infra (Redis + Prometheus + Grafana) under Docker on the
+> same host while the WAF runs as a native binary, and is written
+> as a mechanical step-by-step that an AI assistant can drive.
+> This guide is for multi-node production with image / Helm /
+> etcd hot-reload.
+
 ---
 
 ## Production checklist

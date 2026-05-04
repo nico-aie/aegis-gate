@@ -5,6 +5,12 @@ feature works**. One row per feature. One concrete click path or curl per
 verification. Pass criteria are explicit so a tester (engineering or
 otherwise) can work through this top to bottom and produce a report.
 
+> **Want to understand the *why* behind these tests?** Read
+> [`security/security-engine.md`](security/security-engine.md) first.
+> That's the narrative walkthrough — request → routing → access gate
+> → detector chain → risk + tier gate → decision. This file is the
+> verification grid that complements it.
+
 **Audience**: QC, operators, anyone bringing the system up for the first
 time and wanting to know everything's wired.
 

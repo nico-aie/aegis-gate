@@ -243,6 +243,7 @@ waf help
 |---|---|
 | **Operator quick start** | [`QUICKSTART.md`](QUICKSTART.md) |
 | **Feature playbook** (one row per feature, how to verify each) | [`docs/FEATURES.md`](docs/FEATURES.md) |
+| **How the security engine works** (request → decision walkthrough) | [`docs/security/security-engine.md`](docs/security/security-engine.md) |
 | **Upstream cookbook (per-protocol recipes)** | [`docs/operator/upstream-cookbook.md`](docs/operator/upstream-cookbook.md) |
 | **Profile picker** | [`docs/operator/profiles.md`](docs/operator/profiles.md) |
 | **SOC runbook** | [`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md) |
@@ -256,7 +257,8 @@ waf help
 | **AI Detector** (perf, config, observability) | [`docs/security/detectors/ai-detector.md`](docs/security/detectors/ai-detector.md) |
 | **HA clustering** | [`docs/operations/ha-clustering.md`](docs/operations/ha-clustering.md) |
 | **Runtime tuning** | [`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md) |
-| **Deployment guide** | [`deploy/GUIDE.md`](deploy/GUIDE.md) |
+| **Deployment guide** (production multi-node) | [`deploy/GUIDE.md`](deploy/GUIDE.md) |
+| **Linux staging deploy** (single host, Docker infra, benchmark-ready, AI-assistant-driven) | [`deploy/STAGING-BENCHMARK.md`](deploy/STAGING-BENCHMARK.md) |
 | **Architecture** | [`Architecture.md`](Architecture.md) |
 | **Requirements** | [`Requirement.md`](Requirement.md) |
 | **Implementation log** | [`Implement-Progress.md`](Implement-Progress.md) |

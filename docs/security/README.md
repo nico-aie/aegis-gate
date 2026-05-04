@@ -6,9 +6,13 @@ plans are tracked in [`../../plans/`](../../plans/).
 
 ## Reading order
 
+0. **[security-engine.md](./security-engine.md) — how the engine works
+   end-to-end.** Start here. One-page narrative: request flow,
+   per-stage decisions, the risk model (per-request score vs
+   cumulative IP strike), worked examples. Companion to
+   `Architecture.md` §5.
 1. [tiered-protection.md](./tiered-protection.md) — tier policy +
-   fail-close/open semantics (read this first; everything else
-   layers on top)
+   fail-close/open semantics
 2. [rule-engine.md](./rule-engine.md) — AST + matcher + actions
 3. Any detector under [detectors/](./detectors/) — per-attack-class
    logic

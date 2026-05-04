@@ -280,6 +280,15 @@ individual stages need not know their tier.
 
 ## 5. Security Pipeline
 
+> **Reader's note.** The list below is dense by design — it is the
+> canonical contract between the data plane and `aegis-security`. For
+> a step-by-step narrative aimed at operators / QC ("how does a single
+> request become a block / allow"), read
+> [`docs/security/security-engine.md`](docs/security/security-engine.md)
+> first. That doc carries the visual flowchart, the per-request vs
+> cumulative-IP risk distinction, and worked examples; this section
+> is the engineering source of truth.
+
 Stages run in this order. Earlier stages can short-circuit later ones.
 
 1. **IP reputation + threat intel.** XFF is walked only when the TCP peer

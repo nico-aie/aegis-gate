@@ -218,11 +218,13 @@ Full troubleshooting: [`docs/operator/usage.md`](docs/operator/usage.md).
 | You want to … | Doc |
 |---|---|
 | **Verify every feature works** (QC playbook · one row per feature) | [`docs/FEATURES.md`](docs/FEATURES.md) |
+| **Understand how the security engine decides allow / block** | [`docs/security/security-engine.md`](docs/security/security-engine.md) |
 | Wire a real upstream (per-protocol recipes) | [`docs/operator/upstream-cookbook.md`](docs/operator/upstream-cookbook.md) |
 | Pick a production profile | [`docs/operator/profiles.md`](docs/operator/profiles.md) |
 | Read every config field | [`config/README.md`](config/README.md) |
 | Tune tokio workers / blocking pool / CPU pinning | [`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md) |
 | Cluster across nodes (HA) | [`docs/operations/ha-clustering.md`](docs/operations/ha-clustering.md) |
+| Stand up a Linux staging host for benchmarking (Docker infra + native WAF) | [`deploy/STAGING-BENCHMARK.md`](deploy/STAGING-BENCHMARK.md) |
 | Deploy to production (image, Helm, etcd hot-reload) | [`deploy/GUIDE.md`](deploy/GUIDE.md) |
 | Run incident response from the dashboard | [`docs/operator/soc-runbook.md`](docs/operator/soc-runbook.md) |
 | Understand AI Detector perf vs the regex chain | [`docs/security/detectors/ai-detector.md`](docs/security/detectors/ai-detector.md) |

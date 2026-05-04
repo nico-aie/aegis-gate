@@ -1,0 +1,467 @@
+# How the Security Engine Works
+
+> **Audience.** Anyone — operator, QC tester, or engineer onboarding —
+> who wants the whole picture in one read: how a request becomes
+> allowed / blocked / scored, where every gate sits, what the risk
+> number means, and where to look when something doesn't behave the
+> way you expected.
+>
+> **Status.** Implemented (`crates/aegis-security/`). For source-of-truth
+> tests of each gate see [`docs/FEATURES.md`](../FEATURES.md). For the
+> system-wide architecture context see [`Architecture.md`](../../Architecture.md)
+> §4 (Request Lifecycle) and §5 (Security Pipeline).
+
+---
+
+## TL;DR — one paragraph
+
+Every request is **routed first** (host + path + method), then runs
+through a **fixed pipeline** of gates. Each gate either short-circuits
+the request (block / 403, redirect to challenge, return 429) or adds
+a **score** to the request's running risk total. After all gates run,
+the WAF compares the total to the route's **tier risk threshold** —
+above the line it blocks, otherwise it forwards to the upstream pool.
+Independently, every detector hit also accrues to a **per-IP strike
+score** that decays exponentially — a client that's been bad recently
+can be blocked at the gate even if today's individual request is
+clean.
+
+---
+
+## The picture
+
+```
+┌─────────────┐      ┌─────────────────────────────────────────────────────────┐
+│  client     │─────▶│  Listener (HTTP/HTTPS/H2/H3 · TLS termination + SNI)    │
+└─────────────┘      └─────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+                     ┌─────────────────────────────────────────────────────────┐
+                     │  Route table  (host + path + method, first-match-wins)  │
+                     │  → resolves the route's tier + upstream pool            │
+                     └─────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+            ┌────────────────────────────────────────────────────────────────────┐
+            │  ACCESS GATE — short-circuits before detectors                     │
+            │   (1) Blacklist (IP / CIDR / ASN / country)        → 403           │
+            │   (2) Whitelist + bypass-scope                     → may bypass    │
+            │   (3) Trusted-proxies XFF rewrite                                  │
+            │   (4) Per-IP strike gate (cumulative score ≥ thr)  → 403           │
+            │   (5) Rate limit (sliding window / token bucket)   → 429           │
+            │   (6) DDoS mode (cluster-wide spike detector)      → 429 / chal    │
+            └────────────────────────────────────────────────────────────────────┘
+                                         │   request still alive
+                                         ▼
+            ┌────────────────────────────────────────────────────────────────────┐
+            │  DETECTOR CHAIN — every detector enabled in the mask runs          │
+            │   sqli · xss · path_traversal · ssrf · header_injection ·          │
+            │   body_abuse · recon · brute_force · ai (optional)                 │
+            │                                                                    │
+            │   Each detector is a pure function over the request.               │
+            │   A hit emits a Signal { tag, score: 50–60 }.                      │
+            │   Signals accumulate on the request's running risk total.          │
+            └────────────────────────────────────────────────────────────────────┘
+                                         │   detectors done
+                                         ▼
+            ┌────────────────────────────────────────────────────────────────────┐
+            │  RULE ENGINE — operator-authored DSL rules                         │
+            │   priority-ordered · scope-filtered (global / tier / route)        │
+            │   actions: Allow · Block · Challenge · RaiseRisk(delta) ·          │
+            │            RateLimit · LogOnly · Transform                         │
+            │   First terminal action wins.                                      │
+            └────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+            ┌────────────────────────────────────────────────────────────────────┐
+            │  RISK + TIER GATE                                                  │
+            │   composite_score = Σ(detector signals) + Σ(rule risk_delta)       │
+            │                   + reputation_delta + bot_class_weight            │
+            │                                                                    │
+            │   if composite_score ≥ tier.risk_threshold → BLOCK (403)           │
+            │   else                                     → forward to upstream   │
+            │                                                                    │
+            │   ALSO: ip_strike_score += composite_score (decays half-life 5m)   │
+            │         if ip_strike_score ≥ risk.thresholds.block_threshold,      │
+            │         the IP is auto-blocked at the access gate above for        │
+            │         subsequent requests until it decays.                       │
+            └────────────────────────────────────────────────────────────────────┘
+                                         │   allowed
+                                         ▼
+            ┌────────────────────────────────────────────────────────────────────┐
+            │  Forward to upstream pool (member picked by LB)                    │
+            │  Upstream responds                                                 │
+            └────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+            ┌────────────────────────────────────────────────────────────────────┐
+            │  RESPONSE FILTER  (security headers, stack-trace scrub, DLP out)   │
+            └────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+            ┌────────────────────────────────────────────────────────────────────┐
+            │  AUDIT + METRICS                                                   │
+            │   one hash-chained NDJSON event · one Prometheus histogram bucket  │
+            └────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## How a request becomes a decision
+
+### Stage 1 — Listener + TLS
+
+`:8080` (plain HTTP) and `:8443` (TLS 1.2+) both serve the data plane.
+HTTPS picks the right cert by **SNI** (servable `tls.certificates: []`
+list with per-cert host pins). HTTP/2 negotiates via ALPN; HTTP/3 (QUIC)
+is opt-in behind `--features http3`. Nothing is gated yet — the request
+hasn't been parsed.
+
+### Stage 2 — Route resolution
+
+The route table is **first-match-wins, top to bottom**:
+
+```yaml
+routes:
+  - id: payments
+    host: api.example.com
+    path: /v1/charges
+    methods: [POST]
+    tier_override: critical
+    upstream: payments-pool
+
+  - id: catch-all          # last entry — required
+    path: /
+    upstream: stub-pool
+```
+
+Match order: exact host > regex host > wildcard host > catch-all.
+A request that matches the `payments` row inherits **tier = critical**
+and **upstream = payments-pool**. Reference: [`routing-ingress.md`](../data-plane/routing-ingress.md),
+[`upstream-pools.md`](../data-plane/upstream-pools.md).
+
+### Stage 3 — Access gate
+
+Six sub-checks, in order. Any short-circuits skip the detector chain:
+
+1. **Blacklist** — exact IP, CIDR, ASN, or country. Terminal block (403).
+   Surfaced on the **Access Lists** page; entries are audit-mutated.
+2. **Whitelist** — same shape, but with a `bypass:` scope. `bypass: ["all"]`
+   skips the entire pipeline; `bypass: ["sqli","xss"]` skips listed
+   detectors only.
+3. **Trusted-proxy XFF rewrite** — when the TCP peer is in
+   `trusted_proxies`, the source IP becomes the leftmost `X-Forwarded-For`
+   value. Without this, all traffic from a CDN looks like one IP.
+4. **Per-IP strike gate** — covered below in [Risk model](#risk-model).
+5. **Rate limit** — sliding window + token bucket. Scopes: IP, session,
+   device, route, global. Hit → **429 Too Many Requests** with a
+   Retry-After header. Reference: [`rate-limiting.md`](rate-limiting.md).
+6. **DDoS mode** — cluster-wide RPS exceeds `spike_multiplier` ×
+   rolling baseline → tighter thresholds + mandatory challenges on new
+   sessions. Reference: [`ddos-protection.md`](ddos-protection.md).
+
+### Stage 4 — Detector chain
+
+Every detector enabled in the **detector mask** (Detectors page) runs
+on the request. Each detector is a pure function `RequestView →
+Vec<Signal>`. A hit emits one or more `Signal { tag, score, field }`
+entries — `score` is typically 50-60 per hit. Detectors do **not**
+block on their own; they accumulate signals.
+
+| Detector | Tag emitted | Inspects |
+|---|---|---|
+| SQL injection | `sqli` | URL, body, headers |
+| XSS | `xss` | URL, body, headers |
+| Path traversal | `path_traversal` | URL, body |
+| SSRF | `ssrf` | URL, body, fetch-style headers |
+| Header injection | `header_injection` | Headers (CRLF, smuggling) |
+| Body abuse | `body_abuse`, `xxe`, `mass_assignment` | Body (size, nesting, JSON / XML / form) |
+| Recon | `recon` | URL patterns + path entropy (`/.env`, `/wp-admin/…`) |
+| Brute force | `brute_force` | Login endpoints (failure counter via `velocity.rs`) |
+| AI (optional) | `ai` | URL + body, run through ONNX classifier |
+
+Per-detector deep-dives in [`detectors/`](detectors/).
+
+The **detector mask** is the runtime gate. Flipping a class off (Detectors
+page → Edit row → Save) stops the WAF from running it on the next
+request. Audit-mutated, hot-swap, no restart.
+
+### Stage 5 — Rule engine
+
+Operator-authored rules, evaluated in **priority order**, scope-filtered
+by `(global → tier → route → session)`. Compiled into an `ArcSwap<Vec<CompiledRule>>`
+so hot-reload is atomic. Each rule produces one of:
+
+- `Allow` — short-circuit allow (rare; usually used to whitelist a
+  specific UA pattern in a blocked tier).
+- `Block` — terminal 403.
+- `Challenge(level)` — JS / PoW / CAPTCHA escalation.
+- `RaiseRisk(delta)` — adds to the running score.
+- `RateLimit` — per-rule custom limiter.
+- `LogOnly` / `Transform` — non-terminal.
+
+**First terminal action wins**. Edit rules from the Rule Manager page;
+the editor + 1 h dry-run is described in [`rule-engine.md`](rule-engine.md).
+
+### Stage 6 — Risk + tier gate (the decision)
+
+After every other stage has contributed, the WAF computes:
+
+```
+composite_score = Σ(detector signals)
+                + Σ(rule risk_delta from RaiseRisk)
+                + reputation_delta (ASN / threat-intel)
+                + bot_class_weight
+                + behavioral_anomaly_delta
+
+if composite_score ≥ matched_route.tier.risk_threshold:
+    block (403)            ← decisive
+else:
+    forward to upstream
+```
+
+The **tier risk threshold** comes from the resolved route's tier:
+
+| Tier | Default threshold |
+|---|---|
+| `critical` | 50 — blocks on a single sqli or xss |
+| `high` | 70 — blocks on a single hit by default |
+| `medium` | 80 — needs more signal to block |
+| `catch_all` (default for unmarked routes) | 90 — most permissive |
+
+Edit the thresholds from the **Detectors page → Edit tier** modal
+(audit-mutated). Reference: [`tiered-protection.md`](tiered-protection.md).
+
+### Stage 7 — Forward + response filter
+
+Allowed requests go through the upstream pool's load balancer (round-robin /
+least-conn / weighted / p2c / consistent-hash) and connect over the
+configured scheme (`http` / `https` / `h2c` / `grpc` / `auto` / `tcp`).
+The response runs through the **response filter**: security headers,
+stack-trace scrub, internal-IP mask, DLP outbound. Reference:
+[`response-filtering.md`](response-filtering.md).
+
+### Stage 8 — Audit + metrics
+
+Every decision lands as one **hash-chained NDJSON** entry under
+`/tmp/aegis-dev-audit.jsonl` (configurable via `cfg.audit.sinks`).
+Verify integrity any time with `waf audit verify --from <path>`.
+Each request also adds one bucket to the per-stage Prometheus histogram
+(`waf_request_duration_ms`, `waf_detector_evaluation_duration_ms{class=…}`,
+`waf_detector_hits_total{class=…}`).
+
+---
+
+## Risk model
+
+There are **two** numbers that look similar but answer different
+questions. This is the most-asked confusion on the Investigation page,
+so the distinction matters.
+
+### Per-request score (composite)
+
+Sum of every signal that fired on **this single request**. Compared
+against the matched tier's `risk_threshold` to decide block vs allow.
+Visible in:
+
+- The Live Feed row's `risk` field
+- The request inspector drawer ("Risk score (this request)")
+- The audit chain entry under `fields.risk_score`
+
+Reset to 0 at the start of every request — independent of any other
+request.
+
+### Per-IP strike score (cumulative)
+
+A second number tracked **per source IP**, updated in the state backend
+(`StateBackend::add_risk` → Redis). Every detector hit AND every
+explicit `RaiseRisk` rule contributes to this. **Decays exponentially**
+with `risk.decay_half_life` (default 5 min). When the score crosses
+`risk.thresholds.block_threshold`, the IP is auto-blocked at the **access
+gate** for `risk.thresholds.block_ttl` (default 10 min); subsequent
+requests from that IP are rejected before any detector runs.
+
+Visible in:
+
+- The Investigation page's "Recent requests" table — column **IP risk**
+  (renamed 2026-05-04 from the misleading "Risk")
+- Top Attackers page (the leaderboard sort)
+- `tracking.risk` API surface
+- Per-IP detail panel in the request inspector
+
+A request can show **`IP risk = 100` and `action = ALLOW`** when:
+- The IP got hammered earlier (detectors fired, score climbed).
+- The current request happens to not match any detector.
+- Per-request score = 0; route's tier threshold not crossed.
+- Strike-gate threshold also not crossed (or already cleared).
+
+That's expected behaviour, not a bug. To **block on cumulative IP
+strike alone** (i.e. "if this client has been bad, refuse them
+regardless"), lower `risk.thresholds.block_threshold`. The trade-off:
+false positives if a legitimate user briefly trips a detector.
+
+### What contributes to score
+
+| Contributor | Where it adds | Default delta |
+|---|---|---|
+| Detector hit (sqli / xss / path_traversal / ssrf / etc.) | per-request and per-IP | 50 – 60 |
+| AI detector hit | per-request and per-IP | 60 |
+| Rule with `RaiseRisk(delta)` action | per-request and per-IP | operator-defined |
+| ASN reputation (hosting / VPN / Tor exit) | per-request and per-IP | 10 – 30 (`risk.weights.bad_asn`) |
+| TLS / HTTP fingerprint reputation (bad JA4) | per-request and per-IP | 10 (`risk.weights.bad_ja4`) |
+| Failed authentication | per-IP only | 20 (`risk.weights.failed_auth`) |
+| Unknown bot class | per-request and per-IP | 10 (`risk.weights.bot_unknown`) |
+| Repeat offender | per-IP only | 15 (`risk.weights.repeat_offender`) |
+| Behavioural anomaly | per-request and per-IP | dynamic |
+
+Edit weights in `cfg.risk.weights` — a YAML restart for now. Reference:
+[`risk-scoring.md`](risk-scoring.md).
+
+---
+
+## Decision precedence — who wins when stages disagree
+
+If multiple stages have an opinion on the same request:
+
+1. **Compliance clamp** wins over operator config. PCI / HIPAA / SOC2 /
+   GDPR modes pin specific detectors **on**; the Detectors page mask
+   surface refuses to disable a clamped class.
+2. **Whitelist `bypass: all`** skips everything below it. Everything
+   else stays in force.
+3. **Blacklist** terminates the request before detectors run. No
+   per-request score is computed.
+4. **Strike-gate auto-block** (cumulative IP score over threshold) also
+   terminates before detectors. Decays naturally.
+5. **Rule engine** can short-circuit with `Allow` (rare) or `Block`.
+   `Allow` is final — detectors do not run; risk is not raised.
+6. **Detectors + per-request score** vs **tier threshold** is the
+   default decision path.
+7. **Challenge** is a non-terminal escalation — the client is asked to
+   solve a JS / CAPTCHA / PoW. Solved → request continues. Failed →
+   block.
+
+`Allow` shows in the audit chain as `action: "allow"`; blocks land as
+`action: "block"` with a `rule_id` field naming the gate that fired.
+
+---
+
+## Worked examples
+
+### Example 1 — A simple SQLi hit
+
+```
+GET /search?q=1' OR '1'='1
+Host: localhost:8080
+```
+
+1. **Listener** parses the request.
+2. **Route table** matches `catch-all` (no host pin, prefix `/`).
+   Tier = `catch_all` (threshold 90). Upstream = `stub-pool`.
+3. **Access gate**: source IP not blacklisted, not rate-limited.
+   Strike score = 0. Pass.
+4. **Detector chain** runs all enabled detectors. The sqli detector's
+   Aho-Corasick catches `OR '1'='1` plus the `'` opener — emits
+   `Signal { tag: "sqli", score: 60 }`.
+5. **Rule engine** has no operator rule matching this URL. No-op.
+6. **Risk + tier gate**: `composite = 60`. Threshold for `catch_all` is
+   90 — 60 < 90 means **the WAF would NOT block**. But: the **bundled
+   sqli detector's score weight is 60** in dev, so single hits don't
+   block on the catch-all tier by default. Same request against a
+   route pinned `tier_override: critical` (threshold 50) **would**
+   block.
+7. **Audit + metrics**: `action: "allow"` (or "block" if critical),
+   `fields.detectors: ["sqli"]`, `fields.risk_score: 60`.
+8. **Per-IP strike** climbs by 60. Three more hits in 5 min →
+   cumulative 240 → crosses `risk.thresholds.block_threshold` (default
+   100 in dev) → **auto-blocked at the access gate** for the next
+   10 min, even for benign requests.
+
+### Example 2 — Allowed despite high IP risk
+
+Same client as Example 1, but on the next request:
+
+```
+GET /index.html
+Host: localhost:8080
+```
+
+1. Listener / Route same.
+2. **Access gate** — IP strike score is 240. Strike threshold may have
+   been raised (dev profile sets it loose). If under threshold, request
+   continues.
+3. **Detector chain** — `/index.html` has no attack pattern. Zero
+   signals. Per-request score = 0.
+4. **Tier gate**: 0 < 90 → allow.
+5. **Audit chain**: `action: "allow"`, `fields.risk_score: 0` (per-request),
+   but the audit event's top-level `risk_score` (the IP cumulative) shows
+   240.
+
+This is the row the user sees on the Investigation page that says
+**`ALLOW · IP risk 240`** — looks contradictory, isn't.
+
+### Example 3 — Blacklisted IP
+
+```
+curl -H 'X-Forwarded-For: 8.8.8.8' http://localhost:8080/anything
+```
+
+1. Listener / Route same.
+2. **Access gate**: trusted-proxies XFF rewrite kicks in (loopback is
+   trusted). Source becomes `8.8.8.8`.
+3. Blacklist contains `8.8.8.8`. **Terminal 403**.
+4. Detectors do not run.
+5. Audit chain: `class: "access"`, `action: "block"`,
+   `rule_id: "blacklist:ip:8.8.8.8"`.
+
+---
+
+## Where each gate is configured
+
+| Gate | YAML key | Dashboard surface |
+|---|---|---|
+| TLS certs | `tls.certificates: []` | (read-only — Health & SLOs cert freshness) |
+| Routes | `routes: []` | Routing & Upstreams (audit-mutated CRUD) |
+| Tier definitions | `tiers: []` (defaults seed at boot) | Detectors page → Edit tier |
+| Detector mask | `detectors.<class>.enabled` | Detectors page (per-class on/off) |
+| AI detector | `cfg.ai.{enabled, model_path, confidence_threshold}` | Detectors page → AI row Enable/Disable |
+| Custom rules | `rules: []` (or external file via `rules_path`) | Rule Manager |
+| Blacklist / whitelist | `blacklist: []`, `whitelist: []` | Access Lists |
+| Rate limit | `rate_limit.{ip, session, route, global}` | (read-only — Settings) |
+| DDoS thresholds | `ddos.{spike_multiplier, ...}` | (read-only) |
+| Risk weights | `risk.weights.{bad_asn, bad_ja4, ...}` | (read-only) |
+| Strike gate threshold | `risk.thresholds.block_threshold` | (read-only) |
+| Compliance clamp | `compliance.modes: [pci|hipaa|soc2|gdpr|fips]` | Compliance page (read-only) |
+| Mode (enforce / log_only) | `mode: enforce` | Settings → Mode toggle |
+| Audit sinks | `audit.sinks: [jsonl, syslog, cef, leef, ocsf, splunk_hec, kafka]` | (read-only) |
+
+"Read-only" means edit YAML and restart for now; the live runtime
+gate is in place, the dashboard editor isn't built yet.
+
+---
+
+## How to verify each gate works
+
+Every row above maps to an entry in [`docs/FEATURES.md`](../FEATURES.md)
+with a concrete curl + expected outcome. Use that doc as the QC walk.
+
+For deeper per-feature reading:
+
+| Topic | Doc |
+|---|---|
+| Tier semantics + failure modes | [`tiered-protection.md`](tiered-protection.md) |
+| Rule DSL + AST + actions | [`rule-engine.md`](rule-engine.md) |
+| Risk model + scoring + decay | [`risk-scoring.md`](risk-scoring.md) |
+| Per-detector behaviour | [`detectors/`](detectors/) |
+| AI detector internals + perf | [`detectors/ai-detector.md`](detectors/ai-detector.md) |
+| Rate limiting + token buckets | [`rate-limiting.md`](rate-limiting.md) |
+| DDoS auto-block + cluster sets | [`ddos-protection.md`](ddos-protection.md) |
+| Threat intel feeds + indicators | [`threat-intelligence.md`](threat-intelligence.md) |
+| GeoIP / ASN reputation | [`geoip-filtering.md`](geoip-filtering.md), [`ip-reputation.md`](ip-reputation.md) |
+| TLS / HTTP fingerprint | [`device-fingerprinting.md`](device-fingerprinting.md) |
+| Bot classifier + good-bot verify | [`bot-management.md`](bot-management.md) |
+| Behavioural / velocity | [`behavioral-analysis.md`](behavioral-analysis.md), [`transaction-velocity.md`](transaction-velocity.md) |
+| Challenge ladder (JS / CAPTCHA / PoW) | [`challenge-engine.md`](challenge-engine.md) |
+| API guard (OpenAPI + GraphQL) | [`api-security.md`](api-security.md) |
+| DLP inbound + outbound | [`dlp.md`](dlp.md), [`response-filtering.md`](response-filtering.md) |
+| Content scan via ICAP | [`content-scanning.md`](content-scanning.md) |
+| Origin-facing auth (JWT / Forward / mTLS) | [`external-auth.md`](external-auth.md) |
