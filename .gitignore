@@ -68,6 +68,10 @@ release/
 # =========================
 /run-staging.cmd
 /config/staging.yaml
+# v2.3 binary contract — `make stage` artefacts (operator-local symlinks)
+/waf
+/waf.yaml
+/waf_audit.log
 
 # =========================
 # Self-signed dev certs
