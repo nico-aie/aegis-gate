@@ -175,6 +175,62 @@ make obs-down    # tear down
 
 ---
 
+## 8 · Drive the v2.3 benchmark contract locally
+
+The dev profile already satisfies the OC's [v2.3 interop
+contract](Hackathon_Doc/EN_waf_interop_contract_v2.3.md) — same surface
+as staging, just on `127.0.0.1` instead of a public host. One command
+boots dev and announces the contract endpoints:
+
+```sh
+make bench-dev
+```
+
+This is a `make run-dev` superset that additionally:
+
+- Symlinks `./waf -> target/release/waf` and copies `config/dev.yaml`
+  to `./waf.yaml` (v2.3 §8 binary contract — config + binary in cwd)
+- Echoes the four `/__waf_control/*` endpoints + the
+  `X-Benchmark-Secret` value (defaults to the contract's
+  `waf-hackathon-2026-ctrl`; override via `AEGIS_BENCHMARK_SECRET`)
+- Hands off to `./waf run --config ./waf.yaml` so the OC harness
+  invocation matches the staging shape
+
+### Verify the contract end-to-end
+
+```sh
+SECRET="${AEGIS_BENCHMARK_SECRET:-waf-hackathon-2026-ctrl}"
+HOST="http://127.0.0.1:8080"     # or https://127.0.0.1:8443
+
+# 1. Capabilities
+curl -sk -H "X-Benchmark-Secret: $SECRET" "$HOST/__waf_control/capabilities" | jq .features
+
+# 2. Reset state (atomic; audit log preserved)
+curl -sk -X POST -H "X-Benchmark-Secret: $SECRET" "$HOST/__waf_control/reset_state" | jq
+
+# 3. Toggle SQLi to log_only (would-be blocks now reach upstream
+#    while X-WAF-Action: block + X-WAF-Mode: log_only still ship)
+curl -sk -X POST -H "X-Benchmark-Secret: $SECRET" \
+  -H 'content-type: application/json' \
+  -d '{"scope":"policies","mode":"log_only","feature":"rules_engine","policies":["sqli"]}' \
+  "$HOST/__waf_control/set_profile" | jq
+
+# 4. Send a SQLi probe — should now reach upstream + headers say block intent
+curl -ski "$HOST/?q=1%27%20OR%20%271%27%3D%271" | grep -i '^x-waf-' | sort
+
+# 5. Audit chain shows the would-have-blocked event
+tail -1 ./waf_audit.log | jq '{action, rule_id, mode}'
+```
+
+Full conformance walkthrough — exactly the same flow staging uses:
+[`deploy/STAGING-BENCHMARK.md §7.5`](deploy/STAGING-BENCHMARK.md#75--v23-interop-contract-conformance).
+
+When you're done iterating, `Ctrl-C` to stop the WAF and
+`rm -f ./waf ./waf.yaml ./waf_audit.log` to clean the staged artifacts
+(or leave them — they're git-ignored).
+
+---
+
 ## CLI cheat sheet
 
 ```sh
