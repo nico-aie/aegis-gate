@@ -642,15 +642,26 @@ pub(crate) async fn handle_interop_control(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
-    use aegis_control::interop::{control, CONTROL_SECRET_HEADER};
-    use http_body_util::BodyExt;
-
     let Some(rt) = services.interop.as_ref() else {
         return json_response(
             404,
             &serde_json::json!({"error": "interop surface disabled"}),
         );
     };
+    handle_interop_control_with_rt(req, rt.as_ref()).await
+}
+
+/// Same dispatcher as [`handle_interop_control`] but takes an
+/// `InteropRuntime` directly. Used by the data-plane request path
+/// (the OC v2.3 benchmarker hits `/__waf_control/*` on the public
+/// TLS listener, not the admin port — see deploy/STAGING-BENCHMARK.md
+/// §7.5).
+pub(crate) async fn handle_interop_control_with_rt(
+    req: hyper::Request<hyper::body::Incoming>,
+    rt: &aegis_control::interop::InteropRuntime,
+) -> Response<Full<Bytes>> {
+    use aegis_control::interop::{control, CONTROL_SECRET_HEADER};
+    use http_body_util::BodyExt;
 
     let method = req.method().clone();
     let path = req.uri().path().to_owned();
