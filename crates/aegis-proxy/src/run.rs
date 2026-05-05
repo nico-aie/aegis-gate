@@ -1398,6 +1398,12 @@ pub(crate) fn build_interop_runtime(
     reset_callbacks.push(Arc::new(move || {
         limiter_for_reset.reset_all();
     }));
+    // 2026-05-05 — AttacksAggregator's rolling window (Top
+    // Attackers / By-Detector / Bot Mix) is built later, inside
+    // `DashboardServices`. accept.rs late-registers its reset
+    // callback via `rt.control.register_reset_callback(...)`
+    // once that aggregator exists — see accept.rs around the
+    // `DashboardServices::spawn_with_mask_and_leader` call.
     // NOTE: `aegis_security::behavior::BehavioralAnalyzer` exists
     // and exposes `.clear()`, but it isn't wired into the live
     // request path yet. When the analyzer lands in the data
@@ -1420,7 +1426,7 @@ pub(crate) fn build_interop_runtime(
     let control = ControlContext {
         modes: Arc::clone(&modes),
         features,
-        reset_callbacks,
+        reset_callbacks: std::sync::Mutex::new(reset_callbacks),
         flush_callback: None,
         secret: cfg
             .interop
