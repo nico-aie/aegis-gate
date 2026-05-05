@@ -186,6 +186,17 @@ impl AttacksAggregator {
         Self::default()
     }
 
+    /// v2.3 §2.4 — drop every retained attack entry. Wired into the
+    /// `/__waf_control/reset_state` callback chain so the OC sees a
+    /// clean Top Attackers / By-Detector / Bot Mix slate between
+    /// benchmark phases. The audit log is unaffected (sink writes
+    /// straight to disk; this aggregator is purely the dashboard's
+    /// rolling-window cache of recent detection events).
+    pub fn reset(&self) {
+        let mut s = self.inner.lock().expect("attacks agg poisoned");
+        s.events.clear();
+    }
+
     /// Ingest one audit event. Non-`Detection` events are ignored —
     /// admin / access / system events don't represent attacks.
     pub fn record(&self, ev: &AuditEvent) {

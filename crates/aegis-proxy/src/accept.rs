@@ -311,6 +311,20 @@ pub(crate) async fn admin_accept_loop(
     services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
 
+    // 2026-05-05 — late-register the AttacksAggregator's reset
+    // cleaner with the v2.3 control plane. The aggregator backs the
+    // dashboard's Top Attackers / By-Detector / Bot Mix charts; per
+    // §2.4 it counts as "temporary client/session metadata" and
+    // MUST be cleared on `POST /__waf_control/reset_state`. Done
+    // here (not at build_interop_runtime time) because services
+    // doesn't exist yet when the runtime is constructed.
+    if let Some(rt) = interop.as_ref() {
+        let agg_for_reset = services.attacks_agg.clone();
+        rt.control.register_reset_callback(std::sync::Arc::new(move || {
+            agg_for_reset.reset();
+        }));
+    }
+
     // CI-T5 — seed `services.routes` from `cfg.routes` so
     // /api/routes returns the live routing trie. Hot-reload
     // re-invokes this through `cfg_swap` (TODO when route

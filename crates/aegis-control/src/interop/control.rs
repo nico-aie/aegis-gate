@@ -11,7 +11,7 @@
 //! Auth check happens before any side effect.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -207,7 +207,15 @@ pub struct ControlContext {
     /// Run synchronously in registration order; failures are
     /// logged but don't block the success response — `reset_state`
     /// MUST appear atomic to the caller.
-    pub reset_callbacks: Vec<ResetCallback>,
+    ///
+    /// 2026-05-05 — wrapped in `Mutex` so subsystems built AFTER
+    /// the runtime (e.g. `AttacksAggregator` inside
+    /// `DashboardServices`) can append their own cleaners via
+    /// [`ControlContext::register_reset_callback`]. The boot path
+    /// pre-populates the chain with risk + rate-limit before the
+    /// runtime goes live; late-binders extend it before the first
+    /// reset_state call lands.
+    pub reset_callbacks: Mutex<Vec<ResetCallback>>,
     /// `flush_cache` callback. `None` = no cache implemented;
     /// the endpoint returns `supported: false`.
     pub flush_callback: Option<ResetCallback>,
@@ -254,7 +262,15 @@ impl ControlContext {
     /// Run every reset callback, return the response. The
     /// audit log is always preserved.
     pub fn reset_state(&self) -> ResetResponse {
-        for cb in &self.reset_callbacks {
+        // Snapshot under the lock + run callbacks unlocked so a
+        // late-registering caller doesn't deadlock if its closure
+        // ever recurses into `register_reset_callback`. Callbacks
+        // are `Arc<dyn Fn>` clones — cheap.
+        let cbs: Vec<ResetCallback> = {
+            let g = self.reset_callbacks.lock().expect("reset_callbacks poisoned");
+            g.iter().cloned().collect()
+        };
+        for cb in &cbs {
             cb();
         }
         ResetResponse {
@@ -263,6 +279,18 @@ impl ControlContext {
             audit_log_preserved: true,
             ts_ms: now_ms(),
         }
+    }
+
+    /// 2026-05-05 — append a reset cleaner after the runtime is
+    /// already live. Used by subsystems that come up AFTER
+    /// `build_interop_runtime` (notably `DashboardServices`'
+    /// `AttacksAggregator`). Idempotent under contention via the
+    /// inner `Mutex`. Caller is responsible for ensuring the
+    /// closure is cheap + non-blocking — the v2.3 contract
+    /// requires `reset_state` to feel atomic to the caller.
+    pub fn register_reset_callback(&self, cb: ResetCallback) {
+        let mut g = self.reset_callbacks.lock().expect("reset_callbacks poisoned");
+        g.push(cb);
     }
 
     /// Apply a `set_profile` request.
@@ -437,7 +465,7 @@ mod tests {
         ControlContext {
             modes: Arc::new(ModeStore::new(Mode::Enforce)),
             features,
-            reset_callbacks: Vec::new(),
+            reset_callbacks: Mutex::new(Vec::new()),
             flush_callback: None,
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
         }
@@ -515,21 +543,39 @@ mod tests {
 
     #[test]
     fn reset_state_runs_callbacks_in_order() {
-        let mut c = ctx();
+        let c = ctx();
         let log: Arc<std::sync::Mutex<Vec<&'static str>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let l1 = log.clone();
-        c.reset_callbacks.push(Arc::new(move || {
+        c.register_reset_callback(Arc::new(move || {
             l1.lock().unwrap().push("first");
         }));
         let l2 = log.clone();
-        c.reset_callbacks.push(Arc::new(move || {
+        c.register_reset_callback(Arc::new(move || {
             l2.lock().unwrap().push("second");
         }));
         let r = c.reset_state();
         assert!(r.ok);
         assert!(r.audit_log_preserved);
         assert_eq!(*log.lock().unwrap(), vec!["first", "second"]);
+    }
+
+    #[test]
+    fn register_reset_callback_appends_after_construction() {
+        // 2026-05-05 — late-binders (e.g. AttacksAggregator inside
+        // DashboardServices) push their cleaners after the
+        // ControlContext is already live.
+        let c = ctx();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_for_cb = counter.clone();
+        c.register_reset_callback(Arc::new(move || {
+            counter_for_cb.fetch_add(1, Ordering::Relaxed);
+        }));
+        c.reset_state();
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        // Idempotent under repeated reset
+        c.reset_state();
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
     }
 
     #[test]
