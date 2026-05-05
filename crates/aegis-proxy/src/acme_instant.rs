@@ -33,8 +33,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use instant_acme::{
-    Account, AccountCredentials, Authorization, AuthorizationStatus, Challenge, ChallengeType,
-    Identifier, NewAccount, NewOrder, Order, OrderStatus,
+    Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
+    NewOrder, Order, OrderStatus, RetryPolicy,
 };
 use tokio::sync::{Mutex, OnceCell};
 
@@ -108,15 +108,18 @@ impl AcmeProvider for InstantAcmeProvider {
         let account = if cfg.account_key_path.exists() {
             load_account(&cfg.account_key_path).await?
         } else {
+            let contacts = collect_contact_uris(cfg);
             let new_account = NewAccount {
-                contact: &collect_contact_uris(cfg),
+                contact: &contacts,
                 terms_of_service_agreed: cfg.terms_of_service_agreed,
                 only_return_existing: false,
             };
-            let (account, credentials) =
-                Account::create(&new_account, &cfg.directory_url, None)
-                    .await
-                    .map_err(|e| AcmeError::Network(e.to_string()))?;
+            let builder = Account::builder()
+                .map_err(|e| AcmeError::Network(e.to_string()))?;
+            let (account, credentials) = builder
+                .create(&new_account, cfg.directory_url.clone(), None)
+                .await
+                .map_err(|e| AcmeError::Network(e.to_string()))?;
             persist_account(&credentials, &cfg.account_key_path).await?;
             account
         };
@@ -139,41 +142,45 @@ impl AcmeProvider for InstantAcmeProvider {
             .ok_or_else(|| AcmeError::Internal("register_account must run first".into()))?;
         let identifiers: Vec<Identifier> =
             domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
-        let new_order = NewOrder {
-            identifiers: &identifiers,
-        };
         let mut order = account
-            .new_order(&new_order)
+            .new_order(&NewOrder::new(&identifiers))
             .await
             .map_err(|e| AcmeError::Rejected(e.to_string()))?;
-        let authorizations = order
-            .authorizations()
-            .await
-            .map_err(|e| AcmeError::Network(e.to_string()))?;
 
         let mut http_challenges = Vec::new();
-        let mut challenge_urls = Vec::new();
-        for authz in &authorizations {
-            if !matches!(authz.status, AuthorizationStatus::Pending) {
-                // Already valid (cached authz) — nothing to publish.
-                continue;
+        let mut authzs = order.authorizations();
+        while let Some(result) = authzs.next().await {
+            let mut authz = result.map_err(|e| AcmeError::Network(e.to_string()))?;
+            match authz.status {
+                AuthorizationStatus::Pending => {}
+                AuthorizationStatus::Valid => continue,
+                other => {
+                    return Err(AcmeError::Rejected(format!(
+                        "authorization in unexpected state: {other:?}"
+                    )))
+                }
             }
-            let challenge = pick_http01_challenge(authz).ok_or_else(|| {
+            let id_label = identifier_label_from_state(&authz);
+            let challenge = authz.challenge(ChallengeType::Http01).ok_or_else(|| {
                 AcmeError::ChallengeFailed {
-                    token: identifier_label(&authz.identifier),
+                    token: id_label.clone(),
                     reason: "no http-01 challenge offered".into(),
                 }
             })?;
-            let key_auth = order.key_authorization(challenge);
+            let token = challenge.token.clone();
+            let key_auth = challenge.key_authorization().as_str().to_string();
             http_challenges.push(Http01Challenge {
-                token: challenge.token.clone(),
-                key_authorization: key_auth.as_str().to_string(),
+                token,
+                key_authorization: key_auth,
             });
-            challenge_urls.push(challenge.url.clone());
         }
+        drop(authzs);
 
         *self.inner.order.lock().await = Some(order);
-        *self.inner.challenges.lock().await = challenge_urls;
+        // 0.8 set-ready works on the live ChallengeHandle; we walk the
+        // authz stream a second time in await_validation and call
+        // set_ready() then. No URLs to track here.
+        self.inner.challenges.lock().await.clear();
         Ok(http_challenges)
     }
 
@@ -182,29 +189,35 @@ impl AcmeProvider for InstantAcmeProvider {
         let order = guard
             .as_mut()
             .ok_or_else(|| AcmeError::Internal("place_order must run first".into()))?;
-        // Tell the directory each challenge is ready to be probed.
-        let challenges = self.inner.challenges.lock().await.clone();
-        for url in &challenges {
-            order
-                .set_challenge_ready(url)
-                .await
-                .map_err(|e| AcmeError::Network(e.to_string()))?;
-        }
-        // Poll until the order leaves Pending.
-        for _ in 0..POLL_MAX_ATTEMPTS {
-            let state = order
-                .refresh()
-                .await
-                .map_err(|e| AcmeError::Network(e.to_string()))?;
-            match state.status {
-                OrderStatus::Ready | OrderStatus::Valid => return Ok(map_status(state.status)),
-                OrderStatus::Invalid => return Ok(OrderState::Invalid),
-                OrderStatus::Pending | OrderStatus::Processing => {
-                    tokio::time::sleep(POLL_INTERVAL).await;
-                }
+        // Tell the directory each pending HTTP-01 challenge is ready
+        // to be probed. Re-iterating doesn't refetch — 0.8 caches the
+        // authz state populated by place_order.
+        let mut authzs = order.authorizations();
+        while let Some(result) = authzs.next().await {
+            let mut authz = result.map_err(|e| AcmeError::Network(e.to_string()))?;
+            if !matches!(authz.status, AuthorizationStatus::Pending) {
+                continue;
+            }
+            if let Some(mut challenge) = authz.challenge(ChallengeType::Http01) {
+                challenge
+                    .set_ready()
+                    .await
+                    .map_err(|e| AcmeError::Network(e.to_string()))?;
             }
         }
-        Err(AcmeError::Timeout(OrderState::Pending))
+        drop(authzs);
+        // Poll until the order leaves Pending.
+        let status = order
+            .poll_ready(&RetryPolicy::default())
+            .await
+            .map_err(|e| AcmeError::Network(e.to_string()))?;
+        match status {
+            OrderStatus::Ready | OrderStatus::Valid => Ok(map_status(status)),
+            OrderStatus::Invalid => Ok(OrderState::Invalid),
+            OrderStatus::Pending | OrderStatus::Processing => {
+                Err(AcmeError::Timeout(map_status(status)))
+            }
+        }
     }
 
     async fn finalize_and_download(
@@ -218,20 +231,13 @@ impl AcmeProvider for InstantAcmeProvider {
             .ok_or_else(|| AcmeError::Internal("place_order must run first".into()))?;
         let (csr_der, key_pem) = build_csr(domains)?;
         order
-            .finalize(&csr_der)
+            .finalize_csr(&csr_der)
             .await
             .map_err(|e| AcmeError::Rejected(e.to_string()))?;
-        // Poll until the certificate is downloadable.
-        let cert_pem = loop {
-            if let Some(pem) = order
-                .certificate()
-                .await
-                .map_err(|e| AcmeError::Network(e.to_string()))?
-            {
-                break pem;
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        };
+        let cert_pem = order
+            .poll_certificate(&RetryPolicy::default())
+            .await
+            .map_err(|e| AcmeError::Network(e.to_string()))?;
         persist_issued(&cfg.cert_dir, domains, cert_pem.as_bytes(), key_pem.as_bytes())
             .await?;
         Ok(IssuedCert {
@@ -246,17 +252,15 @@ fn collect_contact_uris(cfg: &AcmeConfig) -> Vec<&str> {
     cfg.contacts.iter().map(|s| s.as_str()).collect()
 }
 
-fn pick_http01_challenge(authz: &Authorization) -> Option<&Challenge> {
-    authz
-        .challenges
-        .iter()
-        .find(|c| c.r#type == ChallengeType::Http01)
-}
-
 fn identifier_label(id: &Identifier) -> String {
     match id {
         Identifier::Dns(s) => s.clone(),
+        other => format!("{other:?}"),
     }
+}
+
+fn identifier_label_from_state(authz: &instant_acme::AuthorizationState) -> String {
+    identifier_label(authz.identifier().identifier)
 }
 
 fn map_status(status: OrderStatus) -> OrderState {
@@ -318,7 +322,9 @@ pub async fn load_account(path: &Path) -> Result<Account, AcmeError> {
         .map_err(|e| AcmeError::Persistence(format!("read {path:?}: {e}")))?;
     let creds: AccountCredentials = serde_json::from_slice(&bytes)
         .map_err(|e| AcmeError::Persistence(format!("parse account creds: {e}")))?;
-    Account::from_credentials(creds)
+    let builder = Account::builder().map_err(|e| AcmeError::Network(e.to_string()))?;
+    builder
+        .from_credentials(creds)
         .await
         .map_err(|e| AcmeError::Network(e.to_string()))
 }

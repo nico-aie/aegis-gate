@@ -162,7 +162,7 @@ pub enum ReceiverKind {
 /// var in production deployments. The values match the project's
 /// dev/UAT VipTalk bot.
 pub const DEFAULT_VIPTALK_BOT_TOKEN: &str =
-    "QGJvdF8yYXB0b2h4Ymdq_ABH4cPDIOj1xFkD71twAH1HYKczIqwEELN6";
+    "xxx-dev-uat-bot-token-xxx";
 pub const DEFAULT_VIPTALK_ROOM_ID: &str =
     "!QNxJHzVzJBrLWIOLPo:matrix-uat.viptalk.org";
 
