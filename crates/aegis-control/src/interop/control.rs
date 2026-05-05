@@ -18,6 +18,24 @@ use serde::{Deserialize, Serialize};
 use super::headers::Mode;
 use super::mode::ModeStore;
 
+/// Constant-time byte-slice equality. Returns `false` immediately
+/// on length mismatch (length is assumed not secret). On equal
+/// lengths, walks every byte and OR-folds the diff into a single
+/// accumulator so the runtime is independent of how many leading
+/// bytes match. Standard pattern from RFC 7564 et al; used here
+/// to compare the `X-Benchmark-Secret` header against the
+/// configured value without leaking secret prefixes via timing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 // ---------------------------------------------------------------------------
 // Capabilities
 // ---------------------------------------------------------------------------
@@ -207,12 +225,18 @@ impl ControlContext {
     /// Authenticate a request against the contract secret.
     /// Comparison is case-insensitive on the header name and
     /// case-sensitive on the value (the contract pins both).
+    ///
+    /// 2026-05-05 — uses [`constant_time_eq`] to defeat the
+    /// timing-side-channel attack against the secret. Plain `==`
+    /// short-circuits on the first mismatched byte, which leaks
+    /// secret prefixes byte-by-byte over enough samples; the
+    /// constant-time compare runs through every byte regardless.
     pub fn check_auth(
         &self,
         header_value: Option<&str>,
     ) -> Result<(), ControlError> {
         match header_value {
-            Some(v) if v == self.secret => Ok(()),
+            Some(v) if constant_time_eq(v.as_bytes(), self.secret.as_bytes()) => Ok(()),
             _ => Err(ControlError::Forbidden),
         }
     }
@@ -438,6 +462,29 @@ mod tests {
     fn auth_accepts_correct_secret() {
         let c = ctx();
         c.check_auth(Some(crate::interop::DEFAULT_CONTROL_SECRET)).unwrap();
+    }
+
+    #[test]
+    fn constant_time_eq_basics() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(!constant_time_eq(b"", b"a"));
+        assert!(constant_time_eq(b"", b""));
+        // Same-length, fully different — all bytes accumulated.
+        assert!(!constant_time_eq(b"aaa", b"bbb"));
+    }
+
+    #[test]
+    fn auth_rejects_secret_with_one_byte_off() {
+        // Regression — pre-fix `==` short-circuited on the first
+        // byte mismatch, leaking the prefix length via timing.
+        // The constant-time compare must reject identically here.
+        let mut c = ctx();
+        c.secret = "supersecret".to_string();
+        let almost = "supersecreT"; // last byte differs
+        let err = c.check_auth(Some(almost)).unwrap_err();
+        assert_eq!(err.status(), 403);
     }
 
     #[test]

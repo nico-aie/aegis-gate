@@ -811,7 +811,17 @@ pub(crate) fn stamp_interop_response(
         &h[20..32],
     );
 
-    let mode = rt.modes.resolve("rules_engine", None);
+    // v2.3 §2.7 — `X-WAF-Mode` MUST reflect the mode of the
+    // policy that produced the final reported `X-WAF-Action`,
+    // not a hardcoded global feature. Map the firing `rule_id`
+    // to its (feature, policy) and resolve there. Pre-fix,
+    // every response stamped the mode of the `rules_engine`
+    // feature regardless of which detector or rate-limit /
+    // risk gate actually decided the request.
+    let mode = aegis_control::interop::rule_map::mode_for_rule(
+        &rt.modes,
+        decision_tag.rule_id.as_deref(),
+    );
     let decision = Decision {
         request_id: request_id.clone(),
         risk_score,

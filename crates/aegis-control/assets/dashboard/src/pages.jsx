@@ -2402,8 +2402,18 @@ function PageTierConfig() {
   }, [tiers.length, selectedName]);
 
   const selected = tiers.find(t => t.name === selectedName) || tiers[0] || null;
+  // 2026-05-05 — a route with no `tier_override` set falls back
+  // to the default tier at runtime (`Tier::Low` post-rename). The
+  // pre-fix filter only matched explicit overrides, so the
+  // catch-all route (which never sets tier_override) showed as
+  // "0 routes assigned to low" despite being the dominant low-
+  // tier consumer. Treat null/empty tier_override as belonging
+  // to the default tier (`low`).
+  const matchTier = (r, name) =>
+    r.tier_override === name ||
+    (!r.tier_override && name === 'low');
   const routesForSelected = selected
-    ? routes.filter(r => r.tier_override === selected.name)
+    ? routes.filter(r => matchTier(r, selected.name))
     : [];
 
   return (
@@ -2445,7 +2455,7 @@ function PageTierConfig() {
               </div>
             )}
             {tiers.map(t => {
-              const tierRouteCount = routes.filter(r => r.tier_override === t.name).length;
+              const tierRouteCount = routes.filter(r => matchTier(r, t.name)).length;
               const detectorCount = (t.pipeline || []).filter(p => !['rate', 'rules', 'risk', 'challenge'].includes(p)).length;
               return (
                 <button key={t.name} onClick={() => setSelectedName(t.name)}

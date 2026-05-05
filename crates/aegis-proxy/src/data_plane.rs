@@ -420,6 +420,17 @@ pub(crate) async fn handle_data_request_inner(
         detector_hit_metrics.record(class);
     }
 
+    // v2.3 §5.3 — `log_only_intent` carries the WOULD-BE
+    // DecisionTag from a block-mode policy that's been switched
+    // to `log_only` via `POST /__waf_control/set_profile`. When
+    // populated, we skip the actual block and let the request
+    // continue to upstream; the listener-side response stamper
+    // emits `X-WAF-Action: <intent>` + `X-WAF-Mode: log_only` so
+    // the OC sees the detector worked while the upstream still
+    // got the request (per `log_only` contract semantics).
+    let mut log_only_intent: Option<DecisionTag> = None;
+    let interop_modes = upstream_ctx.interop_modes.get();
+
     if !signals.is_empty() {
         let total_score: u32 = signals.iter().map(|s| s.score).sum();
         let post_state = risk.record_malicious(peer_ip, total_score);
@@ -511,82 +522,131 @@ pub(crate) async fn handle_data_request_inner(
         } else {
             tags.join(",")
         };
-        let resp = Response::builder()
-            .status(403)
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from(
-                serde_json::json!({
-                    "error": "forbidden",
-                    "reason": reason,
-                    "strikes": post_state.strikes,
-                })
-                .to_string(),
-            )))
-            .unwrap();
-        return (resp, DecisionTag::block(detector_rule).with_tier(tier));
-    }
-
-    // Clean request — let the trust-recovery clock claw back any
-    // accumulated score (capped at `trust_recovery.per_hour` so
-    // one benign request can't reset a flagged client). Then the
-    // adaptive-mitigation classifier decides between Allow,
-    // Challenge, and Block based on the post-state vs the
-    // configured `RiskThresholds`.
-    risk.record_clean(peer_ip);
-    match risk.level(peer_ip) {
-        aegis_security::risk::RiskLevel::Block => {
-            let resp = blocked_response(
-                peer,
-                "blocked by risk score",
-                None,
-                risk.snapshot(peer_ip).map(|s| s.score),
-                &parts.uri,
-                &parts.method,
-                bus,
-            );
-            (resp, DecisionTag::block("risk-score").with_tier(tier))
-        }
-        aegis_security::risk::RiskLevel::Challenge => {
-            // AF-T1: contract-level distinction. Even though
-            // the HTTP status (429) and Retry-After header are
-            // shaped like rate-limit, the body carries
-            // "challenge" and the contract action MUST be
-            // `challenge` so the OC's challenge-solver path
-            // engages.
+        // v2.3 §5.3 — check the firing detector's mode before
+        // building the 403. If `log_only`, skip enforcement and
+        // forward to upstream; the response stamper later sees
+        // the intent DecisionTag and emits `X-WAF-Action: block`
+        // + `X-WAF-Mode: log_only`. Audit was already recorded
+        // above, so the OC's correlation chain is intact.
+        let detector_mode = interop_modes
+            .map(|m| {
+                aegis_control::interop::rule_map::mode_for_rule(m, Some(detector_rule.as_str()))
+            })
+            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+        let block_tag = DecisionTag::block(detector_rule).with_tier(tier);
+        if detector_mode == aegis_control::interop::headers::Mode::LogOnly {
+            log_only_intent = Some(block_tag);
+            // Fall through — skip the 403 and the risk gate below
+            // (which would also block this request because we just
+            // recorded the malicious score). The intent is applied
+            // at the function's tail, after upstream forward.
+        } else {
             let resp = Response::builder()
-                .status(429)
+                .status(403)
                 .header("content-type", "application/json")
-                .header("retry-after", "5")
                 .body(Full::new(Bytes::from(
                     serde_json::json!({
-                        "challenge": true,
-                        "reason": "risk score over challenge threshold",
-                        "challenge_type": "proof_of_work",
+                        "error": "forbidden",
+                        "reason": reason,
+                        "strikes": post_state.strikes,
                     })
                     .to_string(),
                 )))
                 .unwrap();
-            (resp, DecisionTag::challenge("risk-challenge").with_tier(tier))
-        }
-        aegis_security::risk::RiskLevel::Allow => {
-            // Forward the request to a real upstream member via
-            // `crate::upstream::forward`. The forwarder maps
-            // its outcome onto a status code; we infer the
-            // contract action from that (allow on 2xx/3xx,
-            // block / circuit_breaker / timeout otherwise).
-            forward_allow_to_upstream(
-                parts,
-                body_bytes,
-                upstream_ctx,
-                identity,
-                route_latency_hist,
-                request_start,
-                peer_ip,
-                bus,
-            )
-            .await
+            return (resp, block_tag);
         }
     }
+
+    // v2.3 §5.3 — when a detector trip is in `log_only` mode we
+    // SKIP the risk gate entirely. The malicious score was just
+    // recorded but the request semantically "passed" the WAF
+    // (intent stashed in `log_only_intent`); running the risk
+    // gate now would surface the just-recorded score as a
+    // separate `risk-score` block and silently re-enforce. Jump
+    // straight to upstream forward and apply the intent override
+    // at the tail.
+    let (resp, allow_tag) = if log_only_intent.is_some() {
+        forward_allow_to_upstream(
+            parts,
+            body_bytes,
+            upstream_ctx,
+            identity,
+            route_latency_hist,
+            request_start,
+            peer_ip,
+            bus,
+        )
+        .await
+    } else {
+        // Clean request — let the trust-recovery clock claw back any
+        // accumulated score (capped at `trust_recovery.per_hour` so
+        // one benign request can't reset a flagged client). Then the
+        // adaptive-mitigation classifier decides between Allow,
+        // Challenge, and Block based on the post-state vs the
+        // configured `RiskThresholds`.
+        risk.record_clean(peer_ip);
+        match risk.level(peer_ip) {
+            aegis_security::risk::RiskLevel::Block => {
+                let resp = blocked_response(
+                    peer,
+                    "blocked by risk score",
+                    None,
+                    risk.snapshot(peer_ip).map(|s| s.score),
+                    &parts.uri,
+                    &parts.method,
+                    bus,
+                );
+                (resp, DecisionTag::block("risk-score").with_tier(tier))
+            }
+            aegis_security::risk::RiskLevel::Challenge => {
+                // AF-T1: contract-level distinction. Even though
+                // the HTTP status (429) and Retry-After header are
+                // shaped like rate-limit, the body carries
+                // "challenge" and the contract action MUST be
+                // `challenge` so the OC's challenge-solver path
+                // engages.
+                let resp = Response::builder()
+                    .status(429)
+                    .header("content-type", "application/json")
+                    .header("retry-after", "5")
+                    .body(Full::new(Bytes::from(
+                        serde_json::json!({
+                            "challenge": true,
+                            "reason": "risk score over challenge threshold",
+                            "challenge_type": "proof_of_work",
+                        })
+                        .to_string(),
+                    )))
+                    .unwrap();
+                (resp, DecisionTag::challenge("risk-challenge").with_tier(tier))
+            }
+            aegis_security::risk::RiskLevel::Allow => {
+                // Forward the request to a real upstream member via
+                // `crate::upstream::forward`. The forwarder maps
+                // its outcome onto a status code; we infer the
+                // contract action from that (allow on 2xx/3xx,
+                // block / circuit_breaker / timeout otherwise).
+                forward_allow_to_upstream(
+                    parts,
+                    body_bytes,
+                    upstream_ctx,
+                    identity,
+                    route_latency_hist,
+                    request_start,
+                    peer_ip,
+                    bus,
+                )
+                .await
+            }
+        }
+    };
+
+    // v2.3 §5.3 — apply the log_only intent: keep the upstream
+    // response body + status, but override the DecisionTag so
+    // `X-WAF-Action: block` + `X-WAF-Mode: log_only` reach the
+    // OC. Audit was already recorded above with the block intent.
+    let final_tag = log_only_intent.unwrap_or(allow_tag);
+    (resp, final_tag)
 }
 
 /// Resolve a route + member from the live `ProxyContext`,

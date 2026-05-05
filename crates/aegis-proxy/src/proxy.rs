@@ -69,6 +69,20 @@ pub struct ProxyContext {
     /// nil when absent.  Production boot path installs this
     /// once at registration time.
     pub websocket_metrics: Option<Arc<aegis_control::metrics::websocket::WebSocketMetrics>>,
+    /// v2.3 §2.5 — interop control plane's per-feature/policy
+    /// `enforce | log_only` store. The data-plane block paths
+    /// consult this via `aegis_control::interop::rule_map::
+    /// mode_for_rule` to honor `log_only` (record + audit but
+    /// don't enforce). Wrapped in `OnceLock` because the boot
+    /// path constructs `ProxyContext` BEFORE the interop runtime
+    /// (which depends on cfg validation + audit-sink open) — the
+    /// listener installs the modes back here once both are up.
+    /// Empty when the binary boots without the interop runtime
+    /// (test bundles); the data plane treats missing modes as
+    /// `Mode::Enforce` for every rule.
+    pub interop_modes: std::sync::OnceLock<
+        Arc<aegis_control::interop::mode::ModeStore>,
+    >,
 }
 
 impl ProxyContext {
@@ -103,6 +117,7 @@ impl ProxyContext {
             ),
             access_list_country_lookup: std::sync::OnceLock::new(),
             websocket_metrics: None,
+            interop_modes: std::sync::OnceLock::new(),
         })
     }
 
