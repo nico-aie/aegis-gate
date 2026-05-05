@@ -1022,6 +1022,21 @@ pub(crate) async fn accept_loop(
                 async move {
                     let method = req.method().clone();
                     let path = req.uri().path().to_string();
+                    // v2.3 contract (deploy/STAGING-BENCHMARK.md §7.5):
+                    // the OC benchmarker hits /__waf_control/* on the
+                    // public TLS data plane, not the admin port. Short-
+                    // circuit the security pipeline here so the control
+                    // surface is reachable on whichever listener the
+                    // operator exposes externally. Auth via
+                    // X-Benchmark-Secret is enforced inside the handler.
+                    if path.starts_with("/__waf_control/") {
+                        if let Some(rt) = interop.as_ref() {
+                            let resp = crate::admin_dispatch::handle_interop_control_with_rt(
+                                req, rt.as_ref(),
+                            ).await;
+                            return Ok::<_, Infallible>(resp);
+                        }
+                    }
                     // 2026-05-03 — capture bot-classification
                     // signals BEFORE handle_data_request consumes
                     // the request. Cheap (~5 string lookups), no
