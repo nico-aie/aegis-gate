@@ -479,7 +479,16 @@ pub(crate) async fn handle_data_request_inner(
                 request_id: blake3::hash(format!("{}:{}", peer, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)).as_bytes()).to_hex().to_string(),
                 class: aegis_core::audit::AuditClass::Detection,
                 tenant_id: None,
-                tier: None,
+                // 2026-05-05 — populate the route's tier so the
+                // dashboard's Live Feed shows the real tier
+                // (critical / high / medium / low) instead of
+                // falling back to a risk-score bucket. `tier` here
+                // is the value computed at line ~381 via
+                // `classify_tier()` — combines route_override (if
+                // resolved) with path heuristics. Pre-route detector
+                // blocks see the heuristic; post-route blocks see
+                // the route's tier_override.
+                tier: Some(tier),
                 action: "block".into(),
                 reason: reason.clone(),
                 client_ip: peer_ip.to_string(),
@@ -514,7 +523,7 @@ pub(crate) async fn handle_data_request_inner(
                 .to_string(),
             )))
             .unwrap();
-        return (resp, DecisionTag::block(detector_rule));
+        return (resp, DecisionTag::block(detector_rule).with_tier(tier));
     }
 
     // Clean request — let the trust-recovery clock claw back any
@@ -535,7 +544,7 @@ pub(crate) async fn handle_data_request_inner(
                 &parts.method,
                 bus,
             );
-            (resp, DecisionTag::block("risk-score"))
+            (resp, DecisionTag::block("risk-score").with_tier(tier))
         }
         aegis_security::risk::RiskLevel::Challenge => {
             // AF-T1: contract-level distinction. Even though
@@ -557,7 +566,7 @@ pub(crate) async fn handle_data_request_inner(
                     .to_string(),
                 )))
                 .unwrap();
-            (resp, DecisionTag::challenge("risk-challenge"))
+            (resp, DecisionTag::challenge("risk-challenge").with_tier(tier))
         }
         aegis_security::risk::RiskLevel::Allow => {
             // Forward the request to a real upstream member via
@@ -1003,7 +1012,9 @@ pub(crate) async fn forward_allow_to_upstream(
                 .to_string(),
                 class: aegis_core::audit::AuditClass::Access,
                 tenant_id: None,
-                tier: None,
+                // 2026-05-05 — populate route's tier so Live Feed
+                // shows the real classification, not a risk-bucket.
+                tier: Some(route_ctx.tier),
                 action: "websocket_open".to_string(),
                 reason: "ws_bridge_started".to_string(),
                 client_ip: peer_ip.to_string(),
@@ -1028,7 +1039,7 @@ pub(crate) async fn forward_allow_to_upstream(
             let resp = resp_builder
                 .body(Full::new(Bytes::new()))
                 .unwrap();
-            return (resp, DecisionTag::allow());
+            return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
         }
 
         // Non-101 — upstream rejected the upgrade.  Drain any
@@ -1066,7 +1077,7 @@ pub(crate) async fn forward_allow_to_upstream(
         let resp = resp_builder
             .body(Full::new(Bytes::from(body)))
             .unwrap();
-        return (resp, DecisionTag::allow());
+        return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
     }
 
     if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
@@ -1076,7 +1087,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                 .body(Full::new(Bytes::from("circuit open\n")))
                 .unwrap();
-            return (resp, DecisionTag::circuit_breaker("circuit-open"));
+            return (resp, DecisionTag::circuit_breaker("circuit-open").with_tier(route_ctx.tier));
         }
     }
 
@@ -1140,7 +1151,7 @@ pub(crate) async fn forward_allow_to_upstream(
             // 5xx from upstream is not a WAF block — we proxied
             // faithfully; the contract action stays `allow` (the
             // upstream's failure is what the client sees).
-            (resp, DecisionTag::allow())
+            (resp, DecisionTag::allow().with_tier(route_ctx.tier))
         }
         Err(e) => {
             tracing::warn!(error = %e, "upstream forward failed");
@@ -1155,13 +1166,13 @@ pub(crate) async fn forward_allow_to_upstream(
                 crate::upstream::forward::ForwardError::Send(m)
                     if m.contains("timed out") =>
                 {
-                    DecisionTag::timeout("upstream-timeout")
+                    DecisionTag::timeout("upstream-timeout").with_tier(route_ctx.tier)
                 }
                 crate::upstream::forward::ForwardError::Connect(_)
                 | crate::upstream::forward::ForwardError::Handshake(_) => {
-                    DecisionTag::circuit_breaker("upstream-unreachable")
+                    DecisionTag::circuit_breaker("upstream-unreachable").with_tier(route_ctx.tier)
                 }
-                _ => DecisionTag::circuit_breaker("upstream-error"),
+                _ => DecisionTag::circuit_breaker("upstream-error").with_tier(route_ctx.tier),
             };
             tracing::Span::current().record("outcome", action_tag.action.as_str());
             let resp = Response::builder()

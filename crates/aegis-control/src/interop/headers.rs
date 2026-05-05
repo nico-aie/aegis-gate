@@ -93,26 +93,42 @@ impl CacheState {
 pub struct DecisionTag {
     pub action: Action,
     pub rule_id: Option<String>,
+    /// 2026-05-05 — populated by the data plane with the resolved
+    /// tier (route override or path heuristic). Lets the listener-
+    /// side audit emit attach the real tier label so the dashboard
+    /// Live Feed shows `critical / high / medium / low` instead of
+    /// falling back to a risk-score bucket. `None` means tier
+    /// hadn't been classified at the point of decision (e.g. early
+    /// rate-limit blocks pre-tier).
+    pub tier: Option<aegis_core::tier::Tier>,
 }
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None }
+        Self { action: Action::Allow, rule_id: None, tier: None }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()) }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()) }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()) }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()) }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()) }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None }
+    }
+
+    /// Attach the resolved tier; used by the data plane after
+    /// classify_tier resolves so the listener-side audit emit and
+    /// `X-WAF-Tier` response header can reflect the truth.
+    pub fn with_tier(mut self, tier: aegis_core::tier::Tier) -> Self {
+        self.tier = Some(tier);
+        self
     }
 }
 
