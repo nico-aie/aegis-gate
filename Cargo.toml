@@ -96,7 +96,7 @@ humantime-serde = "1"
 # Pin to aws-lc-rs to match the rest of the workspace's rustls
 # crypto provider — instant-acme's default is `ring`, which would
 # leave rustls unable to pick a process-level provider.
-instant-acme = { version = "0.7", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
+instant-acme = { version = "0.8.5", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
 
 # Redis state backend (B1-T1 — Phase B). Pulled in only via the
 # `aegis-proxy/redis` feature so single-node builds still compile
