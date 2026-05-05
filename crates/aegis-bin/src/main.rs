@@ -73,9 +73,20 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn parse_config_flag(args: &[String]) -> PathBuf {
-    parse_flag(args, "--config")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("config/prod.yaml"))
+    if let Some(p) = parse_flag(args, "--config") {
+        return PathBuf::from(p);
+    }
+    // v2.3 §8 — Binary contract default config lookup. The
+    // benchmarker expects `./waf.yaml` (or `./waf.toml`) in the
+    // working directory. Fall back to the legacy `config/prod.yaml`
+    // shipped in the repo so existing deploys keep working.
+    for candidate in ["./waf.yaml", "./waf.toml"] {
+        let p = PathBuf::from(candidate);
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("config/prod.yaml")
 }
 
 fn parse_flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {

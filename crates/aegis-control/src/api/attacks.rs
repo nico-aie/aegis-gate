@@ -633,6 +633,21 @@ fn detector_name(ev: &AuditEvent) -> String {
         }
     }
     if let Some(rule_id) = ev.rule_id.as_deref() {
+        // 2026-05-05 — risk-engine and rate-limit blocks carry
+        // structured rule_ids that don't fit the "first segment
+        // is the detector class" convention used for OWASP
+        // detectors. Pre-fix, splitting `risk-strikes` on `-`
+        // surfaced `risk` (not a real detector) which the SOC
+        // dashboard rendered as "unknown" because no chart bucket
+        // exists for it. Map them to honest synthetic labels.
+        match rule_id {
+            "risk-strikes" => return "ip-strikes".to_string(),
+            "risk-score" => return "ip-risk".to_string(),
+            "risk-challenge" => return "ip-risk".to_string(),
+            "ip-rate-limit" => return "rate-limit".to_string(),
+            "blacklist" => return "blacklist".to_string(),
+            _ => {}
+        }
         let prefix = rule_id.split(['-', '/']).next().unwrap_or("");
         if !prefix.is_empty() {
             // Strip the legacy `detector:` prefix when present so

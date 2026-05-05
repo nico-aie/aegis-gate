@@ -77,7 +77,8 @@ SMOKE_ADMIN      ?= http://localhost:9443
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
         dashboard redis-up redis-down obs-up obs-down urls logs login-reset \
         upstream-build upstream-up upstream-down \
-        mock-load mock-load-attacks mock-load-mix
+        mock-load mock-load-attacks mock-load-mix \
+        stage
 
 help:
 	@awk 'BEGIN { FS = ":.*##" } \
@@ -106,6 +107,21 @@ reset-cert: ## Delete + regenerate the dev cert
 
 build: ## cargo build --release with $(FEATURES)
 	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES)"
+
+stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd
+	@ln -sf target/release/waf ./waf
+	@if [ ! -e ./waf.yaml ]; then \
+	  cp config/profiles/prod-balanced.yaml ./waf.yaml ; \
+	  echo "  staged: ./waf.yaml (copied from config/profiles/prod-balanced.yaml — edit before boot)" ; \
+	else \
+	  echo "  ./waf.yaml already exists — left in place" ; \
+	fi
+	@echo "  staged: ./waf -> target/release/waf"
+	@echo
+	@echo "  Verify:"
+	@echo "    ls -la ./waf ./waf.yaml"
+	@echo "    ./waf validate --config ./waf.yaml"
+	@echo "    ./waf run                     # picks up ./waf.yaml automatically"
 
 build-debug: ## cargo build (debug) for fast iteration
 	@$(CARGO) build --workspace

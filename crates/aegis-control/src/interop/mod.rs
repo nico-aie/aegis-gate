@@ -24,6 +24,7 @@ pub mod audit;
 pub mod control;
 pub mod headers;
 pub mod mode;
+pub mod rule_map;
 
 use std::sync::Arc;
 

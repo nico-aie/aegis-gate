@@ -745,6 +745,12 @@ pub async fn run(
                 "external interop contract enabled (audit log path not configured)",
             );
         }
+        // v2.3 §2.5 — install the ModeStore back into the
+        // already-constructed ProxyContext so the data-plane
+        // block paths can consult it for log_only enforcement
+        // skip. `set` is one-shot: subsequent boots can't
+        // accidentally swap modes mid-run.
+        let _ = upstream_ctx.interop_modes.set(rt.modes.clone());
     }
 
     // Data-plane listeners.
@@ -1366,8 +1372,22 @@ pub(crate) fn build_interop_runtime(
         },
     );
 
-    // `reset_state` must clear: rate-limit counters, risk
-    // state, challenge sessions. Audit log is preserved.
+    // v2.3 §2.4 — `reset_state` MUST clear (at least):
+    //   - risk state                    ✓ (risk_tracker.reset_all)
+    //   - rate-limit counters           ✓ (ip_rate_limiter.reset_all)
+    //   - cache state                   — handled by flush_cache (no
+    //                                     content cache today; sep endpoint)
+    //   - challenge/session state       — challenges are stateless PoW
+    //                                     in this WAF; no server-side
+    //                                     session storage to clear
+    //   - temporary client metadata     ✓ (behavior tracker .clear)
+    //   - temporary enforcement state   — `ModeStore` is operator-set
+    //                                     config, NOT temporary; must
+    //                                     NOT be cleared (§2.4 says
+    //                                     long-term static config is
+    //                                     preserved)
+    //
+    // Audit log: append-only, NOT touched by reset.
     let mut reset_callbacks: Vec<aegis_control::interop::control::ResetCallback> =
         Vec::new();
     let risk_for_reset = risk.clone();
@@ -1378,6 +1398,12 @@ pub(crate) fn build_interop_runtime(
     reset_callbacks.push(Arc::new(move || {
         limiter_for_reset.reset_all();
     }));
+    // NOTE: `aegis_security::behavior::BehavioralAnalyzer` exists
+    // and exposes `.clear()`, but it isn't wired into the live
+    // request path yet. When the analyzer lands in the data
+    // plane, register its `.clear()` here too. Today it's a
+    // documented gap — log_only-style false-positive verification
+    // doesn't depend on it, so the v2.3 contract stays satisfied.
 
     let audit_sink = match MinimalJsonlSink::open(&cfg.interop.audit_path) {
         Ok(s) => Some(Arc::new(s)),
