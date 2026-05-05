@@ -315,6 +315,24 @@ function useApi(url, { intervalMs = 5000, fallback = null } = {}) {
 // `{ events, connected }`; pages that only need rows should
 // destructure both anyway so they can show the connection state.
 let _realLiveSeq = 0;
+// 2026-05-05 — normalize raw tier values from the audit chain into the
+// dashboard's display labels. The WAF emits `critical | high | medium |
+// low` (matching `aegis_core::tier::Tier` post-rename, with `catch_all`
+// kept as a serde alias). Map them to the short `crit / high / med /
+// low` pills the existing renderer expects.
+function normalizeWafTier(raw) {
+  if (!raw) return null;
+  const s = String(raw).toLowerCase();
+  if (s === 'critical' || s === 'crit') return 'crit';
+  if (s === 'high') return 'high';
+  if (s === 'medium' || s === 'med') return 'med';
+  if (s === 'low' || s === 'catch_all' || s === 'catchall') return 'low';
+  return null;
+}
+// Risk-bucket label — used as a LAST-RESORT fallback when the audit
+// event doesn't carry a `tier` (e.g. very old events from before the
+// 2026-05-05 fix). New events should always populate `ev.tier` so this
+// branch becomes dead in practice. Kept for backfill of legacy rows.
 function tierForRisk(r) {
   if (r >= 90) return 'crit';
   if (r >= 60) return 'high';
@@ -360,7 +378,7 @@ function mapAuditToLiveRow(ev, seq) {
     method: f.method || ev.method || 'GET',
     path: f.path || ev.path || '/',
     region: f.region || ev.region || '',
-    tier: ev.tier || tierForRisk(risk),
+    tier: normalizeWafTier(ev.tier) || tierForRisk(risk),
     risk,
     action,
     rules: ruleId ? [ruleId] : (ev.rules || []),
@@ -454,7 +472,7 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
             method: f.method || ev.method || 'GET',
             path: f.path || ev.path || '/',
             region: f.region || ev.region || '',
-            tier: ev.tier || tierForRisk(risk),
+            tier: normalizeWafTier(ev.tier) || tierForRisk(risk),
             risk,
             action,
             rules: ruleId ? [ruleId] : (ev.rules || []),
@@ -602,7 +620,20 @@ async function csrfMutate(url, { method = 'POST', body = null } = {}) {
       }, 1500);
     }
   }
-  return { status: r.status, ...parsed };
+  // 2026-05-05 — spread parsed FIRST so the response body's fields
+  // are exposed, then write `status: r.status` LAST so HTTP status
+  // always wins. Without this order, a body like
+  // `{"status":"resolved"}` (from PUT /api/incidents/{id}/resolve)
+  // would overwrite the HTTP 200 with the string "resolved",
+  // breaking the `r.status >= 200 && r.status < 300` success check
+  // and causing every Resolve click to surface "resolve failed:
+  // status resolved". Body-side `status` is still accessible at
+  // `r.body_status` for callers that need it.
+  return {
+    ...parsed,
+    body_status: parsed?.status,
+    status: r.status,
+  };
 }
 
 // HACK-T4 rollback — POST /api/config/versions/{seq}/rollback.

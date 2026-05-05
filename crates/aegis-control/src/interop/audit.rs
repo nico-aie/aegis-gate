@@ -42,6 +42,14 @@ pub struct MinimalAuditEntry {
     /// out as a recommended addition. Skipped when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_id: Option<String>,
+    /// 2026-05-05 — bonus field. Resolved tier (route override
+    /// or path heuristic): `critical | high | medium | low`.
+    /// Skipped when `None` (e.g. early rate-limit blocks before
+    /// tier classification ran). The dashboard's Live Feed reads
+    /// this so the `TIER` column shows the real classification
+    /// instead of falling back to a risk-score bucket.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
 }
 
 /// Append-only file sink for [`MinimalAuditEntry`].
@@ -109,6 +117,7 @@ mod tests {
             risk_score: 75,
             mode: "enforce".into(),
             rule_id: Some("rule-001".into()),
+            tier: Some("critical".into()),
         }
     }
 

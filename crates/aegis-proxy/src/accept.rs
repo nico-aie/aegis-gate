@@ -1170,7 +1170,13 @@ pub(crate) async fn accept_loop(
                         request_id: request_id.clone(),
                         class,
                         tenant_id: None,
-                        tier: None,
+                        // 2026-05-05 — surface the route's tier so
+                        // Live Feed shows critical / high / medium /
+                        // low instead of falling back to a risk-bucket
+                        // label. Populated by `DecisionTag::with_tier`
+                        // on every post-classify_tier exit point in
+                        // the data plane.
+                        tier: decision.tier,
                         action: action.to_string(),
                         reason: decision
                             .rule_id

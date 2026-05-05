@@ -833,6 +833,17 @@ pub(crate) fn stamp_interop_response(
             risk_score,
             mode: mode.as_str().to_string(),
             rule_id: decision_tag.rule_id,
+            // 2026-05-05 — surface the resolved tier so the
+            // dashboard's Live Feed shows the route's real tier
+            // instead of a risk-score bucket. snake_case form
+            // matches the canonical Tier enum serde variants
+            // (`critical | high | medium | low`).
+            tier: decision_tag.tier.map(|t| match t {
+                aegis_core::tier::Tier::Critical => "critical",
+                aegis_core::tier::Tier::High => "high",
+                aegis_core::tier::Tier::Medium => "medium",
+                aegis_core::tier::Tier::Low => "low",
+            }.to_string()),
         };
         if let Err(e) = sink.append(&entry) {
             tracing::warn!(error = %e, "interop audit write failed");
