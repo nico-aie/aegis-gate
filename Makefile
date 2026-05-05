@@ -78,7 +78,7 @@ SMOKE_ADMIN      ?= http://localhost:9443
         dashboard redis-up redis-down obs-up obs-down urls logs login-reset \
         upstream-build upstream-up upstream-down \
         mock-load mock-load-attacks mock-load-mix \
-        stage
+        stage bench-dev
 
 help:
 	@awk 'BEGIN { FS = ":.*##" } \
@@ -136,6 +136,38 @@ run: $(WAF_BIN) cert redis-up ## Boot against $(CONFIG) — default: prod-balanc
 
 run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts Redis + mock upstream)
 	@AEGIS_INSECURE_COOKIES=1 $(WAF_BIN) run --config $(CONFIG_DEV)
+
+bench-dev: build cert redis-up upstream-up ## Boot dev with the v2.3 benchmark binary contract surfaced (./waf + ./waf.yaml)
+	@# 1. Stage `./waf` + `./waf.yaml` per v2.3 §8 binary contract.
+	@#    Uses dev.yaml content so the existing dev profile (loose
+	@#    rate-limit + strikes disabled for shared loopback) is what
+	@#    the OC harness sees — easier to drive 5k+ RPS through.
+	@ln -sf target/release/waf ./waf
+	@if [ ! -e ./waf.yaml ]; then \
+	  cp $(CONFIG_DEV) ./waf.yaml ; \
+	  echo "  staged: ./waf.yaml (copied from $(CONFIG_DEV))" ; \
+	else \
+	  echo "  ./waf.yaml already exists — left in place" ; \
+	fi
+	@echo "  staged: ./waf -> target/release/waf"
+	@echo
+	@echo "v2.3 contract surface (data port + admin port both serve /__waf_control/*):"
+	@echo "  GET    /__waf_control/capabilities"
+	@echo "  POST   /__waf_control/reset_state"
+	@echo "  POST   /__waf_control/set_profile"
+	@echo "  POST   /__waf_control/flush_cache"
+	@echo "  Header: X-Benchmark-Secret: $${AEGIS_BENCHMARK_SECRET:-waf-hackathon-2026-ctrl}"
+	@echo "  Audit:  ./waf_audit.log (created on first request)"
+	@echo
+	@if [ -z "$$AEGIS_BENCHMARK_SECRET" ]; then \
+	  echo "  AEGIS_BENCHMARK_SECRET unset — falling back to contract default 'waf-hackathon-2026-ctrl'." ; \
+	  echo "  For a real benchmark run, generate a fresh secret first:" ; \
+	  echo "    export AEGIS_BENCHMARK_SECRET=\$$(openssl rand -base64 32 | tr -d '=+/' | head -c 40)" ; \
+	  echo ; \
+	fi
+	@AEGIS_INSECURE_COOKIES=1 \
+	  AEGIS_BENCHMARK_SECRET=$${AEGIS_BENCHMARK_SECRET:-waf-hackathon-2026-ctrl} \
+	  ./waf run --config ./waf.yaml
 
 run-strict: $(WAF_BIN) cert redis-up ## Boot against prod-strict profile — compliance-tightened
 	@$(WAF_BIN) run --config $(CONFIG_STRICT)

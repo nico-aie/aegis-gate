@@ -242,6 +242,7 @@ waf help
 | Topic | Doc |
 |---|---|
 | **Operator quick start** | [`QUICKSTART.md`](QUICKSTART.md) |
+| **v2.3 benchmark contract** (control plane + headers + audit shape) | [`Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](Hackathon_Doc/EN_waf_interop_contract_v2.3.md) — drive locally with `make bench-dev` (see [`QUICKSTART.md`](QUICKSTART.md) §8) or on staging via [`deploy/STAGING-BENCHMARK.md`](deploy/STAGING-BENCHMARK.md) §7.5 |
 | **Feature playbook** (one row per feature, how to verify each) | [`docs/FEATURES.md`](docs/FEATURES.md) |
 | **How the security engine works** (request → decision walkthrough) | [`docs/security/security-engine.md`](docs/security/security-engine.md) |
 | **Upstream cookbook (per-protocol recipes)** | [`docs/operator/upstream-cookbook.md`](docs/operator/upstream-cookbook.md) |
