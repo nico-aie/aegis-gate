@@ -1338,6 +1338,12 @@ pub(crate) fn build_interop_runtime(
             policies: vec!["blacklist".into(), "whitelist".into()],
         },
     );
+    // v2.3 §2.5 — AI is exposed as a toggleable policy under
+    // rules_engine so the OC harness can put it into log_only via
+    // set_profile { scope: "policies", feature: "rules_engine",
+    // policies: ["ai"], mode: "log_only" } without a YAML edit or
+    // restart. Mirror in `aegis_control::interop::control::tests::
+    // ctx_v23` — keep the policy list in sync.
     features.insert(
         "rules_engine".into(),
         CapabilityFeature {
@@ -1352,6 +1358,7 @@ pub(crate) fn build_interop_runtime(
                 "body_abuse".into(),
                 "recon".into(),
                 "brute_force".into(),
+                "ai".into(),
             ],
         },
     );

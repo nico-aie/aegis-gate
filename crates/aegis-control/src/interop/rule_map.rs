@@ -48,6 +48,7 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "body_abuse" | "xxe" | "mass_assignment" => ("rules_engine", "body_abuse"),
         "recon" => ("rules_engine", "recon"),
         "brute_force" | "brute-force" => ("rules_engine", "brute_force"),
+        "ai" => ("rules_engine", "ai"),
 
         // ---- rate_limit ----
         "ip-rate-limit" | "rate_limit" => ("rate_limit", "per_ip"),
@@ -87,6 +88,13 @@ mod tests {
             rule_to_feature("path_traversal"),
             Some(("rules_engine", "path_traversal")),
         );
+    }
+
+    #[test]
+    fn ai_detector_maps_to_rules_engine_ai() {
+        // v2.3 §2.5 — AI must be a toggleable policy so the OC harness
+        // can put it into log_only without a YAML edit + restart.
+        assert_eq!(rule_to_feature("ai"), Some(("rules_engine", "ai")));
     }
 
     #[test]
