@@ -58,7 +58,14 @@ impl Detector for SsrfDetector {
             check_ssrf(&super::url_decode(body), "body", &mut signals);
         }
 
-        for name in &["referer", "x-original-url", "x-rewrite-url"] {
+        // 2026-05-07 — `Referer` dropped (H001). It's set by the
+        // browser to the page origin; SSRF exploits never travel via
+        // Referer. Loopback Referer values trip the detector on any
+        // localhost-deployed dashboard, which self-blocks every
+        // sub-resource fetch. Reverse-proxy override headers still
+        // scan because operators sometimes pass attacker-controlled
+        // URLs through them.
+        for name in &["x-original-url", "x-rewrite-url"] {
             if let Some(val) = req.headers.get(*name).and_then(|v| v.to_str().ok()) {
                 check_ssrf(val, name, &mut signals);
             }
@@ -227,5 +234,61 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(d.inspect(&req).is_empty(), "self-targeting 127.0.0.1 must not SSRF");
+    }
+
+    // 2026-05-07 — `Referer` is browser-set to the page's own origin.
+    // A dashboard hosted at 127.0.0.1:8080 sets Referer on every
+    // sub-resource fetch, which used to trip the loopback pattern.
+    // SSRF exploits go through query / body / X-Original-URL /
+    // X-Rewrite-URL — never via Referer.
+    #[test]
+    fn clean_request_with_loopback_referer_does_not_trip() {
+        let d = SsrfDetector;
+        let u: http::Uri = "/api/data".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert("referer", "http://127.0.0.1:8080/".parse().unwrap());
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).is_empty(),
+            "loopback Referer must not trigger SSRF (browser-set, not attacker-controlled)",
+        );
+    }
+
+    #[test]
+    fn x_original_url_with_loopback_still_blocks() {
+        // Regression guard — H001 only drops Referer; reverse-proxy
+        // override headers must still trigger SSRF.
+        let d = SsrfDetector;
+        let u: http::Uri = "/api/data".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            "x-original-url",
+            "http://127.0.0.1:8080/admin".parse().unwrap(),
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        assert_eq!(signals.len(), 1, "X-Original-URL with loopback must still SSRF");
+        assert_eq!(signals[0].tag, "ssrf");
+    }
+
+    #[test]
+    fn x_rewrite_url_with_loopback_still_blocks() {
+        let d = SsrfDetector;
+        let u: http::Uri = "/api/data".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            "x-rewrite-url",
+            "http://127.0.0.1:8080/admin".parse().unwrap(),
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        assert_eq!(signals.len(), 1, "X-Rewrite-URL with loopback must still SSRF");
+        assert_eq!(signals[0].tag, "ssrf");
     }
 }
