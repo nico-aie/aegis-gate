@@ -55,6 +55,20 @@ const ROUTE_REDIRECTS = {
   'whitelist': 'access-lists',
 };
 
+// 2026-05-07 — H002 fix. `location.hash.slice(2)` returns
+// `investigation?pivot=abc&kind=request_id` for deep-links from the
+// Live-Feed drawer. The router used to switch on that whole string,
+// fall through to the `default` case, and silently render Overview.
+// Now the router splits path/query, matches the path only, and
+// preserves the query string so PageInvestigation's own useEffect
+// can read it via `location.hash`.
+const splitHashRoute = (raw) => {
+  const q = raw.indexOf('?');
+  return q === -1
+    ? { path: raw, query: '' }
+    : { path: raw.slice(0, q), query: raw.slice(q) };
+};
+
 // ============== TopBar ==============
 //
 // HU-T2 — wired to real data instead of hardcoded "v1.4.2 · 5 nodes
@@ -470,12 +484,38 @@ class PageErrorBoundary extends React.Component {
   }
 }
 
+// 2026-05-07 — visible fallback for unmatched hash routes. Replaces
+// the prior silent-Overview default so routing bugs don't hide.
+function PageNotFound({ route }) {
+  return (
+    <div style={{ padding: 32 }}>
+      <h1 className="page-title">Page not found</h1>
+      <p style={{ color: 'var(--ink-mute)', marginTop: 8 }}>
+        No page matches <code>#/{route}</code>.
+      </p>
+      <button
+        type="button"
+        className="btn"
+        style={{ marginTop: 16 }}
+        onClick={() => { location.hash = '#/overview'; }}
+      >
+        Back to Overview
+      </button>
+    </div>
+  );
+}
+
 // ============== App ==============
 function App() {
   // Resolve hash → route, applying redirects for renamed pages.
+  // Strips `?query` so deep-links like
+  // `#/investigation?pivot=req-abc&kind=request_id` route to
+  // `investigation` and the page reads its own params from
+  // `location.hash`.
   const resolveRoute = () => {
     const raw = location.hash.slice(2) || 'overview';
-    return ROUTE_REDIRECTS[raw] || raw;
+    const { path } = splitHashRoute(raw);
+    return ROUTE_REDIRECTS[path] || path;
   };
   const [route, setRoute] = useState(resolveRoute);
   const tick = window.useTicking(2000);
@@ -488,16 +528,18 @@ function App() {
   }, []);
 
   // Hash routing — apply Phase-2 renames on every hash change so
-  // pasted-in old URLs land on the new page.
+  // pasted-in old URLs land on the new page. Query string is
+  // preserved across redirects so deep-links survive the rewrite.
   useEffect(() => {
     const onHash = () => {
       const raw = location.hash.slice(2) || 'overview';
-      const resolved = ROUTE_REDIRECTS[raw];
+      const { path, query } = splitHashRoute(raw);
+      const resolved = ROUTE_REDIRECTS[path];
       if (resolved) {
-        location.replace(`#/${resolved}`);
+        location.replace(`#/${resolved}${query}`);
         setRoute(resolved);
       } else {
-        setRoute(raw);
+        setRoute(path);
       }
     };
     window.addEventListener('hashchange', onHash);
@@ -528,7 +570,10 @@ function App() {
     case 'settings':         page = <window.PageSettings />; break;
     case 'reports':          page = <window.PageReports />; break;
     case 'help':             page = <window.PageHelp />; break;
-    default:                 page = <window.PageOverview />;
+    // 2026-05-07 — H002. Unknown routes used to silently render
+    // PageOverview, which hid routing bugs (e.g. typos in hash
+    // links, or this exact pivot bug). A visible 404 surfaces them.
+    default:                 page = <PageNotFound route={route} />;
   }
 
   return (
