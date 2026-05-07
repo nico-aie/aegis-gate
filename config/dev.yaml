@@ -124,7 +124,11 @@ detectors:
 ai:
   enabled: true
   model_path: data/ai_model/waf_model.onnx
-  confidence_threshold: 0.5
+  # 2026-05-07 — bumped from 0.5 (over-fired ~77% of clean traffic
+  # in QA) to the calibrated default. Operators can put AI into
+  # log_only at runtime via set_profile (v2.3 §2.5) without a
+  # config edit or restart.
+  confidence_threshold: 0.85
 
 # ---------------------------------------------------------------------------
 # Risk scoring — tuned for the P6 k6 scenario (`risk-strikes.js`)
