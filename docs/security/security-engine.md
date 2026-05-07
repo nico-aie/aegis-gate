@@ -332,20 +332,37 @@ shares an IP (NAT / corporate proxy / shared loopback in dev).
 
 ### What contributes to score
 
-| Contributor | Where it adds | Default delta |
-|---|---|---|
-| Detector hit (sqli / xss / path_traversal / ssrf / etc.) | per-request and per-IP | 50 – 60 |
-| AI detector hit | per-request and per-IP | 60 |
-| Rule with `RaiseRisk(delta)` action | per-request and per-IP | operator-defined |
-| ASN reputation (hosting / VPN / Tor exit) | per-request and per-IP | 10 – 30 (`risk.weights.bad_asn`) |
-| TLS / HTTP fingerprint reputation (bad JA4) | per-request and per-IP | 10 (`risk.weights.bad_ja4`) |
-| Failed authentication | per-IP only | 20 (`risk.weights.failed_auth`) |
-| Unknown bot class | per-request and per-IP | 10 (`risk.weights.bot_unknown`) |
-| Repeat offender | per-IP only | 15 (`risk.weights.repeat_offender`) |
-| Behavioural anomaly | per-request and per-IP | dynamic |
+Per-detector signal scores (read straight from the detector code —
+not configurable today; change the file + rebuild):
 
-Edit weights in `cfg.risk.weights` — a YAML restart for now. Reference:
-[`risk-scoring.md`](risk-scoring.md).
+| Contributor | Where it adds | Default delta | Source |
+|---|---|---:|---|
+| SQL injection | per-request + per-IP | **40** | `detectors/sqli.rs` |
+| XSS | per-request + per-IP | **35** | `detectors/xss.rs` |
+| Path traversal | per-request + per-IP | **45** | `detectors/path_traversal.rs` |
+| SSRF | per-request + per-IP | **50** | `detectors/ssrf.rs` |
+| Header injection / CRLF / smuggling | per-request + per-IP | **40** | `detectors/header_injection.rs` |
+| Recon (probe / canary) | per-request + per-IP | **25 / 30** | `detectors/recon.rs` |
+| Body abuse (size → depth escalation) | per-request + per-IP | **30 / 35 / 50 / 60** | `detectors/body_abuse.rs` |
+| Brute force | per-request + per-IP | YAML-configured | `detectors/brute_force.rs` |
+| **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` |
+
+Identity / behaviour weights (configurable in `cfg.risk.weights`,
+default **10 each**):
+
+| Contributor | Where it adds | YAML key | Default |
+|---|---|---|---:|
+| ASN reputation (hosting / VPN / Tor exit) | per-request + per-IP | `risk.weights.bad_asn` | 10 |
+| TLS / HTTP fingerprint reputation (bad JA4) | per-request + per-IP | `risk.weights.bad_ja4` | 10 |
+| Failed authentication | per-IP only | `risk.weights.failed_auth` | 10 |
+| Generic detector-hit modifier | per-request + per-IP | `risk.weights.detector_hit` | 10 |
+| Unknown bot class | per-request + per-IP | `risk.weights.bot_unknown` | 10 |
+| Repeat offender (history bonus) | per-IP only | `risk.weights.repeat_offender` | 10 |
+| Rule engine `RaiseRisk(delta)` | per-request + per-IP | rule-defined | n/a |
+| Canary route touch | per-request + per-IP | `risk.canary_routes` | `max_score` (immediate cap) |
+
+Concrete worked examples (single-request, multi-detector combo, lifecycle
+across decay, AI tiebreaker): [`risk-scoring.md`](risk-scoring.md#worked-example-sqli-probe-lifecycle).
 
 ---
 
