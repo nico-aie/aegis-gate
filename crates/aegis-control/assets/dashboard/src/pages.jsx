@@ -2785,6 +2785,22 @@ function ListPage({ kind }) {
   const [draftValue, setDraftValue] = useStateP('');
   const [draftNote, setDraftNote] = useStateP('');
   const [draftBypass, setDraftBypass] = useStateP('');
+  // M005 (2026-05-07) — optional expiry, search filter, bulk import.
+  const [draftExpiry, setDraftExpiry] = useStateP(''); // YYYY-MM-DDTHH:mm (datetime-local)
+  const [search, setSearch] = useStateP('');
+  const [showImport, setShowImport] = useStateP(false);
+
+  // Filter entries by search term against value + note + kind.
+  const filtered = useMemoP(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return data;
+    return data.filter(e => {
+      const value = (e.value || '').toLowerCase();
+      const note = (e.note || e.reason || '').toLowerCase();
+      const k = (e.kind || e.type || '').toLowerCase();
+      return value.includes(q) || note.includes(q) || k.includes(q);
+    });
+  }, [data, search]);
 
   async function submitAdd() {
     const value = draftValue.trim();
@@ -2804,10 +2820,19 @@ function ListPage({ kind }) {
           : [],
         created_at: new Date().toISOString(),
       };
+      // M005 — optional ISO 8601 expiry. The datetime-local input
+      // returns "YYYY-MM-DDTHH:mm" in local time; promote to a
+      // proper ISO string with timezone for the server.
+      if (draftExpiry) {
+        const d = new Date(draftExpiry);
+        if (!isNaN(d.getTime())) {
+          entry.expires_at = d.toISOString();
+        }
+      }
       const r = await window.accessListAdd(kind, entry);
       if (r.ok) {
         window.aegisToast(`Added ${kind} entry ${draftKind}:${value}`, 'ok');
-        setDraftValue(''); setDraftNote(''); setDraftBypass('');
+        setDraftValue(''); setDraftNote(''); setDraftBypass(''); setDraftExpiry('');
         setShowForm(false);
         api.reload && api.reload();
       } else {
@@ -2818,6 +2843,59 @@ function ListPage({ kind }) {
       window.aegisToast(`Add error: ${e.message || e}`, 'err');
     } finally {
       setBusy(false);
+    }
+  }
+
+  // M005 — CSV bulk import. Format: kind,value,note,bypass,expires_at
+  // - kind: ip | cidr | asn | country
+  // - bypass: pipe-separated (sqli|xss) or empty; only meaningful for whitelist
+  // - expires_at: ISO 8601 or empty
+  // Submits one POST per row (no batch endpoint today). Reports
+  // a summary toast at the end.
+  async function bulkImport(csvText) {
+    const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (!lines.length) {
+      window.aegisToast('Bulk import: no rows to import', 'warn');
+      return;
+    }
+    // Skip a header row if first line looks like one.
+    const start = /^kind\b/i.test(lines[0]) ? 1 : 0;
+    setBusy(true);
+    let added = 0, failed = 0;
+    try {
+      for (let i = start; i < lines.length; i++) {
+        const cols = lines[i].split(',').map(c => c.trim());
+        const [k, val, note = '', bypass = '', exp = ''] = cols;
+        if (!k || !val) { failed++; continue; }
+        const id = `${kind}-bulk-${Date.now().toString(36)}-${i.toString(36)}`;
+        const entry = {
+          id,
+          kind: k,
+          value: k === 'country' ? val.toUpperCase() : val,
+          note,
+          bypass: !isBL && bypass
+            ? bypass.split('|').map(s => s.trim()).filter(Boolean)
+            : [],
+          created_at: new Date().toISOString(),
+        };
+        if (exp) {
+          const d = new Date(exp);
+          if (!isNaN(d.getTime())) entry.expires_at = d.toISOString();
+        }
+        const r = await window.accessListAdd(kind, entry);
+        if (r.ok) added++; else failed++;
+      }
+      window.aegisToast(
+        `Imported ${added} of ${lines.length - start}` +
+        (failed > 0 ? ` · ${failed} failed` : ''),
+        failed > 0 ? 'warn' : 'ok',
+      );
+      api.reload && api.reload();
+    } catch (e) {
+      window.aegisToast(`Bulk import error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+      setShowImport(false);
     }
   }
 
@@ -2859,6 +2937,15 @@ function ListPage({ kind }) {
           <button className="btn" onClick={() => api.reload && api.reload()}>
             <window.I.Refresh /> Refresh
           </button>
+          {/* M005 — bulk import opens a CSV-paste modal */}
+          <button
+            className="btn"
+            onClick={() => setShowImport(true)}
+            disabled={busy}
+            title="Paste CSV: kind,value,note,bypass,expires_at"
+          >
+            Bulk import
+          </button>
           <button
             className="btn primary"
             onClick={() => setShowForm(v => !v)}
@@ -2867,6 +2954,30 @@ function ListPage({ kind }) {
             <window.I.Plus /> {showForm ? 'Cancel' : 'Add entry'}
           </button>
         </div>
+      </div>
+
+      {/* M005 — search input above the table */}
+      <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input
+          type="search"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search value, note, or type…"
+          style={{
+            flex: 1,
+            padding: '6px 10px',
+            background: 'var(--canvas-2)',
+            border: '1px solid var(--hairline)',
+            borderRadius: 4,
+            color: 'var(--ink)',
+            fontSize: 12,
+          }}
+        />
+        {search && (
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+            {filtered.length} of {data.length}
+          </span>
+        )}
       </div>
 
       {showForm && (
@@ -2934,6 +3045,19 @@ function ListPage({ kind }) {
                 />
               </div>
             )}
+            {/* M005 — optional expiry */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 180 }}>
+              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                Expires (optional)
+              </label>
+              <input
+                type="datetime-local"
+                value={draftExpiry}
+                onChange={e => setDraftExpiry(e.target.value)}
+                disabled={busy}
+                style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)' }}
+              />
+            </div>
             <button
               className="btn primary"
               onClick={submitAdd}
@@ -2959,12 +3083,14 @@ function ListPage({ kind }) {
             </tr>
           </thead>
           <tbody>
-            {data.length === 0 && (
+            {filtered.length === 0 && (
               <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
-                No entries.
+                {data.length === 0
+                  ? 'No entries.'
+                  : `No matches for "${search}". Clear the search to see all ${data.length} entries.`}
               </td></tr>
             )}
-            {data.map(e => (
+            {filtered.map(e => (
               <tr key={e.id}>
                 <td><span className="pill neutral">{e.kind || e.type}</span></td>
                 <td className="mono" style={{ color: 'var(--ink-strong)' }}>{e.value}</td>
@@ -3002,7 +3128,73 @@ function ListPage({ kind }) {
           </tbody>
         </table>
       </div>
+
+      {showImport && (
+        <BulkImportModal
+          kind={kind}
+          isBL={isBL}
+          busy={busy}
+          onCancel={() => setShowImport(false)}
+          onImport={bulkImport}
+        />
+      )}
     </>
+  );
+}
+
+// M005 (2026-05-07) — paste-CSV bulk import for access lists.
+// Format documented inline in the modal so operators don't need
+// to leave the page to look it up.
+function BulkImportModal({ kind, isBL, busy, onCancel, onImport }) {
+  const [text, setText] = useStateP('');
+  const sample = isBL
+    ? 'kind,value,note,bypass,expires_at\nip,203.0.113.7,test entry,,2026-12-31T00:00:00Z\ncidr,198.51.100.0/24,known bot net,,'
+    : 'kind,value,note,bypass,expires_at\nip,203.0.113.7,partner,sqli|xss,\nasn,AS13335,cdn,all,';
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
+        <div className="modal-head">
+          <div className="modal-title">Bulk import to {kind}</div>
+          <button className="btn btn-sm" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          <p style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 8 }}>
+            Paste CSV: <code>kind,value,note,bypass,expires_at</code>.
+            One row per entry; header row is auto-detected.
+            Each row submits as its own audit-chained POST.
+            {!isBL && <> Bypass list is pipe-separated (e.g. <code>sqli|xss</code> or <code>all</code>).</>}
+          </p>
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            placeholder={sample}
+            disabled={busy}
+            spellCheck={false}
+            style={{
+              width: '100%',
+              minHeight: 220,
+              padding: 8,
+              background: 'var(--canvas-2)',
+              border: '1px solid var(--hairline)',
+              borderRadius: 4,
+              color: 'var(--ink)',
+              fontFamily: 'var(--mono)',
+              fontSize: 12,
+            }}
+          />
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button
+            className="btn primary"
+            onClick={() => onImport(text)}
+            disabled={busy || !text.trim()}
+          >
+            {busy ? 'Importing…' : 'Import'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3844,6 +4036,17 @@ function PageSettings() {
         </div>
       </div>
 
+      {/* M004 (2026-05-07) — surface backend data already returned
+          by /api/admin/sessions, /api/admin/break-glass,
+          /api/integrations, /api/certs. All four cards are
+          read-only today; mutation surfaces (terminate, toggle,
+          update) ship in a follow-up once the audit-mutated
+          handlers are wired. */}
+      <SettingsSessionsCard />
+      <SettingsBreakGlassCard />
+      <SettingsIntegrationsCard />
+      <SettingsCertsCard />
+
       {/*
         CQF-T7 — Cache management card removed.
 
@@ -3865,6 +4068,230 @@ function PageSettings() {
         bucket inspector.
       */}
     </>
+  );
+}
+
+// ============== M004 SETTINGS SECTIONS ==============
+// All four cards are read-only surfaces over backend data that
+// previously had no UI. The QA finding was specifically:
+//   "Operators cannot terminate sessions, enable break-glass,
+//    configure integrations, or inspect cert expiry from the
+//    dashboard. All require direct API calls."
+// Visibility comes first; the mutation surfaces follow once the
+// audit-mutated handlers exist (DELETE /api/admin/sessions/{id},
+// POST /api/admin/break-glass, PUT /api/integrations).
+
+function SettingsSessionsCard() {
+  const sessions = window.useAdminSessionsApi
+    ? window.useAdminSessionsApi()
+    : { data: null };
+  const rows = sessions.data?.sessions || [];
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Active admin sessions</div>
+          <div className="card-sub">
+            live from /api/admin/sessions · {rows.length} active · terminate via direct API
+            (audit-mutated DELETE handler not yet wired)
+          </div>
+        </div>
+        <span className={`pill ${rows.length > 0 ? 'up' : 'neutral'}`}>{rows.length}</span>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          No active sessions visible. (Your own session is excluded by the API.)
+        </div>
+      ) : (
+        <table className="tbl tbl-compact">
+          <thead>
+            <tr>
+              <th style={{ width: 220 }}>Session id</th>
+              <th>Created</th>
+              <th>Last seen</th>
+              <th>IP</th>
+              <th>User-Agent</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(s => (
+              <tr key={s.id || s.session_id}>
+                <td className="mono" style={{ fontSize: 11 }}>
+                  {(s.id || s.session_id || '—').slice(0, 16)}…
+                </td>
+                <td className="dim">
+                  {s.created_at ? new Date(s.created_at).toISOString().slice(0, 19) : '—'}
+                </td>
+                <td className="dim">
+                  {s.last_seen ? new Date(s.last_seen).toISOString().slice(0, 19) : '—'}
+                </td>
+                <td className="mono">{s.ip || '—'}</td>
+                <td
+                  className="dim"
+                  style={{ maxWidth: 280, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  title={s.user_agent}
+                >
+                  {s.user_agent || '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function SettingsBreakGlassCard() {
+  const bg = window.useBreakGlassApi ? window.useBreakGlassApi() : { data: null };
+  const data = bg.data || { active: false };
+  const expiresAt = data.expires_at ? new Date(data.expires_at) : null;
+  const expiresIn = expiresAt
+    ? Math.max(0, Math.round((expiresAt - new Date()) / 60000))
+    : null;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Break-glass</div>
+          <div className="card-sub">
+            emergency override · live from /api/admin/break-glass · toggle via direct API
+            (audit-mutated POST handler not yet wired)
+          </div>
+        </div>
+        <span className={`pill ${data.active ? 'down' : 'neutral'}`}>
+          {data.active ? 'ACTIVE' : 'INACTIVE'}
+        </span>
+      </div>
+      <div style={{ padding: 4 }}>
+        {data.active ? (
+          <div className="callout warn" style={{ fontSize: 12 }}>
+            <strong>Break-glass active.</strong>{' '}
+            Reason: <em>{data.reason || '(unset)'}</em>{' '}
+            · expires in ~{expiresIn} min
+            {expiresAt && <> ({expiresAt.toISOString().slice(0, 19)} UTC)</>}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+            Not active. When enabled, break-glass relaxes selected
+            policies (e.g. mTLS) for a bounded TTL (60s–3600s) with
+            a free-form reason recorded in the audit chain.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SettingsIntegrationsCard() {
+  const integ = window.useIntegrationsApi
+    ? window.useIntegrationsApi()
+    : { data: null };
+  const data = integ.data || {};
+  const fields = [
+    { key: 'grafana_url', label: 'Grafana' },
+    { key: 'alertmanager_url', label: 'Alertmanager' },
+    { key: 'gitops_repo', label: 'GitOps repo' },
+    { key: 'prometheus_url', label: 'Prometheus' },
+  ];
+  const configured = fields.filter(f => data[f.key]).length;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">External integrations</div>
+          <div className="card-sub">
+            live from /api/integrations · {configured} of {fields.length} configured · edit via
+            waf.yaml + restart (audit-mutated PUT handler not yet wired)
+          </div>
+        </div>
+        <span className={`pill ${configured > 0 ? 'up' : 'neutral'}`}>
+          {configured}/{fields.length}
+        </span>
+      </div>
+      <table className="tbl tbl-compact">
+        <tbody>
+          {fields.map(f => (
+            <tr key={f.key}>
+              <td style={{ width: 180, color: 'var(--ink-dim)' }}>{f.label}</td>
+              <td className="mono">
+                {data[f.key]
+                  ? <a href={data[f.key]} target="_blank" rel="noopener noreferrer">{data[f.key]}</a>
+                  : <span style={{ color: 'var(--ink-dim)', fontStyle: 'italic' }}>not configured</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SettingsCertsCard() {
+  const certsApi = window.useCertsApi ? window.useCertsApi() : { data: null };
+  const certs = certsApi.data?.certs || certsApi.data || [];
+  const rows = Array.isArray(certs) ? certs : [];
+  function tone(days) {
+    if (days == null) return 'neutral';
+    if (days < 14) return 'down';
+    if (days < 30) return 'warn';
+    return 'up';
+  }
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Certificates</div>
+          <div className="card-sub">
+            live from /api/certs · {rows.length} loaded · ACME / static / mTLS source
+          </div>
+        </div>
+        <span className={`pill neutral`}>{rows.length}</span>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+          No certs reported. /api/certs may not be wired in this build.
+        </div>
+      ) : (
+        <table className="tbl tbl-compact">
+          <thead>
+            <tr>
+              <th>Subject / host</th>
+              <th>Issuer</th>
+              <th>Source</th>
+              <th style={{ width: 140 }}>Expires</th>
+              <th style={{ width: 110 }}>Days remaining</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((c, i) => {
+              const days = c.days_to_expiry ?? c.days_remaining;
+              return (
+                <tr key={c.host || c.subject || i}>
+                  <td className="mono">{c.host || c.subject || '—'}</td>
+                  <td className="dim">{c.issuer || '—'}</td>
+                  <td>
+                    <span className="pill neutral" style={{ fontSize: 9 }}>
+                      {c.source || 'static'}
+                    </span>
+                  </td>
+                  <td className="dim">
+                    {c.expires_at
+                      ? new Date(c.expires_at).toISOString().slice(0, 10)
+                      : c.not_after || '—'}
+                  </td>
+                  <td>
+                    <span className={`pill ${tone(days)}`}>
+                      {days != null ? `${days} d` : '—'}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 
@@ -6002,6 +6429,7 @@ function PageScaling() {
   const runtime = window.useRuntimeApi();
   const cluster = window.useClusterApi();
   const state = window.useStateApi();
+  const loadmode = window.useLoadModeApi ? window.useLoadModeApi() : { data: null };
   const [draining, setDraining] = useStateP(false);
 
   const onDrain = async () => {
@@ -6028,16 +6456,153 @@ function PageScaling() {
             runtime.reload && runtime.reload();
             cluster.reload && cluster.reload();
             state.reload && state.reload();
+            loadmode.reload && loadmode.reload();
           }}>
             <window.I.Refresh /> Refresh
           </button>
         </div>
       </div>
 
+      <LoadModeCard loadmode={loadmode} />
       <ScalingL1Card runtime={runtime} />
       <ScalingL2Card cluster={cluster} onDrain={onDrain} draining={draining} />
       <ScalingL3Card state={state} />
     </>
+  );
+}
+
+// M002 (2026-05-07) — operator override for the LoadGauge mode.
+// Three pill buttons (normal / elevated / critical) + a "Clear
+// override" link that returns to auto-driven mode. Critical
+// requires a confirmation modal because it tightens block
+// thresholds and cannot be auto-recovered without an explicit
+// unset. Audit-mutated via PUT /api/loadmode.
+function LoadModeCard({ loadmode }) {
+  const data = loadmode?.data;
+  const [busy, setBusy] = useStateP(false);
+  const [confirmCritical, setConfirmCritical] = useStateP(false);
+  const effective = data?.effective_mode || data?.mode || '—';
+  const overrideActive = !!data?.override_active;
+  const autoMode = data?.mode || '—';
+
+  async function applyMode(mode) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await window.loadmodePut(mode);
+      if (r && r.status >= 200 && r.status < 300) {
+        window.aegisToast(
+          mode === 'unset'
+            ? 'Override cleared · mode now auto-driven'
+            : `Mode pinned to ${mode}`,
+          'ok',
+        );
+        loadmode.reload && loadmode.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status}`;
+        window.aegisToast(`Mode change failed: ${msg}`, 'err');
+      }
+    } catch (err) {
+      window.aegisToast(`Mode change error: ${err.message || err}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onClickMode(mode) {
+    if (mode === 'critical') {
+      setConfirmCritical(true);
+      return;
+    }
+    applyMode(mode);
+  }
+
+  const pillStyle = (mode) => ({
+    padding: '6px 14px',
+    border: '1px solid var(--border)',
+    borderRadius: 999,
+    cursor: busy ? 'not-allowed' : 'pointer',
+    fontSize: 12,
+    fontWeight: 500,
+    background: effective === mode ? 'var(--accent)' : 'transparent',
+    color: effective === mode ? 'var(--canvas)' : 'var(--ink)',
+    opacity: busy ? 0.6 : 1,
+  });
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Load mode</div>
+          <div className="card-sub">
+            operator pin overrides auto · audit-chained on every change
+          </div>
+        </div>
+        <span className={`pill ${effective === 'critical' ? 'down' : effective === 'elevated' ? 'warn' : 'up'}`}>
+          {effective.toUpperCase()}
+        </span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 4, flexWrap: 'wrap' }}>
+        {['normal', 'elevated', 'critical'].map(mode => (
+          <button
+            key={mode}
+            type="button"
+            style={pillStyle(mode)}
+            onClick={() => onClickMode(mode)}
+            disabled={busy}
+          >
+            {mode}
+          </button>
+        ))}
+        {overrideActive && (
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => applyMode('unset')}
+            disabled={busy}
+            style={{ marginLeft: 'auto' }}
+          >
+            Clear override (return to auto: {autoMode})
+          </button>
+        )}
+      </div>
+      <div style={{ marginTop: 8, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 11, color: 'var(--ink-dim)' }}>
+        {overrideActive
+          ? <>Operator override active. Auto-driven mode would be <code>{autoMode}</code>.</>
+          : <>Auto-driven from RPS. Pin a mode to override; clear to return to auto.</>}
+      </div>
+
+      {confirmCritical && (
+        <div className="modal-backdrop" onClick={() => setConfirmCritical(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <div className="modal-head">
+              <div className="modal-title">Pin mode to critical?</div>
+              <button className="btn btn-sm" onClick={() => setConfirmCritical(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: 13, lineHeight: 1.5 }}>
+                Critical mode tightens rate limits and block thresholds.
+                It does <strong>not</strong> auto-revert when load drops —
+                you must explicitly clear the override. The change is
+                audit-chained.
+              </p>
+            </div>
+            <div className="modal-foot">
+              <button className="btn" onClick={() => setConfirmCritical(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button
+                className="btn danger"
+                onClick={() => { setConfirmCritical(false); applyMode('critical'); }}
+                disabled={busy}
+              >
+                {busy ? 'Pinning…' : 'Pin to critical'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -7021,34 +7586,139 @@ function PageCompliance() {
   );
 }
 
+// M006 (2026-05-07) — escape one CSV cell. Wraps in quotes when
+// the value contains commas, quotes, or newlines (RFC 4180);
+// doubles internal quotes.
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+// M006 (2026-05-07) — trigger a browser download for a Blob.
+// Click the synthesised <a download> then revoke the URL on the
+// next tick so Safari has time to start the download.
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function PageReports() {
-  // Only the audit CSV is wired today. The other report shapes
-  // are placeholders — the data is available via /api/* but no
-  // CSV/PDF renderer is plumbed yet.
+  // M006 (2026-05-07) — Top Attackers + Compliance snapshot wired.
+  // Reports fall into two flavours: server-rendered CSV (audit log
+  // — too large to round-trip through the browser) and
+  // client-rendered (smaller payloads where fetching JSON +
+  // converting in the browser keeps the backend simple).
+  const [busyId, setBusyId] = useStateP(null);
+  const ts = () => new Date().toISOString().replace(/[:.]/g, '-');
+
+  async function downloadTopAttackers() {
+    setBusyId('top-7d');
+    try {
+      const r = await fetch('/api/attacks/top?window=604800&limit=500', {
+        credentials: 'same-origin',
+      });
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      const json = await r.json();
+      const rows = json.attackers || [];
+      const header = [
+        'identifier', 'kind', 'country', 'asn',
+        'blocks', 'last_seen', 'top_detector',
+      ];
+      const lines = [header.join(',')];
+      for (const row of rows) {
+        lines.push([
+          csvCell(row.identifier),
+          csvCell(row.kind),
+          csvCell(row.country),
+          csvCell(row.asn),
+          csvCell(row.blocks ?? row.block_count ?? 0),
+          csvCell(row.last_seen ?? row.last_block_at),
+          csvCell(row.top_detector ?? row.detector ?? ''),
+        ].join(','));
+      }
+      const blob = new Blob([lines.join('\n') + '\n'], {
+        type: 'text/csv;charset=utf-8',
+      });
+      downloadBlob(`top-attackers-7d-${ts()}.csv`, blob);
+      window.aegisToast(`Downloaded ${rows.length} rows`, 'ok');
+    } catch (err) {
+      window.aegisToast(`Top attackers report failed: ${err.message || err}`, 'err');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function downloadComplianceSnapshot() {
+    setBusyId('compliance');
+    try {
+      // /api/config returns the active runtime config; /api/detectors
+      // returns the live detector mask + per-detector mode. Both are
+      // small (< 50 KB combined) so JSON is fine.
+      const [cfgR, detR] = await Promise.all([
+        fetch('/api/config', { credentials: 'same-origin' }),
+        fetch('/api/detectors', { credentials: 'same-origin' }),
+      ]);
+      if (!cfgR.ok) throw new Error(`/api/config status ${cfgR.status}`);
+      if (!detR.ok) throw new Error(`/api/detectors status ${detR.status}`);
+      const config = await cfgR.json();
+      const detectors = await detR.json();
+      const snapshot = {
+        generated_at: new Date().toISOString(),
+        config,
+        detectors,
+      };
+      const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+        type: 'application/json;charset=utf-8',
+      });
+      downloadBlob(`compliance-snapshot-${ts()}.json`, blob);
+      window.aegisToast('Compliance snapshot downloaded', 'ok');
+    } catch (err) {
+      window.aegisToast(`Compliance snapshot failed: ${err.message || err}`, 'err');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const cards = [
     {
+      id: 'audit-200',
       title: 'Audit trail (last 200 events)',
       sub: 'CSV of every chained event — request decisions + config mutations',
+      kind: 'href',
       href: '/api/reports/audit.csv?limit=200',
-      ready: true,
     },
     {
+      id: 'audit-1000',
       title: 'Audit trail (last 1000 events)',
       sub: 'Larger window for weekly review',
+      kind: 'href',
       href: '/api/reports/audit.csv?limit=1000',
-      ready: true,
     },
     {
+      id: 'top-7d',
       title: 'Top attackers (last 7d)',
-      sub: 'IP / ASN / country / hits / first seen — not wired yet (data lives at /api/attacks/top)',
-      href: null,
-      ready: false,
+      sub: 'identifier / kind / country / ASN / blocks / last seen / top detector — sourced from /api/attacks/top',
+      kind: 'click',
+      onClick: downloadTopAttackers,
+      label: 'Download CSV',
     },
     {
+      id: 'compliance',
       title: 'Compliance snapshot',
-      sub: 'Active modes + clamped detectors — not wired yet (read live state via /api/compliance + /api/detectors)',
-      href: null,
-      ready: false,
+      sub: 'Active runtime config + detector mask, JSON snapshot — sourced from /api/config + /api/detectors',
+      kind: 'click',
+      onClick: downloadComplianceSnapshot,
+      label: 'Download JSON',
     },
   ];
   return (
@@ -7056,22 +7726,26 @@ function PageReports() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Reports</h1>
-          <p className="page-subtitle">CSV exports of audit + summary data · scheduled delivery not built yet</p>
+          <p className="page-subtitle">CSV / JSON exports of audit + summary data · scheduled delivery not built yet</p>
         </div>
       </div>
       <div className="card" style={{ padding: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
           {cards.map(card => (
-            <div key={card.title} className="card" style={{ padding: 12 }}>
+            <div key={card.id} className="card" style={{ padding: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>{card.title}</div>
               <div style={{ fontSize: 11, color: 'var(--ink-dim)', margin: '4px 0 10px' }}>{card.sub}</div>
-              {card.ready ? (
+              {card.kind === 'href' ? (
                 <a className="btn primary" href={card.href} download>
                   <window.I.Download /> Download CSV
                 </a>
               ) : (
-                <button className="btn" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                  <window.I.Download /> not wired yet
+                <button
+                  className="btn primary"
+                  onClick={card.onClick}
+                  disabled={busyId === card.id}
+                >
+                  <window.I.Download /> {busyId === card.id ? 'Preparing…' : (card.label || 'Download')}
                 </button>
               )}
             </div>
