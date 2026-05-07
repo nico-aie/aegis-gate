@@ -10,6 +10,8 @@ but no longer guiding new work.
 |---|---|---|
 | **Hackathon Round-1 stress test** | [`hackathon-stress-test.md`](./hackathon-stress-test.md) | Harness + mock upstream + 15-min k6 mixed-traffic shipped. Awaiting benchmark team's source-IP fan-out + latency target. |
 | **AI-assistant sweep tooling** | [`ai-assistant-testing-kickoff.md`](./ai-assistant-testing-kickoff.md) | Tooling shipped 2026-05-03 (`tests/sweeps/` + `make sweep-validate`). Awaiting sweep #1 schedule. |
+| **Multi-node deployment** | [`multi-node-deployment/`](./multi-node-deployment/) | Proposal drafted 2026-05-08. Active-Active behind L4 LB + Redis cluster. Awaiting SA Team answers on machine count, network model, Redis availability. |
+| **2026-05-07 QA fixes (tester-n)** | [`issue-fix/tester-n-2026-05-07/`](./issue-fix/tester-n-2026-05-07/) | C001+C002+H001+H002+H003 + M001+M002+M003+M004(read-only)+M005+M006+M007+M008 + L001-L004 shipped on `develop` 2026-05-08. Awaiting Test/UI re-check + M004 mutation backend follow-up + M009 operator action. |
 
 ## Recently shipped (kept for fix-lookup)
 
