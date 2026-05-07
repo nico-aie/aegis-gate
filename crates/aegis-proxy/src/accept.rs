@@ -257,6 +257,17 @@ pub(crate) async fn admin_accept_loop(
                                 .strip_prefix(&prefix)
                                 .map(|s| s.to_string())
                                 .unwrap_or(full);
+                            // M008 (2026-05-07) — skip phantom
+                            // entries from stale Redis state. A key
+                            // shaped `g:lease:members:` (empty
+                            // node id, e.g. left over from a crash
+                            // with a no-TTL write) produces an
+                            // empty id here. Surfacing it as a
+                            // peer renders the dashboard's "DOWN
+                            // peer with no node ID" mystery.
+                            if id.trim().is_empty() {
+                                continue;
+                            }
                             peers.push(
                                 aegis_control::api::tracking::ClusterPeer {
                                     id,

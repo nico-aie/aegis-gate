@@ -115,7 +115,19 @@ function TopBar() {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span className={`env-pill ${env}`}>● {env.toUpperCase()}</span>
+        {/* L002 (2026-05-07) — surface what UNKNOWN means without
+            requiring tribal knowledge. The pill reflects
+            `cfg.admin.environment` from /api/about. UNKNOWN means
+            the operator never set it; it's the default of the
+            environment-tagging system, not an error. */}
+        <span
+          className={`env-pill ${env}`}
+          title={
+            env === 'unknown'
+              ? 'Environment not labelled. Set cfg.admin.environment in waf.yaml ("dev", "staging", "prod") to clear this pill.'
+              : `Environment: ${env}`
+          }
+        >● {env.toUpperCase()}</span>
         {status.data?.mtls_break_glass_active && (
           <span
             className="pill down"
