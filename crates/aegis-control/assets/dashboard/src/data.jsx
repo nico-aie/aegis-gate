@@ -676,6 +676,36 @@ function useMtlsSansApi() {
 async function mtlsSansPut(allowed) {
   return csrfMutate('/api/mtls/sans', { method: 'PUT', body: JSON.stringify({ allowed }) });
 }
+
+// M002 (2026-05-07) — operator override for the LoadGauge mode.
+// PUT body shape (see crates/aegis-control/src/api/load_mode.rs):
+//   { override: "normal" | "elevated" | "critical" | "unset" }
+function useLoadModeApi() {
+  return useApi('/api/loadmode', { intervalMs: 5000, fallback: null });
+}
+async function loadmodePut(modeOrUnset) {
+  return csrfMutate('/api/loadmode', {
+    method: 'PUT',
+    body: JSON.stringify({ override: modeOrUnset }),
+  });
+}
+
+// M004 (2026-05-07) — Settings page surface hooks. All read-only;
+// the corresponding mutation handlers (terminate session, toggle
+// break-glass, update integration URLs) aren't wired in
+// admin_dispatch yet, so the dashboard renders these as
+// information-only cards. Future work: add audit-mutated
+// DELETE /api/admin/sessions/{id}, POST /api/admin/break-glass,
+// PUT /api/integrations.
+function useAdminSessionsApi() {
+  return useApi('/api/admin/sessions', { intervalMs: 15000, fallback: null });
+}
+function useBreakGlassApi() {
+  return useApi('/api/admin/break-glass', { intervalMs: 5000, fallback: null });
+}
+function useIntegrationsApi() {
+  return useApi('/api/integrations', { intervalMs: 60000, fallback: null });
+}
 async function mtlsSansDelete(san) {
   return csrfMutate(`/api/mtls/sans/${encodeURIComponent(san)}`, {
     method: 'DELETE',
@@ -1172,6 +1202,10 @@ Object.assign(window, {
   useAlertReceiversApi, alertReceiversPut, alertReceiverDelete, alertReceiverTest,
   // MTLS-T7 — Allowed SAN allowlist (read + audit-mutated PUT/DELETE/POST-test)
   useMtlsSansApi, mtlsSansPut, mtlsSansDelete, mtlsSansTest,
+  // M002 (2026-05-07) — load mode read + audit-mutated PUT
+  useLoadModeApi, loadmodePut,
+  // M004 (2026-05-07) — Settings page read-only sections
+  useAdminSessionsApi, useBreakGlassApi, useIntegrationsApi,
   // CQF-T1 — admin logout
   adminLogout,
   // CQF-T2 — Blacklist + Whitelist add/delete
