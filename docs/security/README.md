@@ -21,16 +21,22 @@ plans are tracked in [`../../plans/`](../../plans/).
 
 ## Detectors
 
-| Doc | Detector |
-|---|---|
-| [sqli.md](./detectors/sqli.md) | SQL injection |
-| [xss.md](./detectors/xss.md) | Cross-site scripting |
-| [path-traversal.md](./detectors/path-traversal.md) | Path traversal |
-| [ssrf.md](./detectors/ssrf.md) | SSRF |
-| [header-injection.md](./detectors/header-injection.md) | Header / response splitting |
-| [recon.md](./detectors/recon.md) | Scanner / probe detection |
-| [brute-force.md](./detectors/brute-force.md) | Auth brute-force |
-| [body-abuse.md](./detectors/body-abuse.md) | Body size / nesting abuse |
+Per-class signal generators. Each fires independently; the engine
+sums their `score` into the per-request risk total. Concrete signal
+scores per detector are listed in
+[risk-scoring.md § Score reference](./risk-scoring.md#score-reference).
+
+| Doc | Detector | Default signal score | Notes |
+|---|---|---:|---|
+| [sqli.md](./detectors/sqli.md) | SQL injection | 40 | Pattern + AST hybrid |
+| [xss.md](./detectors/xss.md) | Cross-site scripting | 35 | Reflected + stored heuristics |
+| [path-traversal.md](./detectors/path-traversal.md) | Path traversal | 45 | URL-decoded `..` walk |
+| [ssrf.md](./detectors/ssrf.md) | SSRF | 50 | Internal/cloud-meta IP blocklist |
+| [header-injection.md](./detectors/header-injection.md) | Header / response splitting | 40 | CRLF + smuggling probes |
+| [recon.md](./detectors/recon.md) | Scanner / probe detection | 25–30 | Common 404 fingerprints + canaries |
+| [brute-force.md](./detectors/brute-force.md) | Auth brute-force | configurable | Counter-based per `(ip, path)` |
+| [body-abuse.md](./detectors/body-abuse.md) | Body size / nesting abuse | 30–60 | Depth + size escalation |
+| [ai-detector.md](./detectors/ai-detector.md) | **AI / ML classifier** (`ai` feature) | 60 | ONNX, 26-feature extractor; chains AFTER the regex detectors as a tiebreaker for ambiguous payloads |
 
 ## Cross-cutting
 
