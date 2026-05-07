@@ -53,6 +53,10 @@ const ROUTE_REDIRECTS = {
   'tracking':  'health',
   'blacklist': 'access-lists',
   'whitelist': 'access-lists',
+  // 2026-05-07 — Routing & Upstreams page lives at #/upstreams.
+  // Documentation, bookmarks, and intuitive guesses (#/routing)
+  // used to silently land on Overview pre-H002. Now they redirect.
+  'routing':   'upstreams',
 };
 
 // 2026-05-07 — H002 fix. `location.hash.slice(2)` returns
