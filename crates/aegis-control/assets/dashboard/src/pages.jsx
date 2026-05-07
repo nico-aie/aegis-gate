@@ -180,6 +180,15 @@ function PageOverview() {
   // attacker is 127.0.0.1, which MaxMind doesn't resolve).
   const geoipLoaded = topApi.data?.geoip_loaded === true;
 
+  // L001 (2026-05-07) — surface firing alerts on the Overview
+  // landing page. Pre-fix the only signal was a small bell-icon
+  // badge in the top nav; SOC analysts during an incident would
+  // open the dashboard, see all-green KPIs, and miss the breach.
+  const overviewAlerts = window.useAlertsApi
+    ? window.useAlertsApi()
+    : { data: null };
+  const firingAlerts = overviewAlerts.data?.firing || [];
+
   return (
     <>
       <div className="page-head">
@@ -193,6 +202,35 @@ function PageOverview() {
           <button className="btn primary"><window.I.External /> Open Grafana</button>
         </div>
       </div>
+
+      {firingAlerts.length > 0 && (
+        <div
+          className="callout warn"
+          style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12 }}
+          role="alert"
+        >
+          <span style={{ fontSize: 18 }}>⚠</span>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            <strong>
+              {firingAlerts.length} alert{firingAlerts.length === 1 ? '' : 's'} firing
+            </strong>
+            {firingAlerts.length <= 4 && (
+              <span style={{ marginLeft: 8, color: 'var(--ink-mute)' }}>
+                {firingAlerts
+                  .map(a => a.name || a.id || a.alert || 'alert')
+                  .join(', ')}
+              </span>
+            )}
+          </div>
+          <a
+            href="#/health"
+            className="btn sm"
+            style={{ textDecoration: 'none' }}
+          >
+            View in Health &amp; SLOs →
+          </a>
+        </div>
+      )}
 
       {/* AI insights — coming soon */}
       <div className="ai-card ai-soon" style={{ marginBottom: 12 }}>
@@ -7124,8 +7162,9 @@ function PageTopAttackers() {
             <>Loading top attackers…</>
           ) : (
             <>
-              No attackers ranked in the last {win}. Drive synthetic load with{' '}
-              <code>make mock-load-attacks</code> to see the table populate.
+              No blocked sources in the last {win}. Try extending the
+              time window above, or wait for traffic to land — attacker
+              rankings populate as soon as the WAF sees blocks.
             </>
           )}
         </div>
