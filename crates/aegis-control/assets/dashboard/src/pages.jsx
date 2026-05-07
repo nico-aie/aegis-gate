@@ -1765,6 +1765,11 @@ function PageRuleManager() {
   const [newId, setNewId] = useStateP('');
   const [newBody, setNewBody] = useStateP(defaultRuleBody('my-rule-001'));
   const [newEnabled, setNewEnabled] = useStateP(true);
+  // 2026-05-07 — M007. window.confirm() blocks Chrome's message
+  // pump for 30+ s when extensions intercept it. Custom modal
+  // mirrors the DeleteRouteModal pattern used elsewhere on this
+  // dashboard for destructive actions.
+  const [showDeleteModal, setShowDeleteModal] = useStateP(false);
 
   // Re-anchor selected when the list changes (e.g., after delete).
   useEffectP(() => {
@@ -1824,9 +1829,14 @@ function PageRuleManager() {
     await runMutation(label, () => window.rulesToggle(selected.id));
   }
 
-  async function deleteSelected() {
+  function deleteSelected() {
     if (!selected) return;
-    if (!window.confirm(`Delete rule ${selected.id}? This is audit-mutated and cannot be undone.`)) return;
+    setShowDeleteModal(true);
+  }
+
+  async function confirmDeleteSelected() {
+    if (!selected) return;
+    setShowDeleteModal(false);
     await runMutation(`Rule ${selected.id} deleted`, () => window.rulesDelete(selected.id));
   }
 
@@ -1991,7 +2001,47 @@ function PageRuleManager() {
           busy={busy}
         />
       )}
+
+      {showDeleteModal && selected && (
+        <DeleteRuleModal
+          ruleId={selected.id}
+          busy={busy}
+          onCancel={() => setShowDeleteModal(false)}
+          onConfirm={confirmDeleteSelected}
+        />
+      )}
     </>
+  );
+}
+
+// 2026-05-07 — M007. Custom React confirmation modal replacing
+// the prior native window.confirm() call (which blocked Chrome's
+// message pump for 30+ s when extensions intercepted it). Mirrors
+// the DeleteRouteModal pattern used on the Routing page.
+function DeleteRuleModal({ ruleId, busy, onCancel, onConfirm }) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="modal-head">
+          <div className="modal-title">Delete rule {ruleId}?</div>
+          <button className="btn btn-sm" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          <p style={{ fontSize: 13, lineHeight: 1.5 }}>
+            Removing <code>{ruleId}</code> is audit-mutated and cannot
+            be undone. In-flight requests finish on the old rule
+            table; new requests see the updated table immediately.
+            The change is recorded in the audit chain.
+          </p>
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn danger" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Deleting…' : 'Delete rule'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
