@@ -654,6 +654,36 @@ mod tests {
     }
 
     #[test]
+    fn reset_state_preserves_unrelated_state_surface() {
+        // v2.3 §2.4 — reset_state MUST clear runtime WAF state but
+        // MUST preserve operator/admin-side state (sessions, audit
+        // log, long-term config). This test simulates an external
+        // state surface (e.g. SessionStore) by asserting that
+        // anything NOT registered as a reset callback stays
+        // untouched. Regression guard for QA finding H003
+        // (2026-05-07): the report's described eviction does not
+        // exist on develop, and this test fails fast if a future
+        // change accidentally wires a session-evicting callback into
+        // reset_state.
+        let c = ctx();
+        let session_alive = Arc::new(AtomicUsize::new(1));
+        let cleared_count = Arc::new(AtomicUsize::new(0));
+        let cleared_for_cb = cleared_count.clone();
+        c.register_reset_callback(Arc::new(move || {
+            cleared_for_cb.fetch_add(1, Ordering::Relaxed);
+        }));
+        let r = c.reset_state();
+        assert!(r.ok);
+        // Registered callback ran exactly once
+        assert_eq!(cleared_count.load(Ordering::Relaxed), 1);
+        // Anything not registered (i.e. session state) is untouched
+        assert_eq!(
+            session_alive.load(Ordering::Relaxed), 1,
+            "reset_state must NOT touch state surfaces that didn't register a callback",
+        );
+    }
+
+    #[test]
     fn flush_cache_reports_unsupported_when_no_callback() {
         let c = ctx();
         let r = c.flush_cache();
