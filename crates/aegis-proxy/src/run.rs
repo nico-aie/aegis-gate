@@ -693,6 +693,7 @@ pub async fn run(
                 Some(ip_rate_limiter.clone()),
                 tls_resolver.clone(),
                 client_trust.clone(),
+                Some(risk.clone()),
             ));
         }
         #[cfg(feature = "etcd")]

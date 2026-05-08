@@ -122,12 +122,35 @@ detectors:
 # before promoting the detector to a route's blocking budget.
 # ---------------------------------------------------------------------------
 ai:
-  enabled: true
+  # 2026-05-08 — disabled by default. The current ONNX model
+  # over-fires on benign traffic at every threshold below 0.95
+  # (QA Run-2 measured ~75% FP at 0.85 against clean traffic
+  # paths like /api/list, /favicon.ico, /static/app.js). This
+  # depresses the data_plane_availability SLO to ~40% in dev,
+  # which masks real failures.
+  #
+  # Two paths to enable:
+  #
+  #   A. Runtime opt-in via the v2.3 control plane (no restart):
+  #      curl -X POST http://127.0.0.1:8080/__waf_control/set_profile \
+  #        -H "X-Benchmark-Secret: <secret>" \
+  #        -H "content-type: application/json" \
+  #        -d '{"scope":"policies","feature":"rules_engine",
+  #             "policies":["ai"],"mode":"log_only"}'
+  #      → AI signals appear in audit but never enforce.
+  #
+  #   B. Per-deployment calibration (recommended for prod):
+  #      1. Sample clean traffic from your real upstream for ≥ 1 h.
+  #      2. Run the model offline against the sample; pick the
+  #         threshold that yields < 5% FP rate.
+  #      3. Set `enabled: true` + `confidence_threshold: <picked>`
+  #         here (or in your prod profile).
+  #
+  # Threshold note: 0.85 is the calibrated default in config.rs
+  # (default_ai_confidence_threshold). Don't ship `enabled: true`
+  # at any threshold below 0.95 without running step B.
+  enabled: false
   model_path: data/ai_model/waf_model.onnx
-  # 2026-05-07 — bumped from 0.5 (over-fired ~77% of clean traffic
-  # in QA) to the calibrated default. Operators can put AI into
-  # log_only at runtime via set_profile (v2.3 §2.5) without a
-  # config edit or restart.
   confidence_threshold: 0.85
 
 # ---------------------------------------------------------------------------

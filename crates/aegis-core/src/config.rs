@@ -1538,7 +1538,7 @@ impl Default for RiskWeights {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct RiskThresholds {
     #[serde(default = "default_challenge_at")]
     pub challenge_at: u32,
