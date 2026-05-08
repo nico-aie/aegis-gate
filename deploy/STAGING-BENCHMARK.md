@@ -774,6 +774,25 @@ curl -ksi "$HOST/?q=1%27%20OR%20%271%27%3D%271" | grep -i '^x-waf-' | sort
 Expected: 6 `x-waf-*` lines on each response. Missing any of them fails
 the v2.3 contract observability gate.
 
+### Bonus: per-request WAF latency (`X-WAF-Overhead-Latency`)
+
+Added 2026-05-08. Reports the per-request WAF processing time in
+milliseconds with microsecond precision (e.g. `1.234`). Captured at
+the listener's `service_fn` entry; covers detector chain + rule
+engine + risk gate + upstream forward + the response stamper itself.
+
+Not part of the v2.3 §5 mandatory list — an extra observability hint
+for operators analyzing per-route WAF cost from a single curl probe.
+
+```sh
+curl -ksi "$HOST/" | grep -i '^x-waf-overhead-latency'
+# x-waf-overhead-latency: 0.823
+```
+
+For a fleet-wide latency view, the dashboard's Performance page (or
+`GET /api/analytics/latency`) reads from the same per-stage histograms
+that drive this header.
+
 ### Verify the log_only enforcement skip (§ 5.3)
 
 This is the trickiest contract requirement: when a policy is in
