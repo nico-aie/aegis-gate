@@ -83,6 +83,19 @@ pub struct ProxyContext {
     pub interop_modes: std::sync::OnceLock<
         Arc<aegis_control::interop::mode::ModeStore>,
     >,
+    /// 2026-05-08 NEW-2 — Proof-of-work challenge issuer for the
+    /// v2.3 §3 contract. The data-plane challenge path issues a
+    /// `{nonce, difficulty, expires_at_ms, mac}` body so the OC
+    /// harness (or any automated client) can solve the PoW and
+    /// submit it to `POST /__waf_control/challenge_verify`.
+    /// `OnceLock` because the issuer is constructed in
+    /// `aegis-proxy::run` after the interop secret is parsed.
+    /// Empty when the binary boots without the interop runtime;
+    /// the data plane falls back to a body with `challenge_type`
+    /// only (degraded but never-panic).
+    pub pow_issuer: std::sync::OnceLock<
+        Arc<aegis_security::challenge::PowIssuer>,
+    >,
 }
 
 impl ProxyContext {
@@ -118,6 +131,7 @@ impl ProxyContext {
             access_list_country_lookup: std::sync::OnceLock::new(),
             websocket_metrics: None,
             interop_modes: std::sync::OnceLock::new(),
+            pow_issuer: std::sync::OnceLock::new(),
         })
     }
 

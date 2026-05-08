@@ -599,24 +599,48 @@ pub(crate) async fn handle_data_request_inner(
                 (resp, DecisionTag::block("risk-score").with_tier(tier))
             }
             aegis_security::risk::RiskLevel::Challenge => {
-                // AF-T1: contract-level distinction. Even though
-                // the HTTP status (429) and Retry-After header are
-                // shaped like rate-limit, the body carries
-                // "challenge" and the contract action MUST be
-                // `challenge` so the OC's challenge-solver path
-                // engages.
+                // AF-T1 + NEW-2 (2026-05-08): contract-level
+                // distinction. Even though the HTTP status (429)
+                // and Retry-After header are shaped like
+                // rate-limit, the body carries "challenge" and
+                // the contract action MUST be `challenge` so the
+                // OC's challenge-solver path engages.
+                //
+                // v2.3 §3 — body must carry "enough information
+                // for automated challenge solving." Per NEW-2
+                // we issue a stateless PoW challenge with a
+                // nonce + difficulty + expiry + MAC. The client
+                // solves and POSTs to /__waf_control/challenge_verify.
+                //
+                // If `pow_issuer` isn't wired (test binaries that
+                // skip the interop runtime), fall back to the
+                // legacy challenge_type-only body — degraded but
+                // never panic.
+                let body = match upstream_ctx.pow_issuer.get() {
+                    Some(issuer) => {
+                        let challenge = issuer.issue();
+                        serde_json::json!({
+                            "challenge": true,
+                            "challenge_type": "proof_of_work",
+                            "nonce": challenge.nonce,
+                            "difficulty": challenge.difficulty,
+                            "expires_at_ms": challenge.expires_at_ms,
+                            "mac": challenge.mac,
+                            "submit_to": "/__waf_control/challenge_verify",
+                            "reason": "risk score over challenge threshold",
+                        })
+                    }
+                    None => serde_json::json!({
+                        "challenge": true,
+                        "reason": "risk score over challenge threshold",
+                        "challenge_type": "proof_of_work",
+                    }),
+                };
                 let resp = Response::builder()
                     .status(429)
                     .header("content-type", "application/json")
                     .header("retry-after", "5")
-                    .body(Full::new(Bytes::from(
-                        serde_json::json!({
-                            "challenge": true,
-                            "reason": "risk score over challenge threshold",
-                            "challenge_type": "proof_of_work",
-                        })
-                        .to_string(),
-                    )))
+                    .body(Full::new(Bytes::from(body.to_string())))
                     .unwrap();
                 (resp, DecisionTag::challenge("risk-challenge").with_tier(tier))
             }
