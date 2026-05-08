@@ -101,26 +101,44 @@ pub struct DecisionTag {
     /// hadn't been classified at the point of decision (e.g. early
     /// rate-limit blocks pre-tier).
     pub tier: Option<aegis_core::tier::Tier>,
+    /// 2026-05-08 NEW-4 — score at decision time.
+    ///
+    /// Pre-fix the response stamper queried `risk.snapshot(peer.ip())`
+    /// on the raw TCP peer. The risk tracker keys on the
+    /// XFF-resolved client IP, so any traffic via a trusted
+    /// proxy (or a client that injects X-Forwarded-For) accumulated
+    /// score under a different key than the stamper queried —
+    /// `unwrap_or(0)` → `X-WAF-Risk-Score: 0` always. Downstream
+    /// monitoring couldn't distinguish first-time attackers from
+    /// repeat offenders.
+    ///
+    /// Now the data plane stamps the score it just observed
+    /// (under the correct XFF-resolved key) onto the
+    /// DecisionTag, and the response stamper prefers it over the
+    /// peer.ip() snapshot. Allow / no-risk-event paths leave it
+    /// `None` and the stamper falls back to a snapshot lookup
+    /// (which works for direct-connect clients).
+    pub risk_score: Option<u32>,
 }
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None, tier: None }
+        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
 
     /// Attach the resolved tier; used by the data plane after
@@ -128,6 +146,15 @@ impl DecisionTag {
     /// `X-WAF-Tier` response header can reflect the truth.
     pub fn with_tier(mut self, tier: aegis_core::tier::Tier) -> Self {
         self.tier = Some(tier);
+        self
+    }
+
+    /// NEW-4 (2026-05-08) — attach the risk score the data plane
+    /// observed at decision time. Stamper prefers this over a
+    /// peer.ip()-keyed snapshot lookup (which races XFF
+    /// resolution).
+    pub fn with_risk_score(mut self, score: u32) -> Self {
+        self.risk_score = Some(score);
         self
     }
 }
@@ -301,6 +328,28 @@ mod tests {
     fn decision_tag_block_records_rule_id() {
         let t = DecisionTag::block("rule-sqli-001");
         assert_eq!(t.rule_id.as_deref(), Some("rule-sqli-001"));
+    }
+
+    #[test]
+    fn decision_tag_with_risk_score_round_trip() {
+        // NEW-4 (2026-05-08) — DecisionTag carries the score the
+        // data plane saw at decision time so the response stamper
+        // doesn't re-query the tracker under a mismatched IP key.
+        let t = DecisionTag::block("ai")
+            .with_tier(aegis_core::tier::Tier::High)
+            .with_risk_score(42);
+        assert_eq!(t.risk_score, Some(42));
+        assert_eq!(t.rule_id.as_deref(), Some("ai"));
+        assert_eq!(t.tier, Some(aegis_core::tier::Tier::High));
+    }
+
+    #[test]
+    fn decision_tag_default_risk_score_is_none() {
+        // Allow path doesn't run the risk gate; carrying None is
+        // the contract — stamper falls back to a peer.ip()
+        // snapshot.
+        assert!(DecisionTag::allow().risk_score.is_none());
+        assert!(DecisionTag::block("r").risk_score.is_none());
     }
 
     #[test]

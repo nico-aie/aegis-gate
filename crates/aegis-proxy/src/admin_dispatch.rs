@@ -955,9 +955,17 @@ pub(crate) fn stamp_interop_response(
         &rt.modes,
         decision_tag.rule_id.as_deref(),
     );
+    // NEW-4 (2026-05-08) — prefer the score the data plane stamped
+    // at decision time (keyed on the XFF-resolved client IP, same
+    // key as the risk accumulator). The peer.ip()-keyed snapshot
+    // (the fallback) only matches the tracker for direct-connect
+    // clients; behind a trusted proxy or with operator-injected
+    // X-Forwarded-For, the keys differ and the snapshot returns
+    // None → 0.
+    let effective_risk_score = decision_tag.risk_score.unwrap_or(risk_score);
     let decision = Decision {
         request_id: request_id.clone(),
-        risk_score,
+        risk_score: effective_risk_score,
         action: decision_tag.action,
         rule_id: decision_tag.rule_id.clone(),
         cache: CacheState::Bypass,
@@ -973,7 +981,10 @@ pub(crate) fn stamp_interop_response(
             method: method.as_str().to_string(),
             path: path.to_string(),
             action: decision_tag.action.as_str().to_string(),
-            risk_score,
+            // NEW-4 (2026-05-08) — same effective score that was
+            // stamped on the X-WAF-Risk-Score header, so audit log
+            // and headers agree.
+            risk_score: effective_risk_score,
             mode: mode.as_str().to_string(),
             rule_id: decision_tag.rule_id,
             // 2026-05-05 — surface the resolved tier so the
