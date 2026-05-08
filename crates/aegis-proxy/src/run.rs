@@ -1391,6 +1391,7 @@ pub(crate) fn build_interop_runtime(
                 "recon".into(),
                 "brute_force".into(),
                 "ai".into(),
+                "command_injection".into(),
             ],
         },
     );

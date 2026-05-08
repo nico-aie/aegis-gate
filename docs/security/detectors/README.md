@@ -20,10 +20,11 @@ verbatim.
 | [xss.md](./xss.md) | `xss` | URL, body, headers |
 | [path-traversal.md](./path-traversal.md) | `path_traversal` | URL, body |
 | [ssrf.md](./ssrf.md) | `ssrf` | URL, body, fetch-style headers |
-| [header-injection.md](./header-injection.md) | `header_injection` | Headers |
+| [header-injection.md](./header-injection.md) | `header_injection` | Headers + query CRLF |
 | [recon.md](./recon.md) | `recon` | URL patterns + path entropy |
 | [brute-force.md](./brute-force.md) | `brute_force` | Login endpoints |
 | [body-abuse.md](./body-abuse.md) | `body_abuse`, `xxe`, `mass_assignment` | Body (JSON / XML / form) |
+| [command-injection.md](./command-injection.md) | `command_injection` | URL, body — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes |
 | [ai-detector.md](./ai-detector.md) | `ai` | URL, body, headers (binary attack/normal verdict over a 26-feature vector via ONNX) |
 
 The detector mask (P2/P3 in [`Implement-Progress.md`](../../../Implement-Progress.md))

@@ -36,9 +36,11 @@ pub mod class_label {
     pub const BODY_ABUSE: &str = "body_abuse";
     pub const RECON: &str = "recon";
     pub const BRUTE_FORCE: &str = "brute_force";
+    pub const COMMAND_INJECTION: &str = "command_injection";
 
-    pub const ALL: [&str; 8] = [
+    pub const ALL: [&str; 9] = [
         SQLI, XSS, PATH_TRAVERSAL, SSRF, HEADER_INJECTION, BODY_ABUSE, RECON, BRUTE_FORCE,
+        COMMAND_INJECTION,
     ];
 }
 
@@ -104,10 +106,10 @@ mod tests {
     }
 
     #[test]
-    fn register_pre_allocates_all_eight_class_series() {
+    fn register_pre_allocates_all_class_series() {
         let reg = MetricsRegistry::init();
         let _m = DetectorHitMetrics::register(&reg).unwrap();
-        assert_eq!(series_count(&reg), 8);
+        assert_eq!(series_count(&reg), class_label::ALL.len());
         for c in class_label::ALL {
             assert_eq!(series_value(&reg, c), 0.0, "class {c} starts at 0");
         }
@@ -134,7 +136,11 @@ mod tests {
         let reg = MetricsRegistry::init();
         let m = DetectorHitMetrics::register(&reg).unwrap();
         m.record("typo");
-        assert_eq!(series_count(&reg), 9, "typo created a 9th series");
+        assert_eq!(
+            series_count(&reg),
+            class_label::ALL.len() + 1,
+            "typo created an extra series past the known classes",
+        );
     }
 
     #[test]

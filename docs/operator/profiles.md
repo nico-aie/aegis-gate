@@ -47,6 +47,7 @@ WAF tier).
 | Rate-limit budget    | loose       | 6k/min        | 30k/min              | 3k/min      |
 | `recon` detector     | on          | on            | **off**              | on          |
 | `brute_force`        | on          | **on**        | off                  | on          |
+| `command_injection`  | on          | on            | on                   | on          |
 | `compliance.modes`   | none        | none          | none                 | populate    |
 | TLS min version      | 1.2         | 1.2           | 1.2                  | 1.2 / 1.3   |
 | State backend        | in-memory   | **redis**     | redis                | redis       |

@@ -499,6 +499,7 @@ mod tests {
                     "recon".into(),
                     "brute_force".into(),
                     "ai".into(),
+                    "command_injection".into(),
                 ],
             },
         );

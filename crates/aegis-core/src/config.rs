@@ -1590,6 +1590,11 @@ pub struct DetectorsConfig {
     pub recon: DetectorToggle,
     #[serde(default = "default_detector_toggle")]
     pub brute_force: DetectorToggle,
+    /// 2026-05-08 SEC-M002 — dedicated command-injection detector
+    /// (`$()`, backticks, `${}`, `| cmd`, `; cmd`, etc.). Default
+    /// enabled — closes a gap that AI was previously covering.
+    #[serde(default = "default_detector_toggle")]
+    pub command_injection: DetectorToggle,
     /// DURABLE-T2 — optional file-backed persistence for the live
     /// detector mask. When set, the proxy writes the mask state to
     /// `path` after every audit-mutated PUT and reloads from it at
@@ -1627,6 +1632,7 @@ impl Default for DetectorsConfig {
             body_abuse: default_detector_toggle(),
             recon: default_detector_toggle(),
             brute_force: default_detector_toggle(),
+            command_injection: default_detector_toggle(),
             persistence: None,
         }
     }

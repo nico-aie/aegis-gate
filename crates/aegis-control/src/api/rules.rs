@@ -61,6 +61,7 @@ const RESERVED_RULE_IDS: &[&str] = &[
     "body_abuse",
     "recon",
     "brute_force",
+    "command_injection",
 ];
 
 /// Validate a candidate rule id. Returns `None` on accept,
