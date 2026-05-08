@@ -190,6 +190,11 @@ state:
                     .unwrap(),
             ),
             None, // MTLS-T3 — no identity tracker in this plain-http test
+            // 2026-05-08 NEW-2 — in-memory state backend; the data
+            // plane never reaches /__waf_control/challenge_verify
+            // in this plain-http test, but accept_loop requires
+            // the parameter.
+            std::sync::Arc::new(crate::state::InMemoryBackend::new()),
         ));
 
         // Give the accept loop a moment to start.
@@ -307,6 +312,8 @@ state:
                     .unwrap(),
             ),
             None, // MTLS-T3 — no identity tracker for this test
+            // 2026-05-08 NEW-2 — in-memory state for accept_loop
+            std::sync::Arc::new(crate::state::InMemoryBackend::new()),
         ));
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

@@ -648,7 +648,17 @@ pub(crate) async fn handle_interop_control(
             &serde_json::json!({"error": "interop surface disabled"}),
         );
     };
-    handle_interop_control_with_rt(req, rt.as_ref()).await
+    // 2026-05-08 NEW-2 — admin port has no direct path to the
+    // PowIssuer (it lives in ProxyContext which is data-plane
+    // scope). The OC harness submits to the data plane per the
+    // C001 short-circuit; admin-port challenge_verify returns
+    // 503 with a clear error if anyone hits it here.
+    handle_interop_control_with_rt(
+        req,
+        rt.as_ref(),
+        None,
+        services.state_backend.as_ref(),
+    ).await
 }
 
 /// Same dispatcher as [`handle_interop_control`] but takes an
@@ -656,9 +666,16 @@ pub(crate) async fn handle_interop_control(
 /// (the OC v2.3 benchmarker hits `/__waf_control/*` on the public
 /// TLS listener, not the admin port — see deploy/STAGING-BENCHMARK.md
 /// §7.5).
+///
+/// 2026-05-08 NEW-2 — `pow_issuer` and `state` are needed for the
+/// `/__waf_control/challenge_verify` endpoint added per v2.3 §3.
+/// Both are `None` in test contexts that skip the interop runtime;
+/// the dispatcher returns 503 for challenge_verify in that case.
 pub(crate) async fn handle_interop_control_with_rt(
     req: hyper::Request<hyper::body::Incoming>,
     rt: &aegis_control::interop::InteropRuntime,
+    pow_issuer: Option<&Arc<aegis_security::challenge::PowIssuer>>,
+    state: Option<&Arc<dyn aegis_core::state::StateBackend>>,
 ) -> Response<Full<Bytes>> {
     use aegis_control::interop::{control, CONTROL_SECRET_HEADER};
     use http_body_util::BodyExt;
@@ -729,12 +746,125 @@ pub(crate) async fn handle_interop_control_with_rt(
                 .unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "no-store")
         }
+        // 2026-05-08 NEW-2 — PoW challenge verify per v2.3 §3.
+        // Body: { nonce, difficulty, expires_at_ms, mac, counter }
+        // Returns 204 on first valid solution; 4xx on tamper /
+        // expiry / replay / insufficient difficulty.
+        (hyper::Method::POST, "/__waf_control/challenge_verify") => {
+            handle_challenge_verify(req, pow_issuer, state).await
+        }
         _ => json_response(
             404,
             &serde_json::json!({
                 "ok": false,
                 "error": "unknown control endpoint",
             }),
+        ),
+    }
+}
+
+/// 2026-05-08 NEW-2 — verify a PoW solution submitted by an
+/// automated client (the OC harness, a benchmark tool, or any
+/// bot-mitigation SDK). Body shape matches what the data-plane
+/// challenge response advertises in `submit_to`.
+async fn handle_challenge_verify(
+    req: hyper::Request<hyper::body::Incoming>,
+    pow_issuer: Option<&Arc<aegis_security::challenge::PowIssuer>>,
+    state: Option<&Arc<dyn aegis_core::state::StateBackend>>,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let issuer = match pow_issuer {
+        Some(i) => i,
+        None => {
+            return json_response(
+                503,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "pow issuer not wired",
+                }),
+            );
+        }
+    };
+    let state_ref = match state {
+        Some(s) => s.as_ref(),
+        None => {
+            return json_response(
+                503,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "state backend not wired",
+                }),
+            );
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct VerifyBody {
+        nonce: String,
+        difficulty: u8,
+        expires_at_ms: i64,
+        mac: String,
+        counter: String,
+    }
+
+    let bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return json_response(
+                400,
+                &serde_json::json!({"ok": false, "error": "body read error"}),
+            );
+        }
+    };
+    let body: VerifyBody = match serde_json::from_slice(&bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": format!("invalid body: {e}"),
+                }),
+            );
+        }
+    };
+
+    let result = issuer.verify(
+        state_ref,
+        &body.nonce,
+        body.difficulty,
+        body.expires_at_ms,
+        &body.mac,
+        &body.counter,
+    ).await;
+
+    use aegis_security::challenge::PowError;
+    match result {
+        Ok(()) => Response::builder()
+            .status(204)
+            .header("cache-control", "no-store")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+        Err(PowError::InvalidMac) => json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": "invalid_mac"}),
+        ),
+        Err(PowError::Expired) => json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": "expired"}),
+        ),
+        Err(PowError::InsufficientDifficulty) => json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": "insufficient_difficulty"}),
+        ),
+        Err(PowError::Replay) => json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": "replay"}),
+        ),
+        Err(PowError::StateError(msg)) => json_response(
+            500,
+            &serde_json::json!({"ok": false, "error": format!("state: {msg}")}),
         ),
     }
 }
