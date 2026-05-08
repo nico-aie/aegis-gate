@@ -61,7 +61,8 @@ clean.
             │                                                                    │
             │   Each detector is a pure function over the request.               │
             │   A hit emits a Signal { tag, score: 50–60 }.                      │
-            │   Signals accumulate on the request's running risk total.          │
+            │   The request contributes max(signal.score) to the per-IP risk     │
+            │   total — single multi-detector hit doesn't pile up score (M003).  │
             └────────────────────────────────────────────────────────────────────┘
                                          │   detectors done
                                          ▼
