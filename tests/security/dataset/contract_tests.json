@@ -1,0 +1,363 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "created": "2026-05-08",
+    "contract": "EN_waf_interop_contract_v2.3",
+    "description": "Contract compliance test cases for control plane endpoints (§2), observability headers (§5), audit log (§6), and decision normalization (§7). Drives /__waf_control/* endpoints with X-Benchmark-Secret header.",
+    "benchmark_secret": "waf-hackathon-2026-ctrl",
+    "data_plane": "http://127.0.0.1:8080",
+    "admin_plane": "http://127.0.0.1:9443"
+  },
+
+  "s2_control_plane": {
+    "description": "§2 Control plane endpoint compliance",
+
+    "capabilities": {
+      "endpoint": "GET /__waf_control/capabilities",
+      "cases": [
+        {
+          "id": "ctrl-001",
+          "label": "GET capabilities — valid secret",
+          "method": "GET",
+          "path": "/__waf_control/capabilities",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl"},
+          "expected_status": 200,
+          "expected_fields": ["ok", "features", "active"],
+          "schema_checks": {
+            "ok": true,
+            "features": "object",
+            "active.default_mode": "string_in:enforce,log_only"
+          }
+        },
+        {
+          "id": "ctrl-002",
+          "label": "GET capabilities — missing secret → 403",
+          "method": "GET",
+          "path": "/__waf_control/capabilities",
+          "headers": {},
+          "expected_status": 403
+        },
+        {
+          "id": "ctrl-003",
+          "label": "GET capabilities — wrong secret → 403",
+          "method": "GET",
+          "path": "/__waf_control/capabilities",
+          "headers": {"X-Benchmark-Secret": "wrong-secret"},
+          "expected_status": 403
+        }
+      ]
+    },
+
+    "reset_state": {
+      "endpoint": "POST /__waf_control/reset_state",
+      "cases": [
+        {
+          "id": "ctrl-010",
+          "label": "reset_state {scope:all} — clears risk state",
+          "method": "POST",
+          "path": "/__waf_control/reset_state",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {"scope": "all"},
+          "expected_status": 200,
+          "expected_fields": ["ok", "action", "audit_log_preserved", "ts_ms"],
+          "schema_checks": {
+            "ok": true,
+            "action": "reset_state",
+            "audit_log_preserved": true,
+            "ts_ms": "integer"
+          }
+        },
+        {
+          "id": "ctrl-011",
+          "label": "reset_state {scope:risk} — clears risk only",
+          "method": "POST",
+          "path": "/__waf_control/reset_state",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {"scope": "risk"},
+          "expected_status": 200,
+          "schema_checks": {"ok": true}
+        },
+        {
+          "id": "ctrl-012",
+          "label": "reset_state — missing secret → 403",
+          "method": "POST",
+          "path": "/__waf_control/reset_state",
+          "headers": {"Content-Type": "application/json"},
+          "body": {"scope": "all"},
+          "expected_status": 403
+        },
+        {
+          "id": "ctrl-013",
+          "label": "reset_state does NOT truncate audit log",
+          "method": "POST",
+          "path": "/__waf_control/reset_state",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {"scope": "all"},
+          "post_check": "audit_log_line_count_not_decreased",
+          "notes": "Per §2.4: reset MUST NOT delete/truncate/rotate audit log"
+        }
+      ]
+    },
+
+    "set_profile": {
+      "endpoint": "POST /__waf_control/set_profile",
+      "cases": [
+        {
+          "id": "ctrl-020",
+          "label": "scope:all mode:log_only — all features to log_only",
+          "method": "POST",
+          "path": "/__waf_control/set_profile",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {"scope": "all", "mode": "log_only"},
+          "expected_status": 200,
+          "expected_fields": ["ok", "action", "applied", "active", "ts_ms"],
+          "schema_checks": {
+            "ok": true,
+            "action": "set_profile",
+            "active.default_mode": "log_only"
+          },
+          "behavioral_test": "attack_probe_returns_200_with_xwafaction_block",
+          "cleanup": {"scope": "all", "mode": "enforce"}
+        },
+        {
+          "id": "ctrl-021",
+          "label": "scope:all mode:enforce — restore all to enforce",
+          "method": "POST",
+          "path": "/__waf_control/set_profile",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {"scope": "all", "mode": "enforce"},
+          "expected_status": 200,
+          "schema_checks": {
+            "ok": true,
+            "active.default_mode": "enforce"
+          },
+          "behavioral_test": "attack_probe_returns_403"
+        },
+        {
+          "id": "ctrl-022",
+          "label": "scope:features — set rules_engine to log_only",
+          "method": "POST",
+          "path": "/__waf_control/set_profile",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {"scope": "features", "mode": "log_only", "features": ["rules_engine"]},
+          "expected_status": 200,
+          "schema_checks": {"ok": true}
+        },
+        {
+          "id": "ctrl-023",
+          "label": "scope:policies — set ai policy to log_only",
+          "method": "POST",
+          "path": "/__waf_control/set_profile",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {"scope": "policies", "feature": "rules_engine", "policies": ["ai"], "mode": "log_only"},
+          "expected_status": 200,
+          "schema_checks": {"ok": true}
+        },
+        {
+          "id": "ctrl-024",
+          "label": "Unsupported feature → unsupported list or 400",
+          "method": "POST",
+          "path": "/__waf_control/set_profile",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {"scope": "features", "mode": "log_only", "features": ["nonexistent_feature_xyz"]},
+          "expected_status_in": [200, 400, 422],
+          "schema_checks": {
+            "unsupported": "array_contains:nonexistent_feature_xyz_OR_error_field"
+          },
+          "notes": "Per §2.5: MUST NOT silently ignore unsupported items"
+        },
+        {
+          "id": "ctrl-025",
+          "label": "Missing secret → 403",
+          "method": "POST",
+          "path": "/__waf_control/set_profile",
+          "headers": {"Content-Type": "application/json"},
+          "body": {"scope": "all", "mode": "log_only"},
+          "expected_status": 403
+        }
+      ]
+    },
+
+    "flush_cache": {
+      "endpoint": "POST /__waf_control/flush_cache",
+      "cases": [
+        {
+          "id": "ctrl-030",
+          "label": "flush_cache — valid secret",
+          "method": "POST",
+          "path": "/__waf_control/flush_cache",
+          "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl", "Content-Type": "application/json"},
+          "body": {},
+          "expected_status_in": [200, 204, 501],
+          "notes": "Per §2.6: if caching not implemented, MAY return not-supported. 501 is acceptable."
+        },
+        {
+          "id": "ctrl-031",
+          "label": "flush_cache — missing secret → 403",
+          "method": "POST",
+          "path": "/__waf_control/flush_cache",
+          "headers": {"Content-Type": "application/json"},
+          "body": {},
+          "expected_status": 403
+        }
+      ]
+    }
+  },
+
+  "s5_header_compliance": {
+    "description": "§5 Mandatory observability headers — must be present on ALL response types",
+    "required_headers": ["X-WAF-Request-Id", "X-WAF-Risk-Score", "X-WAF-Action", "X-WAF-Rule-Id", "X-WAF-Cache", "X-WAF-Mode"],
+    "cases": [
+      {
+        "id": "hdr-001",
+        "label": "Headers on allow response",
+        "probe": "GET / (clean IP)",
+        "expected_action": "allow",
+        "checks": {
+          "X-WAF-Request-Id": "uuid_v4_format",
+          "X-WAF-Risk-Score": "integer_0_to_100",
+          "X-WAF-Action": "allow",
+          "X-WAF-Rule-Id": "any_non_empty",
+          "X-WAF-Cache": "one_of:HIT,MISS,BYPASS",
+          "X-WAF-Mode": "one_of:enforce,log_only"
+        }
+      },
+      {
+        "id": "hdr-002",
+        "label": "Headers on block response (SQLi)",
+        "probe": "GET /?q=UNION+SELECT+null,version()-- (attack IP)",
+        "expected_action": "block",
+        "checks": {
+          "X-WAF-Request-Id": "uuid_v4_format",
+          "X-WAF-Risk-Score": "integer_0_to_100",
+          "X-WAF-Action": "block",
+          "X-WAF-Rule-Id": "contains:sqli",
+          "X-WAF-Cache": "BYPASS",
+          "X-WAF-Mode": "enforce"
+        }
+      },
+      {
+        "id": "hdr-003",
+        "label": "Headers on challenge response (high-risk IP)",
+        "probe": "Clean request from IP with score >= challenge_at threshold",
+        "expected_action": "challenge",
+        "checks": {
+          "X-WAF-Request-Id": "uuid_v4_format",
+          "X-WAF-Risk-Score": "integer_gte_challenge_threshold",
+          "X-WAF-Action": "challenge",
+          "X-WAF-Rule-Id": "any_non_empty",
+          "X-WAF-Cache": "BYPASS",
+          "X-WAF-Mode": "enforce"
+        }
+      },
+      {
+        "id": "hdr-004",
+        "label": "X-WAF-Request-Id is valid UUID v4",
+        "check": "regex:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+        "notes": "UUID v4 format per §5.1"
+      },
+      {
+        "id": "hdr-005",
+        "label": "X-WAF-Risk-Score is integer 0-100",
+        "check": "integer_range:0-100",
+        "notes": "Plain integer, no whitespace per §5.1"
+      },
+      {
+        "id": "hdr-006",
+        "label": "log_only mode — X-WAF-Action reports intended action, X-WAF-Mode: log_only",
+        "setup": "POST /__waf_control/set_profile {scope:all, mode:log_only}",
+        "probe": "Attack request that would normally be blocked",
+        "checks": {
+          "X-WAF-Action": "block (intended, not enforced)",
+          "X-WAF-Mode": "log_only",
+          "http_status": "200 or 502 (not 403)"
+        },
+        "cleanup": "POST /__waf_control/set_profile {scope:all, mode:enforce}",
+        "notes": "Per §5.3: log_only MUST report intended action while not enforcing"
+      }
+    ]
+  },
+
+  "s6_audit_log": {
+    "description": "§6 Audit log mandatory fields and correlation",
+    "required_fields": ["request_id", "ts_ms", "ip", "method", "path", "action", "risk_score", "mode"],
+    "cases": [
+      {
+        "id": "audit-001",
+        "label": "Audit entry has all required fields",
+        "check_via": "admin_api:/api/audit/since?limit=5",
+        "required_fields": ["request_id", "ts_ms", "ip", "method", "path", "action", "risk_score", "mode"]
+      },
+      {
+        "id": "audit-002",
+        "label": "request_id matches X-WAF-Request-Id header",
+        "method": "Send request, capture X-WAF-Request-Id header, find matching audit entry",
+        "check": "header_request_id == audit_entry_request_id"
+      },
+      {
+        "id": "audit-003",
+        "label": "ip field is TCP peer address NOT XFF",
+        "method": "Send request with X-Forwarded-For: 8.8.8.8 from 127.0.0.1",
+        "check": "audit_entry.ip == 127.0.0.1 (peer addr), NOT 8.8.8.8 (XFF)"
+      },
+      {
+        "id": "audit-004",
+        "label": "mode field matches X-WAF-Mode header",
+        "check": "audit_entry.mode == response.X-WAF-Mode"
+      },
+      {
+        "id": "audit-005",
+        "label": "Audit log preserved after reset_state",
+        "method": "Count audit entries, call reset_state, count again",
+        "check": "count_after >= count_before",
+        "notes": "Per §2.4: MUST remain append-only across state resets"
+      }
+    ]
+  },
+
+  "challenge_engine": {
+    "description": "Challenge engine per §4 — PoW format and verification endpoint",
+    "cases": [
+      {
+        "id": "chal-001",
+        "label": "Challenge body has all required fields",
+        "trigger": "Request from IP at score >= challenge_at",
+        "expected_fields": ["challenge", "challenge_type", "nonce", "difficulty", "expires_at_ms", "mac", "submit_to"],
+        "schema": {
+          "challenge": true,
+          "challenge_type": "proof_of_work",
+          "difficulty": "integer",
+          "submit_to": "/__waf_control/challenge_verify"
+        }
+      },
+      {
+        "id": "chal-002",
+        "label": "challenge_verify — wrong counter → 403 insufficient_difficulty",
+        "method": "POST",
+        "path": "/__waf_control/challenge_verify",
+        "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl"},
+        "body_template": {"nonce": "<from_challenge>", "difficulty": "<from_challenge>", "expires_at_ms": "<from_challenge>", "mac": "<from_challenge>", "counter": "0"},
+        "expected_status": 403,
+        "expected_error": "insufficient_difficulty"
+      },
+      {
+        "id": "chal-003",
+        "label": "challenge_verify — bad MAC → 403 invalid_mac",
+        "method": "POST",
+        "path": "/__waf_control/challenge_verify",
+        "headers": {"X-Benchmark-Secret": "waf-hackathon-2026-ctrl"},
+        "body_template": {"nonce": "<from_challenge>", "difficulty": "<from_challenge>", "expires_at_ms": "<from_challenge>", "mac": "dGhpcyBpcyBub3QgYSB2YWxpZCBtYWM=", "counter": "0"},
+        "expected_status": 403,
+        "expected_error": "invalid_mac"
+      },
+      {
+        "id": "chal-004",
+        "label": "challenge_verify — missing secret → 403",
+        "method": "POST",
+        "path": "/__waf_control/challenge_verify",
+        "headers": {},
+        "expected_status": 403
+      }
+    ]
+  }
+}

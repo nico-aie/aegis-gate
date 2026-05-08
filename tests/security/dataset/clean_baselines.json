@@ -1,0 +1,281 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "created": "2026-05-08",
+    "contract": "EN_waf_interop_contract_v2.3",
+    "description": "Clean/legitimate traffic that MUST NOT be blocked. Any 403/429 on these is a false positive — CRITICAL finding per §7 decision matrix ('false_positive'). Ordered from most-common to edge-case.",
+    "rule": "ALL entries must receive X-WAF-Action: allow (or rate_limit only under extreme stress conditions per §7 'collateral'). A block or challenge on any entry is a false positive."
+  },
+
+  "static_assets": {
+    "description": "Common static file requests — safe CDN/browser traffic",
+    "cases": [
+      {
+        "id": "clean-001",
+        "label": "Root path",
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {},
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-002",
+        "label": "Favicon",
+        "method": "GET",
+        "path": "/favicon.ico",
+        "query": "",
+        "headers": {},
+        "user_agent": "Mozilla/5.0",
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-003",
+        "label": "Static JS bundle",
+        "method": "GET",
+        "path": "/static/app.js",
+        "query": "",
+        "headers": {},
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-004",
+        "label": "Static CSS",
+        "method": "GET",
+        "path": "/static/style.css",
+        "query": "",
+        "headers": {},
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-005",
+        "label": "Image resource",
+        "method": "GET",
+        "path": "/images/logo.png",
+        "query": "",
+        "headers": {},
+        "expected_action": "allow"
+      }
+    ]
+  },
+
+  "api_endpoints": {
+    "description": "Normal API calls that look like app traffic",
+    "cases": [
+      {
+        "id": "clean-010",
+        "label": "Users list",
+        "method": "GET",
+        "path": "/api/users",
+        "query": "page=1&limit=20",
+        "headers": {"Accept": "application/json"},
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-011",
+        "label": "User by ID",
+        "method": "GET",
+        "path": "/api/users/42",
+        "query": "",
+        "headers": {"Accept": "application/json"},
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-012",
+        "label": "JSON POST — normal login",
+        "method": "POST",
+        "path": "/api/login",
+        "query": "",
+        "body": "{\"username\":\"alice\",\"password\":\"hunter2\"}",
+        "content_type": "application/json",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "Legitimate credentials — no injection patterns"
+      },
+      {
+        "id": "clean-013",
+        "label": "Form POST — normal search",
+        "method": "POST",
+        "path": "/search",
+        "query": "",
+        "body": "q=blue+widget&category=electronics",
+        "content_type": "application/x-www-form-urlencoded",
+        "headers": {},
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-014",
+        "label": "API list with sort",
+        "method": "GET",
+        "path": "/api/list",
+        "query": "sort=price&order=asc",
+        "headers": {},
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-015",
+        "label": "Health check path",
+        "method": "GET",
+        "path": "/health",
+        "query": "",
+        "headers": {},
+        "expected_action": "allow"
+      }
+    ]
+  },
+
+  "benign_keywords": {
+    "description": "Requests that contain security-like words in benign context — common false positive sources",
+    "cases": [
+      {
+        "id": "clean-020",
+        "label": "Search with 'script' in term",
+        "method": "GET",
+        "path": "/search",
+        "query": "q=shell+script+tutorial",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "Word 'script' in legitimate search — must not trigger XSS"
+      },
+      {
+        "id": "clean-021",
+        "label": "Search with 'select' in term",
+        "method": "GET",
+        "path": "/search",
+        "query": "q=select+product+category",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "SQL keyword 'SELECT' in natural language query"
+      },
+      {
+        "id": "clean-022",
+        "label": "URL with 'union' in path",
+        "method": "GET",
+        "path": "/union-types/documentation",
+        "query": "",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "'union' in URL path as product name"
+      },
+      {
+        "id": "clean-023",
+        "label": "Email address in query",
+        "method": "GET",
+        "path": "/api/users",
+        "query": "email=alice@example.com",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "Email with @ — must not trigger header injection"
+      },
+      {
+        "id": "clean-024",
+        "label": "JSON with apostrophe in value",
+        "method": "POST",
+        "path": "/api/items",
+        "query": "",
+        "body": "{\"name\":\"O'Brien's Pub\",\"type\":\"restaurant\"}",
+        "content_type": "application/json",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "Apostrophe in JSON string — must not trigger SQLi"
+      },
+      {
+        "id": "clean-025",
+        "label": "Markdown content in body",
+        "method": "POST",
+        "path": "/api/posts",
+        "query": "",
+        "body": "{\"content\":\"# Hello\\n\\nThis is **bold** text with `code` and [links](https://example.com).\"}",
+        "content_type": "application/json",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "Markdown with special chars — must not trigger XSS/injection"
+      },
+      {
+        "id": "clean-026",
+        "label": "File path in API parameter",
+        "method": "GET",
+        "path": "/api/docs",
+        "query": "path=/docs/getting-started",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "Legitimate path parameter — must not trigger path traversal"
+      },
+      {
+        "id": "clean-027",
+        "label": "URL in JSON body (safe)",
+        "method": "POST",
+        "path": "/api/webhooks",
+        "query": "",
+        "body": "{\"callback_url\":\"https://api.myapp.com/hooks/123\"}",
+        "content_type": "application/json",
+        "headers": {},
+        "expected_action": "allow",
+        "notes": "Legitimate URL in body — must not trigger SSRF"
+      },
+      {
+        "id": "clean-028",
+        "label": "Numeric ID in path",
+        "method": "GET",
+        "path": "/api/orders/12345",
+        "query": "",
+        "headers": {},
+        "expected_action": "allow"
+      }
+    ]
+  },
+
+  "browser_headers": {
+    "description": "Requests with realistic browser header sets — must all pass",
+    "cases": [
+      {
+        "id": "clean-030",
+        "label": "Chrome browser fingerprint",
+        "method": "GET",
+        "path": "/api/list",
+        "query": "",
+        "headers": {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.5",
+          "Accept-Encoding": "gzip, deflate, br"
+        },
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-031",
+        "label": "Firefox browser fingerprint",
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        },
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-032",
+        "label": "Mobile Safari",
+        "method": "GET",
+        "path": "/m/",
+        "query": "",
+        "headers": {
+          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        },
+        "expected_action": "allow"
+      },
+      {
+        "id": "clean-033",
+        "label": "curl/wget user agent",
+        "method": "GET",
+        "path": "/api/status",
+        "query": "",
+        "headers": {"User-Agent": "curl/8.0.0"},
+        "expected_action": "allow",
+        "notes": "Automation/devops tool — not inherently malicious"
+      }
+    ]
+  }
+}
