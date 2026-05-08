@@ -6232,6 +6232,7 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
   const peers = cluster?.data?.peers || [];
   const ourNode = cluster?.data?.our_node;
   const isLeader = cluster?.data?.is_leader;
+  const leaderNode = cluster?.data?.leader_node;
   const [confirmStep, setConfirmStep] = useStateP(0); // 0 idle, 1 first, 2 final
   const [drainResult, setDrainResult] = useStateP(null);
 
@@ -6244,24 +6245,54 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
     setDrainResult(res);
   };
 
+  // 2026-05-08 NEW-3 — derive freshness signals from the raw
+  // ClusterPeer fields the backend actually serialises
+  // (id, addr, version, last_heartbeat, leases). The pre-fix
+  // dashboard read p.node_id / p.healthy / p.last_heartbeat_age_s
+  // / p.leader — none of which exist on the JSON, so a single
+  // self-peer rendered as a phantom `down/replica/—` row.
+  //
+  // Healthy is defined here as a heartbeat within 30 s (≈ 2×
+  // the 15 s lease TTL). Beyond that the membership lease would
+  // have expired and the peer wouldn't be in the list at all,
+  // but we defend in depth.
+  const now = Date.now();
+  const peersDecorated = peers.map(p => {
+    const ts = p.last_heartbeat ? new Date(p.last_heartbeat).getTime() : NaN;
+    const ageSec = Number.isFinite(ts) ? Math.max(0, Math.round((now - ts) / 1000)) : null;
+    const healthy = ageSec != null && ageSec < 30;
+    const leader = leaderNode != null && p.id === leaderNode;
+    const isMe = p.id === ourNode;
+    return { ...p, ageSec, healthy, leader, isMe };
+  });
+  const peersExcludingSelf = peersDecorated.filter(p => !p.isMe);
+  // Single-node mode: either no peers at all, or only self-peer
+  // present (the membership writer publishes our own members:<id>
+  // key, so an N=1 cluster always has 1 entry in peers[]).
+  const isSingleNode = peersExcludingSelf.length === 0;
+  const peerCountLabel = isSingleNode
+    ? '1 node · standalone'
+    : `${peersDecorated.length} ${peersDecorated.length === 1 ? 'node' : 'nodes'}`;
+
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <div className="card-head">
         <div>
           <div className="card-title">Layer 2 · Cluster peers</div>
           <div className="card-sub">
-            {peers.length} {peers.length === 1 ? 'peer' : 'peers'}
-            {ourNode ? ` · this node ${ourNode}${isLeader ? ' · leader' : ''}` : ' · standalone'}
+            {peerCountLabel}
+            {ourNode ? ` · this node ${ourNode}${isLeader ? ' · leader' : ''}` : ''}
           </div>
         </div>
         <span className="pill neutral">L2</span>
       </div>
-      {peers.length === 0 && (
+      {isSingleNode && (
         <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-          No cluster peers — running standalone.
+          Running in single-node mode — no remote peers configured.
+          {ourNode && peersDecorated.length === 1 && <> This node ({ourNode}) is the only member.</>}
         </div>
       )}
-      {peers.length > 0 && (
+      {!isSingleNode && (
         <table className="data-table" style={{ width: '100%', fontSize: 12 }}>
           <thead>
             <tr>
@@ -6272,26 +6303,23 @@ function ScalingL2Card({ cluster, onDrain, draining }) {
             </tr>
           </thead>
           <tbody>
-            {peers.map(p => {
-              const isMe = p.node_id === ourNode;
-              return (
-                <tr key={p.node_id} style={isMe ? { background: 'var(--surface-3)' } : undefined}>
-                  <td>
-                    <code>{p.node_id}</code>
-                    {isMe && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--ink-dim)' }}>(this)</span>}
-                  </td>
-                  <td>
-                    <span className={`pill ${p.healthy ? 'up' : 'down'}`}>
-                      {p.healthy ? 'healthy' : 'down'}
-                    </span>
-                  </td>
-                  <td style={{ textAlign: 'right' }} className="num">
-                    {p.last_heartbeat_age_s != null ? `${p.last_heartbeat_age_s}s ago` : '—'}
-                  </td>
-                  <td>{p.leader ? <span className="pill solid-yellow">leader</span> : <span className="dim">replica</span>}</td>
-                </tr>
-              );
-            })}
+            {peersDecorated.map(p => (
+              <tr key={p.id} style={p.isMe ? { background: 'var(--surface-3)' } : undefined}>
+                <td>
+                  <code>{p.id}</code>
+                  {p.isMe && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--ink-dim)' }}>(this)</span>}
+                </td>
+                <td>
+                  <span className={`pill ${p.healthy ? 'up' : 'down'}`}>
+                    {p.healthy ? 'healthy' : 'down'}
+                  </span>
+                </td>
+                <td style={{ textAlign: 'right' }} className="num">
+                  {p.ageSec != null ? `${p.ageSec}s ago` : '—'}
+                </td>
+                <td>{p.leader ? <span className="pill solid-yellow">leader</span> : <span className="dim">replica</span>}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       )}
