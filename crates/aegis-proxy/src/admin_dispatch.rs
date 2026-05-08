@@ -701,6 +701,25 @@ pub(crate) async fn handle_interop_control_with_rt(
                 .unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "no-store")
         }
+        // RUN3-NEW-2 (2026-05-08) — liveness endpoint for the
+        // automated interop harness. Returns 200 + minimal body
+        // as soon as the data-plane dispatcher can respond.
+        // Auth via X-Benchmark-Secret stays enforced (already
+        // checked above before the match), so this isn't an
+        // unauthenticated probe surface.
+        //
+        // Deeper readiness (Redis reachable, audit sink open,
+        // upstream pools registered) lives at the admin port's
+        // /healthz/ready — that endpoint exposes the actual
+        // /api/state probes. This one is just "the WAF process
+        // is alive and serving requests on this listener."
+        (hyper::Method::GET, "/__waf_control/healthz") => {
+            json_body_response(
+                200,
+                serde_json::json!({"ok": true, "status": "alive"}).to_string(),
+                "no-store",
+            )
+        }
         (hyper::Method::POST, "/__waf_control/reset_state") => {
             let body = serde_json::to_string(&rt.control.reset_state())
                 .unwrap_or_else(|_| "{}".into());
