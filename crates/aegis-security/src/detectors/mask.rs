@@ -45,11 +45,14 @@ pub enum DetectorClass {
     BodyAbuse,
     Recon,
     BruteForce,
+    /// 2026-05-08 SEC-M002 — dedicated command-injection class.
+    /// `$()`, backticks, `${}`, pipe/semi-shell-cmd patterns.
+    CommandInjection,
 }
 
 impl DetectorClass {
     /// All classes in the order they appear in `DetectorsConfig`.
-    pub const ALL: [DetectorClass; 8] = [
+    pub const ALL: [DetectorClass; 9] = [
         DetectorClass::Sqli,
         DetectorClass::Xss,
         DetectorClass::PathTraversal,
@@ -58,6 +61,7 @@ impl DetectorClass {
         DetectorClass::BodyAbuse,
         DetectorClass::Recon,
         DetectorClass::BruteForce,
+        DetectorClass::CommandInjection,
     ];
 
     /// Wire-compatible string used in `Detector::id()` and the JSON
@@ -72,6 +76,7 @@ impl DetectorClass {
             DetectorClass::BodyAbuse => "body_abuse",
             DetectorClass::Recon => "recon",
             DetectorClass::BruteForce => "brute_force",
+            DetectorClass::CommandInjection => "command_injection",
         }
     }
 
@@ -87,6 +92,7 @@ impl DetectorClass {
             DetectorClass::BodyAbuse => 1 << 5,
             DetectorClass::Recon => 1 << 6,
             DetectorClass::BruteForce => 1 << 7,
+            DetectorClass::CommandInjection => 1 << 8,
         }
     }
 
@@ -151,6 +157,9 @@ impl DetectorMask {
         }
         if cfg.brute_force.enabled {
             m.set(DetectorClass::BruteForce, true);
+        }
+        if cfg.command_injection.enabled {
+            m.set(DetectorClass::CommandInjection, true);
         }
         m
     }
@@ -221,6 +230,12 @@ pub struct DetectorMaskBody {
     pub recon: bool,
     #[serde(default)]
     pub brute_force: bool,
+    /// 2026-05-08 SEC-M002 — command-injection class. Defaults
+    /// to `false` on the wire (`#[serde(default)]`) so older
+    /// snapshot files load without erroring; the round-trip
+    /// helpers below populate it from the bitmask.
+    #[serde(default)]
+    pub command_injection: bool,
 }
 
 impl From<DetectorMask> for DetectorMaskBody {
@@ -234,6 +249,7 @@ impl From<DetectorMask> for DetectorMaskBody {
             body_abuse: m.is_enabled(DetectorClass::BodyAbuse),
             recon: m.is_enabled(DetectorClass::Recon),
             brute_force: m.is_enabled(DetectorClass::BruteForce),
+            command_injection: m.is_enabled(DetectorClass::CommandInjection),
         }
     }
 }
@@ -249,6 +265,7 @@ impl From<DetectorMaskBody> for DetectorMask {
             .with(DetectorClass::BodyAbuse, b.body_abuse)
             .with(DetectorClass::Recon, b.recon)
             .with(DetectorClass::BruteForce, b.brute_force)
+            .with(DetectorClass::CommandInjection, b.command_injection)
     }
 }
 
@@ -422,8 +439,8 @@ mod tests {
             assert_eq!(b & seen, 0, "duplicate bit for {c:?}");
             seen |= b;
         }
-        // 8 classes → 8 bits set.
-        assert_eq!(seen.count_ones(), 8);
+        // One bit per class — must match `DetectorClass::ALL`.
+        assert_eq!(seen.count_ones(), DetectorClass::ALL.len() as u32);
     }
 
     #[test]
@@ -527,10 +544,13 @@ mod tests {
     fn entries_iterates_in_declaration_order() {
         let mask = DetectorMask::all_enabled().with(DetectorClass::Xss, false);
         let entries: Vec<_> = mask.entries().collect();
-        assert_eq!(entries.len(), 8);
+        assert_eq!(entries.len(), DetectorClass::ALL.len());
         assert_eq!(entries[0], (DetectorClass::Sqli, true));
         assert_eq!(entries[1], (DetectorClass::Xss, false));
-        assert_eq!(entries[7].0, DetectorClass::BruteForce);
+        assert_eq!(
+            entries[entries.len() - 1].0,
+            DetectorClass::CommandInjection,
+        );
     }
 
     // ---------- P3 per-tier overrides --------------------------------

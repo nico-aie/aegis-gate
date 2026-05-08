@@ -369,6 +369,7 @@ mod tests {
                 body_abuse: true,
                 recon: false,
                 brute_force: true,
+                command_injection: true,
             }),
         );
         let next = apply_put_body(initial, body, &[]).unwrap();
@@ -413,6 +414,7 @@ mod tests {
                 body_abuse: true,
                 recon: true,
                 brute_force: true,
+                command_injection: true,
             }),
         );
         let err = apply_put_body(
@@ -436,6 +438,7 @@ mod tests {
             body_abuse: true,
             recon: true,
             brute_force: true,
+            command_injection: true,
         });
         let err = apply_put_body(
             MaskState::default(),

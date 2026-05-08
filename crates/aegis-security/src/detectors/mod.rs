@@ -1,5 +1,6 @@
 pub mod body_abuse;
 pub mod brute_force;
+pub mod command_injection;
 pub mod header_injection;
 pub mod mask;
 pub mod path_traversal;
@@ -167,6 +168,11 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
         Box::new(body_abuse::BodyAbuseDetector::default()),
         Box::new(recon::ReconDetector),
         Box::new(brute_force::BruteForceDetector::default()),
+        // 2026-05-08 SEC-M002 — dedicated command-injection class.
+        // Pre-fix, cmdi was caught only by AI or via incidental
+        // overlap with path_traversal regex. With AI disabled the
+        // pipeline missed `$(id)`, `| whoami`, etc. entirely.
+        Box::new(command_injection::CommandInjectionDetector),
     ]
 }
 
@@ -205,8 +211,8 @@ mod tests {
     fn default_detectors_count() {
         let d = default_detectors();
         // sqli + xss + path_traversal + ssrf + header_injection
-        // + body_abuse + recon + brute_force.
-        assert_eq!(d.len(), 8);
+        // + body_abuse + recon + brute_force + command_injection.
+        assert_eq!(d.len(), 9);
     }
 
     #[test]

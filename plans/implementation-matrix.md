@@ -91,6 +91,7 @@ table — keep them in sync.
 | [`detectors/recon.md`](../docs/security/detectors/recon.md) | **Implemented** | `detectors/recon.rs`. |
 | [`detectors/body-abuse.md`](../docs/security/detectors/body-abuse.md) | **Implemented** | `detectors/body_abuse.rs`. |
 | [`detectors/brute-force.md`](../docs/security/detectors/brute-force.md) | **Partial** | `BruteForce` is a `DetectorClass` enum variant; the actual detection is via `velocity.rs` (login-failure counter). No dedicated `detectors/brute_force.rs`. |
+| [`detectors/command-injection.md`](../docs/security/detectors/command-injection.md) | **Implemented** | `detectors/command_injection.rs` (2026-05-08 SEC-M002). Regex-only — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes. |
 
 ## 5. Control plane (M3 / aegis-control)
 

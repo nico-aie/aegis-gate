@@ -49,6 +49,7 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "recon" => ("rules_engine", "recon"),
         "brute_force" | "brute-force" => ("rules_engine", "brute_force"),
         "ai" => ("rules_engine", "ai"),
+        "command_injection" | "cmdi" => ("rules_engine", "command_injection"),
 
         // ---- rate_limit ----
         "ip-rate-limit" | "rate_limit" => ("rate_limit", "per_ip"),
@@ -95,6 +96,23 @@ mod tests {
         // v2.3 §2.5 — AI must be a toggleable policy so the OC harness
         // can put it into log_only without a YAML edit + restart.
         assert_eq!(rule_to_feature("ai"), Some(("rules_engine", "ai")));
+    }
+
+    #[test]
+    fn command_injection_maps_to_rules_engine() {
+        // SEC-M002 (2026-05-08) — dedicated cmdi class. Must be
+        // toggleable via set_profile so operators can move it
+        // into log_only without a config edit.
+        assert_eq!(
+            rule_to_feature("command_injection"),
+            Some(("rules_engine", "command_injection")),
+        );
+        // Short alias for compatibility with detector code that
+        // uses the abbreviated form.
+        assert_eq!(
+            rule_to_feature("cmdi"),
+            Some(("rules_engine", "command_injection")),
+        );
     }
 
     #[test]
