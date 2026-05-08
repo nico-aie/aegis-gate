@@ -1605,6 +1605,11 @@ pub struct DetectorsConfig {
     /// enabled — closes a gap that AI was previously covering.
     #[serde(default = "default_detector_toggle")]
     pub command_injection: DetectorToggle,
+    /// 2026-05-08 Run-5 GAP-006 — server-side template injection
+    /// (Jinja2 `{{...}}`, Spring SpEL `${...}`, Freemarker `<#...>`,
+    /// Velocity `#set(...)`, etc.). Default enabled.
+    #[serde(default = "default_detector_toggle")]
+    pub template_injection: DetectorToggle,
     /// DURABLE-T2 — optional file-backed persistence for the live
     /// detector mask. When set, the proxy writes the mask state to
     /// `path` after every audit-mutated PUT and reloads from it at
@@ -1643,6 +1648,7 @@ impl Default for DetectorsConfig {
             recon: default_detector_toggle(),
             brute_force: default_detector_toggle(),
             command_injection: default_detector_toggle(),
+            template_injection: default_detector_toggle(),
             persistence: None,
         }
     }

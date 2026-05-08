@@ -50,6 +50,7 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "brute_force" | "brute-force" => ("rules_engine", "brute_force"),
         "ai" => ("rules_engine", "ai"),
         "command_injection" | "cmdi" => ("rules_engine", "command_injection"),
+        "template_injection" | "ssti" => ("rules_engine", "template_injection"),
 
         // ---- rate_limit ----
         "ip-rate-limit" | "rate_limit" => ("rate_limit", "per_ip"),
@@ -112,6 +113,19 @@ mod tests {
         assert_eq!(
             rule_to_feature("cmdi"),
             Some(("rules_engine", "command_injection")),
+        );
+    }
+
+    #[test]
+    fn template_injection_maps_to_rules_engine() {
+        // GAP-006 (2026-05-08) — dedicated SSTI class.
+        assert_eq!(
+            rule_to_feature("template_injection"),
+            Some(("rules_engine", "template_injection")),
+        );
+        assert_eq!(
+            rule_to_feature("ssti"),
+            Some(("rules_engine", "template_injection")),
         );
     }
 

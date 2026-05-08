@@ -91,7 +91,8 @@ table — keep them in sync.
 | [`detectors/recon.md`](../docs/security/detectors/recon.md) | **Implemented** | `detectors/recon.rs`. |
 | [`detectors/body-abuse.md`](../docs/security/detectors/body-abuse.md) | **Implemented** | `detectors/body_abuse.rs`. |
 | [`detectors/brute-force.md`](../docs/security/detectors/brute-force.md) | **Partial** | `BruteForce` is a `DetectorClass` enum variant; the actual detection is via `velocity.rs` (login-failure counter). No dedicated `detectors/brute_force.rs`. |
-| [`detectors/command-injection.md`](../docs/security/detectors/command-injection.md) | **Implemented** | `detectors/command_injection.rs` (2026-05-08 SEC-M002). Regex-only — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes. |
+| [`detectors/command-injection.md`](../docs/security/detectors/command-injection.md) | **Implemented** | `detectors/command_injection.rs` (2026-05-08 SEC-M002 + Run-5 GAP-008 Log4Shell). Regex-only — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, plus `${jndi:...}` at score 60 (CVE-2021-44228). Headers (UA / Referer / Authorization / etc.) scanned for Log4Shell. |
+| [`detectors/template-injection.md`](../docs/security/detectors/template-injection.md) | **Implemented** | `detectors/template_injection.rs` (2026-05-08 Run-5 GAP-006). Regex-only — Jinja2 `{{config}}` / Twig / Mako / Freemarker `<#assign>` / Velocity `#set()` / SpEL `${T(...)}` / Handlebars `{{#with}}`. Score 50. |
 
 ## 5. Control plane (M3 / aegis-control)
 

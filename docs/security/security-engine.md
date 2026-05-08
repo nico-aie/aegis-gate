@@ -57,7 +57,7 @@ clean.
             │  DETECTOR CHAIN — every detector enabled in the mask runs          │
             │   sqli · xss · path_traversal · ssrf · header_injection ·          │
             │   body_abuse · recon · brute_force · command_injection ·            │
-            │   ai (optional)                                                    │
+            │   template_injection · ai (optional)                                │
             │                                                                    │
             │   Each detector is a pure function over the request.               │
             │   A hit emits a Signal { tag, score: 50–60 }.                      │
@@ -182,7 +182,8 @@ block on their own; they accumulate signals.
 | Body abuse | `body_abuse`, `xxe`, `mass_assignment` | Body (size, nesting, JSON / XML / form) |
 | Recon | `recon` | URL patterns + path entropy (`/.env`, `/wp-admin/…`, Docker REST) |
 | Brute force | `brute_force` | Login endpoints (failure counter via `velocity.rs`) |
-| Command injection | `command_injection` | URL, body — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes |
+| Command injection | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, Log4Shell `${jndi:...}` (score 60) |
+| Template injection | `template_injection` | URL, body — Jinja2 / Twig / SpEL / Freemarker / Velocity / Handlebars |
 | AI (optional) | `ai` | URL + body, run through ONNX classifier |
 
 Per-detector deep-dives in [`detectors/`](detectors/).
@@ -348,7 +349,8 @@ not configurable today; change the file + rebuild):
 | Recon (probe / canary) | per-request + per-IP | **25 / 30** | `detectors/recon.rs` |
 | Body abuse (size → depth escalation) | per-request + per-IP | **30 / 35 / 50 / 60** | `detectors/body_abuse.rs` |
 | Brute force | per-request + per-IP | YAML-configured | `detectors/brute_force.rs` |
-| Command injection | per-request + per-IP | **50** | `detectors/command_injection.rs` |
+| Command injection | per-request + per-IP | **50** (Log4Shell **60**) | `detectors/command_injection.rs` |
+| Template injection (SSTI) | per-request + per-IP | **50** | `detectors/template_injection.rs` |
 | **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` |
 
 Identity / behaviour weights (configurable in `cfg.risk.weights`,
