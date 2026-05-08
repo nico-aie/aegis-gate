@@ -52,6 +52,30 @@ Separate from CRLF detection, the WAF also validates incoming headers:
 
 Malformed headers are rejected with 400 immediately.
 
+## X-Forwarded-Host poisoning
+
+Added 2026-05-08 (SEC-L002). The detector inspects the **value** of the
+`X-Forwarded-Host` (XFH) request header for shape-suspicious patterns
+that backends would treat as the public hostname for cache keys, OAuth
+redirect URIs, password-reset email links, etc.
+
+The check is conservative — many legit reverse-proxy chains set XFH to
+the public hostname while `Host` is the proxy's internal address, so a
+bare "XFH ≠ Host" mismatch isn't enough to alert. The detector flags
+when the XFH carries:
+
+| Shape | Example | Why suspicious |
+|---|---|---|
+| Attacker-keyword + Host mismatch | `Host: a.com`, `XFH: evil.attacker.com` | Classic poisoning probe |
+| `javascript:` / `data:` URI | `XFH: javascript:alert(1)` | XSS pivot via cache-bound link |
+| Quoting / angle-bracket chars | `XFH: <script>` | HTML-context injection |
+| Three or more comma-separated hosts | `XFH: a.com, proxy.com, evil.com` | Attacker appended a host to a legitimate proxy chain |
+| Control bytes (NUL/CR/LF) | (defense-in-depth — hyper rejects upstream) | Header smuggling |
+
+Score: `35` (slightly below CRLF since the heuristic is broader).
+Field tag: `x-forwarded-host` so the audit log + dashboard can
+distinguish XFH poisoning from query-CRLF.
+
 ## HTTP request smuggling defense
 
 Request smuggling exploits discrepancies in how the WAF and backend parse `Content-Length` vs `Transfer-Encoding`. The WAF enforces:

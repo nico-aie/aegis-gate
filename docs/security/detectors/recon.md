@@ -37,6 +37,7 @@ Requests to known reconnaissance paths score risk immediately:
 - **Backups:** `/backup.sql`, `/dump.sql`, `/*.bak`, `/*.old`, `/*.swp`, `/*.tar.gz`
 - **Development:** `/.htaccess`, `/web.config`, `/appsettings.json`, `/application.yml`
 - **Credentials:** `/.ssh/id_rsa`, `/credentials.json`, `/.aws/credentials`
+- **Docker REST API:** `/v1.24/containers/json`, `/v1.41/info`, `/v1.43/images/json`, `/v1.40/networks`, `/v1.41/swarm`, `/_ping` (the daemon's HTTP API surface, reachable when the socket is mistakenly exposed via TCP / a sidecar proxy — added 2026-05-08 SEC-L001)
 
 These are treated as **canary routes** — a request to any of them sets risk to 100 immediately (see [risk scoring](../risk-scoring.md)).
 

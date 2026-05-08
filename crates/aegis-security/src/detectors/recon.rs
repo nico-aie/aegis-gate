@@ -36,6 +36,13 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:~$)",
         r"(?i)(?:Dockerfile)",
         r"(?i)(?:docker-compose\.ya?ml)",
+        // SEC-L001 (2026-05-08) — Docker REST API surface.
+        // Versioned paths /v{major}.{minor}/{containers,images,...}
+        // are how the Docker daemon's HTTP API is reachable when
+        // the socket is mistakenly exposed via TCP / a sidecar
+        // proxy. Probe: `GET /v1.24/containers/json`.
+        r"(?i)(?:^|/)v\d+\.\d+/(?:containers|images|networks|volumes|services|tasks|secrets|configs|swarm|nodes|plugins|info|version|events|system|build|auth)\b",
+        r"(?i)(?:^|/)_ping\b",
         r"(?i)(?:Makefile$)",
         r"(?i)(?:\.aws/credentials)",
         r"(?i)(?:\.ssh/)",
@@ -191,6 +198,13 @@ mod tests {
     path_positive!(tilde_file, "/config~");
     path_positive!(dockerfile, "/Dockerfile");
     path_positive!(docker_compose, "/docker-compose.yml");
+    // SEC-L001 (2026-05-08) — Docker REST API surface.
+    path_positive!(docker_api_containers,    "/v1.24/containers/json");
+    path_positive!(docker_api_info,          "/v1.41/info");
+    path_positive!(docker_api_images_short,  "/v1.43/images/json");
+    path_positive!(docker_api_networks,      "/v1.40/networks");
+    path_positive!(docker_api_swarm,         "/v1.41/swarm");
+    path_positive!(docker_api_ping,          "/_ping");
     path_positive!(aws_creds, "/.aws/credentials");
     path_positive!(ssh_dir, "/.ssh/id_rsa");
     path_positive!(hg_dir, "/.hg/store");
@@ -257,6 +271,12 @@ mod tests {
     negative!(clean_manifest, "/manifest.json");
     negative!(clean_sw, "/sw.js");
     negative!(clean_favicon, "/favicon.ico");
+    // SEC-L001 — version-shaped paths that aren't Docker REST.
+    // The Docker pattern matches /v\d+\.\d+/{namespace} only when
+    // namespace is in the allowlist; bare /v1/users etc. don't fire.
+    negative!(clean_v1_users,            "/v1/users");
+    negative!(clean_semver_v2_1,         "/api/v2.1/products");
+    negative!(clean_static_versioned,    "/static/v1.5/app.js");
     negative!(clean_webhook, "/webhooks/github");
     negative!(clean_download, "/download/report.pdf");
 }
