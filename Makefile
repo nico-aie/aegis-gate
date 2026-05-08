@@ -108,13 +108,26 @@ reset-cert: ## Delete + regenerate the dev cert
 build: ## cargo build --release with $(FEATURES)
 	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES)"
 
-stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd
+stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd (FORCE=1 to refresh waf.yaml from prod-balanced.yaml)
 	@ln -sf target/release/waf ./waf
-	@if [ ! -e ./waf.yaml ]; then \
+	@if [ ! -e ./waf.yaml ] || [ "$$FORCE" = "1" ]; then \
+	  if [ -e ./waf.yaml ] && [ "$$FORCE" = "1" ]; then \
+	    cp ./waf.yaml ./waf.yaml.bak ; \
+	    echo "  FORCE=1: existing ./waf.yaml backed up to ./waf.yaml.bak" ; \
+	  fi ; \
 	  cp config/profiles/prod-balanced.yaml ./waf.yaml ; \
 	  echo "  staged: ./waf.yaml (copied from config/profiles/prod-balanced.yaml — edit before boot)" ; \
 	else \
-	  echo "  ./waf.yaml already exists — left in place" ; \
+	  if [ "config/profiles/prod-balanced.yaml" -nt ./waf.yaml ]; then \
+	    echo "" ; \
+	    echo "  WARNING: config/profiles/prod-balanced.yaml is newer than ./waf.yaml" ; \
+	    echo "  Local waf.yaml may be missing recent fixes." ; \
+	    echo "  To refresh:  make stage FORCE=1" ; \
+	    echo "  To inspect:  diff ./waf.yaml config/profiles/prod-balanced.yaml" ; \
+	    echo "" ; \
+	  else \
+	    echo "  ./waf.yaml already exists — left in place" ; \
+	  fi ; \
 	fi
 	@echo "  staged: ./waf -> target/release/waf"
 	@echo
@@ -137,25 +150,47 @@ run: $(WAF_BIN) cert redis-up ## Boot against $(CONFIG) — default: prod-balanc
 run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts Redis + mock upstream)
 	@AEGIS_INSECURE_COOKIES=1 $(WAF_BIN) run --config $(CONFIG_DEV)
 
-bench-dev: build cert redis-up upstream-up ## Boot dev with the v2.3 benchmark binary contract surfaced (./waf + ./waf.yaml)
+bench-dev: build cert redis-up upstream-up ## Boot dev with the v2.3 benchmark binary contract (./waf + ./waf.yaml; FORCE=1 to refresh waf.yaml from dev.yaml)
 	@# 1. Stage `./waf` + `./waf.yaml` per v2.3 §8 binary contract.
 	@#    Uses dev.yaml content so the existing dev profile (loose
 	@#    rate-limit + strikes disabled for shared loopback) is what
 	@#    the OC harness sees — easier to drive 5k+ RPS through.
+	@#
+	@# RUN3-NEW-1 (2026-05-08) — when ./waf.yaml exists, the prior
+	@# behavior was to leave it alone forever. That meant config-side
+	@# fixes landed via $(CONFIG_DEV) were invisible to anyone with a
+	@# local waf.yaml, leading to `ai.enabled: true` lingering across
+	@# QA runs. Now: opt-in `FORCE=1` to refresh (with .bak), and a
+	@# drift warning when $(CONFIG_DEV) is newer than ./waf.yaml.
 	@ln -sf target/release/waf ./waf
-	@if [ ! -e ./waf.yaml ]; then \
+	@if [ ! -e ./waf.yaml ] || [ "$$FORCE" = "1" ]; then \
+	  if [ -e ./waf.yaml ] && [ "$$FORCE" = "1" ]; then \
+	    cp ./waf.yaml ./waf.yaml.bak ; \
+	    echo "  FORCE=1: existing ./waf.yaml backed up to ./waf.yaml.bak" ; \
+	  fi ; \
 	  cp $(CONFIG_DEV) ./waf.yaml ; \
 	  echo "  staged: ./waf.yaml (copied from $(CONFIG_DEV))" ; \
 	else \
-	  echo "  ./waf.yaml already exists — left in place" ; \
+	  if [ "$(CONFIG_DEV)" -nt ./waf.yaml ]; then \
+	    echo "" ; \
+	    echo "  WARNING: $(CONFIG_DEV) is newer than ./waf.yaml" ; \
+	    echo "  Local waf.yaml may be missing recent fixes." ; \
+	    echo "  To refresh:  make bench-dev FORCE=1" ; \
+	    echo "  To inspect:  diff ./waf.yaml $(CONFIG_DEV)" ; \
+	    echo "" ; \
+	  else \
+	    echo "  ./waf.yaml already exists — left in place" ; \
+	  fi ; \
 	fi
 	@echo "  staged: ./waf -> target/release/waf"
 	@echo
 	@echo "v2.3 contract surface (data port + admin port both serve /__waf_control/*):"
 	@echo "  GET    /__waf_control/capabilities"
+	@echo "  GET    /__waf_control/healthz"
 	@echo "  POST   /__waf_control/reset_state"
 	@echo "  POST   /__waf_control/set_profile"
 	@echo "  POST   /__waf_control/flush_cache"
+	@echo "  POST   /__waf_control/challenge_verify"
 	@echo "  Header: X-Benchmark-Secret: $${AEGIS_BENCHMARK_SECRET:-waf-hackathon-2026-ctrl}"
 	@echo "  Audit:  ./waf_audit.log (created on first request)"
 	@echo
