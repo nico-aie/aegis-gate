@@ -572,8 +572,40 @@ function useConfigVersionsApi(limit = 50) {
       try {
         const cloned = r.clone();
         const body = await cloned.json();
-        if (typeof body?.reason === 'string' && body.reason.startsWith('csrf_')) {
+        // RUN3-NEW-3 (2026-05-08) — tighter heuristic. The
+        // canonical CSRF reject shape from MutationError is
+        // `{ok: false, reason: "csrf_*", ...}`. Requiring
+        // `ok === false` filters out unrelated 403s that happen
+        // to carry a `reason` field starting with `csrf_` (e.g.
+        // an audit-log entry being passed through a wrapper).
+        if (typeof body?.reason === 'string'
+            && body.reason.startsWith('csrf_')
+            && body.ok === false) {
           window.__aegisCsrfRedirecting = true;
+          // RUN3-NEW-3 — capture trigger context so the next
+          // operator hitting this redirect has actionable
+          // evidence. localStorage survives the navigation to
+          // /admin/login. Operators reporting the issue can
+          // paste back this entry from devtools, giving us
+          // confirmation of which fetch tripped the redirect
+          // (vs the QA-suspected coincidence with reset_state).
+          try {
+            const url = typeof args[0] === 'string'
+              ? args[0]
+              : (args[0]?.url ?? 'unknown');
+            const method = (args[1]?.method ?? args[0]?.method ?? 'GET').toUpperCase();
+            window.localStorage.setItem('__aegisLastRedirect', JSON.stringify({
+              ts:     new Date().toISOString(),
+              url,
+              method,
+              status: r.status,
+              reason: body.reason,
+              note:   'global fetch interceptor → /admin/login',
+            }));
+          } catch (_storage) {
+            // localStorage might be disabled / quota-exceeded;
+            // non-fatal — the redirect still happens.
+          }
           const toast = window.aegisToast
             || ((m) => console.warn('[csrf]', m));
           toast('Session expired — redirecting to login…', 'warn');
@@ -606,13 +638,31 @@ async function csrfMutate(url, { method = 'POST', body = null } = {}) {
   const r = await fetch(url, init);
   const parsed = await r.json().catch(() => ({}));
   // Detect session-expired CSRF reject. The server returns
-  // reason: "csrf_missing_cookie" | "csrf_missing_header" |
-  // "csrf_mismatch" with HTTP 403 (see
+  // {ok: false, reason: "csrf_missing_cookie" | "csrf_missing_header"
+  // | "csrf_mismatch"} with HTTP 403 (see
   // aegis_control::api::mutation::MutationError).
-  if (r.status === 403 && typeof parsed?.reason === 'string'
-      && parsed.reason.startsWith('csrf_')) {
+  // RUN3-NEW-3 (2026-05-08) — match `ok: false` too so we don't
+  // trip on non-error 403 bodies that happen to carry a
+  // `reason` field starting with `csrf_`. Same diagnostic stash
+  // as the global interceptor for cross-correlation.
+  if (r.status === 403
+      && typeof parsed?.reason === 'string'
+      && parsed.reason.startsWith('csrf_')
+      && parsed.ok === false) {
     if (typeof window !== 'undefined' && !window.__aegisCsrfRedirecting) {
       window.__aegisCsrfRedirecting = true;
+      try {
+        window.localStorage.setItem('__aegisLastRedirect', JSON.stringify({
+          ts:     new Date().toISOString(),
+          url,
+          method,
+          status: r.status,
+          reason: parsed.reason,
+          note:   'csrfMutate → /admin/login',
+        }));
+      } catch (_storage) {
+        // localStorage disabled / quota exceeded — non-fatal.
+      }
       const toast = window.aegisToast || ((m) => console.warn(m));
       toast('Session expired — redirecting to login…', 'warn');
       setTimeout(() => {
