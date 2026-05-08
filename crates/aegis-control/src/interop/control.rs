@@ -500,6 +500,7 @@ mod tests {
                     "brute_force".into(),
                     "ai".into(),
                     "command_injection".into(),
+                    "template_injection".into(),
                 ],
             },
         );

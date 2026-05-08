@@ -48,11 +48,14 @@ pub enum DetectorClass {
     /// 2026-05-08 SEC-M002 — dedicated command-injection class.
     /// `$()`, backticks, `${}`, pipe/semi-shell-cmd patterns.
     CommandInjection,
+    /// 2026-05-08 Run-5 GAP-006 — server-side template injection.
+    /// Jinja2 / Twig / Mako / Freemarker / Velocity / SpEL / Handlebars.
+    TemplateInjection,
 }
 
 impl DetectorClass {
     /// All classes in the order they appear in `DetectorsConfig`.
-    pub const ALL: [DetectorClass; 9] = [
+    pub const ALL: [DetectorClass; 10] = [
         DetectorClass::Sqli,
         DetectorClass::Xss,
         DetectorClass::PathTraversal,
@@ -62,6 +65,7 @@ impl DetectorClass {
         DetectorClass::Recon,
         DetectorClass::BruteForce,
         DetectorClass::CommandInjection,
+        DetectorClass::TemplateInjection,
     ];
 
     /// Wire-compatible string used in `Detector::id()` and the JSON
@@ -77,6 +81,7 @@ impl DetectorClass {
             DetectorClass::Recon => "recon",
             DetectorClass::BruteForce => "brute_force",
             DetectorClass::CommandInjection => "command_injection",
+            DetectorClass::TemplateInjection => "template_injection",
         }
     }
 
@@ -93,6 +98,7 @@ impl DetectorClass {
             DetectorClass::Recon => 1 << 6,
             DetectorClass::BruteForce => 1 << 7,
             DetectorClass::CommandInjection => 1 << 8,
+            DetectorClass::TemplateInjection => 1 << 9,
         }
     }
 
@@ -160,6 +166,9 @@ impl DetectorMask {
         }
         if cfg.command_injection.enabled {
             m.set(DetectorClass::CommandInjection, true);
+        }
+        if cfg.template_injection.enabled {
+            m.set(DetectorClass::TemplateInjection, true);
         }
         m
     }
@@ -236,6 +245,10 @@ pub struct DetectorMaskBody {
     /// helpers below populate it from the bitmask.
     #[serde(default)]
     pub command_injection: bool,
+    /// 2026-05-08 Run-5 GAP-006 — template-injection class.
+    /// Same `#[serde(default)]` back-compat for older snapshots.
+    #[serde(default)]
+    pub template_injection: bool,
 }
 
 impl From<DetectorMask> for DetectorMaskBody {
@@ -250,6 +263,7 @@ impl From<DetectorMask> for DetectorMaskBody {
             recon: m.is_enabled(DetectorClass::Recon),
             brute_force: m.is_enabled(DetectorClass::BruteForce),
             command_injection: m.is_enabled(DetectorClass::CommandInjection),
+            template_injection: m.is_enabled(DetectorClass::TemplateInjection),
         }
     }
 }
@@ -266,6 +280,7 @@ impl From<DetectorMaskBody> for DetectorMask {
             .with(DetectorClass::Recon, b.recon)
             .with(DetectorClass::BruteForce, b.brute_force)
             .with(DetectorClass::CommandInjection, b.command_injection)
+            .with(DetectorClass::TemplateInjection, b.template_injection)
     }
 }
 
@@ -549,7 +564,7 @@ mod tests {
         assert_eq!(entries[1], (DetectorClass::Xss, false));
         assert_eq!(
             entries[entries.len() - 1].0,
-            DetectorClass::CommandInjection,
+            DetectorClass::TemplateInjection,
         );
     }
 

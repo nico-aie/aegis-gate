@@ -44,8 +44,10 @@ SOC-first dashboard.
 - **OWASP detectors** — SQLi, XSS, path traversal, SSRF,
   header injection, body abuse (oversize / depth / decompression),
   XXE, mass-assignment, recon / scanner detection, auth
-  brute-force, command injection (`$()`, `|cmd`, `/bin/sh`, etc.).
-  Per-tier on/off, compliance-clamped, hot-reloadable.
+  brute-force, command injection (`$()`, `|cmd`, `/bin/sh`, etc.,
+  including Log4Shell `${jndi:...}` at higher score), template
+  injection (Jinja2 / Twig / SpEL / Freemarker / Velocity /
+  Handlebars). Per-tier on/off, compliance-clamped, hot-reloadable.
   Per-detector docs in [`docs/security/detectors/`](docs/security/detectors/).
 - **Rule engine** — AST + parser + evaluator with hot-reload,
   custom rule definitions in YAML.

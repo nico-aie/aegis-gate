@@ -1392,6 +1392,7 @@ pub(crate) fn build_interop_runtime(
                 "brute_force".into(),
                 "ai".into(),
                 "command_injection".into(),
+                "template_injection".into(),
             ],
         },
     );

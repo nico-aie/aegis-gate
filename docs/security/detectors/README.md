@@ -24,7 +24,8 @@ verbatim.
 | [recon.md](./recon.md) | `recon` | URL patterns + path entropy |
 | [brute-force.md](./brute-force.md) | `brute_force` | Login endpoints |
 | [body-abuse.md](./body-abuse.md) | `body_abuse`, `xxe`, `mass_assignment` | Body (JSON / XML / form) |
-| [command-injection.md](./command-injection.md) | `command_injection` | URL, body — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes |
+| [command-injection.md](./command-injection.md) | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, **Log4Shell `${jndi:...}`** (score 60) |
+| [template-injection.md](./template-injection.md) | `template_injection` | URL, body — Jinja2 `{{config}}` / Twig / Mako / Freemarker `<#assign>` / Velocity `#set()` / SpEL `${T(...)}` / Handlebars `{{#with}}` |
 | [ai-detector.md](./ai-detector.md) | `ai` | URL, body, headers (binary attack/normal verdict over a 26-feature vector via ONNX) |
 
 The detector mask (P2/P3 in [`Implement-Progress.md`](../../../Implement-Progress.md))

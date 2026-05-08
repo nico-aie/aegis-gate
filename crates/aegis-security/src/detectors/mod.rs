@@ -7,6 +7,7 @@ pub mod path_traversal;
 pub mod recon;
 pub mod sqli;
 pub mod ssrf;
+pub mod template_injection;
 pub mod xss;
 
 // AI-T4 — ML-based detector.  Compiled in only when the `ai`
@@ -173,6 +174,10 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
         // overlap with path_traversal regex. With AI disabled the
         // pipeline missed `$(id)`, `| whoami`, etc. entirely.
         Box::new(command_injection::CommandInjectionDetector),
+        // 2026-05-08 Run-5 GAP-006 — dedicated SSTI class. Detects
+        // template-engine payloads in URI + body (Jinja2 / Twig /
+        // Mako / Freemarker / Velocity / Spring SpEL / Handlebars).
+        Box::new(template_injection::TemplateInjectionDetector),
     ]
 }
 
@@ -211,8 +216,9 @@ mod tests {
     fn default_detectors_count() {
         let d = default_detectors();
         // sqli + xss + path_traversal + ssrf + header_injection
-        // + body_abuse + recon + brute_force + command_injection.
-        assert_eq!(d.len(), 9);
+        // + body_abuse + recon + brute_force + command_injection
+        // + template_injection.
+        assert_eq!(d.len(), 10);
     }
 
     #[test]
