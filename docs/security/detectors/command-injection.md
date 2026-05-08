@@ -133,6 +133,36 @@ The trigger list is intentionally **shell-context aware**, not bare-metacharacte
 
 For deployment-specific tuning, the v2.3 `set_profile` runtime knob lets operators move `command_injection` into `log_only` without a restart while they collect live FP data.
 
+## Log4Shell coverage (CVE-2021-44228)
+
+Added 2026-05-08 (Run-5 GAP-008). Log4Shell is RCE-class command injection — the JNDI lookup ultimately fetches and executes attacker-controlled code. It's bundled into this detector because:
+
+- Same audit class ("RCE attempt"), same Prometheus by-class bucket, same `set_profile` policy.
+- Splitting into a `log4shell` detector would force duplicate operator toggles for closely-related semantics.
+
+**Patterns** (checked **before** the baseline cmdi patterns and emit at score 60 — Critical-RCE / known-CVE tier):
+
+| Pattern | Catches | Why specific |
+|---|---|---|
+| `${jndi:<scheme>://...}` | Direct exploitation | Scheme allowlist: `ldap`, `ldaps`, `rmi`, `dns`, `nis`, `iiop`, `corba`, `nds`, `http`, `https` |
+| Bare `${jndi:` | Schemeless variants, defense-in-depth | Rare FP risk on apps that legitimately reference JNDI in URL/body |
+| Nested `${${::-j}${::-n}${::-d}${::-i}:...}` | `${::-X}` substitution-default obfuscation | Requires nested `${${...}` — bare `${HOME}` envvars don't match |
+| `${${(lower|upper|env|sys|date):X}...}` | Case-folding / env-lookup obfuscation | Unique to Log4j substitution lookups |
+
+**Header scanning.** Active Log4Shell exploitation predominantly arrives in headers (User-Agent, Referer, X-Api-Version), not URL/body. The detector now scans a documented allowlist of headers commonly logged by application frameworks:
+
+- `user-agent`, `referer`, `x-api-version`, `x-forwarded-for`, `x-real-ip`, `authorization`, `cookie`, `x-requested-with`
+
+Broader header scans risk overlap with `header_injection`; the allowlist is conservative.
+
+**Score: 60.** One tier above baseline cmdi because:
+
+- CVSS 10.0 (most severe CVE in years; active worldwide exploitation).
+- Pattern specificity: `${jndi:<scheme>://` is so specific that FP rate is essentially zero on real traffic.
+- One hit + one prior risk-event reaches `block_at: 80` (60 + 30 = 90). Two consecutive hits cap at 100 (60 + 60 → max-clamp). Effectively: confirmed Log4Shell payload escalates to block within 1-2 requests.
+
+**Field tag stays `command_injection`** — audit log records the firing detector class, not the sub-pattern. Operators investigating high-cmdi-volume from a host can grep their audit log for `${jndi:` to identify Log4Shell specifically.
+
 ## Implementation
 
 - `crates/aegis-security/src/detectors/command_injection.rs` — pattern set, regex list, scorer (~200 lines, regex-only — no Hyperscan / Aho-Corasick dep)
@@ -151,7 +181,7 @@ For deployment-specific tuning, the v2.3 `set_profile` runtime knob lets operato
 
 ## Tests
 
-29 cases in `command_injection.rs::tests`:
+43 cases in `command_injection.rs::tests`:
 
 - 3 QA Run-4 reproductions (`?input=test|whoami`, `?arg=$(id)`, pipe + nc)
 - 7 subshell / brace / backtick / URL-encoded variants
@@ -159,6 +189,7 @@ For deployment-specific tuning, the v2.3 `set_profile` runtime knob lets operato
 - 4 direct shell invocation
 - 2 exfil shapes
 - 9 negative cases (clean queries, base64, bare pipes, legacy `;`, etc.)
+- **14 Log4Shell cases (Run-5 GAP-008):** direct JNDI URLs (LDAP/RMI/DNS), bare `${jndi:`, nested `${${::-j}...}` obfuscation, case-fold `${${lower:j}ndi:...}`, env-lookup `${${env:HOME:-j}ndi:...}`, header-scan positives (UA / Referer / X-Api-Version), score-tier verification (60 for Log4Shell, 50 for baseline cmdi), `${HOME}` plain envvar negative
 
 Plus rule_map regression test in `aegis-control::interop::rule_map::tests::command_injection_maps_to_rules_engine`.
 
