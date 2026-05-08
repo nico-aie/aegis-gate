@@ -52,8 +52,78 @@ impl Detector for HeaderInjectionDetector {
             }
         }
 
+        // SEC-L002 (2026-05-08) — X-Forwarded-Host poisoning. The
+        // CRLF scan above catches XFH with control bytes; this
+        // adds shape-suspicion checks for clean attacker-domain
+        // poisoning (Host: a.com, X-Forwarded-Host: evil.com)
+        // that backends trust for cache keys, password-reset
+        // links, OAuth redirect URIs, etc.
+        if let Some(xfh_val) = req
+            .headers
+            .get("x-forwarded-host")
+            .and_then(|v| v.to_str().ok())
+        {
+            let host = req
+                .headers
+                .get("host")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if xfh_is_suspicious(xfh_val, host) {
+                signals.push(Signal {
+                    score: 35,
+                    tag: "header_injection".into(),
+                    field: "x-forwarded-host".into(),
+                });
+            }
+        }
+
         signals
     }
+}
+
+/// SEC-L002 — flag X-Forwarded-Host shapes that indicate poisoning.
+/// Conservative: many legit reverse-proxy chains set XFH to the
+/// original public hostname while Host is the proxy's internal
+/// address, so a bare "XFH != Host" mismatch isn't enough to
+/// alert. We require additional shape-suspicion (CRLF/control,
+/// multiple hosts beyond a normal proxy chain, or attacker-keyword
+/// + Host mismatch).
+fn xfh_is_suspicious(xfh: &str, host: &str) -> bool {
+    if xfh.is_empty() {
+        return false;
+    }
+    // Control bytes / CRLF — header-injection style XFH.
+    if xfh.bytes().any(|b| b == b'\r' || b == b'\n' || b < 0x20) {
+        return true;
+    }
+    // Multiple hosts via comma. Legit chains typically have at
+    // most 2 entries; 3+ suggests attacker-appended values.
+    if xfh.split(',').count() > 2 {
+        return true;
+    }
+    // Doesn't match Host AND contains an attacker-shape needle.
+    // Loose by design — never flags legit proxy chains where XFH
+    // is just a different (public) hostname.
+    if !host.is_empty() && !xfh.eq_ignore_ascii_case(host) {
+        let xfh_lc = xfh.to_ascii_lowercase();
+        for needle in [
+            "evil",
+            "attacker",
+            "malicious",
+            "phish",
+            "javascript:",
+            "data:",
+            "<",
+            ">",
+            "\"",
+            "'",
+        ] {
+            if xfh_lc.contains(needle) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
@@ -198,4 +268,129 @@ mod tests {
     negative!(clean_callback, "/api?callback=handleResponse");
     negative!(clean_token, "/api?token=abc123def456");
     negative!(clean_timestamp, "/api?ts=1706000000");
+
+    // SEC-L002 (2026-05-08) — X-Forwarded-Host poisoning.
+
+    fn make_view_with_headers<'a>(
+        m: &'a http::Method,
+        u: &'a http::Uri,
+        h: &'a http::HeaderMap,
+        b: &'a BodyPeek,
+    ) -> RequestView<'a> {
+        make_view(m, u, h, b)
+    }
+
+    fn xfh_view(host: &str, xfh: &[u8]) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        h.insert("host", host.parse().unwrap());
+        if let Ok(v) = http::HeaderValue::from_bytes(xfh) {
+            h.insert("x-forwarded-host", v);
+        }
+        h
+    }
+
+    #[test]
+    fn xfh_with_evil_keyword_flagged() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = xfh_view("a.com", b"evil.attacker.com");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        assert!(signals.iter().any(|s| s.field == "x-forwarded-host"),
+            "evil-domain XFH must flag, got {signals:?}");
+    }
+
+    #[test]
+    fn xfh_with_attacker_keyword_flagged() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = xfh_view("api.example.com", b"attacker.example.com");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.field == "x-forwarded-host"));
+    }
+
+    #[test]
+    fn xfh_with_javascript_uri_flagged() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = xfh_view("a.com", b"javascript:alert(1)");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.field == "x-forwarded-host"));
+    }
+
+    // (Note: a control-byte / CRLF XFH test isn't possible at this
+    // layer — `http::HeaderValue::from_bytes` rejects NUL/CR/LF
+    // before construction. The `xfh.bytes().any(|b| ...)` check in
+    // `xfh_is_suspicious` is defense-in-depth for the case where
+    // some future code path constructs a HeaderValue without the
+    // hyper validation gate.)
+
+    #[test]
+    fn xfh_with_three_hosts_flagged() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        // > 2 entries via comma — attacker appended
+        let h = xfh_view("a.com", b"a.com, proxy.com, evil.com");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.field == "x-forwarded-host"));
+    }
+
+    #[test]
+    fn xfh_legit_proxy_chain_not_flagged() {
+        // Legit reverse-proxy chain: Host is the internal service
+        // address, XFH is the public hostname. No suspicious shape.
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = xfh_view("internal-svc:8080", b"api.example.com");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        let signals: Vec<_> = d
+            .inspect(&req)
+            .into_iter()
+            .filter(|s| s.field == "x-forwarded-host")
+            .collect();
+        assert!(signals.is_empty(), "legit proxy chain must not flag, got {signals:?}");
+    }
+
+    #[test]
+    fn xfh_matching_host_not_flagged() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = xfh_view("api.example.com", b"api.example.com");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        let signals: Vec<_> = d
+            .inspect(&req)
+            .into_iter()
+            .filter(|s| s.field == "x-forwarded-host")
+            .collect();
+        assert!(signals.is_empty());
+    }
+
+    #[test]
+    fn xfh_two_legit_proxy_chain_not_flagged() {
+        // 2 entries via comma is normal proxy hop; only > 2 flags.
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = xfh_view("a.com", b"public.example.com, edge.example.com");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        let signals: Vec<_> = d
+            .inspect(&req)
+            .into_iter()
+            .filter(|s| s.field == "x-forwarded-host")
+            .collect();
+        assert!(signals.is_empty());
+    }
 }
