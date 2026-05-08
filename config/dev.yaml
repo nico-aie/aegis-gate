@@ -166,22 +166,36 @@ risk:
     repeat_offender: 15
   decay_half_life: "5m"
   thresholds:
-    # Score-based block threshold raised so legit-user VUs sharing
-    # 127.0.0.1 with attacker traffic from `make mock-load` don't
-    # cross it within seconds. Production uses 40/80/100 (see
-    # config/profiles/prod-balanced.yaml). Detector-driven blocks
-    # still fire — they don't need a high score.
-    challenge_at: 99998
-    block_at:     99999
+    # NEW-5 (2026-05-08) — challenge tier is INTENTIONALLY
+    # DISABLED in dev. The values below sit far above max=100 so
+    # `level()` always returns Allow (or Block, if we ever set
+    # block_at <= max — also impossible here). Detector-driven
+    # blocks still fire independently of these thresholds —
+    # they don't go through `level()`.
+    #
+    # Why disabled in dev: dev runs with shared-IP traffic (one
+    # source IP for many k6 VUs), so a low challenge_at would
+    # cause legit-user VUs to share strikes with attacker VUs
+    # and trigger spurious 429s. Production uses challenge_at=40
+    # / block_at=80 / max=100 (see config/profiles/prod-balanced.yaml).
+    #
+    # To enable the challenge tier in dev, set BOTH challenge_at
+    # and block_at to sane pairs (e.g. challenge_at=40,
+    # block_at=80) and either restart the WAF or PUT
+    # /api/risk/thresholds via the dashboard's
+    # Settings → "Cumulative IP risk thresholds" card. Hot-reload
+    # of thresholds via config-file edit also works post-NEW-1.
+    challenge_at: 99998       # disabled — challenge tier not used in dev
+    block_at:     99999       # disabled — score-based block not used in dev
     max:          100
   trust_recovery:
     per_hour: 30
   strikes:
-    # Same shared-IP-friendly tweak as the hackathon harness
-    # (tests/hackathon/configs/bench.yaml). Single source IP =
-    # all VUs share the strike counter; 50 trips within the
-    # first iteration of mock-load. Production keeps 50.
-    block_at: 1000000
+    # Strike-based block threshold also disabled in dev (same
+    # shared-IP rationale). Production keeps 50 (see
+    # config/profiles/prod-balanced.yaml). Detector hits are
+    # still recorded, but the strike counter never trips.
+    block_at: 1000000   # disabled — strike block not used in dev
 
 # ---------------------------------------------------------------------------
 # Load mode — thresholds tuned so a laptop k6 runner can drive the
