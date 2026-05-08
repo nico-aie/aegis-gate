@@ -14,6 +14,7 @@ but no longer guiding new work.
 | **2026-05-07 QA fixes (tester-n)** | [`issue-fix/tester-n-2026-05-07/`](./issue-fix/tester-n-2026-05-07/) | C001+C002+H001+H002+H003 + M001+M002+M003+M004(read-only)+M005+M006+M007+M008 + L001-L004 shipped on `develop` 2026-05-08. Awaiting Test/UI re-check + M004 mutation backend follow-up + M009 operator action. |
 | **2026-05-07 QA regression (tester-n rerun)** | [`issue-fix/tester-n-2026-05-07-regression/`](./issue-fix/tester-n-2026-05-07-regression/) | Run-2 closed 15/18 of Run-1 + opened 5 new findings (NEW-1..NEW-5). Plan drafted 2026-05-08. Phase 1 (NEW-1 + C002 follow-up) starts first; Phase 2 NEW-2 PoW challenge body is the largest item. |
 | **2026-05-08 QA Run-3 (tester-n)** | [`issue-fix/tester-n-2026-05-08-run3/`](./issue-fix/tester-n-2026-05-08-run3/) | Run-3 closed all 5 Run-2 findings + opened 3 new (RUN3-NEW-1 HIGH bench-dev waf.yaml drift, RUN3-NEW-2 MEDIUM /__waf_control/healthz, RUN3-NEW-3 LOW SPA login redirect after reset_state). Plan drafted 2026-05-08. ~1.5h, 3 small PRs. |
+| **2026-05-08 QA Run-4 security (tester-n)** | [`issue-fix/tester-n-2026-05-08-run4/`](./issue-fix/tester-n-2026-05-08-run4/) | Run-4 (security focus) — 6 findings; 2 misreads, 1 design-decision, 3 real fixes. SEC-C001 (HIGH, hard-abort bench-dev drift), SEC-M002 (MEDIUM, dedicated command_injection detector), SEC-M001+M003 (DOC + risk cap), SEC-L001+L002 (Docker recon + XFH). ~3.5h, 4 PRs. |
 
 ## Recently shipped (kept for fix-lookup)
 
