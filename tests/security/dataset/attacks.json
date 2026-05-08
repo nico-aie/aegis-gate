@@ -1,0 +1,633 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "created": "2026-05-08",
+    "contract": "EN_waf_interop_contract_v2.3",
+    "description": "Diverse attack payload dataset for Aegis-Gate WAF security testing. Each entry is a self-contained test case with expected detection class, acceptable actions per §3.1, and a unique ID for correlation.",
+    "acceptable_actions_reference": {
+      "high_confidence_injection": ["block", "challenge"],
+      "auth_abuse": ["rate_limit", "challenge", "block"],
+      "volumetric": ["rate_limit", "block"],
+      "recon": ["block", "rate_limit", "challenge"],
+      "known_bad_ip": ["block"]
+    }
+  },
+
+  "sqli": {
+    "class": "sqli",
+    "contract_section": "§3.1 — High-confidence injection",
+    "acceptable_actions": ["block", "challenge"],
+    "cases": [
+      {
+        "id": "sqli-001",
+        "label": "Classic UNION SELECT",
+        "method": "GET",
+        "path": "/search",
+        "query": "q=UNION+SELECT+null,version(),null--",
+        "headers": {},
+        "notes": "Canonical SQL injection via UNION — high confidence"
+      },
+      {
+        "id": "sqli-002",
+        "label": "Boolean-based blind",
+        "method": "GET",
+        "path": "/login",
+        "query": "u=admin'+OR+1=1--",
+        "headers": {},
+        "notes": "Boolean blind injection in login parameter"
+      },
+      {
+        "id": "sqli-003",
+        "label": "Time-based blind (SLEEP)",
+        "method": "GET",
+        "path": "/product",
+        "query": "id=1;SELECT+SLEEP(5)--",
+        "headers": {},
+        "notes": "Time-delay injection"
+      },
+      {
+        "id": "sqli-004",
+        "label": "Stacked queries",
+        "method": "GET",
+        "path": "/item",
+        "query": "id=1;DROP+TABLE+users--",
+        "headers": {},
+        "notes": "Multi-statement injection"
+      },
+      {
+        "id": "sqli-005",
+        "label": "POST body JSON injection",
+        "method": "POST",
+        "path": "/api/login",
+        "query": "",
+        "body": "{\"username\":\"admin' OR '1'='1\",\"password\":\"x\"}",
+        "content_type": "application/json",
+        "headers": {},
+        "notes": "SQLi in JSON POST body"
+      },
+      {
+        "id": "sqli-006",
+        "label": "UNION with column count probe",
+        "method": "GET",
+        "path": "/report",
+        "query": "id=1+UNION+SELECT+1,2,3--",
+        "headers": {},
+        "notes": "Column count enumeration"
+      },
+      {
+        "id": "sqli-007",
+        "label": "Comment-based evasion",
+        "method": "GET",
+        "path": "/item",
+        "query": "id=1/**/UNION/**/SELECT/**/null--",
+        "headers": {},
+        "notes": "Inline comment evasion of simple pattern match"
+      },
+      {
+        "id": "sqli-008",
+        "label": "URL-encoded evasion",
+        "method": "GET",
+        "path": "/search",
+        "query": "q=1%27%20OR%20%271%27%3D%271",
+        "headers": {},
+        "notes": "URL-encoded single-quote evasion"
+      },
+      {
+        "id": "sqli-009",
+        "label": "Error-based via extractvalue",
+        "method": "GET",
+        "path": "/product",
+        "query": "id=extractvalue(1,concat(0x7e,version()))",
+        "headers": {},
+        "notes": "MySQL error-based exfiltration"
+      },
+      {
+        "id": "sqli-010",
+        "label": "Header injection — User-Agent",
+        "method": "GET",
+        "path": "/api/users",
+        "query": "",
+        "headers": {"User-Agent": "' UNION SELECT 1,2,3--"},
+        "notes": "SQLi via User-Agent header"
+      }
+    ]
+  },
+
+  "xss": {
+    "class": "xss",
+    "contract_section": "§3.1 — High-confidence injection",
+    "acceptable_actions": ["block", "challenge"],
+    "cases": [
+      {
+        "id": "xss-001",
+        "label": "Classic script tag",
+        "method": "GET",
+        "path": "/search",
+        "query": "q=<script>alert(1)</script>",
+        "headers": {},
+        "notes": "Canonical reflected XSS"
+      },
+      {
+        "id": "xss-002",
+        "label": "Event handler injection",
+        "method": "GET",
+        "path": "/page",
+        "query": "title=<img+src=x+onerror=alert(1)>",
+        "headers": {},
+        "notes": "Attribute event handler XSS"
+      },
+      {
+        "id": "xss-003",
+        "label": "SVG-based XSS",
+        "method": "GET",
+        "path": "/render",
+        "query": "data=<svg/onload=alert(document.cookie)>",
+        "headers": {},
+        "notes": "SVG onload XSS"
+      },
+      {
+        "id": "xss-004",
+        "label": "JavaScript URI",
+        "method": "GET",
+        "path": "/redirect",
+        "query": "url=javascript:alert(1)",
+        "headers": {},
+        "notes": "javascript: protocol in URL parameter"
+      },
+      {
+        "id": "xss-005",
+        "label": "DOM-based via hash",
+        "method": "GET",
+        "path": "/app",
+        "query": "callback=</script><script>alert(1)</script>",
+        "headers": {},
+        "notes": "Script tag breakout"
+      },
+      {
+        "id": "xss-006",
+        "label": "Data URI XSS",
+        "method": "GET",
+        "path": "/viewer",
+        "query": "src=data:text/html,<script>alert(1)</script>",
+        "headers": {},
+        "notes": "Data URI injection"
+      },
+      {
+        "id": "xss-007",
+        "label": "Encoded angle brackets",
+        "method": "GET",
+        "path": "/search",
+        "query": "q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E",
+        "headers": {},
+        "notes": "URL-encoded XSS evasion attempt"
+      },
+      {
+        "id": "xss-008",
+        "label": "POST body reflected",
+        "method": "POST",
+        "path": "/comment",
+        "query": "",
+        "body": "text=<script>alert(document.domain)</script>",
+        "content_type": "application/x-www-form-urlencoded",
+        "headers": {},
+        "notes": "XSS in POST body form field"
+      },
+      {
+        "id": "xss-009",
+        "label": "Expression injection (template)",
+        "method": "GET",
+        "path": "/template",
+        "query": "name={{7*7}}",
+        "headers": {},
+        "notes": "SSTI / template injection probe"
+      },
+      {
+        "id": "xss-010",
+        "label": "AngularJS sandbox escape",
+        "method": "GET",
+        "path": "/ng",
+        "query": "input={{constructor.constructor('alert(1)')()}}",
+        "headers": {},
+        "notes": "AngularJS sandbox escape"
+      }
+    ]
+  },
+
+  "path_traversal": {
+    "class": "path_traversal",
+    "contract_section": "§3.1 — High-confidence injection",
+    "acceptable_actions": ["block", "challenge"],
+    "cases": [
+      {
+        "id": "ptrav-001",
+        "label": "Classic ../../etc/passwd",
+        "method": "GET",
+        "path": "/files",
+        "query": "p=../../../../etc/passwd",
+        "headers": {},
+        "notes": "Canonical path traversal"
+      },
+      {
+        "id": "ptrav-002",
+        "label": "URL-encoded dots",
+        "method": "GET",
+        "path": "/download",
+        "query": "file=%2E%2E%2F%2E%2E%2Fetc%2Fpasswd",
+        "headers": {},
+        "notes": "URL-encoded traversal"
+      },
+      {
+        "id": "ptrav-003",
+        "label": "Double-encoded traversal",
+        "method": "GET",
+        "path": "/read",
+        "query": "path=%252e%252e%252fetc%252fpasswd",
+        "headers": {},
+        "notes": "Double URL-encoded evasion"
+      },
+      {
+        "id": "ptrav-004",
+        "label": "Windows-style traversal",
+        "method": "GET",
+        "path": "/file",
+        "query": "name=..\\..\\windows\\system32\\drivers\\etc\\hosts",
+        "headers": {},
+        "notes": "Windows backslash traversal"
+      },
+      {
+        "id": "ptrav-005",
+        "label": "Null byte injection",
+        "method": "GET",
+        "path": "/view",
+        "query": "file=../../../etc/passwd%00.jpg",
+        "headers": {},
+        "notes": "Null byte to truncate extension"
+      },
+      {
+        "id": "ptrav-006",
+        "label": "Absolute path",
+        "method": "GET",
+        "path": "/read",
+        "query": "path=/etc/shadow",
+        "headers": {},
+        "notes": "Absolute path to sensitive file"
+      },
+      {
+        "id": "ptrav-007",
+        "label": "Path traversal in path segment",
+        "method": "GET",
+        "path": "/files/../../../etc/passwd",
+        "query": "",
+        "headers": {},
+        "notes": "Traversal embedded in URL path"
+      },
+      {
+        "id": "ptrav-008",
+        "label": "Proc self cmdline",
+        "method": "GET",
+        "path": "/log",
+        "query": "f=../../../proc/self/cmdline",
+        "headers": {},
+        "notes": "Linux /proc traversal"
+      }
+    ]
+  },
+
+  "ssrf": {
+    "class": "ssrf",
+    "contract_section": "§3.1 — High-confidence injection",
+    "acceptable_actions": ["block", "challenge"],
+    "cases": [
+      {
+        "id": "ssrf-001",
+        "label": "IMDS v1 classic",
+        "method": "GET",
+        "path": "/fetch",
+        "query": "url=http://169.254.169.254/latest/meta-data/",
+        "headers": {},
+        "notes": "AWS EC2 metadata service SSRF"
+      },
+      {
+        "id": "ssrf-002",
+        "label": "IMDS via redirect",
+        "method": "GET",
+        "path": "/proxy",
+        "query": "target=http://169.254.169.254/",
+        "headers": {},
+        "notes": "SSRF via proxy parameter"
+      },
+      {
+        "id": "ssrf-003",
+        "label": "Localhost loopback",
+        "method": "GET",
+        "path": "/fetch",
+        "query": "url=http://127.0.0.1:22/",
+        "headers": {},
+        "notes": "Internal port scan via SSRF"
+      },
+      {
+        "id": "ssrf-004",
+        "label": "Internal RFC-1918",
+        "method": "GET",
+        "path": "/webhook",
+        "query": "endpoint=http://192.168.1.1/admin",
+        "headers": {},
+        "notes": "RFC-1918 internal range SSRF"
+      },
+      {
+        "id": "ssrf-005",
+        "label": "GCP metadata endpoint",
+        "method": "GET",
+        "path": "/fetch",
+        "query": "url=http://metadata.google.internal/computeMetadata/v1/",
+        "headers": {},
+        "notes": "GCP metadata service SSRF"
+      },
+      {
+        "id": "ssrf-006",
+        "label": "File protocol",
+        "method": "GET",
+        "path": "/load",
+        "query": "url=file:///etc/passwd",
+        "headers": {},
+        "notes": "file:// protocol SSRF"
+      },
+      {
+        "id": "ssrf-007",
+        "label": "DNS rebinding bait",
+        "method": "GET",
+        "path": "/fetch",
+        "query": "url=http://169.254.169.254.xip.io/",
+        "headers": {},
+        "notes": "DNS rebinding to IMDS via wildcard DNS"
+      },
+      {
+        "id": "ssrf-008",
+        "label": "Decimal IP encoding",
+        "method": "GET",
+        "path": "/fetch",
+        "query": "url=http://2130706433/",
+        "headers": {},
+        "notes": "127.0.0.1 as decimal integer"
+      }
+    ]
+  },
+
+  "header_injection": {
+    "class": "header_injection",
+    "contract_section": "§3.1 — High-confidence injection",
+    "acceptable_actions": ["block", "challenge"],
+    "cases": [
+      {
+        "id": "hinj-001",
+        "label": "CRLF in Host header",
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {"Host": "evil.com\r\nX-Injected: pwned"},
+        "notes": "CRLF header injection via Host"
+      },
+      {
+        "id": "hinj-002",
+        "label": "HTTP response splitting",
+        "method": "GET",
+        "path": "/redirect",
+        "query": "url=http://legit.com%0d%0aSet-Cookie:+admin=true",
+        "headers": {},
+        "notes": "Response splitting via redirect URL"
+      },
+      {
+        "id": "hinj-003",
+        "label": "X-Forwarded-Host override",
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {"X-Forwarded-Host": "evil.attacker.com"},
+        "notes": "Host header poisoning via XFH"
+      },
+      {
+        "id": "hinj-004",
+        "label": "Newline in User-Agent",
+        "method": "GET",
+        "path": "/api/data",
+        "query": "",
+        "headers": {"User-Agent": "curl/7.68\r\nX-Evil: injected"},
+        "notes": "CRLF in User-Agent"
+      },
+      {
+        "id": "hinj-005",
+        "label": "Content-Type smuggling",
+        "method": "POST",
+        "path": "/upload",
+        "query": "",
+        "body": "data=test",
+        "headers": {"Content-Type": "application/json\r\nTransfer-Encoding: chunked"},
+        "notes": "Header injection in Content-Type"
+      }
+    ]
+  },
+
+  "command_injection": {
+    "class": "command_injection",
+    "contract_section": "§3.1 — High-confidence injection",
+    "acceptable_actions": ["block", "challenge"],
+    "cases": [
+      {
+        "id": "cmdi-001",
+        "label": "Semicolon command chain",
+        "method": "GET",
+        "path": "/ping",
+        "query": "host=127.0.0.1;id",
+        "headers": {},
+        "notes": "Command chaining via semicolon"
+      },
+      {
+        "id": "cmdi-002",
+        "label": "Pipe to shell command",
+        "method": "GET",
+        "path": "/convert",
+        "query": "input=test|whoami",
+        "headers": {},
+        "notes": "Command injection via pipe"
+      },
+      {
+        "id": "cmdi-003",
+        "label": "Backtick subshell",
+        "method": "GET",
+        "path": "/exec",
+        "query": "cmd=`cat+/etc/passwd`",
+        "headers": {},
+        "notes": "Subshell execution via backticks"
+      },
+      {
+        "id": "cmdi-004",
+        "label": "Dollar subshell",
+        "method": "GET",
+        "path": "/run",
+        "query": "arg=$(id)",
+        "headers": {},
+        "notes": "$(cmd) subshell substitution"
+      },
+      {
+        "id": "cmdi-005",
+        "label": "Newline command injection",
+        "method": "GET",
+        "path": "/log",
+        "query": "msg=hello%0aid%0a",
+        "headers": {},
+        "notes": "Newline to inject second shell command"
+      },
+      {
+        "id": "cmdi-006",
+        "label": "POST body command injection",
+        "method": "POST",
+        "path": "/api/exec",
+        "query": "",
+        "body": "{\"command\":\"ls; cat /etc/passwd\"}",
+        "content_type": "application/json",
+        "headers": {},
+        "notes": "Command injection via JSON POST body"
+      }
+    ]
+  },
+
+  "recon": {
+    "class": "recon",
+    "contract_section": "§3.1 — Reconnaissance/scanning",
+    "acceptable_actions": ["block", "rate_limit", "challenge"],
+    "cases": [
+      {
+        "id": "recon-001",
+        "label": "Env file probe",
+        "method": "GET",
+        "path": "/.env",
+        "query": "",
+        "headers": {},
+        "notes": "Common env file recon"
+      },
+      {
+        "id": "recon-002",
+        "label": "Git repo exposure",
+        "method": "GET",
+        "path": "/.git/config",
+        "query": "",
+        "headers": {},
+        "notes": "Exposed git config"
+      },
+      {
+        "id": "recon-003",
+        "label": "WordPress admin panel",
+        "method": "GET",
+        "path": "/wp-admin/",
+        "query": "",
+        "headers": {},
+        "notes": "WordPress admin recon"
+      },
+      {
+        "id": "recon-004",
+        "label": "phpMyAdmin probe",
+        "method": "GET",
+        "path": "/phpmyadmin/",
+        "query": "",
+        "headers": {},
+        "notes": "phpMyAdmin discovery"
+      },
+      {
+        "id": "recon-005",
+        "label": "AWS credentials file",
+        "method": "GET",
+        "path": "/.aws/credentials",
+        "query": "",
+        "headers": {},
+        "notes": "AWS credentials exposure"
+      },
+      {
+        "id": "recon-006",
+        "label": "Docker API exposure",
+        "method": "GET",
+        "path": "/v1.24/containers/json",
+        "query": "",
+        "headers": {},
+        "notes": "Docker remote API probe"
+      },
+      {
+        "id": "recon-007",
+        "label": "Kubernetes API",
+        "method": "GET",
+        "path": "/api/v1/namespaces/default/pods",
+        "query": "",
+        "headers": {},
+        "notes": "K8s API server probe"
+      },
+      {
+        "id": "recon-008",
+        "label": "Config backup file",
+        "method": "GET",
+        "path": "/config.php.bak",
+        "query": "",
+        "headers": {},
+        "notes": "Backup config file discovery"
+      },
+      {
+        "id": "recon-009",
+        "label": "SSH private key probe",
+        "method": "GET",
+        "path": "/.ssh/id_rsa",
+        "query": "",
+        "headers": {},
+        "notes": "SSH private key exposure"
+      },
+      {
+        "id": "recon-010",
+        "label": "Server-status Apache",
+        "method": "GET",
+        "path": "/server-status",
+        "query": "",
+        "headers": {},
+        "notes": "Apache server-status recon"
+      }
+    ]
+  },
+
+  "body_abuse": {
+    "class": "body_abuse",
+    "contract_section": "§3.1 — Volumetric / body abuse",
+    "acceptable_actions": ["block", "rate_limit", "challenge"],
+    "cases": [
+      {
+        "id": "body-001",
+        "label": "Oversized JSON body",
+        "method": "POST",
+        "path": "/api/upload",
+        "query": "",
+        "body_generator": "repeat_char",
+        "body_size_kb": 500,
+        "content_type": "application/json",
+        "headers": {},
+        "notes": "500 KB JSON body — body abuse detection"
+      },
+      {
+        "id": "body-002",
+        "label": "Deeply nested JSON",
+        "method": "POST",
+        "path": "/api/data",
+        "query": "",
+        "body": "{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":{\"g\":{\"h\":{\"i\":{\"j\":{\"k\":\"deep\"}}}}}}}}}}}",
+        "content_type": "application/json",
+        "headers": {},
+        "notes": "Deeply nested JSON to stress parser"
+      },
+      {
+        "id": "body-003",
+        "label": "Binary in JSON string",
+        "method": "POST",
+        "path": "/api/parse",
+        "query": "",
+        "body": "{\"data\":\"\\u0000\\u0001\\u0002\\u0003\\u0004\"}",
+        "content_type": "application/json",
+        "headers": {},
+        "notes": "Null bytes in JSON string value"
+      }
+    ]
+  }
+}
