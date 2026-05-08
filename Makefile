@@ -108,7 +108,7 @@ reset-cert: ## Delete + regenerate the dev cert
 build: ## cargo build --release with $(FEATURES)
 	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES)"
 
-stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd (FORCE=1 to refresh waf.yaml from prod-balanced.yaml)
+stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd (FORCE=1 to refresh, KEEP=1 to acknowledge drift)
 	@ln -sf target/release/waf ./waf
 	@if [ ! -e ./waf.yaml ] || [ "$$FORCE" = "1" ]; then \
 	  if [ -e ./waf.yaml ] && [ "$$FORCE" = "1" ]; then \
@@ -117,13 +117,24 @@ stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd 
 	  fi ; \
 	  cp config/profiles/prod-balanced.yaml ./waf.yaml ; \
 	  echo "  staged: ./waf.yaml (copied from config/profiles/prod-balanced.yaml — edit before boot)" ; \
+	elif [ "config/profiles/prod-balanced.yaml" -nt ./waf.yaml ] && [ "$$KEEP" != "1" ]; then \
+	  echo "" ; \
+	  echo "  ERROR: config/profiles/prod-balanced.yaml is newer than ./waf.yaml — drift detected." ; \
+	  echo "" ; \
+	  echo "  Stale waf.yaml has caused benchmark regressions" ; \
+	  echo "  (Run-2 SEC-C001 / Run-3 NEW-1 / Run-4 SEC-C001). Pick one:" ; \
+	  echo "" ; \
+	  echo "    make stage FORCE=1      # refresh waf.yaml from prod-balanced.yaml (with .bak)" ; \
+	  echo "    make stage KEEP=1       # acknowledge drift; keep your edits" ; \
+	  echo "" ; \
+	  echo "  To inspect the diff first:    diff ./waf.yaml config/profiles/prod-balanced.yaml" ; \
+	  echo "" ; \
+	  exit 1 ; \
 	else \
-	  if [ "config/profiles/prod-balanced.yaml" -nt ./waf.yaml ]; then \
-	    echo "" ; \
-	    echo "  WARNING: config/profiles/prod-balanced.yaml is newer than ./waf.yaml" ; \
-	    echo "  Local waf.yaml may be missing recent fixes." ; \
-	    echo "  To refresh:  make stage FORCE=1" ; \
-	    echo "  To inspect:  diff ./waf.yaml config/profiles/prod-balanced.yaml" ; \
+	  if [ "$$KEEP" = "1" ] && [ "config/profiles/prod-balanced.yaml" -nt ./waf.yaml ]; then \
+	    echo "  KEEP=1: drift acknowledged — booting with operator-edited waf.yaml" ; \
+	    echo "  Drift summary (first 20 diff lines):" ; \
+	    diff ./waf.yaml config/profiles/prod-balanced.yaml 2>/dev/null | head -20 | sed 's/^/    /' || true ; \
 	    echo "" ; \
 	  else \
 	    echo "  ./waf.yaml already exists — left in place" ; \
@@ -150,18 +161,18 @@ run: $(WAF_BIN) cert redis-up ## Boot against $(CONFIG) — default: prod-balanc
 run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts Redis + mock upstream)
 	@AEGIS_INSECURE_COOKIES=1 $(WAF_BIN) run --config $(CONFIG_DEV)
 
-bench-dev: build cert redis-up upstream-up ## Boot dev with the v2.3 benchmark binary contract (./waf + ./waf.yaml; FORCE=1 to refresh waf.yaml from dev.yaml)
+bench-dev: build cert redis-up upstream-up ## Boot dev with v2.3 benchmark binary contract (FORCE=1 to refresh waf.yaml, KEEP=1 to acknowledge drift)
 	@# 1. Stage `./waf` + `./waf.yaml` per v2.3 §8 binary contract.
 	@#    Uses dev.yaml content so the existing dev profile (loose
 	@#    rate-limit + strikes disabled for shared loopback) is what
 	@#    the OC harness sees — easier to drive 5k+ RPS through.
 	@#
-	@# RUN3-NEW-1 (2026-05-08) — when ./waf.yaml exists, the prior
-	@# behavior was to leave it alone forever. That meant config-side
-	@# fixes landed via $(CONFIG_DEV) were invisible to anyone with a
-	@# local waf.yaml, leading to `ai.enabled: true` lingering across
-	@# QA runs. Now: opt-in `FORCE=1` to refresh (with .bak), and a
-	@# drift warning when $(CONFIG_DEV) is newer than ./waf.yaml.
+	@# Run-3 NEW-1 → Run-4 SEC-C001 (2026-05-08) — when ./waf.yaml
+	@# exists and dev.yaml is newer, ABORT with a clear FORCE/KEEP
+	@# choice. Earlier iterations only printed a WARNING; operators
+	@# (and the QA judging panel) booted stale ./waf.yaml repeatedly,
+	@# causing AI FP regressions across QA runs. Hard-abort makes
+	@# the choice explicit.
 	@ln -sf target/release/waf ./waf
 	@if [ ! -e ./waf.yaml ] || [ "$$FORCE" = "1" ]; then \
 	  if [ -e ./waf.yaml ] && [ "$$FORCE" = "1" ]; then \
@@ -170,13 +181,24 @@ bench-dev: build cert redis-up upstream-up ## Boot dev with the v2.3 benchmark b
 	  fi ; \
 	  cp $(CONFIG_DEV) ./waf.yaml ; \
 	  echo "  staged: ./waf.yaml (copied from $(CONFIG_DEV))" ; \
+	elif [ "$(CONFIG_DEV)" -nt ./waf.yaml ] && [ "$$KEEP" != "1" ]; then \
+	  echo "" ; \
+	  echo "  ERROR: $(CONFIG_DEV) is newer than ./waf.yaml — drift detected." ; \
+	  echo "" ; \
+	  echo "  Stale waf.yaml has caused benchmark regressions" ; \
+	  echo "  (Run-2 SEC-C001 / Run-3 NEW-1 / Run-4 SEC-C001). Pick one:" ; \
+	  echo "" ; \
+	  echo "    make bench-dev FORCE=1      # refresh waf.yaml from $(CONFIG_DEV) (with .bak)" ; \
+	  echo "    make bench-dev KEEP=1       # acknowledge drift; keep your edits" ; \
+	  echo "" ; \
+	  echo "  To inspect the diff first:    diff ./waf.yaml $(CONFIG_DEV)" ; \
+	  echo "" ; \
+	  exit 1 ; \
 	else \
-	  if [ "$(CONFIG_DEV)" -nt ./waf.yaml ]; then \
-	    echo "" ; \
-	    echo "  WARNING: $(CONFIG_DEV) is newer than ./waf.yaml" ; \
-	    echo "  Local waf.yaml may be missing recent fixes." ; \
-	    echo "  To refresh:  make bench-dev FORCE=1" ; \
-	    echo "  To inspect:  diff ./waf.yaml $(CONFIG_DEV)" ; \
+	  if [ "$$KEEP" = "1" ] && [ "$(CONFIG_DEV)" -nt ./waf.yaml ]; then \
+	    echo "  KEEP=1: drift acknowledged — booting with operator-edited waf.yaml" ; \
+	    echo "  Drift summary (first 20 diff lines):" ; \
+	    diff ./waf.yaml $(CONFIG_DEV) 2>/dev/null | head -20 | sed 's/^/    /' || true ; \
 	    echo "" ; \
 	  else \
 	    echo "  ./waf.yaml already exists — left in place" ; \

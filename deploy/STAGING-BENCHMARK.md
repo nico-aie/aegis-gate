@@ -147,6 +147,51 @@ The audit log gets created automatically on the first request because
 backend before booting — the prod-balanced template ships with a
 `127.0.0.1:9999` stub.
 
+#### Drift handling — `FORCE=1` vs `KEEP=1`
+
+Once `./waf.yaml` exists, `make stage` and `make bench-dev` do **not**
+silently overwrite operator edits. Instead, when the source profile
+(`config/profiles/prod-balanced.yaml` for `stage`, `config/dev.yaml`
+for `bench-dev`) is **newer** than `./waf.yaml`, the target aborts
+with an explicit choice:
+
+```text
+ERROR: config/profiles/prod-balanced.yaml is newer than ./waf.yaml — drift detected.
+
+Stale waf.yaml has caused benchmark regressions
+(Run-2 SEC-C001 / Run-3 NEW-1 / Run-4 SEC-C001). Pick one:
+
+  make stage FORCE=1      # refresh waf.yaml from prod-balanced.yaml (with .bak)
+  make stage KEEP=1       # acknowledge drift; keep your edits
+```
+
+| Flag | Behavior | When to use |
+|---|---|---|
+| `FORCE=1` | Backup the current `./waf.yaml` to `./waf.yaml.bak`, then copy fresh from the source profile. | Standard pre-submission step — the source profile usually has fixes you want. |
+| `KEEP=1` | Boot with the stale `./waf.yaml`, but print the first 20 lines of `diff` so you see what you're keeping out. | Rare — you've intentionally edited `./waf.yaml` (e.g. operator-tuned thresholds) and don't want to lose those edits. |
+
+**Submission workflow:** always run `make stage FORCE=1` (or `make
+bench-dev FORCE=1` for the dev profile) before tarballing for the
+judging panel. Without `FORCE`, you ship whatever local `./waf.yaml`
+happens to be on disk — which is how AI FP regressions slipped past
+QA Run-2 → Run-3 → Run-4.
+
+#### Audit log files (two sinks, two consumers)
+
+The WAF writes **two** audit logs in parallel. They serve different
+consumers and have different schemas — this is intentional dual-sink
+design.
+
+| File | Schema | Consumer |
+|------|--------|----------|
+| `./waf_audit.log` (configurable: `cfg.interop.audit_path`) | v2.3 §6 contract — `request_id, ts_ms, ip, method, path, action, risk_score, mode, [rule_id, tier]` | Benchmark harness / OC |
+| `cfg.audit.sinks[*].path` (default `./audit.jsonl`; dev `/tmp/aegis-dev-audit.jsonl`) | Rich `AuditEvent` — `client_ip, ts (ISO 8601), class, tenant_id, fields.{...}, ...` | SOC dashboard / SIEM / cold-tier shipper |
+
+When validating contract compliance, parse `./waf_audit.log`. The
+operator audit at `cfg.audit.sinks` is for human consumption and
+intentionally a different schema (richer context: XFF-resolved
+`client_ip`, decoded request fields, detector-mask state).
+
 If you re-build with new features (e.g. add `ai` after the fact),
 re-run `make stage` — the symlink follows the latest `target/release/waf`
 without extra steps.
