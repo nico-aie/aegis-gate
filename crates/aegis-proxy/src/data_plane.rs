@@ -440,8 +440,20 @@ pub(crate) async fn handle_data_request_inner(
     let interop_modes = upstream_ctx.interop_modes.get();
 
     if !signals.is_empty() {
-        let total_score: u32 = signals.iter().map(|s| s.score).sum();
-        let post_state = risk.record_malicious(peer_ip, total_score);
+        // SEC-M003 (2026-05-08) — cap per-request contribution to
+        // max(signal). Pre-fix: sum() let a single multi-class hit
+        // (e.g. sqli=50 + path_traversal=45 + ai=50) clamp to
+        // score=100 immediately, breaking risk lifecycle tests +
+        // locking legit users out on a single ambiguous request.
+        //
+        // Now: each request contributes the strongest signal only.
+        // Repeated bad requests still escalate (each adds max(signal)
+        // to the running total → reach `block_at` in 2-3 hits with
+        // default thresholds 40/80/100); single multi-detector
+        // false-positives get a softer one-strike penalty.
+        let request_score: u32 =
+            signals.iter().map(|s| s.score).max().unwrap_or(0);
+        let post_state = risk.record_malicious(peer_ip, request_score);
         // 2026-05-03 — dedup detector tags before emitting them
         // anywhere (audit fields, rule_id, response header).
         // Multiple signals from one detector class (e.g. two

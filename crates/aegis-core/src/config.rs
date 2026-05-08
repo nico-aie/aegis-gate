@@ -163,6 +163,16 @@ fn default_interop_enabled() -> bool {
 }
 
 fn default_interop_audit_path() -> std::path::PathBuf {
+    // ./waf_audit.log — the v2.3 §6 CONTRACT-shape audit sink.
+    // Schema: request_id, ts_ms, ip (TCP peer), method, path,
+    // action, risk_score, mode (+ optional rule_id, tier).
+    //
+    // This is the file the OC benchmark harness parses for
+    // contract validation. It is intentionally distinct from
+    // the OPERATOR audit at `cfg.audit.sinks` (rich AuditEvent
+    // schema with XFF-resolved client_ip, ISO 8601 ts, class,
+    // tenant_id, fields.*). See deploy/STAGING-BENCHMARK.md
+    // §"Audit log files" for the dual-sink rationale.
     std::path::PathBuf::from("./waf_audit.log")
 }
 

@@ -216,7 +216,18 @@ logging:
   verbosity: info
 
 # ---------------------------------------------------------------------------
-# Audit — single jsonl sink under /tmp so dev runs are inspectable
+# Audit — OPERATOR sink (dashboard / SIEM / cold-tier shipper)
+#
+# Schema: AuditEvent (rich) — `client_ip` (XFF-resolved), `ts` (ISO 8601),
+# `class`, `tenant_id`, `tier`, `fields.{...}` nested. This is the SOC
+# / forensics audit; it carries decoded request fields and detector
+# mask state, NOT a stable contract schema.
+#
+# The CONTRACT audit (v2.3 §6: request_id, ts_ms, ip, method, path,
+# action, risk_score, mode) lives at a SEPARATE sink configured under
+# `interop.audit_path` (default ./waf_audit.log). Both sinks run in
+# parallel. The OC harness parses the contract sink; humans read this
+# one. See deploy/STAGING-BENCHMARK.md §"Audit log files".
 # ---------------------------------------------------------------------------
 audit:
   sinks:
