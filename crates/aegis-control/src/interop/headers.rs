@@ -19,6 +19,23 @@ pub const RULE_ID: &str = "x-waf-rule-id";
 pub const CACHE: &str = "x-waf-cache";
 pub const MODE: &str = "x-waf-mode";
 
+/// 2026-05-08 — bonus telemetry header. Reports the per-request
+/// WAF processing time (received → response stamped) in
+/// milliseconds with microsecond precision (e.g. `1.234`).
+///
+/// Captured at the listener `service_fn` entry; covers detector
+/// chain + rule engine + risk gate + upstream forward + the
+/// stamp itself. NOT on the v2.3 §5 mandatory list — extra
+/// observability for operators analyzing per-route WAF cost
+/// without spinning up a separate latency probe.
+///
+/// Side-channel note: precise per-request timing leaks regex-
+/// hot-path information. Operators who care about that should
+/// disable via the existing detector mask (no separate toggle
+/// — the header is cheap enough that gating it would cost more
+/// than it saves).
+pub const OVERHEAD_LATENCY: &str = "x-waf-overhead-latency";
+
 /// One of the six contract decision classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -226,6 +243,24 @@ fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) {
     }
 }
 
+/// 2026-05-08 — stamp the `X-WAF-Overhead-Latency` header from a
+/// `Duration`. Format: `<int>.<3-digit>` ms (microsecond
+/// precision; cap at 4 fractional digits worth of safety).
+///
+/// Caller measures `request_start.elapsed()` at the listener
+/// service_fn entry; this writes the formatted value.
+pub fn stamp_overhead_latency(headers: &mut HeaderMap, elapsed: std::time::Duration) {
+    let micros = elapsed.as_micros();
+    // Format as ms with µs precision: `12.345` for 12.345 ms.
+    // Cheaper than format!("{:.3}") because we avoid float
+    // formatting; integer-divide trick gives 3 decimals
+    // deterministically. u128 math fits any realistic request.
+    let ms_int = micros / 1000;
+    let us_frac = micros % 1000;
+    let value = format!("{ms_int}.{us_frac:03}");
+    insert(headers, OVERHEAD_LATENCY, &value);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +312,37 @@ mod tests {
         Decision::block("rid".into(), 90, "rule-sqli-001", Mode::Enforce).stamp(&mut h);
         assert_eq!(h.get(ACTION).unwrap(), "block");
         assert_eq!(h.get(RULE_ID).unwrap(), "rule-sqli-001");
+    }
+
+    #[test]
+    fn stamp_overhead_latency_formats_with_microsecond_precision() {
+        let mut h = HeaderMap::new();
+        // 12.345 ms = 12_345 microseconds
+        stamp_overhead_latency(&mut h, std::time::Duration::from_micros(12_345));
+        assert_eq!(h.get(OVERHEAD_LATENCY).unwrap(), "12.345");
+    }
+
+    #[test]
+    fn stamp_overhead_latency_pads_fractional_zeros() {
+        let mut h = HeaderMap::new();
+        // 1.005 ms — verifies the {us_frac:03} zero-pad
+        stamp_overhead_latency(&mut h, std::time::Duration::from_micros(1_005));
+        assert_eq!(h.get(OVERHEAD_LATENCY).unwrap(), "1.005");
+    }
+
+    #[test]
+    fn stamp_overhead_latency_handles_sub_millisecond() {
+        let mut h = HeaderMap::new();
+        // 0.250 ms = 250 µs
+        stamp_overhead_latency(&mut h, std::time::Duration::from_micros(250));
+        assert_eq!(h.get(OVERHEAD_LATENCY).unwrap(), "0.250");
+    }
+
+    #[test]
+    fn stamp_overhead_latency_handles_zero() {
+        let mut h = HeaderMap::new();
+        stamp_overhead_latency(&mut h, std::time::Duration::ZERO);
+        assert_eq!(h.get(OVERHEAD_LATENCY).unwrap(), "0.000");
     }
 
     #[test]

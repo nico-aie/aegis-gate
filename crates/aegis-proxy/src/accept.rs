@@ -1038,6 +1038,12 @@ pub(crate) async fn accept_loop(
                 let decision_metrics = decision_metrics.clone();
                 let detector_hit_metrics = detector_hit_metrics.clone();
                 async move {
+                    // 2026-05-08 — capture earliest-possible per-
+                    // request timestamp for the X-WAF-Overhead-
+                    // Latency response header. Sub-microsecond cost
+                    // (single Instant::now()); stamped at response
+                    // time inside `stamp_interop_response`.
+                    let request_start = std::time::Instant::now();
                     let method = req.method().clone();
                     let path = req.uri().path().to_string();
                     // v2.3 contract (deploy/STAGING-BENCHMARK.md §7.5):
@@ -1176,6 +1182,7 @@ pub(crate) async fn accept_loop(
                             &method,
                             &path,
                             risk_score,
+                            request_start,
                         );
                         return Ok::<_, Infallible>(resp);
                     }
@@ -1282,6 +1289,7 @@ pub(crate) async fn accept_loop(
                         &method,
                         &path,
                         risk_score,
+                        request_start,
                     );
                     Ok::<_, Infallible>(resp)
                 }

@@ -941,11 +941,24 @@ pub(crate) fn stamp_interop_response(
     method: &hyper::Method,
     path: &str,
     risk_score: u32,
+    // 2026-05-08 — `Instant` captured at the listener service_fn
+    // entry. Used to stamp `X-WAF-Overhead-Latency`. Computed
+    // here (after Decision::stamp) so the header reflects the
+    // actual time-on-wire from the WAF's perspective.
+    request_start: std::time::Instant,
 ) -> Response<Full<Bytes>> {
     use aegis_control::interop::audit::MinimalAuditEntry;
     use aegis_control::interop::headers::{CacheState, Decision};
 
     let Some(rt) = interop else {
+        // No interop runtime → skip the v2.3 mandatory headers,
+        // but still stamp the overhead-latency telemetry so
+        // operators in non-interop builds get the same
+        // observability hint.
+        aegis_control::interop::headers::stamp_overhead_latency(
+            resp.headers_mut(),
+            request_start.elapsed(),
+        );
         return resp;
     };
 
@@ -991,6 +1004,16 @@ pub(crate) fn stamp_interop_response(
         mode,
     };
     decision.stamp(resp.headers_mut());
+
+    // 2026-05-08 — bonus telemetry. Captures elapsed at the
+    // last possible moment so the value reflects the full
+    // WAF-side processing cost (received → response stamped),
+    // including the stamper itself. Two `Instant::now()` calls
+    // and an integer format — sub-microsecond cost.
+    aegis_control::interop::headers::stamp_overhead_latency(
+        resp.headers_mut(),
+        request_start.elapsed(),
+    );
 
     if let Some(sink) = rt.audit.as_ref() {
         let entry = MinimalAuditEntry {
