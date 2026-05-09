@@ -534,6 +534,50 @@ pub async fn run(
         ctx
     });
 
+    // 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS observe-only wire-up.
+    // Build the runtime if `cfg.ddos.enabled = true` and install
+    // it into `ProxyContext`. Default config has `enabled: true,
+    // observe_only: true` so the detector runs in shadow mode out
+    // of the box. The Phase 2 follow-up flips `observe_only`
+    // through to enforcement (503 short-circuit) once operators
+    // have validated the signal in their env.
+    //
+    // The ticker is spawned once here so cluster-wide spike mode
+    // (EWMA over `current_rps`) advances every second regardless
+    // of request load. Without it, the spike-detection signal
+    // would only update on requests, defeating the whole point
+    // of "alert before traffic crashes the upstream".
+    if cfg.ddos.enabled {
+        let runtime = Arc::new(aegis_security::ddos::DdosRuntime::new(
+            cfg.ddos.clone().into(),
+            state.clone(),
+        ));
+        if upstream_ctx.ddos.set(runtime.clone()).is_err() {
+            tracing::warn!("ddos: runtime already installed; skipping");
+        } else {
+            tracing::info!(
+                observe_only = runtime.observe_only(),
+                per_ip_limit = cfg.ddos.per_ip_limit,
+                spike_multiplier = cfg.ddos.spike_multiplier,
+                "ddos: runtime installed (observe-only Phase 1)",
+            );
+            // Spawn the spike-detection ticker. Drop guard not
+            // needed — handle leaks at shutdown the same way the
+            // health-check handles do; the proxy supervisor owns
+            // the process lifetime.
+            let runtime_for_tick = runtime.clone();
+            handles.push(tokio::spawn(async move {
+                let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    iv.tick().await;
+                    runtime_for_tick.tick_rps();
+                }
+            }));
+        }
+    } else {
+        tracing::info!("ddos: cfg.ddos.enabled = false — detector not installed");
+    }
+
     // Spawn live health-check tasks for every pool that carries
     // a `health:` block. Without this, configured probes never
     // ran and the dashboard's "members up" stayed at the

@@ -1,21 +1,42 @@
 # DDoS Protection
 
-> **Status:** ⚠️ **Stub — NOT WIRED** (filed 2026-05-09 as
-> [`BUG-DDOS-STUB`](../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md)).
-> The `DdosDetector` struct exists at `aegis-security/src/ddos.rs` but is
-> never instantiated outside its own unit tests. **Operators should not rely
-> on the protections described below.** Wire-up plan tracked at
-> [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](../../plans/issue-fix/internal-audit-2026-05-09-ddos/).
+> **Status:** ⚠️ **Partial — observe-only single-node (Phase 1)** as of
+> 2026-05-09. The `DdosRuntime` is now wired into `aegis-proxy/src/data_plane.rs`
+> with `cfg.ddos.enabled = true, observe_only = true` by default. Every
+> per-IP burst that exceeds the limit emits an `ddos_observed` audit event
+> but **the request still proceeds** — no 503 short-circuit until Phase 2
+> flips `observe_only: false`. The cluster-wide / per-tenant target design
+> below stays deferred behind multi-tenancy + ha-clustering. See
+> [`BUG-DDOS-STUB`](../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md)
+> for the original audit and
+> [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](../../plans/issue-fix/internal-audit-2026-05-09-ddos/)
+> for the two-phase wire-up plan.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
-> **What actually works today** (partial backstop until the wire-up lands):
-> per-IP token-bucket rate limiting, velocity / login-flood limiter,
-> risk-strikes auto-block (default 50 strikes → permanent block),
-> adaptive load shedding (Gradient2). See the bug report for the full
-> doc-vs-code gap table. The cluster-wide / per-tenant pieces below
-> describe the **target v2 design**; the v1 single-node implementation
-> is what the wire-up plan covers first.
+> **What works today** (Phase 1 observe-only):
+> - Per-IP burst detection (sliding window) — every request runs through
+>   `DdosDetector::check`. Burst-exceeded events emit `ddos_observed` audit
+>   entries with `path`, `method`, `ddos_observe_only: true`,
+>   `ddos_spike_active`, `reason`. Operators grep audit for `ddos_observed`
+>   to bake the signal before flipping enforce on.
+> - EWMA spike-detection ticker runs once per second in a tokio task —
+>   `current_rps`, `baseline_rps`, `is_spike_active` are reachable on
+>   `Arc<DdosRuntime>` for future dashboard surface.
+> - `StateBackend::auto_block` writes a TTL'd block entry on burst-exceed,
+>   so a previously-blocked IP returns `blocked: true` from the cluster
+>   keyspace on its next request — useful even in observe-only mode for
+>   tracking which IPs would have been 503'd.
+>
+> **Already on the data path independently** (partial backstop, separate
+> features): per-IP token-bucket rate limiting, velocity / login-flood
+> limiter, risk-strikes auto-block (default 50 strikes → permanent block),
+> adaptive load shedding (Gradient2).
+>
+> **Still deferred** for Phase 2 + later: 503 short-circuit on blocked IPs
+> (the enforce flip), Prometheus counter / gauge surface, dashboard panel,
+> per-tenant scoping (depends on `multi-tenancy.md` — DEFERRED), cluster-
+> wide spike-mode broadcast (depends on `ha-clustering.md`).
 
 ## Purpose
 
