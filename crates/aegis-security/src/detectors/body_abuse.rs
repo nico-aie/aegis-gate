@@ -65,7 +65,7 @@ impl Detector for BodyAbuseDetector {
         if let Some(cl) = req.body.content_length() {
             if cl > self.max_body_bytes {
                 signals.push(Signal {
-                    score: 30,
+                    score: super::scores::body_abuse::OVERSIZE,
                     tag: "body_oversize".into(),
                     field: "body".into(),
                 });
@@ -83,7 +83,7 @@ impl Detector for BodyAbuseDetector {
                     let depth = json_nesting_depth(trimmed);
                     if depth > self.max_nesting_depth {
                         signals.push(Signal {
-                            score: 35,
+                            score: super::scores::body_abuse::DEEP_NESTING,
                             tag: "body_deep_nesting".into(),
                             field: "body".into(),
                         });
@@ -91,7 +91,7 @@ impl Detector for BodyAbuseDetector {
                     // Mass assignment: privileged-field key in body.
                     if MASS_ASSIGN_KEYS.is_match(text) {
                         signals.push(Signal {
-                            score: 50,
+                            score: super::scores::body_abuse::MASS_ASSIGNMENT,
                             tag: "mass_assignment".into(),
                             field: "body".into(),
                         });
@@ -113,7 +113,7 @@ impl Detector for BodyAbuseDetector {
                     || (trimmed.starts_with('<') && !trimmed.starts_with("<!--"));
                 if looks_xml && XXE_ENTITY_DECL.is_match(text) {
                     signals.push(Signal {
-                        score: 60,
+                        score: super::scores::body_abuse::XXE,
                         tag: "xxe".into(),
                         field: "body".into(),
                     });
@@ -148,7 +148,7 @@ fn check_proto_pollution(body: &str, signals: &mut Vec<Signal>) {
     let lc = body.to_ascii_lowercase();
     if lc.contains("\"__proto__\"") {
         signals.push(Signal {
-            score: 45,
+            score: super::scores::body_abuse::PROTO_POLLUTION,
             tag: "proto_pollution".into(),
             field: "body".into(),
         });
@@ -156,7 +156,7 @@ fn check_proto_pollution(body: &str, signals: &mut Vec<Signal>) {
     }
     if lc.contains("\"constructor\"") && lc.contains("\"prototype\"") {
         signals.push(Signal {
-            score: 45,
+            score: super::scores::body_abuse::PROTO_POLLUTION,
             tag: "proto_pollution".into(),
             field: "body".into(),
         });

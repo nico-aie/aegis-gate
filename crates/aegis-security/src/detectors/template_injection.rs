@@ -109,7 +109,7 @@ fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in SSTI_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 50,
+                score: super::scores::template_injection::TEMPLATE_INJECTION,
                 tag: "template_injection".into(),
                 field: field.into(),
             });

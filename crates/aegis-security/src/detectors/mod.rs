@@ -7,6 +7,7 @@ pub mod nosql_injection;
 pub mod open_redirect;
 pub mod path_traversal;
 pub mod recon;
+pub mod scores;
 pub mod sqli;
 pub mod ssrf;
 pub mod template_injection;

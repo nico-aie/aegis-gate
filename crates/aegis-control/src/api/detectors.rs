@@ -24,6 +24,7 @@
 use aegis_core::config::ComplianceMode;
 use aegis_core::tier::Tier;
 use aegis_security::detectors::{
+    scores::{tier_for, ScoreEntry, CATALOG},
     tier_str, DetectorClass, DetectorMask, DetectorMaskBody, MaskState, SharedDetectorMask,
     ALL_TIERS,
 };
@@ -43,6 +44,40 @@ pub struct DetectorsResponse {
     /// Active compliance modes — informational, mirrors
     /// `cfg.compliance.modes`.
     pub compliance_modes: Vec<&'static str>,
+    /// 2026-05-09 (Run-5 follow-up #293) — read-only score catalog
+    /// surfaced so the dashboard can render a "Risk score" column
+    /// without scraping detector source files. The catalog is the
+    /// single source of truth: detector code references the same
+    /// consts (`aegis_security::detectors::scores::*`) for every
+    /// `Signal { score: ... }` literal it emits.
+    pub score_table: Vec<ScoreRow>,
+}
+
+/// Row consumed by the dashboard's per-detector "Risk score" column.
+/// Mirrors [`aegis_security::detectors::scores::ScoreEntry`] but
+/// adds a UI-only `tier` label so the SPA doesn't need to duplicate
+/// the bucketing logic.
+#[derive(Clone, Debug, Serialize)]
+pub struct ScoreRow {
+    pub class: &'static str,
+    pub tag: &'static str,
+    pub score: u32,
+    /// Tier label — `"critical"`, `"high"`, `"broad"`, `"header"`,
+    /// `"phishing"`, `"probe"`. Drives the chip colour.
+    pub tier: &'static str,
+    pub note: &'static str,
+}
+
+impl From<&ScoreEntry> for ScoreRow {
+    fn from(e: &ScoreEntry) -> Self {
+        Self {
+            class: e.class,
+            tag: e.tag,
+            score: e.score,
+            tier: tier_for(e.score),
+            note: e.note,
+        }
+    }
 }
 
 /// JSON shape accepted by `PUT /api/detectors`. Both fields are
@@ -114,6 +149,7 @@ pub fn render_get(mask: &SharedDetectorMask, modes: &[ComplianceMode]) -> String
             .map(|c| c.as_str())
             .collect(),
         compliance_modes: modes.iter().map(compliance_mode_str).collect(),
+        score_table: CATALOG.iter().map(ScoreRow::from).collect(),
     };
     serde_json::to_string(&body).unwrap_or_else(|_| String::from("{}"))
 }
@@ -456,6 +492,57 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.iter().any(|e| e.contains("base mask") && e.contains("sqli")));
+    }
+
+    // ---- Run-5 follow-up #293 — score catalog in GET response ----
+
+    #[test]
+    fn render_get_includes_score_table_with_all_classes() {
+        let mask = SharedDetectorMask::default();
+        let json = render_get(&mask, &[]);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let table = parsed
+            .get("score_table")
+            .and_then(|v| v.as_array())
+            .expect("score_table is an array");
+        // Every detector class enabled by default appears at least
+        // once. Drift guard for the catalog.
+        for c in DetectorClass::ALL {
+            let id = c.as_str();
+            assert!(
+                table.iter().any(|row| row["class"] == id),
+                "score_table missing class {id}",
+            );
+        }
+        // Each row carries the expected shape.
+        let first = table.first().expect("non-empty table");
+        for field in ["class", "tag", "score", "tier", "note"] {
+            assert!(
+                first.get(field).is_some(),
+                "row missing field {field}: {first:?}",
+            );
+        }
+        // Tier label is one of the documented buckets.
+        let tier = first["tier"].as_str().unwrap();
+        assert!(
+            matches!(
+                tier,
+                "critical" | "high" | "broad" | "header" | "phishing" | "probe",
+            ),
+            "unexpected tier label {tier}",
+        );
+    }
+
+    #[test]
+    fn render_get_score_table_is_stable_across_calls() {
+        // The catalog is a const slice — rendering it twice must
+        // produce byte-identical output. Pinning this guards against
+        // accidental non-deterministic iteration (e.g. a future
+        // HashMap rewrite).
+        let mask = SharedDetectorMask::default();
+        let a = render_get(&mask, &[]);
+        let b = render_get(&mask, &[]);
+        assert_eq!(a, b);
     }
 
     #[test]

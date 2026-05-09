@@ -127,7 +127,7 @@ impl AiDetector {
         Ok(Self {
             model: Arc::new(model),
             threshold,
-            score: 60,
+            score: super::scores::ai::AI,
             metrics: Arc::new(NoopAiMetricsSink),
             runtime_enabled: Arc::new(AtomicBool::new(true)),
         })
@@ -140,7 +140,7 @@ impl AiDetector {
         Self {
             model,
             threshold,
-            score: 60,
+            score: super::scores::ai::AI,
             metrics: Arc::new(NoopAiMetricsSink),
             runtime_enabled: Arc::new(AtomicBool::new(true)),
         }

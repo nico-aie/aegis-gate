@@ -92,7 +92,7 @@ fn check_ssrf(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in SSRF_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 50,
+                score: super::scores::ssrf::SSRF,
                 tag: "ssrf".into(),
                 field: field.into(),
             });

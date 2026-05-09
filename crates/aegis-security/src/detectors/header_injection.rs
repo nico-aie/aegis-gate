@@ -70,7 +70,7 @@ impl Detector for HeaderInjectionDetector {
                 .unwrap_or("");
             if xfh_is_suspicious(xfh_val, host) {
                 signals.push(Signal {
-                    score: 35,
+                    score: super::scores::header_injection::XFH,
                     tag: "header_injection".into(),
                     field: "x-forwarded-host".into(),
                 });
@@ -203,7 +203,7 @@ fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in INJECTION_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 40,
+                score: super::scores::header_injection::CRLF,
                 tag: "header_injection".into(),
                 field: field.into(),
             });
@@ -217,7 +217,7 @@ fn check_crlf(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in INJECTION_PATTERNS.iter().take(6) {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 40,
+                score: super::scores::header_injection::CRLF,
                 tag: "header_injection".into(),
                 field: field.into(),
             });
