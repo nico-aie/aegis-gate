@@ -1,0 +1,102 @@
+# l-tester WAF config — no Redis, no Docker required.
+# Derived from tests/hackathon/configs/bench.yaml with adjustments
+# for the l-tester suite (tighter rate limits for burst detection tests,
+# realistic risk thresholds so attack tests trigger block/challenge).
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+
+routes:
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+
+upstreams:
+  stub-pool:
+    members:
+      - addr: "127.0.0.1:9999"
+    lb: round_robin
+
+state:
+  backend: in_memory
+
+risk:
+  weights:
+    bad_asn: 15
+    bad_ja4: 10
+    failed_auth: 20
+    detector_hit: 25
+    bot_unknown: 10
+    repeat_offender: 15
+  decay_half_life: "5m"
+  thresholds:
+    challenge_at: 40
+    block_at:     80
+    max:          100
+  trust_recovery:
+    per_hour: 30
+  strikes:
+    block_at: 1000000
+
+load_mode:
+  elevated_rps:    100000
+  critical_rps:    1000000
+  sample_interval: 1s
+
+audit:
+  sinks:
+    - jsonl:
+        path: "/tmp/aegis-l-tester-audit.jsonl"
+  chain:
+    enabled: true
+  retention: "7d"
+  pseudonymize_ip: false
+
+# Rate limit tight enough that 300-request burst triggers rate_limit
+# (for LT-08 volumetric test), but loose enough legit tests pass.
+rate_limit:
+  buckets:
+    - id: global-ip
+      scope: global
+      key: ip
+      algo: sliding_window
+      limit: 200
+      window: "10s"
+
+rules:
+  paths: []
+  max_rule_count: 10000
+  strict_compile: false
+
+detectors:
+  sqli:             { enabled: true }
+  xss:              { enabled: true }
+  path_traversal:   { enabled: true }
+  ssrf:             { enabled: true }
+  header_injection: { enabled: true }
+  body_abuse:       { enabled: true }
+  recon:            { enabled: true }
+  brute_force:      { enabled: false }
+
+observability:
+  prometheus:
+    enabled: false
+
+logging:
+  verbosity: info
+
+admin:
+  bind: "127.0.0.1:9443"
+  identity:
+    user: admin
+    password_hash: "$argon2id$v=19$m=19456,t=2,p=1$dGVzdHRlc3R0ZXN0$kxlR4dPmllB+IMOmw3hNW1Lv3qiI4xFC7FgTiM2wmiU"
+
+interop:
+  enabled: true
+  audit_path: "./waf_audit.log"
+  control_secret: "waf-hackathon-2026-ctrl"
