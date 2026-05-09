@@ -4001,49 +4001,6 @@ function PageSettings() {
   const runtime = window.useRuntimeApi();
   const showRuntimeHint = !!runtime?.data;
 
-  // CQF-T8 — risk thresholds wired to /api/risk/thresholds.
-  // The endpoint shipped via CI-T12; this wiring closes the
-  // CQA-T10 partial. The slider's "Allow ≤ X" is challenge_at-1
-  // and "Challenge ≤ Y" is block_at-1; we mirror the API's
-  // `challenge_at` / `block_at` directly into local state.
-  const riskApi = window.useRiskThresholdsApi();
-  const [allow, setAllow] = useStateP(0);
-  const [challenge, setChallenge] = useStateP(0);
-  const [riskBusy, setRiskBusy] = useStateP(false);
-  // Sync local sliders with whatever the live API reports —
-  // first load, hot-reload, or another operator's PUT.
-  useEffectP(() => {
-    if (!riskApi.data) return;
-    const ca = Number(riskApi.data.challenge_at);
-    const ba = Number(riskApi.data.block_at);
-    if (Number.isFinite(ca)) setAllow(Math.max(0, ca - 1));
-    if (Number.isFinite(ba)) setChallenge(Math.max(0, ba - 1));
-  }, [riskApi.data?.challenge_at, riskApi.data?.block_at]);
-
-  async function saveRiskThresholds() {
-    if (riskBusy) return;
-    setRiskBusy(true);
-    try {
-      const body = {
-        challenge_at: allow + 1,
-        block_at: challenge + 1,
-        max: Number(riskApi.data?.max) || 100,
-      };
-      const r = await window.settingsRiskThresholdsPut(body);
-      if (r && r.ok) {
-        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
-        riskApi.reload && riskApi.reload();
-      } else {
-        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
-        window.aegisToast(`Risk threshold save failed: ${msg}`, 'err');
-      }
-    } catch (e) {
-      window.aegisToast(`Risk threshold error: ${e.message || e}`, 'err');
-    } finally {
-      setRiskBusy(false);
-    }
-  }
-
   const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
   const [stackTraces, setStackTraces] = useStateP(true);
   const [redactJSON, setRedactJSON] = useStateP(true);
@@ -4138,53 +4095,19 @@ function PageSettings() {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Cumulative IP risk thresholds</div>
-          <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`}>
-            {riskApi.error ? 'fetch failed' : 'live'}
-          </span>
-          {riskApi.data && (
-            <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 'auto' }}>
-              live: challenge ≥ {riskApi.data.challenge_at} · block ≥ {riskApi.data.block_at}
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 10, lineHeight: 1.5 }}>
-          Per-source-IP score that <strong>accumulates across requests</strong> and decays exponentially
-          (half-life <span className="num">{riskApi.data?.decay_half_life || '5m'}</span> from <code>risk.decay_half_life</code>).
-          Gates the challenge ladder for <em>future</em> requests from this IP.
-          {' '}
-          <strong>Distinct from</strong> the per-request <em>tier risk threshold</em> (50 / 70 / 80 / 90 by tier)
-          which blocks <em>this</em> request based on its detector hits — that one lives on the Detectors page → Edit tier.
-          {' '}
-          See <a href="/docs/security/security-engine.md" target="_blank" rel="noreferrer">security-engine.md § Risk model</a>.
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
-            </div>
-            <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
-          </div>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
-            </div>
-            <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
-            </div>
-            <button
-              className="btn primary"
-              disabled={riskBusy}
-              onClick={saveRiskThresholds}
-              style={{ fontSize: 11, padding: '4px 12px' }}
-            >
-              Save thresholds
-            </button>
+      {/* 2026-05-10 — "Cumulative IP risk thresholds" card moved to
+          Traffic Gates → next to Strike-Block, so the per-IP-risk
+          knobs (lifetime strikes + decaying score thresholds) live
+          on one page with a side-by-side semantics callout. */}
+      <div className="card" style={{ marginBottom: 12, padding: 14, background: 'var(--surface-2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <window.I.Shield />
+          <div style={{ flex: 1, fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.5 }}>
+            <strong style={{ color: 'var(--ink)' }}>Cumulative IP risk thresholds moved.</strong>{' '}
+            They now live with Strike-Block on the
+            {' '}
+            <a href="#/traffic-gates" style={{ color: 'var(--accent)', fontWeight: 600 }}>Traffic Gates</a>
+            {' '}page so the full per-IP-risk story (lifetime strikes vs. decaying score) sits in one place.
           </div>
         </div>
       </div>
@@ -7802,6 +7725,8 @@ function PageTrafficGates() {
 
       <AccessListGateCard />
       <StrikeBlockGateCard />
+      <PerIpRiskComparisonCallout />
+      <CumulativeIpRiskCard />
       <RateLimitGateCard />
       <DdosGateCard />
     </>
@@ -7862,10 +7787,163 @@ function StrikeBlockGateCard() {
           <span className="pill neutral" style={{ fontSize: 11 }}>
             {totalTracked} tracked
           </span>
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+            Lifetime counter — never decays. Edit <code>risk.strikes.block_at</code> in YAML;
+            reset a single IP via <code>POST /api/risk/&lt;ip&gt;/reset</code>.
+          </span>
         </div>
-        <a href="#/settings" className="btn" style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none' }}>
-          Edit thresholds →
-        </a>
+      </div>
+    </div>
+  );
+}
+
+// 2026-05-10 — explain to operators why "Strike-Block" (#2 above)
+// and "Cumulative IP risk" (the editable card below) sit next to
+// each other instead of being one thing. They're both per-IP risk,
+// but with opposite recovery semantics — same shape as the
+// Rate-Limit-vs-DDoS contrast we already document on this page.
+function PerIpRiskComparisonCallout() {
+  return (
+    <div className="card" style={{ marginBottom: 12, padding: 14, background: 'var(--surface-2)' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+        Strike count vs. cumulative score — what's the difference?
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+        <div style={{ padding: 10, background: 'var(--canvas)', borderRadius: 4, border: '1px solid var(--hairline)' }}>
+          <div style={{ fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>
+            Strike-Block (#2 above)
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            <code style={{ fontSize: 10 }}>risk.strikes.block_at</code> · lifetime counter ·
+            <strong> never decays</strong>
+          </div>
+          Each detector hit increments the IP's lifetime strike count by 1.
+          When it crosses the threshold (default <strong>50</strong>),
+          the IP is permanently blocked at the gate until an operator
+          resets it. "You ran out of chances" gate.
+        </div>
+        <div style={{ padding: 10, background: 'var(--canvas)', borderRadius: 4, border: '1px solid var(--hairline)' }}>
+          <div style={{ fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>
+            Cumulative IP risk (editable below)
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            <code style={{ fontSize: 10 }}>risk.thresholds.&#123;challenge,block&#125;_at</code> ·
+            decaying score · <strong>recovers over time</strong>
+          </div>
+          Each detector hit adds <em>weight</em> to the IP's cumulative score
+          (sum of signals). Score decays exponentially (half-life
+          <code style={{ fontSize: 10 }}> 5m</code>). Crossing
+          <code style={{ fontSize: 10 }}> challenge_at</code> serves
+          a JS / CAPTCHA challenge; crossing
+          <code style={{ fontSize: 10 }}> block_at</code> blocks at the gate
+          until decay drops the score back below.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 2026-05-10 — moved from PageSettings into Traffic Gates so all
+// per-IP-risk knobs (strike threshold, cumulative challenge_at,
+// cumulative block_at) sit on one page. The two thresholds gate
+// the challenge ladder for the *cumulative* per-IP score (decays
+// over time); the strike-block threshold above gates the lifetime
+// strike counter (never decays). Wired to /api/risk/thresholds
+// via window.useRiskThresholdsApi + window.settingsRiskThresholdsPut
+// — the same hooks Settings used to call.
+function CumulativeIpRiskCard() {
+  const riskApi = window.useRiskThresholdsApi();
+  const [allow, setAllow] = useStateP(0);
+  const [challenge, setChallenge] = useStateP(0);
+  const [riskBusy, setRiskBusy] = useStateP(false);
+
+  // Sync local sliders with whatever the live API reports —
+  // first load, hot-reload, or another operator's PUT.
+  useEffectP(() => {
+    if (!riskApi.data) return;
+    const ca = Number(riskApi.data.challenge_at);
+    const ba = Number(riskApi.data.block_at);
+    if (Number.isFinite(ca)) setAllow(Math.max(0, ca - 1));
+    if (Number.isFinite(ba)) setChallenge(Math.max(0, ba - 1));
+  }, [riskApi.data?.challenge_at, riskApi.data?.block_at]);
+
+  async function saveRiskThresholds() {
+    if (riskBusy) return;
+    setRiskBusy(true);
+    try {
+      const body = {
+        challenge_at: allow + 1,
+        block_at: challenge + 1,
+        max: Number(riskApi.data?.max) || 100,
+      };
+      const r = await window.settingsRiskThresholdsPut(body);
+      if (r && r.ok) {
+        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
+        riskApi.reload && riskApi.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Risk threshold save failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Risk threshold error: ${e.message || e}`, 'err');
+    } finally {
+      setRiskBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12 }}>
+        <div className="card-title">Cumulative IP risk thresholds</div>
+        <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`}>
+          {riskApi.error ? 'fetch failed' : 'live'}
+        </span>
+        {riskApi.data && (
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 'auto' }}>
+            live: challenge ≥ {riskApi.data.challenge_at} · block ≥ {riskApi.data.block_at}
+          </span>
+        )}
+      </div>
+      <div style={{ padding: '0 12px 12px' }}>
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 10, lineHeight: 1.5 }}>
+          Per-source-IP score that <strong>accumulates across requests</strong> and decays exponentially
+          (half-life <span className="num">{riskApi.data?.decay_half_life || '5m'}</span> from <code>risk.decay_half_life</code>).
+          Gates the challenge ladder for <em>future</em> requests from this IP.
+          {' '}
+          <strong>Distinct from</strong> the per-request <em>tier risk threshold</em> (50 / 70 / 80 / 90 by tier)
+          which blocks <em>this</em> request based on its detector hits — that one lives on the
+          {' '}
+          <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors &amp; Tiers</a> page → Edit tier.
+          {' '}
+          See <a href="/docs/security/security-engine.md" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>security-engine.md § Risk model</a>.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
+            </div>
+            <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
+          </div>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
+            </div>
+            <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
+            </div>
+            <button
+              className="btn primary"
+              disabled={riskBusy}
+              onClick={saveRiskThresholds}
+              style={{ fontSize: 11, padding: '4px 12px' }}
+            >
+              Save thresholds
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
