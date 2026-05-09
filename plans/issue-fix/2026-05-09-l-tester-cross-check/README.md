@@ -16,11 +16,11 @@ The three l-tester reports look alarming at first glance (especially Run-3's "12
 
 This plan groups the work into three independent tracks so they can ship in any order:
 
-| Track | What | Effort | Owner |
-|---|---|---|---|
-| **A.** Confirmed Rust bypasses (l-tester) | Fix SSTI space-tolerance + add IPv4-mapped IPv6 SSRF coverage | ~1 hr | This plan, Phase 1 |
-| **B.** Verify-only l-tester bypasses (regression pinning) | Add Rust regression tests proving the other 10 bypasses don't apply | ~1 hr | This plan, Phase 2 |
-| **C.** DDoS wire-up (internal audit) | Two-phase wire-up of `DdosDetector` (already planned) | ~2 days | [`internal-audit-2026-05-09-ddos/`](../internal-audit-2026-05-09-ddos/README.md) |
+| Track | What | Effort | Owner | Status |
+|---|---|---|---|---|
+| **A.** Confirmed Rust bypasses (l-tester) | Fix SSTI space-tolerance + add IPv4-mapped IPv6 SSRF coverage | ~1 hr | This plan, Phase 1 | ✅ **Shipped** ([`3e1270b`](#)) |
+| **B.** Verify-only l-tester bypasses (regression pinning) | Add Rust regression tests proving the other 10 bypasses don't apply | ~1 hr | This plan, Phase 2 | ⏳ Pending |
+| **C.** DDoS wire-up (internal audit) | Two-phase wire-up of `DdosDetector` (already planned) | ~2 days | [`internal-audit-2026-05-09-ddos/`](../internal-audit-2026-05-09-ddos/README.md) | Phase 1 ✅ shipped, Phase 2 pending |
 
 ---
 
@@ -170,13 +170,13 @@ Two phases (Phase 1 observe-only telemetry; Phase 2 enforce + 503). Phase 1 shou
 
 ## Sequencing
 
-| Order | Phase | Effort | Why this order |
-|---|---|---|---|
-| 1 | This plan, Phase 1 | ~1 hr | Closes 2 confirmed Rust bypasses; small surface, easy review |
-| 2 | DDoS Phase 1 (observe-only) | ~1 day | Higher impact than the l-tester regression pinning; behaviour-neutral so safe to land on develop without bake-in |
-| 3 | This plan, Phase 2 (regression pinning) | ~1 hr | Documentation-style work; can ship while DDoS bakes |
-| 4 | DDoS Phase 2 (enforce + 503) | ~1 day | Behaviour-changing; gated on DDoS Phase 1 metrics being clean |
-| 5 | l-tester team updates mock_waf.py | external | Hygiene, doesn't affect Rust binary |
+| Order | Phase | Effort | Status | Why this order |
+|---|---|---|---|---|
+| 1 | This plan, Phase 1 | ~1 hr | ✅ **Shipped** ([`3e1270b`](#)) | Closes 2 confirmed Rust bypasses; small surface, easy review |
+| 2 | DDoS Phase 1 (observe-only) | ~1 day | ✅ **Shipped** ([`095537d`](#)) | Higher impact than the l-tester regression pinning; behaviour-neutral so safe to land on develop without bake-in |
+| 3 | This plan, Phase 2 (regression pinning) | ~1 hr | ⏳ Pending | Documentation-style work; can ship while DDoS bakes |
+| 4 | DDoS Phase 2 (enforce + 503) | ~1 day | ⏳ Pending operator bake-in | Behaviour-changing; gated on DDoS Phase 1 metrics being clean |
+| 5 | l-tester team updates mock_waf.py | external | external | Hygiene, doesn't affect Rust binary |
 
 ---
 

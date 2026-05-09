@@ -5,6 +5,24 @@
 > **Branch:** all changes target `develop`.
 >
 > **Goal:** turn the unwired `DdosDetector` stub into a working v1 single-node implementation, then update the doc to honestly describe what's shipped vs what's deferred.
+>
+> ## Status (2026-05-09)
+>
+> | Phase | Status | Commit |
+> |---|---|---|
+> | Phase 1 — config + telemetry observe-only | ✅ **Shipped** | [`095537d`](#) |
+> | Phase 2 — enforce path + 503 short-circuit | ⏳ Pending operator bake-in | — |
+>
+> Phase 1 wired `DdosRuntime` into the proxy hot path with
+> `cfg.ddos.observe_only = true` by default — the detector runs on
+> every request and emits `ddos_observed` audit events on burst-exceed,
+> but no request is 503'd. Per-second `tick_rps()` ticker spawned in
+> `aegis-proxy/src/run.rs`. 1264 security tests + 18/18 workspace
+> binaries green. Phase 2 follows once operators have validated the
+> signal in their environment (typically ≥1 day of staging traffic).
+> The Phase 2 implementation is mostly the `observe_only: false` flip
+> + Prometheus counter wiring + dashboard panel; the data-plane
+> 503 path is already coded behind `outcome.should_enforce()`.
 
 ---
 

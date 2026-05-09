@@ -77,6 +77,17 @@ SOC-first dashboard.
 - **Threat intel** — STIX/TAXII auto-fetch (`taxii` feature),
   in-memory + file-loaded indicators, MaxMind GeoIP for
   country / ASN enrichment (`geoip` feature).
+- **DDoS protection** (⚠️ **Partial — observe-only single-node Phase 1**)
+  — per-IP burst detection (sliding window) + EWMA cluster
+  spike-mode ticker, wired into `aegis-proxy/src/data_plane.rs`
+  with `cfg.ddos.observe_only = true` by default. Burst-exceed
+  emits `ddos_observed` audit events but never short-circuits
+  the request — Phase 2 (enforce + 503 + Prometheus + dashboard
+  panel) follows after operator bake-in. Per-tenant + cluster-
+  coordinated pieces deferred behind multi-tenancy + ha-clustering.
+  Audit + plan: [`docs/security/ddos-protection.md`](docs/security/ddos-protection.md),
+  [`reports/findings/2026-05-09-internal-audit-ddos/`](reports/findings/2026-05-09-internal-audit-ddos/),
+  [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](plans/issue-fix/internal-audit-2026-05-09-ddos/).
 
 ### Control plane (admin / dashboard)
 - **Aegis WAF Console** — pre-compiled React 18 SPA at
@@ -118,7 +129,11 @@ SOC-first dashboard.
   `#[tracing::instrument]` on every hot-path span, Jaeger
   parent-child traces per request.
 - **Grafana** — three file-provisioned dashboards (WAF
-  Overview / Redis / Runtime).
+  Overview / Redis / Runtime). `make obs-up` brings up the full
+  Prometheus + Grafana + Jaeger stack via
+  [`deploy/docker-compose.dev.yml`](deploy/docker-compose.dev.yml);
+  if dashboards render empty, see the diagnostic checklist in
+  [`docs/observability/README.md`](docs/observability/README.md#empty-grafana-panels--diagnostic-checklist).
 - **Live Feed** — `/dashboard/sse` streams every audit event;
   proto pill on each row distinguishes `http` / `ws-open` /
   `ws-close` / `tcp-open` / `tcp-close` events.
