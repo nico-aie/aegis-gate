@@ -7960,15 +7960,20 @@ function ComplianceModeBadge() {
   );
 }
 
-// Reference data: which detector classes each compliance mode pins.
-// Mirrors the backend clamps in `crates/aegis-core/src/compliance.rs`.
-const COMPLIANCE_CLAMPS = {
-  pci_dss: ['sqli', 'xss', 'path_traversal', 'header_injection'],
-  hipaa:   ['sqli', 'xss', 'ssrf', 'header_injection'],
-  soc2:    ['sqli', 'xss', 'path_traversal', 'header_injection', 'recon'],
-  gdpr:    ['sqli', 'xss'],
-  fips:    ['sqli', 'xss', 'path_traversal', 'header_injection', 'ssrf'],
-};
+// 2026-05-09 page audit — the previous `COMPLIANCE_CLAMPS` const
+// invented per-regime granularity (PCI pins these 4, HIPAA pins
+// these 4, SOC2 these 5, ...) that didn't exist in code. The Rust
+// truth at `crates/aegis-control/src/api/detectors.rs::COMPLIANCE_PINNED`
+// pins the same 4 classes (sqli, xss, path_traversal, ssrf) when
+// ANY compliance mode is active. Dashboard now reads the
+// authoritative `locked_classes` from the live `/api/detectors`
+// response so it can never drift from the Rust source.
+//
+// All operator-recognised compliance mode IDs (matched against
+// `ComplianceMode` in `crates/aegis-core/src/config.rs`). Used to
+// render the "available modes" reference; the active subset
+// comes from /api/status::compliance.modes.
+const COMPLIANCE_MODES = ['pci_dss', 'hipaa', 'soc2', 'gdpr', 'fips'];
 
 function PageCompliance() {
   const status = window.useStatusApi ? window.useStatusApi() : { data: null };
@@ -8012,52 +8017,80 @@ function PageCompliance() {
         </div>
       </div>
 
+      {/* 2026-05-09 — replaced the old per-mode pinning table that
+          invented regulatory granularity not present in code. The
+          actual Rust pinning rule is one-size-fits-all (any active
+          mode locks the same 4 classes), so the dashboard now
+          shows that truth instead of the made-up per-regime
+          breakdown. The page-audit doc explains the change:
+          plans/issue-fix/2026-05-09-page-audit/README.md. */}
       <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Detector clamps by mode" sub="What each mode forces ON (cannot be disabled while active)" />
-        <table className="tbl tbl-compact">
-          <thead><tr><th>Mode</th><th>Pinned detectors</th><th>Status</th></tr></thead>
-          <tbody>
-            {Object.entries(COMPLIANCE_CLAMPS).map(([mode, classes]) => {
-              const active = modes.includes(mode);
-              return (
-                <tr key={mode} style={active ? { background: 'var(--surface-2)' } : undefined}>
-                  <td><strong>{mode.toUpperCase().replace('_', ' ')}</strong></td>
-                  <td style={{ fontSize: 11 }}>
-                    {classes.map(c => (
-                      <span key={c} className="pill" style={{ marginRight: 4, fontSize: 10 }}>{c}</span>
-                    ))}
-                  </td>
-                  <td>
-                    {active
-                      ? <span className="pill ok">active</span>
-                      : <span className="pill" style={{ opacity: 0.5 }}>inactive</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <window.SectionHeader
+          title="Locked detector classes"
+          sub="These detectors cannot be disabled while ANY compliance mode is active"
+        />
+        <div style={{ padding: 16 }}>
+          {modes.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+              No compliance mode is active, so no detector classes are pinned.
+              Activate a mode (above) to lock the regulatory baseline detectors.
+            </div>
+          ) : lockedClasses.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+              <span className="pill warn" style={{ fontSize: 11, marginRight: 8 }}>backend not reporting locked classes</span>
+              The active mode list reports {modes.length} active mode{modes.length === 1 ? '' : 's'} but
+              <code> /api/detectors </code> returned an empty <code>locked_classes</code>.
+              This shouldn't happen — please check the backend logs.
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginBottom: 8 }}>
+                {lockedClasses.length} detector class{lockedClasses.length === 1 ? '' : 'es'} pinned by the active compliance mode{modes.length === 1 ? '' : 's'} ({modes.join(', ')}):
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {lockedClasses.map(c => (
+                  <span key={c} className="pill warn" style={{ fontSize: 11 }}>🔒 {c}</span>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
-      {lockedClasses.length > 0 && (
-        <div className="card">
-          <window.SectionHeader
-            title="Locked detector classes"
-            sub="These detectors cannot be disabled while the active modes are pinned"
-          />
-          <div style={{ padding: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {lockedClasses.map(c => <span key={c} className="pill warn">{c}</span>)}
-          </div>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <window.SectionHeader
+          title="Recognised compliance modes"
+          sub="The five modes the binary accepts in cfg.compliance.modes"
+        />
+        <div style={{ padding: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {COMPLIANCE_MODES.map(m => {
+            const active = modes.includes(m);
+            return (
+              <span
+                key={m}
+                className={active ? 'pill ok' : 'pill'}
+                style={{ fontSize: 11, opacity: active ? 1 : 0.55 }}
+                title={active ? `${m} is active in cfg.compliance.modes` : `${m} is recognised but not active`}
+              >
+                {m.toUpperCase().replace('_', '-')} {active && '· active'}
+              </span>
+            );
+          })}
         </div>
-      )}
+      </div>
 
-      <div className="card" style={{ marginTop: 12, padding: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="card" style={{ marginTop: 12, padding: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
         <window.I.Info />
-        <span>
-          The runtime clamp editor (toggle modes without YAML + restart) isn't built yet —
-          edit <code>cfg.compliance.modes</code> and restart for now.
+        <div style={{ lineHeight: 1.5 }}>
+          <strong>How pinning works today (2026-05-09):</strong> activating ANY compliance mode locks the
+          same four detector classes (<code>sqli</code>, <code>xss</code>, <code>path_traversal</code>, <code>ssrf</code>) —
+          there is no per-regime differentiation in the binary. Source-of-truth: <code>COMPLIANCE_PINNED</code> in <code>crates/aegis-control/src/api/detectors.rs</code>.
+          {' '}A future feature could implement real per-regime pinning (PCI 6.5, HIPAA §164.312, SOC 2 CC 6.1, GDPR Art. 32(1)(b),
+          FIPS each map to slightly different detector sets when read strictly) — tracked in <code>plans/issue-fix/2026-05-09-page-audit/</code>.
+          {' '}Runtime clamp editor (toggle modes without YAML + restart) isn't built yet —
+          edit <code>cfg.compliance.modes</code> in YAML and reload for now.
           Detector tier overrides remain editable on the <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors</a> page.
-        </span>
+        </div>
       </div>
     </>
   );
