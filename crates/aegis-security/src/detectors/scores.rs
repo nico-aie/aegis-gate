@@ -185,6 +185,12 @@ pub const CATALOG: &[ScoreEntry] = &[
         note: "X-Original-URL / X-Rewrite-URL header carrying an admin / recon / traversal path — framework auth-bypass primitive.",
     },
     ScoreEntry {
+        class: "header_injection",
+        tag: "method_override_bypass",
+        score: header_injection::XFH,
+        note: "X-HTTP-Method-Override / X-Method-Override / X-HTTP-Method header carrying a destructive verb (DELETE / PUT / PATCH / CONNECT / TRACE) — framework method-override bypass.",
+    },
+    ScoreEntry {
         class: "body_abuse",
         tag: "body_oversize",
         score: body_abuse::OVERSIZE,

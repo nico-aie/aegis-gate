@@ -66,7 +66,12 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)/api/v1/pods\b",
         r"(?i)/apis/apps/v1/deployments\b",
         // Kibana / Elastic internals.
-        r"(?i)/(?:app/kibana|\.kibana(?:/|/_search)|_cat/indices|_cluster/health)\b",
+        // Kibana 6+: classic `app/kibana`. Kibana 7/8: `/kibana/app`,
+        // `/kibana/api/...`. Elastic API: `_cat/indices`,
+        // `_cluster/health`, `.kibana/_search` (config index).
+        // 2026-05-09 — Run-7 added `/kibana/app` + `/kibana/api`
+        // shapes (Run-6 only had `app/kibana`).
+        r"(?i)/(?:app/kibana|kibana/(?:app|api)|\.kibana(?:/|/_search)|_cat/indices|_cluster/health)\b",
         // Jenkins script console (Groovy RCE) and CLI jar.
         r"(?i)/(?:script(?:Text)?|jnlpJars/jenkins-cli\.jar|manage|computer/(?:\(master\)|\(built-in\))/script)\b",
         // CGI legacy probes — Shellshock surface, classic info
@@ -287,6 +292,10 @@ mod tests {
     path_positive!(k8s_deployments,       "/apis/apps/v1/deployments");
     path_positive!(kibana_app,            "/app/kibana");
     path_positive!(kibana_search,         "/.kibana/_search");
+    // 2026-05-09 — Run-7 added Kibana 7+/8+ path layouts (`/kibana/app`,
+    // `/kibana/api/...`). Run-6 only had the legacy `app/kibana` form.
+    path_positive!(kibana_v7_app,         "/kibana/app/dashboards");
+    path_positive!(kibana_v7_api,         "/kibana/api/saved_objects/_find");
     path_positive!(elastic_cat_indices,   "/_cat/indices");
     path_positive!(elastic_cluster,       "/_cluster/health");
     path_positive!(jenkins_script,        "/script");
