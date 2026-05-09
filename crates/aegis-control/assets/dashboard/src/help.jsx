@@ -73,17 +73,22 @@ function TabGetStarted() {
       cta: 'Open Routing & Upstreams →', to: '#/upstreams',
     },
     {
-      n: 4, t: 'Tune the detector mask',
-      d: 'Detectors page combines the per-class mask (sqli/xss/ssrf/…) with the AI detector\'s on/off toggle and observability tiles. Flip a class off without a restart; the data plane stops running it within one tick.',
-      cta: 'Open Detectors →', to: '#/tiers',
+      n: 4, t: 'Tune the detector mask & tier overrides',
+      d: 'Detectors & Tiers combines the per-class mask (sqli/xss/ssrf/…), the read-only score reference (5-tier framework), per-tier mask overrides, and the AI detector toggle. Each chip carries the dominant score so posture is readable at a glance. Flip a class off without a restart — the data plane stops running it within one hot-reload tick.',
+      cta: 'Open Detectors & Tiers →', to: '#/detectors',
     },
     {
-      n: 5, t: 'See where the latency went',
+      n: 5, t: 'Configure the four traffic gates',
+      d: 'Traffic Gates surfaces the four binary short-circuits that fire before the detector chain: access list, strike-block, rate limit, DDoS gate. Live config + edit modal for rate limit and DDoS thresholds (audit-mutated, hot-reload). Watch the Spike-active banner during volumetric incidents.',
+      cta: 'Open Traffic Gates →', to: '#/traffic-gates',
+    },
+    {
+      n: 6, t: 'See where the latency went',
       d: 'Performance shows per-stage and per-route p50/p95/p99 from the live Prometheus histogram. SLO burn lives on Health & SLOs. Cluster peers, cert freshness, and runtime sizing live on Scaling.',
       cta: 'Open Performance →', to: '#/performance',
     },
     {
-      n: 6, t: 'Audit any operator change',
+      n: 7, t: 'Audit any operator change',
       d: 'Audit Trail is the hash-chained record of admin actions, logins, and system events. Per-request decisions live on the Investigation and Live Feed pages — flip the class chip on Audit Trail to bring them in if you need a single timeline.',
       cta: 'Open Audit Trail →', to: '#/audit',
     },
@@ -136,8 +141,8 @@ function TabHowItWorks() {
           <ol style={{ marginTop: 8, paddingLeft: 18 }}>
             <li><strong>Listener</strong> accepts the connection on <code>:8080</code> (HTTP) or <code>:8443</code> (TLS, with SNI-driven cert selection).</li>
             <li><strong>Route resolution</strong> matches the request's host + path + method against the route table (first-match-wins, top to bottom).</li>
-            <li><strong>Access list</strong> (blacklist / whitelist) — IP / CIDR / ASN / country filters short-circuit before the detector chain.</li>
-            <li><strong>Detector chain</strong> — every detector enabled in the mask runs on the request: SQLi, XSS, path traversal, SSRF, header injection, body abuse, recon, plus the AI detector if it's on.</li>
+            <li><strong>Traffic gates</strong> — four binary short-circuits fire in cheapest-first order before the detector chain: <em>access list</em> (IP/CIDR/ASN/country), <em>strike-block</em> (lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code>), <em>rate limit</em> (token bucket → 429), <em>DDoS gate</em> (per-IP sliding-window auto-block → 403 + 5-min TTL). All four configurable from the Traffic Gates page; all four hot-reloadable.</li>
+            <li><strong>Detector chain</strong> — every detector enabled in the mask runs on the request: SQLi, XSS, path traversal, SSRF, header injection, body abuse, recon, brute_force, command_injection, template_injection, nosql_injection, open_redirect, plus the AI detector if it's on.</li>
             <li><strong>Risk + tier gate</strong> — detector signals add to a per-request composite score; if it crosses the route's tier threshold (critical 50 / high 70 / medium 80 / low 90), the request is blocked (HTTP 403 / 429). Separately, every detector hit also increments the client IP's <em>cumulative IP risk score</em>, which has its own thresholds in Settings → "Cumulative IP risk thresholds".</li>
             <li><strong>Forward</strong> — if allowed, the request is proxied to the route's upstream pool with the configured scheme, load-balancing, host-header rewrite, etc.</li>
             <li><strong>Audit + metrics</strong> — every decision lands as a hash-chained audit event and one entry per Prometheus histogram bucket.</li>
@@ -162,27 +167,47 @@ function TabHowItWorks() {
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Tiers</div>
         <div style={{ fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.65 }}>
           Four canonical tiers — <code>critical</code>, <code>high</code>, <code>medium</code>, <code>low</code>.
-          Each carries a <strong>risk threshold</strong> (composite score that triggers a block — lower = stricter)
-          and a <strong>block threshold</strong> (req/s rate cap).
+          Each carries a <strong>risk threshold</strong> (composite score that triggers a block — lower = stricter).
           A route inherits the default tier or pins one via <code>tier_override</code>.
-          Edit the thresholds via the <strong>Edit tier</strong> button on Detectors.
+          Edit the threshold via the <strong>Edit tier</strong> button on Detectors &amp; Tiers.
           <br/><br/>
-          The <em>pipeline</em> string list on each tier is descriptive metadata today — the
-          live filter is the global <strong>detector mask</strong> at the top of Detectors.
-          Real per-tier execution is a follow-up.
+          The legacy per-tier <code>block_threshold</code> field is descriptive metadata only — the
+          live rate cap lives on the <a href="#/traffic-gates" style={{ color: 'var(--brand-yellow)' }}>Traffic Gates</a> page (one global rate-limit + DDoS gate).
+          The tier <em>pipeline</em> string list is also descriptive — the
+          live filter is the global <strong>detector mask</strong> at the top of Detectors &amp; Tiers.
         </div>
       </div>
 
       <div className="col-6 card" style={{ padding: 16 }}>
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Detectors</div>
         <div style={{ fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.65 }}>
-          Eight regex/heuristic classes plus the AI detector.
+          Twelve regex/heuristic classes (sqli, xss, path_traversal, ssrf, header_injection,
+          body_abuse, recon, brute_force, command_injection, template_injection,
+          nosql_injection, open_redirect) plus the AI detector.
           The <strong>mask</strong> is the runtime gate — flip a class off and the chain skips it
           on the next request. Mask edits are hash-chained.
           <br/><br/>
           The <strong>AI detector</strong> runs an operator-supplied ONNX model
           (<code>data/ai_model/waf_model.onnx</code>) and emits a binary attack/normal verdict.
-          Toggle on/off via the Enable button on the Detectors page (audit-mutated <code>PUT /api/ai/enabled</code>).
+          Toggle on/off via the Enable button on the Detectors &amp; Tiers page (audit-mutated <code>PUT /api/ai/enabled</code>).
+        </div>
+      </div>
+
+      <div className="col-6 card" style={{ padding: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Traffic gates</div>
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.65 }}>
+          Four binary block-or-pass gates run before the detector chain (cheapest-first):
+          <ol style={{ marginTop: 6, paddingLeft: 18 }}>
+            <li><strong>Access list</strong> — IP / CIDR / ASN / country (403)</li>
+            <li><strong>Strike-block</strong> — lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code> (403)</li>
+            <li><strong>Rate limit</strong> — token bucket; recoverable when window slides (429)</li>
+            <li><strong>DDoS gate</strong> — per-IP sliding-window auto-block; 5-min TTL (403)</li>
+          </ol>
+          Rate limit returns 429 with automatic recovery; DDoS gate returns 403
+          with a TTL'd quarantine — opposite enforcement semantics, distinct use
+          cases (see <code>docs/operator/traffic-gates.md</code>).
+          All four are audit-mutated and hot-reloadable from the
+          <a href="#/traffic-gates" style={{ color: 'var(--brand-yellow)' }}> Traffic Gates</a> page.
         </div>
       </div>
 
@@ -196,7 +221,8 @@ function TabHowItWorks() {
             <li>Live state hot-swapped via atomic ArcSwap</li>
           </ul>
           Routes, upstream pools, the detector mask, AI on/off, tier thresholds,
-          rules, alert receivers, mode toggles, access lists — all of them.
+          rules, alert receivers, mode toggles, access lists, rate-limit, DDoS
+          gate — all of them.
           See the chain on <a href="#/audit" style={{ color: 'var(--brand-yellow)' }}>Audit Trail</a>.
         </div>
       </div>
@@ -214,11 +240,17 @@ function TabGlossary() {
     ['Member',
       'One backend address (IP:port) inside a pool. Carries optional `host_header` for vhost / SNI override, weight, and zone tag.'],
     ['Tier',
-      'A policy bucket — risk_threshold (composite score that triggers a block, 0-100), block_threshold (req/s rate cap), failure_mode (fail-close on critical, fail-open elsewhere). The four canonical tiers are critical / high / medium / low. Routes inherit the default or pin via tier_override.'],
+      'A policy bucket — risk_threshold (composite score that triggers a block, 0-100) and failure_mode (fail-close on critical, fail-open elsewhere). The four canonical tiers are critical / high / medium / low. Routes inherit the default or pin via tier_override. The legacy block_threshold field is descriptive metadata only — the live rate cap lives on the Traffic Gates page.'],
+    ['Traffic gates',
+      'Four binary block-or-pass short-circuits that run before the detector chain (in firing order): access list, strike-block, rate limit, DDoS gate. Cheapest-first so a known-bad IP costs minimum CPU. Distinct from the signal-emitting detector chain — gates read shared cluster state and return a yes/no decision, not a score. All four are configured from the Traffic Gates page.'],
+    ['Rate limit',
+      'Per-IP token bucket (sliding-window count). Returns 429 + X-WAF-Action: rate_limit when exceeded; recovery is automatic as the window slides. Configured at e.g. 1000 req / 60 s — tuned for "API rate fairness" (catches abusive clients gracefully). Audit-mutated PUT /api/rate-limit; per-IP state preserved across edits.'],
+    ['DDoS gate',
+      'Per-IP sliding-window auto-block. Returns 403 + X-WAF-Action: block when burst exceeded; quarantines the IP for block_ttl_s (default 300 s). Configured at e.g. 1000 req / 10 s — tuned for "sustained-burst quarantine" (catches actual flood attacks). Cluster-scoped via StateBackend::auto_block. Audit-mutated PUT /api/gates/ddos.'],
     ['Detector',
-      'An attack-class analyzer (sqli, xss, path_traversal, ssrf, header_injection, body_abuse, recon, brute_force, ai). Each detector emits a Signal { tag, score } that contributes to the request\'s risk score.'],
+      'An attack-class analyzer (sqli, xss, path_traversal, ssrf, header_injection, body_abuse, recon, brute_force, command_injection, template_injection, nosql_injection, open_redirect, ai). Each detector emits a Signal { tag, score } that contributes to the request\'s risk score.'],
     ['Detector mask',
-      'The runtime per-class on/off table, edited from the Detectors page. Audit-mutated, hot-swap. Flips take effect on the next request.'],
+      'The runtime per-class on/off table, edited from the Detectors & Tiers page. Audit-mutated, hot-swap. Flips take effect on the next request. Each chip on the mask grid carries the dominant score for its class so operators see "sqli · 60" tinted by the calibrated 5-tier framework.'],
     ['Risk score (per-request)',
       'Sum of detector signals on this single request. Compared against the matched tier\'s risk_threshold; ≥ threshold → block.'],
     ['IP risk',
@@ -230,7 +262,7 @@ function TabGlossary() {
     ['Audit Trail (page)',
       'Dashboard view of the audit chain. Defaults to admin / access / system events; flip the class chip to "requests" or "all" to bring per-request decisions in.'],
     ['AI detector',
-      'ML-based detector backed by an operator-supplied ONNX model. Binary verdict (attack vs normal) at a configurable confidence threshold. Build the binary with `--features ai`, set `cfg.ai.enabled: true`, toggle on/off at runtime via the Detectors page.'],
+      'ML-based detector backed by an operator-supplied ONNX model. Binary verdict (attack vs normal) at a configurable confidence threshold. Build the binary with `--features ai`, set `cfg.ai.enabled: true`, toggle on/off at runtime via the Detectors & Tiers page.'],
     ['Mode',
       'Global enforce / log-only switch (Settings page). Log-only emits all detections to audit + metrics but never blocks — used for burn-in of new rules.'],
     ['Hash-chained',
@@ -298,6 +330,16 @@ function TabWorkflows() {
         'Save & deploy. The rule is live but log_only mode means nothing actually blocks.',
         'Watch Investigation → Recent requests for false positives.',
         'When confident, Settings → Mode → enforce. Real blocks resume.',
+      ],
+    },
+    {
+      t: 'Tighten the rate limit or DDoS gate mid-incident',
+      steps: [
+        'Traffic Gates → look at the Rate Limit card (current limit / window / scope) and the DDoS Gate card (per-IP limit / window / block TTL / spike trigger).',
+        'For a misbehaving-but-not-malicious client (429 is fine): Rate Limit → Edit. Lower the limit or shorten the window. Save (audit-mutated, hot-reload).',
+        'For a sustained flood (need to quarantine the IP entirely): DDoS Gate → Edit. Tighten per_ip_limit + window, raise block_ttl_s. Save.',
+        'Per-IP state is preserved across edits — flooding sources do not get a free reset when thresholds tighten.',
+        'Verify: watch the Spike-active banner on the DDoS card and cross-reference Investigation → Top Attackers.',
       ],
     },
     {
@@ -381,15 +423,19 @@ function TabFaq() {
     },
     {
       q: 'I toggled a detector OFF on the tier pipeline list. Why is it still firing?',
-      a: 'The tier pipeline list is descriptive metadata today — the live runtime gate is the detector mask at the top of the Detectors page, not the per-tier pipeline list. Flip it off there. Real per-tier execution gating is a follow-up.',
+      a: 'The tier pipeline list is descriptive metadata today — the live runtime gate is the detector mask at the top of the Detectors & Tiers page, not the per-tier pipeline list. Flip it off there (or use a per-tier override). Real per-tier execution gating is a follow-up.',
     },
     {
       q: 'How do I enable the AI detector?',
-      a: 'Build with the feature: FEATURES="redis geoip alerts ai" make build (the default Makefile target now includes ai). Symlink your model: make ai-link MODEL=<path-to-onnx>. Set cfg.ai.enabled: true in your config. After boot, runtime on/off is hot via the Detectors page Enable/Disable button.',
+      a: 'Build with the feature: FEATURES="redis geoip alerts ai" make build (the default Makefile target now includes ai). Symlink your model: make ai-link MODEL=<path-to-onnx>. Set cfg.ai.enabled: true in your config. After boot, runtime on/off is hot via the Detectors & Tiers page Enable/Disable button.',
     },
     {
       q: 'Tier definitions edit in the dashboard — does it actually change traffic flow?',
-      a: 'Today: thresholds (risk_threshold, block_threshold) are LIVE — the data plane consults them on every request. The pipeline string list is metadata for now (see above). Detector mask is the way to actually disable a detector.',
+      a: 'Today: only risk_threshold is LIVE — the data plane consults it on every request to decide block-vs-allow against the per-request composite score. The legacy block_threshold field on the tier model is descriptive metadata only — the live rate cap is configured on the Traffic Gates page (one global rate-limit + DDoS gate, both hot-reloadable). The tier pipeline string list is also metadata; detector mask is the way to actually disable a detector.',
+    },
+    {
+      q: 'What\'s the difference between Rate Limit and the DDoS gate?',
+      a: 'Both are per-IP "limit + window" gates but with opposite enforcement: Rate Limit returns 429 with automatic recovery as the window slides — designed for steady-state per-IP API budgets where misbehaving clients should back off and retry. DDoS gate returns 403 with a 5-minute TTL\'d quarantine — designed for sustained-burst quarantine where the IP is flooding (e.g. 100 req/s for 10 s). Configure both on Traffic Gates; tune the rate limit looser (e.g. 1000/60 s) and the DDoS gate tighter (e.g. 1000/10 s). Detail in docs/operator/traffic-gates.md.',
     },
     {
       q: 'How does light mode persist?',
@@ -401,7 +447,7 @@ function TabFaq() {
     },
     {
       q: 'Can I script the dashboard?',
-      a: 'Yes — every audit-mutated action has a documented HTTP endpoint. Login via POST /admin/login → grab the cookie + CSRF, then PUT /api/routes/{id}, /api/upstreams/pool/{id}, /api/detectors, /api/ai/enabled, /api/tiers/{name}, etc. Full schema in docs/control-plane/api.openapi.yaml.',
+      a: 'Yes — every audit-mutated action has a documented HTTP endpoint. Login via POST /admin/login → grab the cookie + CSRF, then PUT /api/routes/{id}, /api/upstreams/pool/{id}, /api/detectors, /api/ai/enabled, /api/tiers/{name}, /api/rate-limit, /api/gates/ddos, /api/blacklist, /api/whitelist, etc. Full schema in docs/control-plane/api.openapi.yaml.',
     },
     {
       q: 'How do I reset everything to defaults in dev?',
