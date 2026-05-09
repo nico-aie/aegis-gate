@@ -39,10 +39,11 @@ pub mod class_label {
     pub const COMMAND_INJECTION: &str = "command_injection";
     pub const TEMPLATE_INJECTION: &str = "template_injection";
     pub const NOSQL_INJECTION: &str = "nosql_injection";
+    pub const OPEN_REDIRECT: &str = "open_redirect";
 
-    pub const ALL: [&str; 11] = [
+    pub const ALL: [&str; 12] = [
         SQLI, XSS, PATH_TRAVERSAL, SSRF, HEADER_INJECTION, BODY_ABUSE, RECON, BRUTE_FORCE,
-        COMMAND_INJECTION, TEMPLATE_INJECTION, NOSQL_INJECTION,
+        COMMAND_INJECTION, TEMPLATE_INJECTION, NOSQL_INJECTION, OPEN_REDIRECT,
     ];
 }
 

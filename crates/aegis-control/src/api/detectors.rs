@@ -372,6 +372,7 @@ mod tests {
                 command_injection: true,
                 template_injection: true,
                 nosql_injection: true,
+                open_redirect: true,
             }),
         );
         let next = apply_put_body(initial, body, &[]).unwrap();
@@ -419,6 +420,7 @@ mod tests {
                 command_injection: true,
                 template_injection: true,
                 nosql_injection: true,
+                open_redirect: true,
             }),
         );
         let err = apply_put_body(
@@ -445,6 +447,7 @@ mod tests {
             command_injection: true,
             template_injection: true,
             nosql_injection: true,
+            open_redirect: true,
         });
         let err = apply_put_body(
             MaskState::default(),

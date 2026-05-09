@@ -219,7 +219,7 @@ pub async fn run(
     // `cfg.ai.enabled = true` on a binary built without the
     // feature so the misconfiguration is visible.
     #[allow(unused_mut)]
-    let mut detector_vec = aegis_security::detectors::default_detectors();
+    let mut detector_vec = aegis_security::detectors::default_detectors_with(&cfg.detectors);
     #[cfg(not(feature = "ai"))]
     {
         if cfg.ai.enabled {

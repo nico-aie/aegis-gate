@@ -502,6 +502,7 @@ mod tests {
                     "command_injection".into(),
                     "template_injection".into(),
                     "nosql_injection".into(),
+                    "open_redirect".into(),
                 ],
             },
         );

@@ -4,6 +4,7 @@ pub mod command_injection;
 pub mod header_injection;
 pub mod mask;
 pub mod nosql_injection;
+pub mod open_redirect;
 pub mod path_traversal;
 pub mod recon;
 pub mod sqli;
@@ -159,8 +160,22 @@ pub fn run_all_filtered_timed(
     (signals, fired)
 }
 
-/// Create the default set of detectors.
+/// Create the default set of detectors using the default config.
+/// Open-redirect runs in strict mode (empty allowlist) — the
+/// proxy run path uses [`default_detectors_with`] to pick up
+/// `cfg.detectors.open_redirect.allowed_domains`.
 pub fn default_detectors() -> Vec<Box<dyn Detector>> {
+    default_detectors_with(&aegis_core::config::DetectorsConfig::default())
+}
+
+/// Build the default detector set, threading `cfg` so detectors
+/// with operator-tunable behaviour (currently only open-redirect's
+/// `allowed_domains`) pick up the live config. Toggleable on/off
+/// state still flows through the [`SharedDetectorMask`] hot-path
+/// gate; this constructor only sets per-detector startup state.
+pub fn default_detectors_with(
+    cfg: &aegis_core::config::DetectorsConfig,
+) -> Vec<Box<dyn Detector>> {
     vec![
         Box::new(sqli::SqliDetector),
         Box::new(xss::XssDetector),
@@ -186,6 +201,15 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
         // → near-zero FP on legit Postgres $1 placeholders or
         // currency strings.
         Box::new(nosql_injection::NoSqlInjectionDetector),
+        // 2026-05-09 Run-5 GAP-009 — open-redirect detector. Flags
+        // suspicious external-URL values in known redirect-param
+        // names. Empty `allowed_domains` = strict mode; operators
+        // with legitimate redirect targets configure
+        // `cfg.detectors.open_redirect.allowed_domains` to skip
+        // those.
+        Box::new(open_redirect::OpenRedirectDetector::new(
+            cfg.open_redirect.allowed_domains.clone(),
+        )),
     ]
 }
 
@@ -225,8 +249,8 @@ mod tests {
         let d = default_detectors();
         // sqli + xss + path_traversal + ssrf + header_injection
         // + body_abuse + recon + brute_force + command_injection
-        // + template_injection + nosql_injection.
-        assert_eq!(d.len(), 11);
+        // + template_injection + nosql_injection + open_redirect.
+        assert_eq!(d.len(), 12);
     }
 
     #[test]

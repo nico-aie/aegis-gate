@@ -54,11 +54,17 @@ pub enum DetectorClass {
     /// 2026-05-08 Run-5 GAP-007 — NoSQL (MongoDB) operator injection.
     /// Bracketed query operators + `$`-prefixed JSON keys.
     NoSqlInjection,
+    /// 2026-05-09 Run-5 GAP-009 — open-redirect detector. Flags
+    /// suspicious external-URL values in known redirect-style
+    /// query parameters (`?next=`, `?redirect_uri=`, etc.). Score
+    /// 30; `allowed_domains` allowlist suppresses operator-approved
+    /// targets.
+    OpenRedirect,
 }
 
 impl DetectorClass {
     /// All classes in the order they appear in `DetectorsConfig`.
-    pub const ALL: [DetectorClass; 11] = [
+    pub const ALL: [DetectorClass; 12] = [
         DetectorClass::Sqli,
         DetectorClass::Xss,
         DetectorClass::PathTraversal,
@@ -70,6 +76,7 @@ impl DetectorClass {
         DetectorClass::CommandInjection,
         DetectorClass::TemplateInjection,
         DetectorClass::NoSqlInjection,
+        DetectorClass::OpenRedirect,
     ];
 
     /// Wire-compatible string used in `Detector::id()` and the JSON
@@ -87,6 +94,7 @@ impl DetectorClass {
             DetectorClass::CommandInjection => "command_injection",
             DetectorClass::TemplateInjection => "template_injection",
             DetectorClass::NoSqlInjection => "nosql_injection",
+            DetectorClass::OpenRedirect => "open_redirect",
         }
     }
 
@@ -105,6 +113,7 @@ impl DetectorClass {
             DetectorClass::CommandInjection => 1 << 8,
             DetectorClass::TemplateInjection => 1 << 9,
             DetectorClass::NoSqlInjection => 1 << 10,
+            DetectorClass::OpenRedirect => 1 << 11,
         }
     }
 
@@ -178,6 +187,9 @@ impl DetectorMask {
         }
         if cfg.nosql_injection.enabled {
             m.set(DetectorClass::NoSqlInjection, true);
+        }
+        if cfg.open_redirect.enabled {
+            m.set(DetectorClass::OpenRedirect, true);
         }
         m
     }
@@ -262,6 +274,10 @@ pub struct DetectorMaskBody {
     /// Same `#[serde(default)]` back-compat.
     #[serde(default)]
     pub nosql_injection: bool,
+    /// 2026-05-09 Run-5 GAP-009 — open-redirect class. Same
+    /// `#[serde(default)]` back-compat.
+    #[serde(default)]
+    pub open_redirect: bool,
 }
 
 impl From<DetectorMask> for DetectorMaskBody {
@@ -278,6 +294,7 @@ impl From<DetectorMask> for DetectorMaskBody {
             command_injection: m.is_enabled(DetectorClass::CommandInjection),
             template_injection: m.is_enabled(DetectorClass::TemplateInjection),
             nosql_injection: m.is_enabled(DetectorClass::NoSqlInjection),
+            open_redirect: m.is_enabled(DetectorClass::OpenRedirect),
         }
     }
 }
@@ -296,6 +313,7 @@ impl From<DetectorMaskBody> for DetectorMask {
             .with(DetectorClass::CommandInjection, b.command_injection)
             .with(DetectorClass::TemplateInjection, b.template_injection)
             .with(DetectorClass::NoSqlInjection, b.nosql_injection)
+            .with(DetectorClass::OpenRedirect, b.open_redirect)
     }
 }
 
@@ -579,7 +597,7 @@ mod tests {
         assert_eq!(entries[1], (DetectorClass::Xss, false));
         assert_eq!(
             entries[entries.len() - 1].0,
-            DetectorClass::NoSqlInjection,
+            DetectorClass::OpenRedirect,
         );
     }
 

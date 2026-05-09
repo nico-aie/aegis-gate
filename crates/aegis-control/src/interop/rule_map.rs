@@ -52,6 +52,7 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "command_injection" | "cmdi" => ("rules_engine", "command_injection"),
         "template_injection" | "ssti" => ("rules_engine", "template_injection"),
         "nosql_injection" | "nosqli" => ("rules_engine", "nosql_injection"),
+        "open_redirect" | "openredir" => ("rules_engine", "open_redirect"),
 
         // ---- rate_limit ----
         "ip-rate-limit" | "rate_limit" => ("rate_limit", "per_ip"),
@@ -140,6 +141,19 @@ mod tests {
         assert_eq!(
             rule_to_feature("nosqli"),
             Some(("rules_engine", "nosql_injection")),
+        );
+    }
+
+    #[test]
+    fn open_redirect_maps_to_rules_engine() {
+        // GAP-009 (2026-05-09) — dedicated open-redirect class.
+        assert_eq!(
+            rule_to_feature("open_redirect"),
+            Some(("rules_engine", "open_redirect")),
+        );
+        assert_eq!(
+            rule_to_feature("openredir"),
+            Some(("rules_engine", "open_redirect")),
         );
     }
 

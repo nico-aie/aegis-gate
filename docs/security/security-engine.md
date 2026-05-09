@@ -57,7 +57,8 @@ clean.
             │  DETECTOR CHAIN — every detector enabled in the mask runs          │
             │   sqli · xss · path_traversal · ssrf · header_injection ·          │
             │   body_abuse · recon · brute_force · command_injection ·            │
-            │   template_injection · nosql_injection · ai (optional)              │
+            │   template_injection · nosql_injection · open_redirect ·            │
+            │   ai (optional)                                                    │
             │                                                                    │
             │   Each detector is a pure function over the request.               │
             │   A hit emits a Signal { tag, score: 50–60 }.                      │
@@ -185,6 +186,7 @@ block on their own; they accumulate signals.
 | Command injection | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, Log4Shell `${jndi:...}` (score 60) |
 | Template injection | `template_injection` | URL, body — Jinja2 / Twig / SpEL / Freemarker / Velocity / Handlebars |
 | NoSQL injection | `nosql_injection` | URL, body — MongoDB operator injection (`[$ne]`, `[$where]`, `"$gt":`) |
+| Open redirect | `open_redirect` | Query string — suspicious external URLs in redirect-style params (`?next=`, `?redirect_uri=`); allowlist via `cfg.detectors.open_redirect.allowed_domains` |
 | AI (optional) | `ai` | URL + body, run through ONNX classifier |
 
 Per-detector deep-dives in [`detectors/`](detectors/).
@@ -353,6 +355,7 @@ not configurable today; change the file + rebuild):
 | Command injection | per-request + per-IP | **50** (Log4Shell **60**) | `detectors/command_injection.rs` |
 | Template injection (SSTI) | per-request + per-IP | **50** | `detectors/template_injection.rs` |
 | NoSQL injection | per-request + per-IP | **50** | `detectors/nosql_injection.rs` |
+| Open redirect | per-request + per-IP | **30** | `detectors/open_redirect.rs` |
 | **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` |
 
 Identity / behaviour weights (configurable in `cfg.risk.weights`,
