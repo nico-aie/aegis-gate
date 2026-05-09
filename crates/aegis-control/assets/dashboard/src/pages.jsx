@@ -2685,8 +2685,15 @@ function PageTierConfig() {
                     borderLeft: selected && selected.name === t.name ? '3px solid var(--brand-yellow)' : '3px solid transparent',
                     cursor: 'pointer', color: 'inherit' }}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{t.name}</div>
+                  {/* 2026-05-09 — `block_threshold` (req/s) is descriptive
+                      metadata, not enforced. Source comment in
+                      crates/aegis-control/src/api/tiers.rs:36-44 confirms.
+                      Real per-IP volumetric limits live on the Traffic
+                      Gates page (Rate Limit + DDoS gates). Showing the
+                      field here was misleading — operators thought it
+                      was an enforce knob. */}
                   <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>
-                    risk ≥ {t.risk_threshold} · block ≥ {t.block_threshold}/s
+                    risk ≥ <span className="num">{t.risk_threshold}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 6, fontSize: 10 }}>
                     <span className="pill neutral">{tierRouteCount} routes</span>
@@ -2704,7 +2711,10 @@ function PageTierConfig() {
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-                    {(selected.pipeline || []).length} pipeline stages · risk threshold <span className="num">{selected.risk_threshold}</span> · block <span className="num">{selected.block_threshold}</span>/s
+                    {(selected.pipeline || []).length} pipeline stages · risk threshold <span className="num">{selected.risk_threshold}</span>
+                    <span style={{ marginLeft: 8, opacity: 0.7 }}>
+                      · per-IP volumetric limits live on the <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a> page
+                    </span>
                   </div>
                 </div>
                 <button className="btn" onClick={() => setTierEditor(selected)} disabled={busy}>
@@ -2869,20 +2879,27 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
                 <div className="form-hint warn">Must be between 0 and 100.</div>
               )}
             </div>
-            <div style={{ flex: 1 }}>
-              <label>Block threshold (req/s) <span className="req">*</span></label>
-              <input className="ip" type="number" min="1"
-                value={block}
-                onChange={e => setBlock(parseInt(e.target.value, 10) || 0)} />
-              <div className="form-hint">Per-second rate cap. Above this, fail-close kicks in.</div>
-              {!blockValid && (
-                <div className="form-hint warn">Must be at least 1.</div>
-              )}
-            </div>
+            {/* 2026-05-09 — Block threshold (req/s) input removed.
+                The field exists on `Tier` for legacy reasons but
+                is **descriptive metadata only** — the data plane
+                doesn't enforce per-tier req/s caps (source comment
+                in crates/aegis-control/src/api/tiers.rs:36-44).
+                Real per-IP volumetric limits live on the Traffic
+                Gates page (Rate Limit + DDoS gates). The form
+                still POSTs `block_threshold` (using the existing
+                `block` state) so the audit-mutated PUT surface
+                doesn't change. Keeping the field hidden in the UI
+                means operators stop tuning a knob that does
+                nothing. */}
           </div>
 
           <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
-            {tier.name}: pipeline=[{orderedPipeline.join(', ')}], risk≥{risk}, block≥{block}/s
+            {tier.name}: pipeline=[{orderedPipeline.join(', ')}], risk≥{risk}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+            <strong>Note:</strong> per-IP volumetric limits (req/s caps, sustained-burst auto-block) live on the{' '}
+            <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a> page,
+            not here. This tier's pipeline + risk threshold drive the detector chain after the gates pass.
           </div>
         </div>
         <div className="modal-foot">
@@ -7810,47 +7827,138 @@ function StrikeBlockGateCard() {
 }
 
 // 3. Rate-limit summary — sourced from /api/rate-limit (if exposed).
+// 3. Rate Limit gate — F-T2 token bucket. Steady-state per-IP
+// limiter that returns 429 + X-WAF-Action: rate_limit when the
+// bucket exceeds. Distinct from DDoS gate (sustained burst →
+// TTL'd auto-block returning 403). Hot-reloadable via PUT
+// /api/rate-limit; per-IP timestamp state preserved across edits.
 function RateLimitGateCard() {
   const rl = window.useApi ? window.useApi('/api/rate-limit', { intervalMs: 10000, fallback: null }) : { data: null };
-  const config = rl.data?.config ?? null;
+  const cfg = rl.data;
+  const [editing, setEditing] = useStateP(false);
+
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="3. Rate Limit"
-        sub="Per-IP token-bucket — returns 429 + X-WAF-Action: rate_limit when bucket exceeded"
+        sub="Per-IP token bucket — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window."
       />
-      <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
-        <div style={{ flex: 1, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-          {config ? (
-            <>
-              {config.buckets && config.buckets.map((b, i) => (
-                <span key={i} className="pill neutral" style={{ fontSize: 11 }}>
-                  <strong>{b.scope}</strong> · {b.limit}/{b.window_s}s
-                </span>
-              ))}
-            </>
-          ) : (
-            <span style={{ fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
-              Rate-limit summary endpoint not yet wired. Configure via <code>cfg.rate_limit</code> YAML.
-            </span>
-          )}
+      <div style={{ padding: 16 }}>
+        {!cfg ? (
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>Loading…</div>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 12 }}>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Limit</div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{cfg.limit}</div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>requests per window</div>
+              </div>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Window</div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{cfg.window_seconds}s</div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>sliding window length</div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+                Effective rate: <strong>{(cfg.limit / Math.max(cfg.window_seconds, 1)).toFixed(2)} req/s per IP</strong>.
+                Hot-reloadable — edits take effect on the next request without restart.
+              </div>
+              <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
+                Edit
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      {editing && (
+        <RateLimitEditModal
+          current={cfg}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); rl.reload && rl.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function RateLimitEditModal({ current, onClose, onSaved }) {
+  const [limit, setLimit] = useStateP(current?.limit ?? 1000);
+  const [windowSeconds, setWindowSeconds] = useStateP(current?.window_seconds ?? 60);
+  const [busy, setBusy] = useStateP(false);
+  const [err, setErr] = useStateP(null);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await window.csrfMutate('/api/rate-limit', {
+        method: 'PUT',
+        body: { limit: parseInt(limit, 10), window_seconds: parseInt(windowSeconds, 10) },
+      });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast && window.aegisToast('Rate limit updated', 'ok');
+        onSaved();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        setErr(msg);
+      }
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+        <div className="modal-head">
+          <div className="modal-title">Edit rate-limit thresholds</div>
+          <button className="btn btn-sm" onClick={onClose}>×</button>
         </div>
-        <a href="#/settings" className="btn" style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none' }}>
-          View settings →
-        </a>
+        <div className="modal-body" style={{ display: 'grid', gap: 12 }}>
+          <label style={{ fontSize: 12 }}>
+            Limit (requests per window)
+            <input className="input" type="number" min="1" value={limit}
+              onChange={e => setLimit(e.target.value)} disabled={busy}
+              style={{ marginTop: 4, width: '100%' }} />
+          </label>
+          <label style={{ fontSize: 12 }}>
+            Window (seconds)
+            <input className="input" type="number" min="1" value={windowSeconds}
+              onChange={e => setWindowSeconds(e.target.value)} disabled={busy}
+              style={{ marginTop: 4, width: '100%' }} />
+          </label>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+            Effective: <strong>{(limit / Math.max(parseInt(windowSeconds, 10), 1)).toFixed(2)} req/s per IP</strong>.
+            Per-IP timestamp state is preserved across the edit — flooding sources don't get a free reset.
+            Audit-mutated; the change appears in the audit chain.
+          </div>
+          {err && <div style={{ fontSize: 11, color: 'var(--down)' }}>Error: {err}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-// 4. DDoS gate — full operator-facing card. The flagship surface
-// since the gate has no other operator UI today. Telemetry +
-// config view; threshold edits require YAML + restart for now.
+// 4. DDoS gate — full operator surface. Per-IP sliding-window
+// burst counter + EWMA spike-mode ticker. Returns 403 +
+// X-WAF-Action: block on burst-exceed (different from rate-limit
+// gate which returns 429). Hot-reloadable via PUT /api/gates/ddos
+// — per-IP StateBackend window state preserved across edits.
 function DdosGateCard() {
   const ddos = window.useApi ? window.useApi('/api/gates/ddos', { intervalMs: 5000, fallback: null }) : { data: null };
-  const data = ddos.data || { enabled: false, observe_only: false, current_rps: 0, baseline_rps: 0, spike_active: false };
+  const [editing, setEditing] = useStateP(false);
+  const data = ddos.data;
 
-  if (!data.enabled) {
+  if (!data || !data.enabled) {
     return (
       <div className="card" style={{ marginBottom: 12 }}>
         <window.SectionHeader
@@ -7868,7 +7976,8 @@ function DdosGateCard() {
     );
   }
 
-  const modeStyle = data.observe_only
+  const cfg = data.config;
+  const modeStyle = cfg.observe_only
     ? { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)', label: 'OBSERVE-ONLY' }
     : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'ENFORCING' };
   const spikeStyle = data.spike_active
@@ -7879,26 +7988,25 @@ function DdosGateCard() {
     <div className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="4. DDoS Gate"
-        sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed"
+        sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s)"
       />
       <div style={{ padding: 16 }}>
         {/* Status row */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-          <span style={{
-            fontSize: 11, padding: '3px 10px', borderRadius: 4,
-            background: modeStyle.bg, color: modeStyle.fg, fontWeight: 600,
-          }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 4, background: modeStyle.bg, color: modeStyle.fg, fontWeight: 600 }}>
             {modeStyle.label}
           </span>
-          <span style={{
-            fontSize: 11, padding: '3px 10px', borderRadius: 4,
-            background: spikeStyle.bg, color: spikeStyle.fg, fontWeight: 600,
-          }}>
+          <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 4, background: spikeStyle.bg, color: spikeStyle.fg, fontWeight: 600 }}>
             Spike mode: {spikeStyle.label}
           </span>
+          <div style={{ flex: 1 }} />
+          <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
+            Edit thresholds
+          </button>
         </div>
 
-        {/* Telemetry grid */}
+        {/* Live telemetry — current/baseline RPS + spike threshold */}
+        <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Live Telemetry</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
           <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Current RPS</div>
@@ -7913,26 +8021,173 @@ function DdosGateCard() {
           <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Spike Threshold</div>
             <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>
-              {Math.round(data.baseline_rps * 3) /* default spike_multiplier 3.0 */}
+              {Math.round(data.baseline_rps * cfg.spike_multiplier)}
             </div>
-            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>3 × baseline</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>{cfg.spike_multiplier} × baseline</div>
           </div>
         </div>
 
-        {/* Operator action map */}
+        {/* Configured thresholds */}
+        <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Configured Thresholds</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>per_ip_limit</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.per_ip_limit.toLocaleString()}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>requests / window</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>per_ip_window_s</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.per_ip_window_s}s</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>sliding window</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>block_ttl_s</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.block_ttl_s}s</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>auto-block duration</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>spike_multiplier</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.spike_multiplier}×</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>spike trigger</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>tightened_per_ip_rps</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.tightened_per_ip_rps}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>cap during spike</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>effective rate</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>
+              {(cfg.per_ip_limit / Math.max(cfg.per_ip_window_s, 1)).toFixed(1)}/s
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>derived per-IP rate</div>
+          </div>
+        </div>
+
+        {/* Difference from rate-limit + operator guide */}
         <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5, padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
-          <strong style={{ color: 'var(--ink)' }}>Threshold edits today require YAML + restart.</strong>{' '}
-          Tune <code>cfg.ddos.per_ip_limit</code>,{' '}
-          <code>cfg.ddos.per_ip_window_s</code>,{' '}
-          <code>cfg.ddos.block_ttl_s</code>,{' '}
-          <code>cfg.ddos.spike_multiplier</code>.
-          To switch from enforce to shadow mode (audit-only),
-          set <code>cfg.ddos.observe_only: true</code> and reload —
-          burst-exceed events will then emit <code>ddos_observed</code> audit
-          tags but never 503. Operator guide:{' '}
-          <a href="/docs/security/ddos-protection" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
-            docs/security/ddos-protection.md
-          </a>.
+          <strong style={{ color: 'var(--ink)' }}>How this differs from Rate Limit (above):</strong>{' '}
+          The rate-limit gate is a <em>steady-state per-IP token bucket</em> — when the bucket exceeds, the request is rejected with 429 but the IP can retry after the window. The DDoS gate is a <em>sustained-burst trigger</em> — exceeding `per_ip_limit` writes a `block_ttl_s`-second auto-block to the cluster keyspace; subsequent requests from that IP are 403'd for the full TTL.{' '}
+          Hot-reloadable; per-IP state preserved across edits.{' '}
+          <a href="/docs/operator/traffic-gates" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Full operator guide</a>.
+        </div>
+      </div>
+      {editing && (
+        <DdosEditModal
+          current={cfg}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); ddos.reload && ddos.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DdosEditModal({ current, onClose, onSaved }) {
+  const [enabled, setEnabled] = useStateP(current?.enabled ?? true);
+  const [observeOnly, setObserveOnly] = useStateP(current?.observe_only ?? false);
+  const [perIpLimit, setPerIpLimit] = useStateP(current?.per_ip_limit ?? 1000);
+  const [perIpWindowS, setPerIpWindowS] = useStateP(current?.per_ip_window_s ?? 10);
+  const [blockTtlS, setBlockTtlS] = useStateP(current?.block_ttl_s ?? 300);
+  const [spikeMultiplier, setSpikeMultiplier] = useStateP(current?.spike_multiplier ?? 3.0);
+  const [tightenedRps, setTightenedRps] = useStateP(current?.tightened_per_ip_rps ?? 20);
+  const [busy, setBusy] = useStateP(false);
+  const [err, setErr] = useStateP(null);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await window.csrfMutate('/api/gates/ddos', {
+        method: 'PUT',
+        body: {
+          enabled,
+          observe_only: observeOnly,
+          per_ip_limit: parseInt(perIpLimit, 10),
+          per_ip_window_s: parseInt(perIpWindowS, 10),
+          block_ttl_s: parseInt(blockTtlS, 10),
+          spike_multiplier: parseFloat(spikeMultiplier),
+          tightened_per_ip_rps: parseInt(tightenedRps, 10),
+        },
+      });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast && window.aegisToast('DDoS gate updated', 'ok');
+        onSaved();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        setErr(msg);
+      }
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <div className="modal-head">
+          <div className="modal-title">Edit DDoS gate thresholds</div>
+          <button className="btn btn-sm" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body" style={{ display: 'grid', gap: 10 }}>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} disabled={busy} />
+            <span><strong>Enabled</strong> — uncheck to skip the gate entirely (no protection).</span>
+          </label>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={observeOnly} onChange={e => setObserveOnly(e.target.checked)} disabled={busy} />
+            <span><strong>Observe-only mode</strong> — emit <code>ddos_observed</code> audit events but never 403. Use for shadow validation before flipping to enforce.</span>
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+            <label style={{ fontSize: 12 }}>
+              per_ip_limit
+              <input className="input" type="number" min="1" value={perIpLimit}
+                onChange={e => setPerIpLimit(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>requests per window</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              per_ip_window_s
+              <input className="input" type="number" min="1" value={perIpWindowS}
+                onChange={e => setPerIpWindowS(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>sliding window length (seconds)</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              block_ttl_s
+              <input className="input" type="number" min="1" value={blockTtlS}
+                onChange={e => setBlockTtlS(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>auto-block duration (seconds)</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              spike_multiplier
+              <input className="input" type="number" min="1.01" step="0.1" value={spikeMultiplier}
+                onChange={e => setSpikeMultiplier(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>spike trigger (× baseline RPS), > 1.0</div>
+            </label>
+            <label style={{ fontSize: 12, gridColumn: 'span 2' }}>
+              tightened_per_ip_rps
+              <input className="input" type="number" min="1" value={tightenedRps}
+                onChange={e => setTightenedRps(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>per-IP cap during spike mode</div>
+            </label>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+            Effective rate: <strong>{(perIpLimit / Math.max(parseInt(perIpWindowS, 10), 1)).toFixed(1)} req/s per IP</strong> before
+            burst-exceed; auto-block holds the IP at 403 for {blockTtlS}s.
+            Per-IP StateBackend window state is preserved across the edit. Audit-mutated.
+          </div>
+          {err && <div style={{ fontSize: 11, color: 'var(--down)' }}>Error: {err}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
         </div>
       </div>
     </div>

@@ -1262,6 +1262,10 @@ Object.assign(window, {
   accessListAdd, accessListDelete,
   // CQF-T3 — Detector mask read + audit-mutated PUT
   useDetectorsApi, detectorsPut,
+  // 2026-05-09 — Traffic Gates needs a generic CSRF-aware PUT
+  // helper for the new audit-mutated endpoints. csrfMutate has
+  // existed since CC-T2 but wasn't on window.
+  csrfMutate,
   // CQF-T6 — Top-risk-paths heatmap derived from /api/audit/since
   useTopRiskPathsApi,
 });

@@ -62,7 +62,12 @@ impl From<aegis_core::config::DdosConfig> for DdosConfig {
 
 /// DDoS detector.
 pub struct DdosDetector {
-    config: DdosConfig,
+    /// Wrapped in `ArcSwap` so config hot-reload (file/etcd
+    /// watcher OR audit-mutated `PUT /api/gates/ddos`) can update
+    /// thresholds atomically without rebuilding the per-IP state
+    /// in the StateBackend. Matches the `IpRateLimiter` pattern.
+    /// Hot-path cost: one `ArcSwap::load` per request (~5 ns).
+    config: arc_swap::ArcSwap<DdosConfig>,
     /// Rolling RPS estimate (requests in current second).
     rolling_rps: AtomicU64,
     /// Average RPS baseline.
@@ -90,7 +95,6 @@ pub struct DdosResult {
 pub struct DdosRuntime {
     detector: std::sync::Arc<DdosDetector>,
     state: std::sync::Arc<dyn aegis_core::state::StateBackend>,
-    observe_only: bool,
 }
 
 /// Outcome of a single per-request DDoS check. Drives the data-
@@ -119,11 +123,9 @@ impl DdosRuntime {
         cfg: DdosConfig,
         state: std::sync::Arc<dyn aegis_core::state::StateBackend>,
     ) -> Self {
-        let observe_only = cfg.observe_only;
         Self {
             detector: std::sync::Arc::new(DdosDetector::new(cfg)),
             state,
-            observe_only,
         }
     }
 
@@ -133,11 +135,12 @@ impl DdosRuntime {
     /// (observe-only never blocks anyway).
     pub async fn check(&self, peer_ip: IpAddr) -> aegis_core::Result<DdosCheckOutcome> {
         let result = self.detector.check(self.state.as_ref(), peer_ip).await?;
+        let observe_only = self.detector.config_snapshot().observe_only;
         Ok(DdosCheckOutcome {
             blocked: result.blocked,
             reason: result.reason,
             spike_active: result.spike_active,
-            observe_only: self.observe_only,
+            observe_only,
         })
     }
 
@@ -146,7 +149,22 @@ impl DdosRuntime {
     }
 
     pub fn observe_only(&self) -> bool {
-        self.observe_only
+        self.detector.config_snapshot().observe_only
+    }
+
+    /// Snapshot the live config — drives the GET /api/gates/ddos
+    /// payload and the audit-mutated PUT's "before" view.
+    pub fn config_snapshot(&self) -> DdosConfig {
+        self.detector.config_snapshot()
+    }
+
+    /// Hot-swap the config. Audit-mutated `PUT /api/gates/ddos`
+    /// calls this through the `AuditedMutate` pipeline so every
+    /// edit is captured in the audit chain. Per-IP StateBackend
+    /// state is preserved — operators editing thresholds don't
+    /// reset every flooding source IP.
+    pub fn set_config(&self, cfg: DdosConfig) {
+        self.detector.set_config(cfg);
     }
 
     pub fn current_rps(&self) -> u64 {
@@ -165,11 +183,26 @@ impl DdosRuntime {
 impl DdosDetector {
     pub fn new(config: DdosConfig) -> Self {
         Self {
-            config,
+            config: arc_swap::ArcSwap::from_pointee(config),
             rolling_rps: AtomicU64::new(0),
             baseline_rps: AtomicU64::new(100),
             spike_active: AtomicU64::new(0),
         }
+    }
+
+    /// 2026-05-09 — hot-swap the detector config. Keeps the
+    /// per-IP StateBackend window state intact (operators editing
+    /// thresholds via PUT /api/gates/ddos don't accidentally
+    /// reset every flooding source IP back to zero counts). The
+    /// new thresholds apply on the next `check()` call. Matches
+    /// the `IpRateLimiter::set_config` shape.
+    pub fn set_config(&self, config: DdosConfig) {
+        self.config.store(std::sync::Arc::new(config));
+    }
+
+    /// Snapshot the live config (for read-back via the GET API).
+    pub fn config_snapshot(&self) -> DdosConfig {
+        (**self.config.load()).clone()
     }
 
     /// Check if an IP should be blocked.
@@ -178,6 +211,7 @@ impl DdosDetector {
         state: &dyn StateBackend,
         ip: IpAddr,
     ) -> aegis_core::Result<DdosResult> {
+        let cfg = self.config.load();
         // 1. Check if already auto-blocked.
         if state.is_auto_blocked(ip).await? {
             return Ok(DdosResult {
@@ -189,20 +223,20 @@ impl DdosDetector {
 
         // 2. Sliding window per-IP.
         let key = format!("ddos:ip:{ip}");
-        let window = Duration::from_secs(u64::from(self.config.per_ip_window_s));
+        let window = Duration::from_secs(u64::from(cfg.per_ip_window_s));
         let result = state
-            .incr_window(&key, window, self.config.per_ip_limit)
+            .incr_window(&key, window, cfg.per_ip_limit)
             .await?;
 
         if !result.allowed {
             // Auto-block.
-            let ttl = Duration::from_secs(self.config.block_ttl_s);
+            let ttl = Duration::from_secs(cfg.block_ttl_s);
             state.auto_block(ip, ttl).await?;
             return Ok(DdosResult {
                 blocked: true,
                 reason: Some(format!(
                     "IP {ip} exceeded {}/{} s; blocked for {} s",
-                    self.config.per_ip_limit, self.config.per_ip_window_s, self.config.block_ttl_s
+                    cfg.per_ip_limit, cfg.per_ip_window_s, cfg.block_ttl_s
                 )),
                 spike_active: self.is_spike_active(),
             });
@@ -220,6 +254,7 @@ impl DdosDetector {
 
     /// Update cluster spike detection.  Called periodically (e.g. every second).
     pub fn tick_rps(&self) {
+        let cfg = self.config.load();
         let current = self.rolling_rps.swap(0, Ordering::Relaxed);
         let baseline = self.baseline_rps.load(Ordering::Relaxed);
 
@@ -227,7 +262,7 @@ impl DdosDetector {
         let new_baseline = ((baseline as f64) * 0.9 + (current as f64) * 0.1) as u64;
         self.baseline_rps.store(new_baseline.max(1), Ordering::Relaxed);
 
-        let threshold = (baseline as f64 * self.config.spike_multiplier) as u64;
+        let threshold = (baseline as f64 * cfg.spike_multiplier) as u64;
         if current > threshold && baseline > 10 {
             self.spike_active.store(1, Ordering::Relaxed);
         } else {
