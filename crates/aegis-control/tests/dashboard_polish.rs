@@ -119,9 +119,15 @@ fn app_js_under_per_bundle_budget() {
     // from 400 → 420 KB after the new Traffic Gates page surfacing
     // the four request-flow gates (access list, strike-block,
     // rate-limit, DDoS) with telemetry cards + operator guide.
+    // Bumped 2026-05-10 from 420 → 432 KB after the Detectors page
+    // UX overhaul (renamed to "Detectors & Tiers", inline score
+    // badges + tier tints on every chip) and the Help & Guide
+    // currency audit (added Traffic Gates step, How-it-works card,
+    // glossary entries for traffic gates / rate limit / DDoS gate,
+    // mid-incident workflow, and Rate-Limit-vs-DDoS FAQ).
     // Real dependency growth (new React lib, etc.) needs an
     // explicit budget bump + comment here, not a silent overrun.
-    const APP_JS_BUDGET: usize = 420_000;
+    const APP_JS_BUDGET: usize = 432_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,
