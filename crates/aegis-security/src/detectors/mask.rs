@@ -51,11 +51,14 @@ pub enum DetectorClass {
     /// 2026-05-08 Run-5 GAP-006 — server-side template injection.
     /// Jinja2 / Twig / Mako / Freemarker / Velocity / SpEL / Handlebars.
     TemplateInjection,
+    /// 2026-05-08 Run-5 GAP-007 — NoSQL (MongoDB) operator injection.
+    /// Bracketed query operators + `$`-prefixed JSON keys.
+    NoSqlInjection,
 }
 
 impl DetectorClass {
     /// All classes in the order they appear in `DetectorsConfig`.
-    pub const ALL: [DetectorClass; 10] = [
+    pub const ALL: [DetectorClass; 11] = [
         DetectorClass::Sqli,
         DetectorClass::Xss,
         DetectorClass::PathTraversal,
@@ -66,6 +69,7 @@ impl DetectorClass {
         DetectorClass::BruteForce,
         DetectorClass::CommandInjection,
         DetectorClass::TemplateInjection,
+        DetectorClass::NoSqlInjection,
     ];
 
     /// Wire-compatible string used in `Detector::id()` and the JSON
@@ -82,6 +86,7 @@ impl DetectorClass {
             DetectorClass::BruteForce => "brute_force",
             DetectorClass::CommandInjection => "command_injection",
             DetectorClass::TemplateInjection => "template_injection",
+            DetectorClass::NoSqlInjection => "nosql_injection",
         }
     }
 
@@ -99,6 +104,7 @@ impl DetectorClass {
             DetectorClass::BruteForce => 1 << 7,
             DetectorClass::CommandInjection => 1 << 8,
             DetectorClass::TemplateInjection => 1 << 9,
+            DetectorClass::NoSqlInjection => 1 << 10,
         }
     }
 
@@ -169,6 +175,9 @@ impl DetectorMask {
         }
         if cfg.template_injection.enabled {
             m.set(DetectorClass::TemplateInjection, true);
+        }
+        if cfg.nosql_injection.enabled {
+            m.set(DetectorClass::NoSqlInjection, true);
         }
         m
     }
@@ -249,6 +258,10 @@ pub struct DetectorMaskBody {
     /// Same `#[serde(default)]` back-compat for older snapshots.
     #[serde(default)]
     pub template_injection: bool,
+    /// 2026-05-08 Run-5 GAP-007 — NoSQL operator injection class.
+    /// Same `#[serde(default)]` back-compat.
+    #[serde(default)]
+    pub nosql_injection: bool,
 }
 
 impl From<DetectorMask> for DetectorMaskBody {
@@ -264,6 +277,7 @@ impl From<DetectorMask> for DetectorMaskBody {
             brute_force: m.is_enabled(DetectorClass::BruteForce),
             command_injection: m.is_enabled(DetectorClass::CommandInjection),
             template_injection: m.is_enabled(DetectorClass::TemplateInjection),
+            nosql_injection: m.is_enabled(DetectorClass::NoSqlInjection),
         }
     }
 }
@@ -281,6 +295,7 @@ impl From<DetectorMaskBody> for DetectorMask {
             .with(DetectorClass::BruteForce, b.brute_force)
             .with(DetectorClass::CommandInjection, b.command_injection)
             .with(DetectorClass::TemplateInjection, b.template_injection)
+            .with(DetectorClass::NoSqlInjection, b.nosql_injection)
     }
 }
 
@@ -564,7 +579,7 @@ mod tests {
         assert_eq!(entries[1], (DetectorClass::Xss, false));
         assert_eq!(
             entries[entries.len() - 1].0,
-            DetectorClass::TemplateInjection,
+            DetectorClass::NoSqlInjection,
         );
     }
 

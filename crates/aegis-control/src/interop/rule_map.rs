@@ -51,6 +51,7 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "ai" => ("rules_engine", "ai"),
         "command_injection" | "cmdi" => ("rules_engine", "command_injection"),
         "template_injection" | "ssti" => ("rules_engine", "template_injection"),
+        "nosql_injection" | "nosqli" => ("rules_engine", "nosql_injection"),
 
         // ---- rate_limit ----
         "ip-rate-limit" | "rate_limit" => ("rate_limit", "per_ip"),
@@ -126,6 +127,19 @@ mod tests {
         assert_eq!(
             rule_to_feature("ssti"),
             Some(("rules_engine", "template_injection")),
+        );
+    }
+
+    #[test]
+    fn nosql_injection_maps_to_rules_engine() {
+        // GAP-007 (2026-05-08) — dedicated NoSQL class.
+        assert_eq!(
+            rule_to_feature("nosql_injection"),
+            Some(("rules_engine", "nosql_injection")),
+        );
+        assert_eq!(
+            rule_to_feature("nosqli"),
+            Some(("rules_engine", "nosql_injection")),
         );
     }
 

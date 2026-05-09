@@ -38,10 +38,11 @@ pub mod class_label {
     pub const BRUTE_FORCE: &str = "brute_force";
     pub const COMMAND_INJECTION: &str = "command_injection";
     pub const TEMPLATE_INJECTION: &str = "template_injection";
+    pub const NOSQL_INJECTION: &str = "nosql_injection";
 
-    pub const ALL: [&str; 10] = [
+    pub const ALL: [&str; 11] = [
         SQLI, XSS, PATH_TRAVERSAL, SSRF, HEADER_INJECTION, BODY_ABUSE, RECON, BRUTE_FORCE,
-        COMMAND_INJECTION, TEMPLATE_INJECTION,
+        COMMAND_INJECTION, TEMPLATE_INJECTION, NOSQL_INJECTION,
     ];
 }
 

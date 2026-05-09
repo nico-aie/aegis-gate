@@ -371,6 +371,7 @@ mod tests {
                 brute_force: true,
                 command_injection: true,
                 template_injection: true,
+                nosql_injection: true,
             }),
         );
         let next = apply_put_body(initial, body, &[]).unwrap();
@@ -417,6 +418,7 @@ mod tests {
                 brute_force: true,
                 command_injection: true,
                 template_injection: true,
+                nosql_injection: true,
             }),
         );
         let err = apply_put_body(
@@ -442,6 +444,7 @@ mod tests {
             brute_force: true,
             command_injection: true,
             template_injection: true,
+            nosql_injection: true,
         });
         let err = apply_put_body(
             MaskState::default(),

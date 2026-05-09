@@ -3,6 +3,7 @@ pub mod brute_force;
 pub mod command_injection;
 pub mod header_injection;
 pub mod mask;
+pub mod nosql_injection;
 pub mod path_traversal;
 pub mod recon;
 pub mod sqli;
@@ -178,6 +179,13 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
         // template-engine payloads in URI + body (Jinja2 / Twig /
         // Mako / Freemarker / Velocity / Spring SpEL / Handlebars).
         Box::new(template_injection::TemplateInjectionDetector),
+        // 2026-05-08 Run-5 GAP-007 — dedicated NoSQL operator
+        // injection class. Detects MongoDB-flavored operator
+        // injection in query strings (?param[$ne]=x) and JSON
+        // bodies ({"$where":"..."}). Closed operator vocabulary
+        // → near-zero FP on legit Postgres $1 placeholders or
+        // currency strings.
+        Box::new(nosql_injection::NoSqlInjectionDetector),
     ]
 }
 
@@ -217,8 +225,8 @@ mod tests {
         let d = default_detectors();
         // sqli + xss + path_traversal + ssrf + header_injection
         // + body_abuse + recon + brute_force + command_injection
-        // + template_injection.
-        assert_eq!(d.len(), 10);
+        // + template_injection + nosql_injection.
+        assert_eq!(d.len(), 11);
     }
 
     #[test]
