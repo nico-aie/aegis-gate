@@ -75,7 +75,7 @@ fn check_xss(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in XSS_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 35,
+                score: super::scores::xss::XSS,
                 tag: "xss".into(),
                 field: field.into(),
             });

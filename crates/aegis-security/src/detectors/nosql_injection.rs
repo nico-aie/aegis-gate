@@ -103,7 +103,7 @@ fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in NOSQL_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 50,
+                score: super::scores::nosql_injection::NOSQL_INJECTION,
                 tag: "nosql_injection".into(),
                 field: field.into(),
             });

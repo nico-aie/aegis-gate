@@ -168,7 +168,7 @@ fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in LOG4SHELL_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 60,
+                score: super::scores::command_injection::LOG4SHELL,
                 tag: "command_injection".into(),
                 field: field.into(),
             });
@@ -180,7 +180,7 @@ fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in CMDI_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 50,
+                score: super::scores::command_injection::BASELINE,
                 tag: "command_injection".into(),
                 field: field.into(),
             });

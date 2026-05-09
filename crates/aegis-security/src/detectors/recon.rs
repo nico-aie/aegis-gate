@@ -132,7 +132,7 @@ impl Detector for ReconDetector {
         for re in RECON_PATHS.iter() {
             if re.is_match(path_q) {
                 signals.push(Signal {
-                    score: 25,
+                    score: super::scores::recon::PATH,
                     tag: "recon_path".into(),
                     field: "uri".into(),
                 });
@@ -145,7 +145,7 @@ impl Detector for ReconDetector {
             for re in RECON_UA.iter() {
                 if re.is_match(ua) {
                     signals.push(Signal {
-                        score: 30,
+                        score: super::scores::recon::TOOL,
                         tag: "recon_tool".into(),
                         field: "user-agent".into(),
                     });

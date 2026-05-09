@@ -77,7 +77,9 @@ use std::sync::LazyLock;
 use super::{url_decode, Detector, Signal};
 
 /// Score emitted when a redirect param carries a suspicious URL.
-pub const SCORE: u32 = 30;
+/// Re-export of the canonical const in [`super::scores::open_redirect`]
+/// — kept here for the in-file `tests` module to use.
+pub const SCORE: u32 = super::scores::open_redirect::OPEN_REDIRECT;
 
 /// Closed list of conventional redirect-style query parameter
 /// names. Match is case-insensitive on the key.

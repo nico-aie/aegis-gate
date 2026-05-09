@@ -41,7 +41,11 @@ pub struct BruteForceDetector {
 
 impl Default for BruteForceDetector {
     fn default() -> Self {
-        Self::new(10, Duration::from_secs(60), 35)
+        Self::new(
+            10,
+            Duration::from_secs(60),
+            super::scores::brute_force::DEFAULT,
+        )
     }
 }
 

@@ -2128,7 +2128,30 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
 // base mask + per-tier overrides via `PUT /api/detectors`.
 // Compliance-locked classes (sqli/xss/path_traversal/ssrf when
 // any compliance mode is active) render as a disabled toggle.
-const MASK_CLASSES = ['sqli', 'xss', 'path_traversal', 'ssrf', 'header_injection', 'body_abuse', 'recon', 'brute_force'];
+// All 12 detector classes wired to the bitmask. Order matches
+// DetectorClass::ALL on the backend so the chip grid reads in the
+// same order operators see in docs (security-engine.md risk-weight
+// ladder, detectors/README.md tag table).
+const MASK_CLASSES = [
+  'sqli', 'xss', 'path_traversal', 'ssrf', 'header_injection',
+  'body_abuse', 'recon', 'brute_force', 'command_injection',
+  'template_injection', 'nosql_injection', 'open_redirect',
+];
+
+// 5-tier framework chip palette — keeps the score chip colour
+// in sync with the docs in `plans/issue-fix/tester-n-2026-05-08-
+// run5/README.md` and `docs/operator/risk-tuning.md`. Uses the
+// existing dashboard palette (--down for error/red, --warn for
+// yellow, --brand-yellow for accent) so the chip colours match
+// the rest of the SPA.
+const SCORE_TIER_STYLE = {
+  critical: { bg: 'rgba(246,70,93,0.14)', fg: 'var(--down)',         label: 'Critical RCE/CVE' },
+  high:     { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)',        label: 'High-conf injection' },
+  broad:    { bg: 'rgba(252,213,53,0.10)', fg: 'var(--brand-yellow)', label: 'Broader pattern' },
+  header:   { bg: 'rgba(112,122,138,0.16)', fg: 'var(--ink-dim)',    label: 'Header heuristic' },
+  phishing: { bg: 'rgba(112,122,138,0.10)', fg: 'var(--ink-dim)',    label: 'Phishing / info' },
+  probe:    { bg: 'rgba(112,122,138,0.06)', fg: 'var(--ink-faint)',  label: 'Probe / canary' },
+};
 
 function DetectorMaskCard() {
   const api = window.useDetectorsApi();
@@ -2290,11 +2313,121 @@ function DetectorMaskCard() {
         Object.entries(overrides).map(([tier, mask]) => renderRow(tier, mask, tier))
       )}
 
+      {/* Read-only risk-score catalog (#293) — surfaced so
+          operators can see the calibrated 5-tier ladder without
+          scraping detector source files. NOT editable by design;
+          see docs/operator/risk-tuning.md for the rationale + the
+          safe knobs available (set_profile log_only, risk
+          thresholds, RaiseRisk rules, per-tier overrides). */}
+      <DetectorScorePanel scoreTable={api.data?.score_table || []} />
+
       {/* AI detector — folded into the same card. AI lives outside
           the bitmask (separate AtomicBool flipped via PUT
           /api/ai/enabled) but operators read this whole page as
           "the detector inventory", so it slots in here. */}
       <AiDetectorRow />
+    </div>
+  );
+}
+
+// Read-only score catalog. Renders one chip per `(class, tag)` row
+// from `/api/detectors`'s `score_table`. The chip's colour follows
+// the documented 5-tier framework; hover shows the operator-facing
+// note. A footer link guides operators to the risk-tuning doc when
+// they want to adjust posture without touching the score ladder.
+function DetectorScorePanel({ scoreTable }) {
+  const [expanded, setExpanded] = useStateP(false);
+  if (!scoreTable || scoreTable.length === 0) {
+    return null;
+  }
+
+  // Group by class so the operator reads them the same way the
+  // mask grid renders.
+  const byClass = {};
+  for (const row of scoreTable) {
+    if (!byClass[row.class]) byClass[row.class] = [];
+    byClass[row.class].push(row);
+  }
+  const classOrder = Object.keys(byClass);
+
+  return (
+    <div style={{ borderTop: '1px solid var(--hairline)' }}>
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="btn"
+        style={{
+          width: '100%', textAlign: 'left', background: 'transparent',
+          border: 'none', padding: '10px 12px', fontSize: 12,
+          color: 'var(--ink)', fontWeight: 600, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}
+      >
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{expanded ? '▼' : '▶'}</span>
+        Risk score reference <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }}>· read-only · {scoreTable.length} signal types</span>
+      </button>
+
+      {expanded && (
+        <div style={{ padding: '4px 12px 12px' }}>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 8, lineHeight: 1.4 }}>
+            The score each detector emits is a calibrated ladder that interacts with{' '}
+            <code style={{ fontSize: 10 }}>risk.thresholds.challenge_at</code> (40) and{' '}
+            <code style={{ fontSize: 10 }}>block_at</code> (80). Editing scores in the
+            UI is intentionally not supported because arbitrary changes break the
+            score↔threshold interaction.{' '}
+            <strong>To tune posture</strong>, use <code style={{ fontSize: 10 }}>set_profile log_only</code>,
+            adjust <code style={{ fontSize: 10 }}>risk.thresholds</code>, add a
+            <code style={{ fontSize: 10 }}> RaiseRisk(delta)</code> rule, or
+            apply a per-tier override above. See the{' '}
+            <a href="/docs/operator/risk-tuning" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+              operator risk-tuning guide
+            </a>.
+          </div>
+
+          {/* Tier-legend strip — chip colour decoder. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+            {Object.entries(SCORE_TIER_STYLE).map(([tier, style]) => (
+              <span
+                key={tier}
+                title={`${style.label} tier`}
+                style={{
+                  fontSize: 10, padding: '2px 8px', borderRadius: 4,
+                  background: style.bg, color: style.fg, fontWeight: 600,
+                }}
+              >
+                {style.label}
+              </span>
+            ))}
+          </div>
+
+          {/* Per-class score table. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, auto) 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
+            {classOrder.map(cls => (
+              <React.Fragment key={cls}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)' }}>{cls}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {byClass[cls].map(row => {
+                    const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
+                    return (
+                      <span
+                        key={`${row.class}-${row.tag}`}
+                        title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}`}
+                        style={{
+                          fontSize: 10, padding: '2px 8px', borderRadius: 4,
+                          background: tierStyle.bg, color: tierStyle.fg,
+                          fontWeight: 500, fontFamily: 'monospace',
+                          cursor: 'help',
+                        }}
+                      >
+                        {row.tag} · {row.score}
+                      </span>
+                    );
+                  })}
+                </div>
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

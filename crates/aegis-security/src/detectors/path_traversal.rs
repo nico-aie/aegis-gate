@@ -77,7 +77,7 @@ fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in TRAVERSAL_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 45,
+                score: super::scores::path_traversal::PATH_TRAVERSAL,
                 tag: "path_traversal".into(),
                 field: field.into(),
             });
