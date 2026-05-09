@@ -179,7 +179,7 @@ block on their own; they accumulate signals.
 | XSS | `xss` | URL, body, headers |
 | Path traversal | `path_traversal` | URL, body |
 | SSRF | `ssrf` | URL, body, fetch-style headers |
-| Header injection | `header_injection` | Headers (CRLF, smuggling) |
+| Header injection | `header_injection`, `url_override_bypass` | Headers (CRLF, smuggling, XFH poisoning, X-Original-URL / X-Rewrite-URL admin-path bypass added 2026-05-09 GAP-011) |
 | Body abuse | `body_abuse`, `xxe`, `mass_assignment`, `proto_pollution` | Body (size, nesting, JSON / XML / form) — `proto_pollution` sub-tag (score 45) added 2026-05-08 (GAP-010) |
 | Recon | `recon_path`, `recon_tool` | URL patterns + path entropy (`/.env`, `/wp-admin/…`, Docker REST) — framework recon (Spring actuator danger paths / Laravel Ignition / Swagger / GraphQL / K8s API / Kibana / Jenkins / CGI / Prometheus federation) added 2026-05-08 (GAP-001) |
 | Brute force | `brute_force` | Login endpoints (failure counter via `velocity.rs`) |

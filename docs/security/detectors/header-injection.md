@@ -93,6 +93,38 @@ Public addresses like `8.8.8.8` or just-outside-RFC1918 addresses like `172.32.0
 
 **Why not also block "arbitrary domain mismatch":** many legit proxy chains do exactly that (`Host: internal-svc:8080`, `XFH: api.example.com`). Bare mismatch is too broad without an operator allowlist. Internal-IP-literal-in-XFH is the narrow shape with no legitimate use case, so it's safe to flag without operator config.
 
+## URL-override-header bypass (added 2026-05-09 GAP-011)
+
+Some app frameworks (older Rails versions, IIS, Apache `mod_rewrite` setups) honor a small set of headers as a "rewrite the URL before processing" hint. An attacker behind a misconfigured proxy can supply the rewrite header pointing to an admin path while making a public-route request — the gateway sees the public route, the framework processes the admin path, and **auth middleware that gates by the raw URL is bypassed**.
+
+The detector watches four header names (case-insensitive) for path values that have no benign use case in a request header:
+
+| Header | Why dangerous |
+|---|---|
+| `X-Original-URL` | IIS / mod_rewrite "use this URL instead" hint — auth middleware that gates by raw URL is bypassed |
+| `X-Rewrite-URL` | Apache `mod_rewrite` rewrite hint — same primitive |
+| `X-Override-URL` | Less-common variant seen in CVE writeups |
+| `X-HTTP-Method-Override-URL` | Compound override (method + URL) used by some REST gateways |
+
+Path shapes that flag (after URL-decode):
+
+| Shape | Examples | Why |
+|---|---|---|
+| Admin-prefix path | `/admin/users`, `/wp-admin/options.php`, `/manage`, `/console`, `/__internal/health` | Privileged route, attacker-supplied — no benign reason for a header to override the URL to one of these |
+| Recon-shape path | `/.env`, `/wp-config.php`, `/.git/config`, `/.aws/credentials`, `/.ssh/id_rsa` | Same recon targets the [`recon`](./recon.md) detector watches in URL paths — stacks signal when the same shape arrives via header override |
+| Path-traversal shape | `../`, `%2e%2e/`, `%252e%252e` | Directory traversal smuggled through the override — would also fire the [`path_traversal`](./path-traversal.md) detector if the override were processed as the URL |
+
+**Sub-tag:** `url_override_bypass` (class stays `header_injection`). Field reports the actual header that fired (`x-original-url`, `x-rewrite-url`, etc.) so audit grep is straightforward.
+
+**Score:** `40` (header-heuristic tier — same as CRLF). One hit doesn't reach `challenge_at: 40` on its own, but stacks with `recon` / `path_traversal` when the override value also matches those shapes — combined risk crosses `block_at: 80`.
+
+**No FP surface in production:** legitimate URL-rewriting happens in proxy / load-balancer config, not in attacker-controlled request headers. Operators who genuinely need to send these headers (rare) can disable the `header_injection` class for the affected tier via `set_profile { policies: ["header_injection"], mode: "log_only" }`.
+
+Test corpus:
+
+- Positive: `X-Original-URL: /admin/users`, `X-Rewrite-URL: /administrator/index.php`, `X-Original-URL: /.env`, `X-Original-URL: /../../../etc/passwd`, `X-Original-URL: /__internal/health`, URL-encoded `/%2Fadmin%2Fusers`.
+- Negative: `X-Original-URL: /api/users`, `X-Original-URL: /products/123`, `X-Original-URL: /health`, `X-Original-URL: /metrics`, header absent or empty.
+
 ## HTTP request smuggling defense
 
 Request smuggling exploits discrepancies in how the WAF and backend parse `Content-Length` vs `Transfer-Encoding`. The WAF enforces:

@@ -20,7 +20,7 @@ verbatim.
 | [xss.md](./xss.md) | `xss` | URL, body, headers |
 | [path-traversal.md](./path-traversal.md) | `path_traversal` | URL, body |
 | [ssrf.md](./ssrf.md) | `ssrf` | URL, body, fetch-style headers |
-| [header-injection.md](./header-injection.md) | `header_injection` | Headers + query CRLF |
+| [header-injection.md](./header-injection.md) | `header_injection`, `url_override_bypass` | Headers + query CRLF — adds **URL-override-header bypass** (`X-Original-URL` / `X-Rewrite-URL` carrying admin / recon / traversal paths) added 2026-05-09 (GAP-011, score 40) |
 | [recon.md](./recon.md) | `recon_path`, `recon_tool` | URL patterns + path entropy — **framework recon** (Spring actuator dangers / Laravel Ignition / Swagger / GraphQL / K8s API / Kibana / Jenkins / CGI / Prometheus federation) added 2026-05-08 (GAP-001) |
 | [brute-force.md](./brute-force.md) | `brute_force` | Login endpoints |
 | [body-abuse.md](./body-abuse.md) | `body_abuse`, `xxe`, `mass_assignment`, `proto_pollution` | Body (JSON / XML / form) — **prototype pollution** (`__proto__` / `constructor.prototype`) added 2026-05-08 (GAP-010, score 45) |
