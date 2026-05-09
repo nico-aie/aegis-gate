@@ -1,15 +1,21 @@
-# DDoS Protection (v2)
+# DDoS Protection
 
-> **Status:** Implemented — `aegis-security/src/ddos.rs`.
+> **Status:** ⚠️ **Stub — NOT WIRED** (filed 2026-05-09 as
+> [`BUG-DDOS-STUB`](../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md)).
+> The `DdosDetector` struct exists at `aegis-security/src/ddos.rs` but is
+> never instantiated outside its own unit tests. **Operators should not rely
+> on the protections described below.** Wire-up plan tracked at
+> [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](../../plans/issue-fix/internal-audit-2026-05-09-ddos/).
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
-> **v1 → v2:** auto-block state now lives in the **clustered state backend**
-> so every node agrees on who is blocked, detection runs **per tenant**, and
-> L7 adaptive load shedding kicks in before the per-IP thresholds. See
-> [`ha-clustering.md`](../operations/ha-clustering.md),
-> [`adaptive-load-shedding.md`](../data-plane/adaptive-load-shedding.md), and
-> [`multi-tenancy.md`](../future/multi-tenancy.md).
+> **What actually works today** (partial backstop until the wire-up lands):
+> per-IP token-bucket rate limiting, velocity / login-flood limiter,
+> risk-strikes auto-block (default 50 strikes → permanent block),
+> adaptive load shedding (Gradient2). See the bug report for the full
+> doc-vs-code gap table. The cluster-wide / per-tenant pieces below
+> describe the **target v2 design**; the v1 single-node implementation
+> is what the wire-up plan covers first.
 
 ## Purpose
 

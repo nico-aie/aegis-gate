@@ -63,7 +63,7 @@ table — keep them in sync.
 | [`rule-engine.md`](../docs/security/rule-engine.md) | **Implemented** | `aegis-security/src/rules/{ast,eval,parser,linter,mod}.rs`. |
 | [`tiered-protection.md`](../docs/security/tiered-protection.md) | **Implemented** | `aegis-core/src/tier.rs` + per-tier detector mask overrides (P2/P3). |
 | [`rate-limiting.md`](../docs/security/rate-limiting.md) | **Implemented** | `rate_limit/{bucket,sliding,ip_limiter,mod}.rs`. |
-| [`ddos-protection.md`](../docs/security/ddos-protection.md) | **Implemented** | `aegis-security/src/ddos.rs`. |
+| [`ddos-protection.md`](../docs/security/ddos-protection.md) | ⚠️ **Stub — NOT WIRED** | `aegis-security/src/ddos.rs` defines `DdosDetector` + `DdosConfig` but is never instantiated outside its own tests. No YAML config field, no proxy hot-path integration, no 503 short-circuit, no background ticker. Filed 2026-05-09 as [`BUG-DDOS-STUB`](../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md). Wire-up plan: [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](./issue-fix/internal-audit-2026-05-09-ddos/). Partial backstop today via velocity, risk-strikes, and adaptive load shedding (separate features). |
 | [`ip-reputation.md`](../docs/security/ip-reputation.md) | **Partial** | `ip_rep/{asn,xff,mod}.rs` — XFF validation + ASN matching. **No live threat-intel feed fetcher** — Phase B **B3-T2**. |
 | [`geoip-filtering.md`](../docs/security/geoip-filtering.md) | **Implemented** | `geoip/{mod,reader}.rs` (gated by `aegis-security/geoip`) + rule-engine `country` / `asn` conditions with hot-reload. |
 | [`device-fingerprinting.md`](../docs/security/device-fingerprinting.md) | **Implemented** | `fingerprint/{ja3,ja4,h2,mod}.rs`. |
