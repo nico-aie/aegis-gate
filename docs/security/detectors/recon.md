@@ -50,7 +50,7 @@ QA Run-5 found the framework-recon corpus passing 1/9 — the WAF caught the obv
 | `/(swagger-ui\|swagger\.json\|v\d+/api-docs\|openapi\.(json\|yaml))` | Surface enumeration; not always sensitive but standard recon target | `/swagger-ui.html`, `/v3/api-docs` |
 | `/graphql(\|/\|?)`, `/graphiql`, `/playground` | GraphQL introspection often disabled in prod; flag for visibility | `/graphql?query=__schema` |
 | `/api/v1/(namespaces\|pods)`, `/apis/apps/v1/deployments` | Kubernetes API — full cluster takeover if reachable | `/api/v1/pods` |
-| `/(\.kibana(/\|/_search)\|_cat/indices\|_cluster/health)` | Elastic / Kibana internals — data exposure | `/.kibana/_search`, `/_cat/indices` |
+| `/(app/kibana\|kibana/(app\|api)\|\.kibana(/\|/_search)\|_cat/indices\|_cluster/health)` | Elastic / Kibana internals (Kibana 6+ legacy `/app/kibana` AND Kibana 7+/8+ `/kibana/app`, `/kibana/api/...`) — data exposure | `/app/kibana`, `/kibana/app/dashboards`, `/kibana/api/saved_objects`, `/.kibana/_search`, `/_cat/indices` |
 | `/(script(Text)?\|jnlpJars/jenkins-cli\.jar\|computer/(\(master\|built-in\))/script)` | Jenkins — Groovy console = RCE; CLI jar = unauth admin | `/script`, `/scriptText` |
 | `/cgi-bin/(printenv\.pl\|test-cgi\|php-cgi\|\.\.)` | Legacy CGI — Shellshock + classic info disclosure | `/cgi-bin/printenv.pl` |
 | `/metrics\?(format=\|target=\|module=)` | Prometheus federation/scrape-target probe — bare `/metrics` is **not** flagged (legit operator endpoint); only the suspicious-query shapes fire | `/metrics?format=prometheus`, `/metrics?target=10.0.0.1:9100` |

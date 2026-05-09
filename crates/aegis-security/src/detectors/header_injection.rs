@@ -87,6 +87,12 @@ impl Detector for HeaderInjectionDetector {
         // config, not request headers.
         check_url_override(req, &mut signals);
 
+        // 2026-05-09 — Run-7 INFO-002. Method-override headers
+        // carrying destructive verbs (DELETE/PUT/PATCH/CONNECT/
+        // TRACE). Conservative — POST not flagged because legit
+        // form-post overrides use it.
+        check_method_override(req, &mut signals);
+
         signals
     }
 }
@@ -221,6 +227,32 @@ const URL_OVERRIDE_HEADERS: &[&str] = &[
     "x-http-method-override-url",
 ];
 
+/// 2026-05-09 — Run-7 INFO-002. Method-override headers some
+/// frameworks (older Spring, Rails, WebDAV middleware) honor to
+/// rewrite the request method. An attacker sending `GET /resource`
+/// with `X-HTTP-Method-Override: DELETE` can bypass GET-only auth
+/// middleware that didn't anticipate the override.
+///
+/// Conservative trigger: only flag when the override value is a
+/// **destructive** verb (DELETE / PUT / PATCH / CONNECT). POST
+/// is intentionally NOT flagged because Rails / Express form
+/// posts use these headers legitimately for the same-origin case.
+/// The narrow allowlist keeps FP near zero on legit traffic
+/// while catching the documented attack shape.
+const METHOD_OVERRIDE_HEADERS: &[&str] = &[
+    "x-http-method-override",
+    "x-method-override",
+    "x-http-method",
+];
+
+/// Verbs that have no benign reason to arrive via a method-override
+/// header in a public-facing API. POST stays off the list because
+/// Rails / Express form posts use these headers legitimately.
+fn is_destructive_method(value: &str) -> bool {
+    let v = value.trim().to_ascii_uppercase();
+    matches!(v.as_str(), "DELETE" | "PUT" | "PATCH" | "CONNECT" | "TRACE")
+}
+
 /// Path shapes that have no business appearing in a URL-override
 /// header. Admin-prefix paths, recon-shape paths, and path-
 /// traversal sequences are all attacker-supplied indicators with
@@ -241,6 +273,25 @@ static URL_OVERRIDE_DANGER_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .map(|p| Regex::new(p).expect("url-override regex compiles"))
     .collect()
 });
+
+fn check_method_override(req: &RequestView<'_>, signals: &mut Vec<Signal>) {
+    for &name in METHOD_OVERRIDE_HEADERS {
+        let Some(val) = req.headers.get(name).and_then(|v| v.to_str().ok()) else {
+            continue;
+        };
+        if val.is_empty() {
+            continue;
+        }
+        if is_destructive_method(val) {
+            signals.push(Signal {
+                score: super::scores::header_injection::XFH,
+                tag: "method_override_bypass".into(),
+                field: name.into(),
+            });
+            return; // One signal per request — no amplification.
+        }
+    }
+}
 
 fn check_url_override(req: &RequestView<'_>, signals: &mut Vec<Signal>) {
     for &name in URL_OVERRIDE_HEADERS {
@@ -743,5 +794,100 @@ mod tests {
             !d.inspect(&req).iter().any(|s| s.tag == "url_override_bypass"),
             "no header → no signal",
         );
+    }
+
+    // 2026-05-09 — Run-7 INFO-002. Method-override headers
+    // carrying destructive verbs (DELETE/PUT/PATCH/CONNECT/TRACE)
+    // fire the method_override_bypass sub-tag at score 35.
+    // Conservative — POST stays unflagged because Rails / Express
+    // form posts use these headers legitimately.
+
+    fn method_override_view(name: &'static str, val: &[u8]) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        h.insert("host", "api.example.com".parse().unwrap());
+        if let Ok(v) = http::HeaderValue::from_bytes(val) {
+            h.insert(name, v);
+        }
+        h
+    }
+
+    macro_rules! method_override_blocks {
+        ($name:ident, $header:expr, $value:expr) => {
+            #[test]
+            fn $name() {
+                let d = HeaderInjectionDetector;
+                let u: http::Uri = "/".parse().unwrap();
+                let m = http::Method::GET;
+                let h = method_override_view($header, $value);
+                let b = BodyPeek::empty();
+                let req = make_view_with_headers(&m, &u, &h, &b);
+                let signals = d.inspect(&req);
+                assert!(
+                    signals.iter().any(|s| s.tag == "method_override_bypass"),
+                    "expected method_override_bypass for {} = {:?}, got {:?}",
+                    $header,
+                    std::str::from_utf8($value).unwrap_or("<binary>"),
+                    signals,
+                );
+            }
+        };
+    }
+    method_override_blocks!(mo_x_http_method_override_delete,  "x-http-method-override", b"DELETE");
+    method_override_blocks!(mo_x_http_method_override_put,     "x-http-method-override", b"PUT");
+    method_override_blocks!(mo_x_http_method_override_patch,   "x-http-method-override", b"PATCH");
+    method_override_blocks!(mo_x_http_method_override_connect, "x-http-method-override", b"CONNECT");
+    method_override_blocks!(mo_x_http_method_override_trace,   "x-http-method-override", b"TRACE");
+    method_override_blocks!(mo_x_method_override_delete,       "x-method-override", b"DELETE");
+    method_override_blocks!(mo_x_http_method_delete,           "x-http-method", b"DELETE");
+    method_override_blocks!(mo_lowercase_delete,               "x-http-method-override", b"delete");
+    method_override_blocks!(mo_with_whitespace,                "x-http-method-override", b"  DELETE  ");
+
+    macro_rules! method_override_clean {
+        ($name:ident, $header:expr, $value:expr) => {
+            #[test]
+            fn $name() {
+                let d = HeaderInjectionDetector;
+                let u: http::Uri = "/".parse().unwrap();
+                let m = http::Method::GET;
+                let h = method_override_view($header, $value);
+                let b = BodyPeek::empty();
+                let req = make_view_with_headers(&m, &u, &h, &b);
+                let signals: Vec<_> = d
+                    .inspect(&req)
+                    .into_iter()
+                    .filter(|s| s.tag == "method_override_bypass")
+                    .collect();
+                assert!(
+                    signals.is_empty(),
+                    "false positive method_override_bypass for {} = {:?}: {:?}",
+                    $header,
+                    std::str::from_utf8($value).unwrap_or("<binary>"),
+                    signals,
+                );
+            }
+        };
+    }
+    // POST is intentionally NOT flagged — Rails / Express use it
+    // for legit form-post overrides. GET / HEAD / OPTIONS are safe
+    // verbs. Empty / missing headers stay green.
+    method_override_clean!(mo_clean_post,    "x-http-method-override", b"POST");
+    method_override_clean!(mo_clean_get,     "x-http-method-override", b"GET");
+    method_override_clean!(mo_clean_head,    "x-http-method-override", b"HEAD");
+    method_override_clean!(mo_clean_options, "x-http-method-override", b"OPTIONS");
+
+    // Score check.
+    #[test]
+    fn method_override_emits_header_tier_score() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = method_override_view("x-http-method-override", b"DELETE");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        let signal = d.inspect(&req)
+            .into_iter()
+            .find(|s| s.tag == "method_override_bypass")
+            .expect("method_override_bypass signal");
+        assert_eq!(signal.score, 35, "method_override_bypass should score 35 (header tier — XFH)");
     }
 }

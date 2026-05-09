@@ -95,6 +95,10 @@ static REDIRECT_PARAM_NAMES: &[&str] = &[
     "return_url",
     "rurl",
     "destination",
+    // 2026-05-09 — Run-7 GAP-009b. `?dest=` is a common short-form
+    // alternative to `?destination=` (Slack, GitHub OAuth, several
+    // OpenID providers use it). Same phishing surface as the rest.
+    "dest",
     "goto",
     "continue",
     "forward",
@@ -328,6 +332,11 @@ mod tests {
     positive!(or_first_pair,          "/r?safe=ok&next=http://evil.com");
     positive!(or_uppercase_key,       "/r?REDIRECT=https://evil.com");
     positive!(or_with_other_params,   "/r?from=a&next=http://evil.com&utm=z");
+    // 2026-05-09 — Run-7 GAP-009b. `?dest=` is a common short-form
+    // alternative to `?destination=` (Slack, GitHub OAuth, several
+    // OpenID providers use it).
+    positive!(or_param_dest,          "/login?dest=http://evil.com");
+    positive!(or_param_dest_protorel, "/login?dest=//evil.example/path");
 
     macro_rules! negative {
         ($name:ident, $uri:expr) => {

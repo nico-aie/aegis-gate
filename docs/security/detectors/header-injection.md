@@ -120,6 +120,22 @@ Path shapes that flag (after URL-decode):
 
 **No FP surface in production:** legitimate URL-rewriting happens in proxy / load-balancer config, not in attacker-controlled request headers. Operators who genuinely need to send these headers (rare) can disable the `header_injection` class for the affected tier via `set_profile { policies: ["header_injection"], mode: "log_only" }`.
 
+### Method-override bypass (added 2026-05-09 INFO-002)
+
+A sibling header class — frameworks (older Spring, Rails, WebDAV middleware) can be configured to honor `X-HTTP-Method-Override`, `X-Method-Override`, or `X-HTTP-Method` to rewrite the request method. An attacker sending `GET /resource` with `X-HTTP-Method-Override: DELETE` can bypass GET-only auth middleware that didn't anticipate the override.
+
+The detector flags **only destructive verbs** in the override value (DELETE, PUT, PATCH, CONNECT, TRACE). Sub-tag: `method_override_bypass`. Score: 35 (XFH tier).
+
+| Header | Value | Fires? |
+|---|---|---|
+| `X-HTTP-Method-Override` | `DELETE` / `PUT` / `PATCH` / `CONNECT` / `TRACE` | ✅ |
+| `X-Method-Override` | same destructive verbs | ✅ |
+| `X-HTTP-Method` | same destructive verbs | ✅ |
+| Any of the above | `POST` | ❌ — Rails / Express form-post overrides use it legitimately |
+| Any of the above | `GET` / `HEAD` / `OPTIONS` | ❌ — safe verbs, no risk |
+
+The narrow allowlist (POST excluded) keeps FP near zero on legit Rails / Express traffic while catching the documented attack shape.
+
 Test corpus:
 
 - Positive: `X-Original-URL: /admin/users`, `X-Rewrite-URL: /administrator/index.php`, `X-Original-URL: /.env`, `X-Original-URL: /../../../etc/passwd`, `X-Original-URL: /__internal/health`, URL-encoded `/%2Fadmin%2Fusers`.
