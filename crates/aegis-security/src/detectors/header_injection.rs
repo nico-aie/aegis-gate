@@ -101,6 +101,18 @@ fn xfh_is_suspicious(xfh: &str, host: &str) -> bool {
     if xfh.split(',').count() > 2 {
         return true;
     }
+    // GAP-005 (Run-5, 2026-05-09) — internal-IP literal in XFH.
+    // Legitimate proxy chains carry public hostnames in XFH (the
+    // whole point is "what hostname did the client originally
+    // request?"). RFC 1918 / loopback / link-local IP literals
+    // here are the cache-key-poisoning / internal-admin /
+    // host-allowlist-bypass shape with no benign use case. Strip
+    // optional `:port` then test against the well-known internal
+    // ranges.
+    let first_host = xfh.split(',').next().unwrap_or("").trim();
+    if xfh_is_internal_ip_literal(first_host) {
+        return true;
+    }
     // Doesn't match Host AND contains an attacker-shape needle.
     // Loose by design — never flags legit proxy chains where XFH
     // is just a different (public) hostname.
@@ -122,6 +134,67 @@ fn xfh_is_suspicious(xfh: &str, host: &str) -> bool {
                 return true;
             }
         }
+    }
+    false
+}
+
+/// Return `true` when `s` is an obvious-internal IP literal that
+/// has no business appearing in `X-Forwarded-Host`. Covers IPv4
+/// loopback (`127.x.x.x`), RFC 1918 (`10.x.x.x`, `172.16-31.x.x`,
+/// `192.168.x.x`), link-local (`169.254.x.x`), and IPv6 loopback /
+/// link-local (`::1`, `[::1]`, `fe80:…`). Manual octet parse is
+/// faster + simpler than `IpAddr::from_str` for the narrow ranges
+/// we care about, and avoids accepting unusual IPv6 forms (`::ffff:
+/// 127.0.0.1` etc.) where coverage isn't required for poisoning
+/// detection.
+fn xfh_is_internal_ip_literal(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Strip optional `:port` suffix. IPv4-literal form has at most
+    // one `:`, so a single-colon shape lets us safely peel the
+    // port. Bracketed IPv6 (`[::1]:8080`) keeps the brackets and
+    // we don't strip port (the bracket-prefixed string-match below
+    // covers it). Bare IPv6 (`::1`, `fe80::1`) has multiple `:` —
+    // do NOT split on the last one, which would slice the address.
+    let single_colon = s.bytes().filter(|&b| b == b':').count() == 1;
+    let host_only = if single_colon {
+        s.rsplit_once(':').map(|(h, _)| h).unwrap_or(s)
+    } else {
+        s
+    };
+    // IPv4 literal: 4 octets, each parses as u8.
+    let parts: Vec<&str> = host_only.split('.').collect();
+    if parts.len() == 4 {
+        let mut octets = [0u8; 4];
+        let mut all_ok = true;
+        for (i, p) in parts.iter().enumerate() {
+            match p.parse::<u8>() {
+                Ok(v) => octets[i] = v,
+                Err(_) => {
+                    all_ok = false;
+                    break;
+                }
+            }
+        }
+        if all_ok {
+            return matches!(
+                (octets[0], octets[1]),
+                (10, _)
+                    | (127, _)
+                    | (169, 254)
+                    | (192, 168)
+                    | (172, 16..=31),
+            );
+        }
+    }
+    // IPv6 loopback / link-local — quick string match.
+    let lc = host_only.to_ascii_lowercase();
+    if lc == "::1" || lc == "[::1]" {
+        return true;
+    }
+    if lc.starts_with("fe80:") || lc.starts_with("[fe80:") {
+        return true;
     }
     false
 }
@@ -392,5 +465,103 @@ mod tests {
             .filter(|s| s.field == "x-forwarded-host")
             .collect();
         assert!(signals.is_empty());
+    }
+
+    // GAP-005 (Run-5, 2026-05-09) — XFH internal-IP poisoning.
+    // Internal IP literals in XFH have no benign use case; they
+    // poison cache keys, bypass host-allowlists, and trigger
+    // internal-admin code paths. RFC 1918 + loopback + link-local
+    // ranges flag.
+
+    macro_rules! xfh_internal_ip {
+        ($name:ident, $xfh:expr) => {
+            #[test]
+            fn $name() {
+                let d = HeaderInjectionDetector;
+                let u: http::Uri = "/".parse().unwrap();
+                let m = http::Method::GET;
+                let h = xfh_view("api.example.com", $xfh);
+                let b = BodyPeek::empty();
+                let req = make_view_with_headers(&m, &u, &h, &b);
+                assert!(
+                    d.inspect(&req).iter().any(|s| s.field == "x-forwarded-host"),
+                    "expected XFH internal-IP flag for: {:?}",
+                    std::str::from_utf8($xfh).unwrap_or("<binary>"),
+                );
+            }
+        };
+    }
+    xfh_internal_ip!(xfh_loopback_v4,        b"127.0.0.1");
+    xfh_internal_ip!(xfh_loopback_with_port, b"127.0.0.1:8080");
+    xfh_internal_ip!(xfh_rfc1918_10,         b"10.0.0.1");
+    xfh_internal_ip!(xfh_rfc1918_10_deep,    b"10.255.255.255");
+    xfh_internal_ip!(xfh_rfc1918_172_16,     b"172.16.0.1");
+    xfh_internal_ip!(xfh_rfc1918_172_31,     b"172.31.255.255");
+    xfh_internal_ip!(xfh_rfc1918_192_168,    b"192.168.1.1");
+    xfh_internal_ip!(xfh_rfc1918_192_168_port, b"192.168.5.5:8080");
+    xfh_internal_ip!(xfh_link_local,         b"169.254.0.1");
+    xfh_internal_ip!(xfh_link_local_aws,     b"169.254.169.254");
+    xfh_internal_ip!(xfh_ipv6_loopback,      b"::1");
+    xfh_internal_ip!(xfh_ipv6_loopback_brk,  b"[::1]");
+    xfh_internal_ip!(xfh_ipv6_link_local,    b"fe80::1");
+    xfh_internal_ip!(xfh_ipv6_link_local_brk, b"[fe80::1]");
+    xfh_internal_ip!(xfh_internal_first_in_chain, b"10.0.0.1, public.example.com");
+
+    // Negative — public IPs / hostnames must NOT flag (subject to
+    // existing keyword tests).
+    #[test]
+    fn xfh_public_ipv4_does_not_flag_as_internal() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        // 8.8.8.8 is public; 172.32.x.x is just outside the RFC 1918
+        // 172.16-31 range. Neither should flag via internal-IP path.
+        let h = xfh_view("api.example.com", b"8.8.8.8");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        let signals: Vec<_> = d
+            .inspect(&req)
+            .into_iter()
+            .filter(|s| s.field == "x-forwarded-host")
+            .collect();
+        assert!(signals.is_empty(), "public IPv4 must not flag, got {signals:?}");
+    }
+
+    #[test]
+    fn xfh_172_32_above_rfc1918_does_not_flag() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = xfh_view("api.example.com", b"172.32.0.1");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        let signals: Vec<_> = d
+            .inspect(&req)
+            .into_iter()
+            .filter(|s| s.field == "x-forwarded-host")
+            .collect();
+        assert!(signals.is_empty(), "172.32.x.x is outside RFC 1918, got {signals:?}");
+    }
+
+    #[test]
+    fn xfh_internal_ip_helper_unit() {
+        // Direct unit test on the helper — covers fast paths without
+        // needing the full request plumbing.
+        assert!(xfh_is_internal_ip_literal("127.0.0.1"));
+        assert!(xfh_is_internal_ip_literal("10.1.2.3"));
+        assert!(xfh_is_internal_ip_literal("172.16.0.1"));
+        assert!(xfh_is_internal_ip_literal("172.31.255.254"));
+        assert!(xfh_is_internal_ip_literal("192.168.0.1"));
+        assert!(xfh_is_internal_ip_literal("169.254.169.254"));
+        assert!(xfh_is_internal_ip_literal("::1"));
+        assert!(xfh_is_internal_ip_literal("[::1]"));
+        assert!(xfh_is_internal_ip_literal("fe80::1"));
+        // Negatives.
+        assert!(!xfh_is_internal_ip_literal(""));
+        assert!(!xfh_is_internal_ip_literal("api.example.com"));
+        assert!(!xfh_is_internal_ip_literal("8.8.8.8"));
+        assert!(!xfh_is_internal_ip_literal("172.32.0.1"));
+        assert!(!xfh_is_internal_ip_literal("256.0.0.1"));
+        assert!(!xfh_is_internal_ip_literal("not-an-ip"));
     }
 }

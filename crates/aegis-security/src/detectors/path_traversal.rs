@@ -25,6 +25,24 @@ static TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?:\\\\[^\\]+\\)",
         r"(?:%00|\x00)",
         r"(?:%5c)",
+        // GAP-002 (Run-5, 2026-05-09) — overlong UTF-8 encoding
+        // for `.`, `/`, `\`. RFC 3629 forbids these (any code
+        // point < 0x80 must be encoded in 1 byte), but legacy
+        // parsers + some app servers decode them — used to
+        // bypass naive prefix matching.
+        //   %c0%ae = overlong U+002E (`.`)
+        //   %c0%af = overlong U+002F (`/`)
+        //   %c0%5c = overlong U+005C (`\`)
+        //   %c1%9c = also overlong `\`
+        r"(?i)(?:%c0%ae){2,}",
+        r"(?i)%c0%af",
+        r"(?i)%c0%5c|%c1%9c",
+        // Docker socket path — unix-socket exposure attack
+        // target. Distinct from Docker REST API recon (caught
+        // by recon.rs via `/v\d+\.\d+/containers`); this catches
+        // the FILESYSTEM path appearing in path-traversal or
+        // SSRF param values (`?file=/var/run/docker.sock`).
+        r"(?i)/var/run/docker\.sock\b",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -148,6 +166,13 @@ mod tests {
     positive!(windows_backslash, "/..\\system32\\config");
     positive!(multiple_dotdot, "/public/../../../../etc/shadow");
     positive!(encoded_backslash, "/%5cwindows%5csystem32");
+    // GAP-002 (Run-5) — overlong UTF-8 + Docker socket positives.
+    positive!(overlong_utf8_slash,    "/?p=%c0%af..%c0%af..%c0%afetc%c0%afpasswd");
+    positive!(overlong_utf8_dot,      "/?p=%c0%ae%c0%ae/etc");
+    positive!(overlong_utf8_back,     "/?p=%c0%5cwindows");
+    positive!(overlong_utf8_back_alt, "/?p=%c1%9cwindows");
+    positive!(docker_socket,          "/file?p=/var/run/docker.sock");
+    positive!(docker_socket_query,    "/api?fetch=/var/run/docker.sock&x=1");
     positive!(long_traversal, "/a/b/c/d/../../../../../etc/passwd");
 
     negative!(clean_root, "/");
