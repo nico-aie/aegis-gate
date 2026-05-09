@@ -10,6 +10,8 @@ Start here if you have a binary and need to make it do something.
 | [usage.md](./usage.md) | Day-1 bring-up + day-2 runbook (config, security toggles, hot-reload, audit verification) |
 | [cli.md](./cli.md) | Authoritative CLI reference for the `waf` binary — every subcommand, flag, exit code |
 | [benchmark-mode.md](./benchmark-mode.md) | Opt-in diagnostic mode — per-request `X-Aegis-*` response headers + dashboard panels |
+| [risk-tuning.md](./risk-tuning.md) | **What to do when a detector fires too much / too little** — why scores aren't UI-editable, and the safe knobs available (`set_profile log_only`, `risk.thresholds`, `RaiseRisk` rules, per-tier overrides, allowlists) |
+| [profiles.md](./profiles.md) | Pick the right `config/profiles/*.yaml` — empirical comparison + per-knob trade-off table |
 
 For testing the running system end-to-end, see
 [`../../tests/TESTING.md`](../../tests/TESTING.md).

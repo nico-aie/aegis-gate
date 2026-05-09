@@ -340,7 +340,10 @@ shares an IP (NAT / corporate proxy / shared loopback in dev).
 ### What contributes to score
 
 Per-detector signal scores (read straight from the detector code —
-not configurable today; change the file + rebuild):
+**not editable from the dashboard UI by design**; see
+[`operator/risk-tuning.md`](../operator/risk-tuning.md) for the
+rationale + the operator knobs that achieve the same effect
+safely without touching the calibrated score ladder):
 
 | Contributor | Where it adds | Default delta | Source |
 |---|---|---:|---|
