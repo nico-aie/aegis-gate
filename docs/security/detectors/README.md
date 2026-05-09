@@ -26,6 +26,7 @@ verbatim.
 | [body-abuse.md](./body-abuse.md) | `body_abuse`, `xxe`, `mass_assignment` | Body (JSON / XML / form) |
 | [command-injection.md](./command-injection.md) | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, **Log4Shell `${jndi:...}`** (score 60) |
 | [template-injection.md](./template-injection.md) | `template_injection` | URL, body — Jinja2 `{{config}}` / Twig / Mako / Freemarker `<#assign>` / Velocity `#set()` / SpEL `${T(...)}` / Handlebars `{{#with}}` |
+| [nosql-injection.md](./nosql-injection.md) | `nosql_injection` | URL, body — MongoDB operator injection (`?param[$ne]=foo`, `{"$where":"..."}`) |
 | [ai-detector.md](./ai-detector.md) | `ai` | URL, body, headers (binary attack/normal verdict over a 26-feature vector via ONNX) |
 
 The detector mask (P2/P3 in [`Implement-Progress.md`](../../../Implement-Progress.md))

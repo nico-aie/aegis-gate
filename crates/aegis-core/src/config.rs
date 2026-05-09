@@ -1610,6 +1610,12 @@ pub struct DetectorsConfig {
     /// Velocity `#set(...)`, etc.). Default enabled.
     #[serde(default = "default_detector_toggle")]
     pub template_injection: DetectorToggle,
+    /// 2026-05-08 Run-5 GAP-007 — NoSQL (MongoDB) operator
+    /// injection (`?param[$ne]=foo`, `{"$where":"..."}`).
+    /// Default enabled — closes a gap previously covered only
+    /// by AI; closed Mongo operator vocabulary keeps FP near zero.
+    #[serde(default = "default_detector_toggle")]
+    pub nosql_injection: DetectorToggle,
     /// DURABLE-T2 — optional file-backed persistence for the live
     /// detector mask. When set, the proxy writes the mask state to
     /// `path` after every audit-mutated PUT and reloads from it at
@@ -1649,6 +1655,7 @@ impl Default for DetectorsConfig {
             brute_force: default_detector_toggle(),
             command_injection: default_detector_toggle(),
             template_injection: default_detector_toggle(),
+            nosql_injection: default_detector_toggle(),
             persistence: None,
         }
     }

@@ -49,6 +49,7 @@ WAF tier).
 | `brute_force`        | on          | **on**        | off                  | on          |
 | `command_injection`  | on          | on            | on                   | on          |
 | `template_injection` | on          | on            | on                   | on          |
+| `nosql_injection`    | on          | on            | on                   | on          |
 | `compliance.modes`   | none        | none          | none                 | populate    |
 | TLS min version      | 1.2         | 1.2           | 1.2                  | 1.2 / 1.3   |
 | State backend        | in-memory   | **redis**     | redis                | redis       |

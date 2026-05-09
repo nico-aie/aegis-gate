@@ -501,6 +501,7 @@ mod tests {
                     "ai".into(),
                     "command_injection".into(),
                     "template_injection".into(),
+                    "nosql_injection".into(),
                 ],
             },
         );
