@@ -27,14 +27,14 @@ Each pattern requires **both** the brace/tag syntax AND a suspicious internal �
 
 | Pattern | Catches | Why specific |
 |---|---|---|
-| `{{<int> * <int>}}` | The canonical SSTI POC `{{7*7}}` | No legit template echoes a multiplication expression in URL/body |
+| `{{<int> * <int>}}` (with optional quotes) | The canonical SSTI POC `{{7*7}}`, `{{7*'7'}}` (Twig coerces quoted operand → 49), `{{'7'*7}}` | No legit template echoes a multiplication expression in URL/body. Quote tolerance added 2026-05-09 (GAP-006b) — Twig + Jinja accept either form |
 | `{{...__\w+__}}` | Python attribute access (`__class__`, `__mro__`, `__subclasses__`) | Jinja2/Mako sandbox-escape primitives |
 | `{{config}}`, `{{cycler.}}`, `{{joiner.}}`, `{{namespace(}}`, `{{request.}}`, `{{self.}}`, `{{lipsum.}}`, `{{url_for}}` | Jinja2 globals | Not legit URL/body content; closed list |
 | `{% set %}`, `{% for %}`, `{% if %}`, `{% import %}`, `{% with %}` | Jinja2 / Twig statement tags | Execution-side constructs, not template output |
 | `<#assign>`, `<#list>`, `<#if>`, `<#include>`, `<#import>` | Freemarker directives | Engine-specific; legit body content rarely uses `<#...>` |
 | `#set(`, `#if(`, `#foreach(`, `#evaluate(` | Velocity directives | Same — engine-specific syntax |
 | `<%!...%>`, `<%...%>` | Mako server-block syntax | Mako template blocks; non-Mako apps don't include `<%` |
-| `${<int> * <int>}` | SpEL / Mako arithmetic POC | Same idea as `{{7*7}}` |
+| `${<int> * <int>}` (with optional quotes) | SpEL / Mako arithmetic POC, `${'7'*7}` quoted variant | Same idea as `{{7*7}}`; quote tolerance added 2026-05-09 (GAP-006b) |
 | `${T('...')}` | SpEL type reference | Used for `T('java.lang.Runtime').getRuntime()...` exploits |
 | `${#root.}`, `${@bean.}` | SpEL bean / root accessors | SpEL-specific; no legit URL/body equivalent |
 | `${new Class}` | SpEL instantiation | Constructor invocation in expression context |
