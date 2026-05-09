@@ -132,6 +132,7 @@ impl DrainHandle {
 /// TLS handshakes that already loaded the old store finish on
 /// it; new handshakes pick up the rotated certs immediately.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_config_watcher(
     path: PathBuf,
     cfg: Arc<ArcSwap<WafConfig>>,
@@ -146,6 +147,15 @@ pub fn spawn_config_watcher(
     // boots without inbound mTLS (the proxy doesn't pass a
     // store; the helper short-circuits).
     client_trust: Option<crate::listener::client_trust::ClientTrustStore>,
+    // 2026-05-08 NEW-1 — risk threshold hot-reload. Mirrors the
+    // detector-mask / route / rate-limit / TLS / mTLS swaps
+    // already wired here. When present, the watcher detects
+    // changes to `cfg.risk.thresholds` and atomic-swaps the live
+    // tracker via `set_thresholds`. `None` for tests + bin
+    // variants that don't drive the risk pipeline. `RiskTracker`
+    // is internally `Arc<...>` + `Clone`, so passing by value is
+    // cheap (matches the rest of run.rs's risk-passing pattern).
+    risk_tracker: Option<aegis_security::risk::RiskTracker>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = watch_loop(
@@ -157,6 +167,7 @@ pub fn spawn_config_watcher(
             ip_rate_limiter,
             tls_resolver,
             client_trust,
+            risk_tracker,
         )
         .await
         {
@@ -175,6 +186,7 @@ async fn watch_loop(
     ip_rate_limiter: Option<Arc<aegis_security::rate_limit::IpRateLimiter>>,
     tls_resolver: Option<Arc<crate::listener::tls::DynamicResolver>>,
     client_trust: Option<crate::listener::client_trust::ClientTrustStore>,
+    risk_tracker: Option<aegis_security::risk::RiskTracker>,
 ) -> aegis_core::Result<()> {
     let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(64);
 
@@ -295,6 +307,61 @@ async fn watch_loop(
                                 "path": path.display().to_string(),
                                 "source": "file",
                                 "reason": reason,
+                            }),
+                        });
+                    }
+                }
+
+                // 2026-05-08 NEW-1 — risk threshold hot-reload.
+                // Mirrors the detector-mask / route / rate-limit
+                // pattern: detect change vs the live snapshot and
+                // atomic-swap. Per-IP risk state is preserved
+                // because `set_thresholds` only swaps the threshold
+                // ArcSwap, not the per-IP score map. Audit-emit on
+                // every applied change so operators see threshold
+                // moves in the same trail as PUT /api/risk/thresholds.
+                if let Some(tracker) = risk_tracker.as_ref() {
+                    let new_thresholds = new_cfg.risk.thresholds.clone();
+                    let old_thresholds = tracker.thresholds();
+                    if new_thresholds != old_thresholds {
+                        tracker.set_thresholds(new_thresholds.clone());
+                        tracing::info!(
+                            challenge_at = new_thresholds.challenge_at,
+                            block_at     = new_thresholds.block_at,
+                            max          = new_thresholds.max,
+                            "config hot-reload: risk thresholds swapped",
+                        );
+                        bus.emit(AuditEvent {
+                            schema_version: 1,
+                            ts: chrono::Utc::now(),
+                            request_id: String::new(),
+                            class: AuditClass::Admin,
+                            tenant_id: None,
+                            tier: None,
+                            action: "risk_thresholds_reloaded".into(),
+                            reason: format!(
+                                "risk thresholds reloaded: challenge_at={} block_at={} max={}",
+                                new_thresholds.challenge_at,
+                                new_thresholds.block_at,
+                                new_thresholds.max,
+                            ),
+                            client_ip: String::new(),
+                            route_id: None,
+                            rule_id: None,
+                            risk_score: None,
+                            fields: serde_json::json!({
+                                "path": path.display().to_string(),
+                                "source": "file",
+                                "before": {
+                                    "challenge_at": old_thresholds.challenge_at,
+                                    "block_at":     old_thresholds.block_at,
+                                    "max":          old_thresholds.max,
+                                },
+                                "after": {
+                                    "challenge_at": new_thresholds.challenge_at,
+                                    "block_at":     new_thresholds.block_at,
+                                    "max":          new_thresholds.max,
+                                },
                             }),
                         });
                     }
@@ -581,7 +648,7 @@ state:
         let bus = AuditBus::new(16);
         let mut rx = bus.subscribe();
 
-        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None);
+        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None, None);
 
         // Give watcher time to register.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -623,7 +690,7 @@ state:
         let bus = AuditBus::new(16);
         let mut rx = bus.subscribe();
 
-        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None);
+        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None, None);
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Drain any spurious events from watcher startup.
@@ -712,6 +779,7 @@ compliance:
             cfg.clone(),
             bus,
             Some(mask.clone()),
+            None,
             None,
             None,
             None,
@@ -818,6 +886,7 @@ state:
             None,
             None,
             None,
+            None,
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -914,6 +983,7 @@ state:
             bus,
             None,
             Some(proxy_ctx.clone()),
+            None,
             None,
             None,
             None,
@@ -1014,6 +1084,7 @@ rate_limit:
             Some(limiter.clone()),
             None,
             None,
+            None,
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1042,6 +1113,153 @@ rate_limit:
         assert!(
             saw_reload_event,
             "expected rate_limit_reloaded audit event",
+        );
+
+        handle.abort();
+    }
+
+    // 2026-05-08 NEW-1 — risk threshold hot-reload regression
+    // guard. Mirrors `hot_reload_swaps_ip_rate_limit_cfg` shape.
+    // Pre-fix: the watcher had no risk block, so editing
+    // `risk.thresholds.challenge_at` in the YAML had no effect on
+    // the live tracker — the challenge tier could only be reached
+    // by a full process restart.
+    fn yaml_with_risk_thresholds(challenge_at: u32, block_at: u32, max: u32) -> String {
+        format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+risk:
+  thresholds:
+    challenge_at: {challenge_at}
+    block_at:     {block_at}
+    max:          {max}
+"#
+        )
+    }
+
+    #[tokio::test]
+    async fn hot_reload_swaps_risk_thresholds() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("waf.yaml");
+        std::fs::write(&config_path, yaml_with_risk_thresholds(40, 80, 100)).unwrap();
+
+        let initial = load_config(&config_path).unwrap();
+        let cfg = Arc::new(ArcSwap::from_pointee(initial));
+        let tracker = aegis_security::risk::RiskTracker::new(&cfg.load().risk);
+        assert_eq!(tracker.thresholds().challenge_at, 40);
+        assert_eq!(tracker.thresholds().block_at,     80);
+
+        let bus = AuditBus::new(64);
+        let mut rx = bus.subscribe();
+        let handle = spawn_config_watcher(
+            config_path.clone(),
+            cfg.clone(),
+            bus,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(tracker.clone()),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Hot-reload: bump challenge_at to 50, block_at to 90.
+        {
+            let mut f = std::fs::File::create(&config_path).unwrap();
+            f.write_all(yaml_with_risk_thresholds(50, 90, 100).as_bytes())
+                .unwrap();
+            f.sync_all().unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Live tracker sees the swap.
+        assert_eq!(
+            tracker.thresholds().challenge_at, 50,
+            "challenge_at must propagate via hot-reload",
+        );
+        assert_eq!(
+            tracker.thresholds().block_at, 90,
+            "block_at must propagate via hot-reload",
+        );
+
+        // Audit chain carries `risk_thresholds_reloaded`.
+        let mut saw_reload_event = false;
+        while let Ok(ev) = rx.try_recv() {
+            if ev.action == "risk_thresholds_reloaded" {
+                saw_reload_event = true;
+                assert!(ev.reason.contains("challenge_at=50"));
+                assert!(ev.reason.contains("block_at=90"));
+            }
+        }
+        assert!(
+            saw_reload_event,
+            "expected risk_thresholds_reloaded audit event",
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn hot_reload_skips_risk_emit_when_thresholds_unchanged() {
+        // Defensive: re-saving the same YAML should not emit a
+        // bogus `risk_thresholds_reloaded` event. The watch loop
+        // compares against the live snapshot before swapping.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("waf.yaml");
+        std::fs::write(&config_path, yaml_with_risk_thresholds(40, 80, 100)).unwrap();
+
+        let initial = load_config(&config_path).unwrap();
+        let cfg = Arc::new(ArcSwap::from_pointee(initial));
+        let tracker = aegis_security::risk::RiskTracker::new(&cfg.load().risk);
+
+        let bus = AuditBus::new(64);
+        let mut rx = bus.subscribe();
+        let handle = spawn_config_watcher(
+            config_path.clone(),
+            cfg.clone(),
+            bus,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(tracker.clone()),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Re-write identical content (touch-style edit).
+        {
+            let mut f = std::fs::File::create(&config_path).unwrap();
+            f.write_all(yaml_with_risk_thresholds(40, 80, 100).as_bytes())
+                .unwrap();
+            f.sync_all().unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let mut saw_reload_event = false;
+        while let Ok(ev) = rx.try_recv() {
+            if ev.action == "risk_thresholds_reloaded" {
+                saw_reload_event = true;
+            }
+        }
+        assert!(
+            !saw_reload_event,
+            "risk_thresholds_reloaded must not fire when thresholds unchanged",
         );
 
         handle.abort();
@@ -1145,6 +1363,7 @@ tls:
             None,
             Some(resolver.clone()),
             None,
+            None,
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1234,6 +1453,7 @@ tls:
             None,
             None,
             Some(resolver.clone()),
+            None,
             None,
         );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;

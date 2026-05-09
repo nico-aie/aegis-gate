@@ -219,7 +219,7 @@ pub async fn run(
     // `cfg.ai.enabled = true` on a binary built without the
     // feature so the misconfiguration is visible.
     #[allow(unused_mut)]
-    let mut detector_vec = aegis_security::detectors::default_detectors();
+    let mut detector_vec = aegis_security::detectors::default_detectors_with(&cfg.detectors);
     #[cfg(not(feature = "ai"))]
     {
         if cfg.ai.enabled {
@@ -693,6 +693,7 @@ pub async fn run(
                 Some(ip_rate_limiter.clone()),
                 tls_resolver.clone(),
                 client_trust.clone(),
+                Some(risk.clone()),
             ));
         }
         #[cfg(feature = "etcd")]
@@ -751,6 +752,24 @@ pub async fn run(
         // skip. `set` is one-shot: subsequent boots can't
         // accidentally swap modes mid-run.
         let _ = upstream_ctx.interop_modes.set(rt.modes.clone());
+
+        // v2.3 §3 + NEW-2 (2026-05-08) — install the PoW issuer
+        // so the data-plane challenge body carries
+        // `{nonce, difficulty, expires_at_ms, mac, submit_to}`
+        // instead of just `challenge_type`. The HMAC key is
+        // derived from the interop control secret so issuers and
+        // verifiers across the same deployment agree on MACs
+        // (relevant once multi-node ships — see
+        // plans/multi-node-deployment/).
+        let pow_key = derive_pow_key(&rt.control.secret);
+        let pow_issuer = std::sync::Arc::new(
+            aegis_security::challenge::PowIssuer::new(
+                pow_key,
+                16,                                            // ~65k hashes to solve
+                std::time::Duration::from_secs(60),            // 60s validity window
+            ),
+        );
+        let _ = upstream_ctx.pow_issuer.set(pow_issuer);
     }
 
     // Data-plane listeners.
@@ -802,6 +821,7 @@ pub async fn run(
         let decision_metrics_l = decision_metrics.clone();
         let detector_hit_metrics_l = detector_hit_metrics.clone();
         let identity_tracker_l = identity_tracker.clone();
+        let state_l = state.clone();
         handles.push(tokio::spawn(accept_loop(
             tcp,
             detectors,
@@ -824,6 +844,8 @@ pub async fn run(
             // the per-identity sliding-window counter that
             // `/api/mtls/connections` reads.
             Some(identity_tracker_l),
+            // 2026-05-08 NEW-2 — state for /__waf_control/challenge_verify
+            state_l,
         )));
     }
 
@@ -1307,6 +1329,16 @@ pub(crate) async fn force_https_loop(
     }
 }
 
+/// 2026-05-08 NEW-2 — derive a 32-byte HMAC key for the PoW
+/// challenge issuer from the interop control secret. The same
+/// derivation runs on every node so a multi-node cluster
+/// produces compatible MACs without coordinating a separate
+/// challenge-key rotation. Domain-separated via the prefix.
+fn derive_pow_key(control_secret: &str) -> [u8; 32] {
+    let h = blake3::hash(format!("aegis-pow-key-v1:{control_secret}").as_bytes());
+    *h.as_bytes()
+}
+
 pub(crate) fn build_interop_runtime(
     cfg: &WafConfig,
     risk: &aegis_security::risk::RiskTracker,
@@ -1338,6 +1370,12 @@ pub(crate) fn build_interop_runtime(
             policies: vec!["blacklist".into(), "whitelist".into()],
         },
     );
+    // v2.3 §2.5 — AI is exposed as a toggleable policy under
+    // rules_engine so the OC harness can put it into log_only via
+    // set_profile { scope: "policies", feature: "rules_engine",
+    // policies: ["ai"], mode: "log_only" } without a YAML edit or
+    // restart. Mirror in `aegis_control::interop::control::tests::
+    // ctx_v23` — keep the policy list in sync.
     features.insert(
         "rules_engine".into(),
         CapabilityFeature {
@@ -1352,6 +1390,10 @@ pub(crate) fn build_interop_runtime(
                 "body_abuse".into(),
                 "recon".into(),
                 "brute_force".into(),
+                "ai".into(),
+                "command_injection".into(),
+                "template_injection".into(),
+                "nosql_injection".into(),
             ],
         },
     );

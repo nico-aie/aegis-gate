@@ -54,6 +54,23 @@ The detector normalizes input before matching:
 - Mixed case (matched case-insensitively for keywords)
 - Whitespace tricks: `<scr\nipt>`, `<scr\0ipt>`
 
+#### HTML-entity decode pre-pass (added 2026-05-09 GAP-012)
+
+The pre-existing `&#x?[0-9a-f]+;` regex already matched numeric-entity literals, but **named-entity bypasses** (`&lt;script&gt;`, `&apos;onerror=…&apos;`, `javascript&colon;…`) slipped through because the named form has no digits. QA Run-6 reported this as an XSS coverage gap.
+
+The fix is a narrow `html_entity_decode()` helper applied as a third decode stage on every surface (URI, body, headers): `raw → url_decode → html_entity_decode → regex`. The decoded string is run through the pattern set in addition to the URL-decoded form (when the two differ).
+
+| Entity | Decodes to | Why XSS payloads use it |
+|---|---|---|
+| `&lt;`, `&gt;` | `<`, `>` | Tag delimiters — bypasses naive `<script>` substring filters |
+| `&quot;`, `&apos;` | `"`, `'` | Attribute-value delimiters in event-handler injection |
+| `&#NN;`, `&#xHH;` | UTF-8 char | Numeric form of any character |
+| `&sol;` | `/` | Tag closing |
+| `&colon;` | `:` | `javascript:` URI bypass |
+| `&amp;` | `&` | Defense-in-depth for re-encoded chains |
+
+The decoder is **not** a full HTML5 entity table — only the seven entities XSS payloads use to encode tag / attribute / URI delimiters. Named entities outside the table (e.g. `&copy;`) pass through unchanged so legit copy text isn't disturbed. The pre-filter (`if !input.contains('&')`) keeps the hot-path cost negligible — most production traffic never contains `&` at all.
+
 ### Angle-bracket injection
 
 Raw `<` and `>` in parameters that shouldn't contain HTML raise a low-confidence signal. Combined with other signals, this becomes a detection.

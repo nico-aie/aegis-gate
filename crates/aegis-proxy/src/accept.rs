@@ -257,6 +257,17 @@ pub(crate) async fn admin_accept_loop(
                                 .strip_prefix(&prefix)
                                 .map(|s| s.to_string())
                                 .unwrap_or(full);
+                            // M008 (2026-05-07) — skip phantom
+                            // entries from stale Redis state. A key
+                            // shaped `g:lease:members:` (empty
+                            // node id, e.g. left over from a crash
+                            // with a no-TTL write) produces an
+                            // empty id here. Surfacing it as a
+                            // peer renders the dashboard's "DOWN
+                            // peer with no node ID" mystery.
+                            if id.trim().is_empty() {
+                                continue;
+                            }
                             peers.push(
                                 aegis_control::api::tracking::ClusterPeer {
                                     id,
@@ -904,6 +915,11 @@ pub(crate) async fn accept_loop(
     // per-identity sliding-window count via `record_request`.
     // `None` for tests / non-TLS configs that don't wire mTLS.
     identity_tracker: Option<Arc<aegis_control::identity_tracker::IdentityTracker>>,
+    // 2026-05-08 NEW-2 — state backend, passed through to the
+    // /__waf_control/challenge_verify handler for nonce
+    // single-use enforcement. Same Arc the rest of the WAF uses
+    // (rate-limit, risk, blacklist).
+    state_backend: Arc<dyn aegis_core::state::StateBackend>,
 ) {
     loop {
         let (stream, peer) = match tcp.accept().await {
@@ -926,6 +942,7 @@ pub(crate) async fn accept_loop(
         let bus = bus.clone();
         let upstream_ctx = upstream_ctx.clone();
         let interop = interop.clone();
+        let state_backend_for_interop = state_backend.clone();
         let acceptor = tls_acceptor.clone();
         let decision_metrics = decision_metrics.clone();
         let detector_hit_metrics = detector_hit_metrics.clone();
@@ -1017,9 +1034,16 @@ pub(crate) async fn accept_loop(
                 let bus = bus.clone();
                 let upstream_ctx = upstream_ctx.clone();
                 let interop = interop.clone();
+                let state_backend_for_interop = state_backend_for_interop.clone();
                 let decision_metrics = decision_metrics.clone();
                 let detector_hit_metrics = detector_hit_metrics.clone();
                 async move {
+                    // 2026-05-08 — capture earliest-possible per-
+                    // request timestamp for the X-WAF-Overhead-
+                    // Latency response header. Sub-microsecond cost
+                    // (single Instant::now()); stamped at response
+                    // time inside `stamp_interop_response`.
+                    let request_start = std::time::Instant::now();
                     let method = req.method().clone();
                     let path = req.uri().path().to_string();
                     // v2.3 contract (deploy/STAGING-BENCHMARK.md §7.5):
@@ -1031,8 +1055,16 @@ pub(crate) async fn accept_loop(
                     // X-Benchmark-Secret is enforced inside the handler.
                     if path.starts_with("/__waf_control/") {
                         if let Some(rt) = interop.as_ref() {
+                            // NEW-2 (2026-05-08) — pass through
+                            // the PoW issuer + state backend so
+                            // /__waf_control/challenge_verify can
+                            // validate solutions. Both are
+                            // installed once at boot from run.rs.
                             let resp = crate::admin_dispatch::handle_interop_control_with_rt(
-                                req, rt.as_ref(),
+                                req,
+                                rt.as_ref(),
+                                upstream_ctx.pow_issuer.get(),
+                                Some(&state_backend_for_interop),
                             ).await;
                             return Ok::<_, Infallible>(resp);
                         }
@@ -1150,6 +1182,7 @@ pub(crate) async fn accept_loop(
                             &method,
                             &path,
                             risk_score,
+                            request_start,
                         );
                         return Ok::<_, Infallible>(resp);
                     }
@@ -1256,6 +1289,7 @@ pub(crate) async fn accept_loop(
                         &method,
                         &path,
                         risk_score,
+                        request_start,
                     );
                     Ok::<_, Infallible>(resp)
                 }

@@ -240,16 +240,24 @@ pub(crate) async fn handle_data_request_inner(
     // override whitelist (a whitelisted IP hammering the API
     // hits the strike threshold then gets the permanent 403).
     if risk.is_strike_blocked(peer_ip) {
+        // NEW-4 (2026-05-08) — keyed on `peer_ip` (XFF-resolved).
+        // Stamp on the DecisionTag so the response stamper picks
+        // it up directly instead of re-querying under peer.ip().
+        let strike_score = risk.snapshot(peer_ip).map(|s| s.score);
         let resp = blocked_response(
             peer,
             "blocked by repeat-offender strikes",
             None,
-            risk.snapshot(peer_ip).map(|s| s.score),
+            strike_score,
             req.uri(),
             req.method(),
             bus,
         );
-        return (resp, DecisionTag::block("risk-strikes"));
+        let tag = match strike_score {
+            Some(s) => DecisionTag::block("risk-strikes").with_risk_score(s),
+            None    => DecisionTag::block("risk-strikes"),
+        };
+        return (resp, tag);
     }
 
     // F-T2 — per-IP volumetric guard. Fires before the
@@ -432,8 +440,20 @@ pub(crate) async fn handle_data_request_inner(
     let interop_modes = upstream_ctx.interop_modes.get();
 
     if !signals.is_empty() {
-        let total_score: u32 = signals.iter().map(|s| s.score).sum();
-        let post_state = risk.record_malicious(peer_ip, total_score);
+        // SEC-M003 (2026-05-08) — cap per-request contribution to
+        // max(signal). Pre-fix: sum() let a single multi-class hit
+        // (e.g. sqli=50 + path_traversal=45 + ai=50) clamp to
+        // score=100 immediately, breaking risk lifecycle tests +
+        // locking legit users out on a single ambiguous request.
+        //
+        // Now: each request contributes the strongest signal only.
+        // Repeated bad requests still escalate (each adds max(signal)
+        // to the running total → reach `block_at` in 2-3 hits with
+        // default thresholds 40/80/100); single multi-detector
+        // false-positives get a softer one-strike penalty.
+        let request_score: u32 =
+            signals.iter().map(|s| s.score).max().unwrap_or(0);
+        let post_state = risk.record_malicious(peer_ip, request_score);
         // 2026-05-03 — dedup detector tags before emitting them
         // anywhere (audit fields, rule_id, response header).
         // Multiple signals from one detector class (e.g. two
@@ -533,7 +553,12 @@ pub(crate) async fn handle_data_request_inner(
                 aegis_control::interop::rule_map::mode_for_rule(m, Some(detector_rule.as_str()))
             })
             .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
-        let block_tag = DecisionTag::block(detector_rule).with_tier(tier);
+        // NEW-4 (2026-05-08) — stamp the post-record score so
+        // X-WAF-Risk-Score reflects the actual accumulated value
+        // rather than 0.
+        let block_tag = DecisionTag::block(detector_rule)
+            .with_tier(tier)
+            .with_risk_score(post_state.score);
         if detector_mode == aegis_control::interop::headers::Mode::LogOnly {
             log_only_intent = Some(block_tag);
             // Fall through — skip the 403 and the risk gate below
@@ -587,38 +612,77 @@ pub(crate) async fn handle_data_request_inner(
         risk.record_clean(peer_ip);
         match risk.level(peer_ip) {
             aegis_security::risk::RiskLevel::Block => {
+                // NEW-4 (2026-05-08) — stamp the snapshot score
+                // on the DecisionTag so the response stamper
+                // doesn't re-query under peer.ip() and miss.
+                let block_score = risk.snapshot(peer_ip).map(|s| s.score);
                 let resp = blocked_response(
                     peer,
                     "blocked by risk score",
                     None,
-                    risk.snapshot(peer_ip).map(|s| s.score),
+                    block_score,
                     &parts.uri,
                     &parts.method,
                     bus,
                 );
-                (resp, DecisionTag::block("risk-score").with_tier(tier))
+                let tag = match block_score {
+                    Some(s) => DecisionTag::block("risk-score").with_tier(tier).with_risk_score(s),
+                    None    => DecisionTag::block("risk-score").with_tier(tier),
+                };
+                (resp, tag)
             }
             aegis_security::risk::RiskLevel::Challenge => {
-                // AF-T1: contract-level distinction. Even though
-                // the HTTP status (429) and Retry-After header are
-                // shaped like rate-limit, the body carries
-                // "challenge" and the contract action MUST be
-                // `challenge` so the OC's challenge-solver path
-                // engages.
+                // AF-T1 + NEW-2 (2026-05-08): contract-level
+                // distinction. Even though the HTTP status (429)
+                // and Retry-After header are shaped like
+                // rate-limit, the body carries "challenge" and
+                // the contract action MUST be `challenge` so the
+                // OC's challenge-solver path engages.
+                //
+                // v2.3 §3 — body must carry "enough information
+                // for automated challenge solving." Per NEW-2
+                // we issue a stateless PoW challenge with a
+                // nonce + difficulty + expiry + MAC. The client
+                // solves and POSTs to /__waf_control/challenge_verify.
+                //
+                // If `pow_issuer` isn't wired (test binaries that
+                // skip the interop runtime), fall back to the
+                // legacy challenge_type-only body — degraded but
+                // never panic.
+                let body = match upstream_ctx.pow_issuer.get() {
+                    Some(issuer) => {
+                        let challenge = issuer.issue();
+                        serde_json::json!({
+                            "challenge": true,
+                            "challenge_type": "proof_of_work",
+                            "nonce": challenge.nonce,
+                            "difficulty": challenge.difficulty,
+                            "expires_at_ms": challenge.expires_at_ms,
+                            "mac": challenge.mac,
+                            "submit_to": "/__waf_control/challenge_verify",
+                            "reason": "risk score over challenge threshold",
+                        })
+                    }
+                    None => serde_json::json!({
+                        "challenge": true,
+                        "reason": "risk score over challenge threshold",
+                        "challenge_type": "proof_of_work",
+                    }),
+                };
                 let resp = Response::builder()
                     .status(429)
                     .header("content-type", "application/json")
                     .header("retry-after", "5")
-                    .body(Full::new(Bytes::from(
-                        serde_json::json!({
-                            "challenge": true,
-                            "reason": "risk score over challenge threshold",
-                            "challenge_type": "proof_of_work",
-                        })
-                        .to_string(),
-                    )))
+                    .body(Full::new(Bytes::from(body.to_string())))
                     .unwrap();
-                (resp, DecisionTag::challenge("risk-challenge").with_tier(tier))
+                // NEW-4 (2026-05-08) — stamp current snapshot score
+                // for the challenge response too.
+                let challenge_score = risk.snapshot(peer_ip).map(|s| s.score);
+                let tag = match challenge_score {
+                    Some(s) => DecisionTag::challenge("risk-challenge").with_tier(tier).with_risk_score(s),
+                    None    => DecisionTag::challenge("risk-challenge").with_tier(tier),
+                };
+                (resp, tag)
             }
             aegis_security::risk::RiskLevel::Allow => {
                 // Forward the request to a real upstream member via

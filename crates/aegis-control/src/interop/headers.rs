@@ -19,6 +19,23 @@ pub const RULE_ID: &str = "x-waf-rule-id";
 pub const CACHE: &str = "x-waf-cache";
 pub const MODE: &str = "x-waf-mode";
 
+/// 2026-05-08 — bonus telemetry header. Reports the per-request
+/// WAF processing time (received → response stamped) in
+/// milliseconds with microsecond precision (e.g. `1.234`).
+///
+/// Captured at the listener `service_fn` entry; covers detector
+/// chain + rule engine + risk gate + upstream forward + the
+/// stamp itself. NOT on the v2.3 §5 mandatory list — extra
+/// observability for operators analyzing per-route WAF cost
+/// without spinning up a separate latency probe.
+///
+/// Side-channel note: precise per-request timing leaks regex-
+/// hot-path information. Operators who care about that should
+/// disable via the existing detector mask (no separate toggle
+/// — the header is cheap enough that gating it would cost more
+/// than it saves).
+pub const OVERHEAD_LATENCY: &str = "x-waf-overhead-latency";
+
 /// One of the six contract decision classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -101,26 +118,44 @@ pub struct DecisionTag {
     /// hadn't been classified at the point of decision (e.g. early
     /// rate-limit blocks pre-tier).
     pub tier: Option<aegis_core::tier::Tier>,
+    /// 2026-05-08 NEW-4 — score at decision time.
+    ///
+    /// Pre-fix the response stamper queried `risk.snapshot(peer.ip())`
+    /// on the raw TCP peer. The risk tracker keys on the
+    /// XFF-resolved client IP, so any traffic via a trusted
+    /// proxy (or a client that injects X-Forwarded-For) accumulated
+    /// score under a different key than the stamper queried —
+    /// `unwrap_or(0)` → `X-WAF-Risk-Score: 0` always. Downstream
+    /// monitoring couldn't distinguish first-time attackers from
+    /// repeat offenders.
+    ///
+    /// Now the data plane stamps the score it just observed
+    /// (under the correct XFF-resolved key) onto the
+    /// DecisionTag, and the response stamper prefers it over the
+    /// peer.ip() snapshot. Allow / no-risk-event paths leave it
+    /// `None` and the stamper falls back to a snapshot lookup
+    /// (which works for direct-connect clients).
+    pub risk_score: Option<u32>,
 }
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None, tier: None }
+        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
 
     /// Attach the resolved tier; used by the data plane after
@@ -128,6 +163,15 @@ impl DecisionTag {
     /// `X-WAF-Tier` response header can reflect the truth.
     pub fn with_tier(mut self, tier: aegis_core::tier::Tier) -> Self {
         self.tier = Some(tier);
+        self
+    }
+
+    /// NEW-4 (2026-05-08) — attach the risk score the data plane
+    /// observed at decision time. Stamper prefers this over a
+    /// peer.ip()-keyed snapshot lookup (which races XFF
+    /// resolution).
+    pub fn with_risk_score(mut self, score: u32) -> Self {
+        self.risk_score = Some(score);
         self
     }
 }
@@ -199,6 +243,24 @@ fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) {
     }
 }
 
+/// 2026-05-08 — stamp the `X-WAF-Overhead-Latency` header from a
+/// `Duration`. Format: `<int>.<3-digit>` ms (microsecond
+/// precision; cap at 4 fractional digits worth of safety).
+///
+/// Caller measures `request_start.elapsed()` at the listener
+/// service_fn entry; this writes the formatted value.
+pub fn stamp_overhead_latency(headers: &mut HeaderMap, elapsed: std::time::Duration) {
+    let micros = elapsed.as_micros();
+    // Format as ms with µs precision: `12.345` for 12.345 ms.
+    // Cheaper than format!("{:.3}") because we avoid float
+    // formatting; integer-divide trick gives 3 decimals
+    // deterministically. u128 math fits any realistic request.
+    let ms_int = micros / 1000;
+    let us_frac = micros % 1000;
+    let value = format!("{ms_int}.{us_frac:03}");
+    insert(headers, OVERHEAD_LATENCY, &value);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +315,37 @@ mod tests {
     }
 
     #[test]
+    fn stamp_overhead_latency_formats_with_microsecond_precision() {
+        let mut h = HeaderMap::new();
+        // 12.345 ms = 12_345 microseconds
+        stamp_overhead_latency(&mut h, std::time::Duration::from_micros(12_345));
+        assert_eq!(h.get(OVERHEAD_LATENCY).unwrap(), "12.345");
+    }
+
+    #[test]
+    fn stamp_overhead_latency_pads_fractional_zeros() {
+        let mut h = HeaderMap::new();
+        // 1.005 ms — verifies the {us_frac:03} zero-pad
+        stamp_overhead_latency(&mut h, std::time::Duration::from_micros(1_005));
+        assert_eq!(h.get(OVERHEAD_LATENCY).unwrap(), "1.005");
+    }
+
+    #[test]
+    fn stamp_overhead_latency_handles_sub_millisecond() {
+        let mut h = HeaderMap::new();
+        // 0.250 ms = 250 µs
+        stamp_overhead_latency(&mut h, std::time::Duration::from_micros(250));
+        assert_eq!(h.get(OVERHEAD_LATENCY).unwrap(), "0.250");
+    }
+
+    #[test]
+    fn stamp_overhead_latency_handles_zero() {
+        let mut h = HeaderMap::new();
+        stamp_overhead_latency(&mut h, std::time::Duration::ZERO);
+        assert_eq!(h.get(OVERHEAD_LATENCY).unwrap(), "0.000");
+    }
+
+    #[test]
     fn stamp_replaces_existing_value_not_appends() {
         // Critical for header-consistency rules — a downstream
         // accidentally setting `X-WAF-Action: allow` on a block
@@ -301,6 +394,28 @@ mod tests {
     fn decision_tag_block_records_rule_id() {
         let t = DecisionTag::block("rule-sqli-001");
         assert_eq!(t.rule_id.as_deref(), Some("rule-sqli-001"));
+    }
+
+    #[test]
+    fn decision_tag_with_risk_score_round_trip() {
+        // NEW-4 (2026-05-08) — DecisionTag carries the score the
+        // data plane saw at decision time so the response stamper
+        // doesn't re-query the tracker under a mismatched IP key.
+        let t = DecisionTag::block("ai")
+            .with_tier(aegis_core::tier::Tier::High)
+            .with_risk_score(42);
+        assert_eq!(t.risk_score, Some(42));
+        assert_eq!(t.rule_id.as_deref(), Some("ai"));
+        assert_eq!(t.tier, Some(aegis_core::tier::Tier::High));
+    }
+
+    #[test]
+    fn decision_tag_default_risk_score_is_none() {
+        // Allow path doesn't run the risk gate; carrying None is
+        // the contract — stamper falls back to a peer.ip()
+        // snapshot.
+        assert!(DecisionTag::allow().risk_score.is_none());
+        assert!(DecisionTag::block("r").risk_score.is_none());
     }
 
     #[test]

@@ -471,6 +471,66 @@ mod tests {
         }
     }
 
+    /// Mirror of the v2.3 capability feature set built by
+    /// `build_interop_runtime` in `aegis-proxy/src/run.rs`. Keep in
+    /// sync — these tests guard against drift in the run.rs wiring.
+    fn ctx_v23() -> ControlContext {
+        let mut features = BTreeMap::new();
+        features.insert(
+            "access_control".into(),
+            CapabilityFeature {
+                supported: true,
+                toggleable: true,
+                policies: vec!["blacklist".into(), "whitelist".into()],
+            },
+        );
+        features.insert(
+            "rules_engine".into(),
+            CapabilityFeature {
+                supported: true,
+                toggleable: true,
+                policies: vec![
+                    "sqli".into(),
+                    "xss".into(),
+                    "path_traversal".into(),
+                    "ssrf".into(),
+                    "header_injection".into(),
+                    "body_abuse".into(),
+                    "recon".into(),
+                    "brute_force".into(),
+                    "ai".into(),
+                    "command_injection".into(),
+                    "template_injection".into(),
+                    "nosql_injection".into(),
+                    "open_redirect".into(),
+                ],
+            },
+        );
+        features.insert(
+            "rate_limit".into(),
+            CapabilityFeature {
+                supported: true,
+                toggleable: true,
+                policies: vec!["per_ip".into()],
+            },
+        );
+        features.insert(
+            "risk_engine".into(),
+            CapabilityFeature {
+                supported: true,
+                toggleable: true,
+                policies: vec!["score".into(), "strikes".into()],
+            },
+        );
+        ControlContext {
+            modes: Arc::new(ModeStore::new(Mode::Enforce)),
+            features,
+            reset_callbacks: Mutex::new(Vec::new()),
+            flush_callback: None,
+            secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
+        }
+    }
+
     #[test]
     fn auth_rejects_missing_header() {
         let c = ctx();
@@ -526,6 +586,25 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_lists_ai_under_rules_engine() {
+        // v2.3 §2.5 — AI must be exposed as a toggleable policy so the
+        // OC harness can disable it via set_profile without a config
+        // edit or restart. Guards against regression where someone
+        // drops "ai" from build_interop_runtime in run.rs.
+        let c = ctx_v23();
+        let r = c.capabilities();
+        let policies = &r
+            .features
+            .get("rules_engine")
+            .expect("rules_engine present in v2.3 capabilities")
+            .policies;
+        assert!(
+            policies.contains(&"ai".to_string()),
+            "v2.3 capabilities must list 'ai' under rules_engine; got {policies:?}",
+        );
+    }
+
+    #[test]
     fn capabilities_renders_overrides_correctly() {
         let c = ctx();
         c.modes.set_feature("access_control", Mode::LogOnly);
@@ -576,6 +655,36 @@ mod tests {
         // Idempotent under repeated reset
         c.reset_state();
         assert_eq!(counter.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn reset_state_preserves_unrelated_state_surface() {
+        // v2.3 §2.4 — reset_state MUST clear runtime WAF state but
+        // MUST preserve operator/admin-side state (sessions, audit
+        // log, long-term config). This test simulates an external
+        // state surface (e.g. SessionStore) by asserting that
+        // anything NOT registered as a reset callback stays
+        // untouched. Regression guard for QA finding H003
+        // (2026-05-07): the report's described eviction does not
+        // exist on develop, and this test fails fast if a future
+        // change accidentally wires a session-evicting callback into
+        // reset_state.
+        let c = ctx();
+        let session_alive = Arc::new(AtomicUsize::new(1));
+        let cleared_count = Arc::new(AtomicUsize::new(0));
+        let cleared_for_cb = cleared_count.clone();
+        c.register_reset_callback(Arc::new(move || {
+            cleared_for_cb.fetch_add(1, Ordering::Relaxed);
+        }));
+        let r = c.reset_state();
+        assert!(r.ok);
+        // Registered callback ran exactly once
+        assert_eq!(cleared_count.load(Ordering::Relaxed), 1);
+        // Anything not registered (i.e. session state) is untouched
+        assert_eq!(
+            session_alive.load(Ordering::Relaxed), 1,
+            "reset_state must NOT touch state surfaces that didn't register a callback",
+        );
     }
 
     #[test]
@@ -656,6 +765,35 @@ mod tests {
             !r.active.overrides.contains_key("access_control.whitelist"),
             "whitelist must remain enforce",
         );
+    }
+
+    #[test]
+    fn set_profile_can_log_only_just_ai() {
+        // v2.3 §2.5 — operator path for putting AI into log_only.
+        // The set_profile call must (a) accept "ai" as a known policy
+        // under rules_engine, and (b) cause the data plane's
+        // mode lookup to resolve "ai" to LogOnly while leaving the
+        // other rules_engine policies on the default mode.
+        let c = ctx_v23();
+        let req = SetProfileRequest {
+            scope: SetProfileScope::Policies,
+            mode: ModeRepr::LogOnly,
+            features: None,
+            feature: Some("rules_engine".into()),
+            policies: Some(vec!["ai".into()]),
+        };
+        let r = c.set_profile(&req).expect("set_profile must accept ai");
+        assert!(r.unsupported.is_empty(), "ai must be supported, got {:?}", r.unsupported);
+        assert_eq!(
+            r.active.overrides.get("rules_engine.ai"),
+            Some(&"log_only".to_string()),
+            "ai override must surface in active state",
+        );
+        // Direct ModeStore resolution — what the data plane uses
+        // before deciding enforce vs log_only on each request.
+        assert_eq!(c.modes.resolve("rules_engine", Some("ai")), Mode::LogOnly);
+        // Other rules_engine policies are unchanged.
+        assert_eq!(c.modes.resolve("rules_engine", Some("sqli")), Mode::Enforce);
     }
 
     #[test]

@@ -25,6 +25,19 @@ static SSRF_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:https?://0x[0-9a-f]+)",
         r"(?i)(?:https?://\d{8,10})",
         r"(?i)(?:https?://0[0-7]+\.)",
+        // GAP-004 (Run-5, 2026-05-09) — SSRF via URL-userinfo.
+        // The `://[^@/]*@` shape catches http://user@host/,
+        // http://user:pass@host/, etc. Some URL parsers split on
+        // the FIRST `@` they see; others on the LAST. Attackers
+        // exploit the discrepancy: a naive WAF allowlist that
+        // sees `http://evil.com:80@internal-svc/` and matches
+        // "starts with http:// and contains evil.com" would let
+        // the request through, even though the parser fetches
+        // `internal-svc:8080/path` (interpreting `evil.com:80@`
+        // as userinfo, not host). HTTP basic-auth in URL form is
+        // RFC 3986-deprecated and rare in modern apps; flagging
+        // URL-userinfo matches Chrome / major-WAF behaviour.
+        r"(?i)https?://[^@/\s]+@",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -58,7 +71,14 @@ impl Detector for SsrfDetector {
             check_ssrf(&super::url_decode(body), "body", &mut signals);
         }
 
-        for name in &["referer", "x-original-url", "x-rewrite-url"] {
+        // 2026-05-07 — `Referer` dropped (H001). It's set by the
+        // browser to the page origin; SSRF exploits never travel via
+        // Referer. Loopback Referer values trip the detector on any
+        // localhost-deployed dashboard, which self-blocks every
+        // sub-resource fetch. Reverse-proxy override headers still
+        // scan because operators sometimes pass attacker-controlled
+        // URLs through them.
+        for name in &["x-original-url", "x-rewrite-url"] {
             if let Some(val) = req.headers.get(*name).and_then(|v| v.to_str().ok()) {
                 check_ssrf(val, name, &mut signals);
             }
@@ -72,7 +92,7 @@ fn check_ssrf(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in SSRF_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 50,
+                score: super::scores::ssrf::SSRF,
                 tag: "ssrf".into(),
                 field: field.into(),
             });
@@ -162,6 +182,12 @@ mod tests {
     positive!(ssrf_172_20, "/proxy?url=http://172.20.0.1/internal");
     positive!(ssrf_10_1, "/proxy?url=http://10.1.2.3/secret");
     positive!(ssrf_192_168_0, "/proxy?url=http://192.168.0.1/router");
+    // GAP-004 (Run-5) — URL-userinfo positives.
+    positive!(ssrf_userinfo_user_pass, "/proxy?url=http://user:pass@10.0.0.1/secret");
+    positive!(ssrf_userinfo_parser_split,
+        "/proxy?url=https://evil.example.com:80@internal-svc/path");
+    positive!(ssrf_userinfo_at_127, "/proxy?u=http://x@127.0.0.1");
+    positive!(ssrf_userinfo_no_pass, "/proxy?url=http://admin@internal/admin");
 
     negative!(clean_root, "/");
     negative!(clean_api, "/api/users");
@@ -227,5 +253,61 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(d.inspect(&req).is_empty(), "self-targeting 127.0.0.1 must not SSRF");
+    }
+
+    // 2026-05-07 — `Referer` is browser-set to the page's own origin.
+    // A dashboard hosted at 127.0.0.1:8080 sets Referer on every
+    // sub-resource fetch, which used to trip the loopback pattern.
+    // SSRF exploits go through query / body / X-Original-URL /
+    // X-Rewrite-URL — never via Referer.
+    #[test]
+    fn clean_request_with_loopback_referer_does_not_trip() {
+        let d = SsrfDetector;
+        let u: http::Uri = "/api/data".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert("referer", "http://127.0.0.1:8080/".parse().unwrap());
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(
+            d.inspect(&req).is_empty(),
+            "loopback Referer must not trigger SSRF (browser-set, not attacker-controlled)",
+        );
+    }
+
+    #[test]
+    fn x_original_url_with_loopback_still_blocks() {
+        // Regression guard — H001 only drops Referer; reverse-proxy
+        // override headers must still trigger SSRF.
+        let d = SsrfDetector;
+        let u: http::Uri = "/api/data".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            "x-original-url",
+            "http://127.0.0.1:8080/admin".parse().unwrap(),
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        assert_eq!(signals.len(), 1, "X-Original-URL with loopback must still SSRF");
+        assert_eq!(signals[0].tag, "ssrf");
+    }
+
+    #[test]
+    fn x_rewrite_url_with_loopback_still_blocks() {
+        let d = SsrfDetector;
+        let u: http::Uri = "/api/data".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            "x-rewrite-url",
+            "http://127.0.0.1:8080/admin".parse().unwrap(),
+        );
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        let signals = d.inspect(&req);
+        assert_eq!(signals.len(), 1, "X-Rewrite-URL with loopback must still SSRF");
+        assert_eq!(signals[0].tag, "ssrf");
     }
 }

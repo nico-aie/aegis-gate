@@ -163,6 +163,16 @@ fn default_interop_enabled() -> bool {
 }
 
 fn default_interop_audit_path() -> std::path::PathBuf {
+    // ./waf_audit.log — the v2.3 §6 CONTRACT-shape audit sink.
+    // Schema: request_id, ts_ms, ip (TCP peer), method, path,
+    // action, risk_score, mode (+ optional rule_id, tier).
+    //
+    // This is the file the OC benchmark harness parses for
+    // contract validation. It is intentionally distinct from
+    // the OPERATOR audit at `cfg.audit.sinks` (rich AuditEvent
+    // schema with XFF-resolved client_ip, ISO 8601 ts, class,
+    // tenant_id, fields.*). See deploy/STAGING-BENCHMARK.md
+    // §"Audit log files" for the dual-sink rationale.
     std::path::PathBuf::from("./waf_audit.log")
 }
 
@@ -1538,7 +1548,7 @@ impl Default for RiskWeights {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct RiskThresholds {
     #[serde(default = "default_challenge_at")]
     pub challenge_at: u32,
@@ -1590,6 +1600,33 @@ pub struct DetectorsConfig {
     pub recon: DetectorToggle,
     #[serde(default = "default_detector_toggle")]
     pub brute_force: DetectorToggle,
+    /// 2026-05-08 SEC-M002 — dedicated command-injection detector
+    /// (`$()`, backticks, `${}`, `| cmd`, `; cmd`, etc.). Default
+    /// enabled — closes a gap that AI was previously covering.
+    #[serde(default = "default_detector_toggle")]
+    pub command_injection: DetectorToggle,
+    /// 2026-05-08 Run-5 GAP-006 — server-side template injection
+    /// (Jinja2 `{{...}}`, Spring SpEL `${...}`, Freemarker `<#...>`,
+    /// Velocity `#set(...)`, etc.). Default enabled.
+    #[serde(default = "default_detector_toggle")]
+    pub template_injection: DetectorToggle,
+    /// 2026-05-08 Run-5 GAP-007 — NoSQL (MongoDB) operator
+    /// injection (`?param[$ne]=foo`, `{"$where":"..."}`).
+    /// Default enabled — closes a gap previously covered only
+    /// by AI; closed Mongo operator vocabulary keeps FP near zero.
+    #[serde(default = "default_detector_toggle")]
+    pub nosql_injection: DetectorToggle,
+    /// 2026-05-09 Run-5 GAP-009 — open-redirect detector.
+    /// Flags suspicious external URLs (`http(s)://`,
+    /// protocol-relative `//`, `javascript:`, `data:`) in known
+    /// redirect-style query parameters (`?next=`, `?redirect_uri=`,
+    /// etc.). Score 30 — phishing / OAuth-token-theft /
+    /// CSRF-bypass tier. `allowed_domains` is an operator
+    /// allowlist of safe redirect targets (literal hostnames
+    /// or `*.example.com` wildcards); empty = strict mode
+    /// (every external URL flags).
+    #[serde(default)]
+    pub open_redirect: OpenRedirectConfig,
     /// DURABLE-T2 — optional file-backed persistence for the live
     /// detector mask. When set, the proxy writes the mask state to
     /// `path` after every audit-mutated PUT and reloads from it at
@@ -1627,6 +1664,10 @@ impl Default for DetectorsConfig {
             body_abuse: default_detector_toggle(),
             recon: default_detector_toggle(),
             brute_force: default_detector_toggle(),
+            command_injection: default_detector_toggle(),
+            template_injection: default_detector_toggle(),
+            nosql_injection: default_detector_toggle(),
+            open_redirect: OpenRedirectConfig::default(),
             persistence: None,
         }
     }
@@ -1636,6 +1677,40 @@ impl Default for DetectorsConfig {
 pub struct DetectorToggle {
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// 2026-05-09 Run-5 GAP-009 — open-redirect detector config.
+/// `enabled` mirrors the standard `DetectorToggle.enabled` knob
+/// (default `true`); `allowed_domains` is the operator allowlist
+/// of safe redirect targets. Each entry is either a literal
+/// hostname (`example.com`) or a `*.example.com` glob (matches
+/// `foo.example.com` and `a.b.example.com`, but not bare
+/// `example.com`). Empty list = strict mode (every external URL
+/// in a redirect-style param flags). YAML shape:
+///
+/// ```yaml
+/// detectors:
+///   open_redirect:
+///     enabled: true
+///     allowed_domains:
+///       - "example.com"
+///       - "*.example.com"
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+pub struct OpenRedirectConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+}
+
+impl Default for OpenRedirectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allowed_domains: Vec::new(),
+        }
+    }
 }
 
 fn default_true() -> bool {

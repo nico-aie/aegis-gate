@@ -50,6 +50,22 @@ When absolute or traversal sequences target known files, the detection is high-c
 - `.env`, `.git/config`, `.ssh/id_rsa`
 - `wp-config.php`, `web.config`, `application.yml`
 - `%WINDIR%\system.ini`
+- **`/var/run/docker.sock`** (added 2026-05-09 GAP-002) — unix-socket exposure attack target. Distinct from the Docker REST API surface caught by the [recon detector](./recon.md) (`/v\d+\.\d+/containers`); this catches the **filesystem path** appearing in path-traversal or SSRF param values like `?file=/var/run/docker.sock`.
+
+### Overlong UTF-8 (added 2026-05-09 GAP-002)
+
+QA Run-5 found that overlong UTF-8 byte sequences were listed in this doc but not actually matched by the detector. Now added to `TRAVERSAL_PATTERNS`:
+
+| Encoding | Decodes to | Why dangerous |
+|---|---|---|
+| `%c0%ae%c0%ae` | `..` (overlong U+002E) | Bypasses `..` substring filters |
+| `%c0%af` | `/` (overlong U+002F) | Bypasses `/` substring filters |
+| `%c0%5c` | `\` (overlong U+005C) | Bypasses `\` filters on Windows paths |
+| `%c1%9c` | `\` (alternate overlong) | Same as above, different byte sequence |
+
+**Why these specifically:** RFC 3629 forbids overlong UTF-8 (any code point < `0x80` must be encoded in 1 byte), but legacy parsers — older Apache, some mod_perl handlers, certain Java URL canonicalizers — decode them. There's no legitimate reason for a client to overlong-encode an ASCII character; the byte sequences are unmistakably attack-shaped.
+
+Score `45` (existing path_traversal score, unchanged) — same semantic class as the existing patterns.
 
 ## Depth check
 

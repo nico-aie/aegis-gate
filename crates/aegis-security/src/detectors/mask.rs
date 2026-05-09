@@ -45,11 +45,26 @@ pub enum DetectorClass {
     BodyAbuse,
     Recon,
     BruteForce,
+    /// 2026-05-08 SEC-M002 — dedicated command-injection class.
+    /// `$()`, backticks, `${}`, pipe/semi-shell-cmd patterns.
+    CommandInjection,
+    /// 2026-05-08 Run-5 GAP-006 — server-side template injection.
+    /// Jinja2 / Twig / Mako / Freemarker / Velocity / SpEL / Handlebars.
+    TemplateInjection,
+    /// 2026-05-08 Run-5 GAP-007 — NoSQL (MongoDB) operator injection.
+    /// Bracketed query operators + `$`-prefixed JSON keys.
+    NoSqlInjection,
+    /// 2026-05-09 Run-5 GAP-009 — open-redirect detector. Flags
+    /// suspicious external-URL values in known redirect-style
+    /// query parameters (`?next=`, `?redirect_uri=`, etc.). Score
+    /// 30; `allowed_domains` allowlist suppresses operator-approved
+    /// targets.
+    OpenRedirect,
 }
 
 impl DetectorClass {
     /// All classes in the order they appear in `DetectorsConfig`.
-    pub const ALL: [DetectorClass; 8] = [
+    pub const ALL: [DetectorClass; 12] = [
         DetectorClass::Sqli,
         DetectorClass::Xss,
         DetectorClass::PathTraversal,
@@ -58,6 +73,10 @@ impl DetectorClass {
         DetectorClass::BodyAbuse,
         DetectorClass::Recon,
         DetectorClass::BruteForce,
+        DetectorClass::CommandInjection,
+        DetectorClass::TemplateInjection,
+        DetectorClass::NoSqlInjection,
+        DetectorClass::OpenRedirect,
     ];
 
     /// Wire-compatible string used in `Detector::id()` and the JSON
@@ -72,6 +91,10 @@ impl DetectorClass {
             DetectorClass::BodyAbuse => "body_abuse",
             DetectorClass::Recon => "recon",
             DetectorClass::BruteForce => "brute_force",
+            DetectorClass::CommandInjection => "command_injection",
+            DetectorClass::TemplateInjection => "template_injection",
+            DetectorClass::NoSqlInjection => "nosql_injection",
+            DetectorClass::OpenRedirect => "open_redirect",
         }
     }
 
@@ -87,6 +110,10 @@ impl DetectorClass {
             DetectorClass::BodyAbuse => 1 << 5,
             DetectorClass::Recon => 1 << 6,
             DetectorClass::BruteForce => 1 << 7,
+            DetectorClass::CommandInjection => 1 << 8,
+            DetectorClass::TemplateInjection => 1 << 9,
+            DetectorClass::NoSqlInjection => 1 << 10,
+            DetectorClass::OpenRedirect => 1 << 11,
         }
     }
 
@@ -151,6 +178,18 @@ impl DetectorMask {
         }
         if cfg.brute_force.enabled {
             m.set(DetectorClass::BruteForce, true);
+        }
+        if cfg.command_injection.enabled {
+            m.set(DetectorClass::CommandInjection, true);
+        }
+        if cfg.template_injection.enabled {
+            m.set(DetectorClass::TemplateInjection, true);
+        }
+        if cfg.nosql_injection.enabled {
+            m.set(DetectorClass::NoSqlInjection, true);
+        }
+        if cfg.open_redirect.enabled {
+            m.set(DetectorClass::OpenRedirect, true);
         }
         m
     }
@@ -221,6 +260,24 @@ pub struct DetectorMaskBody {
     pub recon: bool,
     #[serde(default)]
     pub brute_force: bool,
+    /// 2026-05-08 SEC-M002 — command-injection class. Defaults
+    /// to `false` on the wire (`#[serde(default)]`) so older
+    /// snapshot files load without erroring; the round-trip
+    /// helpers below populate it from the bitmask.
+    #[serde(default)]
+    pub command_injection: bool,
+    /// 2026-05-08 Run-5 GAP-006 — template-injection class.
+    /// Same `#[serde(default)]` back-compat for older snapshots.
+    #[serde(default)]
+    pub template_injection: bool,
+    /// 2026-05-08 Run-5 GAP-007 — NoSQL operator injection class.
+    /// Same `#[serde(default)]` back-compat.
+    #[serde(default)]
+    pub nosql_injection: bool,
+    /// 2026-05-09 Run-5 GAP-009 — open-redirect class. Same
+    /// `#[serde(default)]` back-compat.
+    #[serde(default)]
+    pub open_redirect: bool,
 }
 
 impl From<DetectorMask> for DetectorMaskBody {
@@ -234,6 +291,10 @@ impl From<DetectorMask> for DetectorMaskBody {
             body_abuse: m.is_enabled(DetectorClass::BodyAbuse),
             recon: m.is_enabled(DetectorClass::Recon),
             brute_force: m.is_enabled(DetectorClass::BruteForce),
+            command_injection: m.is_enabled(DetectorClass::CommandInjection),
+            template_injection: m.is_enabled(DetectorClass::TemplateInjection),
+            nosql_injection: m.is_enabled(DetectorClass::NoSqlInjection),
+            open_redirect: m.is_enabled(DetectorClass::OpenRedirect),
         }
     }
 }
@@ -249,6 +310,10 @@ impl From<DetectorMaskBody> for DetectorMask {
             .with(DetectorClass::BodyAbuse, b.body_abuse)
             .with(DetectorClass::Recon, b.recon)
             .with(DetectorClass::BruteForce, b.brute_force)
+            .with(DetectorClass::CommandInjection, b.command_injection)
+            .with(DetectorClass::TemplateInjection, b.template_injection)
+            .with(DetectorClass::NoSqlInjection, b.nosql_injection)
+            .with(DetectorClass::OpenRedirect, b.open_redirect)
     }
 }
 
@@ -422,8 +487,8 @@ mod tests {
             assert_eq!(b & seen, 0, "duplicate bit for {c:?}");
             seen |= b;
         }
-        // 8 classes → 8 bits set.
-        assert_eq!(seen.count_ones(), 8);
+        // One bit per class — must match `DetectorClass::ALL`.
+        assert_eq!(seen.count_ones(), DetectorClass::ALL.len() as u32);
     }
 
     #[test]
@@ -527,10 +592,13 @@ mod tests {
     fn entries_iterates_in_declaration_order() {
         let mask = DetectorMask::all_enabled().with(DetectorClass::Xss, false);
         let entries: Vec<_> = mask.entries().collect();
-        assert_eq!(entries.len(), 8);
+        assert_eq!(entries.len(), DetectorClass::ALL.len());
         assert_eq!(entries[0], (DetectorClass::Sqli, true));
         assert_eq!(entries[1], (DetectorClass::Xss, false));
-        assert_eq!(entries[7].0, DetectorClass::BruteForce);
+        assert_eq!(
+            entries[entries.len() - 1].0,
+            DetectorClass::OpenRedirect,
+        );
     }
 
     // ---------- P3 per-tier overrides --------------------------------

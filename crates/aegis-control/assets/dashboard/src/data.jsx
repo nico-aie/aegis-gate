@@ -572,8 +572,40 @@ function useConfigVersionsApi(limit = 50) {
       try {
         const cloned = r.clone();
         const body = await cloned.json();
-        if (typeof body?.reason === 'string' && body.reason.startsWith('csrf_')) {
+        // RUN3-NEW-3 (2026-05-08) — tighter heuristic. The
+        // canonical CSRF reject shape from MutationError is
+        // `{ok: false, reason: "csrf_*", ...}`. Requiring
+        // `ok === false` filters out unrelated 403s that happen
+        // to carry a `reason` field starting with `csrf_` (e.g.
+        // an audit-log entry being passed through a wrapper).
+        if (typeof body?.reason === 'string'
+            && body.reason.startsWith('csrf_')
+            && body.ok === false) {
           window.__aegisCsrfRedirecting = true;
+          // RUN3-NEW-3 — capture trigger context so the next
+          // operator hitting this redirect has actionable
+          // evidence. localStorage survives the navigation to
+          // /admin/login. Operators reporting the issue can
+          // paste back this entry from devtools, giving us
+          // confirmation of which fetch tripped the redirect
+          // (vs the QA-suspected coincidence with reset_state).
+          try {
+            const url = typeof args[0] === 'string'
+              ? args[0]
+              : (args[0]?.url ?? 'unknown');
+            const method = (args[1]?.method ?? args[0]?.method ?? 'GET').toUpperCase();
+            window.localStorage.setItem('__aegisLastRedirect', JSON.stringify({
+              ts:     new Date().toISOString(),
+              url,
+              method,
+              status: r.status,
+              reason: body.reason,
+              note:   'global fetch interceptor → /admin/login',
+            }));
+          } catch (_storage) {
+            // localStorage might be disabled / quota-exceeded;
+            // non-fatal — the redirect still happens.
+          }
           const toast = window.aegisToast
             || ((m) => console.warn('[csrf]', m));
           toast('Session expired — redirecting to login…', 'warn');
@@ -606,13 +638,31 @@ async function csrfMutate(url, { method = 'POST', body = null } = {}) {
   const r = await fetch(url, init);
   const parsed = await r.json().catch(() => ({}));
   // Detect session-expired CSRF reject. The server returns
-  // reason: "csrf_missing_cookie" | "csrf_missing_header" |
-  // "csrf_mismatch" with HTTP 403 (see
+  // {ok: false, reason: "csrf_missing_cookie" | "csrf_missing_header"
+  // | "csrf_mismatch"} with HTTP 403 (see
   // aegis_control::api::mutation::MutationError).
-  if (r.status === 403 && typeof parsed?.reason === 'string'
-      && parsed.reason.startsWith('csrf_')) {
+  // RUN3-NEW-3 (2026-05-08) — match `ok: false` too so we don't
+  // trip on non-error 403 bodies that happen to carry a
+  // `reason` field starting with `csrf_`. Same diagnostic stash
+  // as the global interceptor for cross-correlation.
+  if (r.status === 403
+      && typeof parsed?.reason === 'string'
+      && parsed.reason.startsWith('csrf_')
+      && parsed.ok === false) {
     if (typeof window !== 'undefined' && !window.__aegisCsrfRedirecting) {
       window.__aegisCsrfRedirecting = true;
+      try {
+        window.localStorage.setItem('__aegisLastRedirect', JSON.stringify({
+          ts:     new Date().toISOString(),
+          url,
+          method,
+          status: r.status,
+          reason: parsed.reason,
+          note:   'csrfMutate → /admin/login',
+        }));
+      } catch (_storage) {
+        // localStorage disabled / quota exceeded — non-fatal.
+      }
       const toast = window.aegisToast || ((m) => console.warn(m));
       toast('Session expired — redirecting to login…', 'warn');
       setTimeout(() => {
@@ -675,6 +725,36 @@ function useMtlsSansApi() {
 }
 async function mtlsSansPut(allowed) {
   return csrfMutate('/api/mtls/sans', { method: 'PUT', body: JSON.stringify({ allowed }) });
+}
+
+// M002 (2026-05-07) — operator override for the LoadGauge mode.
+// PUT body shape (see crates/aegis-control/src/api/load_mode.rs):
+//   { override: "normal" | "elevated" | "critical" | "unset" }
+function useLoadModeApi() {
+  return useApi('/api/loadmode', { intervalMs: 5000, fallback: null });
+}
+async function loadmodePut(modeOrUnset) {
+  return csrfMutate('/api/loadmode', {
+    method: 'PUT',
+    body: JSON.stringify({ override: modeOrUnset }),
+  });
+}
+
+// M004 (2026-05-07) — Settings page surface hooks. All read-only;
+// the corresponding mutation handlers (terminate session, toggle
+// break-glass, update integration URLs) aren't wired in
+// admin_dispatch yet, so the dashboard renders these as
+// information-only cards. Future work: add audit-mutated
+// DELETE /api/admin/sessions/{id}, POST /api/admin/break-glass,
+// PUT /api/integrations.
+function useAdminSessionsApi() {
+  return useApi('/api/admin/sessions', { intervalMs: 15000, fallback: null });
+}
+function useBreakGlassApi() {
+  return useApi('/api/admin/break-glass', { intervalMs: 5000, fallback: null });
+}
+function useIntegrationsApi() {
+  return useApi('/api/integrations', { intervalMs: 60000, fallback: null });
 }
 async function mtlsSansDelete(san) {
   return csrfMutate(`/api/mtls/sans/${encodeURIComponent(san)}`, {
@@ -1172,6 +1252,10 @@ Object.assign(window, {
   useAlertReceiversApi, alertReceiversPut, alertReceiverDelete, alertReceiverTest,
   // MTLS-T7 — Allowed SAN allowlist (read + audit-mutated PUT/DELETE/POST-test)
   useMtlsSansApi, mtlsSansPut, mtlsSansDelete, mtlsSansTest,
+  // M002 (2026-05-07) — load mode read + audit-mutated PUT
+  useLoadModeApi, loadmodePut,
+  // M004 (2026-05-07) — Settings page read-only sections
+  useAdminSessionsApi, useBreakGlassApi, useIntegrationsApi,
   // CQF-T1 — admin logout
   adminLogout,
   // CQF-T2 — Blacklist + Whitelist add/delete

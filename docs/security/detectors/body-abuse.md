@@ -58,6 +58,50 @@ field appears at the top level — nested fields and string
 values that happen to contain the word are ignored to keep
 false positives down.
 
+### Prototype pollution (added 2026-05-08, GAP-010)
+
+JavaScript-targeted body shape that pollutes the global
+`Object.prototype` chain via JSON keys named `__proto__` or via
+the `constructor.prototype` path. When a Node.js (or any
+prototype-chain) backend uses an unsafe deep-merge / extend
+function on the parsed JSON, the attacker-controlled keys
+land on every object — leading to auth bypass (`isAdmin: true`
+becomes the default for every user object) or RCE in tooling
+that uses prototype properties to look up command paths.
+
+Two signatures fire under the **`proto_pollution`** sub-tag
+(class `body_abuse`, score **45**):
+
+| Signature | Example body |
+|---|---|
+| `"__proto__"` as a JSON key (exact double-underscore form) | `{"__proto__":{"polluted":"x"}}` |
+| `"constructor"` + `"prototype"` substrings co-occurring | `{"constructor":{"prototype":{"isAdmin":true}}}` |
+
+**Why exact-match `"__proto__"` and not loose `proto`:**
+single-underscore variants (`_proto_`, `proto`) are legitimate
+field names in some APIs (e.g. protobuf serialization, internal
+app schemas). Double-underscore `__proto__` is the JavaScript
+prototype reserved name — exact match avoids the FP.
+
+**Why also catch `constructor` + `prototype`:** object-prototype
+pollution can also be triggered via the `constructor.prototype`
+chain. The detector requires **both** keywords to appear in the
+body to fire on this pattern — a JSON with
+`"constructor":"NamedClass"` (constructor as a string value)
+doesn't fire because `prototype` isn't present.
+
+**Cheap pre-filter:** the function bails immediately if the
+body doesn't contain any of `__proto__`, `constructor`, or
+`"prototype"` as substrings. Only then does it apply the full
+case-insensitive check. Avoids cost on every body.
+
+**Score 45 (high-impact, broader pattern tier):** prototype
+pollution can lead to RCE in Node.js apps via `child_process.exec`
+or unsafe merge functions — same impact ceiling as sqli when
+exploited. Pattern is more permissive than sqli/cmdi (substring
+match in body, not regex over query params), so slight downgrade
+from 50.
+
 ### XML entity expansion (Billion Laughs)
 
 Nested entity definitions that expand exponentially when parsed. Example:

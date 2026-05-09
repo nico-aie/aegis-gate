@@ -65,7 +65,7 @@ impl Detector for BodyAbuseDetector {
         if let Some(cl) = req.body.content_length() {
             if cl > self.max_body_bytes {
                 signals.push(Signal {
-                    score: 30,
+                    score: super::scores::body_abuse::OVERSIZE,
                     tag: "body_oversize".into(),
                     field: "body".into(),
                 });
@@ -83,7 +83,7 @@ impl Detector for BodyAbuseDetector {
                     let depth = json_nesting_depth(trimmed);
                     if depth > self.max_nesting_depth {
                         signals.push(Signal {
-                            score: 35,
+                            score: super::scores::body_abuse::DEEP_NESTING,
                             tag: "body_deep_nesting".into(),
                             field: "body".into(),
                         });
@@ -91,11 +91,17 @@ impl Detector for BodyAbuseDetector {
                     // Mass assignment: privileged-field key in body.
                     if MASS_ASSIGN_KEYS.is_match(text) {
                         signals.push(Signal {
-                            score: 50,
+                            score: super::scores::body_abuse::MASS_ASSIGNMENT,
                             tag: "mass_assignment".into(),
                             field: "body".into(),
                         });
                     }
+                    // GAP-010 (Run-5, 2026-05-08) — prototype
+                    // pollution: `__proto__` key, or the
+                    // `constructor` + `prototype` chain. Sub-tag
+                    // `proto_pollution` for audit-log clarity;
+                    // class stays under `body_abuse`.
+                    check_proto_pollution(text, &mut signals);
                 }
 
                 // 2b. XML-only check — XXE external-entity decl.
@@ -107,7 +113,7 @@ impl Detector for BodyAbuseDetector {
                     || (trimmed.starts_with('<') && !trimmed.starts_with("<!--"));
                 if looks_xml && XXE_ENTITY_DECL.is_match(text) {
                     signals.push(Signal {
-                        score: 60,
+                        score: super::scores::body_abuse::XXE,
                         tag: "xxe".into(),
                         field: "body".into(),
                     });
@@ -116,6 +122,44 @@ impl Detector for BodyAbuseDetector {
         }
 
         signals
+    }
+}
+
+/// Prototype-pollution scan. Matches:
+///   - `"__proto__"` as a JSON key (exact double-underscore form).
+///     Single-underscore variants like `_proto_` or `proto` are
+///     legitimate field names in some APIs and are not flagged.
+///   - The `"constructor"` + `"prototype"` chain (e.g.
+///     `{"constructor":{"prototype":{...}}}`). Both substrings must
+///     appear so a body containing `"constructor":"NamedClass"`
+///     alone (constructor as a string value, no prototype path)
+///     does not fire.
+///
+/// Cheap pre-filter: bail before lowering the body if none of the
+/// dangerous substrings appear. Full check uses ASCII lowercase
+/// to remain case-insensitive without regex compile cost.
+fn check_proto_pollution(body: &str, signals: &mut Vec<Signal>) {
+    if !body.contains("__proto__")
+        && !body.contains("constructor")
+        && !body.contains("\"prototype\"")
+    {
+        return;
+    }
+    let lc = body.to_ascii_lowercase();
+    if lc.contains("\"__proto__\"") {
+        signals.push(Signal {
+            score: super::scores::body_abuse::PROTO_POLLUTION,
+            tag: "proto_pollution".into(),
+            field: "body".into(),
+        });
+        return;
+    }
+    if lc.contains("\"constructor\"") && lc.contains("\"prototype\"") {
+        signals.push(Signal {
+            score: super::scores::body_abuse::PROTO_POLLUTION,
+            tag: "proto_pollution".into(),
+            field: "body".into(),
+        });
     }
 }
 
@@ -494,4 +538,57 @@ mod tests {
     // an external-entity declaration; the regex requires <!ENTITY.
     xxe_clean!(xxe_clean_internal_entity,
         r#"<?xml version="1.0"?><!DOCTYPE r [<!ENTITY name "value">]><r>&name;</r>"#);
+
+    // ---- GAP-010 (Run-5) — prototype pollution positives ----
+    macro_rules! proto_pollution {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let body = $body.as_bytes();
+                let (m, u, h, b) = make_view_with_body(body, Some(body.len() as u64));
+                let req = view(&m, &u, &h, &b);
+                let signals = d.inspect(&req);
+                assert!(
+                    signals.iter().any(|s| s.tag == "proto_pollution"),
+                    "expected proto_pollution for: {}",
+                    $body,
+                );
+            }
+        };
+    }
+    proto_pollution!(pp_proto_simple,       r#"{"__proto__":{"polluted":"x"}}"#);
+    proto_pollution!(pp_proto_exec,         r#"{"__proto__":{"exec":"id"}}"#);
+    proto_pollution!(pp_proto_nested,       r#"{"data":{"__proto__":{"x":1}}}"#);
+    proto_pollution!(pp_proto_with_ws,      r#"{ "__proto__" : {"a":1} }"#);
+    proto_pollution!(pp_proto_array_member, r#"[{"__proto__":{"k":"v"}}]"#);
+    proto_pollution!(pp_constructor_proto,
+        r#"{"constructor":{"prototype":{"polluted":"x"}}}"#);
+    proto_pollution!(pp_constructor_proto_nested,
+        r#"{"x":{"constructor":{"prototype":{"isAdmin":true}}}}"#);
+
+    // ---- Negative: should NOT trip proto_pollution ----
+    macro_rules! pp_clean {
+        ($name:ident, $body:expr) => {
+            #[test]
+            fn $name() {
+                let d = BodyAbuseDetector::default();
+                let body = $body.as_bytes();
+                let (m, u, h, b) = make_view_with_body(body, Some(body.len() as u64));
+                let req = view(&m, &u, &h, &b);
+                let signals = d.inspect(&req);
+                assert!(
+                    !signals.iter().any(|s| s.tag == "proto_pollution"),
+                    "false positive proto_pollution for: {}",
+                    $body,
+                );
+            }
+        };
+    }
+    pp_clean!(pp_clean_single_underscore, r#"{"_proto_":"x"}"#);
+    pp_clean!(pp_clean_proto_substring,   r#"{"item":"__proto__-string"}"#);
+    pp_clean!(pp_clean_constructor_only,  r#"{"constructor":"NamedClass"}"#);
+    pp_clean!(pp_clean_prototype_only,    r#"{"prototype":"someValue"}"#);
+    pp_clean!(pp_clean_proto_word,        r#"{"description":"this is a prototype design"}"#);
+    pp_clean!(pp_clean_normal_obj,        r#"{"name":"alice","email":"a@b.com"}"#);
 }

@@ -79,7 +79,7 @@ tiers:
     routes: ["/login", "/otp", "/deposit", "/withdrawal", "/payments/*"]
     match_type: wildcard
     failure_mode: fail_close
-    detectors: [sqli, xss, ssrf, brute_force, header_injection, body_abuse]
+    detectors: [sqli, xss, ssrf, brute_force, header_injection, body_abuse, command_injection]
     rate_limit:
       requests: 10
       window_s: 60

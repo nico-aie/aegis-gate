@@ -52,6 +52,79 @@ Separate from CRLF detection, the WAF also validates incoming headers:
 
 Malformed headers are rejected with 400 immediately.
 
+## X-Forwarded-Host poisoning
+
+Added 2026-05-08 (SEC-L002). The detector inspects the **value** of the
+`X-Forwarded-Host` (XFH) request header for shape-suspicious patterns
+that backends would treat as the public hostname for cache keys, OAuth
+redirect URIs, password-reset email links, etc.
+
+The check is conservative — many legit reverse-proxy chains set XFH to
+the public hostname while `Host` is the proxy's internal address, so a
+bare "XFH ≠ Host" mismatch isn't enough to alert. The detector flags
+when the XFH carries:
+
+| Shape | Example | Why suspicious |
+|---|---|---|
+| Attacker-keyword + Host mismatch | `Host: a.com`, `XFH: evil.attacker.com` | Classic poisoning probe |
+| `javascript:` / `data:` URI | `XFH: javascript:alert(1)` | XSS pivot via cache-bound link |
+| Quoting / angle-bracket chars | `XFH: <script>` | HTML-context injection |
+| Three or more comma-separated hosts | `XFH: a.com, proxy.com, evil.com` | Attacker appended a host to a legitimate proxy chain |
+| Control bytes (NUL/CR/LF) | (defense-in-depth — hyper rejects upstream) | Header smuggling |
+| **Internal-IP literal** (added 2026-05-09 GAP-005) | `XFH: 127.0.0.1`, `XFH: 10.0.0.1`, `XFH: 169.254.169.254`, `XFH: ::1`, `XFH: fe80::1` | Cache-key poisoning / internal-admin code-path bypass / host-allowlist evasion. Legit proxy chains carry **public hostnames** in XFH; an RFC 1918 / loopback / link-local IP literal here has no benign use case. |
+
+Score: `35` (slightly below CRLF since the heuristic is broader).
+Field tag: `x-forwarded-host` so the audit log + dashboard can
+distinguish XFH poisoning from query-CRLF.
+
+#### Internal-IP literal — what specifically flags
+
+The `xfh_is_internal_ip_literal` helper (added GAP-005) checks the **first** comma-segment of the XFH value (after stripping an optional `:port`) against:
+
+| Range | Examples |
+|---|---|
+| IPv4 loopback (`127.0.0.0/8`) | `127.0.0.1`, `127.55.0.1` |
+| IPv4 RFC 1918 (`10.0.0.0/8`, `172.16-31.0.0/12`, `192.168.0.0/16`) | `10.0.0.1`, `172.20.5.5:8080`, `192.168.1.1` |
+| IPv4 link-local (`169.254.0.0/16`) | `169.254.169.254` (cloud metadata) |
+| IPv6 loopback | `::1`, `[::1]` |
+| IPv6 link-local | `fe80::1`, `[fe80::1]` |
+
+Public addresses like `8.8.8.8` or just-outside-RFC1918 addresses like `172.32.0.1` do **not** flag — the helper is a narrow internal-range check, not a generic IP-literal flag (legitimate origin servers may have IP-literal hostnames in some setups).
+
+**Why not also block "arbitrary domain mismatch":** many legit proxy chains do exactly that (`Host: internal-svc:8080`, `XFH: api.example.com`). Bare mismatch is too broad without an operator allowlist. Internal-IP-literal-in-XFH is the narrow shape with no legitimate use case, so it's safe to flag without operator config.
+
+## URL-override-header bypass (added 2026-05-09 GAP-011)
+
+Some app frameworks (older Rails versions, IIS, Apache `mod_rewrite` setups) honor a small set of headers as a "rewrite the URL before processing" hint. An attacker behind a misconfigured proxy can supply the rewrite header pointing to an admin path while making a public-route request — the gateway sees the public route, the framework processes the admin path, and **auth middleware that gates by the raw URL is bypassed**.
+
+The detector watches four header names (case-insensitive) for path values that have no benign use case in a request header:
+
+| Header | Why dangerous |
+|---|---|
+| `X-Original-URL` | IIS / mod_rewrite "use this URL instead" hint — auth middleware that gates by raw URL is bypassed |
+| `X-Rewrite-URL` | Apache `mod_rewrite` rewrite hint — same primitive |
+| `X-Override-URL` | Less-common variant seen in CVE writeups |
+| `X-HTTP-Method-Override-URL` | Compound override (method + URL) used by some REST gateways |
+
+Path shapes that flag (after URL-decode):
+
+| Shape | Examples | Why |
+|---|---|---|
+| Admin-prefix path | `/admin/users`, `/wp-admin/options.php`, `/manage`, `/console`, `/__internal/health` | Privileged route, attacker-supplied — no benign reason for a header to override the URL to one of these |
+| Recon-shape path | `/.env`, `/wp-config.php`, `/.git/config`, `/.aws/credentials`, `/.ssh/id_rsa` | Same recon targets the [`recon`](./recon.md) detector watches in URL paths — stacks signal when the same shape arrives via header override |
+| Path-traversal shape | `../`, `%2e%2e/`, `%252e%252e` | Directory traversal smuggled through the override — would also fire the [`path_traversal`](./path-traversal.md) detector if the override were processed as the URL |
+
+**Sub-tag:** `url_override_bypass` (class stays `header_injection`). Field reports the actual header that fired (`x-original-url`, `x-rewrite-url`, etc.) so audit grep is straightforward.
+
+**Score:** `40` (header-heuristic tier — same as CRLF). One hit doesn't reach `challenge_at: 40` on its own, but stacks with `recon` / `path_traversal` when the override value also matches those shapes — combined risk crosses `block_at: 80`.
+
+**No FP surface in production:** legitimate URL-rewriting happens in proxy / load-balancer config, not in attacker-controlled request headers. Operators who genuinely need to send these headers (rare) can disable the `header_injection` class for the affected tier via `set_profile { policies: ["header_injection"], mode: "log_only" }`.
+
+Test corpus:
+
+- Positive: `X-Original-URL: /admin/users`, `X-Rewrite-URL: /administrator/index.php`, `X-Original-URL: /.env`, `X-Original-URL: /../../../etc/passwd`, `X-Original-URL: /__internal/health`, URL-encoded `/%2Fadmin%2Fusers`.
+- Negative: `X-Original-URL: /api/users`, `X-Original-URL: /products/123`, `X-Original-URL: /health`, `X-Original-URL: /metrics`, header absent or empty.
+
 ## HTTP request smuggling defense
 
 Request smuggling exploits discrepancies in how the WAF and backend parse `Content-Length` vs `Transfer-Encoding`. The WAF enforces:

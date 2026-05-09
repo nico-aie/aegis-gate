@@ -36,9 +36,67 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:~$)",
         r"(?i)(?:Dockerfile)",
         r"(?i)(?:docker-compose\.ya?ml)",
+        // SEC-L001 (2026-05-08) — Docker REST API surface.
+        // Versioned paths /v{major}.{minor}/{containers,images,...}
+        // are how the Docker daemon's HTTP API is reachable when
+        // the socket is mistakenly exposed via TCP / a sidecar
+        // proxy. Probe: `GET /v1.24/containers/json`.
+        r"(?i)(?:^|/)v\d+\.\d+/(?:containers|images|networks|volumes|services|tasks|secrets|configs|swarm|nodes|plugins|info|version|events|system|build|auth)\b",
+        r"(?i)(?:^|/)_ping\b",
         r"(?i)(?:Makefile$)",
         r"(?i)(?:\.aws/credentials)",
         r"(?i)(?:\.ssh/)",
+        // GAP-001 (Run-5, 2026-05-08) — framework recon paths.
+        // Spring Boot actuator danger endpoints (/health and /info
+        // are intentionally public on most Spring deployments;
+        // only the dangerous subpaths flag).
+        r"(?i)/actuator/(?:heapdump|threaddump|env|configprops|loggers|trace|httptrace|auditevents|dump|jolokia|liquibase|flyway|gateway|conditions|beans|mappings|metrics/.*|sessions|shutdown)\b",
+        // Laravel Ignition — CVE-2021-3129 (RCE).
+        r"(?i)/_ignition/(?:execute-solution|health-check|update-config)\b",
+        // Swagger / OpenAPI surface enumeration.
+        r"(?i)/(?:swagger-ui\.html|swagger\.json|swagger\.yaml|v\d+/api-docs|api-docs|openapi\.json|openapi\.yaml)\b",
+        // GraphQL introspection / playground — usually disabled
+        // in prod. Operators with intentional public GraphQL can
+        // disable this class via `set_profile`.
+        r"(?i)/graphql(?:/|\?|$)",
+        r"(?i)/graphiql(?:/|\?|$)",
+        r"(?i)/playground(?:/|\?|$)",
+        // Kubernetes API namespaces / pods / deployments.
+        r"(?i)/api/v1/namespaces\b",
+        r"(?i)/api/v1/pods\b",
+        r"(?i)/apis/apps/v1/deployments\b",
+        // Kibana / Elastic internals.
+        r"(?i)/(?:app/kibana|\.kibana(?:/|/_search)|_cat/indices|_cluster/health)\b",
+        // Jenkins script console (Groovy RCE) and CLI jar.
+        r"(?i)/(?:script(?:Text)?|jnlpJars/jenkins-cli\.jar|manage|computer/(?:\(master\)|\(built-in\))/script)\b",
+        // CGI legacy probes — Shellshock surface, classic info
+        // disclosure.
+        r"(?i)/cgi-bin/(?:printenv\.pl|test-cgi|php-cgi|\.\.)\b",
+        // Prometheus federation/scrape-target probe. Bare
+        // `/metrics` is a legit operator-hosted endpoint and
+        // is NOT flagged; only the suspicious-query shapes
+        // (`?format=`, `?target=`, `?module=`) fire.
+        r"(?i)/metrics\?(?:format=|target=|module=)",
+        // GAP-001b (Run-6, 2026-05-09) — bare actuator discovery
+        // page. Spring Boot Actuator's root index lists every
+        // available endpoint; operators legitimately exposing
+        // actuator typically expose `/actuator/health` and
+        // `/actuator/info` (the safe subset) but rarely the bare
+        // index. Match `/actuator` followed by end-of-path or
+        // query-prefix only — `/actuator/health` (subpath form)
+        // does NOT match here.
+        r"(?i)/actuator(?:$|\?|#)",
+        // Rails debug surface — `/rails/info/*` leaks installed
+        // gems, environment, and routes. Development-only page;
+        // reachable in prod = recon dump.
+        r"(?i)/rails/info(?:/|$)",
+        // Classic PHP-developer-debug files — `phpinfo()` output
+        // dumps loaded modules / paths / environment. Distinct
+        // from the existing `phpinfo\(\)` function-call match,
+        // which catches the shape inside a body or query value.
+        // Common filenames operators leave behind by accident:
+        // `phpinfo.php`, `info.php`, `test.php`, `i.php`.
+        r"(?i)/(?:phpinfo|info|test|i)\.php(?:$|\?|/)",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -81,12 +139,20 @@ impl Detector for ReconDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        // Check path for recon targets.
-        let path = req.uri.path();
+        // Check path-and-query for recon targets. We use the full
+        // path-and-query (not just `path()`) so query-shaped probes
+        // like `/metrics?format=prometheus` (Prometheus federation
+        // scrape) can match. Existing path-only patterns are
+        // unaffected — they don't contain `?`.
+        let path_q = req
+            .uri
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or_else(|| req.uri.path());
         for re in RECON_PATHS.iter() {
-            if re.is_match(path) {
+            if re.is_match(path_q) {
                 signals.push(Signal {
-                    score: 25,
+                    score: super::scores::recon::PATH,
                     tag: "recon_path".into(),
                     field: "uri".into(),
                 });
@@ -99,7 +165,7 @@ impl Detector for ReconDetector {
             for re in RECON_UA.iter() {
                 if re.is_match(ua) {
                     signals.push(Signal {
-                        score: 30,
+                        score: super::scores::recon::TOOL,
                         tag: "recon_tool".into(),
                         field: "user-agent".into(),
                     });
@@ -191,9 +257,56 @@ mod tests {
     path_positive!(tilde_file, "/config~");
     path_positive!(dockerfile, "/Dockerfile");
     path_positive!(docker_compose, "/docker-compose.yml");
+    // SEC-L001 (2026-05-08) — Docker REST API surface.
+    path_positive!(docker_api_containers,    "/v1.24/containers/json");
+    path_positive!(docker_api_info,          "/v1.41/info");
+    path_positive!(docker_api_images_short,  "/v1.43/images/json");
+    path_positive!(docker_api_networks,      "/v1.40/networks");
+    path_positive!(docker_api_swarm,         "/v1.41/swarm");
+    path_positive!(docker_api_ping,          "/_ping");
     path_positive!(aws_creds, "/.aws/credentials");
     path_positive!(ssh_dir, "/.ssh/id_rsa");
     path_positive!(hg_dir, "/.hg/store");
+    // GAP-001 (Run-5) — framework recon positives.
+    path_positive!(actuator_heapdump,     "/actuator/heapdump");
+    path_positive!(actuator_env,          "/actuator/env");
+    path_positive!(actuator_jolokia,      "/actuator/jolokia");
+    path_positive!(actuator_threaddump,   "/actuator/threaddump");
+    path_positive!(actuator_shutdown,     "/actuator/shutdown");
+    path_positive!(ignition_solve,        "/_ignition/execute-solution");
+    path_positive!(ignition_health,       "/_ignition/health-check");
+    path_positive!(swagger_ui,            "/swagger-ui.html");
+    path_positive!(swagger_json,          "/swagger.json");
+    path_positive!(openapi_v3,            "/v3/api-docs");
+    path_positive!(graphql_root,          "/graphql");
+    path_positive!(graphql_query,         "/graphql?query=__schema");
+    path_positive!(graphiql_ide,          "/graphiql/");
+    path_positive!(playground_ide,        "/playground");
+    path_positive!(k8s_namespaces,        "/api/v1/namespaces");
+    path_positive!(k8s_pods,              "/api/v1/pods");
+    path_positive!(k8s_deployments,       "/apis/apps/v1/deployments");
+    path_positive!(kibana_app,            "/app/kibana");
+    path_positive!(kibana_search,         "/.kibana/_search");
+    path_positive!(elastic_cat_indices,   "/_cat/indices");
+    path_positive!(elastic_cluster,       "/_cluster/health");
+    path_positive!(jenkins_script,        "/script");
+    path_positive!(jenkins_script_text,   "/scriptText");
+    path_positive!(jenkins_cli_jar,       "/jnlpJars/jenkins-cli.jar");
+    path_positive!(cgi_printenv,          "/cgi-bin/printenv.pl");
+    path_positive!(cgi_test,              "/cgi-bin/test-cgi");
+    path_positive!(cgi_phpcgi,            "/cgi-bin/php-cgi");
+    path_positive!(prom_federate,         "/metrics?format=prometheus");
+    path_positive!(prom_target_probe,     "/metrics?target=10.0.0.1:9100");
+    // GAP-001b (Run-6) — bare framework discovery + Rails debug + PHP debug.
+    path_positive!(actuator_bare,            "/actuator");
+    path_positive!(actuator_bare_with_query, "/actuator?refresh=true");
+    path_positive!(rails_info_properties,    "/rails/info/properties");
+    path_positive!(rails_info_routes,        "/rails/info/routes");
+    path_positive!(phpinfo_php,              "/phpinfo.php");
+    path_positive!(info_php,                 "/info.php");
+    path_positive!(test_php,                 "/test.php");
+    path_positive!(i_php,                    "/i.php");
+    path_positive!(phpinfo_php_with_query,   "/phpinfo.php?details=1");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
@@ -257,6 +370,30 @@ mod tests {
     negative!(clean_manifest, "/manifest.json");
     negative!(clean_sw, "/sw.js");
     negative!(clean_favicon, "/favicon.ico");
+    // SEC-L001 — version-shaped paths that aren't Docker REST.
+    // The Docker pattern matches /v\d+\.\d+/{namespace} only when
+    // namespace is in the allowlist; bare /v1/users etc. don't fire.
+    negative!(clean_v1_users,            "/v1/users");
+    negative!(clean_semver_v2_1,         "/api/v2.1/products");
+    negative!(clean_static_versioned,    "/static/v1.5/app.js");
     negative!(clean_webhook, "/webhooks/github");
     negative!(clean_download, "/download/report.pdf");
+    // GAP-001 (Run-5) — operator-hosted endpoints that must NOT FP.
+    // /actuator/health and /actuator/info are intentionally public on
+    // most Spring Boot deployments — only the dangerous subpaths flag.
+    negative!(clean_actuator_health,   "/actuator/health");
+    negative!(clean_actuator_info,     "/actuator/info");
+    negative!(clean_bare_metrics,      "/metrics");
+    negative!(clean_metrics_legit,     "/metrics?accept=text/plain");
+    negative!(clean_kibana_substring,  "/api/kibana-feedback");
+    negative!(clean_graphql_substr,    "/graphqlproxy");
+    // GAP-001b (Run-6) — must NOT FP on these operator-controlled
+    // and look-alike paths.
+    negative!(clean_actuator_with_subpath, "/actuator/health");        // already covered above; explicit here to pin GAP-001b doesn't break it
+    negative!(clean_actuator_info_subpath, "/actuator/info");          // operator-hosted
+    negative!(clean_rails_app_path,        "/rails/api/users");        // legitimate Rails app path that happens to start with /rails/
+    negative!(clean_index_php,             "/index.php");              // common PHP entry point — too generic to flag
+    negative!(clean_app_php,               "/app.php");                // common PHP entry — must not flag
+    negative!(clean_phpinfo_substring,     "/api/phpinfocard");        // contains phpinfo as substring but not as filename
+    negative!(clean_test_dir,              "/test/results");           // /test/ as directory, not test.php
 }

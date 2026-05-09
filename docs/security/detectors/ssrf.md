@@ -58,6 +58,37 @@ Attackers commonly use redirectors and alternate encodings:
 - `@` in URLs: `http://example.com@169.254.169.254/` — authority is the RIGHT side
 - DNS rebinding indicators (domains that resolve to private IPs)
 - URL-shortener-style redirects (if the submitted URL is a known redirector, rescan the target)
+
+#### URL userinfo (added 2026-05-09 GAP-004)
+
+Some URL parsers split the authority on the **first** `@` they see; others on the **last**. Attackers exploit the discrepancy:
+
+```
+http://[email protected]:8080/path
+                        ^---- some parsers split here
+        ^----------------- others split here
+```
+
+A naive WAF allowlist that sees the URL "starts with `http://` and contains `evil.com`" allows the request — even though the real fetch goes to `internal-svc:8080/path` (the parser interpreted `evil.com:80@` as userinfo, not host).
+
+The detector now flags any HTTP(S) URL with userinfo via the regex
+`https?://[^@/\s]+@`. Tag stays `ssrf`, score `50`. Examples:
+
+| Input | Why it flags |
+|---|---|
+| `?url=http://user:pass@10.0.0.1/secret` | Direct userinfo + private IP destination |
+| `?url=https://evil.com:80@internal-svc/` | Parser-split bypass (the real host is `internal-svc`) |
+| `?u=http://x@127.0.0.1` | Trivial userinfo + loopback |
+
+Negative cases that do NOT flag:
+
+- `?email=user@example.com` — no `://` scheme prefix
+- `?to=mailto:user@example.com` — `mailto:` not `http(s)://`
+- `/oauth/callback?code=abc&user=fred` — no `@` in the URL value
+
+**Why the userinfo shape and not "just match internal IP after `@`":** that would be brittle — attackers can use DNS rebinding or direct hostnames. Catching the userinfo shape itself is the right hook because the parser-confusion vector applies regardless of destination.
+
+HTTP basic-auth in URL form is RFC 3986-deprecated and rare in modern apps; legitimate auth lives in `Authorization` headers. Flagging URL-userinfo matches Chrome's behaviour (warns / blocks) and major-WAF practice.
 - IPv6 mapping: `::ffff:169.254.169.254`
 
 ## DNS resolution

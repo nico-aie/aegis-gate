@@ -648,7 +648,17 @@ pub(crate) async fn handle_interop_control(
             &serde_json::json!({"error": "interop surface disabled"}),
         );
     };
-    handle_interop_control_with_rt(req, rt.as_ref()).await
+    // 2026-05-08 NEW-2 — admin port has no direct path to the
+    // PowIssuer (it lives in ProxyContext which is data-plane
+    // scope). The OC harness submits to the data plane per the
+    // C001 short-circuit; admin-port challenge_verify returns
+    // 503 with a clear error if anyone hits it here.
+    handle_interop_control_with_rt(
+        req,
+        rt.as_ref(),
+        None,
+        services.state_backend.as_ref(),
+    ).await
 }
 
 /// Same dispatcher as [`handle_interop_control`] but takes an
@@ -656,9 +666,16 @@ pub(crate) async fn handle_interop_control(
 /// (the OC v2.3 benchmarker hits `/__waf_control/*` on the public
 /// TLS listener, not the admin port — see deploy/STAGING-BENCHMARK.md
 /// §7.5).
+///
+/// 2026-05-08 NEW-2 — `pow_issuer` and `state` are needed for the
+/// `/__waf_control/challenge_verify` endpoint added per v2.3 §3.
+/// Both are `None` in test contexts that skip the interop runtime;
+/// the dispatcher returns 503 for challenge_verify in that case.
 pub(crate) async fn handle_interop_control_with_rt(
     req: hyper::Request<hyper::body::Incoming>,
     rt: &aegis_control::interop::InteropRuntime,
+    pow_issuer: Option<&Arc<aegis_security::challenge::PowIssuer>>,
+    state: Option<&Arc<dyn aegis_core::state::StateBackend>>,
 ) -> Response<Full<Bytes>> {
     use aegis_control::interop::{control, CONTROL_SECRET_HEADER};
     use http_body_util::BodyExt;
@@ -683,6 +700,25 @@ pub(crate) async fn handle_interop_control_with_rt(
             let body = serde_json::to_string(&rt.control.capabilities())
                 .unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "no-store")
+        }
+        // RUN3-NEW-2 (2026-05-08) — liveness endpoint for the
+        // automated interop harness. Returns 200 + minimal body
+        // as soon as the data-plane dispatcher can respond.
+        // Auth via X-Benchmark-Secret stays enforced (already
+        // checked above before the match), so this isn't an
+        // unauthenticated probe surface.
+        //
+        // Deeper readiness (Redis reachable, audit sink open,
+        // upstream pools registered) lives at the admin port's
+        // /healthz/ready — that endpoint exposes the actual
+        // /api/state probes. This one is just "the WAF process
+        // is alive and serving requests on this listener."
+        (hyper::Method::GET, "/__waf_control/healthz") => {
+            json_body_response(
+                200,
+                serde_json::json!({"ok": true, "status": "alive"}).to_string(),
+                "no-store",
+            )
         }
         (hyper::Method::POST, "/__waf_control/reset_state") => {
             let body = serde_json::to_string(&rt.control.reset_state())
@@ -729,12 +765,125 @@ pub(crate) async fn handle_interop_control_with_rt(
                 .unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "no-store")
         }
+        // 2026-05-08 NEW-2 — PoW challenge verify per v2.3 §3.
+        // Body: { nonce, difficulty, expires_at_ms, mac, counter }
+        // Returns 204 on first valid solution; 4xx on tamper /
+        // expiry / replay / insufficient difficulty.
+        (hyper::Method::POST, "/__waf_control/challenge_verify") => {
+            handle_challenge_verify(req, pow_issuer, state).await
+        }
         _ => json_response(
             404,
             &serde_json::json!({
                 "ok": false,
                 "error": "unknown control endpoint",
             }),
+        ),
+    }
+}
+
+/// 2026-05-08 NEW-2 — verify a PoW solution submitted by an
+/// automated client (the OC harness, a benchmark tool, or any
+/// bot-mitigation SDK). Body shape matches what the data-plane
+/// challenge response advertises in `submit_to`.
+async fn handle_challenge_verify(
+    req: hyper::Request<hyper::body::Incoming>,
+    pow_issuer: Option<&Arc<aegis_security::challenge::PowIssuer>>,
+    state: Option<&Arc<dyn aegis_core::state::StateBackend>>,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let issuer = match pow_issuer {
+        Some(i) => i,
+        None => {
+            return json_response(
+                503,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "pow issuer not wired",
+                }),
+            );
+        }
+    };
+    let state_ref = match state {
+        Some(s) => s.as_ref(),
+        None => {
+            return json_response(
+                503,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "state backend not wired",
+                }),
+            );
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct VerifyBody {
+        nonce: String,
+        difficulty: u8,
+        expires_at_ms: i64,
+        mac: String,
+        counter: String,
+    }
+
+    let bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return json_response(
+                400,
+                &serde_json::json!({"ok": false, "error": "body read error"}),
+            );
+        }
+    };
+    let body: VerifyBody = match serde_json::from_slice(&bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": format!("invalid body: {e}"),
+                }),
+            );
+        }
+    };
+
+    let result = issuer.verify(
+        state_ref,
+        &body.nonce,
+        body.difficulty,
+        body.expires_at_ms,
+        &body.mac,
+        &body.counter,
+    ).await;
+
+    use aegis_security::challenge::PowError;
+    match result {
+        Ok(()) => Response::builder()
+            .status(204)
+            .header("cache-control", "no-store")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+        Err(PowError::InvalidMac) => json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": "invalid_mac"}),
+        ),
+        Err(PowError::Expired) => json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": "expired"}),
+        ),
+        Err(PowError::InsufficientDifficulty) => json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": "insufficient_difficulty"}),
+        ),
+        Err(PowError::Replay) => json_response(
+            403,
+            &serde_json::json!({"ok": false, "error": "replay"}),
+        ),
+        Err(PowError::StateError(msg)) => json_response(
+            500,
+            &serde_json::json!({"ok": false, "error": format!("state: {msg}")}),
         ),
     }
 }
@@ -792,11 +941,24 @@ pub(crate) fn stamp_interop_response(
     method: &hyper::Method,
     path: &str,
     risk_score: u32,
+    // 2026-05-08 — `Instant` captured at the listener service_fn
+    // entry. Used to stamp `X-WAF-Overhead-Latency`. Computed
+    // here (after Decision::stamp) so the header reflects the
+    // actual time-on-wire from the WAF's perspective.
+    request_start: std::time::Instant,
 ) -> Response<Full<Bytes>> {
     use aegis_control::interop::audit::MinimalAuditEntry;
     use aegis_control::interop::headers::{CacheState, Decision};
 
     let Some(rt) = interop else {
+        // No interop runtime → skip the v2.3 mandatory headers,
+        // but still stamp the overhead-latency telemetry so
+        // operators in non-interop builds get the same
+        // observability hint.
+        aegis_control::interop::headers::stamp_overhead_latency(
+            resp.headers_mut(),
+            request_start.elapsed(),
+        );
         return resp;
     };
 
@@ -812,15 +974,7 @@ pub(crate) fn stamp_interop_response(
         .as_bytes(),
     );
     let h = raw.to_hex();
-    let h = h.as_str();
-    let request_id = format!(
-        "{}-{}-4{}-{}-{}",
-        &h[0..8],
-        &h[8..12],
-        &h[13..16],
-        &h[16..20],
-        &h[20..32],
-    );
+    let request_id = format_request_id(h.as_str());
 
     // v2.3 §2.7 — `X-WAF-Mode` MUST reflect the mode of the
     // policy that produced the final reported `X-WAF-Action`,
@@ -833,15 +987,33 @@ pub(crate) fn stamp_interop_response(
         &rt.modes,
         decision_tag.rule_id.as_deref(),
     );
+    // NEW-4 (2026-05-08) — prefer the score the data plane stamped
+    // at decision time (keyed on the XFF-resolved client IP, same
+    // key as the risk accumulator). The peer.ip()-keyed snapshot
+    // (the fallback) only matches the tracker for direct-connect
+    // clients; behind a trusted proxy or with operator-injected
+    // X-Forwarded-For, the keys differ and the snapshot returns
+    // None → 0.
+    let effective_risk_score = decision_tag.risk_score.unwrap_or(risk_score);
     let decision = Decision {
         request_id: request_id.clone(),
-        risk_score,
+        risk_score: effective_risk_score,
         action: decision_tag.action,
         rule_id: decision_tag.rule_id.clone(),
         cache: CacheState::Bypass,
         mode,
     };
     decision.stamp(resp.headers_mut());
+
+    // 2026-05-08 — bonus telemetry. Captures elapsed at the
+    // last possible moment so the value reflects the full
+    // WAF-side processing cost (received → response stamped),
+    // including the stamper itself. Two `Instant::now()` calls
+    // and an integer format — sub-microsecond cost.
+    aegis_control::interop::headers::stamp_overhead_latency(
+        resp.headers_mut(),
+        request_start.elapsed(),
+    );
 
     if let Some(sink) = rt.audit.as_ref() {
         let entry = MinimalAuditEntry {
@@ -851,7 +1023,10 @@ pub(crate) fn stamp_interop_response(
             method: method.as_str().to_string(),
             path: path.to_string(),
             action: decision_tag.action.as_str().to_string(),
-            risk_score,
+            // NEW-4 (2026-05-08) — same effective score that was
+            // stamped on the X-WAF-Risk-Score header, so audit log
+            // and headers agree.
+            risk_score: effective_risk_score,
             mode: mode.as_str().to_string(),
             rule_id: decision_tag.rule_id,
             // 2026-05-05 — surface the resolved tier so the
@@ -912,4 +1087,97 @@ pub(crate) fn handle_force_https_request(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
     crate::listener::tls_policy::force_https_redirect_response(host, &path_owned, status)
+}
+
+/// Build a 36-char RFC 4122-shaped request id from a 64-char blake3
+/// hex digest. The version nibble (group 3, first hex digit) is
+/// fixed at `4` so the string parses as UUIDv4. The variant nibble
+/// (group 4, first hex digit) is masked to the RFC 4122 range
+/// `[89ab]` per §4.1.1 — without this mask, OC tooling that
+/// validates request_ids as proper UUIDs rejects ~75% of audit log
+/// entries (M001, 2026-05-07).
+fn format_request_id(h: &str) -> String {
+    debug_assert!(h.len() >= 32, "blake3 hex too short: {}", h.len());
+    let variant_byte = u8::from_str_radix(&h[16..17], 16).unwrap_or(0);
+    let masked_variant = (variant_byte & 0x3) | 0x8;
+    format!(
+        "{}-{}-4{}-{:x}{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[13..16],
+        masked_variant,
+        &h[17..20],
+        &h[20..32],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_request_id;
+
+    fn variant_nibble(uuid: &str) -> char {
+        // group 4 starts after the third hyphen.
+        uuid.split('-').nth(3).and_then(|g| g.chars().next()).unwrap()
+    }
+
+    #[test]
+    fn format_request_id_emits_uuid_v4_shape() {
+        // 64-char blake3 hex sample
+        let h = "1c4187368f4540970f0c9a06172e426412345678abcdef9012345678ffffffff";
+        let id = format_request_id(h);
+        // Standard 8-4-4-4-12 layout
+        let groups: Vec<&str> = id.split('-').collect();
+        assert_eq!(groups.len(), 5, "{id}");
+        assert_eq!(groups[0].len(), 8);
+        assert_eq!(groups[1].len(), 4);
+        assert_eq!(groups[2].len(), 4);
+        assert_eq!(groups[3].len(), 4);
+        assert_eq!(groups[4].len(), 12);
+    }
+
+    #[test]
+    fn format_request_id_version_nibble_is_4() {
+        let h = "0000000000000000ffffffffffffffff00000000000000000000000000000000";
+        let id = format_request_id(h);
+        // Group 3 first char must be '4'
+        let g3 = id.split('-').nth(2).unwrap();
+        assert_eq!(g3.chars().next(), Some('4'), "{id}");
+    }
+
+    #[test]
+    fn format_request_id_variant_nibble_is_rfc4122() {
+        // Sweep all 16 hex digits at position [16] — every output
+        // variant nibble must be one of [89ab].
+        for c in "0123456789abcdef".chars() {
+            let mut h = String::from("0000000000000000");
+            h.push(c);
+            // Pad to 64 chars total
+            while h.len() < 64 {
+                h.push('0');
+            }
+            let id = format_request_id(&h);
+            let v = variant_nibble(&id);
+            assert!(
+                matches!(v, '8' | '9' | 'a' | 'b'),
+                "variant nibble {v} not in [89ab] for input nibble {c}: {id}",
+            );
+        }
+    }
+
+    #[test]
+    fn format_request_id_regression_for_qa_sample() {
+        // QA finding F-MEDIUM-001 reported request_id
+        // "1c418736-8f45-4097-4f0c-9a06172e4264" with variant nibble
+        // '4' (invalid). Reconstruct the producing hash and confirm
+        // the new formatter masks variant correctly.
+        // Hash bytes laid out so groups 1/2/3/5 match; group 4
+        // first nibble is the masked one.
+        let h = "1c4187368f4540970f0c9a06172e4264aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let id = format_request_id(h);
+        let v = variant_nibble(&id);
+        assert!(
+            matches!(v, '8' | '9' | 'a' | 'b'),
+            "QA-reported invalid variant must be masked: {id}",
+        );
+    }
 }

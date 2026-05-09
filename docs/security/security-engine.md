@@ -56,11 +56,14 @@ clean.
             ┌────────────────────────────────────────────────────────────────────┐
             │  DETECTOR CHAIN — every detector enabled in the mask runs          │
             │   sqli · xss · path_traversal · ssrf · header_injection ·          │
-            │   body_abuse · recon · brute_force · ai (optional)                 │
+            │   body_abuse · recon · brute_force · command_injection ·            │
+            │   template_injection · nosql_injection · open_redirect ·            │
+            │   ai (optional)                                                    │
             │                                                                    │
             │   Each detector is a pure function over the request.               │
             │   A hit emits a Signal { tag, score: 50–60 }.                      │
-            │   Signals accumulate on the request's running risk total.          │
+            │   The request contributes max(signal.score) to the per-IP risk     │
+            │   total — single multi-detector hit doesn't pile up score (M003).  │
             └────────────────────────────────────────────────────────────────────┘
                                          │   detectors done
                                          ▼
@@ -176,10 +179,14 @@ block on their own; they accumulate signals.
 | XSS | `xss` | URL, body, headers |
 | Path traversal | `path_traversal` | URL, body |
 | SSRF | `ssrf` | URL, body, fetch-style headers |
-| Header injection | `header_injection` | Headers (CRLF, smuggling) |
-| Body abuse | `body_abuse`, `xxe`, `mass_assignment` | Body (size, nesting, JSON / XML / form) |
-| Recon | `recon` | URL patterns + path entropy (`/.env`, `/wp-admin/…`) |
+| Header injection | `header_injection`, `url_override_bypass` | Headers (CRLF, smuggling, XFH poisoning, X-Original-URL / X-Rewrite-URL admin-path bypass added 2026-05-09 GAP-011) |
+| Body abuse | `body_abuse`, `xxe`, `mass_assignment`, `proto_pollution` | Body (size, nesting, JSON / XML / form) — `proto_pollution` sub-tag (score 45) added 2026-05-08 (GAP-010) |
+| Recon | `recon_path`, `recon_tool` | URL patterns + path entropy (`/.env`, `/wp-admin/…`, Docker REST) — framework recon (Spring actuator danger paths / Laravel Ignition / Swagger / GraphQL / K8s API / Kibana / Jenkins / CGI / Prometheus federation) added 2026-05-08 (GAP-001) |
 | Brute force | `brute_force` | Login endpoints (failure counter via `velocity.rs`) |
+| Command injection | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, Log4Shell `${jndi:...}` (score 60) |
+| Template injection | `template_injection` | URL, body — Jinja2 / Twig / SpEL / Freemarker / Velocity / Handlebars |
+| NoSQL injection | `nosql_injection` | URL, body — MongoDB operator injection (`[$ne]`, `[$where]`, `"$gt":`) |
+| Open redirect | `open_redirect` | Query string — suspicious external URLs in redirect-style params (`?next=`, `?redirect_uri=`); allowlist via `cfg.detectors.open_redirect.allowed_domains` |
 | AI (optional) | `ai` | URL + body, run through ONNX classifier |
 
 Per-detector deep-dives in [`detectors/`](detectors/).
@@ -332,20 +339,44 @@ shares an IP (NAT / corporate proxy / shared loopback in dev).
 
 ### What contributes to score
 
-| Contributor | Where it adds | Default delta |
-|---|---|---|
-| Detector hit (sqli / xss / path_traversal / ssrf / etc.) | per-request and per-IP | 50 – 60 |
-| AI detector hit | per-request and per-IP | 60 |
-| Rule with `RaiseRisk(delta)` action | per-request and per-IP | operator-defined |
-| ASN reputation (hosting / VPN / Tor exit) | per-request and per-IP | 10 – 30 (`risk.weights.bad_asn`) |
-| TLS / HTTP fingerprint reputation (bad JA4) | per-request and per-IP | 10 (`risk.weights.bad_ja4`) |
-| Failed authentication | per-IP only | 20 (`risk.weights.failed_auth`) |
-| Unknown bot class | per-request and per-IP | 10 (`risk.weights.bot_unknown`) |
-| Repeat offender | per-IP only | 15 (`risk.weights.repeat_offender`) |
-| Behavioural anomaly | per-request and per-IP | dynamic |
+Per-detector signal scores (read straight from the detector code —
+**not editable from the dashboard UI by design**; see
+[`operator/risk-tuning.md`](../operator/risk-tuning.md) for the
+rationale + the operator knobs that achieve the same effect
+safely without touching the calibrated score ladder):
 
-Edit weights in `cfg.risk.weights` — a YAML restart for now. Reference:
-[`risk-scoring.md`](risk-scoring.md).
+| Contributor | Where it adds | Default delta | Source |
+|---|---|---:|---|
+| SQL injection | per-request + per-IP | **40** | `detectors/sqli.rs` |
+| XSS | per-request + per-IP | **35** | `detectors/xss.rs` |
+| Path traversal | per-request + per-IP | **45** | `detectors/path_traversal.rs` |
+| SSRF | per-request + per-IP | **50** | `detectors/ssrf.rs` |
+| Header injection / CRLF / smuggling | per-request + per-IP | **40** | `detectors/header_injection.rs` |
+| Recon (probe / canary) | per-request + per-IP | **25 / 30** | `detectors/recon.rs` |
+| Body abuse (size → depth → mass-assign → proto-pollution → XXE) | per-request + per-IP | **30 / 35 / 45 / 50 / 60** | `detectors/body_abuse.rs` |
+| Brute force | per-request + per-IP | YAML-configured | `detectors/brute_force.rs` |
+| Command injection | per-request + per-IP | **50** (Log4Shell **60**) | `detectors/command_injection.rs` |
+| Template injection (SSTI) | per-request + per-IP | **50** | `detectors/template_injection.rs` |
+| NoSQL injection | per-request + per-IP | **50** | `detectors/nosql_injection.rs` |
+| Open redirect | per-request + per-IP | **30** | `detectors/open_redirect.rs` |
+| **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` |
+
+Identity / behaviour weights (configurable in `cfg.risk.weights`,
+default **10 each**):
+
+| Contributor | Where it adds | YAML key | Default |
+|---|---|---|---:|
+| ASN reputation (hosting / VPN / Tor exit) | per-request + per-IP | `risk.weights.bad_asn` | 10 |
+| TLS / HTTP fingerprint reputation (bad JA4) | per-request + per-IP | `risk.weights.bad_ja4` | 10 |
+| Failed authentication | per-IP only | `risk.weights.failed_auth` | 10 |
+| Generic detector-hit modifier | per-request + per-IP | `risk.weights.detector_hit` | 10 |
+| Unknown bot class | per-request + per-IP | `risk.weights.bot_unknown` | 10 |
+| Repeat offender (history bonus) | per-IP only | `risk.weights.repeat_offender` | 10 |
+| Rule engine `RaiseRisk(delta)` | per-request + per-IP | rule-defined | n/a |
+| Canary route touch | per-request + per-IP | `risk.canary_routes` | `max_score` (immediate cap) |
+
+Concrete worked examples (single-request, multi-detector combo, lifecycle
+across decay, AI tiebreaker): [`risk-scoring.md`](risk-scoring.md#worked-example-sqli-probe-lifecycle).
 
 ---
 

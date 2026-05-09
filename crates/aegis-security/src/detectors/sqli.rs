@@ -78,7 +78,7 @@ fn check_patterns(input: &str, field: &str, signals: &mut Vec<Signal>) {
     for re in SQLI_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
-                score: 40,
+                score: super::scores::sqli::SQLI,
                 tag: "sqli".into(),
                 field: field.into(),
             });
