@@ -71,10 +71,27 @@ when the XFH carries:
 | Quoting / angle-bracket chars | `XFH: <script>` | HTML-context injection |
 | Three or more comma-separated hosts | `XFH: a.com, proxy.com, evil.com` | Attacker appended a host to a legitimate proxy chain |
 | Control bytes (NUL/CR/LF) | (defense-in-depth — hyper rejects upstream) | Header smuggling |
+| **Internal-IP literal** (added 2026-05-09 GAP-005) | `XFH: 127.0.0.1`, `XFH: 10.0.0.1`, `XFH: 169.254.169.254`, `XFH: ::1`, `XFH: fe80::1` | Cache-key poisoning / internal-admin code-path bypass / host-allowlist evasion. Legit proxy chains carry **public hostnames** in XFH; an RFC 1918 / loopback / link-local IP literal here has no benign use case. |
 
 Score: `35` (slightly below CRLF since the heuristic is broader).
 Field tag: `x-forwarded-host` so the audit log + dashboard can
 distinguish XFH poisoning from query-CRLF.
+
+#### Internal-IP literal — what specifically flags
+
+The `xfh_is_internal_ip_literal` helper (added GAP-005) checks the **first** comma-segment of the XFH value (after stripping an optional `:port`) against:
+
+| Range | Examples |
+|---|---|
+| IPv4 loopback (`127.0.0.0/8`) | `127.0.0.1`, `127.55.0.1` |
+| IPv4 RFC 1918 (`10.0.0.0/8`, `172.16-31.0.0/12`, `192.168.0.0/16`) | `10.0.0.1`, `172.20.5.5:8080`, `192.168.1.1` |
+| IPv4 link-local (`169.254.0.0/16`) | `169.254.169.254` (cloud metadata) |
+| IPv6 loopback | `::1`, `[::1]` |
+| IPv6 link-local | `fe80::1`, `[fe80::1]` |
+
+Public addresses like `8.8.8.8` or just-outside-RFC1918 addresses like `172.32.0.1` do **not** flag — the helper is a narrow internal-range check, not a generic IP-literal flag (legitimate origin servers may have IP-literal hostnames in some setups).
+
+**Why not also block "arbitrary domain mismatch":** many legit proxy chains do exactly that (`Host: internal-svc:8080`, `XFH: api.example.com`). Bare mismatch is too broad without an operator allowlist. Internal-IP-literal-in-XFH is the narrow shape with no legitimate use case, so it's safe to flag without operator config.
 
 ## HTTP request smuggling defense
 

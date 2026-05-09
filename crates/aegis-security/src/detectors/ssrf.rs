@@ -25,6 +25,19 @@ static SSRF_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:https?://0x[0-9a-f]+)",
         r"(?i)(?:https?://\d{8,10})",
         r"(?i)(?:https?://0[0-7]+\.)",
+        // GAP-004 (Run-5, 2026-05-09) — SSRF via URL-userinfo.
+        // The `://[^@/]*@` shape catches http://user@host/,
+        // http://user:pass@host/, etc. Some URL parsers split on
+        // the FIRST `@` they see; others on the LAST. Attackers
+        // exploit the discrepancy: a naive WAF allowlist that
+        // sees `http://evil.com:80@internal-svc/` and matches
+        // "starts with http:// and contains evil.com" would let
+        // the request through, even though the parser fetches
+        // `internal-svc:8080/path` (interpreting `evil.com:80@`
+        // as userinfo, not host). HTTP basic-auth in URL form is
+        // RFC 3986-deprecated and rare in modern apps; flagging
+        // URL-userinfo matches Chrome / major-WAF behaviour.
+        r"(?i)https?://[^@/\s]+@",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -169,6 +182,12 @@ mod tests {
     positive!(ssrf_172_20, "/proxy?url=http://172.20.0.1/internal");
     positive!(ssrf_10_1, "/proxy?url=http://10.1.2.3/secret");
     positive!(ssrf_192_168_0, "/proxy?url=http://192.168.0.1/router");
+    // GAP-004 (Run-5) — URL-userinfo positives.
+    positive!(ssrf_userinfo_user_pass, "/proxy?url=http://user:pass@10.0.0.1/secret");
+    positive!(ssrf_userinfo_parser_split,
+        "/proxy?url=https://evil.example.com:80@internal-svc/path");
+    positive!(ssrf_userinfo_at_127, "/proxy?u=http://x@127.0.0.1");
+    positive!(ssrf_userinfo_no_pass, "/proxy?url=http://admin@internal/admin");
 
     negative!(clean_root, "/");
     negative!(clean_api, "/api/users");

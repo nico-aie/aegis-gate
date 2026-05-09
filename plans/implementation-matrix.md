@@ -85,9 +85,9 @@ table — keep them in sync.
 |---|---|---|
 | [`detectors/sqli.md`](../docs/security/detectors/sqli.md) | **Implemented** | `detectors/sqli.rs`. |
 | [`detectors/xss.md`](../docs/security/detectors/xss.md) | **Implemented** | `detectors/xss.rs`. |
-| [`detectors/path-traversal.md`](../docs/security/detectors/path-traversal.md) | **Implemented** | `detectors/path_traversal.rs`. |
-| [`detectors/ssrf.md`](../docs/security/detectors/ssrf.md) | **Implemented** | `detectors/ssrf.rs`. |
-| [`detectors/header-injection.md`](../docs/security/detectors/header-injection.md) | **Implemented** | `detectors/header_injection.rs`. |
+| [`detectors/path-traversal.md`](../docs/security/detectors/path-traversal.md) | **Implemented** | `detectors/path_traversal.rs` — Run-5 GAP-002 added overlong UTF-8 (`%c0%ae{2,}`, `%c0%af`, `%c0%5c`, `%c1%9c`) + Docker socket path (`/var/run/docker.sock`). |
+| [`detectors/ssrf.md`](../docs/security/detectors/ssrf.md) | **Implemented** | `detectors/ssrf.rs` — Run-5 GAP-004 added URL-userinfo pattern (`https?://[^@/\s]+@`) for parser-split bypass attacks. |
+| [`detectors/header-injection.md`](../docs/security/detectors/header-injection.md) | **Implemented** | `detectors/header_injection.rs` — Run-4 SEC-L002 X-Forwarded-Host keyword detection + Run-5 GAP-005 internal-IP literal detection (RFC 1918 / loopback / link-local IPv4 + IPv6 loopback / link-local). |
 | [`detectors/recon.md`](../docs/security/detectors/recon.md) | **Implemented** | `detectors/recon.rs` — Run-4 SEC-L001 Docker REST + Run-5 GAP-001 framework recon (Spring actuator dangers / Laravel Ignition / Swagger / GraphQL / K8s API / Kibana / Jenkins / CGI / Prometheus federation). Path scan now uses `path_and_query()` so query-shaped probes (`/metrics?format=…`) match. |
 | [`detectors/body-abuse.md`](../docs/security/detectors/body-abuse.md) | **Implemented** | `detectors/body_abuse.rs` — Run-5 GAP-010 prototype pollution (`__proto__`, `constructor.prototype`) sub-tag `proto_pollution` at score 45 alongside existing oversize / deep-nesting / mass-assign / XXE. |
 | [`detectors/brute-force.md`](../docs/security/detectors/brute-force.md) | **Partial** | `BruteForce` is a `DetectorClass` enum variant; the actual detection is via `velocity.rs` (login-failure counter). No dedicated `detectors/brute_force.rs`. |
