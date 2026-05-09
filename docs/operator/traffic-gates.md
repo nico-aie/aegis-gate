@@ -87,7 +87,8 @@ The Traffic Gates page polls `/api/blacklist`, `/api/whitelist`,
 | Gate | Tune via | Hot-reload? |
 |---|---|---|
 | Access list | Dashboard → Access Lists page (`POST /api/blacklist` etc.) | ✅ yes — audit-mutated |
-| Strike-block threshold | Dashboard → Settings → Risk thresholds (`PUT /api/risk/thresholds`) | ✅ yes — audit-mutated |
+| Strike-block threshold | YAML (`risk.strikes.block_at`); reset a single IP via `POST /api/risk/<ip>/reset` | ⚠ partial — config edit needs restart, per-IP reset is hot |
+| Cumulative IP risk thresholds | Dashboard → Traffic Gates → Cumulative IP risk card (`PUT /api/risk/thresholds`) | ✅ yes — audit-mutated (moved 2026-05-10) |
 | Rate-limit | Dashboard → Traffic Gates → Rate Limit card → Edit (`PUT /api/rate-limit`) | ✅ yes — audit-mutated (2026-05-09) |
 | DDoS thresholds | Dashboard → Traffic Gates → DDoS card → Edit (`PUT /api/gates/ddos`) | ✅ yes — audit-mutated (2026-05-09) |
 

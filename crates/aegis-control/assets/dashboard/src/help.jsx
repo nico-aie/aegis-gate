@@ -143,7 +143,7 @@ function TabHowItWorks() {
             <li><strong>Route resolution</strong> matches the request's host + path + method against the route table (first-match-wins, top to bottom).</li>
             <li><strong>Traffic gates</strong> — four binary short-circuits fire in cheapest-first order before the detector chain: <em>access list</em> (IP/CIDR/ASN/country), <em>strike-block</em> (lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code>), <em>rate limit</em> (token bucket → 429), <em>DDoS gate</em> (per-IP sliding-window auto-block → 403 + 5-min TTL). All four configurable from the Traffic Gates page; all four hot-reloadable.</li>
             <li><strong>Detector chain</strong> — every detector enabled in the mask runs on the request: SQLi, XSS, path traversal, SSRF, header injection, body abuse, recon, brute_force, command_injection, template_injection, nosql_injection, open_redirect, plus the AI detector if it's on.</li>
-            <li><strong>Risk + tier gate</strong> — detector signals add to a per-request composite score; if it crosses the route's tier threshold (critical 50 / high 70 / medium 80 / low 90), the request is blocked (HTTP 403 / 429). Separately, every detector hit also increments the client IP's <em>cumulative IP risk score</em>, which has its own thresholds in Settings → "Cumulative IP risk thresholds".</li>
+            <li><strong>Risk + tier gate</strong> — detector signals add to a per-request composite score; if it crosses the route's tier threshold (critical 50 / high 70 / medium 80 / low 90), the request is blocked (HTTP 403 / 429). Separately, every detector hit also increments the client IP's <em>cumulative IP risk score</em>, which has its own thresholds on the Traffic Gates page → "Cumulative IP risk thresholds" (next to Strike-Block).</li>
             <li><strong>Forward</strong> — if allowed, the request is proxied to the route's upstream pool with the configured scheme, load-balancing, host-header rewrite, etc.</li>
             <li><strong>Audit + metrics</strong> — every decision lands as a hash-chained audit event and one entry per Prometheus histogram bucket.</li>
           </ol>
@@ -276,7 +276,7 @@ function TabGlossary() {
     ['Host header override',
       'Per-member `host_header:` field. Drives both the outbound `Host` AND the TLS SNI for HTTPS upstreams. Required for multi-vhost backends (Cloudflare-fronted, GitHub Pages, shared nginx).'],
     ['Cumulative IP risk score',
-      'Per-IP score that accumulates across requests and decays exponentially (default half-life 5 min from `risk.decay_half_life`). Two thresholds gate the challenge ladder: `risk.thresholds.challenge_at` (default 40 — JS / CAPTCHA before allow) and `risk.thresholds.block_at` (default 80 — refuse all further requests from this IP at the access gate, before any detector runs, until decay drops the score below). Edit live via Settings → "Cumulative IP risk thresholds" card. Distinct from the per-request tier risk threshold (Detectors → Edit tier).'],
+      'Per-IP score that accumulates across requests and decays exponentially (default half-life 5 min from `risk.decay_half_life`). Two thresholds gate the challenge ladder: `risk.thresholds.challenge_at` (default 40 — JS / CAPTCHA before allow) and `risk.thresholds.block_at` (default 80 — refuse all further requests from this IP at the access gate, before any detector runs, until decay drops the score below). Edit live on Traffic Gates → "Cumulative IP risk thresholds" (next to Strike-Block). Distinct from the per-request tier risk threshold (Detectors & Tiers → Edit tier).'],
     ['Strike count (lifetime)',
       'A separate per-IP counter that never decays — `risk.strikes.block_at` (default 50 lifetime malicious events) permanently blocks the IP until an operator resets it via `PUT /api/risk/{ip}/reset`. The "you ran out of chances" gate, distinct from the score-and-decay gate above.'],
   ];
@@ -407,7 +407,7 @@ function TabFaq() {
   const QA = [
     {
       q: 'A request shows IP risk = 100 but the action is ALLOW. Bug?',
-      a: 'No. The "IP risk" column is the cumulative IP risk score for that client IP — it accumulates across requests and decays over time (default half-life 5 min). A single request can be allowed (it didn\'t trigger any detector this time) while the IP carries high cumulative risk from earlier hits. To make cumulative IP risk also block, lower `risk.thresholds.block_at` from Settings → "Cumulative IP risk thresholds" card. Watch out for false positives if legitimate users share an IP (NAT / corporate proxy).',
+      a: 'No. The "IP risk" column is the cumulative IP risk score for that client IP — it accumulates across requests and decays over time (default half-life 5 min). A single request can be allowed (it didn\'t trigger any detector this time) while the IP carries high cumulative risk from earlier hits. To make cumulative IP risk also block, lower `risk.thresholds.block_at` from Traffic Gates → "Cumulative IP risk thresholds" (next to Strike-Block). Watch out for false positives if legitimate users share an IP (NAT / corporate proxy).',
     },
     {
       q: 'Why is "Audit Trail" hiding request decisions by default?',
