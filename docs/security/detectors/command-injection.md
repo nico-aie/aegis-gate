@@ -163,6 +163,24 @@ Broader header scans risk overlap with `header_injection`; the allowlist is cons
 
 **Field tag stays `command_injection`** — audit log records the firing detector class, not the sub-pattern. Operators investigating high-cmdi-volume from a host can grep their audit log for `${jndi:` to identify Log4Shell specifically.
 
+### GAP-013 — blind RCE / time-based primitives (added 2026-05-09)
+
+QA Run-6 noted that the canonical blind-RCE shape `;sleep+5;echo+done` slipped through because the cmdi shell-builtin allowlists didn't list `sleep` or `timeout`. These are the standard "verify exploitation by triggering a measurable delay" primitives operators rely on attackers using when they have command injection but no output channel.
+
+The three shell-builtin allowlists (`|cmd`, `;cmd`, `&&cmd` / `||cmd`) now include `sleep\b` and `timeout\b`. The existing metacharacter-prefix requirement keeps false positives near zero — bare `?action=sleep` or `?timeout=300` URL params don't fire because there's no `;`/`|`/`&&`/`||` prefix in front of `sleep`. Prose mentions like `?msg=I will sleep tonight` also stay green.
+
+| Probe | Fires? | Why |
+|---|---|---|
+| `?x=a;sleep+5` | yes | `;sleep` matches the semicolon-shell-cmd allowlist |
+| `?x=a|sleep 5` | yes | `\|sleep` matches the pipe-shell-cmd allowlist |
+| `?x=a&&sleep+10` | yes | `&&sleep` matches the chain allowlist |
+| `?x=test;timeout+5+whoami` | yes | `;timeout` matches; bonus signal from `;whoami` already covered |
+| `?action=sleep` | no | no metacharacter prefix |
+| `?timeout=300` | no | URL param named `timeout`, no shell context |
+| `?msg=I+will+sleep+tonight` | no | bare word in prose |
+
+Score is the cmdi baseline (50) — blind sleep is high-confidence injection, not Critical-RCE / CVE tier.
+
 ### GAP-008b regression coverage (2026-05-09)
 
 QA Run-6 reported header-borne obfuscation as missed. Verification with regression tests pinned in `command_injection.rs::tests` confirms the patterns added in Run-5 GAP-008 already catch every reported shape:

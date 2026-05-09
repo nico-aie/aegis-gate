@@ -36,6 +36,123 @@ pub struct Signal {
     pub field: String,
 }
 
+/// Narrow HTML-entity decoder for XSS pattern normalization.
+///
+/// 2026-05-09 (Run-6 GAP-012) — handles the entities that XSS
+/// payloads use to bypass naive substring filters:
+///
+/// - Numeric: `&#NN;` (decimal), `&#xHH;` (hex)
+/// - Named: `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&amp;`, `&#0;`,
+///   `&sol;` (`/`), `&colon;` (`:`)
+///
+/// **NOT a full HTML5 entity decoder** — only the chars XSS
+/// payloads use to encode `<`, `>`, `"`, `'`, `&`, `/`, `:`. A
+/// full entity table (3 000+ entries) is overkill — XSS bypasses
+/// the parser, and the parser only does the canonical-relevant
+/// entities for tags + delimiters.
+///
+/// **Cheap pre-filter:** bail before allocating if no `&` is
+/// present. Most production traffic never contains `&` outside
+/// of legitimate query separators (which still pass through this
+/// helper unchanged because the entity has to be `&NAME;` or
+/// `&#NN;` shape).
+///
+/// **Trailing semicolon optional** for hash-prefixed forms
+/// (`&#60`, `&#x3c`) because some HTML parsers accept the
+/// trailing-semicolon-less form, which means an attacker can
+/// send the same shape and an entity-honoring backend will still
+/// decode it.
+pub(crate) fn html_entity_decode(input: &str) -> String {
+    if !input.contains('&') {
+        return input.to_string();
+    }
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'&' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        // Numeric entity: `&#NN;` (decimal) or `&#xHH;` (hex).
+        if i + 2 < bytes.len() && bytes[i + 1] == b'#' {
+            let (radix, value_start) = if bytes[i + 2] == b'x' || bytes[i + 2] == b'X' {
+                (16u32, i + 3)
+            } else {
+                (10u32, i + 2)
+            };
+            let mut j = value_start;
+            // Bound the digit run to a small max to avoid
+            // pathological inputs; 8 digits is enough for all
+            // valid Unicode code points.
+            while j < bytes.len() && j - value_start < 8 {
+                let ok = if radix == 10 {
+                    bytes[j].is_ascii_digit()
+                } else {
+                    bytes[j].is_ascii_hexdigit()
+                };
+                if !ok {
+                    break;
+                }
+                j += 1;
+            }
+            if j > value_start {
+                let digits = std::str::from_utf8(&bytes[value_start..j]).unwrap_or("");
+                if let Ok(code) = u32::from_str_radix(digits, radix) {
+                    if let Some(ch) = char::from_u32(code) {
+                        let mut buf = [0u8; 4];
+                        out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                        // Consume the optional trailing `;`.
+                        i = if j < bytes.len() && bytes[j] == b';' {
+                            j + 1
+                        } else {
+                            j
+                        };
+                        continue;
+                    }
+                }
+            }
+            // Malformed numeric entity → emit `&` and advance.
+            out.push(b'&');
+            i += 1;
+            continue;
+        }
+        // Named entity: `&NAME;` — small allowlist.
+        if i + 3 < bytes.len() {
+            // Find the next `;` within a short window (8 chars
+            // covers every entity in our allowlist).
+            let max_end = (i + 1 + 8).min(bytes.len());
+            let mut sc = i + 1;
+            while sc < max_end && bytes[sc] != b';' {
+                sc += 1;
+            }
+            if sc < bytes.len() && bytes[sc] == b';' {
+                let name = &bytes[i + 1..sc];
+                let replacement: Option<&[u8]> = match name {
+                    b"lt" => Some(b"<"),
+                    b"gt" => Some(b">"),
+                    b"quot" => Some(b"\""),
+                    b"apos" => Some(b"'"),
+                    b"amp" => Some(b"&"),
+                    b"sol" => Some(b"/"),
+                    b"colon" => Some(b":"),
+                    _ => None,
+                };
+                if let Some(r) = replacement {
+                    out.extend_from_slice(r);
+                    i = sc + 1;
+                    continue;
+                }
+            }
+        }
+        // Bare `&` not followed by a recognised entity — pass through.
+        out.push(b'&');
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Simple URL decode: `+` → space, `%XX` → byte.
 pub(crate) fn url_decode(input: &str) -> String {
     let mut out = Vec::with_capacity(input.len());
