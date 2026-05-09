@@ -64,6 +64,7 @@ const RESERVED_RULE_IDS: &[&str] = &[
     "command_injection",
     "template_injection",
     "nosql_injection",
+    "open_redirect",
 ];
 
 /// Validate a candidate rule id. Returns `None` on accept,

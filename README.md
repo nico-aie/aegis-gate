@@ -48,7 +48,11 @@ SOC-first dashboard.
   including Log4Shell `${jndi:...}` at higher score), template
   injection (Jinja2 / Twig / SpEL / Freemarker / Velocity /
   Handlebars), NoSQL operator injection (`[$ne]`, `[$where]`,
-  `{"$gt":...}`). Per-tier on/off, compliance-clamped, hot-reloadable.
+  `{"$gt":...}`), open redirect (`?next=http://evil.com`,
+  `?redirect_uri=javascript:…` with operator allowlist).
+  Prototype pollution (`__proto__`, `constructor.prototype`)
+  caught under the body-abuse class. Per-tier on/off,
+  compliance-clamped, hot-reloadable.
   Per-detector docs in [`docs/security/detectors/`](docs/security/detectors/).
 - **Rule engine** — AST + parser + evaluator with hot-reload,
   custom rule definitions in YAML.
