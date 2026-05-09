@@ -126,6 +126,19 @@ pub struct WafConfig {
     /// is loud, not silent.
     #[serde(default)]
     pub ai: AiConfig,
+    /// 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS protection
+    /// (per-IP burst detection + EWMA spike mode + cluster-
+    /// wide auto-block via the state backend). Defaults to
+    /// `enabled: true, observe_only: true` so the detector
+    /// runs in shadow mode out of the box: every per-IP-flood
+    /// burst is counted, every spike is observed, but no
+    /// request is 503'd until the operator flips
+    /// `observe_only: false` after baking the metrics. See
+    /// `docs/security/ddos-protection.md` for the operator
+    /// guide and `plans/issue-fix/internal-audit-2026-05-09-ddos/`
+    /// for the wire-up plan.
+    #[serde(default)]
+    pub ddos: DdosConfig,
 }
 
 /// External interop surface configuration. Always-on by default.
@@ -1677,6 +1690,72 @@ impl Default for DetectorsConfig {
 pub struct DetectorToggle {
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS protection config.
+///
+/// `enabled` toggles the detector wholesale (default `true`).
+///
+/// `observe_only` runs the detector + emits Prometheus counters +
+/// writes audit events but **never short-circuits with 503**. This
+/// is the safe default until the operator confirms the signal is
+/// clean in their environment, after which they flip to
+/// `observe_only: false` for Phase 2 enforcement. Default `true`.
+///
+/// The threshold knobs (`per_ip_limit`, `per_ip_window_s`,
+/// `block_ttl_s`, `spike_multiplier`) match the existing internal
+/// `aegis_security::ddos::DdosConfig::default()` values; the
+/// `tightened_per_ip_rps` knob is the per-IP cap that kicks in
+/// during cluster spike mode.
+///
+/// YAML shape:
+///
+/// ```yaml
+/// ddos:
+///   enabled: true
+///   observe_only: true   # Phase 1 default — no 503s
+///   per_ip_limit: 1000
+///   per_ip_window_s: 10
+///   block_ttl_s: 300
+///   spike_multiplier: 3.0
+///   tightened_per_ip_rps: 20
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+pub struct DdosConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub observe_only: bool,
+    #[serde(default = "default_ddos_per_ip_limit")]
+    pub per_ip_limit: u64,
+    #[serde(default = "default_ddos_per_ip_window_s")]
+    pub per_ip_window_s: u32,
+    #[serde(default = "default_ddos_block_ttl_s")]
+    pub block_ttl_s: u64,
+    #[serde(default = "default_ddos_spike_multiplier")]
+    pub spike_multiplier: f64,
+    #[serde(default = "default_ddos_tightened_rps")]
+    pub tightened_per_ip_rps: u64,
+}
+
+fn default_ddos_per_ip_limit() -> u64 { 1000 }
+fn default_ddos_per_ip_window_s() -> u32 { 10 }
+fn default_ddos_block_ttl_s() -> u64 { 300 }
+fn default_ddos_spike_multiplier() -> f64 { 3.0 }
+fn default_ddos_tightened_rps() -> u64 { 20 }
+
+impl Default for DdosConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            observe_only: true,
+            per_ip_limit: default_ddos_per_ip_limit(),
+            per_ip_window_s: default_ddos_per_ip_window_s(),
+            block_ttl_s: default_ddos_block_ttl_s(),
+            spike_multiplier: default_ddos_spike_multiplier(),
+            tightened_per_ip_rps: default_ddos_tightened_rps(),
+        }
+    }
 }
 
 /// 2026-05-09 Run-5 GAP-009 — open-redirect detector config.

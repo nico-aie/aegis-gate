@@ -96,6 +96,15 @@ pub struct ProxyContext {
     pub pow_issuer: std::sync::OnceLock<
         Arc<aegis_security::challenge::PowIssuer>,
     >,
+    /// 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS runtime. Wraps
+    /// `DdosDetector` + the state-backend handle + the observe-
+    /// only flag so the data-plane call site is a single lookup.
+    /// `OnceLock` because the boot path constructs `ProxyContext`
+    /// before the state backend is fully initialised; `run.rs`
+    /// installs this once both pieces are ready. Empty when
+    /// `cfg.ddos.enabled = false` — the data plane treats absent
+    /// runtime as "skip the check".
+    pub ddos: std::sync::OnceLock<Arc<aegis_security::ddos::DdosRuntime>>,
 }
 
 impl ProxyContext {
@@ -132,6 +141,7 @@ impl ProxyContext {
             websocket_metrics: None,
             interop_modes: std::sync::OnceLock::new(),
             pow_issuer: std::sync::OnceLock::new(),
+            ddos: std::sync::OnceLock::new(),
         })
     }
 
