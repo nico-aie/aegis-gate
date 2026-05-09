@@ -96,9 +96,6 @@ load_shedding:
     catchall_ratio: 0.5
     medium_ratio:   0.7
     high_ratio:     0.9
-  per_tenant_defaults:
-    concurrency_soft: 500
-    concurrency_hard: 1000
 ```
 
 ## P7 — `LoadMode` discrete-state companion

@@ -158,7 +158,6 @@ each category.
 | Doc | Status | Summary |
 |---|---|---|
 | [advanced-features.md](./future/advanced-features.md) | Phase B intake | Template for collecting + scoring future feature requests |
-| [multi-tenancy.md](./future/multi-tenancy.md) | Deferred | Per-tenant isolation + quotas + residency |
 | [rbac-sso.md](./future/rbac-sso.md) | Deferred | OIDC / SAML / RBAC |
 
 ---
@@ -179,7 +178,7 @@ each category.
 8. `control-plane/dashboard.md` → `control-plane/dashboard-auth.md` →
    `observability/audit-logging.md` — operator surfaces
 9. `operations/ha-clustering.md` → `operations/compliance.md` — the
-   enterprise story (multi-tenancy is deferred; see `future/`)
+   enterprise story
 
 ## Ownership map
 

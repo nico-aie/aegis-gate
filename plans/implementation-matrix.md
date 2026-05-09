@@ -63,7 +63,7 @@ table — keep them in sync.
 | [`rule-engine.md`](../docs/security/rule-engine.md) | **Implemented** | `aegis-security/src/rules/{ast,eval,parser,linter,mod}.rs`. |
 | [`tiered-protection.md`](../docs/security/tiered-protection.md) | **Implemented** | `aegis-core/src/tier.rs` + per-tier detector mask overrides (P2/P3). |
 | [`rate-limiting.md`](../docs/security/rate-limiting.md) | **Implemented** | `rate_limit/{bucket,sliding,ip_limiter,mod}.rs`. |
-| [`ddos-protection.md`](../docs/security/ddos-protection.md) | ⚠️ **Partial — observe-only single-node (Phase 1)** | Phase 1 (2026-05-09) wired: `DdosRuntime` instantiated in `aegis-proxy/src/run.rs` from `cfg.ddos`, called early in `data_plane.rs`, emits `ddos_observed` audit events on burst-exceed. Default `cfg.ddos.observe_only = true` so no 503 yet. Spike-detection ticker runs once/sec. Phase 2 (enforce + 503 + Prometheus + dashboard panel) follows after operators bake the observe-only signal. Per-tenant + cluster-coordinated pieces deferred behind multi-tenancy + ha-clustering. Plan: [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](./issue-fix/internal-audit-2026-05-09-ddos/). |
+| [`ddos-protection.md`](../docs/security/ddos-protection.md) | ✅ **Implemented (v1 single-node)** | `DdosRuntime` instantiated in `aegis-proxy/src/run.rs` from `cfg.ddos`, called early in `data_plane.rs`, emits `ddos_blocked` (enforce) or `ddos_observed` (observe-only) audit events on burst-exceed. Default `cfg.ddos.observe_only = false` — secure by default. Spike-detection ticker runs once/sec. Returns HTTP 403 + `X-WAF-Action: block` per contract §3.1 (volumetric abuse). Cluster-wide spike-mode broadcast deferred behind ha-clustering; dashboard panel + Prometheus counters queued as a follow-up. Plan: [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](./issue-fix/internal-audit-2026-05-09-ddos/). |
 | [`ip-reputation.md`](../docs/security/ip-reputation.md) | **Partial** | `ip_rep/{asn,xff,mod}.rs` — XFF validation + ASN matching. **No live threat-intel feed fetcher** — Phase B **B3-T2**. |
 | [`geoip-filtering.md`](../docs/security/geoip-filtering.md) | **Implemented** | `geoip/{mod,reader}.rs` (gated by `aegis-security/geoip`) + rule-engine `country` / `asn` conditions with hot-reload. |
 | [`device-fingerprinting.md`](../docs/security/device-fingerprinting.md) | **Implemented** | `fingerprint/{ja3,ja4,h2,mod}.rs`. |
@@ -131,7 +131,6 @@ table — keep them in sync.
 | Doc | Status | Notes |
 |---|---|---|
 | [`advanced-features.md`](../docs/future/advanced-features.md) | **Intake template** | Open process for proposals NOT covered by Phase B. |
-| [`multi-tenancy.md`](../docs/future/multi-tenancy.md) | **Deferred** | No production code; design preserved. |
 | [`rbac-sso.md`](../docs/future/rbac-sso.md) | **Deferred** | No production code; OIDC / SAML / RBAC retained as future reference. |
 
 ---

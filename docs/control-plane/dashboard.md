@@ -9,21 +9,19 @@
 > Page inventory + REST/SSE contract live at
 > [`enterprise/`](./enterprise/). Source:
 > `crates/aegis-control/assets/dashboard/src/`. The contract below
-> (control-plane listener, single-tenant auth, deferred RBAC /
-> multi-tenancy) is unchanged. The legacy single-file shell was
-> removed in D-M6-T6.9 — drop `admin.dashboard.legacy_shell: true`
-> from `waf.yaml` if present.
+> (control-plane listener, single-tenant auth, deferred RBAC) is
+> unchanged. The legacy single-file shell was removed in D-M6-T6.9
+> — drop `admin.dashboard.legacy_shell: true` from `waf.yaml` if
+> present.
 
 > **v1 scope.** The dashboard is served by the **control-plane listener**
 > (separate from data-plane traffic). Authentication is local
 > (argon2id password + HMAC session + CSRF + IP allowlist, optional
-> TOTP/mTLS) — see [`dashboard-auth.md`](./dashboard-auth.md). The WAF
-> runs single-tenant in v1; OIDC/SSO, RBAC roles, and multi-tenant
-> scoping are deferred (see
-> [`future/rbac-sso.md`](../future/rbac-sso.md) and
-> [`future/multi-tenancy.md`](../future/multi-tenancy.md)). The
-> listener also exposes Prometheus `/metrics`,
-> `/healthz/{live,ready,startup}`, and the full admin API. See
+> TOTP/mTLS) — see [`dashboard-auth.md`](./dashboard-auth.md). OIDC/SSO
+> and RBAC roles are deferred (see
+> [`future/rbac-sso.md`](../future/rbac-sso.md)). The listener also
+> exposes Prometheus `/metrics`, `/healthz/{live,ready,startup}`, and
+> the full admin API. See
 > [`observability-prometheus-otel.md`](../observability/prometheus-otel.md).
 
 ## Purpose
@@ -74,10 +72,9 @@ session cookie + matching CSRF token for mutating methods. See
 | `/healthz/ready` | Readiness (etcd reachable, certs loaded, ≥1 healthy upstream) | open |
 | `/healthz/startup` | Startup (first config load done) | open |
 
-> **Deferred.** `/api/tenants` and `/api/tokens` are out of scope for
-> v1. The single admin principal holds all privileges; per-user API
-> tokens, tenant CRUD, and role separation reappear with the deferred
-> OIDC/RBAC/multi-tenancy work.
+> **Deferred.** `/api/tokens` is out of scope for v1. The single
+> admin principal holds all privileges; per-user API tokens and
+> role separation reappear with the deferred OIDC/RBAC work.
 
 ## UI views
 

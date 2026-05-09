@@ -18,10 +18,9 @@ challenge, high → block. Canary routes instantly max the score.
 ## Composite identity
 
 ```
-RiskKey = (tenant_id, client_ip, device_fp, session, authenticated_user)
+RiskKey = (client_ip, device_fp, session, authenticated_user)
 ```
 
-- `tenant_id` — v2; forces per-tenant isolation of scores
 - `device_fp` — JA3/JA4 + UA hash (see [`device-fingerprinting.md`](./device-fingerprinting.md))
 - `session` — session cookie or bearer-derived id
 - `authenticated_user` — optional, present when JWT / OIDC validated

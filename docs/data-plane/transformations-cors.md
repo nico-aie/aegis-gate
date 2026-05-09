@@ -28,7 +28,7 @@ transforms:
 
 Variables:
 
-- `$host`, `$client_ip`, `$request_id`, `$route_id`, `$tenant_id`
+- `$host`, `$client_ip`, `$request_id`, `$route_id`
 - `$jwt.<claim>` — claim from validated JWT
 - `$cookie.<name>`, `$header.<name>`
 

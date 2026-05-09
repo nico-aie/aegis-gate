@@ -57,11 +57,10 @@ Every line above is a doc-vs-code contradiction.
 |---|---|
 | "Implemented — `aegis-security/src/ddos.rs`" | **File exists, contents are dead code** |
 | Sub-modules `src/ddos/detector.rs`, `auto_block.rs`, `sweeper.rs`, `mode.rs` | **Single file `ddos.rs`** — multi-module structure was never built |
-| YAML `ddos: enabled: true ...` config block with `per_ip`, `global`, `per_tenant_overrides` | **Zero `ddos:` field on the Rust config struct** — operators cannot configure it |
+| YAML `ddos: enabled: true ...` config block with `per_ip`, `global` | **Zero `ddos:` field on the Rust config struct** — operators cannot configure it |
 | "Blocked IP hits the WAF: HTTP 503, no backend contact" | **Proxy never calls `is_auto_blocked` on the request path; never returns 503 from a DDoS check** |
 | "Per-IP burst detection in 1-second sliding window" | Logic exists in `DdosDetector::check`. Never invoked. |
 | "Global rate spike detection" via `tick_rps()` | Method exists. **No tokio task spawns it in production.** |
-| "Per-tenant scope, `waf:block:{tenant}:{ip}`" | Multi-tenancy is **explicitly DEFERRED** ([`docs/future/multi-tenancy.md`](../../../docs/future/multi-tenancy.md)). The keyspace doesn't exist. |
 | "Cluster-wide DDoS mode" | `spike_active` is a per-process `AtomicU64`. Cluster-shared mode broadcast doesn't exist. |
 | "Adaptive load shedder drops MEDIUM tier first" | Load shedder is implemented (`aegis-proxy/src/shed.rs`) but **not wired to DDoS** |
 | "Dashboard alert on DDoS mode" | No dashboard surface, no metric, no audit event for DDoS-triggered blocks |
@@ -115,8 +114,7 @@ Plan: [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](../../../plans/issue-f
 - [ ] Per-IP burst exceeded → `state.auto_block` writes a TTL'd block entry
 - [ ] Background `tokio::spawn` runs `tick_rps()` every 1 s for spike detection
 - [ ] Spike mode increments a Prometheus counter and emits an audit event
-- [ ] Per-tenant scope is **explicitly removed** from the doc until multi-tenancy lands (no fake feature claims)
-- [ ] Documentation status field updated truthfully — "Partial (single-node v1)" until the cluster pieces land, then "Implemented (v2)" later
+- [ ] Documentation status field updated truthfully — "Implemented (v1 single-node)" once the wire-up lands; cluster-wide spike-mode broadcast deferred behind ha-clustering
 - [ ] Implementation-matrix row reflects the same status
 - [ ] Integration tests cover the 503-on-blocked-IP path end-to-end (full request through proxy, not just the detector unit)
 - [ ] No regression on existing tests (1242 security + 1045 control + workspace green)
@@ -130,4 +128,3 @@ Plan: [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](../../../plans/issue-f
 - [`crates/aegis-security/src/ddos.rs`](../../../crates/aegis-security/src/ddos.rs) — the stub
 - [`docs/operator/risk-tuning.md`](../../../docs/operator/risk-tuning.md) — adjacent doc that explains how the risk-strikes auto-block works (one of the partial backstops)
 - [`docs/data-plane/adaptive-load-shedding.md`](../../../docs/data-plane/adaptive-load-shedding.md) — actually-implemented feature DDoS should integrate with
-- [`docs/future/multi-tenancy.md`](../../../docs/future/multi-tenancy.md) — the deferred dependency that blocks the per-tenant claims in the DDoS doc

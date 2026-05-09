@@ -28,7 +28,7 @@ auth:
   endpoint: "http://auth.internal/verify"
   method: GET
   copy_request_headers: ["authorization", "cookie", "x-forwarded-*"]
-  copy_response_headers: ["x-user-id", "x-tenant-id", "x-scopes"]
+  copy_response_headers: ["x-user-id", "x-scopes"]
   timeout_ms: 200
   failure_mode: fail_close
 ```
@@ -51,7 +51,6 @@ auth:
   required_claims: { scope: "read:api" }
   claim_to_header:
     sub: "x-user-id"
-    tenant_id: "x-tenant-id"
 ```
 
 - JWKS fetched on first use, cached via `moka` with TTL + stale-on-error

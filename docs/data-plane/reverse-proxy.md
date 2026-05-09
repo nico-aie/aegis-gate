@@ -38,18 +38,16 @@ Built on `hyper 1.x` + `hyper-util` + `tokio`. The listener is held by the
 4. **Admission control** (see [`adaptive-load-shedding.md`](./adaptive-load-shedding.md))
    rejects with 503 under pressure before the pipeline runs.
 5. **Route match** against the `RouteTable` (host + path → `Route`).
-6. **Tenant governor** (see [`multi-tenancy.md`](../future/multi-tenancy.md)) enforces
-   per-tenant quotas.
-7. **Security pipeline** — the v1 pipeline stages (rules, detectors, risk,
+6. **Security pipeline** — the v1 pipeline stages (rules, detectors, risk,
    rate limits, challenge) run unchanged against the resolved route.
-8. **Auth** — ForwardAuth / JWT / HMAC per route (see [`external-auth.md`](../security/external-auth.md)).
-9. **API schema guard** — OpenAPI / GraphQL validation (see [`api-security.md`](../security/api-security.md)).
-10. **DLP inbound** scanning.
-11. **Transforms** — header/URL rewrite, CORS (see [`transformations-cors.md`](./transformations-cors.md)).
-12. **Upstream selection** via the route's `Pool`, with LB + health awareness.
-13. **Forward** using the pool's dedicated `hyper` client.
-14. **Outbound filters**: DLP response scan, redactor, header strip, CORS.
-15. **Audit emit** + metrics + access log.
+7. **Auth** — ForwardAuth / JWT / HMAC per route (see [`external-auth.md`](../security/external-auth.md)).
+8. **API schema guard** — OpenAPI / GraphQL validation (see [`api-security.md`](../security/api-security.md)).
+9. **DLP inbound** scanning.
+10. **Transforms** — header/URL rewrite, CORS (see [`transformations-cors.md`](./transformations-cors.md)).
+11. **Upstream selection** via the route's `Pool`, with LB + health awareness.
+12. **Forward** using the pool's dedicated `hyper` client.
+13. **Outbound filters**: DLP response scan, redactor, header strip, CORS.
+14. **Audit emit** + metrics + access log.
 
 ## Protocol adapters
 

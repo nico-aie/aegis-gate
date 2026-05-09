@@ -10,19 +10,26 @@
 >
 > | Phase | Status | Commit |
 > |---|---|---|
-> | Phase 1 — config + telemetry observe-only | ✅ **Shipped** | [`095537d`](#) |
-> | Phase 2 — enforce path + 503 short-circuit | ⏳ Pending operator bake-in | — |
+> | Phase 1 — config + telemetry observe-only (planned split) | ✅ **Shipped** | [`095537d`](#) |
+> | Default flipped to enforce + naming hygiene | ✅ **Shipped** | (this PR) |
+> | Phase 2 — Prometheus counters + dashboard panel | ⏳ Follow-up |  — |
 >
-> Phase 1 wired `DdosRuntime` into the proxy hot path with
-> `cfg.ddos.observe_only = true` by default — the detector runs on
-> every request and emits `ddos_observed` audit events on burst-exceed,
-> but no request is 503'd. Per-second `tick_rps()` ticker spawned in
-> `aegis-proxy/src/run.rs`. 1264 security tests + 18/18 workspace
-> binaries green. Phase 2 follows once operators have validated the
-> signal in their environment (typically ≥1 day of staging traffic).
-> The Phase 2 implementation is mostly the `observe_only: false` flip
-> + Prometheus counter wiring + dashboard panel; the data-plane
-> 503 path is already coded behind `outcome.should_enforce()`.
+> The original two-phase split (Phase 1 observe-only → operator
+> bake-in → Phase 2 enforce flip) was **collapsed** after review.
+> Reasoning: every other security primitive in this codebase
+> (rate-limit, strike-block, access-list, detector chain) is
+> secure-by-default; making DDoS the lone exception was
+> inconsistent. Default config defaults are deliberately generous
+> (1000 req/s per IP, 10s window) so legitimate users never reach
+> them — operators with edge cases (CDN-fronted high-RPS-per-IP,
+> internal-API trusted callers) opt into shadow mode by setting
+> `cfg.ddos.observe_only: true` explicitly.
+>
+> The remaining follow-up is **observability surface** (Prometheus
+> counters + Health & SLOs dashboard panel for `current_rps`,
+> `baseline_rps`, `spike_active`, blocks-per-window). Code shape is
+> trivial; deferred only because it's read-only telemetry that
+> doesn't gate the security feature.
 
 ---
 
@@ -34,7 +41,7 @@ Wiring DDoS protection in one giant PR is risky: the request hot path is shared 
 
 2. **Phase 2 — enforce path + 503 short-circuit** (behaviour-changing). Wire the `is_auto_blocked` short-circuit, return 503 on blocked IPs, broadcast spike-mode to the dashboard / SIEM. Default `enforce: true` here only after Phase 1's metrics confirm zero false-positive spike triggers in real traffic.
 
-Splitting also keeps the doc-status update honest: after Phase 1 the doc moves to "**Partial — observe-only single-node**", and after Phase 2 it moves to "**Implemented (v1 single-node)**". The v2 cluster + per-tenant pieces stay deferred behind multi-tenancy.
+Splitting also keeps the doc-status update honest: after Phase 1 the doc moves to "**Partial — observe-only single-node**", and after Phase 2 it moves to "**Implemented (v1 single-node)**". Cluster-wide spike-mode broadcast across nodes stays deferred behind ha-clustering.
 
 ---
 
@@ -109,7 +116,7 @@ Splitting also keeps the doc-status update honest: after Phase 1 the doc moves t
    - Status field → "**Partial — observe-only single-node** (Phase 1 of [wire-up plan])"
    - Explicit "what's shipped vs what's deferred" table
    - Operator action: how to switch `observe_only: false` once they trust the signal
-   - Drop the per-tenant + cluster-coordinated paragraphs entirely (link them to multi-tenancy + ha-clustering as deferred dependencies)
+   - Drop the cluster-coordinated paragraphs entirely (link to ha-clustering as a deferred dependency)
 
 8. **Score-catalog** — DDoS doesn't run through the detector chain (it's a request-level gate, not a `Detector` impl), so no `scores.rs` row needed. It does emit risk via `state.add_risk` at the strikes ladder; document the 100-point set on auto-block.
 
@@ -149,8 +156,8 @@ Splitting also keeps the doc-status update honest: after Phase 1 the doc moves t
 
 5. **Doc update** — `docs/security/ddos-protection.md`:
    - Status field → "**Implemented (v1 single-node)**"
-   - Explicitly state the v2 / multi-tenant / cluster pieces are deferred behind `multi-tenancy.md` and `ha-clustering.md`
-   - Update the "Response behavior" section to describe the actual 503 path
+   - Cluster-wide spike-mode broadcast pieces stay deferred behind `ha-clustering.md`
+   - Update the "Response behavior" section to describe the actual 403 + `X-WAF-Action: block` path per contract §3.1 + §4
 
 6. **Implementation-matrix update** — same status change.
 
@@ -171,10 +178,9 @@ Splitting also keeps the doc-status update honest: after Phase 1 the doc moves t
 
 ## What this plan does NOT solve
 
-- **Per-tenant scoping** — depends on multi-tenancy (`docs/future/multi-tenancy.md` is DEFERRED). Don't fake it; explicitly remove from the doc.
 - **Cluster-wide spike-mode broadcast** — depends on cluster state (`docs/operations/ha-clustering.md`). Phase 1 + 2 deliver per-process spike detection only; nodes coordinate **only** through the shared `StateBackend::is_auto_blocked` keyspace (which already works for redis backend).
 - **Adaptive load-shedder integration** — works today via the load shedder reading the same state-backend; document the integration without adding new code.
-- **Sub-modules `mode.rs` / `sweeper.rs`** — not built. The single `ddos.rs` file is enough for the v1 scope. If multi-tenancy lands later, refactor at that time.
+- **Sub-modules `mode.rs` / `sweeper.rs`** — not built. The single `ddos.rs` file is enough for the v1 scope.
 
 ---
 
@@ -197,4 +203,3 @@ Splitting also keeps the doc-status update honest: after Phase 1 the doc moves t
 - [`crates/aegis-security/src/ddos.rs`](../../../crates/aegis-security/src/ddos.rs) — existing detector logic to wire
 - [`docs/operator/risk-tuning.md`](../../../docs/operator/risk-tuning.md) — adjacent doc explaining the risk-strikes auto-block (one of the partial backstops today)
 - [`docs/data-plane/adaptive-load-shedding.md`](../../../docs/data-plane/adaptive-load-shedding.md) — actually-implemented feature DDoS should integrate with
-- [`docs/future/multi-tenancy.md`](../../../docs/future/multi-tenancy.md) — deferred dependency blocking the per-tenant claims

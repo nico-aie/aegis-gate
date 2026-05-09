@@ -114,7 +114,7 @@ that header intact.
 | **Next Task** | The immediate next item, or a list of open tracks if no task is in flight | Every closed task — overwrite |
 | **Tracks in flight** | Long-running tracks + their open/closed state | Only when a track opens or closes |
 | **Carry-overs / known limitations** | Durable list of things that work but aren't fully shipped | Only when a carry-over graduates to "shipped" |
-| **Future phases** | Pointers to `docs/future/advanced-features.md` (multi-tenancy, RBAC/SSO intake) | Rarely |
+| **Future phases** | Pointers to `docs/future/advanced-features.md` (RBAC/SSO intake) | Rarely |
 | **Verification (last full run)** | `cargo test` count + clippy state | Every closed task |
 | **Completed Tasks Log** | One row per closed task | **Append only** — never edit older rows |
 

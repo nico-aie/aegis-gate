@@ -34,7 +34,6 @@ events. Fuels dashboards, SIEM pipelines, incident response, and audits.
   "schema_version": 2,
   "ts": "2026-04-12T10:15:30.123Z",
   "class": "detection",
-  "tenant_id": "acme",
   "request_id": "c0ffee…",
   "trace_id": "00-4bf92f…-e2...-01",
   "client_ip": "203.0.113.4",

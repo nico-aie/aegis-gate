@@ -65,12 +65,11 @@ Limits can be keyed by any combination:
 - `session` — session cookie
 - `device` — fingerprint hash
 - `user` — authenticated user id
-- `tenant` — tenant id (v2)
 - `api_key` — consumer API key (v2, see [`api-security.md`](./api-security.md))
 
 Multiple scopes are ANDed: a request must pass **all** configured limits.
 
-Key format: `{tenant}:{tier}:{scope}:{identifier_hash}`.
+Key format: `{tier}:{scope}:{identifier_hash}`.
 
 ## Storage backends
 
@@ -95,12 +94,6 @@ redis.call('ZADD', key, now, now..':'..ARGV[4])
 redis.call('PEXPIRE', key, window)
 return 1
 ```
-
-## Per-tenant fairness
-
-When multi-tenancy is enabled, the rate-limit key always includes the tenant
-prefix so tenant A cannot exhaust tenant B's capacity. Global fairness is
-enforced by the `TenantGovernor` admission controller.
 
 ## Configuration
 

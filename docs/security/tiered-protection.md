@@ -5,9 +5,8 @@
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
 > **v1 → v2:** tiers are now **resolved after route matching** (see
-> [`routing-ingress.md`](../data-plane/routing-ingress.md)) and can be **overridden
-> per tenant** ([`multi-tenancy.md`](../future/multi-tenancy.md)). CRITICAL tier
-> is also hard-wired to PCI/HIPAA response validation
+> [`routing-ingress.md`](../data-plane/routing-ingress.md)). CRITICAL
+> tier is also hard-wired to PCI/HIPAA response validation
 > ([`api-security.md`](./api-security.md)).
 
 ## Purpose
@@ -32,9 +31,8 @@ Tiers are resolved **after** the route table match:
 
 1. Route table (host + path) → `route_id`
 2. `route.tier_override` wins if present
-3. Else tenant tier overrides
-4. Else cluster-wide tier table (first-match wins)
-5. CATCH-ALL guarantees a match
+3. Else cluster-wide tier table (first-match wins)
+4. CATCH-ALL guarantees a match
 
 Patterns are pre-compiled at config load and stored in an `ArcSwap`,
 so classification is a tight loop on pre-built automata.
@@ -52,14 +50,6 @@ The critical distinction of the tier system.
 
 See [`graceful-degradation.md`](../data-plane/graceful-degradation.md) for the
 per-layer timeout machinery that enforces this.
-
-## Per-tenant overrides
-
-Tenants can:
-
-- Add routes to an existing tier
-- Create tenant-local tiers with stricter settings
-- Not **weaken** cluster-wide CRITICAL guarantees — admin API refuses
 
 ## Global rules (all tiers)
 
@@ -107,18 +97,12 @@ tiers:
     routes: ["/**"]
     match_type: wildcard
     failure_mode: fail_open
-
-per_tenant_tiers:
-  acme:
-    - name: critical
-      routes_add: ["/acme/wire-transfer"]
 ```
 
 ## Implementation
 
 - `src/pipeline/tier.rs` — tier resolver + compiled pattern cache
 - `src/config/schema.rs::TierConfig` — schema
-- `src/pipeline/tenant_tier.rs` — per-tenant override merge
 
 ## Performance notes
 

@@ -77,15 +77,17 @@ SOC-first dashboard.
 - **Threat intel** — STIX/TAXII auto-fetch (`taxii` feature),
   in-memory + file-loaded indicators, MaxMind GeoIP for
   country / ASN enrichment (`geoip` feature).
-- **DDoS protection** (⚠️ **Partial — observe-only single-node Phase 1**)
-  — per-IP burst detection (sliding window) + EWMA cluster
-  spike-mode ticker, wired into `aegis-proxy/src/data_plane.rs`
-  with `cfg.ddos.observe_only = true` by default. Burst-exceed
-  emits `ddos_observed` audit events but never short-circuits
-  the request — Phase 2 (enforce + 503 + Prometheus + dashboard
-  panel) follows after operator bake-in. Per-tenant + cluster-
-  coordinated pieces deferred behind multi-tenancy + ha-clustering.
-  Audit + plan: [`docs/security/ddos-protection.md`](docs/security/ddos-protection.md),
+- **DDoS protection** (✅ **Implemented v1 single-node**)
+  — request-flow gate (NOT a `Detector` trait impl) sitting
+  alongside access-list / strike-block / rate-limit. Per-IP
+  sliding-window burst gate + EWMA spike-mode ticker, wired
+  into `aegis-proxy/src/data_plane.rs` from `cfg.ddos`. Secure-
+  by-default: `enabled: true, observe_only: false`. Burst-exceed
+  → HTTP 403 + `X-WAF-Action: block` per
+  [`Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](Hackathon_Doc/EN_waf_interop_contract_v2.3.md)
+  §3.1 (volumetric abuse). Cluster-wide spike-mode broadcast
+  across nodes deferred behind ha-clustering. Audit + plan:
+  [`docs/security/ddos-protection.md`](docs/security/ddos-protection.md),
   [`reports/findings/2026-05-09-internal-audit-ddos/`](reports/findings/2026-05-09-internal-audit-ddos/),
   [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](plans/issue-fix/internal-audit-2026-05-09-ddos/).
 

@@ -27,7 +27,6 @@ pub struct Route {
     pub transforms: TransformSet,  // see transformations-cors.md
     pub auth: Option<AuthRef>,     // see external-auth.md
     pub quotas: QuotaSet,          // see per-route-quotas.md
-    pub tenant_id: Option<String>,
 }
 ```
 
