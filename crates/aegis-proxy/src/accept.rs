@@ -567,6 +567,14 @@ pub(crate) async fn admin_accept_loop(
         );
     }
 
+    // 2026-05-09 — share the DDoS runtime (already installed on
+    // ProxyContext at boot in `run.rs`) with the dashboard so
+    // `/api/gates/ddos` can read live telemetry. `OnceLock::get`
+    // returns `None` until the proxy boot path has installed it
+    // and `ProxyContext::ddos.set(...)` has been called; the
+    // dashboard renders an empty-state card in that case.
+    services.ddos = upstream_ctx.ddos.get().cloned();
+
     // DURABLE-T1 — audit chain durability. For each Jsonl sink the
     // operator configured under `cfg.audit.sinks`, open a real
     // file-backed `JsonlSink` and spawn (1) a persist task that

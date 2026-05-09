@@ -25,11 +25,20 @@ const NAV = [
     { id: 'threat-intel',  label: 'Threat Intel',     icon: <window.I.Globe />,    badge: null },
   ]},
   { group: 'Policy', items: [
-    { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
-    { id: 'detectors',     label: 'Detectors',        icon: <window.I.Cluster />,  badge: null },
-    { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
+    // 2026-05-09 — reordered per operator request. The flow now
+    // mirrors the request lifecycle: traffic enters via a route
+    // → hits the four request-flow gates → runs the detector
+    // chain → operator-authored rules apply → compliance clamps.
+    // "Traffic Gates" is the new page surfacing all four binary
+    // gates (access list, strike-block, rate-limit, DDoS) with
+    // telemetry + edit controls. Access Lists keeps its dedicated
+    // CRUD page since the entry-by-entry editor is heavyweight.
     { id: 'upstreams',     label: 'Routing & Upstreams', icon: <window.I.Server />, badge: null },
-    { id: 'compliance',    label: 'Compliance',       icon: <window.I.Check />,    badge: 'NEW', tone: 'warn' },
+    { id: 'traffic-gates', label: 'Traffic Gates',    icon: <window.I.Shield />,   badge: 'NEW', tone: 'warn' },
+    { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
+    { id: 'detectors',     label: 'Detectors',        icon: <window.I.Cluster />,  badge: null },
+    { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
+    { id: 'compliance',    label: 'Compliance',       icon: <window.I.Check />,    badge: null },
   ]},
   { group: 'Observability', items: [
     { id: 'performance',   label: 'Performance',      icon: <window.I.Gauge />,    badge: 'NEW', tone: 'warn' },
@@ -578,6 +587,7 @@ function App() {
     case 'detectors':        page = <window.PageTierConfig />; break;
     case 'access-lists':     page = <window.PageAccessLists />; break;
     case 'upstreams':        page = <window.PageUpstreams />; break;
+    case 'traffic-gates':    page = <window.PageTrafficGates />; break;
     case 'compliance':       page = <window.PageCompliance />; break;
     case 'performance':      page = <window.PageAnalytics />; break;
     case 'health':           page = <window.PageTracking />; break;
