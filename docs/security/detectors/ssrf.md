@@ -89,7 +89,30 @@ Negative cases that do NOT flag:
 **Why the userinfo shape and not "just match internal IP after `@`":** that would be brittle — attackers can use DNS rebinding or direct hostnames. Catching the userinfo shape itself is the right hook because the parser-confusion vector applies regardless of destination.
 
 HTTP basic-auth in URL form is RFC 3986-deprecated and rare in modern apps; legitimate auth lives in `Authorization` headers. Flagging URL-userinfo matches Chrome's behaviour (warns / blocks) and major-WAF practice.
-- IPv6 mapping: `::ffff:169.254.169.254`
+
+#### IPv4-mapped IPv6 — `[::ffff:<ipv4>]` (added 2026-05-09 BYPASS-03f)
+
+Browsers and many HTTP clients resolve `[::ffff:127.0.0.1]` natively as the embedded IPv4 (`127.0.0.1`). Attackers wrap an internal-target IP in the IPv4-mapped IPv6 prefix to slip past allowlists that only check dotted-decimal RFC 1918 / loopback. Both the dotted-decimal payload form and the hex-colon form are flagged:
+
+| Form | Payload | Resolves to |
+|---|---|---|
+| Dotted-decimal | `[::ffff:127.0.0.1]` | loopback |
+| Dotted-decimal | `[::ffff:10.0.0.1]` | RFC 1918 |
+| Dotted-decimal | `[::ffff:169.254.169.254]` | AWS metadata |
+| Dotted-decimal | `[::ffff:192.168.1.1]` | RFC 1918 |
+| Dotted-decimal | `[::ffff:172.16.0.1]` | RFC 1918 |
+| Dotted-decimal | `[::ffff:0.0.0.0]` | all-interface bind |
+| Hex-colon | `[::ffff:7f00:1]` | loopback |
+| Hex-colon | `[::ffff:a9fe:a9fe]` | AWS metadata |
+| Hex-colon | `[::ffff:c0a8:1]` | RFC 1918 (192.168.0.1) |
+| Hex-colon | `[::ffff:ac10:1]` | RFC 1918 (172.16.0.1) |
+| Hex-colon | `[::ffff:0a00:1]` | RFC 1918 (10.0.0.1) |
+
+The pattern allowlist is **closed to internal targets** — public IPv4-mapped forms like `[::ffff:8.8.8.8]` do **not** flag (8.8.8.8 is Google DNS; legitimate DNS-resolver fetches use this form occasionally). If an operator wants every IPv4-mapped form flagged regardless of destination, they can add a rule-engine override; the detector defaults stay narrow to avoid FP on legit external resolvers.
+
+**Score:** `50` (existing `ssrf::SSRF` const, unchanged). Same class — additional pattern coverage for the closed allowlist, not a new tier.
+
+**Why we don't enable hostname resolution:** documented [below in the DNS resolution section](#dns-resolution) — opt-in only because resolution adds per-request latency. The IPv4-mapped IPv6 patterns close the bypass on the textual layer without paying for resolution.
 
 ## DNS resolution
 
