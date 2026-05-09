@@ -48,8 +48,8 @@ doesn't drift.>
 <What could go wrong. Compliance? Performance? Migration burden?>
 
 **Dependencies.**  
-<Which deferred designs (e.g. RBAC, multi-tenancy) or upstream pieces
-must land first.>
+<Which deferred designs (e.g. RBAC) or upstream pieces must land
+first.>
 
 **Success metric.**  
 <How will we know this worked, three months after shipping it?>
@@ -97,13 +97,11 @@ business case attached:
 These are NOT candidates — they have full specs and are waiting on
 prerequisites:
 
-- [`multi-tenancy.md`](./multi-tenancy.md) — needs the operator-RBAC
-  story to land first
 - [`rbac-sso.md`](./rbac-sso.md) — needs an SSO target customer +
   OIDC integration spec sign-off
 
-If a candidate below would need either of those, mark it under
-**Dependencies** rather than re-litigating the design.
+If a candidate below would need it, mark it under **Dependencies**
+rather than re-litigating the design.
 
 ## Candidates
 

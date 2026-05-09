@@ -98,7 +98,7 @@ The audit chain pairs `websocket_open` + `websocket_close` events; the dashboard
 
 ## Recipe 3 — multi-vhost / public-TLS upstream
 
-Your backend dispatches on the `Host` header (Cloudflare-fronted services, GitHub Pages, multi-tenant nginx, your own VPS hosting many vhosts). Without `host_header:` the WAF rewrites `Host` to the IP and the backend returns 404.
+Your backend dispatches on the `Host` header (Cloudflare-fronted services, GitHub Pages, multi-vhost nginx, your own VPS hosting many vhosts). Without `host_header:` the WAF rewrites `Host` to the IP and the backend returns 404.
 
 ```bash
 dig +short example.com    # → e.g. 23.215.0.136
@@ -313,7 +313,7 @@ upstreams:
       - addr: "10.0.1.12:3001"
     lb: consistent_hash
     hash_on:
-      header: "x-tenant-id"           # or `cookie: session-id` etc.
+      header: "x-customer-id"         # or `cookie: session-id` etc.
     connection:
       scheme: http
 ```

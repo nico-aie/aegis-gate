@@ -7,9 +7,7 @@
 > **v1 scope.** The rule engine evaluates a priority-ordered AST and
 > sits alongside **schema-based** positive-security guards (OpenAPI +
 > GraphQL — see [`api-security.md`](./api-security.md)). It references
-> JWT claims, threat-intel feed id, and bot class. Tenant-scoped rules
-> are deferred with multi-tenancy — see
-> [`future/multi-tenancy.md`](../future/multi-tenancy.md).
+> JWT claims, threat-intel feed id, and bot class.
 
 ## Purpose
 
@@ -24,7 +22,6 @@ or accumulates risk for downstream stages.
 Rule := { id, priority, enabled, scope, conditions, actions }
 
 Scope := Global | Tier(name) | Route(path)
-         # Tenant(id) reserved for the deferred multi-tenancy work
 
 Condition := Ip(IpMatcher)
            | Path(StringMatcher)

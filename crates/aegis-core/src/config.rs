@@ -1692,28 +1692,53 @@ pub struct DetectorToggle {
     pub enabled: bool,
 }
 
-/// 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS protection config.
+/// 2026-05-09 — DDoS request-flow gate config.
 ///
-/// `enabled` toggles the detector wholesale (default `true`).
+/// DDoS is **not a `Detector` trait impl** — it does not produce
+/// risk-score signals via the detector chain. It's a request-flow
+/// gate that sits alongside the access-list / strike-block /
+/// rate-limit gates in the data plane, reading the shared
+/// `StateBackend` cluster-wide auto-block list and writing TTL'd
+/// blocks on per-IP burst-exceed.
 ///
-/// `observe_only` runs the detector + emits Prometheus counters +
-/// writes audit events but **never short-circuits with 503**. This
-/// is the safe default until the operator confirms the signal is
-/// clean in their environment, after which they flip to
-/// `observe_only: false` for Phase 2 enforcement. Default `true`.
+/// `enabled` toggles the gate wholesale (default `true` — secure
+/// by default, matching every other security primitive in this
+/// codebase).
+///
+/// `observe_only` runs the gate + emits audit events but **does
+/// not short-circuit the request**. Default `false` — the gate
+/// enforces by default. Operators with edge cases (CDN-fronted
+/// where high RPS-per-IP is normal, internal-API workloads with
+/// trusted high-volume callers) can opt into shadow mode by
+/// setting `observe_only: true` in YAML. Audit-event tag changes
+/// from `ddos_blocked` (enforce) to `ddos_observed` (observe-only)
+/// so operators can grep either way.
 ///
 /// The threshold knobs (`per_ip_limit`, `per_ip_window_s`,
-/// `block_ttl_s`, `spike_multiplier`) match the existing internal
-/// `aegis_security::ddos::DdosConfig::default()` values; the
-/// `tightened_per_ip_rps` knob is the per-IP cap that kicks in
-/// during cluster spike mode.
+/// `block_ttl_s`, `spike_multiplier`) defaults are deliberately
+/// generous (1000 req/s per IP for a 10s window, 5-minute block
+/// TTL) so legitimate users never hit them. A real DDoS attacker
+/// burning a single IP at >100 req/s sustained will trip in <10s
+/// and earn the auto-block.
+///
+/// `tightened_per_ip_rps` is the per-IP cap that kicks in cluster-
+/// wide once spike-mode is active (current_rps > spike_multiplier
+/// × baseline_rps).
+///
+/// **Contract compliance** (`Hackathon_Doc/EN_waf_interop_contract_v2.3.md` §3.1):
+/// volumetric abuse from a single source maps to acceptable
+/// actions `rate_limit` or `block`. This gate emits
+/// `X-WAF-Action: block` + HTTP 403 (the `block` action's
+/// recommended response per §4). The token-bucket rate-limiter
+/// at `aegis-security/src/rate_limit/` covers the `rate_limit`
+/// + 429 path independently.
 ///
 /// YAML shape:
 ///
 /// ```yaml
 /// ddos:
-///   enabled: true
-///   observe_only: true   # Phase 1 default — no 503s
+///   enabled: true        # default — secure by default
+///   observe_only: false  # default — enforce by default
 ///   per_ip_limit: 1000
 ///   per_ip_window_s: 10
 ///   block_ttl_s: 300
@@ -1724,7 +1749,9 @@ pub struct DetectorToggle {
 pub struct DdosConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_true")]
+    /// Default `false` — enforce by default. Operators opt into
+    /// shadow mode explicitly via `observe_only: true`.
+    #[serde(default)]
     pub observe_only: bool,
     #[serde(default = "default_ddos_per_ip_limit")]
     pub per_ip_limit: u64,
@@ -1748,7 +1775,7 @@ impl Default for DdosConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            observe_only: true,
+            observe_only: false,
             per_ip_limit: default_ddos_per_ip_limit(),
             per_ip_window_s: default_ddos_per_ip_window_s(),
             block_ttl_s: default_ddos_block_ttl_s(),

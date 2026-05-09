@@ -11,11 +11,13 @@ pub struct DdosConfig {
     /// called — the request handler short-circuits before reaching
     /// the detector. Default `true`.
     pub enabled: bool,
-    /// 2026-05-09 BUG-DDOS-STUB Phase 1 — observation mode. `true`
-    /// runs the detector + emits Prometheus counters + writes audit
-    /// events but **never** flips a [`DdosResult::blocked`] signal
-    /// into a 503. Default `true` until operators have validated
-    /// the signal in their environment.
+    /// Observation mode. `true` runs the gate + writes audit events
+    /// (`ddos_observed`) but does NOT short-circuit with HTTP 403.
+    /// Default `false` — enforce by default, matching every other
+    /// security primitive in the data plane. Operators with edge
+    /// cases (CDN-fronted high-RPS-per-IP, internal-API trusted
+    /// callers) opt into shadow mode by setting `observe_only: true`
+    /// explicitly.
     pub observe_only: bool,
     /// Max requests per IP within the window.
     pub per_ip_limit: u64,
@@ -34,7 +36,7 @@ impl Default for DdosConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            observe_only: true,
+            observe_only: false,
             per_ip_limit: 1000,
             per_ip_window_s: 10,
             block_ttl_s: 300,

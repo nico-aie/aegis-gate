@@ -265,7 +265,6 @@ components:
         class:
           type: string
           enum: [detection, admin, access, system]
-        tenant_id: { type: string, nullable: true }
         tier:
           type: string
           nullable: true

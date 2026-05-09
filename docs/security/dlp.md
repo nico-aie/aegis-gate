@@ -73,7 +73,7 @@ remain decryptable via a versioned keyring until retired.
 
 ## Policy scoping
 
-Policies are per-tenant and per-route:
+Policies are per-route:
 
 ```yaml
 dlp:
@@ -118,7 +118,7 @@ false positives on numeric patterns.
 - `src/dlp/match.rs` — Aho-Corasick + regex orchestrator
 - `src/dlp/action.rs` — redact/mask/fpe/hash/block
 - `src/dlp/fpe.rs` — AES-FF1
-- `src/dlp/policy.rs` — per-tenant/per-route policy resolver
+- `src/dlp/policy.rs` — per-route policy resolver
 
 ## Performance notes
 

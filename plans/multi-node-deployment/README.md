@@ -26,7 +26,6 @@ This document **proposes** that topology and lists the open questions we need SA
 
 Non-goals for this round:
 - Geo distribution / cross-region replication (single-DC for now).
-- Per-tenant sharding (out of scope; can add later if a tenant isolation requirement arrives).
 - Kubernetes — we already ship a Helm chart, but the SA Team is hinting at "machines," so this proposal is **deployment-substrate-agnostic** (works on bare metal, VMs, or k8s).
 
 ---
@@ -239,7 +238,6 @@ We can't finalise the delivery plan until SA confirms:
 ## Out of scope (deliberately)
 
 - **Geo-distributed multi-DC** — different problem (replication, latency, data sovereignty). Address when the SA roadmap calls for it.
-- **Per-tenant sharding** — Aegis-Gate is single-tenant per deployment today; sharding would precede multi-tenant work, not this.
 - **Service mesh integration** (Istio / Linkerd sidecars) — orthogonal; if a mesh shows up later, the L4 LB just becomes the mesh's ingress.
 - **Custom protocols** (QUIC / HTTP/3) — current stack is HTTP/1.1 + HTTP/2; not changing here.
 

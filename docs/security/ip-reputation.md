@@ -5,9 +5,9 @@
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
 > **v1 → v2:** the reputation pipeline now consumes **STIX 2.1 / TAXII 2.1**
-> threat-intel feeds with provenance tags, supports **per-tenant** lists,
-> and records feed-id + confidence on every block so auditors can trace
-> *why* an IP was rejected. See [`threat-intelligence.md`](./threat-intelligence.md).
+> threat-intel feeds with provenance tags and records feed-id +
+> confidence on every block so auditors can trace *why* an IP was
+> rejected. See [`threat-intelligence.md`](./threat-intelligence.md).
 
 ## Purpose
 
@@ -17,14 +17,13 @@ should be cheap — O(1) hash lookup plus one CIDR range check.
 
 ## Data sources
 
-### Static lists (per tenant)
+### Static lists
 
 - **Blacklist** — hits return 403 immediately
 - **Whitelist** — bypass IP-based blocking (detection still runs)
 - **Trusted proxies** — CIDRs whose `X-Forwarded-For` is trusted
 
 All lists hot-reload via [`config-hot-reload.md`](../control-plane/config-hot-reload.md).
-Tenants can add their own entries without touching cluster-wide lists.
 
 ### ASN classification
 
@@ -94,9 +93,6 @@ ip_reputation:
   threat_intel_refs:
     - abuseipdb
     - spamhaus_drop
-  per_tenant_overrides:
-    acme:
-      whitelist: ["203.0.113.0/24"]
 ```
 
 ## Implementation
