@@ -43,5 +43,13 @@ Audit-mutated; flips take effect within one hot-reload tick. The
 AI detector itself is gated by `cfg.ai.enabled` at boot time
 today (a runtime `PUT /api/ai/enabled` knob is queued).
 
+> **The dashboard does not expose a per-detector score editor.** The
+> score table is a calibrated ladder (25 / 30 / 35–40 / 45 / 50 / 60)
+> that interacts with `risk.thresholds.challenge_at` and `block_at` —
+> changing one without the other breaks both. Operators tune posture
+> by adjusting thresholds, moving classes to `log_only`, applying
+> per-tier overrides, or scoping `RaiseRisk(delta)` rules to a
+> route. Full guide: [`../../operator/risk-tuning.md`](../../operator/risk-tuning.md).
+
 For corpus-based regression testing, see
 [`../../../tests/security/corpus/`](../../../tests/security/corpus/).
