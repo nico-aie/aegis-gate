@@ -36,7 +36,7 @@ const NAV = [
     { id: 'upstreams',     label: 'Routing & Upstreams', icon: <window.I.Server />, badge: null },
     { id: 'traffic-gates', label: 'Traffic Gates',    icon: <window.I.Shield />,   badge: 'NEW', tone: 'warn' },
     { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
-    { id: 'detectors',     label: 'Detectors',        icon: <window.I.Cluster />,  badge: null },
+    { id: 'detectors',     label: 'Detectors & Tiers', icon: <window.I.Cluster />, badge: null },
     { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
     { id: 'compliance',    label: 'Compliance',       icon: <window.I.Check />,    badge: null },
   ]},
