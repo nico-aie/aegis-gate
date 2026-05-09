@@ -38,6 +38,23 @@ static SSRF_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // RFC 3986-deprecated and rare in modern apps; flagging
         // URL-userinfo matches Chrome / major-WAF behaviour.
         r"(?i)https?://[^@/\s]+@",
+        // BYPASS-03f (Run-6 l-tester cross-check, 2026-05-09) —
+        // IPv4-mapped IPv6 (`[::ffff:<ipv4>]`). Browsers and many
+        // HTTP clients resolve `[::ffff:127.0.0.1]` natively as
+        // `127.0.0.1`, so attackers use this form to bypass naive
+        // allowlists that only check dotted-decimal RFC 1918 /
+        // loopback. Same internal-network targets as the dotted-
+        // decimal patterns above, just wearing the IPv4-mapped
+        // IPv6 prefix.
+        //
+        // Dotted-decimal payload form: `[::ffff:127.0.0.1]`,
+        // `[::ffff:10.0.0.1]`, `[::ffff:169.254.169.254]`, etc.
+        r"(?i)(?:https?://\[::ffff:(?:127|10|0|169\.254|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.)",
+        // Hex-colon payload form: `[::ffff:7f00:1]` (= 127.0.0.1),
+        // `[::ffff:0a00:1]` (= 10.0.0.1), `[::ffff:a9fe:a9fe]`
+        // (= 169.254.169.254 AWS metadata), `[::ffff:c0a8:1]` (=
+        // 192.168.0.1), `[::ffff:ac10:1]` (= 172.16.0.1).
+        r"(?i)(?:https?://\[::ffff:(?:7f00|0a[0-9a-f]{2}|a9fe|c0a8|ac1[0-9a-f]):)",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -188,6 +205,24 @@ mod tests {
         "/proxy?url=https://evil.example.com:80@internal-svc/path");
     positive!(ssrf_userinfo_at_127, "/proxy?u=http://x@127.0.0.1");
     positive!(ssrf_userinfo_no_pass, "/proxy?url=http://admin@internal/admin");
+    // BYPASS-03f (Run-6 l-tester cross-check, 2026-05-09) —
+    // IPv4-mapped IPv6 SSRF. Browsers resolve `[::ffff:127.0.0.1]`
+    // natively as `127.0.0.1`, so attackers use this form to
+    // bypass naive allowlists that only check dotted-decimal.
+    // Dotted-decimal payload form.
+    positive!(ssrf_ipv4_mapped_loopback,    "/proxy?url=http://[::ffff:127.0.0.1]/secret");
+    positive!(ssrf_ipv4_mapped_rfc1918_10,  "/proxy?url=http://[::ffff:10.0.0.1]/internal");
+    positive!(ssrf_ipv4_mapped_rfc1918_192, "/proxy?url=http://[::ffff:192.168.1.1]/admin");
+    positive!(ssrf_ipv4_mapped_rfc1918_172, "/proxy?url=http://[::ffff:172.16.0.1]/secrets");
+    positive!(ssrf_ipv4_mapped_aws_metadata,
+        "/proxy?url=http://[::ffff:169.254.169.254]/latest/meta-data/");
+    positive!(ssrf_ipv4_mapped_zero,        "/proxy?url=http://[::ffff:0.0.0.0]/bind");
+    // Hex-colon payload form.
+    positive!(ssrf_ipv4_mapped_hex_loopback, "/proxy?url=http://[::ffff:7f00:1]/");
+    positive!(ssrf_ipv4_mapped_hex_aws_meta, "/proxy?url=http://[::ffff:a9fe:a9fe]/");
+    positive!(ssrf_ipv4_mapped_hex_192_168,  "/proxy?url=http://[::ffff:c0a8:1]/");
+    positive!(ssrf_ipv4_mapped_hex_172_16,   "/proxy?url=http://[::ffff:ac10:1]/");
+    positive!(ssrf_ipv4_mapped_hex_10_0,     "/proxy?url=http://[::ffff:0a00:1]/");
 
     negative!(clean_root, "/");
     negative!(clean_api, "/api/users");
@@ -220,6 +255,14 @@ mod tests {
     negative!(clean_favicon, "/favicon.ico");
     negative!(clean_mailto, "/contact?email=user@example.com");
     negative!(clean_auth, "/auth/callback");
+    // BYPASS-03f negatives — public IPv6 + non-internal IPv4-mapped
+    // forms must NOT FP. The pattern only matches the documented
+    // internal target prefixes (127, 10, 169.254, 192.168, 172.16-31,
+    // 0) in dotted-decimal, plus their hex-colon equivalents.
+    negative!(clean_public_ipv6,         "/proxy?url=http://[2001:db8::1]/");
+    negative!(clean_ipv4_mapped_public,  "/proxy?url=http://[::ffff:8.8.8.8]/dns");
+    negative!(clean_ipv4_mapped_172_32,  "/proxy?url=http://[::ffff:172.32.0.1]/");  // 172.32 is outside RFC 1918
+    negative!(clean_ipv4_mapped_hex_public, "/proxy?url=http://[::ffff:0808:0808]/");  // 8.8.8.8 in hex pairs
 
     // Regression: prior to 2026-05-02 the detector scanned
     // `req.uri.to_string()` which over HTTP/2 returns the absolute
