@@ -6,11 +6,27 @@ global:
 
 scrape_configs:
   # ---- DATA PLANE ----
+  #
+  # The WAF binary serves Prometheus metrics on the **admin
+  # listener** at `/metrics` (see `aegis-proxy/src/admin_get.rs`),
+  # NOT on a separate metrics-only port. The admin listener is
+  # configured as `cfg.listeners.admin.bind` in YAML (default
+  # `127.0.0.1:9443` in `config/dev.yaml`). For the dev observability
+  # stack to reach the WAF, the admin listener must bind on an
+  # interface Docker can reach — `0.0.0.0:9443` for dev, or the
+  # host's docker-bridge IP for stricter deployments. Production
+  # configs (`config/profiles/prod-*.yaml`) bind to specific
+  # internal addresses per security best practice and operators
+  # plumb their Prometheus into the same network there.
+  #
+  # 2026-05-09 fix — port was `9100` (stale; never matched the
+  # admin listener). Updated to `9443` to match the documented
+  # admin port.
   - job_name: aegis-waf
     metrics_path: /metrics
     static_configs:
       - targets:
-          - host.docker.internal:9100
+          - host.docker.internal:9443
         labels:
           service: aegis-gate
           plane: data
