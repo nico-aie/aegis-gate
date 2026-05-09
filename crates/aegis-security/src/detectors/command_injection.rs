@@ -79,12 +79,16 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Pipe-to-shell-cmd: `| whoami`, `| nc -e ...`. The
         // shell-builtin list catches the OWASP cmdi sample set
         // and stays narrow enough to skip bare pipes in regex /
-        // base64 / OR-style filter expressions.
-        r"(?i)\|\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe)\b",
-        // Semicolon-shell-cmd: `; whoami`, `; rm -rf /tmp`.
-        r"(?i);\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe)\b",
+        // base64 / OR-style filter expressions. `sleep` and
+        // `timeout` added 2026-05-09 (Run-6 GAP-013) for blind-RCE
+        // detection — `;sleep+5;` is the canonical primitive when
+        // the attacker has no output channel.
+        r"(?i)\|\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b)\b",
+        // Semicolon-shell-cmd: `; whoami`, `; rm -rf /tmp`,
+        // `; sleep 5` (blind-RCE primitive — GAP-013).
+        r"(?i);\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b)\b",
         // Logical-AND / logical-OR command chaining.
-        r"(?i)(?:&&|\|\|)\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown)\b",
+        r"(?i)(?:&&|\|\|)\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|sleep\b|timeout\b)\b",
         // /bin/{sh,bash,zsh,ksh,dash} direct invocation.
         r"(?i)/bin/(?:sh|bash|zsh|ksh|dash)\b",
         // Classic exfil shape — `cat /etc/passwd`. (Distinct
@@ -284,6 +288,18 @@ mod tests {
     // (URI must be valid; payload lives in query for these.)
     positive!(cmdi_in_body_via_query,    "/api/run?p=foo;whoami");
 
+    // --- GAP-013 (Run-6, 2026-05-09) — blind RCE / time-based ---
+    // `sleep`/`timeout` after a metacharacter is the canonical
+    // blind-cmdi primitive when the attacker has no output channel.
+    // Pattern requires `;`, `|`, or `&&`/`||` prefix — bare
+    // `?action=sleep` doesn't fire.
+    positive!(cmdi_blind_sleep_semicolon, "/api?x=a;sleep+5");
+    positive!(cmdi_blind_sleep_pipe,      "/api?x=a|sleep+5");
+    positive!(cmdi_blind_sleep_double_amp, "/api?x=a&&sleep+10");
+    positive!(cmdi_blind_sleep_double_pipe, "/api?x=a||sleep+5");
+    positive!(cmdi_blind_timeout,         "/api?x=test;timeout+5+whoami");
+    positive!(cmdi_blind_sleep_then_echo, "/api?x=a;sleep+5;echo+done");
+
     // --- Negatives: common FP traps ---
     negative!(clean_root,                "/");
     negative!(clean_query_simple,        "/search?q=hello");
@@ -295,6 +311,13 @@ mod tests {
     negative!(clean_paren_in_query,      "/api?expr=(a+b)");             // bare parens, no $ prefix
     negative!(clean_path_query,          "/api/v2/users?id=42");
     negative!(clean_static_asset,        "/static/main.js");
+    // GAP-013 negatives — `sleep`/`timeout` without metacharacter
+    // prefix must NOT fire. Ordinary `?timeout=300` URL params
+    // and prose mentions like "I will sleep tonight" stay green.
+    negative!(clean_action_sleep,        "/api?action=sleep");
+    negative!(clean_timeout_param,       "/api?timeout=300");
+    negative!(clean_msg_sleep_word,      "/post?msg=I+will+sleep+tonight");
+    negative!(clean_sleep_filename,      "/files/sleep_research.pdf");
 
     // Edge — `${user.name}` template var. Brace-subshell pattern
     // requires a leading [A-Za-z_], so `${user.name}` matches.

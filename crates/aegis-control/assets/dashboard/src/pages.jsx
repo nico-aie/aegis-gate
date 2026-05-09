@@ -7706,6 +7706,27 @@ function PageThreatIntel() {
   );
 }
 
+// Run-6 UX S6 — small badge surfacing the WAF mode (enforce /
+// log_only) on the Compliance page heading. Sourced from
+// /api/mode (audit-mutated, polled every 5 s). Green when
+// enforcing (the safe default); yellow when log_only (the
+// shadow-mode warning state operators want to notice).
+function ComplianceModeBadge() {
+  const modeApi = window.useModeApi ? window.useModeApi() : { data: null };
+  const mode = modeApi.data?.mode || 'enforce';
+  const cls = mode === 'enforce' ? 'pill ok' : 'pill warn';
+  const label = mode === 'enforce' ? 'ENFORCING' : 'LOG-ONLY';
+  return (
+    <span
+      className={cls}
+      title={`WAF is currently ${mode} — sourced from /api/mode`}
+      style={{ marginLeft: 12, fontSize: 11, verticalAlign: 'middle' }}
+    >
+      {label}
+    </span>
+  );
+}
+
 // Reference data: which detector classes each compliance mode pins.
 // Mirrors the backend clamps in `crates/aegis-core/src/compliance.rs`.
 const COMPLIANCE_CLAMPS = {
@@ -7726,7 +7747,13 @@ function PageCompliance() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Compliance Profile</h1>
+          <h1 className="page-title">
+            Compliance Profile
+            {/* Run-6 UX S6 — visible enforce/log_only badge so a SOC
+                analyst on call recognises the current enforcement
+                state at a glance without hunting through Settings. */}
+            <ComplianceModeBadge />
+          </h1>
           <p className="page-subtitle">PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator (read-only · YAML-driven)</p>
         </div>
       </div>

@@ -53,17 +53,36 @@ impl Detector for XssDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        let uri_str = super::url_decode(&req.uri.to_string());
-        check_xss(&uri_str, "uri", &mut signals);
+        // GAP-012 (Run-6, 2026-05-09) — three-stage decode chain:
+        // raw → URL-decoded → HTML-entity-decoded. The named-entity
+        // bypass (`&lt;script&gt;`) doesn't match the existing
+        // `&#NN;` numeric-entity pattern; entity-decoding the value
+        // before pattern match closes that gap.
+        let raw_uri = req.uri.to_string();
+        let url_decoded_uri = super::url_decode(&raw_uri);
+        let entity_decoded_uri = super::html_entity_decode(&url_decoded_uri);
+        check_xss(&url_decoded_uri, "uri", &mut signals);
+        if entity_decoded_uri != url_decoded_uri {
+            check_xss(&entity_decoded_uri, "uri", &mut signals);
+        }
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
         if !body.is_empty() {
-            check_xss(&super::url_decode(body), "body", &mut signals);
+            let url_decoded_body = super::url_decode(body);
+            let entity_decoded_body = super::html_entity_decode(&url_decoded_body);
+            check_xss(&url_decoded_body, "body", &mut signals);
+            if entity_decoded_body != url_decoded_body {
+                check_xss(&entity_decoded_body, "body", &mut signals);
+            }
         }
 
         for name in &["cookie", "referer", "user-agent"] {
             if let Some(val) = req.headers.get(*name).and_then(|v| v.to_str().ok()) {
                 check_xss(val, name, &mut signals);
+                let entity_decoded = super::html_entity_decode(val);
+                if entity_decoded != val {
+                    check_xss(&entity_decoded, name, &mut signals);
+                }
             }
         }
 
@@ -200,4 +219,42 @@ mod tests {
     negative!(clean_feed, "/feed.xml");
     negative!(clean_manifest, "/manifest.json");
     negative!(clean_service_worker, "/sw.js");
+
+    // GAP-012 (Run-6, 2026-05-09) — HTML-entity decode coverage.
+    // Named-entity (&lt;…&gt;) and numeric-entity (&#60;…&#62;)
+    // forms must fire after entity-decode normalisation. The
+    // existing pattern set already catches numeric-entity LITERALS
+    // (`&#60;` matches `&#x?[0-9a-f]+;`), so the regression
+    // tests below pin both the literal-match and the post-decode
+    // recheck for the named-entity bypass.
+
+    // Named entity — no `#`, URI parses cleanly.
+    positive!(xss_entity_named_lt_gt,
+        "/?q=&lt;script&gt;alert(1)&lt;/script&gt;");
+    // Numeric entities require URL-encoding the `#` as `%23` so
+    // http::Uri doesn't treat it as a fragment delimiter — this
+    // is also what real attackers send, since unencoded `#` in
+    // a query string is reliably stripped by the URL parser.
+    positive!(xss_entity_numeric_decimal,
+        "/?q=&%2360;script&%2362;alert(1)&%2360;/script&%2362;");
+    positive!(xss_entity_numeric_hex,
+        "/?q=&%23x3c;script&%23x3e;alert(1)&%23x3c;/script&%23x3e;");
+    positive!(xss_entity_javascript_uri,
+        "/?next=javascript&colon;alert(1)");
+    positive!(xss_entity_url_encoded_decimal,
+        // %26%2360%3B = &#60; — url-decode then entity-decode.
+        "/?q=%26%2360%3Bscript%26%2362%3Balert(1)%26%2360%3B/script%26%2362%3B");
+
+    // Negatives — legit content with `&` separators or entity-like
+    // chars must NOT FP.
+    negative!(clean_amp_separator,
+        "/api?a=1&b=2&c=3");
+    negative!(clean_amp_in_text,
+        "/contact?msg=Tom+%26+Jerry");
+    negative!(clean_bare_amp,
+        "/?q=Rock+%26+Roll");
+    negative!(clean_named_entity_no_xss,
+        // `&copy;` decodes to nothing in our narrow table; even if
+        // it did, the result wouldn't match XSS patterns.
+        "/?q=Copyright+&copy;+2026");
 }
