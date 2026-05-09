@@ -40,6 +40,29 @@ costs the least CPU.
 | 3 | **Rate-limit** | `aegis-security/src/rate_limit/` | 429 + `X-WAF-Action: rate_limit` | Token bucket exceeded for this request |
 | 4 | **DDoS gate** | `aegis-security/src/ddos.rs` | 403 + `X-WAF-Action: block` | Per-IP sliding-window burst exceeded **OR** previously auto-blocked |
 
+### Rate Limit vs DDoS — what's the difference?
+
+These look similar (both per-IP, both have a "limit + window" pair) but they have **opposite enforcement semantics**:
+
+| Property | Rate Limit | DDoS Gate |
+|---|---|---|
+| Algorithm | Sliding-window token bucket | Sliding-window auto-block |
+| Trigger | Window count exceeds `limit` | Window count exceeds `per_ip_limit` |
+| Response | 429 `X-WAF-Action: rate_limit` | 403 `X-WAF-Action: block` |
+| Recovery | **Automatic** — IP allowed again as the window slides | **TTL'd** — IP rejected for `block_ttl_s` (default 300s) |
+| State location | In-process `DashMap<IpAddr, VecDeque<Instant>>` | Cluster `StateBackend::auto_block` keyspace |
+| Cluster scope | Per-node | Cluster-wide via shared backend |
+| Use case | "Steady-state per-IP budget" — APIs with rate fairness | "Sustained-burst quarantine" — DDoS-grade protection |
+
+In practice operators configure both:
+
+- **Rate Limit** at e.g. `1000 req / 60 s` (≈16 req/s per IP). Catches abusive clients gracefully — they get 429, can back off and retry.
+- **DDoS Gate** at e.g. `1000 req / 10 s` (a much tighter burst window: 100 req/s sustained for 10 s). Catches actual flood attacks — burst-exceed → 5-minute auto-block. The IP is rejected entirely for that duration.
+
+The Rate Limit's 429 lets a misbehaving client recover. The DDoS Gate's 403 + TTL doesn't — by design, because if you're at "100 req/s sustained for 10 s from one IP" you're not a misbehaving client, you're an attack.
+
+Both are **hot-reloadable** via the dashboard's edit modals (`PUT /api/rate-limit`, `PUT /api/gates/ddos`). Per-IP state is preserved across edits — flooding sources don't get a free reset when you tighten thresholds mid-attack.
+
 After all four pass, the request enters the detector chain. The
 [detectors](../security/detectors/README.md) emit signals that
 accumulate into the risk score; threshold crossings produce
@@ -65,13 +88,10 @@ The Traffic Gates page polls `/api/blacklist`, `/api/whitelist`,
 |---|---|---|
 | Access list | Dashboard → Access Lists page (`POST /api/blacklist` etc.) | ✅ yes — audit-mutated |
 | Strike-block threshold | Dashboard → Settings → Risk thresholds (`PUT /api/risk/thresholds`) | ✅ yes — audit-mutated |
-| Rate-limit buckets | YAML `cfg.rate_limit.buckets`, reload | ⏳ requires reload |
-| DDoS thresholds | YAML `cfg.ddos.*`, reload | ⏳ requires reload |
+| Rate-limit | Dashboard → Traffic Gates → Rate Limit card → Edit (`PUT /api/rate-limit`) | ✅ yes — audit-mutated (2026-05-09) |
+| DDoS thresholds | Dashboard → Traffic Gates → DDoS card → Edit (`PUT /api/gates/ddos`) | ✅ yes — audit-mutated (2026-05-09) |
 
-DDoS hot-reload of `per_ip_limit` / `block_ttl_s` / `spike_multiplier`
-is queued as a follow-up — config is captured at boot via
-`DdosDetector::new(cfg)`. To change values, edit YAML and run
-`waf reload` (or restart the process).
+All four gates are hot-reloadable. Per-IP state is preserved across edits — flooding sources don't get a free reset when operators tighten thresholds mid-attack. Every change is captured in the audit chain via `AuditedMutate`.
 
 ### "Why was my legit traffic blocked?"
 

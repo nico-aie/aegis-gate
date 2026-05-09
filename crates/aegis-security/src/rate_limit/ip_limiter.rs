@@ -112,6 +112,12 @@ impl IpRateLimiter {
         self.inner.cfg.store(Arc::new(cfg));
     }
 
+    /// Snapshot the live config — drives the `GET /api/rate-limit`
+    /// payload + the audit-mutated PUT's "before" view.
+    pub fn config_snapshot(&self) -> IpRateLimitConfig {
+        **self.inner.cfg.load()
+    }
+
     /// Consume one slot for `ip`. Returns the post-state
     /// decision the hot path acts on.
     pub fn consume(&self, ip: IpAddr) -> RateDecision {

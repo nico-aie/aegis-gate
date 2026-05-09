@@ -132,13 +132,37 @@ Hardcoded UI constants (`CAT_COLOR`, `MASK_CLASSES`, `LB_OPTIONS`, `RECEIVER_KIN
 
 ## Future work tracked here (not in this PR)
 
-| # | Item | Effort | Reason for deferral |
+| # | Item | Effort | Status |
 |---|---|---|---|
-| 1 | Real per-regime pinning (PCI vs HIPAA vs SOC2 vs GDPR vs FIPS map to different detector lists) | ~3 hr | Operator hasn't asked for it; honesty fix above is sufficient until they do. |
-| 2 | TAXII / MISP feed CRUD UI | ~1 day | Backend wiring needed for audit-mutated feed add/remove; bigger than a quick fix. |
-| 3 | Compliance page modes editor (toggle PCI on/off without YAML + restart) | ~half day | Hot-reload of `cfg.compliance.modes` doesn't exist; would need backend swap path. |
-| 4 | Rate-limit summary endpoint `/api/rate-limit` so the Traffic Gates rate-limit card lights up | ~1 hr | Currently the Traffic Gates page renders an empty-state hint for that card. |
-| 5 | DDoS hot-reload of thresholds | ~half day | Currently YAML + restart only. ArcSwap wrap of `DdosConfig` would close it. |
+| 1 | Real per-regime pinning (PCI vs HIPAA vs SOC2 vs GDPR vs FIPS map to different detector lists) | ~3 hr | Open — operator hasn't asked for it; honesty fix above is sufficient until they do. |
+| 2 | TAXII / MISP feed CRUD UI | ~1 day | Open — backend wiring needed for audit-mutated feed add/remove. |
+| 3 | Compliance page modes editor (toggle PCI on/off without YAML + restart) | ~half day | Open — hot-reload of `cfg.compliance.modes` doesn't exist; would need backend swap path. |
+| 4 | Rate-limit summary endpoint + hot-reload | ~1 hr | ✅ **Shipped 2026-05-09 (later commit)** — `GET /api/rate-limit` + audit-mutated `PUT /api/rate-limit` + Traffic Gates edit modal |
+| 5 | DDoS hot-reload of thresholds | ~half day | ✅ **Shipped 2026-05-09 (later commit)** — `DdosDetector::config` wrapped in ArcSwap, audit-mutated `PUT /api/gates/ddos`, Traffic Gates edit modal |
+| 6 | Tier `block_threshold` (req/s) field is dead UI | ~30 min | ✅ **Shipped 2026-05-09 (later commit)** — hidden from Edit-tier modal; pointer added to the Traffic Gates page where real per-IP limits live |
+
+### Tier `block_threshold` finding (added 2026-05-09)
+
+The Detectors page Edit-tier modal showed a "Block threshold (req/s)" input that's purely descriptive — not enforced anywhere. Source comment in `crates/aegis-control/src/api/tiers.rs:36-44`:
+
+> Note that the pipeline field today is **descriptive metadata only** — the data plane gates detectors via the detector mask (`is_enabled_id`), not by walking this string list. ... Real tier-scoped execution is a follow-up.
+
+Same applies to `block_threshold`. Operators tuning the field believed they were configuring a per-tier rate cap; in reality the field was stored and rendered but had zero runtime effect. Real per-IP rate limits live in `cfg.rate_limit.buckets` (with hot-reload via the new Traffic Gates Rate Limit card).
+
+**Fix shipped:** hide the input from the Edit-tier modal + remove the `block ≥ X/s` chip from the tier list view + add an inline note "per-IP volumetric limits live on the Traffic Gates page". The `block_threshold` value is still POSTed (for audit-stream stability) but operators no longer waste time tuning it.
+
+### Hot-reload story now consistent across all four gates (added 2026-05-09)
+
+All four request-flow gates now hot-reload through audit-mutated PUT endpoints:
+
+| Gate | Endpoint | Hot-reload? |
+|---|---|---|
+| Access list | `POST /api/blacklist`, `POST /api/whitelist` | ✅ |
+| Strike-block | `PUT /api/risk/thresholds` | ✅ |
+| Rate-limit | `PUT /api/rate-limit` | ✅ (new 2026-05-09) |
+| DDoS gate | `PUT /api/gates/ddos` | ✅ (new 2026-05-09) |
+
+Per-IP state is preserved across edits in all four — flooding sources don't get a free reset when operators tighten thresholds mid-attack.
 
 Cross-link these as separate PRs if/when prioritised.
 
