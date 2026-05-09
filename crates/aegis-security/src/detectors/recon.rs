@@ -46,6 +46,37 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:Makefile$)",
         r"(?i)(?:\.aws/credentials)",
         r"(?i)(?:\.ssh/)",
+        // GAP-001 (Run-5, 2026-05-08) — framework recon paths.
+        // Spring Boot actuator danger endpoints (/health and /info
+        // are intentionally public on most Spring deployments;
+        // only the dangerous subpaths flag).
+        r"(?i)/actuator/(?:heapdump|threaddump|env|configprops|loggers|trace|httptrace|auditevents|dump|jolokia|liquibase|flyway|gateway|conditions|beans|mappings|metrics/.*|sessions|shutdown)\b",
+        // Laravel Ignition — CVE-2021-3129 (RCE).
+        r"(?i)/_ignition/(?:execute-solution|health-check|update-config)\b",
+        // Swagger / OpenAPI surface enumeration.
+        r"(?i)/(?:swagger-ui\.html|swagger\.json|swagger\.yaml|v\d+/api-docs|api-docs|openapi\.json|openapi\.yaml)\b",
+        // GraphQL introspection / playground — usually disabled
+        // in prod. Operators with intentional public GraphQL can
+        // disable this class via `set_profile`.
+        r"(?i)/graphql(?:/|\?|$)",
+        r"(?i)/graphiql(?:/|\?|$)",
+        r"(?i)/playground(?:/|\?|$)",
+        // Kubernetes API namespaces / pods / deployments.
+        r"(?i)/api/v1/namespaces\b",
+        r"(?i)/api/v1/pods\b",
+        r"(?i)/apis/apps/v1/deployments\b",
+        // Kibana / Elastic internals.
+        r"(?i)/(?:app/kibana|\.kibana(?:/|/_search)|_cat/indices|_cluster/health)\b",
+        // Jenkins script console (Groovy RCE) and CLI jar.
+        r"(?i)/(?:script(?:Text)?|jnlpJars/jenkins-cli\.jar|manage|computer/(?:\(master\)|\(built-in\))/script)\b",
+        // CGI legacy probes — Shellshock surface, classic info
+        // disclosure.
+        r"(?i)/cgi-bin/(?:printenv\.pl|test-cgi|php-cgi|\.\.)\b",
+        // Prometheus federation/scrape-target probe. Bare
+        // `/metrics` is a legit operator-hosted endpoint and
+        // is NOT flagged; only the suspicious-query shapes
+        // (`?format=`, `?target=`, `?module=`) fire.
+        r"(?i)/metrics\?(?:format=|target=|module=)",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -88,10 +119,18 @@ impl Detector for ReconDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        // Check path for recon targets.
-        let path = req.uri.path();
+        // Check path-and-query for recon targets. We use the full
+        // path-and-query (not just `path()`) so query-shaped probes
+        // like `/metrics?format=prometheus` (Prometheus federation
+        // scrape) can match. Existing path-only patterns are
+        // unaffected — they don't contain `?`.
+        let path_q = req
+            .uri
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or_else(|| req.uri.path());
         for re in RECON_PATHS.iter() {
-            if re.is_match(path) {
+            if re.is_match(path_q) {
                 signals.push(Signal {
                     score: 25,
                     tag: "recon_path".into(),
@@ -208,6 +247,36 @@ mod tests {
     path_positive!(aws_creds, "/.aws/credentials");
     path_positive!(ssh_dir, "/.ssh/id_rsa");
     path_positive!(hg_dir, "/.hg/store");
+    // GAP-001 (Run-5) — framework recon positives.
+    path_positive!(actuator_heapdump,     "/actuator/heapdump");
+    path_positive!(actuator_env,          "/actuator/env");
+    path_positive!(actuator_jolokia,      "/actuator/jolokia");
+    path_positive!(actuator_threaddump,   "/actuator/threaddump");
+    path_positive!(actuator_shutdown,     "/actuator/shutdown");
+    path_positive!(ignition_solve,        "/_ignition/execute-solution");
+    path_positive!(ignition_health,       "/_ignition/health-check");
+    path_positive!(swagger_ui,            "/swagger-ui.html");
+    path_positive!(swagger_json,          "/swagger.json");
+    path_positive!(openapi_v3,            "/v3/api-docs");
+    path_positive!(graphql_root,          "/graphql");
+    path_positive!(graphql_query,         "/graphql?query=__schema");
+    path_positive!(graphiql_ide,          "/graphiql/");
+    path_positive!(playground_ide,        "/playground");
+    path_positive!(k8s_namespaces,        "/api/v1/namespaces");
+    path_positive!(k8s_pods,              "/api/v1/pods");
+    path_positive!(k8s_deployments,       "/apis/apps/v1/deployments");
+    path_positive!(kibana_app,            "/app/kibana");
+    path_positive!(kibana_search,         "/.kibana/_search");
+    path_positive!(elastic_cat_indices,   "/_cat/indices");
+    path_positive!(elastic_cluster,       "/_cluster/health");
+    path_positive!(jenkins_script,        "/script");
+    path_positive!(jenkins_script_text,   "/scriptText");
+    path_positive!(jenkins_cli_jar,       "/jnlpJars/jenkins-cli.jar");
+    path_positive!(cgi_printenv,          "/cgi-bin/printenv.pl");
+    path_positive!(cgi_test,              "/cgi-bin/test-cgi");
+    path_positive!(cgi_phpcgi,            "/cgi-bin/php-cgi");
+    path_positive!(prom_federate,         "/metrics?format=prometheus");
+    path_positive!(prom_target_probe,     "/metrics?target=10.0.0.1:9100");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
@@ -279,4 +348,13 @@ mod tests {
     negative!(clean_static_versioned,    "/static/v1.5/app.js");
     negative!(clean_webhook, "/webhooks/github");
     negative!(clean_download, "/download/report.pdf");
+    // GAP-001 (Run-5) — operator-hosted endpoints that must NOT FP.
+    // /actuator/health and /actuator/info are intentionally public on
+    // most Spring Boot deployments — only the dangerous subpaths flag.
+    negative!(clean_actuator_health,   "/actuator/health");
+    negative!(clean_actuator_info,     "/actuator/info");
+    negative!(clean_bare_metrics,      "/metrics");
+    negative!(clean_metrics_legit,     "/metrics?accept=text/plain");
+    negative!(clean_kibana_substring,  "/api/kibana-feedback");
+    negative!(clean_graphql_substr,    "/graphqlproxy");
 }

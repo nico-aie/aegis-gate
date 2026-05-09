@@ -39,6 +39,28 @@ Requests to known reconnaissance paths score risk immediately:
 - **Credentials:** `/.ssh/id_rsa`, `/credentials.json`, `/.aws/credentials`
 - **Docker REST API:** `/v1.24/containers/json`, `/v1.41/info`, `/v1.43/images/json`, `/v1.40/networks`, `/v1.41/swarm`, `/_ping` (the daemon's HTTP API surface, reachable when the socket is mistakenly exposed via TCP / a sidecar proxy — added 2026-05-08 SEC-L001)
 
+#### Framework reconnaissance (added 2026-05-08, GAP-001)
+
+QA Run-5 found the framework-recon corpus passing 1/9 — the WAF caught the obvious `/.env` shape but missed every framework-specific probe. Added the following pattern groups, all kept **conservative** so operator-hosted endpoints (`/health`, `/metrics`, `/actuator/health`, `/actuator/info`) do **not** false-positive:
+
+| Pattern shape | Why dangerous | Examples |
+|---|---|---|
+| `/actuator/(heapdump\|env\|threaddump\|jolokia\|env\|configprops\|...)` | Spring Boot — heapdump leaks memory; env leaks secrets; jolokia is RCE if writable | `/actuator/heapdump`, `/actuator/jolokia` |
+| `/_ignition/(execute-solution\|health-check\|update-config)` | Laravel Ignition — CVE-2021-3129, direct RCE | `/_ignition/execute-solution` |
+| `/(swagger-ui\|swagger\.json\|v\d+/api-docs\|openapi\.(json\|yaml))` | Surface enumeration; not always sensitive but standard recon target | `/swagger-ui.html`, `/v3/api-docs` |
+| `/graphql(\|/\|?)`, `/graphiql`, `/playground` | GraphQL introspection often disabled in prod; flag for visibility | `/graphql?query=__schema` |
+| `/api/v1/(namespaces\|pods)`, `/apis/apps/v1/deployments` | Kubernetes API — full cluster takeover if reachable | `/api/v1/pods` |
+| `/(\.kibana(/\|/_search)\|_cat/indices\|_cluster/health)` | Elastic / Kibana internals — data exposure | `/.kibana/_search`, `/_cat/indices` |
+| `/(script(Text)?\|jnlpJars/jenkins-cli\.jar\|computer/(\(master\|built-in\))/script)` | Jenkins — Groovy console = RCE; CLI jar = unauth admin | `/script`, `/scriptText` |
+| `/cgi-bin/(printenv\.pl\|test-cgi\|php-cgi\|\.\.)` | Legacy CGI — Shellshock + classic info disclosure | `/cgi-bin/printenv.pl` |
+| `/metrics\?(format=\|target=\|module=)` | Prometheus federation/scrape-target probe — bare `/metrics` is **not** flagged (legit operator endpoint); only the suspicious-query shapes fire | `/metrics?format=prometheus`, `/metrics?target=10.0.0.1:9100` |
+
+**Why the conservative shape:** many operators legitimately host `/health`, `/metrics`, `/info`, `/status` on their own services. Pattern-matching on bare `/actuator` or `/health` would FP on every Spring-Boot-style operator endpoint that's intentionally public. Each pattern targets the **known-dangerous subpath** specifically. `/actuator/health` and `/actuator/info` therefore stay green.
+
+**Score:** existing recon score (25 for path, 30 for UA). Recon is info disclosure, not exec — the detector's job is signal accumulation across multiple probes, not one-shot block. A determined scanner hitting `/actuator/env` once doesn't deserve a block; the third recon probe in a row should (`risk.thresholds.challenge_at = 40` lifts to challenge after a couple of hits, `block_at = 80` blocks once enough recon stacks up).
+
+**Field tag:** `recon_path` (for path hits) — same as Docker REST and the original recon-path corpus.
+
 These are treated as **canary routes** — a request to any of them sets risk to 100 immediately (see [risk scoring](../risk-scoring.md)).
 
 ### High path diversity

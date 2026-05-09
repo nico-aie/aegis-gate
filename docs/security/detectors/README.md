@@ -21,9 +21,9 @@ verbatim.
 | [path-traversal.md](./path-traversal.md) | `path_traversal` | URL, body |
 | [ssrf.md](./ssrf.md) | `ssrf` | URL, body, fetch-style headers |
 | [header-injection.md](./header-injection.md) | `header_injection` | Headers + query CRLF |
-| [recon.md](./recon.md) | `recon` | URL patterns + path entropy |
+| [recon.md](./recon.md) | `recon_path`, `recon_tool` | URL patterns + path entropy — **framework recon** (Spring actuator dangers / Laravel Ignition / Swagger / GraphQL / K8s API / Kibana / Jenkins / CGI / Prometheus federation) added 2026-05-08 (GAP-001) |
 | [brute-force.md](./brute-force.md) | `brute_force` | Login endpoints |
-| [body-abuse.md](./body-abuse.md) | `body_abuse`, `xxe`, `mass_assignment` | Body (JSON / XML / form) |
+| [body-abuse.md](./body-abuse.md) | `body_abuse`, `xxe`, `mass_assignment`, `proto_pollution` | Body (JSON / XML / form) — **prototype pollution** (`__proto__` / `constructor.prototype`) added 2026-05-08 (GAP-010, score 45) |
 | [command-injection.md](./command-injection.md) | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, **Log4Shell `${jndi:...}`** (score 60) |
 | [template-injection.md](./template-injection.md) | `template_injection` | URL, body — Jinja2 `{{config}}` / Twig / Mako / Freemarker `<#assign>` / Velocity `#set()` / SpEL `${T(...)}` / Handlebars `{{#with}}` |
 | [nosql-injection.md](./nosql-injection.md) | `nosql_injection` | URL, body — MongoDB operator injection (`?param[$ne]=foo`, `{"$where":"..."}`) |

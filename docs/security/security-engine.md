@@ -179,8 +179,8 @@ block on their own; they accumulate signals.
 | Path traversal | `path_traversal` | URL, body |
 | SSRF | `ssrf` | URL, body, fetch-style headers |
 | Header injection | `header_injection` | Headers (CRLF, smuggling) |
-| Body abuse | `body_abuse`, `xxe`, `mass_assignment` | Body (size, nesting, JSON / XML / form) |
-| Recon | `recon` | URL patterns + path entropy (`/.env`, `/wp-admin/…`, Docker REST) |
+| Body abuse | `body_abuse`, `xxe`, `mass_assignment`, `proto_pollution` | Body (size, nesting, JSON / XML / form) — `proto_pollution` sub-tag (score 45) added 2026-05-08 (GAP-010) |
+| Recon | `recon_path`, `recon_tool` | URL patterns + path entropy (`/.env`, `/wp-admin/…`, Docker REST) — framework recon (Spring actuator danger paths / Laravel Ignition / Swagger / GraphQL / K8s API / Kibana / Jenkins / CGI / Prometheus federation) added 2026-05-08 (GAP-001) |
 | Brute force | `brute_force` | Login endpoints (failure counter via `velocity.rs`) |
 | Command injection | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, Log4Shell `${jndi:...}` (score 60) |
 | Template injection | `template_injection` | URL, body — Jinja2 / Twig / SpEL / Freemarker / Velocity / Handlebars |
@@ -348,7 +348,7 @@ not configurable today; change the file + rebuild):
 | SSRF | per-request + per-IP | **50** | `detectors/ssrf.rs` |
 | Header injection / CRLF / smuggling | per-request + per-IP | **40** | `detectors/header_injection.rs` |
 | Recon (probe / canary) | per-request + per-IP | **25 / 30** | `detectors/recon.rs` |
-| Body abuse (size → depth escalation) | per-request + per-IP | **30 / 35 / 50 / 60** | `detectors/body_abuse.rs` |
+| Body abuse (size → depth → mass-assign → proto-pollution → XXE) | per-request + per-IP | **30 / 35 / 45 / 50 / 60** | `detectors/body_abuse.rs` |
 | Brute force | per-request + per-IP | YAML-configured | `detectors/brute_force.rs` |
 | Command injection | per-request + per-IP | **50** (Log4Shell **60**) | `detectors/command_injection.rs` |
 | Template injection (SSTI) | per-request + per-IP | **50** | `detectors/template_injection.rs` |
