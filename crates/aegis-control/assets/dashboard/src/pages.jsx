@@ -2159,10 +2159,25 @@ function DetectorMaskCard() {
   const overrides = api.data?.overrides || {};
   const lockedClasses = api.data?.locked_classes || [];
   const complianceModes = api.data?.compliance_modes || [];
+  const scoreTable = api.data?.score_table || [];
 
   const [busy, setBusy] = useStateP(false);
   const [editing, setEditing] = useStateP(null);
   const [draft, setDraft] = useStateP({});
+
+  // 2026-05-10 — compute the dominant score + tier per class so
+  // each chip in the mask grid carries a small score badge tinted
+  // by the 5-tier framework (probe / phishing / header / broad /
+  // high / critical). Operators see "sqli · 60" with a critical
+  // tint instead of bare "sqli", so the mask + scores are
+  // legible from one card without expanding anything.
+  const dominantByClass = {};
+  for (const row of scoreTable) {
+    const prev = dominantByClass[row.class];
+    if (!prev || row.score > prev.score) {
+      dominantByClass[row.class] = { score: row.score, tier: row.tier, tag: row.tag };
+    }
+  }
 
   if (!baseMask) {
     return (
@@ -2245,6 +2260,22 @@ function DetectorMaskCard() {
           {MASK_CLASSES.map(cls => {
             const enabled = !!view[cls];
             const locked = lockedClasses.includes(cls);
+            // Each class has a dominant score + tier (highest-weight
+            // signal that class can emit). Render that score inline
+            // so operators see "sqli · 60" instead of just "sqli" —
+            // the calibrated tier tint backs each enabled chip so
+            // posture is readable at a glance without expanding the
+            // reference table below.
+            const dominant = dominantByClass[cls];
+            const tierStyle = dominant ? (SCORE_TIER_STYLE[dominant.tier] || SCORE_TIER_STYLE.probe) : null;
+            const baseTitle = dominant
+              ? `${cls} → top score ${dominant.score} (${tierStyle.label}) via tag ${dominant.tag}`
+              : cls;
+            const titleText = locked
+              ? `${baseTitle}\n\n🔒 pinned by active compliance mode`
+              : `${baseTitle}\n\n${enabled ? 'enabled — click to disable' : 'disabled — click to enable'}`;
+            const chipBg = enabled && tierStyle ? tierStyle.bg : 'transparent';
+            const chipFg = enabled && tierStyle ? tierStyle.fg : 'var(--ink-dim)';
             return (
               <button
                 key={cls}
@@ -2253,17 +2284,21 @@ function DetectorMaskCard() {
                   setDraft(d => ({ ...d, [cls]: !d[cls] }));
                 }}
                 disabled={!isEditing || locked || busy}
-                title={locked ? `${cls} is pinned by active compliance mode` : (enabled ? 'enabled — click to disable' : 'disabled — click to enable')}
-                className={`pill ${enabled ? 'ok' : 'neutral'}`}
+                title={titleText}
                 style={{
                   fontSize: 10,
                   cursor: isEditing && !locked ? 'pointer' : 'default',
-                  opacity: locked ? 0.6 : 1,
+                  opacity: locked ? 0.6 : (enabled ? 1 : 0.55),
                   padding: '2px 8px',
+                  borderRadius: 4,
+                  background: chipBg,
+                  color: chipFg,
+                  fontWeight: enabled ? 600 : 500,
                   border: isEditing && !locked ? '1px dashed var(--hairline)' : '1px solid transparent',
+                  textDecoration: enabled ? 'none' : 'line-through',
                 }}
               >
-                {locked && '🔒 '}{cls}{!enabled && ' · off'}
+                {locked && '🔒 '}{cls}{dominant ? ` · ${dominant.score}` : ''}
               </button>
             );
           })}
@@ -2291,10 +2326,12 @@ function DetectorMaskCard() {
     <div className="card" style={{ marginBottom: 12, padding: 0 }}>
       <div className="card-head" style={{ padding: 12 }}>
         <div>
-          <div className="card-title">Detectors</div>
+          <div className="card-title">Detector inventory &amp; mask</div>
           <div className="card-subtitle">
-            Per-class on/off mask. Locked classes (🔒) are pinned by
-            active compliance modes
+            Per-class on/off mask plus the read-only score reference.
+            Each chip shows the dominant score for that class, tinted
+            by the 5-tier framework. Locked classes (🔒) are pinned
+            by active compliance modes
             {complianceModes.length > 0 && (
               <> ({complianceModes.join(', ')})</>
             )}
@@ -2330,19 +2367,24 @@ function DetectorMaskCard() {
   );
 }
 
-// Read-only score catalog. Renders one chip per `(class, tag)` row
-// from `/api/detectors`'s `score_table`. The chip's colour follows
-// the documented 5-tier framework; hover shows the operator-facing
-// note. A footer link guides operators to the risk-tuning doc when
-// they want to adjust posture without touching the score ladder.
+// Read-only score reference — sits inside the unified Detectors
+// card. The tier legend is always visible so operators can decode
+// the chip colours in the mask grid above without hunting; the
+// per-tag breakdown stays behind a "Show full table" toggle to
+// keep the card compact for routine operation.
+//
+// Why read-only: the score each detector emits is a calibrated
+// ladder that interacts with `risk.thresholds.challenge_at` (40)
+// and `block_at` (80). Editing scores arbitrarily breaks the
+// score↔threshold contract. To tune posture, operators reach for
+// `set_profile log_only`, the threshold knobs, RaiseRisk rules,
+// or per-tier overrides above (all surfaced on this same page).
 function DetectorScorePanel({ scoreTable }) {
   const [expanded, setExpanded] = useStateP(false);
   if (!scoreTable || scoreTable.length === 0) {
     return null;
   }
 
-  // Group by class so the operator reads them the same way the
-  // mask grid renders.
   const byClass = {};
   for (const row of scoreTable) {
     if (!byClass[row.class]) byClass[row.class] = [];
@@ -2351,81 +2393,84 @@ function DetectorScorePanel({ scoreTable }) {
   const classOrder = Object.keys(byClass);
 
   return (
-    <div style={{ borderTop: '1px solid var(--hairline)' }}>
+    <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+          Risk score reference
+        </span>
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>
+          · read-only · 5-tier framework · {scoreTable.length} signal types
+        </span>
+      </div>
+
+      {/* Always-visible tier legend — decodes the chip tints in
+          the mask grid above so operators do not need to expand
+          anything for routine reading. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        {Object.entries(SCORE_TIER_STYLE).map(([tier, style]) => (
+          <span
+            key={tier}
+            title={`${style.label} tier`}
+            style={{
+              fontSize: 10, padding: '2px 8px', borderRadius: 4,
+              background: style.bg, color: style.fg, fontWeight: 600,
+            }}
+          >
+            {style.label}
+          </span>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.4, marginBottom: 6 }}>
+        Scores are calibrated against{' '}
+        <code style={{ fontSize: 10 }}>risk.thresholds.challenge_at</code> (40) and{' '}
+        <code style={{ fontSize: 10 }}>block_at</code> (80). To tune posture without
+        touching scores, use <code style={{ fontSize: 10 }}>set_profile log_only</code>,
+        adjust risk thresholds, add a <code style={{ fontSize: 10 }}>RaiseRisk(delta)</code> rule,
+        or apply a per-tier override above. See the{' '}
+        <a href="/docs/operator/risk-tuning" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+          operator risk-tuning guide
+        </a>.
+      </div>
+
       <button
         onClick={() => setExpanded(e => !e)}
         className="btn"
         style={{
-          width: '100%', textAlign: 'left', background: 'transparent',
-          border: 'none', padding: '10px 12px', fontSize: 12,
-          color: 'var(--ink)', fontWeight: 600, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'transparent', border: '1px solid var(--hairline)',
+          padding: '4px 10px', fontSize: 11, color: 'var(--ink-dim)',
+          cursor: 'pointer', borderRadius: 4,
         }}
       >
-        <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{expanded ? '▼' : '▶'}</span>
-        Risk score reference <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }}>· read-only · {scoreTable.length} signal types</span>
+        {expanded ? '▼ Hide full table' : '▶ Show full per-tag table'}
       </button>
 
       {expanded && (
-        <div style={{ padding: '4px 12px 12px' }}>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 8, lineHeight: 1.4 }}>
-            The score each detector emits is a calibrated ladder that interacts with{' '}
-            <code style={{ fontSize: 10 }}>risk.thresholds.challenge_at</code> (40) and{' '}
-            <code style={{ fontSize: 10 }}>block_at</code> (80). Editing scores in the
-            UI is intentionally not supported because arbitrary changes break the
-            score↔threshold interaction.{' '}
-            <strong>To tune posture</strong>, use <code style={{ fontSize: 10 }}>set_profile log_only</code>,
-            adjust <code style={{ fontSize: 10 }}>risk.thresholds</code>, add a
-            <code style={{ fontSize: 10 }}> RaiseRisk(delta)</code> rule, or
-            apply a per-tier override above. See the{' '}
-            <a href="/docs/operator/risk-tuning" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
-              operator risk-tuning guide
-            </a>.
-          </div>
-
-          {/* Tier-legend strip — chip colour decoder. */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-            {Object.entries(SCORE_TIER_STYLE).map(([tier, style]) => (
-              <span
-                key={tier}
-                title={`${style.label} tier`}
-                style={{
-                  fontSize: 10, padding: '2px 8px', borderRadius: 4,
-                  background: style.bg, color: style.fg, fontWeight: 600,
-                }}
-              >
-                {style.label}
-              </span>
-            ))}
-          </div>
-
-          {/* Per-class score table. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, auto) 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
-            {classOrder.map(cls => (
-              <React.Fragment key={cls}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)' }}>{cls}</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {byClass[cls].map(row => {
-                    const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
-                    return (
-                      <span
-                        key={`${row.class}-${row.tag}`}
-                        title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}`}
-                        style={{
-                          fontSize: 10, padding: '2px 8px', borderRadius: 4,
-                          background: tierStyle.bg, color: tierStyle.fg,
-                          fontWeight: 500, fontFamily: 'monospace',
-                          cursor: 'help',
-                        }}
-                      >
-                        {row.tag} · {row.score}
-                      </span>
-                    );
-                  })}
-                </div>
-              </React.Fragment>
-            ))}
-          </div>
+        <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'minmax(140px, auto) 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
+          {classOrder.map(cls => (
+            <React.Fragment key={cls}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)' }}>{cls}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {byClass[cls].map(row => {
+                  const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
+                  return (
+                    <span
+                      key={`${row.class}-${row.tag}`}
+                      title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}`}
+                      style={{
+                        fontSize: 10, padding: '2px 8px', borderRadius: 4,
+                        background: tierStyle.bg, color: tierStyle.fg,
+                        fontWeight: 500, fontFamily: 'monospace',
+                        cursor: 'help',
+                      }}
+                    >
+                      {row.tag} · {row.score}
+                    </span>
+                  );
+                })}
+              </div>
+            </React.Fragment>
+          ))}
         </div>
       )}
     </div>
@@ -2641,9 +2686,9 @@ function PageTierConfig() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Detectors</h1>
+          <h1 className="page-title">Detectors &amp; Tiers</h1>
           <p className="page-subtitle">
-            Pipeline assignment per tier ·
+            Detector mask + per-tier pipeline assignment ·
             <span className="num"> {tiers.length}</span> active tiers ·
             <span className="num"> {routes.length}</span> routes
             <span style={{ marginLeft: 8 }}>
