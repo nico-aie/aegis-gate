@@ -109,19 +109,19 @@ fn bundle_under_documented_budget() {
 #[test]
 fn app_js_under_per_bundle_budget() {
     // The pre-compiled app.js holds every page + every widget. Cap
-    // at 400 KB to catch accidental dependency bloat — v1 was ~158 KB,
+    // at 420 KB to catch accidental dependency bloat — v1 was ~158 KB,
     // post-Phase-3 (Investigation pivot, Incidents queue with
     // ack/snooze/resolve, Threat Intel, Compliance, Reports CSV) is
     // ~263 KB. Bumped 2026-05-04 from 320 → 360 KB after the
     // Routing & Upstreams page was restructured. Bumped 2026-05-09
     // from 360 → 400 KB after Run-5: 4 new detector classes added
-    // to the mask grid (command_injection, template_injection,
-    // nosql_injection, open_redirect — previously silently omitted)
-    // + the read-only DetectorScorePanel surfacing the 5-tier
-    // score catalog from /api/detectors. Real dependency growth
-    // (new React lib, etc.) needs an explicit budget bump +
-    // comment here, not a silent overrun.
-    const APP_JS_BUDGET: usize = 400_000;
+    // to the mask grid + the DetectorScorePanel. Bumped 2026-05-09
+    // from 400 → 420 KB after the new Traffic Gates page surfacing
+    // the four request-flow gates (access list, strike-block,
+    // rate-limit, DDoS) with telemetry cards + operator guide.
+    // Real dependency growth (new React lib, etc.) needs an
+    // explicit budget bump + comment here, not a silent overrun.
+    const APP_JS_BUDGET: usize = 420_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,

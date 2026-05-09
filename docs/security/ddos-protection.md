@@ -15,6 +15,13 @@
 > Audit trail: original stub-finding [`BUG-DDOS-STUB`](../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md);
 > wire-up plan [`internal-audit-2026-05-09-ddos/`](../../plans/issue-fix/internal-audit-2026-05-09-ddos/).
 
+> **Operator surface:** the dashboard's **Traffic Gates** page
+> (Policy menu) shows the live DDoS telemetry — `current_rps`,
+> `baseline_rps`, `spike_active`, mode (enforce / observe-only),
+> alongside summary cards for the other three request-flow gates.
+> Operator workflow + tuning guide:
+> [`docs/operator/traffic-gates.md`](../operator/traffic-gates.md).
+
 ## What DDoS is — and isn't
 
 DDoS is a **request-flow gate**, not a `Detector` trait

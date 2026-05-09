@@ -7706,6 +7706,239 @@ function PageThreatIntel() {
   );
 }
 
+// 2026-05-09 — Traffic Gates page. Operator-facing surface for the
+// four request-flow gates that fire BEFORE the detector chain:
+//
+//   1. Access list (blacklist + whitelist) — IP / CIDR / country
+//   2. Strike-block — per-IP lifetime strike counter
+//   3. Rate-limit — token-bucket per-IP volumetric guard
+//   4. DDoS — sliding-window per-IP burst gate + EWMA spike mode
+//
+// All four short-circuit the request before detectors run. They are
+// NOT detectors (don't emit `Signal { score, tag }`); they live in
+// `crates/aegis-security/src/{ddos,risk,rate_limit,...}`.
+//
+// The page surfaces telemetry for each gate and links to the
+// dedicated CRUD page where one exists (Access Lists). The DDoS
+// card has the most detail because the gate has no other operator
+// surface today; threshold edits still require restart (hot-reload
+// of DdosConfig is a follow-up).
+function PageTrafficGates() {
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Traffic Gates</h1>
+          <p className="page-subtitle">
+            Four request-flow short-circuits that fire <strong>before</strong> the detector chain.
+            Each is a binary block-or-pass gate, not a `Detector` trait
+            impl — see the <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors</a> page
+            for the signal-emitting pipeline that runs after these gates pass.
+          </p>
+        </div>
+      </div>
+
+      <AccessListGateCard />
+      <StrikeBlockGateCard />
+      <RateLimitGateCard />
+      <DdosGateCard />
+    </>
+  );
+}
+
+// 1. Access list summary — links to the existing dedicated page.
+function AccessListGateCard() {
+  const black = window.useApi ? window.useApi('/api/blacklist', { intervalMs: 30000, fallback: { entries: [] } }) : { data: { entries: [] } };
+  const white = window.useApi ? window.useApi('/api/whitelist', { intervalMs: 30000, fallback: { entries: [] } }) : { data: { entries: [] } };
+  const blackCount = (black.data?.entries || []).length;
+  const whiteCount = (white.data?.entries || []).length;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="1. Access List"
+        sub="IP / CIDR / country blacklist + whitelist — fires first, cheapest gate"
+      />
+      <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div style={{ flex: 1, display: 'flex', gap: 16 }}>
+          <span className="pill err" style={{ fontSize: 11 }}>{blackCount} blacklist {blackCount === 1 ? 'entry' : 'entries'}</span>
+          <span className="pill ok" style={{ fontSize: 11 }}>{whiteCount} whitelist {whiteCount === 1 ? 'entry' : 'entries'}</span>
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+            Returns 403 + <code>X-WAF-Action: block</code> on blacklist hit.
+            Whitelist bypasses detectors but not other gates.
+          </span>
+        </div>
+        <a href="#/access-lists" className="btn primary" style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none' }}>
+          Edit lists →
+        </a>
+      </div>
+    </div>
+  );
+}
+
+// 2. Strike-block summary — sourced from /api/risk.
+function StrikeBlockGateCard() {
+  const risk = window.useApi ? window.useApi('/api/risk', { intervalMs: 5000, fallback: null }) : { data: null };
+  const blockAt = risk.data?.config?.strikes?.block_at ?? null;
+  const blockedCount = (risk.data?.entries || []).filter(e => e.strikes >= (blockAt ?? 999999)).length;
+  const totalTracked = (risk.data?.entries || []).length;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="2. Strike-Block"
+        sub="Per-IP lifetime strike counter — permanent block once threshold crossed"
+      />
+      <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div style={{ flex: 1, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          {blockAt !== null && (
+            <span className="pill neutral" style={{ fontSize: 11 }}>
+              <code style={{ fontSize: 10 }}>strikes.block_at</code>: <strong>{blockAt}</strong>
+            </span>
+          )}
+          <span className={`pill ${blockedCount > 0 ? 'err' : 'ok'}`} style={{ fontSize: 11 }}>
+            {blockedCount} {blockedCount === 1 ? 'IP' : 'IPs'} permanently blocked
+          </span>
+          <span className="pill neutral" style={{ fontSize: 11 }}>
+            {totalTracked} tracked
+          </span>
+        </div>
+        <a href="#/settings" className="btn" style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none' }}>
+          Edit thresholds →
+        </a>
+      </div>
+    </div>
+  );
+}
+
+// 3. Rate-limit summary — sourced from /api/rate-limit (if exposed).
+function RateLimitGateCard() {
+  const rl = window.useApi ? window.useApi('/api/rate-limit', { intervalMs: 10000, fallback: null }) : { data: null };
+  const config = rl.data?.config ?? null;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="3. Rate Limit"
+        sub="Per-IP token-bucket — returns 429 + X-WAF-Action: rate_limit when bucket exceeded"
+      />
+      <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div style={{ flex: 1, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          {config ? (
+            <>
+              {config.buckets && config.buckets.map((b, i) => (
+                <span key={i} className="pill neutral" style={{ fontSize: 11 }}>
+                  <strong>{b.scope}</strong> · {b.limit}/{b.window_s}s
+                </span>
+              ))}
+            </>
+          ) : (
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+              Rate-limit summary endpoint not yet wired. Configure via <code>cfg.rate_limit</code> YAML.
+            </span>
+          )}
+        </div>
+        <a href="#/settings" className="btn" style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none' }}>
+          View settings →
+        </a>
+      </div>
+    </div>
+  );
+}
+
+// 4. DDoS gate — full operator-facing card. The flagship surface
+// since the gate has no other operator UI today. Telemetry +
+// config view; threshold edits require YAML + restart for now.
+function DdosGateCard() {
+  const ddos = window.useApi ? window.useApi('/api/gates/ddos', { intervalMs: 5000, fallback: null }) : { data: null };
+  const data = ddos.data || { enabled: false, observe_only: false, current_rps: 0, baseline_rps: 0, spike_active: false };
+
+  if (!data.enabled) {
+    return (
+      <div className="card" style={{ marginBottom: 12 }}>
+        <window.SectionHeader
+          title="4. DDoS Gate"
+          sub="Per-IP sliding-window burst gate + EWMA spike mode — currently DISABLED"
+        />
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+            <span className="pill neutral" style={{ fontSize: 11, marginRight: 8 }}>cfg.ddos.enabled = false</span>
+            Set <code>cfg.ddos.enabled: true</code> in your YAML and restart to enable.
+            See <a href="/docs/security/ddos-protection" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>docs/security/ddos-protection.md</a>.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const modeStyle = data.observe_only
+    ? { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)', label: 'OBSERVE-ONLY' }
+    : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'ENFORCING' };
+  const spikeStyle = data.spike_active
+    ? { bg: 'rgba(246,70,93,0.14)', fg: 'var(--down)', label: '⚠ SPIKE ACTIVE' }
+    : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'NORMAL' };
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="4. DDoS Gate"
+        sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed"
+      />
+      <div style={{ padding: 16 }}>
+        {/* Status row */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+          <span style={{
+            fontSize: 11, padding: '3px 10px', borderRadius: 4,
+            background: modeStyle.bg, color: modeStyle.fg, fontWeight: 600,
+          }}>
+            {modeStyle.label}
+          </span>
+          <span style={{
+            fontSize: 11, padding: '3px 10px', borderRadius: 4,
+            background: spikeStyle.bg, color: spikeStyle.fg, fontWeight: 600,
+          }}>
+            Spike mode: {spikeStyle.label}
+          </span>
+        </div>
+
+        {/* Telemetry grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+          <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Current RPS</div>
+            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{data.current_rps}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>this 1-second window</div>
+          </div>
+          <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Baseline RPS</div>
+            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{data.baseline_rps}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>EWMA, 0.9 / 0.1 weights</div>
+          </div>
+          <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Spike Threshold</div>
+            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>
+              {Math.round(data.baseline_rps * 3) /* default spike_multiplier 3.0 */}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>3 × baseline</div>
+          </div>
+        </div>
+
+        {/* Operator action map */}
+        <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5, padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+          <strong style={{ color: 'var(--ink)' }}>Threshold edits today require YAML + restart.</strong>{' '}
+          Tune <code>cfg.ddos.per_ip_limit</code>,{' '}
+          <code>cfg.ddos.per_ip_window_s</code>,{' '}
+          <code>cfg.ddos.block_ttl_s</code>,{' '}
+          <code>cfg.ddos.spike_multiplier</code>.
+          To switch from enforce to shadow mode (audit-only),
+          set <code>cfg.ddos.observe_only: true</code> and reload —
+          burst-exceed events will then emit <code>ddos_observed</code> audit
+          tags but never 503. Operator guide:{' '}
+          <a href="/docs/security/ddos-protection" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+            docs/security/ddos-protection.md
+          </a>.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Run-6 UX S6 — small badge surfacing the WAF mode (enforce /
 // log_only) on the Compliance page heading. Sourced from
 // /api/mode (audit-mutated, polled every 5 s). Green when
@@ -9029,4 +9262,8 @@ Object.assign(window, {
   PageIncidents, PageInvestigation, PageThreatIntel,
   PageTopAttackers,
   PageCompliance, PageReports,
+  // 2026-05-09 — Traffic Gates page surfaces the four request-flow
+  // gates (access list, strike-block, rate-limit, DDoS) with
+  // telemetry + cross-links. New page slot in Policy menu group.
+  PageTrafficGates,
 });

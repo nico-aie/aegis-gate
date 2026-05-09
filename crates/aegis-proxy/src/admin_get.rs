@@ -583,6 +583,19 @@ pub(crate) fn admin_router(
             json_body_response(200, body, "private, max-age=2")
         }
 
+        // 2026-05-09 — DDoS request-flow gate read surface for the
+        // Traffic Gates page. Returns config + EWMA telemetry
+        // (current_rps, baseline_rps, spike_active). Returns the
+        // empty-state shape (`enabled: false`) when the runtime
+        // isn't installed, so the page renders an explicit
+        // "DDoS gate disabled" card instead of erroring.
+        "/api/gates/ddos" => {
+            let body = aegis_control::api::gates::render_get(
+                services.ddos.as_ref(),
+            );
+            json_body_response(200, body, "private, max-age=2")
+        }
+
         // D-M5: tracking
         "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
         "/api/cluster" => json_body_response(200, services.tracking.render_cluster(), "private, max-age=2"),

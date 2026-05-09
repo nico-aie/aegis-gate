@@ -239,6 +239,14 @@ pub struct DashboardServices {
     /// behaves as before (no allowlist gate).
     pub allowed_sans:
         Option<crate::api::mtls::AllowedSansStore>,
+    /// 2026-05-09 — DDoS request-flow gate runtime. Wired by
+    /// `aegis-proxy::run` from `cfg.ddos`. `None` when
+    /// `cfg.ddos.enabled = false` or for test bundles that don't
+    /// boot the proxy. The dashboard's Traffic Gates page reads
+    /// telemetry (current_rps, baseline_rps, spike_active) +
+    /// config from this; absent → the page renders an empty-state
+    /// card with a "DDoS gate disabled" message.
+    pub ddos: Option<std::sync::Arc<aegis_security::ddos::DdosRuntime>>,
 }
 
 impl DashboardServices {
@@ -505,6 +513,10 @@ impl DashboardServices {
                 // MTLS-T7 — wired by the proxy boot path. Until then
                 // identity extraction skips the allowlist gate.
                 allowed_sans: None,
+                // Wired by the proxy boot path when cfg.ddos.enabled.
+                // Test bundles boot without the gate; /api/gates/ddos
+                // returns the empty-state shape in that case.
+                ddos: None,
             },
             drain,
         )
