@@ -77,6 +77,16 @@ impl Detector for HeaderInjectionDetector {
             }
         }
 
+        // GAP-011 (Run-6, 2026-05-09) — URL-override-header bypass.
+        // X-Original-URL / X-Rewrite-URL / X-Override-URL carrying
+        // an admin / recon / traversal path is a framework-auth
+        // bypass primitive: middleware that gates by the raw URL
+        // sees the public route while the framework processes the
+        // attacker-supplied admin path. No benign use case —
+        // operators legitimately rewriting URLs do so via proxy
+        // config, not request headers.
+        check_url_override(req, &mut signals);
+
         signals
     }
 }
@@ -197,6 +207,61 @@ fn xfh_is_internal_ip_literal(s: &str) -> bool {
         return true;
     }
     false
+}
+
+/// GAP-011 (Run-6) — URL-override-header bypass.
+/// Headers some frameworks honor as a "rewrite the URL before
+/// processing" hint. Auth middleware that gates by URL is bypassed
+/// when the framework processes the attacker-supplied path while
+/// the gateway sees the public route.
+const URL_OVERRIDE_HEADERS: &[&str] = &[
+    "x-original-url",
+    "x-rewrite-url",
+    "x-override-url",
+    "x-http-method-override-url",
+];
+
+/// Path shapes that have no business appearing in a URL-override
+/// header. Admin-prefix paths, recon-shape paths, and path-
+/// traversal sequences are all attacker-supplied indicators with
+/// effectively zero benign use case in a request header.
+static URL_OVERRIDE_DANGER_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        // Admin / management consoles. `^/*` allows zero, one,
+        // or more leading slashes (`/admin`, `admin`, `//admin`
+        // — the last shape appears after URL-decoding payloads
+        // like `/%2Fadmin%2Fusers`).
+        r"(?i)^/*(?:admin|administrator|wp-admin|manage|console|internal|_admin|__internal)\b",
+        // Recon-shape paths smuggled through URL override.
+        r"(?i)/?(?:\.env(?:$|/|\.)|wp-config\.php|\.git/config|\.aws/credentials|\.ssh/)",
+        // Path traversal smuggled through URL override.
+        r"(?i)\.\.[/\\]|%2e%2e[/\\]|%252e%252e",
+    ]
+    .iter()
+    .map(|p| Regex::new(p).expect("url-override regex compiles"))
+    .collect()
+});
+
+fn check_url_override(req: &RequestView<'_>, signals: &mut Vec<Signal>) {
+    for &name in URL_OVERRIDE_HEADERS {
+        let Some(val) = req.headers.get(name).and_then(|v| v.to_str().ok()) else {
+            continue;
+        };
+        if val.is_empty() {
+            continue;
+        }
+        let decoded = super::url_decode(val);
+        for re in URL_OVERRIDE_DANGER_PATHS.iter() {
+            if re.is_match(val) || re.is_match(&decoded) {
+                signals.push(Signal {
+                    score: super::scores::header_injection::CRLF,
+                    tag: "url_override_bypass".into(),
+                    field: name.into(),
+                });
+                return; // One signal per request — no amplification.
+            }
+        }
+    }
 }
 
 fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
@@ -563,5 +628,120 @@ mod tests {
         assert!(!xfh_is_internal_ip_literal("172.32.0.1"));
         assert!(!xfh_is_internal_ip_literal("256.0.0.1"));
         assert!(!xfh_is_internal_ip_literal("not-an-ip"));
+    }
+
+    // GAP-011 (Run-6, 2026-05-09) — URL-override-header bypass.
+    // X-Original-URL / X-Rewrite-URL carrying admin / recon /
+    // traversal paths flag with sub-tag `url_override_bypass`.
+
+    fn url_override_view(name: &'static str, val: &[u8]) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        h.insert("host", "api.example.com".parse().unwrap());
+        if let Ok(v) = http::HeaderValue::from_bytes(val) {
+            h.insert(name, v);
+        }
+        h
+    }
+
+    macro_rules! url_override_blocks {
+        ($name:ident, $header:expr, $value:expr) => {
+            #[test]
+            fn $name() {
+                let d = HeaderInjectionDetector;
+                let u: http::Uri = "/".parse().unwrap();
+                let m = http::Method::GET;
+                let h = url_override_view($header, $value);
+                let b = BodyPeek::empty();
+                let req = make_view_with_headers(&m, &u, &h, &b);
+                let signals = d.inspect(&req);
+                assert!(
+                    signals.iter().any(|s| s.tag == "url_override_bypass"),
+                    "expected url_override_bypass for {} = {:?}, got {:?}",
+                    $header,
+                    std::str::from_utf8($value).unwrap_or("<binary>"),
+                    signals,
+                );
+            }
+        };
+    }
+    url_override_blocks!(uo_x_original_admin,         "x-original-url", b"/admin/users");
+    url_override_blocks!(uo_x_original_administrator, "x-original-url", b"/administrator/index.php");
+    url_override_blocks!(uo_x_original_wp_admin,      "x-original-url", b"/wp-admin/options.php");
+    url_override_blocks!(uo_x_original_console,       "x-original-url", b"/console");
+    url_override_blocks!(uo_x_original_internal,      "x-original-url", b"/__internal/health");
+    url_override_blocks!(uo_x_rewrite_admin,          "x-rewrite-url", b"/admin");
+    url_override_blocks!(uo_x_override_manage,        "x-override-url", b"/manage");
+    url_override_blocks!(uo_x_method_override,        "x-http-method-override-url", b"/admin/db");
+    url_override_blocks!(uo_x_original_env,           "x-original-url", b"/.env");
+    url_override_blocks!(uo_x_original_wp_config,     "x-original-url", b"/wp-config.php");
+    url_override_blocks!(uo_x_original_git,           "x-original-url", b"/.git/config");
+    url_override_blocks!(uo_x_original_aws_creds,     "x-original-url", b"/.aws/credentials");
+    url_override_blocks!(uo_x_original_traversal,     "x-original-url", b"/../../../etc/passwd");
+    url_override_blocks!(uo_x_original_encoded,       "x-original-url", b"/%2Fadmin%2Fusers");
+    url_override_blocks!(uo_x_original_double_enc,    "x-original-url", b"/%252e%252e/admin");
+
+    // Score is the CRLF tier (40) — header heuristic.
+    #[test]
+    fn url_override_emits_header_tier_score() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let h = url_override_view("x-original-url", b"/admin/users");
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        let signal = d.inspect(&req)
+            .into_iter()
+            .find(|s| s.tag == "url_override_bypass")
+            .expect("url_override_bypass signal");
+        assert_eq!(signal.score, 40, "url_override_bypass should score 40 (header tier)");
+        assert_eq!(signal.field, "x-original-url");
+    }
+
+    // Negatives — must NOT fire on legitimate API paths.
+    macro_rules! url_override_clean {
+        ($name:ident, $header:expr, $value:expr) => {
+            #[test]
+            fn $name() {
+                let d = HeaderInjectionDetector;
+                let u: http::Uri = "/".parse().unwrap();
+                let m = http::Method::GET;
+                let h = url_override_view($header, $value);
+                let b = BodyPeek::empty();
+                let req = make_view_with_headers(&m, &u, &h, &b);
+                let signals: Vec<_> = d
+                    .inspect(&req)
+                    .into_iter()
+                    .filter(|s| s.tag == "url_override_bypass")
+                    .collect();
+                assert!(
+                    signals.is_empty(),
+                    "false positive url_override_bypass for {} = {:?}: {:?}",
+                    $header,
+                    std::str::from_utf8($value).unwrap_or("<binary>"),
+                    signals,
+                );
+            }
+        };
+    }
+    url_override_clean!(uo_clean_api_users,    "x-original-url", b"/api/users");
+    url_override_clean!(uo_clean_products,     "x-original-url", b"/products/123");
+    url_override_clean!(uo_clean_static,       "x-rewrite-url", b"/static/main.js");
+    url_override_clean!(uo_clean_health,       "x-original-url", b"/health");
+    url_override_clean!(uo_clean_metrics,      "x-original-url", b"/metrics");
+    url_override_clean!(uo_clean_sub_admin,    "x-original-url", b"/api/v1/users-admin-list"); // contains "admin" but not as path prefix
+
+    #[test]
+    fn url_override_absent_header_does_not_flag() {
+        let d = HeaderInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert("host", "api.example.com".parse().unwrap());
+        let b = BodyPeek::empty();
+        let req = make_view_with_headers(&m, &u, &h, &b);
+        assert!(
+            !d.inspect(&req).iter().any(|s| s.tag == "url_override_bypass"),
+            "no header → no signal",
+        );
     }
 }

@@ -179,6 +179,12 @@ pub const CATALOG: &[ScoreEntry] = &[
         note: "CRLF / Set-Cookie / Location-header injection in user-controlled input.",
     },
     ScoreEntry {
+        class: "header_injection",
+        tag: "url_override_bypass",
+        score: header_injection::CRLF,
+        note: "X-Original-URL / X-Rewrite-URL header carrying an admin / recon / traversal path — framework auth-bypass primitive.",
+    },
+    ScoreEntry {
         class: "body_abuse",
         tag: "body_oversize",
         score: body_abuse::OVERSIZE,
