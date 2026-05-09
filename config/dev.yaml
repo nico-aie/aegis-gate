@@ -37,7 +37,15 @@ listeners:
     - bind: "0.0.0.0:8443"
       tls: true
   admin:
-    bind: "127.0.0.1:9443"
+    # 2026-05-09 obs-stack fix — bound on 0.0.0.0 so the
+    # `make obs-up` Prometheus container can scrape `/metrics`
+    # via `host.docker.internal:9443`. Loopback bind blocked
+    # the container from reaching the WAF, leaving Grafana
+    # dashboards empty. **Dev-only** — production profiles
+    # (`config/profiles/prod-*.yaml`) bind to specific internal
+    # addresses; never expose the admin listener on a public
+    # interface.
+    bind: "0.0.0.0:9443"
   # P4 — optional plain-HTTP redirect listener; off by default in
   # dev so the data plane stays on :8080 without conflicts.
   # force_https: { bind: "0.0.0.0:80", status: 301 }
@@ -286,7 +294,13 @@ geoip:
 # csrf:     test-csrf-secret-do-not-use-in-production-32b
 # ---------------------------------------------------------------------------
 admin:
-  bind: "127.0.0.1:9443"
+  # 2026-05-09 obs-stack fix — bound on 0.0.0.0 so the
+  # `make obs-up` Prometheus container can scrape `/metrics`
+  # at `host.docker.internal:9443`. Loopback bind blocked
+  # the container from reaching the WAF, leaving Grafana
+  # dashboards empty. Dev-only — production profiles bind
+  # to specific internal addresses.
+  bind: "0.0.0.0:9443"
   # FIX 2026-05-03 — admin TLS is now wired (was always plain
   # HTTP regardless of cert config before this commit). Default
   # for `make run-dev` is unset → plain HTTP (matches the
