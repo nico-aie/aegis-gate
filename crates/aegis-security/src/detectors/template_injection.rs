@@ -37,9 +37,11 @@ pub struct TemplateInjectionDetector;
 static SSTI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         // Numeric expressions in `{{...}}` — the canonical SSTI
-        // proof-of-concept (`{{7*7}}`). No legit template echoes
-        // a multiplication expression in URL/body.
-        r"(?i)\{\{\s*\d+\s*\*\s*\d+\s*\}\}",
+        // proof-of-concept. Allows quoted operands so Twig's
+        // `{{7*'7'}}` and Jinja's `{{ '7' * 7 }}` both match
+        // (the engine coerces both to numeric and multiplies).
+        // GAP-006b (Run-6, 2026-05-09) — extended quote tolerance.
+        r#"(?i)\{\{\s*['"]?\d+['"]?\s*\*\s*['"]?\d+['"]?\s*\}\}"#,
 
         // Python attribute access — Jinja2/Mako sandbox-escape
         // primitives. `__class__.__mro__`, `__subclasses__`, etc.
@@ -62,8 +64,9 @@ static SSTI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)<%[!=]?\s*",
 
         // Numeric expression in `${...}` — Spring SpEL / Mako /
-        // shell-style template POC. Same idea as `{{7*7}}`.
-        r"(?i)\$\{\s*\d+\s*\*\s*\d+\s*\}",
+        // shell-style template POC. Same quote-tolerance as the
+        // `{{...}}` form (GAP-006b).
+        r#"(?i)\$\{\s*['"]?\d+['"]?\s*\*\s*['"]?\d+['"]?\s*\}"#,
 
         // Spring SpEL — type / bean / instantiation references.
         r##"(?i)\$\{\s*T\s*\(\s*['"]"##,           // ${T('java.lang.Runtime')...}
@@ -233,4 +236,31 @@ mod tests {
     negative!(clean_url_encoded_brace,   "/?q=%7B%7D");                   // bare {}
     negative!(clean_paren_query,         "/api?expr=(a+b)");
     negative!(clean_curly_in_uuid,       "/api/550e8400-e29b-41d4-a716");
+
+    // --- GAP-006b (Run-6, 2026-05-09) — quote-tolerant SSTI POC ---
+    //
+    // Twig coerces quoted-string operands to numbers when used in
+    // arithmetic (`'7' * 7 == 49`), so the quoted-operand variants
+    // are equivalent to bare-numeric POCs. URL-encoded quote
+    // variants exercise the URI surface; raw quotes exercise the
+    // body surface (URI parser may reject `'` in some shells).
+    positive!(ssti_twig_quoted_right,    "/?q=%7B%7B7*%277%27%7D%7D");      // {{7*'7'}}
+    positive!(ssti_twig_quoted_left,     "/?q=%7B%7B%277%27*7%7D%7D");      // {{'7'*7}}
+    positive!(ssti_twig_double_quoted,   "/?q=%7B%7B%227%22*7%7D%7D");      // {{"7"*7}}
+    positive!(ssti_twig_with_spaces,     "/?q=%7B%7B+7+*+%277%27+%7D%7D");  // {{ 7 * '7' }}
+    positive!(ssti_spel_quoted,          "/?q=%24%7B%277%27*7%7D");          // ${'7'*7}
+
+    // Freemarker regression coverage — these were reported as
+    // "missed" in QA Run-6; verifying via direct tests confirms
+    // the patterns added in Run-5 still cover them. URL-encoded
+    // forms exercise the realistic transport.
+    positive!(ssti_freemarker_assign_alt, "/?q=%3C%23assign+ex=%22runtime%22%3E");  // <#assign ex="runtime">
+    positive!(ssti_freemarker_if,         "/?q=%3C%23if+x%3E");                       // <#if x>
+    positive!(ssti_freemarker_list,       "/?q=%3C%23list+seq+as+x%3E");              // <#list seq as x>
+    positive!(ssti_freemarker_setting,    "/?q=%3C%23setting+locale=%22en%22%3E");    // <#setting locale="en">
+
+    // Negative — quoted strings in non-multiplication contexts
+    // must NOT FP.
+    negative!(clean_quoted_string_no_mul, "/?q={{name='alice'}}");
+    negative!(clean_freemarker_comment,   "/?q=%3C%23--+a+legit+comment+--%3E");      // <#-- comment -->
 }

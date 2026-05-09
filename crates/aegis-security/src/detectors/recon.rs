@@ -77,6 +77,26 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // is NOT flagged; only the suspicious-query shapes
         // (`?format=`, `?target=`, `?module=`) fire.
         r"(?i)/metrics\?(?:format=|target=|module=)",
+        // GAP-001b (Run-6, 2026-05-09) — bare actuator discovery
+        // page. Spring Boot Actuator's root index lists every
+        // available endpoint; operators legitimately exposing
+        // actuator typically expose `/actuator/health` and
+        // `/actuator/info` (the safe subset) but rarely the bare
+        // index. Match `/actuator` followed by end-of-path or
+        // query-prefix only — `/actuator/health` (subpath form)
+        // does NOT match here.
+        r"(?i)/actuator(?:$|\?|#)",
+        // Rails debug surface — `/rails/info/*` leaks installed
+        // gems, environment, and routes. Development-only page;
+        // reachable in prod = recon dump.
+        r"(?i)/rails/info(?:/|$)",
+        // Classic PHP-developer-debug files — `phpinfo()` output
+        // dumps loaded modules / paths / environment. Distinct
+        // from the existing `phpinfo\(\)` function-call match,
+        // which catches the shape inside a body or query value.
+        // Common filenames operators leave behind by accident:
+        // `phpinfo.php`, `info.php`, `test.php`, `i.php`.
+        r"(?i)/(?:phpinfo|info|test|i)\.php(?:$|\?|/)",
     ]
     .iter()
     .map(|p| Regex::new(p).unwrap())
@@ -277,6 +297,16 @@ mod tests {
     path_positive!(cgi_phpcgi,            "/cgi-bin/php-cgi");
     path_positive!(prom_federate,         "/metrics?format=prometheus");
     path_positive!(prom_target_probe,     "/metrics?target=10.0.0.1:9100");
+    // GAP-001b (Run-6) — bare framework discovery + Rails debug + PHP debug.
+    path_positive!(actuator_bare,            "/actuator");
+    path_positive!(actuator_bare_with_query, "/actuator?refresh=true");
+    path_positive!(rails_info_properties,    "/rails/info/properties");
+    path_positive!(rails_info_routes,        "/rails/info/routes");
+    path_positive!(phpinfo_php,              "/phpinfo.php");
+    path_positive!(info_php,                 "/info.php");
+    path_positive!(test_php,                 "/test.php");
+    path_positive!(i_php,                    "/i.php");
+    path_positive!(phpinfo_php_with_query,   "/phpinfo.php?details=1");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
@@ -357,4 +387,13 @@ mod tests {
     negative!(clean_metrics_legit,     "/metrics?accept=text/plain");
     negative!(clean_kibana_substring,  "/api/kibana-feedback");
     negative!(clean_graphql_substr,    "/graphqlproxy");
+    // GAP-001b (Run-6) — must NOT FP on these operator-controlled
+    // and look-alike paths.
+    negative!(clean_actuator_with_subpath, "/actuator/health");        // already covered above; explicit here to pin GAP-001b doesn't break it
+    negative!(clean_actuator_info_subpath, "/actuator/info");          // operator-hosted
+    negative!(clean_rails_app_path,        "/rails/api/users");        // legitimate Rails app path that happens to start with /rails/
+    negative!(clean_index_php,             "/index.php");              // common PHP entry point — too generic to flag
+    negative!(clean_app_php,               "/app.php");                // common PHP entry — must not flag
+    negative!(clean_phpinfo_substring,     "/api/phpinfocard");        // contains phpinfo as substring but not as filename
+    negative!(clean_test_dir,              "/test/results");           // /test/ as directory, not test.php
 }
