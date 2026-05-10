@@ -23,7 +23,7 @@ Folding into SSRF would force one of those policies onto the other. Splitting ke
 ## Detection logic
 
 1. Parse the query string into `(key, value)` pairs.
-2. Match `key` (case-insensitive) against the **closed list** of conventional redirect-param names — `next`, `url`, `to`, `redirect`, `redirect_uri`, `redirect_url`, `return`, `return_to`, `return_url`, `rurl`, `destination`, `goto`, `continue`, `forward`, `callback`, `checkout_url`, `image_url`, `domain`.
+2. Match `key` (case-insensitive) against the **closed list** of conventional redirect-param names — `next`, `url`, `to`, `redirect`, `redirect_uri`, `redirect_url`, `return`, `return_to`, `return_url`, `rurl`, `destination`, `dest`, `goto`, `continue`, `forward`, `callback`, `checkout_url`, `image_url`, `domain`.
 3. URL-decode `value` once. Apply the suspicious-shape regex set:
 
    | Pattern | Why dangerous |

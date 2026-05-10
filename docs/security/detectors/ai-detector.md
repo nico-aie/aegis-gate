@@ -82,8 +82,9 @@ Knobs:
 | Knob | Granularity | Restart? | Notes |
 |---|---|---|---|
 | Cargo feature `ai` | compile-time | yes (rebuild) | Adds `ort` runtime + 38 MB model bytes. Included in the default `make build` target. |
-| `ai.enabled` (YAML) | per-deployment | restart for first wire | Boot wires the AiDetector into the chain when `true` AND the feature is on. |
-| `PUT /api/ai/enabled` | runtime | hot | Audit-mutated runtime toggle. Shipped as the **Detectors** page Enable/Disable button. When off, `inspect()` short-circuits — zero inference cost. |
+| `ai.model_path` (YAML) | per-deployment | restart | Path to the ONNX model. Boot loads the model whenever this is set + the file exists, regardless of `ai.enabled`. **2026-05-10** — the loader is hot-tolerant: missing / malformed model with `ai.enabled: false` boots cleanly with AI un-installed; same condition with `ai.enabled: true` is a hard error. |
+| `ai.enabled` (YAML) | per-deployment | seed only | Seeds the **initial** state of the runtime toggle at boot. `false` → boots with AI loaded but toggle off. Operators flip on from the Detectors & Tiers page without a restart. |
+| `PUT /api/ai/enabled` | runtime | hot | Audit-mutated runtime toggle. Shipped as the **Detectors & Tiers** page → AI row → Enable/Disable button. When off, `inspect()` short-circuits — zero inference cost. **Works in any deployment where the model loaded at boot**, regardless of the YAML `enabled` flag. |
 | `ai.confidence_threshold` | per-deployment | restart | Minimum verdict confidence — below threshold the detector returns no signal so it can't override regex verdicts on low-confidence calls. |
 
 ## Actions on detection
@@ -247,4 +248,5 @@ report is calibrated against.
 - Perf + p99 report — [`tests/results/run-ai-compare-2026-05-03/`](../../../tests/results/run-ai-compare-2026-05-03/)
   (re-run with `bash tests/perf/ai-compare.sh`)
 - Detector chain semantics — [`./README.md`](./README.md)
-- Tier mask + compliance clamp — [`../tiered-protection.md`](../tiered-protection.md)
+- Tier mask — [`../tiered-protection.md`](../tiered-protection.md)
+  (compliance lock-by-mode is deferred; see [`plans/future/compliance-profiles.md`](../../../plans/future/compliance-profiles.md))

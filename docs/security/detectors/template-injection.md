@@ -27,7 +27,7 @@ Each pattern requires **both** the brace/tag syntax AND a suspicious internal �
 
 | Pattern | Catches | Why specific |
 |---|---|---|
-| `{{<int> * <int>}}` (with optional quotes) | The canonical SSTI POC `{{7*7}}`, `{{7*'7'}}` (Twig coerces quoted operand → 49), `{{'7'*7}}` | No legit template echoes a multiplication expression in URL/body. Quote tolerance added 2026-05-09 (GAP-006b) — Twig + Jinja accept either form |
+| `{{<int> * <int>}}` (with optional quotes) | The canonical SSTI POC `{{7*7}}`, `{{7*'7'}}` (Twig coerces quoted operand → 49), `{{'7'*7}}` | No legit template echoes a multiplication expression in URL/body. Quote tolerance added 2026-05-09 (GAP-006b) — Twig + Jinja accept either form. **Adjacent-brace required** — see "Why we don't flag `{ { … } }`" below. |
 | `{{...__\w+__}}` | Python attribute access (`__class__`, `__mro__`, `__subclasses__`) | Jinja2/Mako sandbox-escape primitives |
 | `{{config}}`, `{{cycler.}}`, `{{joiner.}}`, `{{namespace(}}`, `{{request.}}`, `{{self.}}`, `{{lipsum.}}`, `{{url_for}}` | Jinja2 globals | Not legit URL/body content; closed list |
 | `{% set %}`, `{% for %}`, `{% if %}`, `{% import %}`, `{% with %}` | Jinja2 / Twig statement tags | Execution-side constructs, not template output |
@@ -39,6 +39,16 @@ Each pattern requires **both** the brace/tag syntax AND a suspicious internal �
 | `${#root.}`, `${@bean.}` | SpEL bean / root accessors | SpEL-specific; no legit URL/body equivalent |
 | `${new Class}` | SpEL instantiation | Constructor invocation in expression context |
 | `{{#with}}`, `{{#each}}`, `{{lookup ...}}` | Handlebars exec helpers | `with`/`each` allow arbitrary expression evaluation; `lookup` is a known Handlebars RCE primitive |
+
+### Why we don't flag `{ { 7*7 } }` (added 2026-05-09 BYPASS-04 reclassification)
+
+The l-tester's hacker-bypass run (Run-3 BYPASS-04) reported `{ { 7*7 } }` (with a space between the two opening `{`) as a "WAF bypass". After analysis, this was reclassified as **not a Rust WAF bug**:
+
+- Real Jinja2 / Twig / Mako template engines **don't accept this syntax**. The parser requires adjacent `{{` and `}}` — a space between the two `{` makes the input regular text from the engine's perspective. The "bypass" payload doesn't execute on a real engine, so flagging it would close zero attack surface.
+- Broadening the regex to match `\{\s*\{` would FP on every legit JSON / debug response that echoes brace-bearing user content (e.g. `{"key": {"nested": "value"}}` rendered as a string).
+- The documented behaviour is now **pinned with negative tests** (`clean_spaced_braces_open`, `..._close`, `..._both` in `template_injection.rs::tests`) so a future regex-broadening doesn't accidentally introduce that FP surface.
+
+If an attacker payload reached an engine that DOES accept the spaced form (a non-mainstream / custom engine), the operator can add a custom rule via the rule engine. The default detector keeps the narrow shape Jinja / Twig / Mako actually parse.
 
 ## Surfaces inspected
 

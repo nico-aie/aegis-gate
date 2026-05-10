@@ -21,23 +21,6 @@ const CAT_COLOR = {
 };
 function colorFor(name) { return CAT_COLOR[name] || '#6B7280'; }
 
-// CQF-T6 — live RiskHeatmap. Reads from useTopRiskPathsApi
-// (audit ring grouped by path → max risk per path → top 8).
-// Renders an honest empty state when no audit events have
-// arrived yet, rather than the previous hardcoded JSX rows.
-function RiskHeatmapLive() {
-  const { rows } = window.useTopRiskPathsApi(200, 8);
-  if (!rows || rows.length === 0) {
-    return (
-      <div style={{ padding: 18, fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic', textAlign: 'center' }}>
-        No risk-bearing audit events in the recent window.
-        Drive some traffic (or a probe) to populate the heatmap.
-      </div>
-    );
-  }
-  return <window.RiskHeatmap rows={rows} h={200} />;
-}
-
 function PageOverview() {
   const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
   // 2026-05-03 — Overview Upstream card used to read
@@ -376,27 +359,6 @@ function PageOverview() {
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Risk heatmap (wow #2) */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head">
-          <div>
-            <div className="card-title">Risk heatmap — top paths × intensity</div>
-            <div className="card-sub">
-              Top 8 paths by max risk score over the most-recent
-              200 audit events. Live · derived from /api/audit/since.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 10, color: 'var(--ink-dim)' }}>
-            <span>low</span>
-            {['#1E2329','#3B2A1A','#6B4710','#A87715','#E0A415','#FCD535'].map(c => (
-              <span key={c} style={{ width: 14, height: 10, background: c, display: 'inline-block', borderRadius: 1 }} />
-            ))}
-            <span>high</span>
-          </div>
-        </div>
-        <RiskHeatmapLive />
       </div>
 
       {/* Top attackers */}
@@ -1058,12 +1020,10 @@ function PageAnalytics() {
   const routeLatency = window.useRouteLatencyApi ? window.useRouteLatencyApi() : { data: null };
   const detectorLatency = window.useDetectorLatencyApi ? window.useDetectorLatencyApi() : { data: null };
   const routes = window.useAnalyticsRoutesApi ? window.useAnalyticsRoutesApi() : { data: null };
-  // HACK-T1 — SLO + Cert summaries also retired from static
-  // fixtures. Both endpoints already shipped (Tracking page
-  // consumes them); we just expose them on Analytics too so
-  // operators don't have to switch tabs.
-  const sloApi = window.useSloApi();
-  const certsApi = window.useCertsApi();
+  // 2026-05-10 — SLO + Cert summaries removed from Performance.
+  // The canonical home is the Health & SLOs page (root-cause hint
+  // when below target + full cert table). Performance focuses on
+  // throughput / latency / route-level metrics instead.
 
   const points = ts.data?.points ?? [];
   const reqOverTime = points.map(p => p.total);
@@ -1320,53 +1280,6 @@ function PageAnalytics() {
         </div>
       </div>
 
-      <div className="grid-12">
-        <div className="col-8 card">
-          <window.SectionHeader title="SLO budget remaining" sub="live engine" />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {(sloApi.data?.slis ?? []).length === 0 && (
-              <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                SLO engine warming up — no SLI data yet.
-              </div>
-            )}
-            {(sloApi.data?.slis ?? []).map(s => {
-              const remainPct = Math.round((s.budget_remaining ?? 0) * 100);
-              return (
-                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 12, alignItems: 'center', fontSize: 12 }}>
-                  <span>{s.name}</span>
-                  <span className="dim">{s.target.toFixed(2)}%</span>
-                  <span className="num" style={{ color: 'var(--ink)' }}>{s.current.toFixed(2)}%</span>
-                  <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${remainPct}%`, height: '100%', background: remainPct < 30 ? 'var(--down)' : remainPct < 60 ? 'var(--warn)' : 'var(--up)' }} />
-                  </div>
-                  <span className="num right" style={{ color: remainPct < 30 ? 'var(--down)' : 'var(--ink-mute)' }}>{remainPct}% left</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div className="col-4 card">
-          <window.SectionHeader title="Cert freshness" sub={`${(certsApi.data?.certs ?? []).length} certificates`} />
-          {(certsApi.data?.certs ?? []).length === 0 ? (
-            <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-              No certificates configured.
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {(certsApi.data?.certs ?? []).slice(0, 5).map(c => {
-                const days = c.days_to_expiry ?? c.days ?? 0;
-                const tone = days < 7 ? 'down' : days < 30 ? 'warn' : 'up';
-                return (
-                  <div key={c.host} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                    <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }} className="mono">{c.host}</div>
-                    <span className={`pill ${tone}`}>{days}d</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
     </>
   );
 }
@@ -2159,10 +2072,25 @@ function DetectorMaskCard() {
   const overrides = api.data?.overrides || {};
   const lockedClasses = api.data?.locked_classes || [];
   const complianceModes = api.data?.compliance_modes || [];
+  const scoreTable = api.data?.score_table || [];
 
   const [busy, setBusy] = useStateP(false);
   const [editing, setEditing] = useStateP(null);
   const [draft, setDraft] = useStateP({});
+
+  // 2026-05-10 — compute the dominant score + tier per class so
+  // each chip in the mask grid carries a small score badge tinted
+  // by the 5-tier framework (probe / phishing / header / broad /
+  // high / critical). Operators see "sqli · 60" with a critical
+  // tint instead of bare "sqli", so the mask + scores are
+  // legible from one card without expanding anything.
+  const dominantByClass = {};
+  for (const row of scoreTable) {
+    const prev = dominantByClass[row.class];
+    if (!prev || row.score > prev.score) {
+      dominantByClass[row.class] = { score: row.score, tier: row.tier, tag: row.tag };
+    }
+  }
 
   if (!baseMask) {
     return (
@@ -2235,16 +2163,54 @@ function DetectorMaskCard() {
     }
   }
 
-  const renderRow = (label, mask, target) => {
+  // 2026-05-10 — `isInherited` flag drives a visual + behavioral
+  // distinction for tier rows that have no explicit override set.
+  // The row still renders (so operators can see "this tier exists,
+  // currently inheriting Base") with the Base mask greyed out;
+  // clicking Edit creates the override on save.
+  const renderRow = (label, mask, target, isInherited = false) => {
     const isEditing = editing === target;
     const view = isEditing ? draft : mask;
     return (
-      <div key={target} style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>{label}</div>
+      <div
+        key={target}
+        style={{
+          borderTop: '1px solid var(--hairline)',
+          padding: '10px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          opacity: isInherited && !isEditing ? 0.65 : 1,
+        }}
+      >
+        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>
+          {label}
+          {isInherited && !isEditing && (
+            <div style={{ fontSize: 9, color: 'var(--ink-dim)', fontWeight: 400, fontStyle: 'italic', marginTop: 2 }}>
+              inheriting Base
+            </div>
+          )}
+        </div>
         <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {MASK_CLASSES.map(cls => {
             const enabled = !!view[cls];
             const locked = lockedClasses.includes(cls);
+            // Each class has a dominant score + tier (highest-weight
+            // signal that class can emit). Render that score inline
+            // so operators see "sqli · 60" instead of just "sqli" —
+            // the calibrated tier tint backs each enabled chip so
+            // posture is readable at a glance without expanding the
+            // reference table below.
+            const dominant = dominantByClass[cls];
+            const tierStyle = dominant ? (SCORE_TIER_STYLE[dominant.tier] || SCORE_TIER_STYLE.probe) : null;
+            const baseTitle = dominant
+              ? `${cls} → top score ${dominant.score} (${tierStyle.label}) via tag ${dominant.tag}`
+              : cls;
+            const titleText = locked
+              ? `${baseTitle}\n\n🔒 pinned by active compliance mode`
+              : `${baseTitle}\n\n${enabled ? 'enabled — click to disable' : 'disabled — click to enable'}`;
+            const chipBg = enabled && tierStyle ? tierStyle.bg : 'transparent';
+            const chipFg = enabled && tierStyle ? tierStyle.fg : 'var(--ink-dim)';
             return (
               <button
                 key={cls}
@@ -2253,17 +2219,21 @@ function DetectorMaskCard() {
                   setDraft(d => ({ ...d, [cls]: !d[cls] }));
                 }}
                 disabled={!isEditing || locked || busy}
-                title={locked ? `${cls} is pinned by active compliance mode` : (enabled ? 'enabled — click to disable' : 'disabled — click to enable')}
-                className={`pill ${enabled ? 'ok' : 'neutral'}`}
+                title={titleText}
                 style={{
                   fontSize: 10,
                   cursor: isEditing && !locked ? 'pointer' : 'default',
-                  opacity: locked ? 0.6 : 1,
+                  opacity: locked ? 0.6 : (enabled ? 1 : 0.55),
                   padding: '2px 8px',
+                  borderRadius: 4,
+                  background: chipBg,
+                  color: chipFg,
+                  fontWeight: enabled ? 600 : 500,
                   border: isEditing && !locked ? '1px dashed var(--hairline)' : '1px solid transparent',
+                  textDecoration: enabled ? 'none' : 'line-through',
                 }}
               >
-                {locked && '🔒 '}{cls}{!enabled && ' · off'}
+                {locked && '🔒 '}{cls}{dominant ? ` · ${dominant.score}` : ''}
               </button>
             );
           })}
@@ -2275,12 +2245,14 @@ function DetectorMaskCard() {
               <button className="btn" disabled={busy} onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '4px 10px' }}>Cancel</button>
             </>
           ) : (
-            <>
-              <button className="btn" disabled={busy || editing !== null} onClick={() => startEdit(target, mask)} style={{ fontSize: 11, padding: '4px 10px' }}>Edit</button>
-              {target !== 'base' && (
-                <button className="btn danger" disabled={busy || editing !== null} onClick={() => clearOverride(target)} style={{ fontSize: 11, padding: '4px 10px' }}>Clear</button>
-              )}
-            </>
+            <button
+              className="btn"
+              disabled={busy || editing !== null}
+              onClick={() => startEdit(target, mask)}
+              style={{ fontSize: 11, padding: '4px 10px' }}
+            >
+              Edit
+            </button>
           )}
         </div>
       </div>
@@ -2288,38 +2260,38 @@ function DetectorMaskCard() {
   };
 
   return (
-    <div className="card" style={{ marginBottom: 12, padding: 0 }}>
+    <div data-component="detector-mask-card" className="card" style={{ marginBottom: 12, padding: 0 }}>
       <div className="card-head" style={{ padding: 12 }}>
         <div>
-          <div className="card-title">Detectors</div>
+          <div className="card-title">
+            Base detector mask
+            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              default for all tiers
+            </span>
+          </div>
           <div className="card-subtitle">
-            Per-class on/off mask. Locked classes (🔒) are pinned by
-            active compliance modes
-            {complianceModes.length > 0 && (
-              <> ({complianceModes.join(', ')})</>
-            )}
-            . Audit-mutated; takes effect within one hot-reload tick.
+            Per-class on/off baseline. Each chip shows the dominant
+            score for that class, tinted by the 5-tier framework.
+            Operators may freely enable or disable any class —
+            compliance lock-by-mode is deferred for now.
+            {' '}Audit-mutated; takes effect within one hot-reload tick.
           </div>
         </div>
       </div>
 
-      {/* Mask grid — base + per-tier overrides. */}
-      {renderRow('Base', baseMask, 'base')}
-      {Object.keys(overrides).length === 0 ? (
-        <div style={{ borderTop: '1px solid var(--hairline)', padding: '8px 12px', fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
-          No per-tier overrides — base mask applies to every tier.
-        </div>
-      ) : (
-        Object.entries(overrides).map(([tier, mask]) => renderRow(tier, mask, tier))
-      )}
-
-      {/* Read-only risk-score catalog (#293) — surfaced so
-          operators can see the calibrated 5-tier ladder without
-          scraping detector source files. NOT editable by design;
-          see docs/operator/risk-tuning.md for the rationale + the
-          safe knobs available (set_profile log_only, risk
-          thresholds, RaiseRisk rules, per-tier overrides). */}
+      {/* 2026-05-10 R2 — Risk score reference moved ABOVE the Base
+          row so operators see the calibrated 5-tier framework
+          (probe / phishing / header / broad / high / critical) FIRST,
+          which makes the score badges on the chips below
+          self-explaining. Per-tier override summary line removed
+          entirely — per-tier customization happens in the Edit
+          Tier modal, no inline summary needed. */}
       <DetectorScorePanel scoreTable={api.data?.score_table || []} />
+
+      {/* Base row — the only mask edited on this card. Per-tier
+          overrides moved into the Edit Tier modal so operators
+          have one focused surface per tier. */}
+      {renderRow('Base mask', baseMask, 'base')}
 
       {/* AI detector — folded into the same card. AI lives outside
           the bitmask (separate AtomicBool flipped via PUT
@@ -2330,19 +2302,38 @@ function DetectorMaskCard() {
   );
 }
 
-// Read-only score catalog. Renders one chip per `(class, tag)` row
-// from `/api/detectors`'s `score_table`. The chip's colour follows
-// the documented 5-tier framework; hover shows the operator-facing
-// note. A footer link guides operators to the risk-tuning doc when
-// they want to adjust posture without touching the score ladder.
+// Read-only score reference — sits inside the unified Detectors
+// card. The tier legend is always visible so operators can decode
+// the chip colours in the mask grid above without hunting; the
+// per-tag breakdown stays behind a "Show full table" toggle to
+// keep the card compact for routine operation.
+//
+// Why read-only: the score each detector emits is a calibrated
+// ladder that interacts with `risk.thresholds.challenge_at` (40)
+// and `block_at` (80). Editing scores arbitrarily breaks the
+// score↔threshold contract. To tune posture, operators reach for
+// `set_profile log_only`, the threshold knobs, RaiseRisk rules,
+// or per-tier overrides above (all surfaced on this same page).
 function DetectorScorePanel({ scoreTable }) {
   const [expanded, setExpanded] = useStateP(false);
+  // 2026-05-10 — read live thresholds from /api/risk/thresholds
+  // so the explanatory text shows the operator's *current* values,
+  // not the hardcoded defaults. The Cumulative IP risk thresholds
+  // editor (Traffic Gates → #3) is the only authoritative source.
+  const riskApi = window.useRiskThresholdsApi
+    ? window.useRiskThresholdsApi()
+    : { data: null };
+  const liveChallengeAt = Number.isFinite(Number(riskApi.data?.challenge_at))
+    ? Number(riskApi.data.challenge_at)
+    : null;
+  const liveBlockAt = Number.isFinite(Number(riskApi.data?.block_at))
+    ? Number(riskApi.data.block_at)
+    : null;
+
   if (!scoreTable || scoreTable.length === 0) {
     return null;
   }
 
-  // Group by class so the operator reads them the same way the
-  // mask grid renders.
   const byClass = {};
   for (const row of scoreTable) {
     if (!byClass[row.class]) byClass[row.class] = [];
@@ -2351,81 +2342,102 @@ function DetectorScorePanel({ scoreTable }) {
   const classOrder = Object.keys(byClass);
 
   return (
-    <div style={{ borderTop: '1px solid var(--hairline)' }}>
+    <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+          Risk score reference
+        </span>
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>
+          · read-only · 5-tier framework · {scoreTable.length} signal types
+        </span>
+      </div>
+
+      {/* Always-visible tier legend — decodes the chip tints in
+          the mask grid above so operators do not need to expand
+          anything for routine reading. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        {Object.entries(SCORE_TIER_STYLE).map(([tier, style]) => (
+          <span
+            key={tier}
+            title={`${style.label} tier`}
+            style={{
+              fontSize: 10, padding: '2px 8px', borderRadius: 4,
+              background: style.bg, color: style.fg, fontWeight: 600,
+            }}
+          >
+            {style.label}
+          </span>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.4, marginBottom: 6 }}>
+        Scores are calibrated against your live cumulative IP risk
+        thresholds:{' '}
+        <code style={{ fontSize: 10 }}>challenge_at</code>{' '}
+        {liveChallengeAt !== null ? (
+          <strong style={{ color: 'var(--ink)' }}>= {liveChallengeAt}</strong>
+        ) : (
+          <span style={{ fontStyle: 'italic' }}>(loading…)</span>
+        )}
+        {' '}and{' '}
+        <code style={{ fontSize: 10 }}>block_at</code>{' '}
+        {liveBlockAt !== null ? (
+          <strong style={{ color: 'var(--ink)' }}>= {liveBlockAt}</strong>
+        ) : (
+          <span style={{ fontStyle: 'italic' }}>(loading…)</span>
+        )}.
+        {' '}Edit those on{' '}
+        <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>
+          Traffic Gates → #3 Cumulative IP risk thresholds
+        </a>
+        . To tune posture without touching detector scores, use{' '}
+        <code style={{ fontSize: 10 }}>set_profile log_only</code>,
+        adjust those thresholds, add a{' '}
+        <code style={{ fontSize: 10 }}>RaiseRisk(delta)</code> rule,
+        or apply a per-tier override above. See the{' '}
+        <a href="/docs/operator/risk-tuning" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+          operator risk-tuning guide
+        </a>.
+      </div>
+
       <button
         onClick={() => setExpanded(e => !e)}
         className="btn"
         style={{
-          width: '100%', textAlign: 'left', background: 'transparent',
-          border: 'none', padding: '10px 12px', fontSize: 12,
-          color: 'var(--ink)', fontWeight: 600, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'transparent', border: '1px solid var(--hairline)',
+          padding: '4px 10px', fontSize: 11, color: 'var(--ink-dim)',
+          cursor: 'pointer', borderRadius: 4,
         }}
       >
-        <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{expanded ? '▼' : '▶'}</span>
-        Risk score reference <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }}>· read-only · {scoreTable.length} signal types</span>
+        {expanded ? '▼ Hide full table' : '▶ Show full per-tag table'}
       </button>
 
       {expanded && (
-        <div style={{ padding: '4px 12px 12px' }}>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 8, lineHeight: 1.4 }}>
-            The score each detector emits is a calibrated ladder that interacts with{' '}
-            <code style={{ fontSize: 10 }}>risk.thresholds.challenge_at</code> (40) and{' '}
-            <code style={{ fontSize: 10 }}>block_at</code> (80). Editing scores in the
-            UI is intentionally not supported because arbitrary changes break the
-            score↔threshold interaction.{' '}
-            <strong>To tune posture</strong>, use <code style={{ fontSize: 10 }}>set_profile log_only</code>,
-            adjust <code style={{ fontSize: 10 }}>risk.thresholds</code>, add a
-            <code style={{ fontSize: 10 }}> RaiseRisk(delta)</code> rule, or
-            apply a per-tier override above. See the{' '}
-            <a href="/docs/operator/risk-tuning" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
-              operator risk-tuning guide
-            </a>.
-          </div>
-
-          {/* Tier-legend strip — chip colour decoder. */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-            {Object.entries(SCORE_TIER_STYLE).map(([tier, style]) => (
-              <span
-                key={tier}
-                title={`${style.label} tier`}
-                style={{
-                  fontSize: 10, padding: '2px 8px', borderRadius: 4,
-                  background: style.bg, color: style.fg, fontWeight: 600,
-                }}
-              >
-                {style.label}
-              </span>
-            ))}
-          </div>
-
-          {/* Per-class score table. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, auto) 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
-            {classOrder.map(cls => (
-              <React.Fragment key={cls}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)' }}>{cls}</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {byClass[cls].map(row => {
-                    const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
-                    return (
-                      <span
-                        key={`${row.class}-${row.tag}`}
-                        title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}`}
-                        style={{
-                          fontSize: 10, padding: '2px 8px', borderRadius: 4,
-                          background: tierStyle.bg, color: tierStyle.fg,
-                          fontWeight: 500, fontFamily: 'monospace',
-                          cursor: 'help',
-                        }}
-                      >
-                        {row.tag} · {row.score}
-                      </span>
-                    );
-                  })}
-                </div>
-              </React.Fragment>
-            ))}
-          </div>
+        <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'minmax(140px, auto) 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
+          {classOrder.map(cls => (
+            <React.Fragment key={cls}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)' }}>{cls}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {byClass[cls].map(row => {
+                  const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
+                  return (
+                    <span
+                      key={`${row.class}-${row.tag}`}
+                      title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}`}
+                      style={{
+                        fontSize: 10, padding: '2px 8px', borderRadius: 4,
+                        background: tierStyle.bg, color: tierStyle.fg,
+                        fontWeight: 500, fontFamily: 'monospace',
+                        cursor: 'help',
+                      }}
+                    >
+                      {row.tag} · {row.score}
+                    </span>
+                  );
+                })}
+              </div>
+            </React.Fragment>
+          ))}
         </div>
       )}
     </div>
@@ -2526,7 +2538,9 @@ function AiDetectorRow() {
             </span>
           )}
           {!featurePresent && (
-            <span>rebuild with <code>--features ai</code> + set <code>cfg.ai.enabled = true</code></span>
+            <span>
+              rebuild with <code>--features ai</code> and set <code>cfg.ai.model_path</code> to a valid ONNX file (run <code>make ai-link MODEL=&lt;path&gt;</code>)
+            </span>
           )}
           <button
             type="button"
@@ -2594,6 +2608,13 @@ function AiDetectorRow() {
 function PageTierConfig() {
   const tiersApi = window.useTiersApi();
   const routesApi = window.useRoutesApi();
+  // 2026-05-10 — read at the top so we don't violate the Rules of
+  // Hooks. The Live Policy summary in the right pane consumes
+  // `detectorsApi.data?.overrides[selected.name]` and `?.mask` to
+  // show whether the tier inherits Base or has an explicit override.
+  const detectorsApi = window.useDetectorsApi
+    ? window.useDetectorsApi()
+    : { data: null };
   const tiers = tiersApi.data?.tiers || [];
   const routes = routesApi.data?.routes || [];
   const [selectedName, setSelectedName] = useStateP(null);
@@ -2603,10 +2624,37 @@ function PageTierConfig() {
   async function saveTier(name, body) {
     setBusy(true);
     try {
+      // 2026-05-10 — pull the detector-override delta out of the
+      // body (TierEditModal stuffs it under __detectorOverride
+      // when the operator changed mask state). Sequence the
+      // detectors PUT first because (a) it's the one most likely
+      // to fail validation (compliance clamp etc.) and (b) the
+      // tier PUT touches different state, so partial failure
+      // leaves the system in a coherent intermediate.
+      const detectorOverride = body.__detectorOverride;
+      delete body.__detectorOverride;
+
+      if (detectorOverride) {
+        const detPayload = detectorOverride.mask
+          ? { overrides: { [name]: detectorOverride.mask } }
+          : { overrides: { [name]: null } };
+        const dr = await window.detectorsPut(detPayload);
+        const detOk = dr && typeof dr.status === 'number' && dr.status >= 200 && dr.status < 300;
+        if (!detOk) {
+          const msg = (dr && (dr.message || dr.error || dr.reason)) || `status ${dr?.status ?? '?'}`;
+          window.aegisToast(`Detector override save failed: ${msg}`, 'err');
+          return;
+        }
+      }
+
       const r = await window.tierPut(name, body);
       if (r.status === 200 && r.ok) {
-        window.aegisToast(`Tier "${name}" updated`, 'ok');
+        const detSuffix = detectorOverride
+          ? (detectorOverride.mask ? ' · detector override saved' : ' · detector override cleared')
+          : '';
+        window.aegisToast(`Tier "${name}" updated${detSuffix}`, 'ok');
         tiersApi.reload && tiersApi.reload();
+        detectorsApi.reload && detectorsApi.reload();
         setTierEditor(null);
       } else {
         const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
@@ -2641,9 +2689,9 @@ function PageTierConfig() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Detectors</h1>
+          <h1 className="page-title">Detectors &amp; Tiers</h1>
           <p className="page-subtitle">
-            Pipeline assignment per tier ·
+            Per-class detector mask (with per-tier overrides) + per-tier risk thresholds ·
             <span className="num"> {tiers.length}</span> active tiers ·
             <span className="num"> {routes.length}</span> routes
             <span style={{ marginLeft: 8 }}>
@@ -2677,7 +2725,6 @@ function PageTierConfig() {
             )}
             {tiers.map(t => {
               const tierRouteCount = routes.filter(r => matchTier(r, t.name)).length;
-              const detectorCount = (t.pipeline || []).filter(p => !['rate', 'rules', 'risk', 'challenge'].includes(p)).length;
               return (
                 <button key={t.name} onClick={() => setSelectedName(t.name)}
                   style={{ display: 'block', width: '100%', textAlign: 'left', padding: 14, border: 'none', borderBottom: '1px solid var(--hairline)',
@@ -2685,12 +2732,17 @@ function PageTierConfig() {
                     borderLeft: selected && selected.name === t.name ? '3px solid var(--brand-yellow)' : '3px solid transparent',
                     cursor: 'pointer', color: 'inherit' }}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{t.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>
-                    risk ≥ {t.risk_threshold} · block ≥ {t.block_threshold}/s
+                  <div
+                    style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}
+                    title={`Per-request: this tier blocks a request when its detector scores sum to ${t.risk_threshold} or more`}
+                  >
+                    block when score ≥ <span className="num">{t.risk_threshold}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 6, fontSize: 10 }}>
                     <span className="pill neutral">{tierRouteCount} routes</span>
-                    <span className="pill neutral">{detectorCount} detectors</span>
+                    {t.challenges_enabled === true && (
+                      <span className="pill ok" title="Cumulative-IP-risk challenges are enabled on this tier (PoW puzzle on score crossing)">challenges on</span>
+                    )}
                   </div>
                 </button>
               );
@@ -2704,7 +2756,19 @@ function PageTierConfig() {
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-                    {(selected.pipeline || []).length} pipeline stages · risk threshold <span className="num">{selected.risk_threshold}</span> · block <span className="num">{selected.block_threshold}</span>/s
+                    Per-request block ≥ <span className="num">{selected.risk_threshold}</span>
+                    {' · '}
+                    cumulative challenge {selected.cumulative_challenge_at != null
+                      ? <>≥ <span className="num">{selected.cumulative_challenge_at}</span></>
+                      : <span style={{ fontStyle: 'italic' }}>inherit</span>}
+                    {' · '}
+                    cumulative block {selected.cumulative_block_at != null
+                      ? <>≥ <span className="num">{selected.cumulative_block_at}</span></>
+                      : <span style={{ fontStyle: 'italic' }}>inherit</span>}
+                    {' · '}
+                    challenges {selected.challenges_enabled === true
+                      ? <span style={{ color: 'var(--up)' }}>on</span>
+                      : 'off'}
                   </div>
                 </div>
                 <button className="btn" onClick={() => setTierEditor(selected)} disabled={busy}>
@@ -2712,12 +2776,85 @@ function PageTierConfig() {
                 </button>
               </div>
 
+              {/* 2026-05-10 — replaced the dead "Pipeline (N stages)"
+                  pill list. Per `docs/security/security-engine.md`,
+                  pipeline is descriptive metadata only — the runtime
+                  detector gate is the per-tier mask grid at the top
+                  of this page. This summary points operators at the
+                  three surfaces where this tier's live policy is
+                  actually configured. */}
               <div style={{ background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 12, marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Pipeline ({(selected.pipeline || []).length} stages)</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {(selected.pipeline || []).map(p => (
-                    <span key={p} className="pill neutral" style={{ fontSize: 10 }}>{p}</span>
-                  ))}
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>
+                  Live policy for <span className="mono">{selected.name}</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, max-content) 1fr', gap: '6px 12px', fontSize: 11, lineHeight: 1.5 }}>
+                  <div style={{ color: 'var(--ink-dim)' }}>Detectors that run</div>
+                  <div>
+                    {(() => {
+                      // Pure projection over `detectorsApi.data` — the
+                      // hook itself is called at the top of
+                      // PageTierConfig (Rules of Hooks).
+                      const tierOverride = detectorsApi.data?.overrides?.[selected.name];
+                      const baseMask = detectorsApi.data?.mask;
+                      const explicit = !!tierOverride;
+                      const effective = tierOverride || baseMask || {};
+                      const enabledCount = Object.entries(effective).filter(([, v]) => v).length;
+                      const totalCount = Object.keys(effective).length;
+                      return (
+                        <>
+                          {explicit ? (
+                            <strong>{enabledCount}/{totalCount} enabled</strong>
+                          ) : (
+                            <>
+                              <em>inherits Base</em> ({totalCount > 0 ? `${enabledCount}/${totalCount} enabled` : 'loading…'})
+                            </>
+                          )}
+                          {' · '}
+                          <a
+                            href="#detector-mask-grid"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              const card = document.querySelector('[data-component="detector-mask-card"]');
+                              if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }}
+                            style={{ color: 'var(--accent)' }}
+                          >
+                            {explicit ? 'Edit override ↑' : 'Override on mask grid ↑'}
+                          </a>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Per-request gate</div>
+                  <div>
+                    Block when this single request's detector scores sum to ≥
+                    {' '}<strong className="num">{selected.risk_threshold}</strong>.
+                    Edit on this card → <em>Edit tier</em>.
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Cumulative IP gate</div>
+                  <div>
+                    {selected.challenges_enabled === true ? (
+                      <><span style={{ color: 'var(--up)', fontWeight: 600 }}>challenges on</span> · PoW on threshold crossing</>
+                    ) : (
+                      <>challenges off · escalate to block on threshold crossing</>
+                    )}
+                    {' · '}
+                    thresholds: <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Rules</div>
+                  <div>
+                    Authored on <a href="#/rules" style={{ color: 'var(--accent)' }}>Rules</a>;
+                    rules can be tier-scoped via their DSL (priority order: global → tier → route → session).
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Volumetric gates</div>
+                  <div>
+                    Rate-limit + DDoS run <strong>before</strong> tier classification — global, configured on
+                    {' '}<a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a>.
+                  </div>
                 </div>
               </div>
 
@@ -2787,110 +2924,245 @@ function PageTierConfig() {
 // Pipeline stages the four canonical tiers use today. Order
 // matters for the canonical sort below. Heads up — this list
 // is **descriptive metadata** today: the data plane gates
-// detectors via the global detector mask (PUT /api/detectors),
-// not by walking this list. Toggling a stage off here surfaces
-// the change in the audit chain + the tier list, but doesn't
-// currently disable the detector at runtime. Real tier-scoped
-// execution is a follow-up.
-const TIER_PIPELINE_STAGES = [
-  ['rate', 'Rate-limit gate'],
-  ['rules', 'Custom rule engine'],
-  ['sqli', 'SQL injection detector'],
-  ['xss', 'Cross-site scripting detector'],
-  ['ssrf', 'SSRF detector'],
-  ['path_traversal', 'Path traversal detector'],
-  ['header_inj', 'Header injection / CRLF'],
-  ['bots', 'Bot management'],
-  ['ai', 'AI-based attack detector (ML / ONNX)'],
-  ['risk', 'Composite risk scoring'],
-  ['challenge', 'JS / CAPTCHA challenge ladder'],
-];
+// 2026-05-10 — TIER_PIPELINE_STAGES checkbox grid retired (Option B).
+// Every stage in the previous list was either descriptive metadata
+// or already configurable elsewhere (detector mask, Traffic Gates,
+// Rules page). The Tier editor now focuses on the four real
+// per-tier knobs: per-request block score, cumulative challenge
+// threshold, cumulative block threshold, and the challenges
+// on/off toggle. The wire shape still carries `pipeline` so
+// existing YAML loads; we POST whatever the tier already had.
 
 function TierEditModal({ tier, onCancel, onSave, busy }) {
-  const [pipelineSet, setPipelineSet] = useStateP(() => new Set(tier.pipeline || []));
-  const [risk, setRisk] = useStateP(tier.risk_threshold || 50);
-  const [block, setBlock] = useStateP(tier.block_threshold || 100);
+  // Preserve the existing pipeline list verbatim — wire shape stays
+  // stable, dashboard just doesn't expose the checkboxes any more.
+  const preservedPipeline = tier.pipeline || [];
+  const [risk, setRisk] = useStateP(tier.risk_threshold ?? 50);
+  // 2026-05-10 R3 — per-tier cumulative threshold inputs retired
+  // from the dashboard (operator-confirmed: in practice the
+  // global cumulative thresholds + the per-request block score
+  // cover the common needs; per-tier cumulative tuning is a
+  // niche use case). Wire shape kept intact so:
+  //   (a) values previously set via API persist across saves —
+  //       we round-trip `tier.cumulative_*` verbatim;
+  //   (b) restoring the inputs is a UI-only change.
+  const preservedCumChallenge = tier.cumulative_challenge_at ?? null;
+  const preservedCumBlock = tier.cumulative_block_at ?? null;
+  // 2026-05-10 R2 — challenges default to OFF. Treat missing /
+  // undefined as false (was: missing-as-true), matching the new
+  // backend default.
+  const [challengesEnabled, setChallengesEnabled] = useStateP(tier.challenges_enabled === true);
+  const [showFlow, setShowFlow] = useStateP(false);
 
-  const togglePipeline = (s) => {
-    const next = new Set(pipelineSet);
-    next.has(s) ? next.delete(s) : next.add(s);
-    setPipelineSet(next);
+  // 2026-05-10 — per-tier detector mask edit moved here from the
+  // unified card (which now only edits Base). Operators get one
+  // focused surface per tier: thresholds + challenges + detector
+  // overrides. On save we sequence the existing detectors PUT and
+  // tiers PUT — both audit-mutated, both idempotent.
+  const detectorsApi = window.useDetectorsApi
+    ? window.useDetectorsApi()
+    : { data: null };
+  const baseMask = detectorsApi.data?.mask || {};
+  const existingOverride = detectorsApi.data?.overrides?.[tier.name] || null;
+  // `overrideMask` is null when the operator hasn't decided to
+  // override yet (inherits Base) or has cleared the override; an
+  // object when actively customizing.
+  const [overrideMask, setOverrideMask] = useStateP(
+    existingOverride ? { ...existingOverride } : null
+  );
+  // Track the original state so we know whether to emit a
+  // detectors PUT on save (no PUT if nothing changed).
+  const initialOverride = useRefP(existingOverride);
+  // Re-seed when the modal opens for a different tier — the
+  // existingOverride read happens after the hook resolves.
+  useEffectP(() => {
+    if (detectorsApi.data) {
+      setOverrideMask(existingOverride ? { ...existingOverride } : null);
+      initialOverride.current = existingOverride;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tier.name, !!detectorsApi.data]);
+
+  const isOverriding = !!overrideMask;
+  const startOverride = () => {
+    // Seed with the current Base mask so the operator sees what's
+    // running today + can toggle classes off/on.
+    setOverrideMask({ ...baseMask });
   };
-  const orderedPipeline = TIER_PIPELINE_STAGES
-    .map(([s]) => s)
-    .filter(s => pipelineSet.has(s));
+  const dropOverride = () => {
+    setOverrideMask(null);
+  };
+  const toggleOverrideClass = (cls) => {
+    setOverrideMask((m) => (m ? { ...m, [cls]: !m[cls] } : m));
+  };
+  // Whether the in-modal state differs from what the server has.
+  const overrideChanged =
+    JSON.stringify(overrideMask) !== JSON.stringify(initialOverride.current);
 
   const riskValid = risk >= 0 && risk <= 100;
-  const blockValid = block >= 1;
-  const pipelineValid = orderedPipeline.length > 0;
-  const canSave = riskValid && blockValid && pipelineValid && !busy;
+  const canSave = riskValid && !busy;
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 620 }}>
         <div className="modal-head">
           <div className="modal-title">Edit tier · {tier.name}</div>
           <button className="btn btn-sm" onClick={onCancel}>×</button>
         </div>
         <div className="modal-body">
-          <div className="form-row">
-            <label>Pipeline stages <span className="req">*</span></label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
-              {TIER_PIPELINE_STAGES.map(([s, label]) => {
-                const on = pipelineSet.has(s);
-                return (
-                  <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}>
-                    <input type="checkbox" checked={on} onChange={() => togglePipeline(s)} />
-                    <code style={{ minWidth: 110 }}>{s}</code>
-                    <span style={{ color: 'var(--ink-dim)' }}>— {label}</span>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="form-hint">
-              <strong>Heads up.</strong> This list is descriptive metadata today —
-              the data plane gates detectors via the <strong>Detectors mask</strong> at
-              the top of this page, not by walking this list. Edit the mask there to
-              actually disable a detector. Per-tier execution is a follow-up.
-            </div>
-            {!pipelineValid && (
-              <div className="form-hint warn">Pipeline must have at least one stage.</div>
+          {/* Collapsible decision-flow primer for operators new to
+              the page. Default collapsed — power users skip it. */}
+          <div style={{ marginBottom: 14, border: '1px solid var(--hairline)', borderRadius: 4 }}>
+            <button
+              type="button"
+              onClick={() => setShowFlow(s => !s)}
+              style={{
+                width: '100%', textAlign: 'left', background: 'transparent',
+                border: 'none', padding: '8px 12px', cursor: 'pointer',
+                fontSize: 11, fontWeight: 600, color: 'var(--ink)',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{showFlow ? '▼' : '▶'}</span>
+              How is a request blocked or challenged on this tier?
+              <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }}>
+                {showFlow ? 'click to collapse' : 'click to expand'}
+              </span>
+            </button>
+            {showFlow && (
+              <div style={{ padding: '4px 12px 12px', fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+                Three independent gates run in order; the first one that fires wins.
+                <ol style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  <li><strong>Traffic Gates</strong> (global, before tier matching) — access list, strike-block, rate-limit, DDoS. Configured on Traffic Gates page.</li>
+                  <li><strong>Per-request block score</strong> (this tier) — when THIS one request's detector scores sum to ≥ the value below, block immediately.</li>
+                  <li><strong>Cumulative IP history</strong> — IP's running score crosses the global thresholds (Traffic Gates → #3). On this tier, challenges either run or escalate to block based on the toggle below.</li>
+                </ol>
+                Otherwise → allow + forward to upstream. <code>X-WAF-Risk-Score</code> always reports the cumulative IP score (contract §5.1).
+              </div>
             )}
           </div>
 
-          <div className="form-row" style={{ display: 'flex', gap: 8, marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
-            <div style={{ flex: 1 }}>
-              <label>Risk threshold (0-100) <span className="req">*</span></label>
-              <input className="ip" type="number" min="0" max="100"
-                value={risk}
-                onChange={e => setRisk(parseInt(e.target.value, 10) || 0)} />
-              <div className="form-hint">Composite score that triggers a block. Lower = stricter.</div>
-              {!riskValid && (
-                <div className="form-hint warn">Must be between 0 and 100.</div>
-              )}
+          {/* ── Per-request gate ───────────────────────────────── */}
+          <div className="form-row">
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Per-request gate
             </div>
-            <div style={{ flex: 1 }}>
-              <label>Block threshold (req/s) <span className="req">*</span></label>
-              <input className="ip" type="number" min="1"
-                value={block}
-                onChange={e => setBlock(parseInt(e.target.value, 10) || 0)} />
-              <div className="form-hint">Per-second rate cap. Above this, fail-close kicks in.</div>
-              {!blockValid && (
-                <div className="form-hint warn">Must be at least 1.</div>
-              )}
+            <label>Block score (0-100) <span className="req">*</span></label>
+            <input className="ip" type="number" min="0" max="100"
+              value={risk}
+              onChange={e => {
+                const v = parseInt(e.target.value, 10);
+                if (!Number.isFinite(v)) { setRisk(0); return; }
+                setRisk(Math.max(0, Math.min(100, v)));
+              }} />
+            <div className="form-hint">
+              Block when this request's detector scores sum ≥ this value. Lower = stricter.
+            </div>
+            {!riskValid && (
+              <div className="form-hint warn">Must be between 0 and 100.</div>
+            )}
+          </div>
+
+          {/* ── Cumulative IP gate ──
+              R3 — Threshold inputs retired. Only the on/off toggle
+              remains per-tier. Threshold defaults are global; edit on
+              Traffic Gates → #3. */}
+          <div className="form-row" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Cumulative IP gate
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input type="checkbox" checked={challengesEnabled} onChange={e => setChallengesEnabled(e.target.checked)} />
+              <span><strong>Allow challenges</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → escalate to block)</span></span>
+            </label>
+            <div className="form-hint" style={{ marginTop: 6 }}>
+              Cumulative thresholds are global — edit on <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>.
             </div>
           </div>
 
+          {/* ── Detector overrides (per-tier mask) ─────────── */}
+          <div className="form-row" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Detectors
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={isOverriding}
+                onChange={() => isOverriding ? dropOverride() : startOverride()}
+              />
+              <span><strong>Override Base mask</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → inherit Base)</span></span>
+            </label>
+
+            {isOverriding && overrideMask && (
+              <>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                  {MASK_CLASSES.map(cls => {
+                    const enabled = !!overrideMask[cls];
+                    const baseEnabled = !!baseMask[cls];
+                    const differsFromBase = enabled !== baseEnabled;
+                    return (
+                      <button
+                        key={cls}
+                        type="button"
+                        onClick={() => toggleOverrideClass(cls)}
+                        title={`${cls} — ${enabled ? 'on' : 'off'}${differsFromBase ? ` (Base: ${baseEnabled ? 'on' : 'off'})` : ''}`}
+                        style={{
+                          fontSize: 10, padding: '3px 9px', borderRadius: 4,
+                          background: enabled ? 'rgba(14,203,129,0.14)' : 'transparent',
+                          color: enabled ? 'var(--up)' : 'var(--ink-dim)',
+                          fontWeight: differsFromBase ? 700 : 500,
+                          border: differsFromBase ? '1px solid var(--brand-yellow)' : '1px solid var(--hairline)',
+                          textDecoration: enabled ? 'none' : 'line-through',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {cls}{!enabled && ' · off'}
+                      </button>
+                    );
+                  })}
+                </div>
+                {(() => {
+                  const diff = MASK_CLASSES.filter(c => !!overrideMask[c] !== !!baseMask[c]).length;
+                  return (
+                    <div className="form-hint">
+                      {diff === 0
+                        ? 'Matches Base. Toggle a chip to diverge.'
+                        : <><strong>{diff}</strong> {diff === 1 ? 'class differs' : 'classes differ'} from Base (yellow border).</>}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+
           <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
-            {tier.name}: pipeline=[{orderedPipeline.join(', ')}], risk≥{risk}, block≥{block}/s
+            block≥{risk}
+            {' · '}challenges {challengesEnabled ? 'on' : 'off'}
+            {' · '}detectors {isOverriding
+              ? `${Object.entries(overrideMask).filter(([, v]) => v).length}/${Object.keys(overrideMask).length}`
+              : 'base'}
           </div>
         </div>
         <div className="modal-foot">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
           <button className="btn primary" disabled={!canSave} onClick={() => onSave({
-            pipeline: orderedPipeline,
+            pipeline: preservedPipeline,
             risk_threshold: risk,
-            block_threshold: block,
+            block_threshold: tier.block_threshold ?? 100,
+            // R3 — cumulative thresholds are not edited from the
+            // dashboard. Round-trip whatever the API has.
+            cumulative_challenge_at: preservedCumChallenge,
+            cumulative_block_at: preservedCumBlock,
+            challenges_enabled: challengesEnabled,
+            // 2026-05-10 — detector override delta. The parent's
+            // saveTier() sequences a `PUT /api/detectors` (audit-
+            // mutated) when this is non-null. `null` means "no
+            // change to detectors" (skip the second PUT).
+            __detectorOverride: overrideChanged
+              ? { mask: overrideMask, hadBefore: !!initialOverride.current }
+              : null,
           })}>
             {busy ? 'Saving…' : 'Save'}
           </button>
@@ -3939,49 +4211,6 @@ function PageSettings() {
   const runtime = window.useRuntimeApi();
   const showRuntimeHint = !!runtime?.data;
 
-  // CQF-T8 — risk thresholds wired to /api/risk/thresholds.
-  // The endpoint shipped via CI-T12; this wiring closes the
-  // CQA-T10 partial. The slider's "Allow ≤ X" is challenge_at-1
-  // and "Challenge ≤ Y" is block_at-1; we mirror the API's
-  // `challenge_at` / `block_at` directly into local state.
-  const riskApi = window.useRiskThresholdsApi();
-  const [allow, setAllow] = useStateP(0);
-  const [challenge, setChallenge] = useStateP(0);
-  const [riskBusy, setRiskBusy] = useStateP(false);
-  // Sync local sliders with whatever the live API reports —
-  // first load, hot-reload, or another operator's PUT.
-  useEffectP(() => {
-    if (!riskApi.data) return;
-    const ca = Number(riskApi.data.challenge_at);
-    const ba = Number(riskApi.data.block_at);
-    if (Number.isFinite(ca)) setAllow(Math.max(0, ca - 1));
-    if (Number.isFinite(ba)) setChallenge(Math.max(0, ba - 1));
-  }, [riskApi.data?.challenge_at, riskApi.data?.block_at]);
-
-  async function saveRiskThresholds() {
-    if (riskBusy) return;
-    setRiskBusy(true);
-    try {
-      const body = {
-        challenge_at: allow + 1,
-        block_at: challenge + 1,
-        max: Number(riskApi.data?.max) || 100,
-      };
-      const r = await window.settingsRiskThresholdsPut(body);
-      if (r && r.ok) {
-        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
-        riskApi.reload && riskApi.reload();
-      } else {
-        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
-        window.aegisToast(`Risk threshold save failed: ${msg}`, 'err');
-      }
-    } catch (e) {
-      window.aegisToast(`Risk threshold error: ${e.message || e}`, 'err');
-    } finally {
-      setRiskBusy(false);
-    }
-  }
-
   const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
   const [stackTraces, setStackTraces] = useStateP(true);
   const [redactJSON, setRedactJSON] = useStateP(true);
@@ -4076,53 +4305,19 @@ function PageSettings() {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Cumulative IP risk thresholds</div>
-          <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`}>
-            {riskApi.error ? 'fetch failed' : 'live'}
-          </span>
-          {riskApi.data && (
-            <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 'auto' }}>
-              live: challenge ≥ {riskApi.data.challenge_at} · block ≥ {riskApi.data.block_at}
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 10, lineHeight: 1.5 }}>
-          Per-source-IP score that <strong>accumulates across requests</strong> and decays exponentially
-          (half-life <span className="num">{riskApi.data?.decay_half_life || '5m'}</span> from <code>risk.decay_half_life</code>).
-          Gates the challenge ladder for <em>future</em> requests from this IP.
-          {' '}
-          <strong>Distinct from</strong> the per-request <em>tier risk threshold</em> (50 / 70 / 80 / 90 by tier)
-          which blocks <em>this</em> request based on its detector hits — that one lives on the Detectors page → Edit tier.
-          {' '}
-          See <a href="/docs/security/security-engine.md" target="_blank" rel="noreferrer">security-engine.md § Risk model</a>.
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
-            </div>
-            <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
-          </div>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
-            </div>
-            <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
-            </div>
-            <button
-              className="btn primary"
-              disabled={riskBusy}
-              onClick={saveRiskThresholds}
-              style={{ fontSize: 11, padding: '4px 12px' }}
-            >
-              Save thresholds
-            </button>
+      {/* 2026-05-10 — "Cumulative IP risk thresholds" card moved to
+          Traffic Gates → next to Strike-Block, so the per-IP-risk
+          knobs (lifetime strikes + decaying score thresholds) live
+          on one page with a side-by-side semantics callout. */}
+      <div className="card" style={{ marginBottom: 12, padding: 14, background: 'var(--surface-2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <window.I.Shield />
+          <div style={{ flex: 1, fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.5 }}>
+            <strong style={{ color: 'var(--ink)' }}>Cumulative IP risk thresholds moved.</strong>{' '}
+            They now live with Strike-Block on the
+            {' '}
+            <a href="#/traffic-gates" style={{ color: 'var(--accent)', fontWeight: 600 }}>Traffic Gates</a>
+            {' '}page so the full per-IP-risk story (lifetime strikes vs. decaying score) sits in one place.
           </div>
         </div>
       </div>
@@ -5065,7 +5260,10 @@ function PageTracking() {
 
       <div className="grid-12" style={{ marginBottom: 12 }}>
         <div className="col-6 card">
-          <window.SectionHeader title="SLO budget" sub="live engine · burn windows pending wiring" />
+          <window.SectionHeader
+            title="SLO budget"
+            sub="Service-level objectives — current value vs. target, plus error-budget remaining over the rolling window. Budget drains when current drops below target."
+          />
           {/* S7 (2026-05-08) — root-cause hint when an SLO is below
               target. Pre-fix: the SOC analyst saw a red SLO and had
               to cross-reference attack logs manually to find the
@@ -5073,27 +5271,58 @@ function PageTracking() {
               link to the audit trail filtered to it. */}
           <SloRootCauseHint slis={slo.data?.slis || []} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(slo.data?.slis || []).length === 0 && (
+            {(slo.data?.slis || []).length === 0 ? (
               <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                No SLO data — engine warming up.
+                No SLO data yet — drive some traffic to populate the SLI window
+                {' ('}<code>cfg.slo</code> defines the SLIs).
               </div>
-            )}
-            {(slo.data?.slis || []).map(s => {
-              const tone = s.budget_remaining > 0.5 ? 'up' : s.budget_remaining > 0.1 ? 'warn' : 'down';
-              return (
-                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}>
-                  <span>{s.name}</span>
-                  <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
-                    {s.current.toFixed(2)}%
-                  </span>
-                  <span className="dim">{s.target.toFixed(2)}%</span>
-                  <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
-                  </div>
-                  <span className={`pill ${tone}`}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
+            ) : (
+              <>
+                {/* Column headers — without these, the three percentages
+                    in each row read as a mystery wall to operators new
+                    to the page. 2026-05-10. */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '180px 80px 80px 1fr 80px',
+                  gap: 10,
+                  alignItems: 'center',
+                  fontSize: 10,
+                  color: 'var(--ink-dim)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.5,
+                  paddingBottom: 4,
+                  borderBottom: '1px solid var(--hairline)',
+                  marginBottom: 4,
+                }}>
+                  <span>SLI</span>
+                  <span>Current</span>
+                  <span>Target</span>
+                  <span>Error budget</span>
+                  <span style={{ textAlign: 'right' }}>Remaining</span>
                 </div>
-              );
-            })}
+                {(slo.data?.slis || []).map(s => {
+                  const tone = s.budget_remaining > 0.5 ? 'up' : s.budget_remaining > 0.1 ? 'warn' : 'down';
+                  const meeting = s.current >= s.target;
+                  return (
+                    <div
+                      key={s.name}
+                      title={`${s.name} — currently ${s.current.toFixed(2)}% (target ${s.target.toFixed(2)}%). ${meeting ? 'Meeting target.' : 'Below target — error budget is draining.'}`}
+                      style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}
+                    >
+                      <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
+                      <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
+                        {s.current.toFixed(2)}%
+                      </span>
+                      <span className="dim">{s.target.toFixed(2)}%</span>
+                      <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                        <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
+                      </div>
+                      <span className={`pill ${tone}`} style={{ textAlign: 'right' }}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         </div>
         <div className="col-6 card">
@@ -7542,293 +7771,795 @@ function PageInvestigation() {
   );
 }
 
-function PageThreatIntel() {
-  const ti = window.useApi ? window.useApi('/api/threat-intel/hits', { intervalMs: 30000, fallback: null }) : { data: null };
-  const feeds = window.useThreatIntelFeedsApi ? window.useThreatIntelFeedsApi() : { data: null };
-  const geo = window.useGeoipStatusApi ? window.useGeoipStatusApi() : { data: null };
-  const hits = ti.data?.hits || [];
-  const feedList = feeds.data?.feeds || [];
-  const featureBuilt = feeds.data?.feature_built !== false; // null = unknown, treat as on
-  const noFeedsAndNoGeo = feedList.length === 0 && !geo.data?.db_loaded;
 
+// 2026-05-09 — Traffic Gates page. Operator-facing surface for the
+// four request-flow gates that fire BEFORE the detector chain:
+//
+//   1. Access list (blacklist + whitelist) — IP / CIDR / country
+//   2. Strike-block — per-IP lifetime strike counter
+//   3. Rate-limit — token-bucket per-IP volumetric guard
+//   4. DDoS — sliding-window per-IP burst gate + EWMA spike mode
+//
+// All four short-circuit the request before detectors run. They are
+// NOT detectors (don't emit `Signal { score, tag }`); they live in
+// `crates/aegis-security/src/{ddos,risk,rate_limit,...}`.
+//
+// The page surfaces telemetry for each gate and links to the
+// dedicated CRUD page where one exists (Access Lists). The DDoS
+// card has the most detail because the gate has no other operator
+// surface today; threshold edits still require restart (hot-reload
+// of DdosConfig is a follow-up).
+function PageTrafficGates() {
   return (
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Threat Intel</h1>
-          <p className="page-subtitle">TAXII / MISP feeds · GeoIP DB · recent indicator matches</p>
+          <h1 className="page-title">Traffic Gates</h1>
+          <p className="page-subtitle">
+            Five per-flow controls that fire <strong>before</strong> the detector chain — four binary
+            block-or-pass gates plus the cumulative IP-risk threshold tuner. Each card carries its
+            own "how does it work" explanation. See
+            {' '}
+            <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors &amp; Tiers</a>
+            {' '}for the signal-emitting pipeline that runs after these gates pass.
+          </p>
         </div>
       </div>
 
-      {/* SOC-UX: when nothing is wired, lead with a clear "what
-          this page is for + what it needs" panel instead of three
-          empty stat cards.  Hides automatically once any feed or
-          GeoIP DB is configured. */}
-      {noFeedsAndNoGeo && (
-        <div className="card" style={{ padding: 16, marginBottom: 12, borderLeft: '3px solid var(--accent)' }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>What you'll see here</div>
-          <div style={{ fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.6 }}>
-            Threat Intel surfaces three signals once you wire them:
-            <ul style={{ marginTop: 6, paddingLeft: 18 }}>
-              <li><strong>Feeds</strong> — TAXII / MISP indicator subscriptions; hits attribute traffic to known-bad infrastructure.</li>
-              <li><strong>Indicator hits</strong> — every request whose IP / domain matched a feed entry.</li>
-              <li><strong>GeoIP</strong> — country + ASN enrichment on the Overview map and the access-list <code>kind: country</code> matcher.</li>
-            </ul>
-            Until a feed is configured this page reads honestly empty — it is not a bug.
-            See <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Threat Intel setup</a>.
-          </div>
-        </div>
-      )}
-
-      <div className="grid-12" style={{ marginBottom: 12 }}>
-        <div className="col-4 card" style={{ padding: 12 }}>
-          <div className="card-title">Configured feeds</div>
-          <div className="num" style={{ fontSize: 24 }}>{feedList.length}</div>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-            {feeds.data?.configured_in_yaml ? 'from YAML' : 'no feeds configured'}
-          </div>
-        </div>
-        <div className="col-4 card" style={{ padding: 12 }}>
-          <div className="card-title">Recent matches</div>
-          <div className="num" style={{ fontSize: 24 }}>{hits.length}</div>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>indicator hits in current window</div>
-        </div>
-        <div className="col-4 card" style={{ padding: 12 }}>
-          <div className="card-title">GeoIP DB</div>
-          <div style={{ fontSize: 18 }}>
-            {geo.data?.db_loaded ? (
-              <span className="pill ok">loaded</span>
-            ) : geo.data?.feature_built ? (
-              <span className="pill warn">no .mmdb</span>
-            ) : (
-              <span className="pill" style={{ opacity: 0.5 }}>feature off</span>
-            )}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-            {geo.data?.feature_built
-              ? geo.data?.db_loaded ? `${geo.data?.indicator_count?.toLocaleString() || 0} indicators` : 'set geoip.path in config'
-              : 'rebuild with FEATURES="redis geoip"'}
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Configured feeds" sub="from cfg.threat_intel.feeds" />
-        {feedList.length === 0 ? (
-          <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
-            No threat-intel feeds configured. Add to <code>config/*.yaml</code>:
-            <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8, textAlign: 'left', fontSize: 11 }}>
-{`threat_intel:
-  feeds:
-    - kind: taxii
-      url: "https://example.org/taxii/api"
-      collection: "indicators"
-      interval: "10m"`}
-            </pre>
-            <div style={{ marginTop: 8, fontSize: 11 }}>
-              Then restart the WAF. A feed-management UI (add/remove without restart) isn't built yet — for now this page is read-only.
-            </div>
-          </div>
-        ) : (
-          <table className="tbl tbl-compact">
-            <thead><tr><th>Kind</th><th>Source</th><th>Last fetch</th><th>Indicators</th><th>Status</th></tr></thead>
-            <tbody>
-              {feedList.map((f, i) => (
-                <tr key={i}>
-                  <td><span className="pill">{f.kind || 'taxii'}</span></td>
-                  <td className="num">{f.source || f.url || f.name}</td>
-                  <td>{f.last_fetch_at ? new Date(f.last_fetch_at).toLocaleString() : '—'}</td>
-                  <td className="num">{f.indicator_count || 0}</td>
-                  <td><span className={`pill ${f.error ? 'down' : 'ok'}`}>{f.error ? 'error' : 'ok'}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Recent indicator hits" sub={`${hits.length} matches in current window`} />
-        {hits.length === 0 ? (
-          <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
-            No threat-intel matches recorded. Either no feeds configured (above), or no traffic matched.
-          </div>
-        ) : (
-          <table className="tbl tbl-compact">
-            <thead><tr><th>Feed</th><th>Indicator</th><th>Hits</th><th>Last seen</th></tr></thead>
-            <tbody>
-              {hits.map((h, i) => (
-                <tr key={i}>
-                  <td>{h.feed}</td>
-                  <td className="num">{h.indicator}</td>
-                  <td className="num">{h.hits}</td>
-                  <td>{h.last_seen ? new Date(h.last_seen).toLocaleString() : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="card">
-        <window.SectionHeader title="GeoIP DB" sub="MaxMind .mmdb status" />
-        <div style={{ padding: 16, fontSize: 12 }}>
-          {geo.data?.feature_built === false ? (
-            <div>
-              The <code>geoip</code> Cargo feature is not enabled in this build. Rebuild with:
-              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8 }}>
-                FEATURES="redis geoip" make build
-              </pre>
-            </div>
-          ) : geo.data?.db_loaded ? (
-            <div>
-              GeoLite2 DB loaded from <code>{geo.data?.db_path || '?'}</code>{' '}
-              ({geo.data?.indicator_count?.toLocaleString() || 0} country mappings).
-              The Overview map renders attacker country blips automatically.
-            </div>
-          ) : (
-            <div>
-              GeoIP feature is built but no <code>.mmdb</code> file is loaded. Configure:
-              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8 }}>
-{`geoip:
-  enabled: true
-  path: /path/to/GeoLite2-City.mmdb`}
-              </pre>
-              Free download:{' '}
-              <a href="https://www.maxmind.com/en/geolite2/signup" target="_blank" rel="noopener" style={{ color: 'var(--accent)' }}>
-                maxmind.com/en/geolite2/signup
-              </a>
-            </div>
-          )}
-        </div>
-      </div>
+      <AccessListGateCard />
+      <StrikeBlockGateCard />
+      <CumulativeIpRiskCard />
+      <RateLimitGateCard />
+      <DdosGateCard />
     </>
   );
 }
 
-// Run-6 UX S6 — small badge surfacing the WAF mode (enforce /
-// log_only) on the Compliance page heading. Sourced from
-// /api/mode (audit-mutated, polled every 5 s). Green when
-// enforcing (the safe default); yellow when log_only (the
-// shadow-mode warning state operators want to notice).
-function ComplianceModeBadge() {
-  const modeApi = window.useModeApi ? window.useModeApi() : { data: null };
-  const mode = modeApi.data?.mode || 'enforce';
-  const cls = mode === 'enforce' ? 'pill ok' : 'pill warn';
-  const label = mode === 'enforce' ? 'ENFORCING' : 'LOG-ONLY';
+// 1. Access list summary — links to the existing dedicated page.
+function AccessListGateCard() {
+  const black = window.useApi ? window.useApi('/api/blacklist', { intervalMs: 30000, fallback: { entries: [] } }) : { data: { entries: [] } };
+  const white = window.useApi ? window.useApi('/api/whitelist', { intervalMs: 30000, fallback: { entries: [] } }) : { data: { entries: [] } };
+  const blackCount = (black.data?.entries || []).length;
+  const whiteCount = (white.data?.entries || []).length;
   return (
-    <span
-      className={cls}
-      title={`WAF is currently ${mode} — sourced from /api/mode`}
-      style={{ marginLeft: 12, fontSize: 11, verticalAlign: 'middle' }}
-    >
-      {label}
-    </span>
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="1. Access List"
+        sub="IP / CIDR / country blacklist + whitelist — fires first, cheapest gate"
+      />
+      <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div style={{ flex: 1, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <span className="pill err" style={{ fontSize: 11 }}>{blackCount} blacklist {blackCount === 1 ? 'entry' : 'entries'}</span>
+          <span className="pill ok" style={{ fontSize: 11 }}>{whiteCount} whitelist {whiteCount === 1 ? 'entry' : 'entries'}</span>
+        </div>
+        <a href="#/access-lists" className="btn primary" style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none' }}>
+          Edit lists →
+        </a>
+      </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Operator-curated IP / CIDR / ASN / country blacklist or whitelist. Match → terminate request before the detector chain.'],
+          ['Response', '403 + ', <code key="c">X-WAF-Action: block</code>, ' on blacklist hit. Whitelist bypasses detectors but not other gates.'],
+          ['Recovery', <span key="r">Manual — operator removes the entry on Access Lists. No automatic expiry unless an entry is created with a TTL.</span>],
+          ['Tunable', 'Add / remove entries on the Access Lists page (audit-mutated, hot-reload).'],
+        ]}
+      />
+    </div>
   );
 }
 
-// Reference data: which detector classes each compliance mode pins.
-// Mirrors the backend clamps in `crates/aegis-core/src/compliance.rs`.
-const COMPLIANCE_CLAMPS = {
-  pci_dss: ['sqli', 'xss', 'path_traversal', 'header_injection'],
-  hipaa:   ['sqli', 'xss', 'ssrf', 'header_injection'],
-  soc2:    ['sqli', 'xss', 'path_traversal', 'header_injection', 'recon'],
-  gdpr:    ['sqli', 'xss'],
-  fips:    ['sqli', 'xss', 'path_traversal', 'header_injection', 'ssrf'],
-};
-
-function PageCompliance() {
-  const status = window.useStatusApi ? window.useStatusApi() : { data: null };
-  const detectors = window.useApi ? window.useApi('/api/detectors', { intervalMs: 30000, fallback: null }) : { data: null };
-  const modes = status.data?.compliance?.modes || status.data?.compliance_modes || [];
-  const lockedClasses = detectors.data?.locked_classes || [];
-
+// Compact "how does it work" strip used at the bottom of every
+// gate card on this page. Renders a 2-column key/value grid so
+// operators can read the operating semantics without having to
+// open the operator doc. Keeps wording tight (one-liner per row).
+//
+// 2026-05-10 — collapsible. Defaults to collapsed (just the header
+// row + chevron) so the five cards on the page stay compact for
+// routine ops; an operator clicks the header to dump the full
+// rows when they need the explanation.
+function GateExplain({ rows }) {
+  const [expanded, setExpanded] = useStateP(false);
   return (
-    <>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">
-            Compliance Profile
-            {/* Run-6 UX S6 — visible enforce/log_only badge so a SOC
-                analyst on call recognises the current enforcement
-                state at a glance without hunting through Settings. */}
-            <ComplianceModeBadge />
-          </h1>
-          <p className="page-subtitle">PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator (read-only · YAML-driven)</p>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Active modes" sub={modes.length === 0 ? 'no modes pinned' : `${modes.length} mode${modes.length === 1 ? '' : 's'} active`} />
-        <div style={{ padding: 16 }}>
-          {modes.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-              No <code>compliance.modes</code> set in the running config. To activate, edit your YAML's <code>compliance:</code> block and restart:
-              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, margin: '8px 0 0', overflow: 'auto', fontSize: 11 }}>
-{`compliance:
-  modes:
-    - pci_dss
-    - soc2`}
-              </pre>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {modes.map(m => <span key={m} className="pill ok">{m.toUpperCase()}</span>)}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Detector clamps by mode" sub="What each mode forces ON (cannot be disabled while active)" />
-        <table className="tbl tbl-compact">
-          <thead><tr><th>Mode</th><th>Pinned detectors</th><th>Status</th></tr></thead>
-          <tbody>
-            {Object.entries(COMPLIANCE_CLAMPS).map(([mode, classes]) => {
-              const active = modes.includes(mode);
-              return (
-                <tr key={mode} style={active ? { background: 'var(--surface-2)' } : undefined}>
-                  <td><strong>{mode.toUpperCase().replace('_', ' ')}</strong></td>
-                  <td style={{ fontSize: 11 }}>
-                    {classes.map(c => (
-                      <span key={c} className="pill" style={{ marginRight: 4, fontSize: 10 }}>{c}</span>
-                    ))}
-                  </td>
-                  <td>
-                    {active
-                      ? <span className="pill ok">active</span>
-                      : <span className="pill" style={{ opacity: 0.5 }}>inactive</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {lockedClasses.length > 0 && (
-        <div className="card">
-          <window.SectionHeader
-            title="Locked detector classes"
-            sub="These detectors cannot be disabled while the active modes are pinned"
-          />
-          <div style={{ padding: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {lockedClasses.map(c => <span key={c} className="pill warn">{c}</span>)}
-          </div>
-        </div>
-      )}
-
-      <div className="card" style={{ marginTop: 12, padding: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <window.I.Info />
-        <span>
-          The runtime clamp editor (toggle modes without YAML + restart) isn't built yet —
-          edit <code>cfg.compliance.modes</code> and restart for now.
-          Detector tier overrides remain editable on the <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors</a> page.
+    <div style={{
+      borderTop: '1px solid var(--hairline)',
+      background: 'var(--surface-2)',
+      fontSize: 11,
+      color: 'var(--ink-dim)',
+      lineHeight: 1.5,
+    }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          background: 'transparent',
+          border: 'none',
+          padding: '10px 16px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 11,
+          fontWeight: 600,
+          color: 'var(--ink)',
+        }}
+      >
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)', width: 10, display: 'inline-block' }}>
+          {expanded ? '▼' : '▶'}
         </span>
-      </div>
-    </>
+        How does it work?
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400, marginLeft: 'auto' }}>
+          {expanded ? 'click to collapse' : `${rows.length} rows · click to expand`}
+        </span>
+      </button>
+      {expanded && (
+        <div style={{ padding: '0 16px 12px', display: 'grid', gridTemplateColumns: 'minmax(96px, max-content) 1fr', gap: '4px 12px' }}>
+          {rows.map(([k, ...v], i) => (
+            <React.Fragment key={i}>
+              <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{k}</div>
+              <div>{v}</div>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
+
+// 2. Strike-Block — per-IP lifetime strike counter. Reads
+// /api/gates/strikes for live `enabled` + `block_at` and the
+// telemetry counts (tracked_ips, at_or_over_threshold).
+// Operators flip enable/disable + tune block_at via the Edit
+// modal — audit-mutated PUT /api/gates/strikes; per-IP strike
+// state is preserved across edits.
+//
+// 2026-05-10 — Strike-Block defaults to *disabled* in production
+// (opt-in). The lifetime counter never decays, which can interact
+// awkwardly with the contract's risk-score decay invariant; opt-in
+// keeps the never-decay knob explicit.
+function StrikeBlockGateCard() {
+  const sb = window.useApi ? window.useApi('/api/gates/strikes', { intervalMs: 10000, fallback: null }) : { data: null };
+  const cfg = sb.data;
+  const [editing, setEditing] = useStateP(false);
+  const enabled = !!cfg?.enabled;
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="2. Strike-Block"
+        sub="Per-IP lifetime strike counter — permanent block once threshold crossed (opt-in)"
+      />
+      <div style={{ padding: 16 }}>
+        {!cfg ? (
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>Loading…</div>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 12 }}>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Status</div>
+                <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4, color: enabled ? 'var(--ok)' : 'var(--ink-dim)' }}>
+                  {enabled ? 'ENABLED' : 'DISABLED'}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>
+                  {enabled ? 'gate is firing' : 'gate is off (opt-in)'}
+                </div>
+              </div>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Block at</div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, opacity: enabled ? 1 : 0.5 }}>{cfg.block_at}</div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>lifetime strikes</div>
+              </div>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>At-or-over</div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: cfg.at_or_over_threshold > 0 ? 'var(--down)' : 'var(--ink)' }}>
+                  {cfg.at_or_over_threshold}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>
+                  of {cfg.tracked_ips} tracked {cfg.tracked_ips === 1 ? 'IP' : 'IPs'}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+                {enabled
+                  ? <>Gate is firing. {cfg.at_or_over_threshold > 0
+                      ? <strong>{cfg.at_or_over_threshold} {cfg.at_or_over_threshold === 1 ? 'IP is' : 'IPs are'} currently 403'd</strong>
+                      : 'No IP at or above threshold.'}{' '}Per-IP strikes preserved across edits.</>
+                  : <>Gate is off — strike counts still climb in <code>/api/risk</code> for forensics, but the data plane does not 403. Enable to opt in.</>
+                }
+              </div>
+              <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
+                Edit
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Each detector hit increments the IP\'s lifetime strike counter by 1. When it crosses block_at, the IP 403s at the gate before any further detector cost.'],
+          ['Counter', <span key="c"><strong>Lifetime, never decays.</strong> An IP that hits block_at stays blocked across days unless an operator resets it.</span>],
+          ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: risk-strikes</code>, '. ', <code key="rs">X-WAF-Risk-Score</code>, ' continues to report the (decayed) cumulative score, distinct from the strike count.'],
+          ['Recovery', <span key="r">Manual — <code>POST /api/risk/&lt;ip&gt;/reset</code> per IP, or disable the gate entirely from this card.</span>],
+          ['Tunable', <span key="t">Edit modal on this card — flip <code>enabled</code> and tune <code>block_at</code>. Audit-mutated <code>PUT /api/gates/strikes</code>; per-IP strike state preserved across edits.</span>],
+          ['When to use', 'Production hardening for repeat offenders. For benchmark / risk-decay lifecycle tests, leave disabled (default) so cumulative score is the only score-based gate.'],
+        ]}
+      />
+      {editing && (
+        <StrikesEditModal
+          current={cfg}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); sb.reload && sb.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function StrikesEditModal({ current, onClose, onSaved }) {
+  const [enabled, setEnabled] = useStateP(!!current?.enabled);
+  const [blockAt, setBlockAt] = useStateP(current?.block_at ?? 50);
+  const [busy, setBusy] = useStateP(false);
+  const [err, setErr] = useStateP(null);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await window.csrfMutate('/api/gates/strikes', {
+        method: 'PUT',
+        body: { enabled, block_at: parseInt(blockAt, 10) },
+      });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast && window.aegisToast(`Strike-Block ${enabled ? 'enabled' : 'disabled'} · block_at=${blockAt}`, 'ok');
+        onSaved();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        setErr(msg);
+      }
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+        <div className="modal-head">
+          <div className="modal-title">Edit Strike-Block gate</div>
+          <button className="btn btn-sm" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body" style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className={`toggle ${enabled ? 'on' : ''}`} onClick={busy ? undefined : () => setEnabled(e => !e)} style={{ cursor: busy ? 'wait' : 'pointer' }} />
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>Enabled</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                When off, strikes still accumulate for forensics but the data plane does not 403.
+              </div>
+            </div>
+          </div>
+          <label style={{ fontSize: 12, opacity: enabled ? 1 : 0.55 }}>
+            Block at (lifetime strikes)
+            <input className="input" type="number" min="1" value={blockAt}
+              onChange={e => setBlockAt(e.target.value)} disabled={busy}
+              style={{ marginTop: 4, width: '100%' }} />
+          </label>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5, padding: 10, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <strong>Caveat:</strong> the strike counter never decays. With <code>enabled = true</code>,
+            an IP that hits <code>block_at</code> stays 403'd until you disable the gate or reset
+            it via <code>POST /api/risk/&lt;ip&gt;/reset</code>. For benchmark / risk-decay lifecycle
+            tests, leave the gate disabled — the cumulative IP risk thresholds (#3 below) carry
+            the contract's accumulation+decay invariant.
+            {' '}
+            Per-IP strike state is preserved across this edit; flipping the gate off then on
+            re-applies any IPs already at-or-over the threshold.
+          </div>
+          {err && <div style={{ fontSize: 11, color: 'var(--down)' }}>Error: {err}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 2026-05-10 — moved from PageSettings into Traffic Gates so all
+// per-IP-risk knobs (strike threshold, cumulative challenge_at,
+// cumulative block_at) sit on one page. The two thresholds gate
+// the challenge ladder for the *cumulative* per-IP score (decays
+// over time); the strike-block threshold above gates the lifetime
+// strike counter (never decays). Wired to /api/risk/thresholds
+// via window.useRiskThresholdsApi + window.settingsRiskThresholdsPut
+// — the same hooks Settings used to call.
+function CumulativeIpRiskCard() {
+  const riskApi = window.useRiskThresholdsApi();
+  const [allow, setAllow] = useStateP(0);
+  const [challenge, setChallenge] = useStateP(0);
+  const [riskBusy, setRiskBusy] = useStateP(false);
+
+  // Sync local sliders with whatever the live API reports —
+  // first load, hot-reload, or another operator's PUT.
+  useEffectP(() => {
+    if (!riskApi.data) return;
+    const ca = Number(riskApi.data.challenge_at);
+    const ba = Number(riskApi.data.block_at);
+    if (Number.isFinite(ca)) setAllow(Math.max(0, ca - 1));
+    if (Number.isFinite(ba)) setChallenge(Math.max(0, ba - 1));
+  }, [riskApi.data?.challenge_at, riskApi.data?.block_at]);
+
+  async function saveRiskThresholds() {
+    if (riskBusy) return;
+    setRiskBusy(true);
+    try {
+      const body = {
+        challenge_at: allow + 1,
+        block_at: challenge + 1,
+        max: Number(riskApi.data?.max) || 100,
+      };
+      const r = await window.settingsRiskThresholdsPut(body);
+      if (r && r.ok) {
+        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
+        riskApi.reload && riskApi.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Risk threshold save failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Risk threshold error: ${e.message || e}`, 'err');
+    } finally {
+      setRiskBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="3. Cumulative IP risk thresholds"
+        sub="Per-IP decaying score — challenge then block, recovers when score decays"
+      />
+      <div style={{ padding: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`} style={{ fontSize: 11 }}>
+            {riskApi.error ? 'fetch failed' : 'live'}
+          </span>
+          {riskApi.data && (
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              currently: challenge ≥ <strong>{riskApi.data.challenge_at}</strong> · block ≥ <strong>{riskApi.data.block_at}</strong>
+              {' · '}half-life <span className="num">{riskApi.data?.decay_half_life || '5m'}</span>
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
+            </div>
+            <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
+          </div>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
+            </div>
+            <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
+            </div>
+            <button
+              className="btn primary"
+              disabled={riskBusy}
+              onClick={saveRiskThresholds}
+              style={{ fontSize: 11, padding: '4px 12px' }}
+            >
+              Save thresholds
+            </button>
+          </div>
+        </div>
+      </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Each detector hit adds weight to the IP\'s cumulative score (sum of signals). Crossing challenge_at serves a JS/CAPTCHA challenge; crossing block_at refuses requests at the gate.'],
+          ['Counter', <span key="c"><strong>Decays exponentially</strong> (half-life ~5m from <code>risk.decay_half_life</code>). Score drifts down between hits; an IP that stops attacking eventually recovers.</span>],
+          ['Response', <span key="rsp">429 + <code>X-WAF-Action: challenge</code> when above challenge_at; 403 + <code>X-WAF-Action: block</code> + <code>X-WAF-Rule-Id: risk-score</code> when above block_at. <code>X-WAF-Risk-Score</code> reports this same accumulated score, satisfying the contract's accumulation+decay invariant.</span>],
+          ['Recovery', 'Automatic — score decays toward zero as time passes without new detector hits.'],
+          ['Tunable', <span key="t">Sliders above. Audit-mutated <code>PUT /api/risk/thresholds</code>; takes effect on the next request.</span>],
+          ['Distinct from', <span key="d">The per-request <em>tier risk threshold</em> (50/70/80/90 by tier) which blocks <em>this</em> request based on its detector hits. That one lives on <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors &amp; Tiers</a> → Edit tier.</span>],
+        ]}
+      />
+    </div>
+  );
+}
+
+// 3. Rate-limit summary — sourced from /api/rate-limit (if exposed).
+// 3. Rate Limit gate — F-T2 token bucket. Steady-state per-IP
+// limiter that returns 429 + X-WAF-Action: rate_limit when the
+// bucket exceeds. Distinct from DDoS gate (sustained burst →
+// TTL'd auto-block returning 403). Hot-reloadable via PUT
+// /api/rate-limit; per-IP timestamp state preserved across edits.
+function RateLimitGateCard() {
+  const rl = window.useApi ? window.useApi('/api/rate-limit', { intervalMs: 10000, fallback: null }) : { data: null };
+  const cfg = rl.data;
+  const [editing, setEditing] = useStateP(false);
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="4. Rate Limit"
+        sub="Per-IP token bucket — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window."
+      />
+      <div style={{ padding: 16 }}>
+        {!cfg ? (
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>Loading…</div>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 12 }}>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Limit</div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{cfg.limit}</div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>requests per window</div>
+              </div>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Window</div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{cfg.window_seconds}s</div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>sliding window length</div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+                Effective rate: <strong>{(cfg.limit / Math.max(cfg.window_seconds, 1)).toFixed(2)} req/s per IP</strong>.
+                Hot-reloadable — edits take effect on the next request without restart.
+              </div>
+              <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
+                Edit
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Per-IP token bucket counts requests within a sliding window. When the count exceeds limit, the request is denied.'],
+          ['Counter', <span key="c">In-process per-IP timestamp deque (per node). <strong>Window slides → automatic recovery.</strong></span>],
+          ['Response', '429 + ', <code key="rc">X-WAF-Action: rate_limit</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ip-rate-limit</code>, '. Misbehaving clients can back off and retry.'],
+          ['Recovery', 'Automatic — IP allowed again as soon as the window slides past old timestamps.'],
+          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/rate-limit</code>; per-IP timestamp state preserved.</span>],
+          ['When to use', '"Steady-state per-IP budget" — APIs with rate fairness. For sustained-burst quarantine (DDoS-grade), use the DDoS gate (#5) instead.'],
+        ]}
+      />
+      {editing && (
+        <RateLimitEditModal
+          current={cfg}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); rl.reload && rl.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function RateLimitEditModal({ current, onClose, onSaved }) {
+  const [limit, setLimit] = useStateP(current?.limit ?? 1000);
+  const [windowSeconds, setWindowSeconds] = useStateP(current?.window_seconds ?? 60);
+  const [busy, setBusy] = useStateP(false);
+  const [err, setErr] = useStateP(null);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await window.csrfMutate('/api/rate-limit', {
+        method: 'PUT',
+        body: { limit: parseInt(limit, 10), window_seconds: parseInt(windowSeconds, 10) },
+      });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast && window.aegisToast('Rate limit updated', 'ok');
+        onSaved();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        setErr(msg);
+      }
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+        <div className="modal-head">
+          <div className="modal-title">Edit rate-limit thresholds</div>
+          <button className="btn btn-sm" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body" style={{ display: 'grid', gap: 12 }}>
+          <label style={{ fontSize: 12 }}>
+            Limit (requests per window)
+            <input className="input" type="number" min="1" value={limit}
+              onChange={e => setLimit(e.target.value)} disabled={busy}
+              style={{ marginTop: 4, width: '100%' }} />
+          </label>
+          <label style={{ fontSize: 12 }}>
+            Window (seconds)
+            <input className="input" type="number" min="1" value={windowSeconds}
+              onChange={e => setWindowSeconds(e.target.value)} disabled={busy}
+              style={{ marginTop: 4, width: '100%' }} />
+          </label>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+            Effective: <strong>{(limit / Math.max(parseInt(windowSeconds, 10), 1)).toFixed(2)} req/s per IP</strong>.
+            Per-IP timestamp state is preserved across the edit — flooding sources don't get a free reset.
+            Audit-mutated; the change appears in the audit chain.
+          </div>
+          {err && <div style={{ fontSize: 11, color: 'var(--down)' }}>Error: {err}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 5. DDoS gate — full operator surface. Per-IP sliding-window
+// burst counter + EWMA spike-mode ticker. Returns 403 +
+// X-WAF-Action: block on burst-exceed (different from rate-limit
+// gate which returns 429). Hot-reloadable via PUT /api/gates/ddos
+// — per-IP StateBackend window state preserved across edits.
+function DdosGateCard() {
+  const ddos = window.useApi ? window.useApi('/api/gates/ddos', { intervalMs: 5000, fallback: null }) : { data: null };
+  const [editing, setEditing] = useStateP(false);
+  const data = ddos.data;
+
+  if (!data || !data.enabled) {
+    return (
+      <div className="card" style={{ marginBottom: 12 }}>
+        <window.SectionHeader
+          title="5. DDoS Gate"
+          sub="Per-IP sliding-window burst gate + EWMA spike mode — currently DISABLED"
+        />
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+            <span className="pill neutral" style={{ fontSize: 11, marginRight: 8 }}>cfg.ddos.enabled = false</span>
+            Set <code>cfg.ddos.enabled: true</code> in your YAML and restart to enable.
+            See <a href="/docs/security/ddos-protection" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>docs/security/ddos-protection.md</a>.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const cfg = data.config;
+  const modeStyle = cfg.observe_only
+    ? { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)', label: 'OBSERVE-ONLY' }
+    : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'ENFORCING' };
+  const spikeStyle = data.spike_active
+    ? { bg: 'rgba(246,70,93,0.14)', fg: 'var(--down)', label: '⚠ SPIKE ACTIVE' }
+    : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'NORMAL' };
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="5. DDoS Gate"
+        sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s)"
+      />
+      <div style={{ padding: 16 }}>
+        {/* Status row */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 4, background: modeStyle.bg, color: modeStyle.fg, fontWeight: 600 }}>
+            {modeStyle.label}
+          </span>
+          <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 4, background: spikeStyle.bg, color: spikeStyle.fg, fontWeight: 600 }}>
+            Spike mode: {spikeStyle.label}
+          </span>
+          <div style={{ flex: 1 }} />
+          <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
+            Edit thresholds
+          </button>
+        </div>
+
+        {/* Live telemetry — current/baseline RPS + spike threshold */}
+        <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Live Telemetry</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+          <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Current RPS</div>
+            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{data.current_rps}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>this 1-second window</div>
+          </div>
+          <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Baseline RPS</div>
+            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{data.baseline_rps}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>EWMA, 0.9 / 0.1 weights</div>
+          </div>
+          <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Spike Threshold</div>
+            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>
+              {Math.round(data.baseline_rps * cfg.spike_multiplier)}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>{cfg.spike_multiplier} × baseline</div>
+          </div>
+        </div>
+
+        {/* Configured thresholds */}
+        <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Configured Thresholds</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>per_ip_limit</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.per_ip_limit.toLocaleString()}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>requests / window</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>per_ip_window_s</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.per_ip_window_s}s</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>sliding window</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>block_ttl_s</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.block_ttl_s}s</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>auto-block duration</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>spike_multiplier</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.spike_multiplier}×</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>spike trigger</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>tightened_per_ip_rps</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>{cfg.tightened_per_ip_rps}</div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>cap during spike</div>
+          </div>
+          <div style={{ padding: 8, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>effective rate</div>
+            <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'monospace' }}>
+              {(cfg.per_ip_limit / Math.max(cfg.per_ip_window_s, 1)).toFixed(1)}/s
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)' }}>derived per-IP rate</div>
+          </div>
+        </div>
+
+      </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Per-IP sliding-window burst counter (StateBackend-backed, cluster-wide). When count exceeds per_ip_limit within the window, the IP is added to the auto-block keyspace.'],
+          ['Counter', <span key="c">Cluster-shared per-IP window. EWMA spike mode raises detection sensitivity when overall RPS exceeds <strong>spike_multiplier × baseline</strong>.</span>],
+          ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ddos</code>, '. Subsequent requests from the IP are 403\'d for the full TTL.'],
+          ['Recovery', <span key="r"><strong>TTL\'d</strong> — IP is rejected for <code>block_ttl_s</code> (default 300s), then automatically allowed again. Tighter recovery than rate-limit\'s instant retry.</span>],
+          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/gates/ddos</code>; per-IP StateBackend window preserved across edits.</span>],
+          ['When to use', '"Sustained-burst quarantine" — DDoS-grade protection. For "API rate fairness" use Rate Limit (#4) instead; the two are complementary.'],
+        ]}
+      />
+      {editing && (
+        <DdosEditModal
+          current={cfg}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); ddos.reload && ddos.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DdosEditModal({ current, onClose, onSaved }) {
+  const [enabled, setEnabled] = useStateP(current?.enabled ?? true);
+  const [observeOnly, setObserveOnly] = useStateP(current?.observe_only ?? false);
+  const [perIpLimit, setPerIpLimit] = useStateP(current?.per_ip_limit ?? 1000);
+  const [perIpWindowS, setPerIpWindowS] = useStateP(current?.per_ip_window_s ?? 10);
+  const [blockTtlS, setBlockTtlS] = useStateP(current?.block_ttl_s ?? 300);
+  const [spikeMultiplier, setSpikeMultiplier] = useStateP(current?.spike_multiplier ?? 3.0);
+  const [tightenedRps, setTightenedRps] = useStateP(current?.tightened_per_ip_rps ?? 20);
+  const [busy, setBusy] = useStateP(false);
+  const [err, setErr] = useStateP(null);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await window.csrfMutate('/api/gates/ddos', {
+        method: 'PUT',
+        body: {
+          enabled,
+          observe_only: observeOnly,
+          per_ip_limit: parseInt(perIpLimit, 10),
+          per_ip_window_s: parseInt(perIpWindowS, 10),
+          block_ttl_s: parseInt(blockTtlS, 10),
+          spike_multiplier: parseFloat(spikeMultiplier),
+          tightened_per_ip_rps: parseInt(tightenedRps, 10),
+        },
+      });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast && window.aegisToast('DDoS gate updated', 'ok');
+        onSaved();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        setErr(msg);
+      }
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <div className="modal-head">
+          <div className="modal-title">Edit DDoS gate thresholds</div>
+          <button className="btn btn-sm" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body" style={{ display: 'grid', gap: 10 }}>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} disabled={busy} />
+            <span><strong>Enabled</strong> — uncheck to skip the gate entirely (no protection).</span>
+          </label>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={observeOnly} onChange={e => setObserveOnly(e.target.checked)} disabled={busy} />
+            <span><strong>Observe-only mode</strong> — emit <code>ddos_observed</code> audit events but never 403. Use for shadow validation before flipping to enforce.</span>
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+            <label style={{ fontSize: 12 }}>
+              per_ip_limit
+              <input className="input" type="number" min="1" value={perIpLimit}
+                onChange={e => setPerIpLimit(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>requests per window</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              per_ip_window_s
+              <input className="input" type="number" min="1" value={perIpWindowS}
+                onChange={e => setPerIpWindowS(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>sliding window length (seconds)</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              block_ttl_s
+              <input className="input" type="number" min="1" value={blockTtlS}
+                onChange={e => setBlockTtlS(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>auto-block duration (seconds)</div>
+            </label>
+            <label style={{ fontSize: 12 }}>
+              spike_multiplier
+              <input className="input" type="number" min="1.01" step="0.1" value={spikeMultiplier}
+                onChange={e => setSpikeMultiplier(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>spike trigger (× baseline RPS), > 1.0</div>
+            </label>
+            <label style={{ fontSize: 12, gridColumn: 'span 2' }}>
+              tightened_per_ip_rps
+              <input className="input" type="number" min="1" value={tightenedRps}
+                onChange={e => setTightenedRps(e.target.value)} disabled={busy}
+                style={{ marginTop: 4, width: '100%' }} />
+              <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>per-IP cap during spike mode</div>
+            </label>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+            Effective rate: <strong>{(perIpLimit / Math.max(parseInt(perIpWindowS, 10), 1)).toFixed(1)} req/s per IP</strong> before
+            burst-exceed; auto-block holds the IP at 403 for {blockTtlS}s.
+            Per-IP StateBackend window state is preserved across the edit. Audit-mutated.
+          </div>
+          {err && <div style={{ fontSize: 11, color: 'var(--down)' }}>Error: {err}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // M006 (2026-05-07) — escape one CSV cell. Wraps in quotes when
 // the value contains commas, quotes, or newlines (RFC 4180);
@@ -9026,7 +9757,11 @@ Object.assign(window, {
   // Phase 2 — merged Access Lists, plus Phase 3 stubs.
   // PageHelp is owned by help.jsx (loaded after this file).
   PageAccessLists,
-  PageIncidents, PageInvestigation, PageThreatIntel,
+  PageIncidents, PageInvestigation,
   PageTopAttackers,
-  PageCompliance, PageReports,
+  PageReports,
+  // 2026-05-09 — Traffic Gates page surfaces the four request-flow
+  // gates (access list, strike-block, rate-limit, DDoS) with
+  // telemetry + cross-links. New page slot in Policy menu group.
+  PageTrafficGates,
 });

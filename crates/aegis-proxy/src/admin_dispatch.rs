@@ -200,6 +200,21 @@ pub(crate) async fn handle_admin_request(
         return handle_mode_put(req, services).await;
     }
 
+    // 2026-05-09 — Traffic Gates audit-mutated PUTs. Both hot-reload
+    // the corresponding live runtime config without restart;
+    // per-IP state (StateBackend window for DDoS, in-process
+    // timestamp map for rate-limit) is preserved across the swap
+    // so flooding sources don't get a free reset.
+    if method == hyper::Method::PUT && path == "/api/gates/ddos" {
+        return crate::admin_mutate::handle_ddos_put(req, services).await;
+    }
+    if method == hyper::Method::PUT && path == "/api/rate-limit" {
+        return crate::admin_mutate::handle_rate_limit_put(req, services).await;
+    }
+    if method == hyper::Method::PUT && path == "/api/gates/strikes" {
+        return crate::admin_mutate::handle_strikes_put(req, services).await;
+    }
+
     // CC-T2.1.b — alert-receivers writes. Audit-mutated; CSRF-
     // gated. Three handlers:
     //   PUT    /api/alert-receivers           whole-list replace

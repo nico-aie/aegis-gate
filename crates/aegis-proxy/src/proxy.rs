@@ -96,6 +96,27 @@ pub struct ProxyContext {
     pub pow_issuer: std::sync::OnceLock<
         Arc<aegis_security::challenge::PowIssuer>,
     >,
+    /// 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS runtime. Wraps
+    /// `DdosDetector` + the state-backend handle + the observe-
+    /// only flag so the data-plane call site is a single lookup.
+    /// `OnceLock` because the boot path constructs `ProxyContext`
+    /// before the state backend is fully initialised; `run.rs`
+    /// installs this once both pieces are ready. Empty when
+    /// `cfg.ddos.enabled = false` — the data plane treats absent
+    /// runtime as "skip the check".
+    pub ddos: std::sync::OnceLock<Arc<aegis_security::ddos::DdosRuntime>>,
+    /// 2026-05-10 — TierStore handle for per-tier policy lookups.
+    /// The data plane reads `tier.cumulative_challenge_at`,
+    /// `tier.cumulative_block_at`, and `tier.challenges_enabled`
+    /// after the detector chain runs to decide challenge / block
+    /// behavior on the matched tier. `OnceLock` because the boot
+    /// path constructs `ProxyContext` before
+    /// `DashboardServices::tiers` is wired; `run.rs` installs the
+    /// handle once both are available. Empty (test bundles, etc.)
+    /// means "no per-tier overrides" — the data plane uses the
+    /// global `cfg.risk.thresholds` and treats every tier as
+    /// `challenges_enabled = true`.
+    pub tiers: std::sync::OnceLock<Arc<aegis_control::api::tiers::TierStore>>,
 }
 
 impl ProxyContext {
@@ -132,6 +153,8 @@ impl ProxyContext {
             websocket_metrics: None,
             interop_modes: std::sync::OnceLock::new(),
             pow_issuer: std::sync::OnceLock::new(),
+            ddos: std::sync::OnceLock::new(),
+            tiers: std::sync::OnceLock::new(),
         })
     }
 

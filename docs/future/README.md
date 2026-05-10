@@ -11,7 +11,6 @@ Two flavours of "not in scope today":
 | Doc | Status | Summary |
 |---|---|---|
 | [advanced-features.md](./advanced-features.md) | Phase B intake | Template + scoring rubric for proposing future work |
-| [multi-tenancy.md](./multi-tenancy.md) | Deferred | Per-tenant isolation + quotas + residency |
 | [rbac-sso.md](./rbac-sso.md) | Deferred | OIDC / SAML / RBAC |
 
 When a deferred design becomes scheduled, move its file into the

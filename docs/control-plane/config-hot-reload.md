@@ -47,7 +47,7 @@ it is considered valid:
 5. Instantiate upstream pools with parsed health-check configs
 6. Resolve TLS cert + key pairs and verify the chain
 7. Cross-check references: every `upstream_ref` in a route points to a
-   defined pool; every `tenant_id` exists
+   defined pool
 8. Run the **rule linter**: depth limits, no conflicting rule ids,
    priority uniqueness warnings
 9. Run the **compliance linter** when FIPS / PCI mode is enabled

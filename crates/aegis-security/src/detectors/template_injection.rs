@@ -263,4 +263,28 @@ mod tests {
     // must NOT FP.
     negative!(clean_quoted_string_no_mul, "/?q={{name='alice'}}");
     negative!(clean_freemarker_comment,   "/?q=%3C%23--+a+legit+comment+--%3E");      // <#-- comment -->
+
+    // BYPASS-04 (Run-6 l-tester cross-check, 2026-05-09) — pin
+    // that spaced-brace forms are NOT flagged. The l-tester's
+    // hacker-bypass run flagged `{ { 7*7 } }` (with spaces between
+    // the two `{`) as a "WAF bypass", but real Jinja2 / Twig /
+    // Mako engines don't accept this syntax — the parser requires
+    // adjacent `{{` and `}}`. The "bypass" doesn't execute on a
+    // real engine, so flagging it would only add FP risk on legit
+    // brace-bearing JSON / debug content. These negatives pin the
+    // documented behaviour so a future regex-broadening doesn't
+    // accidentally introduce that FP surface.
+    negative!(clean_spaced_braces_open,
+        "/?q=%7B+%7B+7%2A7+%7D%7D");                 // `{ { 7*7 }}`
+    negative!(clean_spaced_braces_close,
+        "/?q=%7B%7B+7%2A7+%7D+%7D");                 // `{{ 7*7 } }`
+    negative!(clean_spaced_braces_both,
+        "/?q=%7B+%7B+7%2A7+%7D+%7D");                // `{ { 7*7 } }`
+    // Note: `${ 7*7 }` (space after the opening `${`) DOES match
+    // the SpEL arithmetic pattern because `\$\{\s*` allows
+    // whitespace inside — only the *outer* delimiter pair
+    // (between the two `{`s in `{{...}}` form) is what matters
+    // for engine validity. So the spaced-`${` form is correctly
+    // flagged; only the doubly-spaced `{{` / `}}` form is the
+    // engine-invalid shape that we deliberately don't flag.
 }

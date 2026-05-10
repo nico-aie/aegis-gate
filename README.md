@@ -52,7 +52,7 @@ SOC-first dashboard.
   `?redirect_uri=javascript:…` with operator allowlist).
   Prototype pollution (`__proto__`, `constructor.prototype`)
   caught under the body-abuse class. Per-tier on/off,
-  compliance-clamped, hot-reloadable.
+  hot-reloadable.
   Per-detector docs in [`docs/security/detectors/`](docs/security/detectors/).
 - **Rule engine** — AST + parser + evaluator with hot-reload,
   custom rule definitions in YAML.
@@ -77,6 +77,19 @@ SOC-first dashboard.
 - **Threat intel** — STIX/TAXII auto-fetch (`taxii` feature),
   in-memory + file-loaded indicators, MaxMind GeoIP for
   country / ASN enrichment (`geoip` feature).
+- **DDoS protection** (✅ **Implemented v1 single-node**)
+  — request-flow gate (NOT a `Detector` trait impl) sitting
+  alongside access-list / strike-block / rate-limit. Per-IP
+  sliding-window burst gate + EWMA spike-mode ticker, wired
+  into `aegis-proxy/src/data_plane.rs` from `cfg.ddos`. Secure-
+  by-default: `enabled: true, observe_only: false`. Burst-exceed
+  → HTTP 403 + `X-WAF-Action: block` per
+  [`Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](Hackathon_Doc/EN_waf_interop_contract_v2.3.md)
+  §3.1 (volumetric abuse). Cluster-wide spike-mode broadcast
+  across nodes deferred behind ha-clustering. Audit + plan:
+  [`docs/security/ddos-protection.md`](docs/security/ddos-protection.md),
+  [`reports/findings/2026-05-09-internal-audit-ddos/`](reports/findings/2026-05-09-internal-audit-ddos/),
+  [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](plans/issue-fix/internal-audit-2026-05-09-ddos/).
 
 ### Control plane (admin / dashboard)
 - **Aegis WAF Console** — pre-compiled React 18 SPA at
@@ -101,12 +114,26 @@ SOC-first dashboard.
 - **Audit-mutated CRUD** — every config change goes through
   the audit chain + CSRF gate + capability check; rule edits,
   mode toggles, alert receivers, upstream pools, risk
-  thresholds, detector mask all hot-swap with a visible
+  thresholds (global + per-tier), detector mask, Strike-Block
+  enable, rate-limit, DDoS gate all hot-swap with a visible
   `config_reload` audit entry.
-- **Compliance** — FIPS 140-2, PCI-DSS, SOC 2, GDPR, HIPAA
-  profiles. The compliance clamp re-runs on every mask change
-  and cfg reload — operators can't accidentally disable a
-  pinned class.
+- **Per-tier risk thresholds** — every tier (critical / high /
+  medium / low) carries its own per-request block score plus a
+  `challenges_enabled` toggle (defaults `false` — challenges
+  opt-in). Lets operators flip a tier into hard allow/block
+  semantics (no PoW puzzle) without affecting other tiers — useful
+  for admin / payment / machine-only API tiers. The wire shape
+  also accepts per-tier `cumulative_challenge_at` /
+  `cumulative_block_at` overrides for API clients with strong
+  per-tier needs; the dashboard surfaces only the toggle since
+  most deployments are well-served by the global thresholds.
+- **Compliance modes** — `cfg.compliance.modes` accepts
+  documentation tags (`fips`, `pci`, `soc2`, `gdpr`, `hipaa`)
+  that surface on the dashboard's Compliance page. Lock-by-mode
+  (auto-pinning detector classes when a mode is active) is
+  deferred — see [`plans/future/compliance-profiles.md`](plans/future/compliance-profiles.md).
+  Operators may freely enable or disable any detector class
+  today.
 
 ### Observability
 - **Prometheus metrics** — per-decision counters, per-stage
@@ -118,7 +145,11 @@ SOC-first dashboard.
   `#[tracing::instrument]` on every hot-path span, Jaeger
   parent-child traces per request.
 - **Grafana** — three file-provisioned dashboards (WAF
-  Overview / Redis / Runtime).
+  Overview / Redis / Runtime). `make obs-up` brings up the full
+  Prometheus + Grafana + Jaeger stack via
+  [`deploy/docker-compose.dev.yml`](deploy/docker-compose.dev.yml);
+  if dashboards render empty, see the diagnostic checklist in
+  [`docs/observability/README.md`](docs/observability/README.md#empty-grafana-panels--diagnostic-checklist).
 - **Live Feed** — `/dashboard/sse` streams every audit event;
   proto pill on each row distinguishes `http` / `ws-open` /
   `ws-close` / `tcp-open` / `tcp-close` events.
@@ -233,7 +264,7 @@ checklist): [`deploy/GUIDE.md`](deploy/GUIDE.md).
 
 ```
 waf run       --config <path>         Start the WAF gateway
-waf validate  --config <path>         Dry-run validation + compliance check
+waf validate  --config <path>         Dry-run validation
 waf audit     verify --from <path>    Verify audit chain integrity
 waf admin     set-password            Hash admin password (argon2id)
 waf admin     enroll-totp             Generate TOTP secret + recovery codes

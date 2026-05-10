@@ -322,6 +322,13 @@ pub(crate) async fn admin_accept_loop(
     services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
 
+    // 2026-05-10 — share the TierStore between DashboardServices
+    // (PUT /api/tiers/{name}) and ProxyContext (data plane reads
+    // per-tier challenge/block thresholds + challenges_enabled
+    // for Option B). Single Arc so dashboard edits become live in
+    // the data plane on the next request, no restart.
+    let _ = upstream_ctx.tiers.set(services.tiers.clone());
+
     // 2026-05-05 — late-register the AttacksAggregator's reset
     // cleaner with the v2.3 control plane. The aggregator backs the
     // dashboard's Top Attackers / By-Detector / Bot Mix charts; per
@@ -566,6 +573,14 @@ pub(crate) async fn admin_accept_loop(
             aegis_control::api::mtls::AllowedSansStore::from(initial),
         );
     }
+
+    // 2026-05-09 — share the DDoS runtime (already installed on
+    // ProxyContext at boot in `run.rs`) with the dashboard so
+    // `/api/gates/ddos` can read live telemetry. `OnceLock::get`
+    // returns `None` until the proxy boot path has installed it
+    // and `ProxyContext::ddos.set(...)` has been called; the
+    // dashboard renders an empty-state card in that case.
+    services.ddos = upstream_ctx.ddos.get().cloned();
 
     // DURABLE-T1 — audit chain durability. For each Jsonl sink the
     // operator configured under `cfg.audit.sinks`, open a real

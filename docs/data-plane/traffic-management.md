@@ -31,8 +31,8 @@ routes:
 ```
 
 Weights are normalized; picking is deterministic via a hash of
-`(tenant_id, client_id, request_id)` when `sticky: true` (so a client
-lands on the same side for the session duration) or random otherwise.
+`(client_id, request_id)` when `sticky: true` (so a client lands on
+the same side for the session duration) or random otherwise.
 
 ## Header / cookie steering (A/B)
 

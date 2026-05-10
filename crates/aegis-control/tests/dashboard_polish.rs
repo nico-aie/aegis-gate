@@ -92,9 +92,11 @@ fn security_header_set_is_complete_and_documented() {
 fn bundle_under_documented_budget() {
     // The DD-T1 bundle is one pre-compiled `app.js` + the React UMD
     // bundles (10.8 KB + 131 KB) + CSS + a tiny HTML shell + i18n.
-    // Cap the raw total at ~600 KB. React UMD makes up most of the
-    // weight today; we measured ~315 KB at v1.
-    const RAW_BUDGET_BYTES: usize = 600_000;
+    // Cap the raw total to track app.js growth — moves in lock-step
+    // with `APP_JS_BUDGET` above. Bumped 2026-05-10 from 600 → 612 KB
+    // alongside the Strike-Block edit modal + per-card GateExplain
+    // strips on Traffic Gates.
+    const RAW_BUDGET_BYTES: usize = 612_000;
     let mut total = 0usize;
     for path in ["index.html", "app.js", "aegis.css", "react.min.js", "react-dom.min.js", "i18n.json"] {
         let asset: EmbeddedAsset = lookup(path).unwrap_or_else(|| panic!("{path} must resolve"));
@@ -109,19 +111,31 @@ fn bundle_under_documented_budget() {
 #[test]
 fn app_js_under_per_bundle_budget() {
     // The pre-compiled app.js holds every page + every widget. Cap
-    // at 400 KB to catch accidental dependency bloat — v1 was ~158 KB,
+    // at 420 KB to catch accidental dependency bloat — v1 was ~158 KB,
     // post-Phase-3 (Investigation pivot, Incidents queue with
     // ack/snooze/resolve, Threat Intel, Compliance, Reports CSV) is
     // ~263 KB. Bumped 2026-05-04 from 320 → 360 KB after the
     // Routing & Upstreams page was restructured. Bumped 2026-05-09
     // from 360 → 400 KB after Run-5: 4 new detector classes added
-    // to the mask grid (command_injection, template_injection,
-    // nosql_injection, open_redirect — previously silently omitted)
-    // + the read-only DetectorScorePanel surfacing the 5-tier
-    // score catalog from /api/detectors. Real dependency growth
-    // (new React lib, etc.) needs an explicit budget bump +
-    // comment here, not a silent overrun.
-    const APP_JS_BUDGET: usize = 400_000;
+    // to the mask grid + the DetectorScorePanel. Bumped 2026-05-09
+    // from 400 → 420 KB after the new Traffic Gates page surfacing
+    // the four request-flow gates (access list, strike-block,
+    // rate-limit, DDoS) with telemetry cards + operator guide.
+    // Bumped 2026-05-10 from 420 → 432 KB after the Detectors page
+    // UX overhaul (renamed to "Detectors & Tiers", inline score
+    // badges + tier tints on every chip) and the Help & Guide
+    // currency audit (added Traffic Gates step, How-it-works card,
+    // glossary entries for traffic gates / rate limit / DDoS gate,
+    // mid-incident workflow, and Rate-Limit-vs-DDoS FAQ).
+    // Bumped 2026-05-10 from 432 → 444 KB after Strike-Block became
+    // an audit-mutated PUT /api/gates/strikes surface (enable/disable
+    // toggle + block_at editor) with a new edit modal, separated
+    // Cumulative IP risk thresholds into card #3, and added the
+    // shared GateExplain "how does it work" strip to all five
+    // Traffic Gates cards.
+    // Real dependency growth (new React lib, etc.) needs an
+    // explicit budget bump + comment here, not a silent overrun.
+    const APP_JS_BUDGET: usize = 444_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,

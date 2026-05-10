@@ -359,46 +359,98 @@ pub async fn run(
     let ai_runtime_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
     #[cfg(feature = "ai")]
     {
-        ai_runtime_toggle = if cfg.ai.enabled {
-            let model_path = cfg.ai.model_path.as_ref().ok_or_else(|| {
-                aegis_core::WafError::Config(
-                    "ai.enabled = true but ai.model_path is unset".into(),
-                )
-            })?;
-            let normal_idx = aegis_security::detectors::ai::DEFAULT_NORMAL_CLASS_IDX;
-            let ai_metrics = std::sync::Arc::new(
-                aegis_control::metrics::ai::AiMetrics::register(&metrics).map_err(|e| {
-                    aegis_core::WafError::Config(format!(
-                        "ai metrics registration failed: {e}"
-                    ))
-                })?,
-            );
-            let detector = aegis_security::detectors::ai::AiDetector::load(
-                model_path,
-                normal_idx,
-                cfg.ai.confidence_threshold,
-            )
-            .map_err(|e| {
-                aegis_core::WafError::Config(format!(
-                    "ai detector load from {} failed: {e}",
-                    model_path.display(),
-                ))
-            })?
-            .with_metrics(ai_metrics);
-            // AI-T10 — grab the runtime-toggle handle BEFORE we
-            // box the detector. Both the data plane (via the
-            // detector chain) and the control plane (via
-            // `services.ai_toggle`) read the same `AtomicBool`.
-            let toggle = detector.runtime_toggle();
-            tracing::info!(
-                model_path = %model_path.display(),
-                threshold = cfg.ai.confidence_threshold,
-                "AI detector wired into the chain",
-            );
-            detector_vec.push(Box::new(detector));
-            Some(toggle)
-        } else {
-            None
+        // 2026-05-10 — AI detector now loads whenever
+        // `cfg.ai.model_path` points at an existing file, regardless
+        // of `cfg.ai.enabled`. The detector's runtime toggle
+        // controls request-time evaluation; the YAML `enabled` flag
+        // only seeds the *initial* toggle state. This lets operators
+        // flip AI on from Detectors & Tiers → AI row → Enable
+        // without a restart (previously the dashboard's Enable
+        // button was inert in the common dev case where
+        // `enabled: false` left the runtime un-installed).
+        ai_runtime_toggle = match cfg.ai.model_path.as_ref() {
+            Some(model_path) if model_path.exists() => {
+                let normal_idx = aegis_security::detectors::ai::DEFAULT_NORMAL_CLASS_IDX;
+                let ai_metrics = std::sync::Arc::new(
+                    aegis_control::metrics::ai::AiMetrics::register(&metrics).map_err(|e| {
+                        aegis_core::WafError::Config(format!(
+                            "ai metrics registration failed: {e}"
+                        ))
+                    })?,
+                );
+                match aegis_security::detectors::ai::AiDetector::load(
+                    model_path,
+                    normal_idx,
+                    cfg.ai.confidence_threshold,
+                ) {
+                    Ok(detector) => {
+                        let detector = detector.with_metrics(ai_metrics);
+                        // AI-T10 — grab the runtime-toggle handle BEFORE
+                        // we box the detector. Both the data plane and
+                        // the control plane read the same `AtomicBool`.
+                        let toggle = detector.runtime_toggle();
+                        // Seed the toggle from `cfg.ai.enabled`. The
+                        // detector's default is `true`; we override here
+                        // so `enabled: false` in YAML still boots with
+                        // AI off (operator opts in via dashboard).
+                        toggle.store(cfg.ai.enabled, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!(
+                            model_path = %model_path.display(),
+                            threshold = cfg.ai.confidence_threshold,
+                            initial_enabled = cfg.ai.enabled,
+                            "AI detector loaded; runtime toggle wired",
+                        );
+                        detector_vec.push(Box::new(detector));
+                        Some(toggle)
+                    }
+                    Err(e) => {
+                        // Fail-soft when the model is malformed:
+                        // log + leave AI un-installed so the boot
+                        // path doesn't trip on a corrupt artifact.
+                        // Dashboard will show "feature off" until
+                        // the operator fixes the model and restarts.
+                        // 2026-05-10 — operator-confirmed: a broken
+                        // model shouldn't block boot in dev / CI.
+                        if cfg.ai.enabled {
+                            // If the YAML asked for AI explicitly,
+                            // surface the failure as a hard config
+                            // error so prod doesn't silently drop AI.
+                            return Err(aegis_core::WafError::Config(format!(
+                                "ai.enabled = true but model load from {} failed: {e}",
+                                model_path.display(),
+                            )));
+                        }
+                        tracing::warn!(
+                            model_path = %model_path.display(),
+                            error = %e,
+                            "ai.enabled = false and model load failed — \
+                             AI detector skipped (operator can't enable from dashboard \
+                             until the model loads cleanly)",
+                        );
+                        None
+                    }
+                }
+            }
+            Some(model_path) => {
+                // model_path set but file missing.
+                if cfg.ai.enabled {
+                    return Err(aegis_core::WafError::Config(format!(
+                        "ai.enabled = true but model file does not exist at {}",
+                        model_path.display(),
+                    )));
+                }
+                tracing::warn!(
+                    model_path = %model_path.display(),
+                    "ai.model_path set but file missing — AI detector skipped \
+                     (run `make ai-link MODEL=<path>` or set a valid path)",
+                );
+                None
+            }
+            None => {
+                // No model_path configured. Dashboard will show
+                // "feature off" with the rebuild-and-configure hint.
+                None
+            }
         };
     }
     let detectors: std::sync::Arc<Vec<Box<dyn aegis_security::detectors::Detector>>> =
@@ -533,6 +585,50 @@ pub async fn run(
         ctx.websocket_metrics = Some(websocket_metrics.clone());
         ctx
     });
+
+    // 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS observe-only wire-up.
+    // Build the runtime if `cfg.ddos.enabled = true` and install
+    // it into `ProxyContext`. Default config has `enabled: true,
+    // observe_only: true` so the detector runs in shadow mode out
+    // of the box. The Phase 2 follow-up flips `observe_only`
+    // through to enforcement (503 short-circuit) once operators
+    // have validated the signal in their env.
+    //
+    // The ticker is spawned once here so cluster-wide spike mode
+    // (EWMA over `current_rps`) advances every second regardless
+    // of request load. Without it, the spike-detection signal
+    // would only update on requests, defeating the whole point
+    // of "alert before traffic crashes the upstream".
+    if cfg.ddos.enabled {
+        let runtime = Arc::new(aegis_security::ddos::DdosRuntime::new(
+            cfg.ddos.clone().into(),
+            state.clone(),
+        ));
+        if upstream_ctx.ddos.set(runtime.clone()).is_err() {
+            tracing::warn!("ddos: runtime already installed; skipping");
+        } else {
+            tracing::info!(
+                observe_only = runtime.observe_only(),
+                per_ip_limit = cfg.ddos.per_ip_limit,
+                spike_multiplier = cfg.ddos.spike_multiplier,
+                "ddos: runtime installed (observe-only Phase 1)",
+            );
+            // Spawn the spike-detection ticker. Drop guard not
+            // needed — handle leaks at shutdown the same way the
+            // health-check handles do; the proxy supervisor owns
+            // the process lifetime.
+            let runtime_for_tick = runtime.clone();
+            handles.push(tokio::spawn(async move {
+                let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    iv.tick().await;
+                    runtime_for_tick.tick_rps();
+                }
+            }));
+        }
+    } else {
+        tracing::info!("ddos: cfg.ddos.enabled = false — detector not installed");
+    }
 
     // Spawn live health-check tasks for every pool that carries
     // a `health:` block. Without this, configured probes never

@@ -288,6 +288,34 @@ individual stages need not know their tier.
 > first. That doc carries the visual flowchart, the per-request vs
 > cumulative-IP risk distinction, and worked examples; this section
 > is the engineering source of truth.
+>
+> **2026-05-10 (Option B + R2 + R3)** — every tier
+> (`critical / high / medium / low`) carries optional
+> `cumulative_challenge_at`, `cumulative_block_at`, and
+> `challenges_enabled: bool` fields alongside the existing
+> `risk_threshold` (per-request block score). When the data plane
+> resolves a route, it looks the matched tier up in the live
+> `TierStore` (shared via `ProxyContext.tiers: OnceLock<Arc<TierStore>>`)
+> and consults these per-tier values for the cumulative-IP-risk
+> decision. Unset fields fall back to the global
+> `cfg.risk.thresholds`. With `challenges_enabled = false` (the
+> per-tier default since R2), `RiskLevel::Challenge` escalates
+> straight to block at the matched tier — operators opt tiers into
+> the PoW rung instead of opting out, since most deployments want
+> hard allow/block semantics.
+>
+> **R3 (2026-05-10)** — the dashboard's Edit Tier modal surfaces
+> only `risk_threshold`, `challenges_enabled`, and the per-tier
+> detector-mask override. The two cumulative-threshold fields
+> (`cumulative_challenge_at` / `cumulative_block_at`) remain on the
+> wire shape so API clients can set them, but the UI doesn't expose
+> inputs because per-tier cumulative tuning is a niche use case;
+> most operators are well-served by the global thresholds on
+> Traffic Gates → #3.
+>
+> Contract wire shape (`X-WAF-Action`, `X-WAF-Risk-Score`, response
+> status / body) is unchanged; per-tier thresholds only move
+> *which threshold the comparison uses*, not what we report.
 
 Stages run in this order. Earlier stages can short-circuit later ones.
 
@@ -833,24 +861,21 @@ pub struct CompiledPattern {
 
 ---
 
-## 24. Compliance Profiles
+## 24. Compliance Profiles (deferred)
 
-Modes **stack**; the strictest wins; conflicting config is refused at load
-time.
+`cfg.compliance.modes` accepts five tag values today (`fips`, `pci`,
+`soc2`, `gdpr`, `hipaa`) and the dashboard's Compliance page surfaces
+the active list, but **the auto-pinning behavior described in earlier
+revisions of this document is deferred for now.** Operators may freely
+enable or disable any detector class regardless of which modes are
+declared. The full per-regime enforcement plan (FIPS primitive
+allow-list, PCI-DSS PAN masking, SOC 2 export hooks, GDPR residency
+pinning, HIPAA PHI log suppression, mode stacking, dry-run validation)
+lives at [`plans/future/compliance-profiles.md`](plans/future/compliance-profiles.md).
 
-- **FIPS 140-2/3**: only `aws-lc-rs` FIPS primitives; TLS / HMAC / PRNG on
-  FIPS allowlist.
-- **PCI-DSS v4.0**: PAN masking in logs + responses; TLS 1.2+ only on
-  PCI-scope listeners; ≥ 90-day audit retention; no CVV / CVC stored.
-- **SOC 2**: hash-chained audit log, admin change trail, access review
-  exports, SLI/SLO monitoring.
-- **GDPR**: PII redaction before logs leave the node, residency pinning,
-  right-to-erasure endpoint, retention ceilings.
-- **HIPAA**: PHI-safe log mode suppressing bodies + flagged headers on PHI
-  routes; BAA dedication flags.
-
-A **compliance-mode profile** flips all of the above into the strictest
-setting with a single config switch.
+Code anchor: the Rust pin list at
+`crates/aegis-control/src/api/detectors.rs::COMPLIANCE_PINNED` is
+intentionally empty; repopulate it to bring lock-by-mode back.
 
 ---
 
@@ -865,8 +890,8 @@ setting with a single config switch.
 - **Hot binary reload** on `SIGUSR2`: new process inherits the listening FD
   via `SCM_RIGHTS` (or systemd socket activation); old process drains; new
   process accepts; rollback on readiness-probe failure.
-- **Dry-run validator** on every config change: full compile + lint +
-  compliance check before the `ArcSwap` swap. Malformed updates refused;
+- **Dry-run validator** on every config change: full compile + lint
+  before the `ArcSwap` swap. Malformed updates refused;
   running config preserved.
 - **TLS cert hot reload** via `ArcSwap<CertStore>`: in-flight handshakes
   finish on the old cert; new ones pick up the new cert.
@@ -1115,7 +1140,7 @@ with a meaningful subset of the requirements.
 | **13** | Bot management | JA4/h2 fingerprints, rDNS verification, CAPTCHA providers, escalation ladder |
 | **14** | Content scan | ICAP REQMOD/RESPMOD, magic-byte, archive-bomb |
 | **15** | Adaptive shed | Gradient2, priority queue, per-route soft/hard |
-| **16** | Compliance profiles | FIPS gate, PCI, SOC 2, GDPR, HIPAA, stacking logic |
+| **16** | Compliance profiles (deferred) | Mode tags accepted; auto-pinning + per-regime enforcement parked in `plans/future/compliance-profiles.md` |
 | **17** | HA + clustering | gossip membership, leader lease, rolling restart story |
 | **18** | GitOps | signed-commit verification, GitSyncer, dashboard→PR round-trip |
 | **19** | DR / backup | config export/import, state snapshots, restore validation |
@@ -1153,8 +1178,8 @@ with a meaningful subset of the requirements.
   requests.
 - **Dry-run**: malformed rule file refused; running config untouched;
   dashboard shows the error.
-- **Compliance**: FIPS profile boots; PCI profile refuses TLS 1.1; GDPR
-  residency exporter refuses cross-region delivery.
+- **Compliance**: declared modes surface on the Compliance dashboard
+  (lock-by-mode deferred — see `plans/future/compliance-profiles.md`).
 - **SLO**: burn-rate alert fires via Alertmanager on a synthetic regression.
 
 ---

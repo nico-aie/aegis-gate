@@ -107,11 +107,52 @@ risk:
 | Permanent ban faster | Lower `strikes.block_at` |
 | No permanent bans (honeypot setups) | Set `strikes.block_at: 999999` |
 
-**Dashboard:** Settings → Risk thresholds.
+**Dashboard:** Traffic Gates → Cumulative IP risk thresholds (#3).
 
 Threshold changes are hot-reloadable (audit-mutated; takes effect within one tick) — see [`config-hot-reload.md`](../control-plane/config-hot-reload.md).
 
-**When to use:** "the WAF blocks our internal QA scanner after 3 probes — we want it to take 6 before blocking" → raise `challenge_at` and/or `block_at`. "we're seeing a credential-stuffing wave and need to ban faster" → lower `strikes.block_at`.
+**When to use:** "the WAF blocks our internal QA scanner after 3 probes — we want it to take 6 before blocking" → raise `challenge_at` and/or `block_at`. "we're seeing a credential-stuffing wave and need to ban faster" → enable Strike-Block on Traffic Gates → #2 then lower `strikes.block_at`.
+
+### 2.5 Per-tier knobs (2026-05-10)
+
+Each tier carries:
+
+- `risk_threshold` (per-request block score) — **edit from dashboard**
+  (Detectors & Tiers → Edit tier).
+- `challenges_enabled` (boolean) — **edit from dashboard**
+  (same modal). Defaults to `false`: challenges are opt-in. With
+  `false`, IPs over the cumulative challenge threshold escalate
+  straight to **block** (403) instead of getting a PoW puzzle.
+  Useful for high-stakes tiers (admin, payments) and machine-only
+  API tiers where PoW breaks clients. With `true`, the tier emits
+  the regular 429 + PoW challenge body.
+- `cumulative_challenge_at` / `cumulative_block_at` — **API-only
+  per-tier overrides** (R3, 2026-05-10). The wire shape accepts
+  per-tier values; the dashboard does **not** surface inputs for
+  them because per-tier cumulative tuning is a niche need. By
+  default, every tier inherits the global thresholds edited on
+  Traffic Gates → #3. If you have a real reason for per-tier
+  cumulative thresholds (e.g. stricter Critical tier than the
+  global default), `PUT /api/tiers/<name>` accepts the fields:
+
+```json
+{
+  "pipeline": [...],
+  "risk_threshold": 50,
+  "block_threshold": 100,
+  "cumulative_challenge_at": 25,
+  "cumulative_block_at": 50,
+  "challenges_enabled": false
+}
+```
+
+**Decision flow** for a single request (three independent gates, first one fires):
+
+1. **Traffic Gates** (global, before tier matching) — access list, strike-block, rate-limit, DDoS.
+2. **Per-request gate** (this tier's `risk_threshold`) — block when this single request's detector scores sum ≥ threshold.
+3. **Cumulative IP history gate** (this tier's `cumulative_*`) — block / challenge when the IP's running cumulative score crosses thresholds. With `challenges_enabled = false`, the challenge rung is removed and crossings escalate straight to block.
+
+`X-WAF-Risk-Score` always reports the cumulative IP score (contract §5.1) regardless of which gate fired the action.
 
 ### 3. Add a custom rule with `RaiseRisk(delta)` (per-route or per-condition)
 
@@ -184,7 +225,7 @@ See [`profiles.md`](./profiles.md) for the empirical comparison + per-knob trade
 ## Validation before changes go live
 
 ```sh
-# Confirm the YAML loads and compliance clamps still hold.
+# Confirm the YAML parses + lints cleanly.
 target/release/waf validate --config config/active.yaml
 
 # Run the simulator on the candidate config — drives synthetic traffic

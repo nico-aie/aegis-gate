@@ -33,7 +33,7 @@ log.
 |---|---|
 | `viewer` | Read-only dashboard + API (`GET`) |
 | `operator` | viewer + mutate non-security config (routes, upstreams, quotas) |
-| `admin` | operator + mutate security config (rules, tenants, tokens, auth) |
+| `admin` | operator + mutate security config (rules, tokens, auth) |
 | `auditor` | Read-only audit log + change history, no dashboard mutate |
 | `break_glass` | Emergency admin with short TTL and dual-control requirement |
 
@@ -67,11 +67,6 @@ admin:
       "waf-break-glass":  break_glass
 ```
 
-## Tenants
-
-Tokens for tenant-scoped users carry a `tenant_id` claim. See
-[`multi-tenancy.md`](./multi-tenancy.md).
-
 ## Sessions
 
 - PASETO v4 local token (symmetric, HMAC-authenticated)
@@ -85,7 +80,7 @@ Tokens for tenant-scoped users carry a `tenant_id` claim. See
 Service accounts use long-lived API tokens:
 
 - Issued by an `admin` via `POST /api/tokens`
-- Scoped to roles + tenants + IP allowlist
+- Scoped to roles + IP allowlist
 - Stored as `argon2(hash)` in the state backend
 - Rotatable, revocable; revocation is immediate via state backend watch
 - Audit-logged on issue, rotate, and revoke
@@ -100,7 +95,7 @@ admin:
     enabled: true
     approvers_required: 2
     self_approval: false
-    scope: ["rules.mutate", "tenants.mutate", "auth.mutate"]
+    scope: ["rules.mutate", "auth.mutate"]
 ```
 
 A mutation enters `pending` state; a second admin approves via the

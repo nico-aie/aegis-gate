@@ -583,6 +583,43 @@ pub(crate) fn admin_router(
             json_body_response(200, body, "private, max-age=2")
         }
 
+        // 2026-05-09 — DDoS request-flow gate read surface for the
+        // Traffic Gates page. Returns config + EWMA telemetry
+        // (current_rps, baseline_rps, spike_active). Returns the
+        // empty-state shape (`enabled: false`) when the runtime
+        // isn't installed, so the page renders an explicit
+        // "DDoS gate disabled" card instead of erroring.
+        "/api/gates/ddos" => {
+            let body = aegis_control::api::gates::render_get(
+                services.ddos.as_ref(),
+            );
+            json_body_response(200, body, "private, max-age=2")
+        }
+
+        // 2026-05-09 — Rate-limit (F-T2 token bucket) read surface
+        // for the Traffic Gates page. Distinct from DDoS — see
+        // `docs/operator/traffic-gates.md` for the difference
+        // (rate-limit is steady-state per-IP returning 429;
+        // DDoS is sustained-burst → TTL'd auto-block returning 403).
+        "/api/rate-limit" => {
+            let body = aegis_control::api::gates::render_get_rate_limit(
+                &services.ip_rate_limiter,
+            );
+            json_body_response(200, body, "private, max-age=2")
+        }
+
+        // 2026-05-10 — Strike-Block read surface for the Traffic
+        // Gates page. Returns the current `enabled` flag, the
+        // `block_at` threshold, and live telemetry (tracked IPs,
+        // count at-or-over threshold). Strike-Block defaults to
+        // disabled in production; flip via PUT /api/gates/strikes.
+        "/api/gates/strikes" => {
+            let body = aegis_control::api::gates::render_get_strikes(
+                &services.risk,
+            );
+            json_body_response(200, body, "private, max-age=2")
+        }
+
         // D-M5: tracking
         "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
         "/api/cluster" => json_body_response(200, services.tracking.render_cluster(), "private, max-age=2"),

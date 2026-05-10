@@ -260,6 +260,96 @@ pub(crate) async fn handle_data_request_inner(
         return (resp, tag);
     }
 
+    // 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS observe-only check.
+    // Sits between the strike-block gate (in-process) and the
+    // per-IP rate-limit token bucket (also in-process) so the
+    // cluster auto-block list (StateBackend-backed) gets a chance
+    // to fail-fast a previously-blocked IP. In Phase 1 the runtime
+    // is wired with `observe_only: true` by default — the audit
+    // event always fires on `blocked == true`, but the request is
+    // never 503'd until Phase 2 flips the flag.
+    //
+    // Body buffering hasn't happened yet (it's deferred until after
+    // rate-limit), so this check is the cheapest of the three
+    // gates. Fail-open on backend errors so a transient redis
+    // hiccup doesn't drop legit traffic.
+    if let Some(ddos) = upstream_ctx.ddos.get() {
+        match ddos.check(peer_ip).await {
+            Ok(outcome) if outcome.blocked => {
+                // Always emit the audit event so operators can
+                // observe-mode bake the signal before Phase 2.
+                if allow_block_emit {
+                    let action = if outcome.observe_only {
+                        "ddos_observed"
+                    } else {
+                        "ddos_blocked"
+                    };
+                    let reason_str = outcome
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "ddos: per-IP burst".into());
+                    let ev = aegis_core::audit::AuditEvent {
+                        schema_version: 1,
+                        ts: chrono::Utc::now(),
+                        request_id: blake3::hash(
+                            format!(
+                                "{}:{}",
+                                peer,
+                                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                            )
+                            .as_bytes(),
+                        )
+                        .to_hex()
+                        .to_string(),
+                        class: aegis_core::audit::AuditClass::Detection,
+                        tenant_id: None,
+                        tier: None,
+                        action: action.into(),
+                        reason: reason_str,
+                        client_ip: peer_ip.to_string(),
+                        route_id: None,
+                        rule_id: Some("ddos".into()),
+                        risk_score: None,
+                        fields: serde_json::json!({
+                            "path": req.uri().to_string(),
+                            "method": req.method().to_string(),
+                            "ddos_observe_only": outcome.observe_only,
+                            "ddos_spike_active": outcome.spike_active,
+                        }),
+                    };
+                    bus.emit(ev);
+                }
+                if outcome.should_enforce() {
+                    // Phase 2 path — never reached while Phase 1
+                    // ships with default `observe_only: true`. The
+                    // 503 response shape mirrors the strike-block
+                    // path above so operators get a consistent
+                    // block envelope regardless of which gate
+                    // tripped.
+                    let resp = blocked_response(
+                        peer,
+                        outcome.reason.as_deref().unwrap_or("ddos: blocked"),
+                        Some("ddos".into()),
+                        None,
+                        req.uri(),
+                        req.method(),
+                        bus,
+                    );
+                    return (resp, DecisionTag::block("ddos"));
+                }
+                // observe_only — fall through; the request still
+                // proceeds to detectors + upstream as if nothing
+                // happened. The audit event records the intent.
+            }
+            Ok(_) => {} // not blocked, no signal
+            Err(e) => {
+                // Fail open — observe-only never blocks anyway,
+                // and a state-backend hiccup must not drop traffic.
+                tracing::debug!(peer = %peer_ip, error = %e, "ddos: backend error, fail-open");
+            }
+        }
+    }
+
     // F-T2 — per-IP volumetric guard. Fires before the
     // detector pipeline so a flooding source can't burn CPU
     // on regex matchers. A denied request still records a
@@ -610,7 +700,39 @@ pub(crate) async fn handle_data_request_inner(
         // Challenge, and Block based on the post-state vs the
         // configured `RiskThresholds`.
         risk.record_clean(peer_ip);
-        match risk.level(peer_ip) {
+
+        // 2026-05-10 — Option B per-tier overrides. Look up the
+        // matched tier's cumulative thresholds + challenges_enabled
+        // flag from the live TierStore. None / missing fields fall
+        // back to the global thresholds, so existing deployments
+        // without tier overrides see no behavior change.
+        let global = risk.thresholds();
+        let (challenge_at, block_at, challenges_enabled) =
+            match upstream_ctx.tiers.get() {
+                Some(store) => match store.get(tier.as_str()) {
+                    Some(t) => (
+                        t.cumulative_challenge_at.unwrap_or(global.challenge_at),
+                        t.cumulative_block_at.unwrap_or(global.block_at),
+                        t.challenges_enabled,
+                    ),
+                    None => (global.challenge_at, global.block_at, true),
+                },
+                None => (global.challenge_at, global.block_at, true),
+            };
+        let level = risk.level_with(peer_ip, challenge_at, block_at);
+        // 2026-05-10 — when the matched tier has challenges_enabled
+        // = false, the challenge rung is removed from the tier's
+        // response ladder. Cumulative score crossing challenge_at
+        // escalates straight to block instead of emitting a 429
+        // PoW. Lets operators run high-stakes tiers (admin APIs,
+        // payment paths) with hard allow/block semantics.
+        let level = match level {
+            aegis_security::risk::RiskLevel::Challenge if !challenges_enabled => {
+                aegis_security::risk::RiskLevel::Block
+            }
+            other => other,
+        };
+        match level {
             aegis_security::risk::RiskLevel::Block => {
                 // NEW-4 (2026-05-08) — stamp the snapshot score
                 // on the DecisionTag so the response stamper

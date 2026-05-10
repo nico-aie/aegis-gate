@@ -21,7 +21,6 @@ Local authentication for the Aegis-Gate dashboard and admin API.
 
 - SSO / OIDC / SAML / LDAP federation → [`future/rbac-sso.md`](../future/rbac-sso.md)
 - RBAC and multi-user accounts → [`future/rbac-sso.md`](../future/rbac-sso.md)
-- Multi-tenancy and per-tenant dashboards → [`future/multi-tenancy.md`](../future/multi-tenancy.md)
 
 v1 has **one admin principal**. Every successful login is that
 principal. Role separation and identity federation arrive with the

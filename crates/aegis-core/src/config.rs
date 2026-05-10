@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::tier::Tier;
 
@@ -126,6 +126,19 @@ pub struct WafConfig {
     /// is loud, not silent.
     #[serde(default)]
     pub ai: AiConfig,
+    /// 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS protection
+    /// (per-IP burst detection + EWMA spike mode + cluster-
+    /// wide auto-block via the state backend). Defaults to
+    /// `enabled: true, observe_only: true` so the detector
+    /// runs in shadow mode out of the box: every per-IP-flood
+    /// burst is counted, every spike is observed, but no
+    /// request is 503'd until the operator flips
+    /// `observe_only: false` after baking the metrics. See
+    /// `docs/security/ddos-protection.md` for the operator
+    /// guide and `plans/issue-fix/internal-audit-2026-05-09-ddos/`
+    /// for the wire-up plan.
+    #[serde(default)]
+    pub ddos: DdosConfig,
 }
 
 /// External interop surface configuration. Always-on by default.
@@ -1494,11 +1507,28 @@ impl Default for TrustRecoveryConfig {
 /// counter (never decays); once `block_at` is reached, the IP is
 /// blocked at the data plane until an operator runs
 /// `PUT /api/risk/{ip}/reset`.
-#[derive(Clone, Debug, Deserialize)]
+///
+/// 2026-05-10 — `enabled` defaults to `false`. Strike-Block is
+/// now opt-in because (a) the contract's `X-WAF-Risk-Score`
+/// requires accumulation+decay semantics that can be tested in
+/// isolation, and Strike-Block's never-decay counter can keep
+/// an IP locked even after the cumulative score has decayed
+/// below threshold; and (b) operators caught off-guard by a
+/// permanent block found the YAML knob hard to discover.
+/// Enable from Dashboard → Traffic Gates → Strike-Block card →
+/// Edit, audit-mutated PUT /api/gates/strikes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StrikeConfig {
-    /// Number of strikes that triggers a permanent block. Per the
-    /// user-confirmed default, strikes never decay — the operator
-    /// must reset them via the audit-mutation pipeline.
+    /// Master enable/disable for the Strike-Block gate. When
+    /// `false`, `is_strike_blocked()` always returns `false` —
+    /// detector hits still increment the lifetime counter
+    /// (operators see it climb in `/api/risk`), but the data
+    /// plane does not 403 on threshold cross. Defaults to
+    /// `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Number of strikes that triggers the gate. Only honored
+    /// when `enabled = true`.
     #[serde(default = "default_strike_block_at")]
     pub block_at: u32,
 }
@@ -1510,6 +1540,7 @@ fn default_strike_block_at() -> u32 {
 impl Default for StrikeConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             block_at: default_strike_block_at(),
         }
     }
@@ -1677,6 +1708,99 @@ impl Default for DetectorsConfig {
 pub struct DetectorToggle {
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// 2026-05-09 — DDoS request-flow gate config.
+///
+/// DDoS is **not a `Detector` trait impl** — it does not produce
+/// risk-score signals via the detector chain. It's a request-flow
+/// gate that sits alongside the access-list / strike-block /
+/// rate-limit gates in the data plane, reading the shared
+/// `StateBackend` cluster-wide auto-block list and writing TTL'd
+/// blocks on per-IP burst-exceed.
+///
+/// `enabled` toggles the gate wholesale (default `true` — secure
+/// by default, matching every other security primitive in this
+/// codebase).
+///
+/// `observe_only` runs the gate + emits audit events but **does
+/// not short-circuit the request**. Default `false` — the gate
+/// enforces by default. Operators with edge cases (CDN-fronted
+/// where high RPS-per-IP is normal, internal-API workloads with
+/// trusted high-volume callers) can opt into shadow mode by
+/// setting `observe_only: true` in YAML. Audit-event tag changes
+/// from `ddos_blocked` (enforce) to `ddos_observed` (observe-only)
+/// so operators can grep either way.
+///
+/// The threshold knobs (`per_ip_limit`, `per_ip_window_s`,
+/// `block_ttl_s`, `spike_multiplier`) defaults are deliberately
+/// generous (1000 req/s per IP for a 10s window, 5-minute block
+/// TTL) so legitimate users never hit them. A real DDoS attacker
+/// burning a single IP at >100 req/s sustained will trip in <10s
+/// and earn the auto-block.
+///
+/// `tightened_per_ip_rps` is the per-IP cap that kicks in cluster-
+/// wide once spike-mode is active (current_rps > spike_multiplier
+/// × baseline_rps).
+///
+/// **Contract compliance** (`Hackathon_Doc/EN_waf_interop_contract_v2.3.md` §3.1):
+/// volumetric abuse from a single source maps to acceptable
+/// actions `rate_limit` or `block`. This gate emits
+/// `X-WAF-Action: block` + HTTP 403 (the `block` action's
+/// recommended response per §4). The token-bucket rate-limiter
+/// at `aegis-security/src/rate_limit/` covers the `rate_limit`
+/// + 429 path independently.
+///
+/// YAML shape:
+///
+/// ```yaml
+/// ddos:
+///   enabled: true        # default — secure by default
+///   observe_only: false  # default — enforce by default
+///   per_ip_limit: 1000
+///   per_ip_window_s: 10
+///   block_ttl_s: 300
+///   spike_multiplier: 3.0
+///   tightened_per_ip_rps: 20
+/// ```
+#[derive(Clone, Debug, Deserialize)]
+pub struct DdosConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Default `false` — enforce by default. Operators opt into
+    /// shadow mode explicitly via `observe_only: true`.
+    #[serde(default)]
+    pub observe_only: bool,
+    #[serde(default = "default_ddos_per_ip_limit")]
+    pub per_ip_limit: u64,
+    #[serde(default = "default_ddos_per_ip_window_s")]
+    pub per_ip_window_s: u32,
+    #[serde(default = "default_ddos_block_ttl_s")]
+    pub block_ttl_s: u64,
+    #[serde(default = "default_ddos_spike_multiplier")]
+    pub spike_multiplier: f64,
+    #[serde(default = "default_ddos_tightened_rps")]
+    pub tightened_per_ip_rps: u64,
+}
+
+fn default_ddos_per_ip_limit() -> u64 { 1000 }
+fn default_ddos_per_ip_window_s() -> u32 { 10 }
+fn default_ddos_block_ttl_s() -> u64 { 300 }
+fn default_ddos_spike_multiplier() -> f64 { 3.0 }
+fn default_ddos_tightened_rps() -> u64 { 20 }
+
+impl Default for DdosConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            observe_only: false,
+            per_ip_limit: default_ddos_per_ip_limit(),
+            per_ip_window_s: default_ddos_per_ip_window_s(),
+            block_ttl_s: default_ddos_block_ttl_s(),
+            spike_multiplier: default_ddos_spike_multiplier(),
+            tightened_per_ip_rps: default_ddos_tightened_rps(),
+        }
+    }
 }
 
 /// 2026-05-09 Run-5 GAP-009 — open-redirect detector config.

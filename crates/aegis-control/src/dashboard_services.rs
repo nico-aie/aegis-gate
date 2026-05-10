@@ -239,6 +239,14 @@ pub struct DashboardServices {
     /// behaves as before (no allowlist gate).
     pub allowed_sans:
         Option<crate::api::mtls::AllowedSansStore>,
+    /// 2026-05-09 — DDoS request-flow gate runtime. Wired by
+    /// `aegis-proxy::run` from `cfg.ddos`. `None` when
+    /// `cfg.ddos.enabled = false` or for test bundles that don't
+    /// boot the proxy. The dashboard's Traffic Gates page reads
+    /// telemetry (current_rps, baseline_rps, spike_active) +
+    /// config from this; absent → the page renders an empty-state
+    /// card with a "DDoS gate disabled" message.
+    pub ddos: Option<std::sync::Arc<aegis_security::ddos::DdosRuntime>>,
 }
 
 impl DashboardServices {
@@ -505,6 +513,10 @@ impl DashboardServices {
                 // MTLS-T7 — wired by the proxy boot path. Until then
                 // identity extraction skips the allowlist gate.
                 allowed_sans: None,
+                // Wired by the proxy boot path when cfg.ddos.enabled.
+                // Test bundles boot without the gate; /api/gates/ddos
+                // returns the empty-state shape in that case.
+                ddos: None,
             },
             drain,
         )
@@ -865,7 +877,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detector_mask_compliance_clamp_blocks_disable() {
+    async fn detector_mask_compliance_clamp_is_a_no_op_while_lock_is_deferred() {
         let bus = AuditBus::new(8);
         let initial_mask = aegis_security::detectors::SharedDetectorMask::default();
         let (services, _drain) = DashboardServices::spawn_with_mask(
@@ -916,13 +928,19 @@ mod tests {
             },
         );
 
-        assert!(result.is_err());
-        // Mask unchanged — sqli still on.
-        assert!(initial_mask
-            .load()
-            .is_enabled(aegis_security::detectors::DetectorClass::Sqli));
-        // No chain entry on validation failure.
-        assert_eq!(services.mutate.chain_len(), 0);
+        // 2026-05-10 — compliance lock is deferred. The clamp returns
+        // Ok regardless of mode, so the mutation pipeline applies the
+        // proposed mask and writes an audit-chain entry. Restore the
+        // pre-deferral assertions (result.is_err(), sqli stays on,
+        // chain_len == 0) when COMPLIANCE_PINNED is repopulated.
+        assert!(result.is_ok());
+        assert!(
+            !initial_mask
+                .load()
+                .is_enabled(aegis_security::detectors::DetectorClass::Sqli),
+            "lock is deferred — sqli flips off as proposed"
+        );
+        assert_eq!(services.mutate.chain_len(), 1);
     }
 
     #[test]

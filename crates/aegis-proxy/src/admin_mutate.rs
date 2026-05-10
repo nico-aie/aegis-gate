@@ -2681,6 +2681,19 @@ pub(crate) async fn handle_tier_put(
         pipeline: Vec<String>,
         risk_threshold: u32,
         block_threshold: u32,
+        // 2026-05-10 — Option B fields. All optional so older
+        // dashboards / scripts that PUT only the legacy shape
+        // still work; missing values are interpreted as
+        // "inherit global" / "challenges enabled".
+        #[serde(default)]
+        cumulative_challenge_at: Option<u32>,
+        #[serde(default)]
+        cumulative_block_at: Option<u32>,
+        // 2026-05-10 R2 — operator-confirmed default `false`:
+        // challenges are opt-in per tier. Older PUTs that omit the
+        // field land `false` instead of the prior `true`.
+        #[serde(default)]
+        challenges_enabled: bool,
     }
     let patch: TierPatch = match serde_json::from_str(body_str) {
         Ok(p) => p,
@@ -2700,6 +2713,9 @@ pub(crate) async fn handle_tier_put(
         "pipeline": patch.pipeline,
         "risk_threshold": patch.risk_threshold,
         "block_threshold": patch.block_threshold,
+        "cumulative_challenge_at": patch.cumulative_challenge_at,
+        "cumulative_block_at": patch.cumulative_block_at,
+        "challenges_enabled": patch.challenges_enabled,
     });
     let resource = format!("/api/tiers/{tier_name}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
@@ -2724,6 +2740,9 @@ pub(crate) async fn handle_tier_put(
             patch.pipeline,
             patch.risk_threshold,
             patch.block_threshold,
+            patch.cumulative_challenge_at,
+            patch.cumulative_block_at,
+            patch.challenges_enabled,
         ),
     );
     match outcome {
@@ -3075,6 +3094,260 @@ pub(crate) async fn handle_route_delete(
                 }),
             )
         }
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2026-05-09 — DDoS gate + Rate Limit gate audit-mutated PUTs
+// ---------------------------------------------------------------------------
+
+/// `PUT /api/gates/ddos` — hot-swap the DDoS detector config.
+/// Audit-mutated through `AuditedMutate`. Per-IP StateBackend
+/// state is preserved (operators tightening thresholds don't
+/// reset every flooding source IP). Validation enforces
+/// non-zero thresholds and `spike_multiplier > 1.0`.
+pub(crate) async fn handle_ddos_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "ddos-put");
+    let Some(runtime) = services.ddos.as_ref().cloned() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "ddos runtime not wired (cfg.ddos.enabled = false?)".into(),
+            ),
+        );
+    };
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let put_body: aegis_control::api::gates::DdosPutBody = match serde_json::from_str(body_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+    let new_cfg = match put_body.validate() {
+        Ok(c) => c,
+        Err(errs) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(errs.join("; ")),
+            )
+        }
+    };
+    let before_cfg = runtime.config_snapshot();
+    let before_view = aegis_control::api::gates::DdosConfigView::from(before_cfg);
+    let after_view = aegis_control::api::gates::DdosConfigView::from(new_cfg.clone());
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/gates/ddos",
+        action: "ddos_set",
+        reason: "operator updated DDoS gate thresholds",
+    };
+    let runtime_for_apply = runtime.clone();
+    let new_cfg_for_apply = new_cfg.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        serde_json::to_value(&before_view).unwrap_or(serde_json::Value::Null),
+        serde_json::to_value(&after_view).unwrap_or(serde_json::Value::Null),
+        move || {
+            runtime_for_apply.set_config(new_cfg_for_apply);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "applied": after_view,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// `PUT /api/rate-limit` — hot-swap the per-IP token-bucket
+/// limiter config. Audit-mutated through `AuditedMutate`.
+/// Per-IP timestamp state preserved.
+pub(crate) async fn handle_rate_limit_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "rate-limit-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let put_body: aegis_control::api::gates::RateLimitPutBody =
+        match serde_json::from_str(body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+                )
+            }
+        };
+    let new_cfg = match put_body.validate() {
+        Ok(c) => c,
+        Err(errs) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(errs.join("; ")),
+            )
+        }
+    };
+    let before_cfg = services.ip_rate_limiter.config_snapshot();
+    let before_json = serde_json::json!({
+        "limit": before_cfg.limit,
+        "window_seconds": before_cfg.window.as_secs(),
+    });
+    let after_json = serde_json::json!({
+        "limit": new_cfg.limit,
+        "window_seconds": new_cfg.window.as_secs(),
+    });
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/rate-limit",
+        action: "rate_limit_set",
+        reason: "operator updated per-IP rate-limit config",
+    };
+    let limiter = services.ip_rate_limiter.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before_json,
+        after_json.clone(),
+        move || {
+            limiter.set_config(new_cfg);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "applied": after_json,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// `PUT /api/gates/strikes` — hot-swap the Strike-Block gate
+/// config (`enabled` + `block_at`). Audit-mutated through
+/// `AuditedMutate`. Per-IP strike state in the `RiskTracker`
+/// map is preserved across edits — operators flipping the gate
+/// on/off or tightening `block_at` mid-incident don't get a free
+/// reset for accumulating IPs.
+pub(crate) async fn handle_strikes_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "strikes-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let put_body: aegis_control::api::gates::StrikesPutBody =
+        match serde_json::from_str(body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+                )
+            }
+        };
+    let new_cfg = match put_body.validate() {
+        Ok(c) => c,
+        Err(errs) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(errs.join("; ")),
+            )
+        }
+    };
+    let before_cfg = services.risk.strike_config_snapshot();
+    let before_json = serde_json::json!({
+        "enabled": before_cfg.enabled,
+        "block_at": before_cfg.block_at,
+    });
+    let after_json = serde_json::json!({
+        "enabled": new_cfg.enabled,
+        "block_at": new_cfg.block_at,
+    });
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/gates/strikes",
+        action: "strikes_set",
+        reason: "operator updated Strike-Block gate config",
+    };
+    let risk = services.risk.clone();
+    let new_cfg_apply = new_cfg.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before_json,
+        after_json.clone(),
+        move || {
+            risk.set_strike_config(new_cfg_apply);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "applied": after_json,
+                "request_id": pre.request_id,
+            }),
+        ),
         Err(e) => mutation_error_response(e),
     }
 }

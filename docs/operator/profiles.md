@@ -51,11 +51,15 @@ WAF tier).
 | `template_injection` | on          | on            | on                   | on          |
 | `nosql_injection`    | on          | on            | on                   | on          |
 | `open_redirect`      | on          | on            | **off**              | on          |
-| `compliance.modes`   | none        | none          | none                 | populate    |
+| `compliance.modes`*  | none        | none          | none                 | populate    |
 | TLS min version      | 1.2         | 1.2           | 1.2                  | 1.2 / 1.3   |
 | State backend        | in-memory   | **redis**     | redis                | redis       |
 
 Bold = the profile's distinctive choice.
+
+\* `compliance.modes` is accepted as a documentation tag today;
+auto-pinning detector classes when a mode is active is **deferred**
+— see [`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md).
 
 ---
 
@@ -97,6 +101,8 @@ retention. Designed for compliance-driven deployments.
 - 90-day audit retention with IP pseudonymisation (GDPR)
 - TLS 1.3 baseline (HSTS preload-eligible)
 - `compliance.modes` placeholder ready to populate per regime
+  (currently a documentation tag — lock-by-mode is deferred,
+  see [`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md))
 
 Use when: you have a regulatory audit mandate. Pick the
 specific `compliance.modes` from your regime
@@ -122,24 +128,24 @@ and tune these knobs. Each row says **what you're trading**:
 | `detectors.brute_force.enabled` | Shared-IP testing / upstream auth shaping (`false`) | Dedicated-IP prod (`true`) |
 | `tls.min_version` | Legacy clients (`1.2`) | Modern clients only (`1.3`) |
 | `tls.client_auth.mode` | Open admin (`disabled`) | Zero-trust admin (`required`) |
-| `compliance.modes` | No clamp | Lock detector classes (PCI, HIPAA, SOC2, GDPR, FIPS) |
+| `compliance.modes` | (no behavior change today) | Documentation tag for the Compliance dashboard. Auto-pinning detector classes is **deferred** — see `plans/future/compliance-profiles.md`. |
 
 ---
 
 ## Validate before booting
 
 ```sh
-# Confirm the config loads + the compliance profile accepts it
+# Confirm the config parses + lints
 target/release/waf validate --config config/profiles/prod-balanced.yaml
 
 # Boot
 target/release/waf run --config config/profiles/prod-balanced.yaml
 ```
 
-`validate` exits 0 only when every clamp the chosen
-`compliance.modes` defines is satisfied — the strict profile
-will refuse to start with conflicting `detectors.*.enabled:
-false` for a class compliance pins.
+`validate` exits 0 when the YAML parses and the structural lint
+passes. Compliance lock-by-mode (which would refuse a mask that
+disabled a pinned class) is currently deferred — see
+[`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md).
 
 ---
 
