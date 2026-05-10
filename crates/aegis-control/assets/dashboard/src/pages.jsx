@@ -2163,12 +2163,34 @@ function DetectorMaskCard() {
     }
   }
 
-  const renderRow = (label, mask, target) => {
+  // 2026-05-10 — `isInherited` flag drives a visual + behavioral
+  // distinction for tier rows that have no explicit override set.
+  // The row still renders (so operators can see "this tier exists,
+  // currently inheriting Base") with the Base mask greyed out;
+  // clicking Edit creates the override on save.
+  const renderRow = (label, mask, target, isInherited = false) => {
     const isEditing = editing === target;
     const view = isEditing ? draft : mask;
     return (
-      <div key={target} style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>{label}</div>
+      <div
+        key={target}
+        style={{
+          borderTop: '1px solid var(--hairline)',
+          padding: '10px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          opacity: isInherited && !isEditing ? 0.65 : 1,
+        }}
+      >
+        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>
+          {label}
+          {isInherited && !isEditing && (
+            <div style={{ fontSize: 9, color: 'var(--ink-dim)', fontWeight: 400, fontStyle: 'italic', marginTop: 2 }}>
+              inheriting Base
+            </div>
+          )}
+        </div>
         <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {MASK_CLASSES.map(cls => {
             const enabled = !!view[cls];
@@ -2224,8 +2246,18 @@ function DetectorMaskCard() {
             </>
           ) : (
             <>
-              <button className="btn" disabled={busy || editing !== null} onClick={() => startEdit(target, mask)} style={{ fontSize: 11, padding: '4px 10px' }}>Edit</button>
-              {target !== 'base' && (
+              <button
+                className="btn"
+                disabled={busy || editing !== null}
+                onClick={() => startEdit(target, mask)}
+                style={{ fontSize: 11, padding: '4px 10px' }}
+                title={isInherited ? 'Create an override for this tier' : 'Edit this tier\'s override'}
+              >
+                {isInherited ? 'Override' : 'Edit'}
+              </button>
+              {/* Clear is only meaningful when an explicit override
+                  exists. Inheriting rows have nothing to clear. */}
+              {target !== 'base' && !isInherited && (
                 <button className="btn danger" disabled={busy || editing !== null} onClick={() => clearOverride(target)} style={{ fontSize: 11, padding: '4px 10px' }}>Clear</button>
               )}
             </>
@@ -2236,7 +2268,7 @@ function DetectorMaskCard() {
   };
 
   return (
-    <div className="card" style={{ marginBottom: 12, padding: 0 }}>
+    <div data-component="detector-mask-card" className="card" style={{ marginBottom: 12, padding: 0 }}>
       <div className="card-head" style={{ padding: 12 }}>
         <div>
           <div className="card-title">Detector inventory &amp; mask</div>
@@ -2252,15 +2284,23 @@ function DetectorMaskCard() {
         </div>
       </div>
 
-      {/* Mask grid — base + per-tier overrides. */}
+      {/* Mask grid — Base default + one row per canonical tier.
+          2026-05-10 — every tier always has a row so operators can
+          create a new override directly (clicking Edit on an
+          "inheriting Base" row stages an override that gets POSTed
+          on save). Pre-fix, only tiers that ALREADY had an override
+          rendered, leaving operators with no UI entry point to
+          create the first one. */}
       {renderRow('Base', baseMask, 'base')}
-      {Object.keys(overrides).length === 0 ? (
-        <div style={{ borderTop: '1px solid var(--hairline)', padding: '8px 12px', fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
-          No per-tier overrides — base mask applies to every tier.
-        </div>
-      ) : (
-        Object.entries(overrides).map(([tier, mask]) => renderRow(tier, mask, tier))
-      )}
+      {['critical', 'high', 'medium', 'low'].map(tierName => {
+        const explicitOverride = overrides[tierName];
+        const isInherited = !explicitOverride;
+        // When inheriting, show the Base mask greyed out so the
+        // operator sees what the tier currently runs without leaving
+        // this view. When editing, the draft state takes over.
+        const displayMask = explicitOverride || baseMask;
+        return renderRow(tierName, displayMask, tierName, isInherited);
+      })}
 
       {/* Read-only risk-score catalog (#293) — surfaced so
           operators can see the calibrated 5-tier ladder without
@@ -2734,8 +2774,42 @@ function PageTierConfig() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, max-content) 1fr', gap: '6px 12px', fontSize: 11, lineHeight: 1.5 }}>
                   <div style={{ color: 'var(--ink-dim)' }}>Detectors that run</div>
                   <div>
-                    Per-tier overrides on the <strong>detector mask grid above</strong> (scroll up).
-                    Tiers without an override row inherit the Base mask.
+                    {(() => {
+                      // Read the live mask state to show whether this tier
+                      // has an explicit override or is inheriting Base.
+                      const detectorsApi = window.useDetectorsApi
+                        ? window.useDetectorsApi()
+                        : { data: null };
+                      const tierOverride = detectorsApi.data?.overrides?.[selected.name];
+                      const baseMask = detectorsApi.data?.mask;
+                      const explicit = !!tierOverride;
+                      const effective = tierOverride || baseMask || {};
+                      const enabledCount = Object.entries(effective).filter(([, v]) => v).length;
+                      const totalCount = Object.keys(effective).length;
+                      return (
+                        <>
+                          {explicit ? (
+                            <strong>{enabledCount}/{totalCount} enabled</strong>
+                          ) : (
+                            <>
+                              <em>inherits Base</em> ({enabledCount}/{totalCount} enabled)
+                            </>
+                          )}
+                          {' · '}
+                          <a
+                            href="#detector-mask-grid"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              const card = document.querySelector('[data-component="detector-mask-card"]');
+                              if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }}
+                            style={{ color: 'var(--accent)' }}
+                          >
+                            {explicit ? 'Edit override ↑' : 'Override on mask grid ↑'}
+                          </a>
+                        </>
+                      );
+                    })()}
                   </div>
 
                   <div style={{ color: 'var(--ink-dim)' }}>Per-request gate</div>
