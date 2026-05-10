@@ -2538,7 +2538,9 @@ function AiDetectorRow() {
             </span>
           )}
           {!featurePresent && (
-            <span>rebuild with <code>--features ai</code> + set <code>cfg.ai.enabled = true</code></span>
+            <span>
+              rebuild with <code>--features ai</code> and set <code>cfg.ai.model_path</code> to a valid ONNX file (run <code>make ai-link MODEL=&lt;path&gt;</code>)
+            </span>
           )}
           <button
             type="button"
