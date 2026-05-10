@@ -54,15 +54,14 @@ pub struct Tier {
     /// 2026-05-10 — when `false`, the challenge rung is removed
     /// from this tier's response ladder: cumulative score crossing
     /// `challenge_at` escalates straight to block instead of
-    /// emitting a 429 PoW. Defaults to `true` so existing
-    /// deployments keep their challenge behavior unchanged.
-    #[serde(default = "default_challenges_enabled")]
+    /// emitting a 429 PoW. **Defaults to `false`** (operator-confirmed
+    /// 2026-05-10 R2) — challenges are opt-in. Most deployments
+    /// want hard allow/block semantics; the PoW rung is useful for
+    /// specific scenarios (browser-only public tiers) and operators
+    /// can flip it on per tier.
+    #[serde(default)]
     pub challenges_enabled: bool,
     pub updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-fn default_challenges_enabled() -> bool {
-    true
 }
 
 impl Tier {
@@ -101,7 +100,9 @@ impl Tier {
             block_threshold: block,
             cumulative_challenge_at: None,
             cumulative_block_at: None,
-            challenges_enabled: true,
+            // 2026-05-10 R2 — challenges off by default. Opt-in
+            // per tier via the Edit Tier modal.
+            challenges_enabled: false,
             updated_at: chrono::Utc::now(),
         }
     }

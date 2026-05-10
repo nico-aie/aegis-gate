@@ -2689,10 +2689,12 @@ pub(crate) async fn handle_tier_put(
         cumulative_challenge_at: Option<u32>,
         #[serde(default)]
         cumulative_block_at: Option<u32>,
-        #[serde(default = "tier_patch_default_challenges_enabled")]
+        // 2026-05-10 R2 — operator-confirmed default `false`:
+        // challenges are opt-in per tier. Older PUTs that omit the
+        // field land `false` instead of the prior `true`.
+        #[serde(default)]
         challenges_enabled: bool,
     }
-    fn tier_patch_default_challenges_enabled() -> bool { true }
     let patch: TierPatch = match serde_json::from_str(body_str) {
         Ok(p) => p,
         Err(e) => {
