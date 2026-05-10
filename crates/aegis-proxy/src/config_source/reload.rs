@@ -440,11 +440,11 @@ detectors:
     }
 
     #[test]
-    fn forces_pci_locked_class_back_on() {
-        // New cfg disables sqli but PCI compliance pins it ON.
-        // Clamp should force it back on and report `forced`.
+    fn pci_does_not_force_classes_on_while_lock_is_deferred() {
+        // 2026-05-10 — compliance lock is deferred. New cfg disables
+        // sqli with PCI mode declared; the clamp is a no-op so the
+        // mask reload applies sqli=false verbatim.
         let cfg = parse(&yaml_with_sqli(false, &["pci"]));
-        // sanity: WafConfig parsed compliance correctly
         assert_eq!(
             cfg.compliance.as_ref().unwrap().modes,
             vec![ComplianceMode::Pci],
@@ -453,13 +453,11 @@ detectors:
         mask.store(DetectorMask::all_enabled());
 
         let outcome = apply_cfg_change_to_mask(&cfg, Some(&mask));
-        match outcome {
-            ReloadOutcome::AppliedWithCompliance { forced } => {
-                assert!(forced.contains(&"sqli".to_string()));
-            }
-            other => panic!("expected AppliedWithCompliance, got {other:?}"),
-        }
-        assert!(mask.load().is_enabled(DetectorClass::Sqli));
+        assert_eq!(outcome, ReloadOutcome::Applied);
+        assert!(
+            !mask.load().is_enabled(DetectorClass::Sqli),
+            "lock is deferred — sqli stays off as the YAML requested"
+        );
     }
 
     #[test]

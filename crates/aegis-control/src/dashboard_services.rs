@@ -877,7 +877,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detector_mask_compliance_clamp_blocks_disable() {
+    async fn detector_mask_compliance_clamp_is_a_no_op_while_lock_is_deferred() {
         let bus = AuditBus::new(8);
         let initial_mask = aegis_security::detectors::SharedDetectorMask::default();
         let (services, _drain) = DashboardServices::spawn_with_mask(
@@ -928,13 +928,19 @@ mod tests {
             },
         );
 
-        assert!(result.is_err());
-        // Mask unchanged — sqli still on.
-        assert!(initial_mask
-            .load()
-            .is_enabled(aegis_security::detectors::DetectorClass::Sqli));
-        // No chain entry on validation failure.
-        assert_eq!(services.mutate.chain_len(), 0);
+        // 2026-05-10 — compliance lock is deferred. The clamp returns
+        // Ok regardless of mode, so the mutation pipeline applies the
+        // proposed mask and writes an audit-chain entry. Restore the
+        // pre-deferral assertions (result.is_err(), sqli stays on,
+        // chain_len == 0) when COMPLIANCE_PINNED is repopulated.
+        assert!(result.is_ok());
+        assert!(
+            !initial_mask
+                .load()
+                .is_enabled(aegis_security::detectors::DetectorClass::Sqli),
+            "lock is deferred — sqli flips off as proposed"
+        );
+        assert_eq!(services.mutate.chain_len(), 1);
     }
 
     #[test]

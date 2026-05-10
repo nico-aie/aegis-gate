@@ -2243,12 +2243,11 @@ function DetectorMaskCard() {
           <div className="card-subtitle">
             Per-class on/off mask plus the read-only score reference.
             Each chip shows the dominant score for that class, tinted
-            by the 5-tier framework. Locked classes (🔒) are pinned
-            by active compliance modes
-            {complianceModes.length > 0 && (
-              <> ({complianceModes.join(', ')})</>
-            )}
-            . Audit-mutated; takes effect within one hot-reload tick.
+            by the 5-tier framework. Operators may freely enable or
+            disable any class — compliance lock-by-mode is deferred
+            for now (modes still surface on the Compliance page as
+            documentation tags).
+            Audit-mutated; takes effect within one hot-reload tick.
           </div>
         </div>
       </div>
@@ -7717,30 +7716,59 @@ function AccessListGateCard() {
 // Compact "how does it work" strip used at the bottom of every
 // gate card on this page. Renders a 2-column key/value grid so
 // operators can read the operating semantics without having to
-// open the operator doc. Keeps wording tight (one-liner per row)
-// because each card has 4-5 rows and the page already carries
-// 5 cards. 2026-05-10.
+// open the operator doc. Keeps wording tight (one-liner per row).
+//
+// 2026-05-10 — collapsible. Defaults to collapsed (just the header
+// row + chevron) so the five cards on the page stay compact for
+// routine ops; an operator clicks the header to dump the full
+// rows when they need the explanation.
 function GateExplain({ rows }) {
+  const [expanded, setExpanded] = useStateP(false);
   return (
     <div style={{
       borderTop: '1px solid var(--hairline)',
-      padding: '10px 16px 12px',
       background: 'var(--surface-2)',
       fontSize: 11,
       color: 'var(--ink-dim)',
       lineHeight: 1.5,
     }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          background: 'transparent',
+          border: 'none',
+          padding: '10px 16px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 11,
+          fontWeight: 600,
+          color: 'var(--ink)',
+        }}
+      >
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)', width: 10, display: 'inline-block' }}>
+          {expanded ? '▼' : '▶'}
+        </span>
         How does it work?
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(96px, max-content) 1fr', gap: '4px 12px' }}>
-        {rows.map(([k, ...v], i) => (
-          <React.Fragment key={i}>
-            <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{k}</div>
-            <div>{v}</div>
-          </React.Fragment>
-        ))}
-      </div>
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400, marginLeft: 'auto' }}>
+          {expanded ? 'click to collapse' : `${rows.length} rows · click to expand`}
+        </span>
+      </button>
+      {expanded && (
+        <div style={{ padding: '0 16px 12px', display: 'grid', gridTemplateColumns: 'minmax(96px, max-content) 1fr', gap: '4px 12px' }}>
+          {rows.map(([k, ...v], i) => (
+            <React.Fragment key={i}>
+              <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{k}</div>
+              <div>{v}</div>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -8418,19 +8446,18 @@ function ComplianceModeBadge() {
   );
 }
 
-// 2026-05-09 page audit — the previous `COMPLIANCE_CLAMPS` const
-// invented per-regime granularity (PCI pins these 4, HIPAA pins
-// these 4, SOC2 these 5, ...) that didn't exist in code. The Rust
-// truth at `crates/aegis-control/src/api/detectors.rs::COMPLIANCE_PINNED`
-// pins the same 4 classes (sqli, xss, path_traversal, ssrf) when
-// ANY compliance mode is active. Dashboard now reads the
-// authoritative `locked_classes` from the live `/api/detectors`
-// response so it can never drift from the Rust source.
-//
 // All operator-recognised compliance mode IDs (matched against
 // `ComplianceMode` in `crates/aegis-core/src/config.rs`). Used to
 // render the "available modes" reference; the active subset
 // comes from /api/status::compliance.modes.
+//
+// 2026-05-10 — compliance lock-by-mode (forcing pinned detector
+// classes always-on when a mode is active) is **deferred for now**.
+// Modes are still accepted in cfg.compliance.modes and surfaced as
+// documentation tags on this page, but they don't pin any detector
+// today — operators can freely enable/disable any class. To bring
+// the lock back, repopulate the COMPLIANCE_PINNED slice in
+// crates/aegis-control/src/api/detectors.rs.
 const COMPLIANCE_MODES = ['pci_dss', 'hipaa', 'soc2', 'gdpr', 'fips'];
 
 function PageCompliance() {
@@ -8450,16 +8477,39 @@ function PageCompliance() {
                 state at a glance without hunting through Settings. */}
             <ComplianceModeBadge />
           </h1>
-          <p className="page-subtitle">PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator (read-only · YAML-driven)</p>
+          <p className="page-subtitle">PCI · HIPAA · SOC2 · GDPR · FIPS — documentation tags (lock-by-mode deferred for now)</p>
+        </div>
+      </div>
+
+      {/* 2026-05-10 — operator banner: compliance lock-by-mode is
+          deferred. The page still shows configured modes (useful as
+          documentation tags for auditors) but no detector class is
+          pinned today; operators may freely enable/disable any class
+          on the Detectors & Tiers page. */}
+      <div className="banner" style={{ marginBottom: 12, background: 'var(--surface-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 10, display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.5 }}>
+        <window.I.Info />
+        <div style={{ flex: 1 }}>
+          <strong style={{ color: 'var(--ink)' }}>Compliance lock-by-mode is deferred.</strong>{' '}
+          Modes you set in <code>cfg.compliance.modes</code> show up below as
+          documentation tags, but no detector class is auto-pinned today.
+          Operators can freely enable or disable any class on the
+          {' '}
+          <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors &amp; Tiers</a>
+          {' '}page. The lock feature can return in a future release —
+          re-enabling repopulates the pinned-class list in
+          {' '}<code>aegis-control/src/api/detectors.rs</code>.
         </div>
       </div>
 
       <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Active modes" sub={modes.length === 0 ? 'no modes pinned' : `${modes.length} mode${modes.length === 1 ? '' : 's'} active`} />
+        <window.SectionHeader
+          title="Active modes"
+          sub={modes.length === 0 ? 'no modes declared' : `${modes.length} mode${modes.length === 1 ? '' : 's'} declared (documentation tags)`}
+        />
         <div style={{ padding: 16 }}>
           {modes.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-              No <code>compliance.modes</code> set in the running config. To activate, edit your YAML's <code>compliance:</code> block and restart:
+              No <code>compliance.modes</code> set in the running config. To declare modes (documentation only today), edit your YAML's <code>compliance:</code> block and restart:
               <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, margin: '8px 0 0', overflow: 'auto', fontSize: 11 }}>
 {`compliance:
   modes:
@@ -8471,46 +8521,6 @@ function PageCompliance() {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {modes.map(m => <span key={m} className="pill ok">{m.toUpperCase()}</span>)}
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* 2026-05-09 — replaced the old per-mode pinning table that
-          invented regulatory granularity not present in code. The
-          actual Rust pinning rule is one-size-fits-all (any active
-          mode locks the same 4 classes), so the dashboard now
-          shows that truth instead of the made-up per-regime
-          breakdown. The page-audit doc explains the change:
-          plans/issue-fix/2026-05-09-page-audit/README.md. */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader
-          title="Locked detector classes"
-          sub="These detectors cannot be disabled while ANY compliance mode is active"
-        />
-        <div style={{ padding: 16 }}>
-          {modes.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-              No compliance mode is active, so no detector classes are pinned.
-              Activate a mode (above) to lock the regulatory baseline detectors.
-            </div>
-          ) : lockedClasses.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-              <span className="pill warn" style={{ fontSize: 11, marginRight: 8 }}>backend not reporting locked classes</span>
-              The active mode list reports {modes.length} active mode{modes.length === 1 ? '' : 's'} but
-              <code> /api/detectors </code> returned an empty <code>locked_classes</code>.
-              This shouldn't happen — please check the backend logs.
-            </div>
-          ) : (
-            <>
-              <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginBottom: 8 }}>
-                {lockedClasses.length} detector class{lockedClasses.length === 1 ? '' : 'es'} pinned by the active compliance mode{modes.length === 1 ? '' : 's'} ({modes.join(', ')}):
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {lockedClasses.map(c => (
-                  <span key={c} className="pill warn" style={{ fontSize: 11 }}>🔒 {c}</span>
-                ))}
-              </div>
-            </>
           )}
         </div>
       </div>

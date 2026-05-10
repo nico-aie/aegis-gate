@@ -52,7 +52,7 @@ SOC-first dashboard.
   `?redirect_uri=javascript:…` with operator allowlist).
   Prototype pollution (`__proto__`, `constructor.prototype`)
   caught under the body-abuse class. Per-tier on/off,
-  compliance-clamped, hot-reloadable.
+  hot-reloadable.
   Per-detector docs in [`docs/security/detectors/`](docs/security/detectors/).
 - **Rule engine** — AST + parser + evaluator with hot-reload,
   custom rule definitions in YAML.
@@ -116,10 +116,13 @@ SOC-first dashboard.
   mode toggles, alert receivers, upstream pools, risk
   thresholds, detector mask all hot-swap with a visible
   `config_reload` audit entry.
-- **Compliance** — FIPS 140-2, PCI-DSS, SOC 2, GDPR, HIPAA
-  profiles. The compliance clamp re-runs on every mask change
-  and cfg reload — operators can't accidentally disable a
-  pinned class.
+- **Compliance modes** — `cfg.compliance.modes` accepts
+  documentation tags (`fips`, `pci`, `soc2`, `gdpr`, `hipaa`)
+  that surface on the dashboard's Compliance page. Lock-by-mode
+  (auto-pinning detector classes when a mode is active) is
+  deferred — see [`plans/future/compliance-profiles.md`](plans/future/compliance-profiles.md).
+  Operators may freely enable or disable any detector class
+  today.
 
 ### Observability
 - **Prometheus metrics** — per-decision counters, per-stage
@@ -250,7 +253,7 @@ checklist): [`deploy/GUIDE.md`](deploy/GUIDE.md).
 
 ```
 waf run       --config <path>         Start the WAF gateway
-waf validate  --config <path>         Dry-run validation + compliance check
+waf validate  --config <path>         Dry-run validation
 waf audit     verify --from <path>    Verify audit chain integrity
 waf admin     set-password            Hash admin password (argon2id)
 waf admin     enroll-totp             Generate TOTP secret + recovery codes

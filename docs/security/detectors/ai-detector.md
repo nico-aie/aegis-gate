@@ -247,4 +247,5 @@ report is calibrated against.
 - Perf + p99 report — [`tests/results/run-ai-compare-2026-05-03/`](../../../tests/results/run-ai-compare-2026-05-03/)
   (re-run with `bash tests/perf/ai-compare.sh`)
 - Detector chain semantics — [`./README.md`](./README.md)
-- Tier mask + compliance clamp — [`../tiered-protection.md`](../tiered-protection.md)
+- Tier mask — [`../tiered-protection.md`](../tiered-protection.md)
+  (compliance lock-by-mode is deferred; see [`plans/future/compliance-profiles.md`](../../../plans/future/compliance-profiles.md))

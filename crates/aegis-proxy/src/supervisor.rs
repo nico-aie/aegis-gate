@@ -755,16 +755,20 @@ compliance:
     }
 
     #[tokio::test]
-    async fn hot_reload_clamps_compliance_locked_class() {
+    async fn hot_reload_does_not_clamp_compliance_while_lock_is_deferred() {
+        // 2026-05-10 — compliance lock is deferred. Hot-reload of a
+        // config that disables sqli with PCI declared applies the
+        // mask change verbatim (no force-back, no clamp event in
+        // audit). Restore the pre-deferral assertions when
+        // COMPLIANCE_PINNED is repopulated.
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("waf.yaml");
 
-        // Boot from a clean (compliant) config — sqli ON.
+        // Boot from a clean config — sqli ON.
         std::fs::write(&config_path, minimal_yaml()).unwrap();
         let initial = load_config(&config_path).unwrap();
         let cfg = Arc::new(ArcSwap::from_pointee(initial));
 
-        // Mask seeded from boot cfg — sqli enabled.
         let mask = aegis_security::detectors::SharedDetectorMask::from_config(
             &cfg.load().detectors,
         );
@@ -797,15 +801,15 @@ compliance:
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        // Mask should have sqli forced back on by the clamp.
+        // Lock deferred: sqli flips OFF as the YAML requested.
         assert!(
-            mask.load().is_enabled(
+            !mask.load().is_enabled(
                 aegis_security::detectors::DetectorClass::Sqli,
             ),
-            "PCI clamp should have forced sqli back on after hot-reload",
+            "lock is deferred — sqli stays off after hot-reload",
         );
 
-        // Audit chain should carry the clamp event.
+        // No clamp event should have fired.
         let mut clamp_seen = false;
         let mut reload_seen = false;
         while let Ok(ev) = rx.try_recv() {
@@ -815,7 +819,7 @@ compliance:
                 _ => {}
             }
         }
-        assert!(clamp_seen, "expected compliance_clamp_applied audit event");
+        assert!(!clamp_seen, "no clamp event expected while lock is deferred");
         assert!(reload_seen, "expected config_reload audit event");
 
         handle.abort();

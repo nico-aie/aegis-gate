@@ -184,7 +184,7 @@ See [`profiles.md`](./profiles.md) for the empirical comparison + per-knob trade
 ## Validation before changes go live
 
 ```sh
-# Confirm the YAML loads and compliance clamps still hold.
+# Confirm the YAML parses + lints cleanly.
 target/release/waf validate --config config/active.yaml
 
 # Run the simulator on the candidate config — drives synthetic traffic
