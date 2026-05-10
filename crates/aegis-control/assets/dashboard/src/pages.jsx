@@ -2259,13 +2259,6 @@ function DetectorMaskCard() {
     );
   };
 
-  // 2026-05-10 — count tiers with explicit overrides so the card
-  // header carries an at-a-glance summary ("2 tiers override Base")
-  // and operators know to scroll to the tier list / Edit Tier modal
-  // for per-tier customization.
-  const overrideCount = Object.keys(overrides).length;
-  const overrideNames = Object.keys(overrides).sort();
-
   return (
     <div data-component="detector-mask-card" className="card" style={{ marginBottom: 12, padding: 0 }}>
       <div className="card-head" style={{ padding: 12 }}>
@@ -2286,48 +2279,19 @@ function DetectorMaskCard() {
         </div>
       </div>
 
-      {/* Base row — the only mask edited here. Per-tier overrides
-          moved into the Edit Tier modal (2026-05-10) so operators
-          have one focused surface per tier instead of two surfaces
-          racing the same data. */}
-      {renderRow('Base mask', baseMask, 'base')}
-
-      {/* Per-tier override summary — at-a-glance state without
-          leaving this card. Each pill links to the tier list below
-          (smooth-scrolls to the per-tier detail panel + Edit Tier
-          button). */}
-      <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--ink-dim)', flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 600, color: 'var(--ink)' }}>Per-tier overrides:</span>
-        {overrideCount === 0 ? (
-          <span style={{ fontStyle: 'italic' }}>
-            none — every tier inherits the Base mask above
-          </span>
-        ) : (
-          <>
-            {overrideNames.map(name => {
-              const ov = overrides[name];
-              const enabled = ov ? Object.entries(ov).filter(([, v]) => v).length : 0;
-              const total = ov ? Object.keys(ov).length : 0;
-              return (
-                <span key={name} className="pill warn" style={{ fontSize: 11 }}>
-                  {name}: {enabled}/{total}
-                </span>
-              );
-            })}
-          </>
-        )}
-        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
-          Customize a tier from <strong>Tier list below → Edit tier</strong>
-        </span>
-      </div>
-
-      {/* Read-only risk-score catalog (#293) — surfaced so
-          operators can see the calibrated 5-tier ladder without
-          scraping detector source files. NOT editable by design;
-          see docs/operator/risk-tuning.md for the rationale + the
-          safe knobs available (set_profile log_only, risk
-          thresholds, RaiseRisk rules, per-tier overrides). */}
+      {/* 2026-05-10 R2 — Risk score reference moved ABOVE the Base
+          row so operators see the calibrated 5-tier framework
+          (probe / phishing / header / broad / high / critical) FIRST,
+          which makes the score badges on the chips below
+          self-explaining. Per-tier override summary line removed
+          entirely — per-tier customization happens in the Edit
+          Tier modal, no inline summary needed. */}
       <DetectorScorePanel scoreTable={api.data?.score_table || []} />
+
+      {/* Base row — the only mask edited on this card. Per-tier
+          overrides moved into the Edit Tier modal so operators
+          have one focused surface per tier. */}
+      {renderRow('Base mask', baseMask, 'base')}
 
       {/* AI detector — folded into the same card. AI lives outside
           the bitmask (separate AtomicBool flipped via PUT
@@ -2774,8 +2738,8 @@ function PageTierConfig() {
                   </div>
                   <div style={{ display: 'flex', gap: 6, fontSize: 10 }}>
                     <span className="pill neutral">{tierRouteCount} routes</span>
-                    {t.challenges_enabled === false && (
-                      <span className="pill warn" title="Cumulative-IP-risk challenges are disabled on this tier">no challenges</span>
+                    {t.challenges_enabled === true && (
+                      <span className="pill ok" title="Cumulative-IP-risk challenges are enabled on this tier (PoW puzzle on score crossing)">challenges on</span>
                     )}
                     {(t.cumulative_challenge_at != null || t.cumulative_block_at != null) && (
                       <span className="pill ok" title="Tier overrides the global cumulative IP risk thresholds">cumulative override</span>
@@ -2803,9 +2767,9 @@ function PageTierConfig() {
                       ? <>≥ <span className="num">{selected.cumulative_block_at}</span></>
                       : <span style={{ fontStyle: 'italic' }}>inherit</span>}
                     {' · '}
-                    challenges {selected.challenges_enabled === false
-                      ? <span style={{ color: 'var(--warn)' }}>OFF</span>
-                      : 'on'}
+                    challenges {selected.challenges_enabled === true
+                      ? <span style={{ color: 'var(--up)' }}>on</span>
+                      : 'off'}
                   </div>
                 </div>
                 <button className="btn" onClick={() => setTierEditor(selected)} disabled={busy}>
@@ -2885,8 +2849,8 @@ function PageTierConfig() {
                     ) : (
                       <em>inherits global thresholds (Traffic Gates → #3)</em>
                     )}
-                    {selected.challenges_enabled === false && (
-                      <> · <span style={{ color: 'var(--warn)', fontWeight: 600 }}>challenges OFF</span> (escalate to block)</>
+                    {selected.challenges_enabled === true && (
+                      <> · <span style={{ color: 'var(--up)', fontWeight: 600 }}>challenges on</span> (PoW on threshold)</>
                     )}
                   </div>
 
@@ -2992,7 +2956,10 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
   const [cumBlock, setCumBlock] = useStateP(
     tier.cumulative_block_at != null ? String(tier.cumulative_block_at) : ''
   );
-  const [challengesEnabled, setChallengesEnabled] = useStateP(tier.challenges_enabled !== false);
+  // 2026-05-10 R2 — challenges default to OFF. Treat missing /
+  // undefined as false (was: missing-as-true), matching the new
+  // backend default.
+  const [challengesEnabled, setChallengesEnabled] = useStateP(tier.challenges_enabled === true);
   const [showFlow, setShowFlow] = useStateP(false);
 
   // Live cumulative thresholds for the inherit-fallback hint.
@@ -3115,9 +3082,7 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
             <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
               Per-request gate
             </div>
-            <label>
-              Per-request block score (0-100) <span className="req">*</span>
-            </label>
+            <label>Block score (0-100) <span className="req">*</span></label>
             <input className="ip" type="number" min="0" max="100"
               value={risk}
               onChange={e => {
@@ -3126,10 +3091,7 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
                 setRisk(Math.max(0, Math.min(100, v)));
               }} />
             <div className="form-hint">
-              <strong>Block this request when its detector scores sum to ≥ this value.</strong>
-              {' '}Per-request only — does not accumulate or decay across requests.
-              {' '}Lower = stricter. Defaults: critical 50 / high 70 / medium 80 / low 90.
-              {' '}Capped at 100 because <code>X-WAF-Risk-Score</code> is bounded 0-100 by contract (§5.1).
+              Block when this request's detector scores sum ≥ this value. Lower = stricter.
             </div>
             {!riskValid && (
               <div className="form-hint warn">Must be between 0 and 100.</div>
@@ -3137,94 +3099,66 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
           </div>
 
           {/* ── Cumulative IP history gate ────────────────────── */}
-          <div className="form-row" style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--hairline)' }}>
+          <div className="form-row" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
-              Cumulative IP history gate
+              Cumulative IP gate
             </div>
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 12 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 10 }}>
               <input type="checkbox" checked={challengesEnabled} onChange={e => setChallengesEnabled(e.target.checked)} />
-              <strong>Allow challenges on this tier</strong>
+              <span><strong>Allow challenges</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → escalate to block)</span></span>
             </label>
-            <div className="form-hint" style={{ marginTop: -8, marginBottom: 14 }}>
-              When off, IPs over the challenge threshold below escalate
-              straight to <strong>403 block</strong> (no PoW). Useful for
-              high-stakes tiers (admin, payments) where you want hard
-              allow/block; or for machine-only API tiers where JS/PoW
-              challenges break clients.
-            </div>
 
             <div style={{ display: 'flex', gap: 12 }}>
               <div style={{ flex: 1 }}>
-                <label>Cumulative challenge threshold (0-100)</label>
+                <label>Challenge ≥ (0-100)</label>
                 <input className="ip" type="number" min="0" max="100"
                   placeholder={globalChallenge != null ? `inherit · ${globalChallenge}` : 'inherit'}
                   value={cumChallenge}
                   onChange={e => setCumChallenge(clampInput(e.target.value))} />
-                <div className="form-hint">
-                  IP's cumulative score crosses this → <strong>challenge</strong>
-                  {' '}(or block, if challenges off above). Leave empty to inherit
-                  the global value
-                  {globalChallenge != null && <> ({globalChallenge})</>}.
-                </div>
                 {!cumChallengeValid && (
-                  <div className="form-hint warn">Must be between 0 and 100, or empty.</div>
+                  <div className="form-hint warn">0-100 or empty.</div>
                 )}
               </div>
               <div style={{ flex: 1 }}>
-                <label>Cumulative block threshold (0-100)</label>
+                <label>Block ≥ (0-100)</label>
                 <input className="ip" type="number" min="0" max="100"
                   placeholder={globalBlock != null ? `inherit · ${globalBlock}` : 'inherit'}
                   value={cumBlock}
                   onChange={e => setCumBlock(clampInput(e.target.value))} />
-                <div className="form-hint">
-                  IP's cumulative score crosses this → <strong>403 block</strong>.
-                  Leave empty to inherit the global value
-                  {globalBlock != null && <> ({globalBlock})</>}.
-                </div>
                 {!cumBlockValid && (
-                  <div className="form-hint warn">Must be between 0 and 100, or empty.</div>
+                  <div className="form-hint warn">0-100 or empty.</div>
                 )}
               </div>
             </div>
             {!cumOrderValid && (
-              <div className="form-hint warn" style={{ marginTop: 8 }}>
-                Challenge threshold must be strictly less than block threshold.
+              <div className="form-hint warn" style={{ marginTop: 6 }}>
+                Challenge must be &lt; block.
               </div>
             )}
-            <div className="form-hint" style={{ marginTop: 10 }}>
-              Cumulative scores are <strong>per-IP, accumulate across requests, and decay over time</strong>
-              {' '}(half-life ~5 min from <code>risk.decay_half_life</code>).
-              Distinct from the per-request gate above which only judges THIS request.
-              Edit defaults on <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3 Cumulative IP risk thresholds</a>.
+            <div className="form-hint" style={{ marginTop: 6 }}>
+              Per-IP cumulative score · decays ~5 min half-life · empty inherits global. Edit defaults on <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>.
             </div>
           </div>
 
           {/* ── Detector overrides (per-tier mask) ─────────── */}
-          <div className="form-row" style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--hairline)' }}>
+          <div className="form-row" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
-              Detector overrides
+              Detectors
             </div>
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 10 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
               <input
                 type="checkbox"
                 checked={isOverriding}
                 onChange={() => isOverriding ? dropOverride() : startOverride()}
               />
-              <strong>Override Base mask for this tier</strong>
+              <span><strong>Override Base mask</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → inherit Base)</span></span>
             </label>
-            <div className="form-hint" style={{ marginTop: -6, marginBottom: 12 }}>
-              Off → this tier inherits the Base detector mask (edit Base on the
-              {' '}<strong>Base detector mask</strong> card above).
-              On → toggle which classes run on requests classified to this tier.
-              Per-tier overrides are useful when one tier needs different detectors
-              (e.g. <code>recon</code> off on Low for noisy CDN traffic).
-            </div>
 
             {isOverriding && overrideMask && (
               <>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
                   {MASK_CLASSES.map(cls => {
                     const enabled = !!overrideMask[cls];
                     const baseEnabled = !!baseMask[cls];
@@ -3234,7 +3168,7 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
                         key={cls}
                         type="button"
                         onClick={() => toggleOverrideClass(cls)}
-                        title={`${cls} — ${enabled ? 'enabled' : 'disabled'} on this tier${differsFromBase ? ` (Base: ${baseEnabled ? 'enabled' : 'disabled'})` : ' (matches Base)'}`}
+                        title={`${cls} — ${enabled ? 'on' : 'off'}${differsFromBase ? ` (Base: ${baseEnabled ? 'on' : 'off'})` : ''}`}
                         style={{
                           fontSize: 10, padding: '3px 9px', borderRadius: 4,
                           background: enabled ? 'rgba(14,203,129,0.14)' : 'transparent',
@@ -3250,33 +3184,28 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
                     );
                   })}
                 </div>
-                <div className="form-hint">
-                  Click a chip to toggle. Chips with a <strong style={{ color: 'var(--brand-yellow)' }}>yellow border</strong> differ from Base.
-                  {(() => {
-                    const diff = MASK_CLASSES.filter(c => !!overrideMask[c] !== !!baseMask[c]).length;
-                    return diff === 0
-                      ? <> No differences yet — the override matches Base.</>
-                      : <> <strong>{diff}</strong> {diff === 1 ? 'class differs' : 'classes differ'} from Base.</>;
-                  })()}
-                </div>
+                {(() => {
+                  const diff = MASK_CLASSES.filter(c => !!overrideMask[c] !== !!baseMask[c]).length;
+                  return (
+                    <div className="form-hint">
+                      {diff === 0
+                        ? 'Matches Base. Toggle a chip to diverge.'
+                        : <><strong>{diff}</strong> {diff === 1 ? 'class differs' : 'classes differ'} from Base (yellow border).</>}
+                    </div>
+                  );
+                })()}
               </>
-            )}
-
-            {!isOverriding && (
-              <div style={{ fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic', padding: 8, background: 'var(--canvas-2)', borderRadius: 4 }}>
-                Inherits Base — {Object.entries(baseMask).filter(([, v]) => v).length}/{Object.keys(baseMask).length} classes enabled.
-              </div>
             )}
           </div>
 
-          <div style={{ marginTop: 16, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
-            {tier.name}: per_request_block≥{risk}
-            {' · '}cumulative_challenge≥{cumChallenge === '' ? `(global ${globalChallenge ?? '?'})` : cumChallenge}
-            {' · '}cumulative_block≥{cumBlock === '' ? `(global ${globalBlock ?? '?'})` : cumBlock}
+          <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
+            block≥{risk}
+            {' · '}challenge≥{cumChallenge === '' ? `g${globalChallenge ?? '?'}` : cumChallenge}
+            {' · '}cum_block≥{cumBlock === '' ? `g${globalBlock ?? '?'}` : cumBlock}
             {' · '}challenges {challengesEnabled ? 'on' : 'off'}
             {' · '}detectors {isOverriding
-              ? `${Object.entries(overrideMask).filter(([, v]) => v).length}/${Object.keys(overrideMask).length} (override)`
-              : 'inherit Base'}
+              ? `${Object.entries(overrideMask).filter(([, v]) => v).length}/${Object.keys(overrideMask).length}`
+              : 'base'}
           </div>
         </div>
         <div className="modal-foot">
