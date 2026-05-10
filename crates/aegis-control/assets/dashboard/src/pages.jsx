@@ -2245,62 +2245,81 @@ function DetectorMaskCard() {
               <button className="btn" disabled={busy} onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '4px 10px' }}>Cancel</button>
             </>
           ) : (
-            <>
-              <button
-                className="btn"
-                disabled={busy || editing !== null}
-                onClick={() => startEdit(target, mask)}
-                style={{ fontSize: 11, padding: '4px 10px' }}
-                title={isInherited ? 'Create an override for this tier' : 'Edit this tier\'s override'}
-              >
-                {isInherited ? 'Override' : 'Edit'}
-              </button>
-              {/* Clear is only meaningful when an explicit override
-                  exists. Inheriting rows have nothing to clear. */}
-              {target !== 'base' && !isInherited && (
-                <button className="btn danger" disabled={busy || editing !== null} onClick={() => clearOverride(target)} style={{ fontSize: 11, padding: '4px 10px' }}>Clear</button>
-              )}
-            </>
+            <button
+              className="btn"
+              disabled={busy || editing !== null}
+              onClick={() => startEdit(target, mask)}
+              style={{ fontSize: 11, padding: '4px 10px' }}
+            >
+              Edit
+            </button>
           )}
         </div>
       </div>
     );
   };
 
+  // 2026-05-10 — count tiers with explicit overrides so the card
+  // header carries an at-a-glance summary ("2 tiers override Base")
+  // and operators know to scroll to the tier list / Edit Tier modal
+  // for per-tier customization.
+  const overrideCount = Object.keys(overrides).length;
+  const overrideNames = Object.keys(overrides).sort();
+
   return (
     <div data-component="detector-mask-card" className="card" style={{ marginBottom: 12, padding: 0 }}>
       <div className="card-head" style={{ padding: 12 }}>
         <div>
-          <div className="card-title">Detector inventory &amp; mask</div>
+          <div className="card-title">
+            Base detector mask
+            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              default for all tiers
+            </span>
+          </div>
           <div className="card-subtitle">
-            Per-class on/off mask plus the read-only score reference.
-            Each chip shows the dominant score for that class, tinted
-            by the 5-tier framework. Operators may freely enable or
-            disable any class — compliance lock-by-mode is deferred
-            for now (modes still surface on the Compliance page as
-            documentation tags).
-            Audit-mutated; takes effect within one hot-reload tick.
+            Per-class on/off baseline. Each chip shows the dominant
+            score for that class, tinted by the 5-tier framework.
+            Operators may freely enable or disable any class —
+            compliance lock-by-mode is deferred for now.
+            {' '}Audit-mutated; takes effect within one hot-reload tick.
           </div>
         </div>
       </div>
 
-      {/* Mask grid — Base default + one row per canonical tier.
-          2026-05-10 — every tier always has a row so operators can
-          create a new override directly (clicking Edit on an
-          "inheriting Base" row stages an override that gets POSTed
-          on save). Pre-fix, only tiers that ALREADY had an override
-          rendered, leaving operators with no UI entry point to
-          create the first one. */}
-      {renderRow('Base', baseMask, 'base')}
-      {['critical', 'high', 'medium', 'low'].map(tierName => {
-        const explicitOverride = overrides[tierName];
-        const isInherited = !explicitOverride;
-        // When inheriting, show the Base mask greyed out so the
-        // operator sees what the tier currently runs without leaving
-        // this view. When editing, the draft state takes over.
-        const displayMask = explicitOverride || baseMask;
-        return renderRow(tierName, displayMask, tierName, isInherited);
-      })}
+      {/* Base row — the only mask edited here. Per-tier overrides
+          moved into the Edit Tier modal (2026-05-10) so operators
+          have one focused surface per tier instead of two surfaces
+          racing the same data. */}
+      {renderRow('Base mask', baseMask, 'base')}
+
+      {/* Per-tier override summary — at-a-glance state without
+          leaving this card. Each pill links to the tier list below
+          (smooth-scrolls to the per-tier detail panel + Edit Tier
+          button). */}
+      <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--ink-dim)', flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 600, color: 'var(--ink)' }}>Per-tier overrides:</span>
+        {overrideCount === 0 ? (
+          <span style={{ fontStyle: 'italic' }}>
+            none — every tier inherits the Base mask above
+          </span>
+        ) : (
+          <>
+            {overrideNames.map(name => {
+              const ov = overrides[name];
+              const enabled = ov ? Object.entries(ov).filter(([, v]) => v).length : 0;
+              const total = ov ? Object.keys(ov).length : 0;
+              return (
+                <span key={name} className="pill warn" style={{ fontSize: 11 }}>
+                  {name}: {enabled}/{total}
+                </span>
+              );
+            })}
+          </>
+        )}
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
+          Customize a tier from <strong>Tier list below → Edit tier</strong>
+        </span>
+      </div>
 
       {/* Read-only risk-score catalog (#293) — surfaced so
           operators can see the calibrated 5-tier ladder without
@@ -2639,10 +2658,37 @@ function PageTierConfig() {
   async function saveTier(name, body) {
     setBusy(true);
     try {
+      // 2026-05-10 — pull the detector-override delta out of the
+      // body (TierEditModal stuffs it under __detectorOverride
+      // when the operator changed mask state). Sequence the
+      // detectors PUT first because (a) it's the one most likely
+      // to fail validation (compliance clamp etc.) and (b) the
+      // tier PUT touches different state, so partial failure
+      // leaves the system in a coherent intermediate.
+      const detectorOverride = body.__detectorOverride;
+      delete body.__detectorOverride;
+
+      if (detectorOverride) {
+        const detPayload = detectorOverride.mask
+          ? { overrides: { [name]: detectorOverride.mask } }
+          : { overrides: { [name]: null } };
+        const dr = await window.detectorsPut(detPayload);
+        const detOk = dr && typeof dr.status === 'number' && dr.status >= 200 && dr.status < 300;
+        if (!detOk) {
+          const msg = (dr && (dr.message || dr.error || dr.reason)) || `status ${dr?.status ?? '?'}`;
+          window.aegisToast(`Detector override save failed: ${msg}`, 'err');
+          return;
+        }
+      }
+
       const r = await window.tierPut(name, body);
       if (r.status === 200 && r.ok) {
-        window.aegisToast(`Tier "${name}" updated`, 'ok');
+        const detSuffix = detectorOverride
+          ? (detectorOverride.mask ? ' · detector override saved' : ' · detector override cleared')
+          : '';
+        window.aegisToast(`Tier "${name}" updated${detSuffix}`, 'ok');
         tiersApi.reload && tiersApi.reload();
+        detectorsApi.reload && detectorsApi.reload();
         setTierEditor(null);
       } else {
         const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
@@ -2956,6 +3002,51 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
   const globalChallenge = riskApi.data?.challenge_at;
   const globalBlock = riskApi.data?.block_at;
 
+  // 2026-05-10 — per-tier detector mask edit moved here from the
+  // unified card (which now only edits Base). Operators get one
+  // focused surface per tier: thresholds + challenges + detector
+  // overrides. On save we sequence the existing detectors PUT and
+  // tiers PUT — both audit-mutated, both idempotent.
+  const detectorsApi = window.useDetectorsApi
+    ? window.useDetectorsApi()
+    : { data: null };
+  const baseMask = detectorsApi.data?.mask || {};
+  const existingOverride = detectorsApi.data?.overrides?.[tier.name] || null;
+  // `overrideMask` is null when the operator hasn't decided to
+  // override yet (inherits Base) or has cleared the override; an
+  // object when actively customizing.
+  const [overrideMask, setOverrideMask] = useStateP(
+    existingOverride ? { ...existingOverride } : null
+  );
+  // Track the original state so we know whether to emit a
+  // detectors PUT on save (no PUT if nothing changed).
+  const initialOverride = useRefP(existingOverride);
+  // Re-seed when the modal opens for a different tier — the
+  // existingOverride read happens after the hook resolves.
+  useEffectP(() => {
+    if (detectorsApi.data) {
+      setOverrideMask(existingOverride ? { ...existingOverride } : null);
+      initialOverride.current = existingOverride;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tier.name, !!detectorsApi.data]);
+
+  const isOverriding = !!overrideMask;
+  const startOverride = () => {
+    // Seed with the current Base mask so the operator sees what's
+    // running today + can toggle classes off/on.
+    setOverrideMask({ ...baseMask });
+  };
+  const dropOverride = () => {
+    setOverrideMask(null);
+  };
+  const toggleOverrideClass = (cls) => {
+    setOverrideMask((m) => (m ? { ...m, [cls]: !m[cls] } : m));
+  };
+  // Whether the in-modal state differs from what the server has.
+  const overrideChanged =
+    JSON.stringify(overrideMask) !== JSON.stringify(initialOverride.current);
+
   const cumChallengeNum = cumChallenge === '' ? null : parseInt(cumChallenge, 10);
   const cumBlockNum = cumBlock === '' ? null : parseInt(cumBlock, 10);
 
@@ -3109,11 +3200,83 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
             </div>
           </div>
 
+          {/* ── Detector overrides (per-tier mask) ─────────── */}
+          <div className="form-row" style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--hairline)' }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Detector overrides
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 10 }}>
+              <input
+                type="checkbox"
+                checked={isOverriding}
+                onChange={() => isOverriding ? dropOverride() : startOverride()}
+              />
+              <strong>Override Base mask for this tier</strong>
+            </label>
+            <div className="form-hint" style={{ marginTop: -6, marginBottom: 12 }}>
+              Off → this tier inherits the Base detector mask (edit Base on the
+              {' '}<strong>Base detector mask</strong> card above).
+              On → toggle which classes run on requests classified to this tier.
+              Per-tier overrides are useful when one tier needs different detectors
+              (e.g. <code>recon</code> off on Low for noisy CDN traffic).
+            </div>
+
+            {isOverriding && overrideMask && (
+              <>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {MASK_CLASSES.map(cls => {
+                    const enabled = !!overrideMask[cls];
+                    const baseEnabled = !!baseMask[cls];
+                    const differsFromBase = enabled !== baseEnabled;
+                    return (
+                      <button
+                        key={cls}
+                        type="button"
+                        onClick={() => toggleOverrideClass(cls)}
+                        title={`${cls} — ${enabled ? 'enabled' : 'disabled'} on this tier${differsFromBase ? ` (Base: ${baseEnabled ? 'enabled' : 'disabled'})` : ' (matches Base)'}`}
+                        style={{
+                          fontSize: 10, padding: '3px 9px', borderRadius: 4,
+                          background: enabled ? 'rgba(14,203,129,0.14)' : 'transparent',
+                          color: enabled ? 'var(--up)' : 'var(--ink-dim)',
+                          fontWeight: differsFromBase ? 700 : 500,
+                          border: differsFromBase ? '1px solid var(--brand-yellow)' : '1px solid var(--hairline)',
+                          textDecoration: enabled ? 'none' : 'line-through',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {cls}{!enabled && ' · off'}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="form-hint">
+                  Click a chip to toggle. Chips with a <strong style={{ color: 'var(--brand-yellow)' }}>yellow border</strong> differ from Base.
+                  {(() => {
+                    const diff = MASK_CLASSES.filter(c => !!overrideMask[c] !== !!baseMask[c]).length;
+                    return diff === 0
+                      ? <> No differences yet — the override matches Base.</>
+                      : <> <strong>{diff}</strong> {diff === 1 ? 'class differs' : 'classes differ'} from Base.</>;
+                  })()}
+                </div>
+              </>
+            )}
+
+            {!isOverriding && (
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic', padding: 8, background: 'var(--canvas-2)', borderRadius: 4 }}>
+                Inherits Base — {Object.entries(baseMask).filter(([, v]) => v).length}/{Object.keys(baseMask).length} classes enabled.
+              </div>
+            )}
+          </div>
+
           <div style={{ marginTop: 16, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
             {tier.name}: per_request_block≥{risk}
             {' · '}cumulative_challenge≥{cumChallenge === '' ? `(global ${globalChallenge ?? '?'})` : cumChallenge}
             {' · '}cumulative_block≥{cumBlock === '' ? `(global ${globalBlock ?? '?'})` : cumBlock}
             {' · '}challenges {challengesEnabled ? 'on' : 'off'}
+            {' · '}detectors {isOverriding
+              ? `${Object.entries(overrideMask).filter(([, v]) => v).length}/${Object.keys(overrideMask).length} (override)`
+              : 'inherit Base'}
           </div>
         </div>
         <div className="modal-foot">
@@ -3125,6 +3288,13 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
             cumulative_challenge_at: cumChallengeNum,
             cumulative_block_at: cumBlockNum,
             challenges_enabled: challengesEnabled,
+            // 2026-05-10 — detector override delta. The parent's
+            // saveTier() sequences a `PUT /api/detectors` (audit-
+            // mutated) when this is non-null. `null` means "no
+            // change to detectors" (skip the second PUT).
+            __detectorOverride: overrideChanged
+              ? { mask: overrideMask, hadBefore: !!initialOverride.current }
+              : null,
           })}>
             {busy ? 'Saving…' : 'Save'}
           </button>
