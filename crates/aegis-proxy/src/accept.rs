@@ -322,6 +322,13 @@ pub(crate) async fn admin_accept_loop(
     services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
 
+    // 2026-05-10 — share the TierStore between DashboardServices
+    // (PUT /api/tiers/{name}) and ProxyContext (data plane reads
+    // per-tier challenge/block thresholds + challenges_enabled
+    // for Option B). Single Arc so dashboard edits become live in
+    // the data plane on the next request, no restart.
+    let _ = upstream_ctx.tiers.set(services.tiers.clone());
+
     // 2026-05-05 — late-register the AttacksAggregator's reset
     // cleaner with the v2.3 control plane. The aggregator backs the
     // dashboard's Top Attackers / By-Detector / Bot Mix charts; per

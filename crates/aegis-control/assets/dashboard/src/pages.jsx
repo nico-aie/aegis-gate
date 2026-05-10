@@ -2703,10 +2703,19 @@ function PageTierConfig() {
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-                    {(selected.pipeline || []).length} pipeline stages · blocks a single request when its detector scores sum to ≥ <span className="num">{selected.risk_threshold}</span>
-                    <span style={{ marginLeft: 8, opacity: 0.7 }}>
-                      · per-IP volumetric limits + cumulative IP risk live on the <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a> page
-                    </span>
+                    Per-request block ≥ <span className="num">{selected.risk_threshold}</span>
+                    {' · '}
+                    cumulative challenge {selected.cumulative_challenge_at != null
+                      ? <>≥ <span className="num">{selected.cumulative_challenge_at}</span></>
+                      : <span style={{ fontStyle: 'italic' }}>inherit</span>}
+                    {' · '}
+                    cumulative block {selected.cumulative_block_at != null
+                      ? <>≥ <span className="num">{selected.cumulative_block_at}</span></>
+                      : <span style={{ fontStyle: 'italic' }}>inherit</span>}
+                    {' · '}
+                    challenges {selected.challenges_enabled === false
+                      ? <span style={{ color: 'var(--warn)' }}>OFF</span>
+                      : 'on'}
                   </div>
                 </div>
                 <button className="btn" onClick={() => setTierEditor(selected)} disabled={busy}>
@@ -2789,140 +2798,207 @@ function PageTierConfig() {
 // Pipeline stages the four canonical tiers use today. Order
 // matters for the canonical sort below. Heads up — this list
 // is **descriptive metadata** today: the data plane gates
-// detectors via the global detector mask (PUT /api/detectors),
-// not by walking this list. Toggling a stage off here surfaces
-// the change in the audit chain + the tier list, but doesn't
-// currently disable the detector at runtime. Real tier-scoped
-// execution is a follow-up.
-const TIER_PIPELINE_STAGES = [
-  ['rate', 'Rate-limit gate'],
-  ['rules', 'Custom rule engine'],
-  ['sqli', 'SQL injection detector'],
-  ['xss', 'Cross-site scripting detector'],
-  ['ssrf', 'SSRF detector'],
-  ['path_traversal', 'Path traversal detector'],
-  ['header_inj', 'Header injection / CRLF'],
-  ['bots', 'Bot management'],
-  ['ai', 'AI-based attack detector (ML / ONNX)'],
-  ['risk', 'Composite risk scoring'],
-  ['challenge', 'JS / CAPTCHA challenge ladder'],
-];
+// 2026-05-10 — TIER_PIPELINE_STAGES checkbox grid retired (Option B).
+// Every stage in the previous list was either descriptive metadata
+// or already configurable elsewhere (detector mask, Traffic Gates,
+// Rules page). The Tier editor now focuses on the four real
+// per-tier knobs: per-request block score, cumulative challenge
+// threshold, cumulative block threshold, and the challenges
+// on/off toggle. The wire shape still carries `pipeline` so
+// existing YAML loads; we POST whatever the tier already had.
 
 function TierEditModal({ tier, onCancel, onSave, busy }) {
-  const [pipelineSet, setPipelineSet] = useStateP(() => new Set(tier.pipeline || []));
-  const [risk, setRisk] = useStateP(tier.risk_threshold || 50);
-  const [block, setBlock] = useStateP(tier.block_threshold || 100);
+  // Preserve the existing pipeline list verbatim — wire shape stays
+  // stable, dashboard just doesn't expose the checkboxes any more.
+  const preservedPipeline = tier.pipeline || [];
+  const [risk, setRisk] = useStateP(tier.risk_threshold ?? 50);
+  // Option B per-tier overrides. Empty string in the input = inherit
+  // global; numbers cast to Some(n) on save.
+  const [cumChallenge, setCumChallenge] = useStateP(
+    tier.cumulative_challenge_at != null ? String(tier.cumulative_challenge_at) : ''
+  );
+  const [cumBlock, setCumBlock] = useStateP(
+    tier.cumulative_block_at != null ? String(tier.cumulative_block_at) : ''
+  );
+  const [challengesEnabled, setChallengesEnabled] = useStateP(tier.challenges_enabled !== false);
+  const [showFlow, setShowFlow] = useStateP(false);
 
-  const togglePipeline = (s) => {
-    const next = new Set(pipelineSet);
-    next.has(s) ? next.delete(s) : next.add(s);
-    setPipelineSet(next);
-  };
-  const orderedPipeline = TIER_PIPELINE_STAGES
-    .map(([s]) => s)
-    .filter(s => pipelineSet.has(s));
+  // Live cumulative thresholds for the inherit-fallback hint.
+  const riskApi = window.useRiskThresholdsApi
+    ? window.useRiskThresholdsApi()
+    : { data: null };
+  const globalChallenge = riskApi.data?.challenge_at;
+  const globalBlock = riskApi.data?.block_at;
+
+  const cumChallengeNum = cumChallenge === '' ? null : parseInt(cumChallenge, 10);
+  const cumBlockNum = cumBlock === '' ? null : parseInt(cumBlock, 10);
 
   const riskValid = risk >= 0 && risk <= 100;
-  const blockValid = block >= 1;
-  const pipelineValid = orderedPipeline.length > 0;
-  const canSave = riskValid && blockValid && pipelineValid && !busy;
+  const cumChallengeValid =
+    cumChallengeNum === null ||
+    (Number.isFinite(cumChallengeNum) && cumChallengeNum >= 0 && cumChallengeNum <= 100);
+  const cumBlockValid =
+    cumBlockNum === null ||
+    (Number.isFinite(cumBlockNum) && cumBlockNum >= 0 && cumBlockNum <= 100);
+  const cumOrderValid =
+    cumChallengeNum === null || cumBlockNum === null || cumChallengeNum < cumBlockNum;
+  const canSave = riskValid && cumChallengeValid && cumBlockValid && cumOrderValid && !busy;
+
+  // Clamp helper: keep the input within 0..=100 silently while
+  // letting operators clear the field (empty string = inherit).
+  const clampInput = (raw) => {
+    if (raw === '' || raw === null || raw === undefined) return '';
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) return '';
+    return String(Math.max(0, Math.min(100, n)));
+  };
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 620 }}>
         <div className="modal-head">
           <div className="modal-title">Edit tier · {tier.name}</div>
           <button className="btn btn-sm" onClick={onCancel}>×</button>
         </div>
         <div className="modal-body">
-          <div className="form-row">
-            <label>Pipeline stages <span className="req">*</span></label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
-              {TIER_PIPELINE_STAGES.map(([s, label]) => {
-                const on = pipelineSet.has(s);
-                return (
-                  <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}>
-                    <input type="checkbox" checked={on} onChange={() => togglePipeline(s)} />
-                    <code style={{ minWidth: 110 }}>{s}</code>
-                    <span style={{ color: 'var(--ink-dim)' }}>— {label}</span>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="form-hint">
-              <strong>Heads up.</strong> This list is descriptive metadata today —
-              the data plane gates detectors via the <strong>Detectors mask</strong> at
-              the top of this page, not by walking this list. Edit the mask there to
-              actually disable a detector. Per-tier execution is a follow-up.
-            </div>
-            {!pipelineValid && (
-              <div className="form-hint warn">Pipeline must have at least one stage.</div>
+          {/* Collapsible decision-flow primer for operators new to
+              the page. Default collapsed — power users skip it. */}
+          <div style={{ marginBottom: 14, border: '1px solid var(--hairline)', borderRadius: 4 }}>
+            <button
+              type="button"
+              onClick={() => setShowFlow(s => !s)}
+              style={{
+                width: '100%', textAlign: 'left', background: 'transparent',
+                border: 'none', padding: '8px 12px', cursor: 'pointer',
+                fontSize: 11, fontWeight: 600, color: 'var(--ink)',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{showFlow ? '▼' : '▶'}</span>
+              How is a request blocked or challenged on this tier?
+              <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }}>
+                {showFlow ? 'click to collapse' : 'click to expand'}
+              </span>
+            </button>
+            {showFlow && (
+              <div style={{ padding: '4px 12px 12px', fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+                Three independent gates run in order; the first one that fires wins.
+                <ol style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  <li><strong>Traffic Gates</strong> (global, before tier matching) — access list, strike-block, rate-limit, DDoS. Configured on Traffic Gates page.</li>
+                  <li><strong>Per-request block score</strong> (this tier) — when THIS one request's detector scores sum to ≥ the value below, block immediately.</li>
+                  <li><strong>Cumulative IP history</strong> (this tier) — when this IP's running cumulative score crosses the thresholds below, challenge or block. Score decays over time (~5 min half-life).</li>
+                </ol>
+                Otherwise → allow + forward to upstream. <code>X-WAF-Risk-Score</code> always reports the cumulative IP score (contract §5.1).
+              </div>
             )}
           </div>
 
-          <div className="form-row" style={{ display: 'flex', gap: 8, marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
-            <div style={{ flex: 1 }}>
-              <label>
-                Per-request block score (0-100) <span className="req">*</span>
-              </label>
-              <input className="ip" type="number" min="0" max="100"
-                value={risk}
-                onChange={e => {
-                  // Cap at 100 — detector scores cap at 100 per
-                  // request (the contract's X-WAF-Risk-Score is
-                  // explicitly an integer 0-100, §5.1). Allowing
-                  // a tier threshold above 100 would be a
-                  // never-fires gate, which is better expressed
-                  // by `set_profile log_only` or by removing the
-                  // `risk` stage from the pipeline above.
-                  const v = parseInt(e.target.value, 10);
-                  if (!Number.isFinite(v)) { setRisk(0); return; }
-                  setRisk(Math.max(0, Math.min(100, v)));
-                }} />
-              <div className="form-hint">
-                <strong>This request is blocked when its detector scores sum to ≥ this value.</strong>
-                {' '}Per-request only — does not accumulate or decay across requests.
-                {' '}Lower = stricter. Defaults: critical 50 / high 70 / medium 80 / low 90.
-                {' '}Distinct from the cumulative IP risk thresholds (per-IP, decays —
-                edit on{' '}
-                <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>).
-                {' '}Capped at 100 because <code>X-WAF-Risk-Score</code> is bounded 0-100
-                by contract (§5.1); to disable per-request blocking on this tier,
-                drop the <code>risk</code> stage from the pipeline above instead.
-              </div>
-              {!riskValid && (
-                <div className="form-hint warn">Must be between 0 and 100.</div>
-              )}
+          {/* ── Per-request gate ───────────────────────────────── */}
+          <div className="form-row">
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Per-request gate
             </div>
-            {/* 2026-05-09 — Block threshold (req/s) input removed.
-                The field exists on `Tier` for legacy reasons but
-                is **descriptive metadata only** — the data plane
-                doesn't enforce per-tier req/s caps (source comment
-                in crates/aegis-control/src/api/tiers.rs:36-44).
-                Real per-IP volumetric limits live on the Traffic
-                Gates page (Rate Limit + DDoS gates). The form
-                still POSTs `block_threshold` (using the existing
-                `block` state) so the audit-mutated PUT surface
-                doesn't change. Keeping the field hidden in the UI
-                means operators stop tuning a knob that does
-                nothing. */}
+            <label>
+              Per-request block score (0-100) <span className="req">*</span>
+            </label>
+            <input className="ip" type="number" min="0" max="100"
+              value={risk}
+              onChange={e => {
+                const v = parseInt(e.target.value, 10);
+                if (!Number.isFinite(v)) { setRisk(0); return; }
+                setRisk(Math.max(0, Math.min(100, v)));
+              }} />
+            <div className="form-hint">
+              <strong>Block this request when its detector scores sum to ≥ this value.</strong>
+              {' '}Per-request only — does not accumulate or decay across requests.
+              {' '}Lower = stricter. Defaults: critical 50 / high 70 / medium 80 / low 90.
+              {' '}Capped at 100 because <code>X-WAF-Risk-Score</code> is bounded 0-100 by contract (§5.1).
+            </div>
+            {!riskValid && (
+              <div className="form-hint warn">Must be between 0 and 100.</div>
+            )}
           </div>
 
-          <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
-            {tier.name}: pipeline=[{orderedPipeline.join(', ')}], risk≥{risk}
+          {/* ── Cumulative IP history gate ────────────────────── */}
+          <div className="form-row" style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--hairline)' }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Cumulative IP history gate
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 12 }}>
+              <input type="checkbox" checked={challengesEnabled} onChange={e => setChallengesEnabled(e.target.checked)} />
+              <strong>Allow challenges on this tier</strong>
+            </label>
+            <div className="form-hint" style={{ marginTop: -8, marginBottom: 14 }}>
+              When off, IPs over the challenge threshold below escalate
+              straight to <strong>403 block</strong> (no PoW). Useful for
+              high-stakes tiers (admin, payments) where you want hard
+              allow/block; or for machine-only API tiers where JS/PoW
+              challenges break clients.
+            </div>
+
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <label>Cumulative challenge threshold (0-100)</label>
+                <input className="ip" type="number" min="0" max="100"
+                  placeholder={globalChallenge != null ? `inherit · ${globalChallenge}` : 'inherit'}
+                  value={cumChallenge}
+                  onChange={e => setCumChallenge(clampInput(e.target.value))} />
+                <div className="form-hint">
+                  IP's cumulative score crosses this → <strong>challenge</strong>
+                  {' '}(or block, if challenges off above). Leave empty to inherit
+                  the global value
+                  {globalChallenge != null && <> ({globalChallenge})</>}.
+                </div>
+                {!cumChallengeValid && (
+                  <div className="form-hint warn">Must be between 0 and 100, or empty.</div>
+                )}
+              </div>
+              <div style={{ flex: 1 }}>
+                <label>Cumulative block threshold (0-100)</label>
+                <input className="ip" type="number" min="0" max="100"
+                  placeholder={globalBlock != null ? `inherit · ${globalBlock}` : 'inherit'}
+                  value={cumBlock}
+                  onChange={e => setCumBlock(clampInput(e.target.value))} />
+                <div className="form-hint">
+                  IP's cumulative score crosses this → <strong>403 block</strong>.
+                  Leave empty to inherit the global value
+                  {globalBlock != null && <> ({globalBlock})</>}.
+                </div>
+                {!cumBlockValid && (
+                  <div className="form-hint warn">Must be between 0 and 100, or empty.</div>
+                )}
+              </div>
+            </div>
+            {!cumOrderValid && (
+              <div className="form-hint warn" style={{ marginTop: 8 }}>
+                Challenge threshold must be strictly less than block threshold.
+              </div>
+            )}
+            <div className="form-hint" style={{ marginTop: 10 }}>
+              Cumulative scores are <strong>per-IP, accumulate across requests, and decay over time</strong>
+              {' '}(half-life ~5 min from <code>risk.decay_half_life</code>).
+              Distinct from the per-request gate above which only judges THIS request.
+              Edit defaults on <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3 Cumulative IP risk thresholds</a>.
+            </div>
           </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
-            <strong>Note:</strong> per-IP volumetric limits (req/s caps, sustained-burst auto-block) live on the{' '}
-            <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a> page,
-            not here. This tier's pipeline + risk threshold drive the detector chain after the gates pass.
+
+          <div style={{ marginTop: 16, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
+            {tier.name}: per_request_block≥{risk}
+            {' · '}cumulative_challenge≥{cumChallenge === '' ? `(global ${globalChallenge ?? '?'})` : cumChallenge}
+            {' · '}cumulative_block≥{cumBlock === '' ? `(global ${globalBlock ?? '?'})` : cumBlock}
+            {' · '}challenges {challengesEnabled ? 'on' : 'off'}
           </div>
         </div>
         <div className="modal-foot">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
           <button className="btn primary" disabled={!canSave} onClick={() => onSave({
-            pipeline: orderedPipeline,
+            pipeline: preservedPipeline,
             risk_threshold: risk,
-            block_threshold: block,
+            block_threshold: tier.block_threshold ?? 100,
+            cumulative_challenge_at: cumChallengeNum,
+            cumulative_block_at: cumBlockNum,
+            challenges_enabled: challengesEnabled,
           })}>
             {busy ? 'Saving…' : 'Save'}
           </button>

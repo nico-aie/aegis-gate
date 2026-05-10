@@ -117,7 +117,8 @@ The Traffic Gates page polls `/api/blacklist`, `/api/whitelist`,
 |---|---|---|
 | Access list | Dashboard → Access Lists page (`POST /api/blacklist` etc.) | ✅ yes — audit-mutated |
 | Strike-block (enable + threshold) | Dashboard → Traffic Gates → Strike-Block card → Edit (`PUT /api/gates/strikes`) — toggles `enabled` and tunes `block_at`. Reset a single IP via `POST /api/risk/<ip>/reset`. | ✅ yes — audit-mutated (2026-05-10) |
-| Cumulative IP risk thresholds | Dashboard → Traffic Gates → Cumulative IP risk card (`PUT /api/risk/thresholds`) | ✅ yes — audit-mutated (moved 2026-05-10) |
+| Cumulative IP risk thresholds (global defaults) | Dashboard → Traffic Gates → Cumulative IP risk card (`PUT /api/risk/thresholds`) | ✅ yes — audit-mutated (moved 2026-05-10) |
+| Per-tier cumulative overrides (`cumulative_challenge_at`, `cumulative_block_at`, `challenges_enabled`) | Dashboard → Detectors & Tiers → Edit tier (`PUT /api/tiers/<name>`) | ✅ yes — audit-mutated (Option B, 2026-05-10) |
 | Rate-limit | Dashboard → Traffic Gates → Rate Limit card → Edit (`PUT /api/rate-limit`) | ✅ yes — audit-mutated (2026-05-09) |
 | DDoS thresholds | Dashboard → Traffic Gates → DDoS card → Edit (`PUT /api/gates/ddos`) | ✅ yes — audit-mutated (2026-05-09) |
 

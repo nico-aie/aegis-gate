@@ -24,13 +24,45 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Tier {
     pub name: String,
-    /// Detector pipeline names enabled for this tier.
+    /// Detector pipeline names enabled for this tier. Descriptive
+    /// metadata only — the data plane runs the detector chain via
+    /// the per-tier mask overrides on `SharedDetectorMask`. Kept on
+    /// the wire shape so existing YAML still loads. The dashboard
+    /// no longer surfaces this list (2026-05-10).
     pub pipeline: Vec<String>,
-    /// Risk threshold used by the challenge engine.
+    /// Per-request block score (0-100). When the SUM of detector
+    /// signals on a single request crosses this value, the request
+    /// is blocked. Per-request only — does not accumulate or decay.
+    /// Field name kept as `risk_threshold` for wire-shape stability.
     pub risk_threshold: u32,
-    /// Block threshold (events / sec) above which fail-closed kicks in.
+    /// Legacy descriptive metadata (req/s rate cap). The live
+    /// rate-limit is configured per-cluster on the Traffic Gates
+    /// page, not per-tier. Kept on the wire shape so older YAML
+    /// configs still load; the dashboard no longer surfaces it.
     pub block_threshold: u32,
+    /// 2026-05-10 — Option B per-tier cumulative IP risk thresholds.
+    /// When `Some`, the data plane uses these instead of the global
+    /// `cfg.risk.thresholds` for requests classified to this tier.
+    /// `None` falls back to the global thresholds, so existing
+    /// snapshots without these fields keep working.
+    #[serde(default)]
+    pub cumulative_challenge_at: Option<u32>,
+    /// See `cumulative_challenge_at`. Both should be set together
+    /// (validated: challenge < block when both Some).
+    #[serde(default)]
+    pub cumulative_block_at: Option<u32>,
+    /// 2026-05-10 — when `false`, the challenge rung is removed
+    /// from this tier's response ladder: cumulative score crossing
+    /// `challenge_at` escalates straight to block instead of
+    /// emitting a 429 PoW. Defaults to `true` so existing
+    /// deployments keep their challenge behavior unchanged.
+    #[serde(default = "default_challenges_enabled")]
+    pub challenges_enabled: bool,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn default_challenges_enabled() -> bool {
+    true
 }
 
 impl Tier {
@@ -67,6 +99,9 @@ impl Tier {
             pipeline: pipeline.into_iter().map(String::from).collect(),
             risk_threshold: risk,
             block_threshold: block,
+            cumulative_challenge_at: None,
+            cumulative_block_at: None,
+            challenges_enabled: true,
             updated_at: chrono::Utc::now(),
         }
     }
@@ -126,13 +161,18 @@ impl TierStore {
     }
 
     /// Update a tier. Returns `Ok(updated)` or `Err(reason)` on
-    /// validation failure (out-of-range thresholds, empty pipeline).
+    /// validation failure (out-of-range thresholds, empty pipeline,
+    /// challenge_at >= block_at when both set).
+    #[allow(clippy::too_many_arguments)]
     pub fn put(
         &self,
         name: &str,
         pipeline: Vec<String>,
         risk_threshold: u32,
         block_threshold: u32,
+        cumulative_challenge_at: Option<u32>,
+        cumulative_block_at: Option<u32>,
+        challenges_enabled: bool,
     ) -> Result<Tier, String> {
         // Accept `catch_all` / `catchall` as aliases — the legacy
         // names land in the same `low` slot. The store key still
@@ -148,11 +188,35 @@ impl TierStore {
         if risk_threshold > 100 {
             return Err("risk_threshold > 100".into());
         }
+        // 2026-05-10 — Option B validation. Both Some => challenge
+        // strictly less than block. One Some + one None is allowed
+        // (operator can override challenge but inherit global block,
+        // or vice versa) since both fall back to global on read.
+        if let Some(c) = cumulative_challenge_at {
+            if c > 100 {
+                return Err("cumulative_challenge_at > 100".into());
+            }
+        }
+        if let Some(b) = cumulative_block_at {
+            if b > 100 {
+                return Err("cumulative_block_at > 100".into());
+            }
+        }
+        if let (Some(c), Some(b)) = (cumulative_challenge_at, cumulative_block_at) {
+            if c >= b {
+                return Err(format!(
+                    "cumulative_challenge_at ({c}) must be strictly less than cumulative_block_at ({b})"
+                ));
+            }
+        }
         let tier = Tier {
             name: canonical.to_string(),
             pipeline,
             risk_threshold,
             block_threshold,
+            cumulative_challenge_at,
+            cumulative_block_at,
+            challenges_enabled,
             updated_at: chrono::Utc::now(),
         };
         let mut s = self.inner.lock().expect("tier store poisoned");
@@ -194,28 +258,83 @@ mod tests {
     #[test]
     fn put_rejects_unknown_tier_name() {
         let s = TierStore::new();
-        let r = s.put("paranoid", vec!["rules".into()], 50, 100);
+        let r = s.put("paranoid", vec!["rules".into()], 50, 100, None, None, true);
         assert!(r.is_err());
     }
 
     #[test]
     fn put_rejects_empty_pipeline() {
         let s = TierStore::new();
-        let r = s.put("high", vec![], 50, 100);
+        let r = s.put("high", vec![], 50, 100, None, None, true);
         assert!(r.is_err());
     }
 
     #[test]
     fn put_rejects_risk_threshold_over_100() {
         let s = TierStore::new();
-        let r = s.put("high", vec!["rules".into()], 200, 100);
+        let r = s.put("high", vec!["rules".into()], 200, 100, None, None, true);
         assert!(r.is_err());
+    }
+
+    // 2026-05-10 — Option B validations.
+    #[test]
+    fn put_rejects_cumulative_challenge_over_100() {
+        let s = TierStore::new();
+        let r = s.put("high", vec!["rules".into()], 50, 100, Some(150), None, true);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("cumulative_challenge_at"));
+    }
+
+    #[test]
+    fn put_rejects_cumulative_block_over_100() {
+        let s = TierStore::new();
+        let r = s.put("high", vec!["rules".into()], 50, 100, None, Some(150), true);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("cumulative_block_at"));
+    }
+
+    #[test]
+    fn put_rejects_challenge_at_or_above_block() {
+        let s = TierStore::new();
+        // challenge == block is invalid (must be strictly less).
+        let eq = s.put("high", vec!["rules".into()], 50, 100, Some(50), Some(50), true);
+        assert!(eq.is_err());
+        // challenge > block is also invalid.
+        let gt = s.put("high", vec!["rules".into()], 50, 100, Some(60), Some(50), true);
+        assert!(gt.is_err());
+        // challenge < block is fine.
+        let ok = s.put("high", vec!["rules".into()], 50, 100, Some(40), Some(80), true);
+        assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn put_accepts_partial_cumulative_overrides() {
+        // Operator overrides only challenge_at, inherits block_at
+        // from the global config — should be allowed.
+        let s = TierStore::new();
+        let r = s.put("high", vec!["rules".into()], 50, 100, Some(35), None, true);
+        assert!(r.is_ok());
+        let t = r.unwrap();
+        assert_eq!(t.cumulative_challenge_at, Some(35));
+        assert_eq!(t.cumulative_block_at, None);
+    }
+
+    #[test]
+    fn put_persists_challenges_enabled_flag() {
+        let s = TierStore::new();
+        s.put("high", vec!["rules".into()], 50, 100, None, None, false).unwrap();
+        let t = s.get("high").unwrap();
+        assert!(!t.challenges_enabled, "challenges_enabled flag persisted");
     }
 
     #[test]
     fn put_persists_change() {
         let s = TierStore::new();
-        s.put("low", vec!["rules".into(), "rate".into()], 95, 50_000).unwrap();
+        s.put(
+            "low",
+            vec!["rules".into(), "rate".into()],
+            95, 50_000, None, None, true,
+        ).unwrap();
         let t = s.get("low").unwrap();
         assert_eq!(t.risk_threshold, 95);
         assert_eq!(t.pipeline.len(), 2);
@@ -226,7 +345,7 @@ mod tests {
     #[test]
     fn put_accepts_legacy_catch_all_alias() {
         let s = TierStore::new();
-        s.put("catch_all", vec!["rules".into()], 95, 50_000).unwrap();
+        s.put("catch_all", vec!["rules".into()], 95, 50_000, None, None, true).unwrap();
         // Read back through both names — same row.
         assert!(s.get("low").is_some(), "alias must store under canonical `low`");
         assert_eq!(s.get("low").unwrap().risk_threshold, 95);

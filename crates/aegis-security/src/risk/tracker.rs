@@ -212,6 +212,29 @@ impl RiskTracker {
         }
     }
 
+    /// 2026-05-10 — Option B per-tier evaluation. Same shape as
+    /// [`level`] but uses caller-supplied `challenge_at` /
+    /// `block_at` thresholds instead of the global config. Used by
+    /// the data plane after route resolution to honor per-tier
+    /// `cumulative_challenge_at` / `cumulative_block_at` overrides.
+    /// Strike-block check is unchanged (it doesn't have a per-tier
+    /// concept — it's a gate-level shedder).
+    pub fn level_with(&self, ip: IpAddr, challenge_at: u32, block_at: u32) -> RiskLevel {
+        if self.is_strike_blocked(ip) {
+            return RiskLevel::Block;
+        }
+        let Some(state) = self.snapshot(ip) else {
+            return RiskLevel::Allow;
+        };
+        if state.score >= block_at {
+            RiskLevel::Block
+        } else if state.score >= challenge_at {
+            RiskLevel::Challenge
+        } else {
+            RiskLevel::Allow
+        }
+    }
+
     /// `true` when the IP's lifetime strike counter has crossed
     /// the configured threshold AND the Strike-Block gate is
     /// enabled. With `enabled = false` (the 2026-05-10 default)
@@ -643,6 +666,66 @@ mod tests {
         // without any new attack signals.
         t.set_strike_config(StrikeConfig { enabled: true, block_at: 3 });
         assert!(t.is_strike_blocked(target));
+    }
+
+    // ---------- 2026-05-10 — level_with (Option B per-tier) -------------
+
+    #[test]
+    fn level_with_uses_caller_supplied_thresholds() {
+        // Use the strikes-disabled fixture so the lifetime
+        // strike check doesn't short-circuit before we get to
+        // the threshold comparison. The point of this test is
+        // to verify the per-tier cumulative thresholds, not the
+        // strike-block interaction (covered in level_with_strike_block_*).
+        let t = RiskTracker::new(&cfg_strikes_disabled());
+        let target = ip("10.0.0.20");
+        // Drive the cumulative score to 50 with two hits.
+        t.record_malicious(target, 30);
+        t.record_malicious(target, 20);
+        let s = t.snapshot(target).unwrap();
+        assert_eq!(s.score, 50);
+        // Strict tier thresholds (challenge=20, block=40) → Block.
+        assert_eq!(
+            t.level_with(target, 20, 40),
+            RiskLevel::Block,
+            "score 50 should block when tier block_at=40"
+        );
+        // Permissive tier thresholds (challenge=80, block=99) → Allow.
+        assert_eq!(
+            t.level_with(target, 80, 99),
+            RiskLevel::Allow,
+            "score 50 should pass when tier challenge_at=80"
+        );
+        // Mid-bucket tier thresholds (challenge=40, block=80) → Challenge.
+        assert_eq!(
+            t.level_with(target, 40, 80),
+            RiskLevel::Challenge,
+            "score 50 should challenge between tier challenge_at=40 and block_at=80"
+        );
+    }
+
+    #[test]
+    fn level_with_returns_allow_for_unknown_ip() {
+        let t = RiskTracker::new(&cfg());
+        assert_eq!(t.level_with(ip("8.8.8.8"), 40, 80), RiskLevel::Allow);
+    }
+
+    #[test]
+    fn level_with_strike_block_still_short_circuits() {
+        // Strike-block is gate-level — it ignores per-tier
+        // thresholds. Even with permissive tier bounds, a
+        // strike-blocked IP returns Block.
+        let t = RiskTracker::new(&cfg());
+        let target = ip("10.0.0.21");
+        for _ in 0..5 {
+            t.record_malicious(target, 1);
+        }
+        assert!(t.is_strike_blocked(target));
+        assert_eq!(
+            t.level_with(target, 99, 100),
+            RiskLevel::Block,
+            "strike-block must override permissive tier thresholds"
+        );
     }
 
     #[test]

@@ -240,7 +240,7 @@ function TabGlossary() {
     ['Member',
       'One backend address (IP:port) inside a pool. Carries optional `host_header` for vhost / SNI override, weight, and zone tag.'],
     ['Tier',
-      'A policy bucket — risk_threshold (composite score that triggers a block, 0-100) and failure_mode (fail-close on critical, fail-open elsewhere). The four canonical tiers are critical / high / medium / low. Routes inherit the default or pin via tier_override. The legacy block_threshold field is descriptive metadata only — the live rate cap lives on the Traffic Gates page.'],
+      'A per-request policy bundle — risk_threshold (per-request block score, 0-100) plus optional cumulative_challenge_at / cumulative_block_at / challenges_enabled (Option B, 2026-05-10). Four canonical tiers: critical / high / medium / low. Routes inherit the default or pin via tier_override. Per-tier cumulative thresholds fall back to the global cfg.risk.thresholds when unset; challenges_enabled = false escalates challenges to block on that tier. Edit on Detectors & Tiers → Edit tier modal.'],
     ['Traffic gates',
       'Four binary block-or-pass short-circuits that run before the detector chain (in firing order): access list, strike-block, rate limit, DDoS gate. Cheapest-first so a known-bad IP costs minimum CPU. Distinct from the signal-emitting detector chain — gates read shared cluster state and return a yes/no decision, not a score. All four are configured from the Traffic Gates page.'],
     ['Rate limit',
@@ -432,7 +432,7 @@ function TabFaq() {
     },
     {
       q: 'Tier definitions edit in the dashboard — does it actually change traffic flow?',
-      a: 'Today: only risk_threshold is LIVE — the data plane consults it on every request to decide block-vs-allow against the per-request composite score. The legacy block_threshold field on the tier model is descriptive metadata only — the live rate cap is configured on the Traffic Gates page (one global rate-limit + DDoS gate, both hot-reloadable). The tier pipeline string list is also metadata; detector mask is the way to actually disable a detector.',
+      a: 'Yes. Three live per-tier knobs as of 2026-05-10 (Option B): (1) risk_threshold — per-request block score, fires when this single request\'s detector scores sum past it. (2) cumulative_challenge_at / cumulative_block_at — per-IP cumulative score thresholds (decay over time). When set, override the global cfg.risk.thresholds for requests on this tier; when empty, inherit the global. (3) challenges_enabled — flip off to escalate challenges straight to block (no PoW puzzle). All audit-mutated PUT /api/tiers/<name>, hot-reload. The legacy block_threshold (req/s) field on the tier model is descriptive metadata only — live rate cap is on Traffic Gates. The tier pipeline string list is also descriptive metadata; detector mask (per-tier overrides) is the way to actually toggle detectors per tier.',
     },
     {
       q: 'What\'s the difference between Rate Limit and the DDoS gate?',

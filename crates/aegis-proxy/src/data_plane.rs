@@ -700,7 +700,39 @@ pub(crate) async fn handle_data_request_inner(
         // Challenge, and Block based on the post-state vs the
         // configured `RiskThresholds`.
         risk.record_clean(peer_ip);
-        match risk.level(peer_ip) {
+
+        // 2026-05-10 — Option B per-tier overrides. Look up the
+        // matched tier's cumulative thresholds + challenges_enabled
+        // flag from the live TierStore. None / missing fields fall
+        // back to the global thresholds, so existing deployments
+        // without tier overrides see no behavior change.
+        let global = risk.thresholds();
+        let (challenge_at, block_at, challenges_enabled) =
+            match upstream_ctx.tiers.get() {
+                Some(store) => match store.get(tier.as_str()) {
+                    Some(t) => (
+                        t.cumulative_challenge_at.unwrap_or(global.challenge_at),
+                        t.cumulative_block_at.unwrap_or(global.block_at),
+                        t.challenges_enabled,
+                    ),
+                    None => (global.challenge_at, global.block_at, true),
+                },
+                None => (global.challenge_at, global.block_at, true),
+            };
+        let level = risk.level_with(peer_ip, challenge_at, block_at);
+        // 2026-05-10 — when the matched tier has challenges_enabled
+        // = false, the challenge rung is removed from the tier's
+        // response ladder. Cumulative score crossing challenge_at
+        // escalates straight to block instead of emitting a 429
+        // PoW. Lets operators run high-stakes tiers (admin APIs,
+        // payment paths) with hard allow/block semantics.
+        let level = match level {
+            aegis_security::risk::RiskLevel::Challenge if !challenges_enabled => {
+                aegis_security::risk::RiskLevel::Block
+            }
+            other => other,
+        };
+        match level {
             aegis_security::risk::RiskLevel::Block => {
                 // NEW-4 (2026-05-08) — stamp the snapshot score
                 // on the DecisionTag so the response stamper
