@@ -2632,7 +2632,7 @@ function PageTierConfig() {
         <div>
           <h1 className="page-title">Detectors &amp; Tiers</h1>
           <p className="page-subtitle">
-            Detector mask + per-tier pipeline assignment ·
+            Per-class detector mask (with per-tier overrides) + per-tier risk thresholds ·
             <span className="num"> {tiers.length}</span> active tiers ·
             <span className="num"> {routes.length}</span> routes
             <span style={{ marginLeft: 8 }}>
@@ -2666,7 +2666,6 @@ function PageTierConfig() {
             )}
             {tiers.map(t => {
               const tierRouteCount = routes.filter(r => matchTier(r, t.name)).length;
-              const detectorCount = (t.pipeline || []).filter(p => !['rate', 'rules', 'risk', 'challenge'].includes(p)).length;
               return (
                 <button key={t.name} onClick={() => setSelectedName(t.name)}
                   style={{ display: 'block', width: '100%', textAlign: 'left', padding: 14, border: 'none', borderBottom: '1px solid var(--hairline)',
@@ -2674,13 +2673,6 @@ function PageTierConfig() {
                     borderLeft: selected && selected.name === t.name ? '3px solid var(--brand-yellow)' : '3px solid transparent',
                     cursor: 'pointer', color: 'inherit' }}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{t.name}</div>
-                  {/* 2026-05-09 — `block_threshold` (req/s) is descriptive
-                      metadata, not enforced. Source comment in
-                      crates/aegis-control/src/api/tiers.rs:36-44 confirms.
-                      Real per-IP volumetric limits live on the Traffic
-                      Gates page (Rate Limit + DDoS gates). Showing the
-                      field here was misleading — operators thought it
-                      was an enforce knob. */}
                   <div
                     style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}
                     title={`Per-request: this tier blocks a request when its detector scores sum to ${t.risk_threshold} or more`}
@@ -2689,7 +2681,12 @@ function PageTierConfig() {
                   </div>
                   <div style={{ display: 'flex', gap: 6, fontSize: 10 }}>
                     <span className="pill neutral">{tierRouteCount} routes</span>
-                    <span className="pill neutral">{detectorCount} detectors</span>
+                    {t.challenges_enabled === false && (
+                      <span className="pill warn" title="Cumulative-IP-risk challenges are disabled on this tier">no challenges</span>
+                    )}
+                    {(t.cumulative_challenge_at != null || t.cumulative_block_at != null) && (
+                      <span className="pill ok" title="Tier overrides the global cumulative IP risk thresholds">cumulative override</span>
+                    )}
                   </div>
                 </button>
               );
@@ -2723,12 +2720,62 @@ function PageTierConfig() {
                 </button>
               </div>
 
+              {/* 2026-05-10 — replaced the dead "Pipeline (N stages)"
+                  pill list. Per `docs/security/security-engine.md`,
+                  pipeline is descriptive metadata only — the runtime
+                  detector gate is the per-tier mask grid at the top
+                  of this page. This summary points operators at the
+                  three surfaces where this tier's live policy is
+                  actually configured. */}
               <div style={{ background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 12, marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Pipeline ({(selected.pipeline || []).length} stages)</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {(selected.pipeline || []).map(p => (
-                    <span key={p} className="pill neutral" style={{ fontSize: 10 }}>{p}</span>
-                  ))}
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>
+                  Live policy for <span className="mono">{selected.name}</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, max-content) 1fr', gap: '6px 12px', fontSize: 11, lineHeight: 1.5 }}>
+                  <div style={{ color: 'var(--ink-dim)' }}>Detectors that run</div>
+                  <div>
+                    Per-tier overrides on the <strong>detector mask grid above</strong> (scroll up).
+                    Tiers without an override row inherit the Base mask.
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Per-request gate</div>
+                  <div>
+                    Block when this single request's detector scores sum to ≥
+                    {' '}<strong className="num">{selected.risk_threshold}</strong>.
+                    Edit on this card → <em>Edit tier</em>.
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Cumulative IP gate</div>
+                  <div>
+                    {selected.cumulative_challenge_at != null || selected.cumulative_block_at != null ? (
+                      <>
+                        challenge ≥ {selected.cumulative_challenge_at != null
+                          ? <strong className="num">{selected.cumulative_challenge_at}</strong>
+                          : <em>(global)</em>}
+                        {' · '}
+                        block ≥ {selected.cumulative_block_at != null
+                          ? <strong className="num">{selected.cumulative_block_at}</strong>
+                          : <em>(global)</em>}
+                      </>
+                    ) : (
+                      <em>inherits global thresholds (Traffic Gates → #3)</em>
+                    )}
+                    {selected.challenges_enabled === false && (
+                      <> · <span style={{ color: 'var(--warn)', fontWeight: 600 }}>challenges OFF</span> (escalate to block)</>
+                    )}
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Rules</div>
+                  <div>
+                    Authored on <a href="#/rules" style={{ color: 'var(--accent)' }}>Rules</a>;
+                    rules can be tier-scoped via their DSL (priority order: global → tier → route → session).
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Volumetric gates</div>
+                  <div>
+                    Rate-limit + DDoS run <strong>before</strong> tier classification — global, configured on
+                    {' '}<a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a>.
+                  </div>
                 </div>
               </div>
 
