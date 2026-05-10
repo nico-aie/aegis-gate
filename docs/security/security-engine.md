@@ -303,11 +303,23 @@ the challenge ladder, both editable live:
 | **Block floor** | `risk.thresholds.block_at` | 80 | score ≥ this → reject **all** requests from this IP at the access gate, before any detector runs, until decay drops the score back below `block_at` |
 | **Score cap** | `risk.thresholds.max` | 100 | score saturates here so a single mega-burst can't permanently doom an IP |
 
-**Where to edit:** the dashboard **Settings page → "Cumulative IP
-risk thresholds"** card. The two sliders set `challenge_at` and
-`block_at`; saves go through the audit-mutated `PUT /api/risk/thresholds`
-endpoint with CSRF + capability check, hot-swap to the live tracker (no
-restart). YAML equivalent in `cfg.risk.thresholds`.
+**Where to edit:**
+
+- **Global defaults** — Dashboard → **Traffic Gates → #3 Cumulative
+  IP risk thresholds** card. The two sliders set `challenge_at` and
+  `block_at`; saves go through the audit-mutated
+  `PUT /api/risk/thresholds` endpoint, hot-swap to the live tracker.
+  YAML equivalent in `cfg.risk.thresholds`.
+
+- **Per-tier overrides (Option B, 2026-05-10)** — Dashboard →
+  **Detectors & Tiers → Edit tier** modal. Each tier carries
+  optional `cumulative_challenge_at` / `cumulative_block_at` /
+  `challenges_enabled` fields; unset values fall back to the global
+  defaults above. Audit-mutated `PUT /api/tiers/<name>`. Useful when
+  one tier (admin / payments) wants stricter posture than the public
+  default, or a machine-only tier wants to disable challenges
+  entirely (`challenges_enabled: false` → escalate to block instead
+  of emitting a 429 PoW).
 
 **A separate `strikes.block_at`** counter (config: `risk.strikes.block_at`,
 default 50) tracks **lifetime malicious-event count per IP** and never

@@ -107,11 +107,42 @@ risk:
 | Permanent ban faster | Lower `strikes.block_at` |
 | No permanent bans (honeypot setups) | Set `strikes.block_at: 999999` |
 
-**Dashboard:** Settings → Risk thresholds.
+**Dashboard:** Traffic Gates → Cumulative IP risk thresholds (#3).
 
 Threshold changes are hot-reloadable (audit-mutated; takes effect within one tick) — see [`config-hot-reload.md`](../control-plane/config-hot-reload.md).
 
-**When to use:** "the WAF blocks our internal QA scanner after 3 probes — we want it to take 6 before blocking" → raise `challenge_at` and/or `block_at`. "we're seeing a credential-stuffing wave and need to ban faster" → lower `strikes.block_at`.
+**When to use:** "the WAF blocks our internal QA scanner after 3 probes — we want it to take 6 before blocking" → raise `challenge_at` and/or `block_at`. "we're seeing a credential-stuffing wave and need to ban faster" → enable Strike-Block on Traffic Gates → #2 then lower `strikes.block_at`.
+
+### 2.5 Per-tier overrides (Option B, 2026-05-10)
+
+When the global thresholds don't fit every route — e.g., your admin tier wants stricter posture and your public tier wants more permissive — set **per-tier cumulative thresholds** in the Tier editor on Detectors & Tiers:
+
+```yaml
+# Conceptual shape (set via dashboard PUT /api/tiers/<name> today)
+tiers:
+  critical:
+    risk_threshold: 50
+    cumulative_challenge_at: 25     # stricter than global 40
+    cumulative_block_at:    50      # stricter than global 80
+    challenges_enabled:     false   # hard allow/block (no PoW)
+  low:
+    risk_threshold: 90
+    cumulative_challenge_at: 60     # more permissive
+    cumulative_block_at:    95
+    challenges_enabled:     true
+```
+
+Tier overrides fall back to the global trio when left unset (`null` /
+omitted). This lets operators tune one tier at a time without
+copying every value.
+
+**Decision flow** for a single request (three independent gates, first one fires):
+
+1. **Traffic Gates** (global, before tier matching) — access list, strike-block, rate-limit, DDoS.
+2. **Per-request gate** (this tier's `risk_threshold`) — block when this single request's detector scores sum ≥ threshold.
+3. **Cumulative IP history gate** (this tier's `cumulative_*`) — block / challenge when the IP's running cumulative score crosses thresholds. With `challenges_enabled = false`, the challenge rung is removed and crossings escalate straight to block.
+
+`X-WAF-Risk-Score` always reports the cumulative IP score (contract §5.1) regardless of which gate fired the action.
 
 ### 3. Add a custom rule with `RaiseRisk(delta)` (per-route or per-condition)
 

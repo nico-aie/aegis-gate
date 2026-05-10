@@ -2681,7 +2681,18 @@ pub(crate) async fn handle_tier_put(
         pipeline: Vec<String>,
         risk_threshold: u32,
         block_threshold: u32,
+        // 2026-05-10 — Option B fields. All optional so older
+        // dashboards / scripts that PUT only the legacy shape
+        // still work; missing values are interpreted as
+        // "inherit global" / "challenges enabled".
+        #[serde(default)]
+        cumulative_challenge_at: Option<u32>,
+        #[serde(default)]
+        cumulative_block_at: Option<u32>,
+        #[serde(default = "tier_patch_default_challenges_enabled")]
+        challenges_enabled: bool,
     }
+    fn tier_patch_default_challenges_enabled() -> bool { true }
     let patch: TierPatch = match serde_json::from_str(body_str) {
         Ok(p) => p,
         Err(e) => {
@@ -2700,6 +2711,9 @@ pub(crate) async fn handle_tier_put(
         "pipeline": patch.pipeline,
         "risk_threshold": patch.risk_threshold,
         "block_threshold": patch.block_threshold,
+        "cumulative_challenge_at": patch.cumulative_challenge_at,
+        "cumulative_block_at": patch.cumulative_block_at,
+        "challenges_enabled": patch.challenges_enabled,
     });
     let resource = format!("/api/tiers/{tier_name}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
@@ -2724,6 +2738,9 @@ pub(crate) async fn handle_tier_put(
             patch.pipeline,
             patch.risk_threshold,
             patch.block_threshold,
+            patch.cumulative_challenge_at,
+            patch.cumulative_block_at,
+            patch.challenges_enabled,
         ),
     );
     match outcome {

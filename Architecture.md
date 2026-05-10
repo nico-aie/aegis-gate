@@ -288,6 +288,21 @@ individual stages need not know their tier.
 > first. That doc carries the visual flowchart, the per-request vs
 > cumulative-IP risk distinction, and worked examples; this section
 > is the engineering source of truth.
+>
+> **2026-05-10 (Option B)** — every tier (`critical / high / medium / low`)
+> now carries optional `cumulative_challenge_at`, `cumulative_block_at`,
+> and `challenges_enabled: bool` fields alongside the existing
+> `risk_threshold` (per-request block score). When the data plane resolves
+> a route, it looks the matched tier up in the live `TierStore`
+> (shared via `ProxyContext.tiers: OnceLock<Arc<TierStore>>`) and consults
+> these per-tier values for the cumulative-IP-risk decision. Unset fields
+> fall back to the global `cfg.risk.thresholds`. With
+> `challenges_enabled = false`, `RiskLevel::Challenge` escalates straight
+> to block at the matched tier — useful for high-stakes tiers (admin /
+> payment) and machine-only tiers where PoW breaks clients. The contract
+> wire shape (`X-WAF-Action`, `X-WAF-Risk-Score`, response status / body)
+> is unchanged; per-tier thresholds only move *which threshold the
+> comparison uses*, not what we report.
 
 Stages run in this order. Earlier stages can short-circuit later ones.
 

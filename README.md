@@ -114,8 +114,18 @@ SOC-first dashboard.
 - **Audit-mutated CRUD** — every config change goes through
   the audit chain + CSRF gate + capability check; rule edits,
   mode toggles, alert receivers, upstream pools, risk
-  thresholds, detector mask all hot-swap with a visible
+  thresholds (global + per-tier), detector mask, Strike-Block
+  enable, rate-limit, DDoS gate all hot-swap with a visible
   `config_reload` audit entry.
+- **Per-tier risk thresholds** — every tier (critical / high /
+  medium / low) carries its own per-request block score and an
+  optional cumulative-IP-risk override pair (`challenge_at`,
+  `block_at`) plus a `challenges_enabled` toggle. Tiers fall
+  back to the global cumulative thresholds when overrides are
+  unset, so existing deployments see no behavior change. Lets
+  operators run stricter posture on Critical (e.g. hard
+  allow/block, no PoW) and looser on Low without forking the
+  global config.
 - **Compliance modes** — `cfg.compliance.modes` accepts
   documentation tags (`fips`, `pci`, `soc2`, `gdpr`, `hipaa`)
   that surface on the dashboard's Compliance page. Lock-by-mode
