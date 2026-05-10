@@ -608,6 +608,18 @@ pub(crate) fn admin_router(
             json_body_response(200, body, "private, max-age=2")
         }
 
+        // 2026-05-10 — Strike-Block read surface for the Traffic
+        // Gates page. Returns the current `enabled` flag, the
+        // `block_at` threshold, and live telemetry (tracked IPs,
+        // count at-or-over threshold). Strike-Block defaults to
+        // disabled in production; flip via PUT /api/gates/strikes.
+        "/api/gates/strikes" => {
+            let body = aegis_control::api::gates::render_get_strikes(
+                &services.risk,
+            );
+            json_body_response(200, body, "private, max-age=2")
+        }
+
         // D-M5: tracking
         "/api/slo" => json_body_response(200, services.tracking.render_slo(), "private, max-age=2"),
         "/api/cluster" => json_body_response(200, services.tracking.render_cluster(), "private, max-age=2"),
