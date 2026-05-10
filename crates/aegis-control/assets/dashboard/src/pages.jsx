@@ -21,23 +21,6 @@ const CAT_COLOR = {
 };
 function colorFor(name) { return CAT_COLOR[name] || '#6B7280'; }
 
-// CQF-T6 — live RiskHeatmap. Reads from useTopRiskPathsApi
-// (audit ring grouped by path → max risk per path → top 8).
-// Renders an honest empty state when no audit events have
-// arrived yet, rather than the previous hardcoded JSX rows.
-function RiskHeatmapLive() {
-  const { rows } = window.useTopRiskPathsApi(200, 8);
-  if (!rows || rows.length === 0) {
-    return (
-      <div style={{ padding: 18, fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic', textAlign: 'center' }}>
-        No risk-bearing audit events in the recent window.
-        Drive some traffic (or a probe) to populate the heatmap.
-      </div>
-    );
-  }
-  return <window.RiskHeatmap rows={rows} h={200} />;
-}
-
 function PageOverview() {
   const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
   // 2026-05-03 — Overview Upstream card used to read
@@ -376,27 +359,6 @@ function PageOverview() {
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Risk heatmap (wow #2) */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head">
-          <div>
-            <div className="card-title">Risk heatmap — top paths × intensity</div>
-            <div className="card-sub">
-              Top 8 paths by max risk score over the most-recent
-              200 audit events. Live · derived from /api/audit/since.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 10, color: 'var(--ink-dim)' }}>
-            <span>low</span>
-            {['#1E2329','#3B2A1A','#6B4710','#A87715','#E0A415','#FCD535'].map(c => (
-              <span key={c} style={{ width: 14, height: 10, background: c, display: 'inline-block', borderRadius: 1 }} />
-            ))}
-            <span>high</span>
-          </div>
-        </div>
-        <RiskHeatmapLive />
       </div>
 
       {/* Top attackers */}
@@ -1058,12 +1020,10 @@ function PageAnalytics() {
   const routeLatency = window.useRouteLatencyApi ? window.useRouteLatencyApi() : { data: null };
   const detectorLatency = window.useDetectorLatencyApi ? window.useDetectorLatencyApi() : { data: null };
   const routes = window.useAnalyticsRoutesApi ? window.useAnalyticsRoutesApi() : { data: null };
-  // HACK-T1 — SLO + Cert summaries also retired from static
-  // fixtures. Both endpoints already shipped (Tracking page
-  // consumes them); we just expose them on Analytics too so
-  // operators don't have to switch tabs.
-  const sloApi = window.useSloApi();
-  const certsApi = window.useCertsApi();
+  // 2026-05-10 — SLO + Cert summaries removed from Performance.
+  // The canonical home is the Health & SLOs page (root-cause hint
+  // when below target + full cert table). Performance focuses on
+  // throughput / latency / route-level metrics instead.
 
   const points = ts.data?.points ?? [];
   const reqOverTime = points.map(p => p.total);
@@ -1320,53 +1280,6 @@ function PageAnalytics() {
         </div>
       </div>
 
-      <div className="grid-12">
-        <div className="col-8 card">
-          <window.SectionHeader title="SLO budget remaining" sub="live engine" />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {(sloApi.data?.slis ?? []).length === 0 && (
-              <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                SLO engine warming up — no SLI data yet.
-              </div>
-            )}
-            {(sloApi.data?.slis ?? []).map(s => {
-              const remainPct = Math.round((s.budget_remaining ?? 0) * 100);
-              return (
-                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 12, alignItems: 'center', fontSize: 12 }}>
-                  <span>{s.name}</span>
-                  <span className="dim">{s.target.toFixed(2)}%</span>
-                  <span className="num" style={{ color: 'var(--ink)' }}>{s.current.toFixed(2)}%</span>
-                  <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${remainPct}%`, height: '100%', background: remainPct < 30 ? 'var(--down)' : remainPct < 60 ? 'var(--warn)' : 'var(--up)' }} />
-                  </div>
-                  <span className="num right" style={{ color: remainPct < 30 ? 'var(--down)' : 'var(--ink-mute)' }}>{remainPct}% left</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div className="col-4 card">
-          <window.SectionHeader title="Cert freshness" sub={`${(certsApi.data?.certs ?? []).length} certificates`} />
-          {(certsApi.data?.certs ?? []).length === 0 ? (
-            <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-              No certificates configured.
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {(certsApi.data?.certs ?? []).slice(0, 5).map(c => {
-                const days = c.days_to_expiry ?? c.days ?? 0;
-                const tone = days < 7 ? 'down' : days < 30 ? 'warn' : 'up';
-                return (
-                  <div key={c.host} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                    <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }} className="mono">{c.host}</div>
-                    <span className={`pill ${tone}`}>{days}d</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
     </>
   );
 }
@@ -5050,7 +4963,10 @@ function PageTracking() {
 
       <div className="grid-12" style={{ marginBottom: 12 }}>
         <div className="col-6 card">
-          <window.SectionHeader title="SLO budget" sub="live engine · burn windows pending wiring" />
+          <window.SectionHeader
+            title="SLO budget"
+            sub="Service-level objectives — current value vs. target, plus error-budget remaining over the rolling window. Budget drains when current drops below target."
+          />
           {/* S7 (2026-05-08) — root-cause hint when an SLO is below
               target. Pre-fix: the SOC analyst saw a red SLO and had
               to cross-reference attack logs manually to find the
@@ -5058,27 +4974,58 @@ function PageTracking() {
               link to the audit trail filtered to it. */}
           <SloRootCauseHint slis={slo.data?.slis || []} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(slo.data?.slis || []).length === 0 && (
+            {(slo.data?.slis || []).length === 0 ? (
               <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                No SLO data — engine warming up.
+                No SLO data yet — drive some traffic to populate the SLI window
+                {' ('}<code>cfg.slo</code> defines the SLIs).
               </div>
-            )}
-            {(slo.data?.slis || []).map(s => {
-              const tone = s.budget_remaining > 0.5 ? 'up' : s.budget_remaining > 0.1 ? 'warn' : 'down';
-              return (
-                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}>
-                  <span>{s.name}</span>
-                  <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
-                    {s.current.toFixed(2)}%
-                  </span>
-                  <span className="dim">{s.target.toFixed(2)}%</span>
-                  <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
-                  </div>
-                  <span className={`pill ${tone}`}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
+            ) : (
+              <>
+                {/* Column headers — without these, the three percentages
+                    in each row read as a mystery wall to operators new
+                    to the page. 2026-05-10. */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '180px 80px 80px 1fr 80px',
+                  gap: 10,
+                  alignItems: 'center',
+                  fontSize: 10,
+                  color: 'var(--ink-dim)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.5,
+                  paddingBottom: 4,
+                  borderBottom: '1px solid var(--hairline)',
+                  marginBottom: 4,
+                }}>
+                  <span>SLI</span>
+                  <span>Current</span>
+                  <span>Target</span>
+                  <span>Error budget</span>
+                  <span style={{ textAlign: 'right' }}>Remaining</span>
                 </div>
-              );
-            })}
+                {(slo.data?.slis || []).map(s => {
+                  const tone = s.budget_remaining > 0.5 ? 'up' : s.budget_remaining > 0.1 ? 'warn' : 'down';
+                  const meeting = s.current >= s.target;
+                  return (
+                    <div
+                      key={s.name}
+                      title={`${s.name} — currently ${s.current.toFixed(2)}% (target ${s.target.toFixed(2)}%). ${meeting ? 'Meeting target.' : 'Below target — error budget is draining.'}`}
+                      style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}
+                    >
+                      <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
+                      <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
+                        {s.current.toFixed(2)}%
+                      </span>
+                      <span className="dim">{s.target.toFixed(2)}%</span>
+                      <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                        <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
+                      </div>
+                      <span className={`pill ${tone}`} style={{ textAlign: 'right' }}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         </div>
         <div className="col-6 card">
