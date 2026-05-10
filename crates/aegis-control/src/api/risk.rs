@@ -84,7 +84,7 @@ mod tests {
 
     fn cfg() -> RiskConfig {
         let mut c = RiskConfig::default();
-        c.strikes = Some(StrikeConfig { block_at: 5 });
+        c.strikes = Some(StrikeConfig { enabled: true, block_at: 5 });
         c.trust_recovery = Some(TrustRecoveryConfig { per_hour: 30 });
         c
     }

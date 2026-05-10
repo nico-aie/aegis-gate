@@ -211,6 +211,9 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::PUT && path == "/api/rate-limit" {
         return crate::admin_mutate::handle_rate_limit_put(req, services).await;
     }
+    if method == hyper::Method::PUT && path == "/api/gates/strikes" {
+        return crate::admin_mutate::handle_strikes_put(req, services).await;
+    }
 
     // CC-T2.1.b — alert-receivers writes. Audit-mutated; CSRF-
     // gated. Three handlers:

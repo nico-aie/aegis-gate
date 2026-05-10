@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::tier::Tier;
 
@@ -1507,11 +1507,28 @@ impl Default for TrustRecoveryConfig {
 /// counter (never decays); once `block_at` is reached, the IP is
 /// blocked at the data plane until an operator runs
 /// `PUT /api/risk/{ip}/reset`.
-#[derive(Clone, Debug, Deserialize)]
+///
+/// 2026-05-10 — `enabled` defaults to `false`. Strike-Block is
+/// now opt-in because (a) the contract's `X-WAF-Risk-Score`
+/// requires accumulation+decay semantics that can be tested in
+/// isolation, and Strike-Block's never-decay counter can keep
+/// an IP locked even after the cumulative score has decayed
+/// below threshold; and (b) operators caught off-guard by a
+/// permanent block found the YAML knob hard to discover.
+/// Enable from Dashboard → Traffic Gates → Strike-Block card →
+/// Edit, audit-mutated PUT /api/gates/strikes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StrikeConfig {
-    /// Number of strikes that triggers a permanent block. Per the
-    /// user-confirmed default, strikes never decay — the operator
-    /// must reset them via the audit-mutation pipeline.
+    /// Master enable/disable for the Strike-Block gate. When
+    /// `false`, `is_strike_blocked()` always returns `false` —
+    /// detector hits still increment the lifetime counter
+    /// (operators see it climb in `/api/risk`), but the data
+    /// plane does not 403 on threshold cross. Defaults to
+    /// `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Number of strikes that triggers the gate. Only honored
+    /// when `enabled = true`.
     #[serde(default = "default_strike_block_at")]
     pub block_at: u32,
 }
@@ -1523,6 +1540,7 @@ fn default_strike_block_at() -> u32 {
 impl Default for StrikeConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             block_at: default_strike_block_at(),
         }
     }

@@ -141,7 +141,7 @@ function TabHowItWorks() {
           <ol style={{ marginTop: 8, paddingLeft: 18 }}>
             <li><strong>Listener</strong> accepts the connection on <code>:8080</code> (HTTP) or <code>:8443</code> (TLS, with SNI-driven cert selection).</li>
             <li><strong>Route resolution</strong> matches the request's host + path + method against the route table (first-match-wins, top to bottom).</li>
-            <li><strong>Traffic gates</strong> — four binary short-circuits fire in cheapest-first order before the detector chain: <em>access list</em> (IP/CIDR/ASN/country), <em>strike-block</em> (lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code>), <em>rate limit</em> (token bucket → 429), <em>DDoS gate</em> (per-IP sliding-window auto-block → 403 + 5-min TTL). All four configurable from the Traffic Gates page; all four hot-reloadable.</li>
+            <li><strong>Traffic gates</strong> — four binary short-circuits fire in cheapest-first order before the detector chain: <em>access list</em> (IP/CIDR/ASN/country), <em>strike-block</em> (lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code>; opt-in, default off since 2026-05-10), <em>rate limit</em> (token bucket → 429), <em>DDoS gate</em> (per-IP sliding-window auto-block → 403 + 5-min TTL). All four configurable from the Traffic Gates page; all four hot-reloadable. The cumulative IP risk thresholds (#3 on the page) tune the score-based challenge / block path that follows the detector chain — same page so the per-IP-risk story sits in one place.</li>
             <li><strong>Detector chain</strong> — every detector enabled in the mask runs on the request: SQLi, XSS, path traversal, SSRF, header injection, body abuse, recon, brute_force, command_injection, template_injection, nosql_injection, open_redirect, plus the AI detector if it's on.</li>
             <li><strong>Risk + tier gate</strong> — detector signals add to a per-request composite score; if it crosses the route's tier threshold (critical 50 / high 70 / medium 80 / low 90), the request is blocked (HTTP 403 / 429). Separately, every detector hit also increments the client IP's <em>cumulative IP risk score</em>, which has its own thresholds on the Traffic Gates page → "Cumulative IP risk thresholds" (next to Strike-Block).</li>
             <li><strong>Forward</strong> — if allowed, the request is proxied to the route's upstream pool with the configured scheme, load-balancing, host-header rewrite, etc.</li>
@@ -199,7 +199,7 @@ function TabHowItWorks() {
           Four binary block-or-pass gates run before the detector chain (cheapest-first):
           <ol style={{ marginTop: 6, paddingLeft: 18 }}>
             <li><strong>Access list</strong> — IP / CIDR / ASN / country (403)</li>
-            <li><strong>Strike-block</strong> — lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code> (403)</li>
+            <li><strong>Strike-block</strong> — lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code> (403). Opt-in; default disabled.</li>
             <li><strong>Rate limit</strong> — token bucket; recoverable when window slides (429)</li>
             <li><strong>DDoS gate</strong> — per-IP sliding-window auto-block; 5-min TTL (403)</li>
           </ol>
@@ -278,7 +278,7 @@ function TabGlossary() {
     ['Cumulative IP risk score',
       'Per-IP score that accumulates across requests and decays exponentially (default half-life 5 min from `risk.decay_half_life`). Two thresholds gate the challenge ladder: `risk.thresholds.challenge_at` (default 40 — JS / CAPTCHA before allow) and `risk.thresholds.block_at` (default 80 — refuse all further requests from this IP at the access gate, before any detector runs, until decay drops the score below). Edit live on Traffic Gates → "Cumulative IP risk thresholds" (next to Strike-Block). Distinct from the per-request tier risk threshold (Detectors & Tiers → Edit tier).'],
     ['Strike count (lifetime)',
-      'A separate per-IP counter that never decays — `risk.strikes.block_at` (default 50 lifetime malicious events) permanently blocks the IP until an operator resets it via `PUT /api/risk/{ip}/reset`. The "you ran out of chances" gate, distinct from the score-and-decay gate above.'],
+      'A separate per-IP counter that never decays — `risk.strikes.block_at` (default 50 lifetime malicious events) permanently blocks the IP until an operator resets it via `POST /api/risk/{ip}/reset`. The "you ran out of chances" gate, distinct from the score-and-decay gate above. Opt-in: `risk.strikes.enabled` defaults to `false` (since 2026-05-10) so the contract\'s X-WAF-Risk-Score accumulation+decay invariant is testable in isolation. Enable + tune from Traffic Gates → Strike-Block card → Edit (audit-mutated PUT /api/gates/strikes).'],
   ];
 
   return (
@@ -338,7 +338,8 @@ function TabWorkflows() {
         'Traffic Gates → look at the Rate Limit card (current limit / window / scope) and the DDoS Gate card (per-IP limit / window / block TTL / spike trigger).',
         'For a misbehaving-but-not-malicious client (429 is fine): Rate Limit → Edit. Lower the limit or shorten the window. Save (audit-mutated, hot-reload).',
         'For a sustained flood (need to quarantine the IP entirely): DDoS Gate → Edit. Tighten per_ip_limit + window, raise block_ttl_s. Save.',
-        'Per-IP state is preserved across edits — flooding sources do not get a free reset when thresholds tighten.',
+        'For repeat offenders accumulating strikes: Strike-Block → Edit → flip Enabled on (or tune block_at). The lifetime counter that already climbed will fire immediately — per-IP state preserved across edits, no free reset.',
+        'Per-IP state is preserved across all edits — flooding sources do not get a free reset when thresholds tighten.',
         'Verify: watch the Spike-active banner on the DDoS card and cross-reference Investigation → Top Attackers.',
       ],
     },
@@ -447,7 +448,7 @@ function TabFaq() {
     },
     {
       q: 'Can I script the dashboard?',
-      a: 'Yes — every audit-mutated action has a documented HTTP endpoint. Login via POST /admin/login → grab the cookie + CSRF, then PUT /api/routes/{id}, /api/upstreams/pool/{id}, /api/detectors, /api/ai/enabled, /api/tiers/{name}, /api/rate-limit, /api/gates/ddos, /api/blacklist, /api/whitelist, etc. Full schema in docs/control-plane/api.openapi.yaml.',
+      a: 'Yes — every audit-mutated action has a documented HTTP endpoint. Login via POST /admin/login → grab the cookie + CSRF, then PUT /api/routes/{id}, /api/upstreams/pool/{id}, /api/detectors, /api/ai/enabled, /api/tiers/{name}, /api/rate-limit, /api/gates/ddos, /api/gates/strikes, /api/blacklist, /api/whitelist, etc. Full schema in docs/control-plane/api.openapi.yaml.',
     },
     {
       q: 'How do I reset everything to defaults in dev?',

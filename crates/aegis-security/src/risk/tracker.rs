@@ -78,7 +78,12 @@ struct TrackerInner {
     /// and the inner clone is cheap (3 u32s).
     thresholds: arc_swap::ArcSwap<RiskThresholds>,
     trust: TrustRecoveryConfig,
-    strikes: StrikeConfig,
+    /// 2026-05-10 — wrapped in ArcSwap so `PUT /api/gates/strikes`
+    /// can hot-flip `enabled` and tune `block_at` without a
+    /// restart. Per-IP strike *state* in `map` is preserved
+    /// across edits — operators tightening thresholds don't
+    /// reset every accumulating IP.
+    strikes: arc_swap::ArcSwap<StrikeConfig>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -98,9 +103,27 @@ impl RiskTracker {
                 map: DashMap::new(),
                 thresholds: arc_swap::ArcSwap::from_pointee(cfg.thresholds.clone()),
                 trust: cfg.trust_recovery.clone().unwrap_or_default(),
-                strikes: cfg.strikes.clone().unwrap_or_default(),
+                strikes: arc_swap::ArcSwap::from_pointee(
+                    cfg.strikes.clone().unwrap_or_default(),
+                ),
             }),
         }
+    }
+
+    /// 2026-05-10 — atomic Strike-Block config swap. The next
+    /// `is_strike_blocked()` call sees the new `enabled` /
+    /// `block_at`. Per-IP strike counters in `map` survive the
+    /// swap: operators flipping the gate on/off or tightening
+    /// the threshold mid-incident don't get a free reset.
+    pub fn set_strike_config(&self, c: StrikeConfig) {
+        self.inner.strikes.store(Arc::new(c));
+    }
+
+    /// Snapshot the current Strike-Block config — used by
+    /// `/api/gates/strikes` GET, the `before` capture in the
+    /// audit-mutated PUT, and tests.
+    pub fn strike_config_snapshot(&self) -> StrikeConfig {
+        (**self.inner.strikes.load()).clone()
     }
 
     /// CI-T12 — atomic threshold swap. The next `level()` /
@@ -190,10 +213,18 @@ impl RiskTracker {
     }
 
     /// `true` when the IP's lifetime strike counter has crossed
-    /// the configured threshold.
+    /// the configured threshold AND the Strike-Block gate is
+    /// enabled. With `enabled = false` (the 2026-05-10 default)
+    /// this always returns `false` regardless of strike count
+    /// — the counter still climbs in `/api/risk` for forensics
+    /// but the data plane does not 403.
     pub fn is_strike_blocked(&self, ip: IpAddr) -> bool {
+        let cfg = self.inner.strikes.load();
+        if !cfg.enabled {
+            return false;
+        }
         self.snapshot(ip)
-            .map(|s| s.strikes >= self.inner.strikes.block_at)
+            .map(|s| s.strikes >= cfg.block_at)
             .unwrap_or(false)
     }
 
@@ -231,10 +262,15 @@ impl RiskTracker {
         let block_at = t.block_at;
         let challenge_at = t.challenge_at;
         drop(t);
+        let strikes_cfg = self.inner.strikes.load();
+        let strikes_enabled = strikes_cfg.enabled;
+        let strikes_block_at = strikes_cfg.block_at;
+        drop(strikes_cfg);
         all.into_iter()
             .take(n)
             .map(|(ip, slot)| {
-                let strike_blocked = slot.strikes >= self.inner.strikes.block_at;
+                let strike_blocked =
+                    strikes_enabled && slot.strikes >= strikes_block_at;
                 let level = if strike_blocked || slot.score >= block_at {
                     "block"
                 } else if slot.score >= challenge_at {
@@ -326,7 +362,12 @@ mod tests {
     fn cfg() -> RiskConfig {
         let mut c = RiskConfig::default();
         c.trust_recovery = Some(TrustRecoveryConfig { per_hour: 30 });
-        c.strikes = Some(StrikeConfig { block_at: 5 });
+        // 2026-05-10 — explicitly enable Strike-Block. The
+        // production default is `enabled: false` (gate is opt-in),
+        // but these tests are about verifying the mechanism, so we
+        // turn it on here. See `strike_block_disabled_by_default_*`
+        // tests below for the off-by-default behavior.
+        c.strikes = Some(StrikeConfig { enabled: true, block_at: 5 });
         c
     }
 
@@ -531,5 +572,90 @@ mod tests {
         // — score then only ever goes up (legacy half-life still
         // applies separately via RiskEngine).
         assert_eq!(trust_decay_points(Duration::from_secs(36_000), 0), 0);
+    }
+
+    // ---------- 2026-05-10 — Strike-Block enable/disable wiring ----------
+
+    fn cfg_strikes_disabled() -> RiskConfig {
+        let mut c = RiskConfig::default();
+        c.trust_recovery = Some(TrustRecoveryConfig { per_hour: 30 });
+        c.strikes = Some(StrikeConfig { enabled: false, block_at: 5 });
+        c
+    }
+
+    #[test]
+    fn strike_block_disabled_does_not_fire_even_at_threshold() {
+        let t = RiskTracker::new(&cfg_strikes_disabled());
+        let target = ip("10.0.0.42");
+        for _ in 0..10 {
+            t.record_malicious(target, 1);
+        }
+        let s = t.snapshot(target).unwrap();
+        assert_eq!(s.strikes, 10);
+        assert!(
+            !t.is_strike_blocked(target),
+            "Strike-Block must not fire when enabled=false"
+        );
+        // level() also gets the score-based path because the gate
+        // is off — score is 10 (below challenge_at=40).
+        assert_eq!(t.level(target), RiskLevel::Allow);
+    }
+
+    #[test]
+    fn strike_config_snapshot_reads_live_config() {
+        let t = RiskTracker::new(&cfg());
+        let snap = t.strike_config_snapshot();
+        assert!(snap.enabled);
+        assert_eq!(snap.block_at, 5);
+    }
+
+    #[test]
+    fn set_strike_config_hot_swaps_without_reset() {
+        let t = RiskTracker::new(&cfg());
+        let target = ip("10.0.0.99");
+        // Accumulate 5 strikes — gate is enabled with block_at=5.
+        for _ in 0..5 {
+            t.record_malicious(target, 1);
+        }
+        assert!(t.is_strike_blocked(target));
+        // Hot-flip the gate off; the IP is no longer blocked at
+        // the gate even though its lifetime counter is unchanged.
+        t.set_strike_config(StrikeConfig { enabled: false, block_at: 5 });
+        assert!(!t.is_strike_blocked(target));
+        let s = t.snapshot(target).unwrap();
+        assert_eq!(s.strikes, 5, "per-IP state preserved across swap");
+        // Hot-flip back on — the same accumulated count fires
+        // immediately, no reset needed.
+        t.set_strike_config(StrikeConfig { enabled: true, block_at: 5 });
+        assert!(t.is_strike_blocked(target));
+    }
+
+    #[test]
+    fn set_strike_config_can_tighten_threshold_mid_incident() {
+        let t = RiskTracker::new(&cfg());
+        let target = ip("10.0.0.55");
+        // 3 strikes at block_at=5 — not yet blocked.
+        for _ in 0..3 {
+            t.record_malicious(target, 1);
+        }
+        assert!(!t.is_strike_blocked(target));
+        // Tighten threshold to 3 — the IP is now over the limit
+        // without any new attack signals.
+        t.set_strike_config(StrikeConfig { enabled: true, block_at: 3 });
+        assert!(t.is_strike_blocked(target));
+    }
+
+    #[test]
+    fn snapshot_wire_strike_blocked_false_when_gate_disabled() {
+        let t = RiskTracker::new(&cfg_strikes_disabled());
+        let target = ip("10.0.0.7");
+        for _ in 0..6 {
+            t.record_malicious(target, 1);
+        }
+        let snap = t.snapshot_wire(target).unwrap();
+        assert_eq!(snap.strikes, 6);
+        assert!(!snap.strike_blocked);
+        // score is 6 (well below challenge_at=40), so level=allow.
+        assert_eq!(snap.level, "allow");
     }
 }

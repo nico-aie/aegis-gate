@@ -27,6 +27,8 @@ use std::sync::Arc;
 
 use aegis_security::ddos::{DdosConfig, DdosRuntime};
 use aegis_security::rate_limit::{IpRateLimitConfig, IpRateLimiter};
+use aegis_security::risk::RiskTracker;
+use aegis_core::config::StrikeConfig;
 
 /// Read shape returned by `GET /api/gates/ddos`.
 ///
@@ -230,6 +232,90 @@ pub fn render_get_rate_limit(limiter: &Arc<IpRateLimiter>) -> String {
     serde_json::to_string(&view).unwrap_or_else(|_| String::from("{}"))
 }
 
+// =====================================================================
+// Strike-Block gate read + write surface (2026-05-10)
+// =====================================================================
+
+/// Read shape returned by `GET /api/gates/strikes`.
+///
+/// Mirrors `aegis_core::config::StrikeConfig` so dashboard ↔ YAML
+/// fields map 1:1. `tracked_ips` and `blocked_ips` are live
+/// telemetry counts derived from the per-IP map (cheap — O(N)
+/// over the typically-tiny tracked set).
+///
+/// Strike-Block is opt-in (`enabled` defaults to `false`); when
+/// disabled, the lifetime counter still climbs for forensics
+/// but the data plane does not 403 on threshold cross. See
+/// `docs/operator/traffic-gates.md` for the operator guide.
+#[derive(Debug, Serialize)]
+pub struct StrikesView {
+    pub enabled: bool,
+    pub block_at: u32,
+    /// Number of IPs currently in the per-IP map (any non-zero
+    /// score or strike count).
+    pub tracked_ips: usize,
+    /// Number of tracked IPs whose lifetime strike count is
+    /// already at-or-over `block_at` — i.e. how many would 403
+    /// right now if the gate is enabled.
+    pub at_or_over_threshold: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StrikesPutBody {
+    pub enabled: bool,
+    #[serde(default = "default_strikes_block_at")]
+    pub block_at: u32,
+}
+
+fn default_strikes_block_at() -> u32 {
+    50
+}
+
+impl StrikesPutBody {
+    pub fn validate(self) -> Result<StrikeConfig, Vec<String>> {
+        let mut errors = Vec::new();
+        if self.block_at == 0 {
+            errors.push("block_at must be > 0".into());
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        Ok(StrikeConfig {
+            enabled: self.enabled,
+            block_at: self.block_at,
+        })
+    }
+}
+
+/// Render the `/api/gates/strikes` GET payload from the live
+/// `RiskTracker`. The `top(usize::MAX)` snapshot is N entries
+/// where N is bounded by the per-IP map size — typically tiny
+/// in production (only IPs that have triggered a detector are
+/// tracked).
+pub fn render_get_strikes(risk: &RiskTracker) -> String {
+    let cfg = risk.strike_config_snapshot();
+    let n = risk.len();
+    // Count IPs whose strike count is at-or-over `block_at`.
+    // Iterating top(n) is the public read path; the snapshot
+    // already carries `strikes` so no extra cost vs. a custom
+    // map walk.
+    let at_or_over = if cfg.block_at == 0 {
+        0
+    } else {
+        risk.top(n)
+            .into_iter()
+            .filter(|s| s.strikes >= cfg.block_at)
+            .count()
+    };
+    let view = StrikesView {
+        enabled: cfg.enabled,
+        block_at: cfg.block_at,
+        tracked_ips: n,
+        at_or_over_threshold: at_or_over,
+    };
+    serde_json::to_string(&view).unwrap_or_else(|_| String::from("{}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +479,33 @@ mod tests {
         let zero_w = RateLimitPutBody { limit: 100, window_seconds: 0 };
         let errs = zero_w.validate().unwrap_err();
         assert!(errs.iter().any(|e| e.contains("window_seconds")));
+    }
+
+    #[test]
+    fn strikes_put_body_validates_bounds() {
+        let valid = StrikesPutBody { enabled: true, block_at: 50 };
+        let cfg = valid.validate().unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.block_at, 50);
+
+        let disable = StrikesPutBody { enabled: false, block_at: 50 };
+        assert!(disable.validate().is_ok());
+
+        let zero = StrikesPutBody { enabled: true, block_at: 0 };
+        let errs = zero.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("block_at")));
+    }
+
+    #[test]
+    fn render_get_strikes_returns_disabled_default_shape() {
+        use aegis_core::config::RiskConfig;
+        let tracker = RiskTracker::new(&RiskConfig::default());
+        let body = render_get_strikes(&tracker);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        // 2026-05-10 — production default is `enabled: false`.
+        assert_eq!(v["enabled"], false);
+        assert_eq!(v["block_at"], 50);
+        assert_eq!(v["tracked_ips"], 0);
+        assert_eq!(v["at_or_over_threshold"], 0);
     }
 }
