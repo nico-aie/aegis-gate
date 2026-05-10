@@ -2623,6 +2623,13 @@ function AiDetectorRow() {
 function PageTierConfig() {
   const tiersApi = window.useTiersApi();
   const routesApi = window.useRoutesApi();
+  // 2026-05-10 — read at the top so we don't violate the Rules of
+  // Hooks. The Live Policy summary in the right pane consumes
+  // `detectorsApi.data?.overrides[selected.name]` and `?.mask` to
+  // show whether the tier inherits Base or has an explicit override.
+  const detectorsApi = window.useDetectorsApi
+    ? window.useDetectorsApi()
+    : { data: null };
   const tiers = tiersApi.data?.tiers || [];
   const routes = routesApi.data?.routes || [];
   const [selectedName, setSelectedName] = useStateP(null);
@@ -2775,11 +2782,9 @@ function PageTierConfig() {
                   <div style={{ color: 'var(--ink-dim)' }}>Detectors that run</div>
                   <div>
                     {(() => {
-                      // Read the live mask state to show whether this tier
-                      // has an explicit override or is inheriting Base.
-                      const detectorsApi = window.useDetectorsApi
-                        ? window.useDetectorsApi()
-                        : { data: null };
+                      // Pure projection over `detectorsApi.data` — the
+                      // hook itself is called at the top of
+                      // PageTierConfig (Rules of Hooks).
                       const tierOverride = detectorsApi.data?.overrides?.[selected.name];
                       const baseMask = detectorsApi.data?.mask;
                       const explicit = !!tierOverride;
@@ -2792,7 +2797,7 @@ function PageTierConfig() {
                             <strong>{enabledCount}/{totalCount} enabled</strong>
                           ) : (
                             <>
-                              <em>inherits Base</em> ({enabledCount}/{totalCount} enabled)
+                              <em>inherits Base</em> ({totalCount > 0 ? `${enabledCount}/${totalCount} enabled` : 'loading…'})
                             </>
                           )}
                           {' · '}
