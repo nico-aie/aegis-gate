@@ -93,15 +93,24 @@ pub struct DetectorsPutBody {
     pub overrides: BTreeMap<String, Option<DetectorMaskBody>>,
 }
 
-/// Classes any compliance profile pins to "always on". Drawn from
-/// the cross-section of PCI 6.5, HIPAA §164.312, SOC 2 CC 6.1, and
-/// GDPR Art. 32(1)(b) detection mandates.
-const COMPLIANCE_PINNED: &[DetectorClass] = &[
-    DetectorClass::Sqli,
-    DetectorClass::Xss,
-    DetectorClass::PathTraversal,
-    DetectorClass::Ssrf,
-];
+/// Classes any compliance profile pins to "always on".
+///
+/// 2026-05-10 — **deferred for now.** The list is intentionally
+/// empty so operators can freely enable/disable any detector
+/// regardless of declared compliance modes. Modes are still
+/// accepted in `cfg.compliance.modes` (they show up on the
+/// Compliance dashboard as documentation tags) and the
+/// `enforce_compliance_clamp` / `is_locked` / `locked_classes`
+/// API surface is preserved — they just no-op while this slice
+/// is empty.
+///
+/// To bring the lock-by-mode feature back, repopulate this
+/// constant with the classes that should be pinned (the historical
+/// set was `[Sqli, Xss, PathTraversal, Ssrf]`, drawn from PCI 6.5,
+/// HIPAA §164.312, SOC 2 CC 6.1, and GDPR Art. 32(1)(b) detection
+/// mandates) and update the tests below + the dashboard
+/// `PageCompliance` messaging.
+const COMPLIANCE_PINNED: &[DetectorClass] = &[];
 
 /// `true` if the active modes pin a class to "always on".
 pub fn is_locked(class: DetectorClass, modes: &[ComplianceMode]) -> bool {
@@ -273,18 +282,21 @@ mod tests {
     }
 
     #[test]
-    fn render_get_pins_locked_classes_under_pci() {
+    fn render_get_emits_modes_but_no_locks_today() {
+        // 2026-05-10 — compliance lock-by-mode is deferred. Modes
+        // declared in cfg.compliance.modes are still surfaced on the
+        // dashboard's `compliance_modes` field (so PageCompliance can
+        // render the active-mode chips), but `locked_classes` is
+        // empty regardless of which mode is active. Re-enable by
+        // repopulating COMPLIANCE_PINNED.
         let mask = SharedDetectorMask::default();
         let body = render_get(&mask, &[ComplianceMode::Pci]);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let locked: Vec<&str> = v["locked_classes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s.as_str().unwrap())
-            .collect();
-        // Order matches COMPLIANCE_PINNED — stable for the dashboard.
-        assert_eq!(locked, vec!["sqli", "xss", "path_traversal", "ssrf"]);
+        assert_eq!(
+            v["locked_classes"].as_array().unwrap().len(),
+            0,
+            "compliance lock is deferred — locked_classes must be empty"
+        );
         assert_eq!(v["compliance_modes"].as_array().unwrap()[0], "pci");
     }
 
@@ -307,24 +319,32 @@ mod tests {
         assert!(enforce_compliance_clamp(proposal, &[]).is_ok());
     }
 
+    // 2026-05-10 — compliance lock is deferred. The pre-deferral
+    // tests verified that PCI / HIPAA blocked an operator from
+    // disabling sqli/xss/path_traversal/ssrf. With COMPLIANCE_PINNED
+    // empty, the clamp is a no-op for every mode, and the operator
+    // is free to disable any class. The single test below documents
+    // that contract; restore the per-mode tests when re-populating
+    // COMPLIANCE_PINNED.
     #[test]
-    fn enforce_clamp_blocks_disabling_pinned_class() {
-        let proposal = DetectorMask::all_enabled().with(DetectorClass::Sqli, false);
-        let err = enforce_compliance_clamp(proposal, &[ComplianceMode::Pci]).unwrap_err();
-        assert_eq!(err, vec!["sqli"]);
-    }
+    fn enforce_clamp_is_a_no_op_while_lock_is_deferred() {
+        // No modes — no-op (this was always the contract).
+        let mut all_off = DetectorMask::none();
+        assert!(enforce_compliance_clamp(all_off, &[]).is_ok());
 
-    #[test]
-    fn enforce_clamp_reports_all_violations() {
-        let proposal = DetectorMask::none();
-        let err = enforce_compliance_clamp(proposal, &[ComplianceMode::Hipaa]).unwrap_err();
-        assert_eq!(err, vec!["sqli", "xss", "path_traversal", "ssrf"]);
-    }
+        // PCI mode active — still no-op today because the lock is
+        // deferred. Operator-disabling sqli is allowed.
+        all_off = DetectorMask::all_enabled().with(DetectorClass::Sqli, false);
+        assert!(
+            enforce_compliance_clamp(all_off, &[ComplianceMode::Pci]).is_ok(),
+            "lock is deferred — PCI mode must not block disabling sqli today"
+        );
 
-    #[test]
-    fn enforce_clamp_allows_disabling_non_pinned_class() {
-        let proposal = DetectorMask::all_enabled().with(DetectorClass::Recon, false);
-        assert!(enforce_compliance_clamp(proposal, &[ComplianceMode::Pci]).is_ok());
+        // HIPAA mode active, mask completely off — still no-op.
+        assert!(
+            enforce_compliance_clamp(DetectorMask::none(), &[ComplianceMode::Hipaa]).is_ok(),
+            "lock is deferred — HIPAA mode must not block disabling everything today"
+        );
     }
 
     #[test]
@@ -348,11 +368,21 @@ mod tests {
     }
 
     #[test]
-    fn is_locked_only_for_pinned_classes() {
-        let modes = [ComplianceMode::Pci];
-        assert!(is_locked(DetectorClass::Sqli, &modes));
-        assert!(!is_locked(DetectorClass::Recon, &modes));
-        assert!(!is_locked(DetectorClass::BruteForce, &modes));
+    fn is_locked_off_for_every_class_while_deferred() {
+        // 2026-05-10 — compliance lock is deferred. is_locked returns
+        // false for every class regardless of mode, so the dashboard
+        // never renders the 🔒 chip and no detector is forced on.
+        let modes = [ComplianceMode::Pci, ComplianceMode::Hipaa];
+        for &cls in &[
+            DetectorClass::Sqli,
+            DetectorClass::Xss,
+            DetectorClass::PathTraversal,
+            DetectorClass::Ssrf,
+            DetectorClass::Recon,
+            DetectorClass::BruteForce,
+        ] {
+            assert!(!is_locked(cls, &modes), "{cls:?} must not be locked while deferred");
+        }
     }
 
     // ---------- P3 per-tier overrides ----------------------------------
@@ -438,9 +468,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_put_body_clamps_overrides_against_compliance() {
-        // Even at a single tier, dropping a pinned class is forbidden
-        // when compliance mode is active.
+    fn apply_put_body_does_not_clamp_overrides_while_lock_is_deferred() {
+        // 2026-05-10 — compliance lock is deferred. Dropping sqli at
+        // a single tier (PCI active) is currently allowed; the apply
+        // path returns the modified state without errors.
         let mut body = DetectorsPutBody::default();
         body.overrides.insert(
             "high".into(),
@@ -459,17 +490,20 @@ mod tests {
                 open_redirect: true,
             }),
         );
-        let err = apply_put_body(
+        let next = apply_put_body(
             MaskState::default(),
             body,
             &[ComplianceMode::Pci],
         )
-        .unwrap_err();
-        assert!(err.iter().any(|e| e.contains("override[high]") && e.contains("sqli")));
+        .expect("lock is deferred — PCI must not block disabling sqli at high tier");
+        let high = next.override_for(Tier::High).expect("override stored");
+        assert!(!high.is_enabled(DetectorClass::Sqli));
     }
 
     #[test]
-    fn apply_put_body_clamps_base_against_compliance() {
+    fn apply_put_body_does_not_clamp_base_while_lock_is_deferred() {
+        // 2026-05-10 — compliance lock is deferred. Disabling sqli at
+        // base mask (HIPAA active) is currently allowed.
         let mut body = DetectorsPutBody::default();
         body.mask = Some(DetectorMaskBody {
             sqli: false,
@@ -485,13 +519,13 @@ mod tests {
             nosql_injection: true,
             open_redirect: true,
         });
-        let err = apply_put_body(
+        let next = apply_put_body(
             MaskState::default(),
             body,
             &[ComplianceMode::Hipaa],
         )
-        .unwrap_err();
-        assert!(err.iter().any(|e| e.contains("base mask") && e.contains("sqli")));
+        .expect("lock is deferred — HIPAA must not block disabling sqli at base");
+        assert!(!next.base.is_enabled(DetectorClass::Sqli));
     }
 
     // ---- Run-5 follow-up #293 — score catalog in GET response ----

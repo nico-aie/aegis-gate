@@ -212,7 +212,7 @@ reflects without restart.
 | ✅ Graceful drain | Topbar drain button or `kill -TERM <pid>` | `/healthz/ready` returns 503; in-flight requests finish; LB stops sending new traffic. |
 | ✅ Binary handover (`SIGUSR2`) | `kill -USR2 $(pgrep waf)` against a release binary on Linux | New binary starts, inherits listener FDs; old finishes in-flight, exits cleanly. (See `plans/binary-handover-fd-pass.md`.) |
 | ✅ Snapshot + restore | `waf snapshot --output /tmp/snap.json` then `waf restore --from /tmp/snap.json` against a fresh instance | Config + rules restored. JSON envelope carries blake3 hash + schema version. |
-| ✅ Compliance modes | `cfg.compliance.modes: [pci, hipaa, soc2, gdpr, fips]` | Forces clamps on detector mask + audit retention + mTLS. Compliance page surfaces active modes. |
+| ⚠ Compliance modes (deferred) | `cfg.compliance.modes: [pci, hipaa, soc2, gdpr, fips]` | Modes are accepted as documentation tags and surface on the Compliance dashboard. Auto-pinning detector classes / per-regime enforcement is **deferred** — see `plans/future/compliance-profiles.md`. |
 | ✅ Data residency / GDPR erasure | `POST /api/gdpr/erase {subject_id: "..."}` | Audit chain rewires to remove the subject's IP/identity from past events; chain stays valid. |
 | 🟦 Cloud secrets (`--features vault`/`aws`/`gcp`/`azure`) | `${secret:vault:/path#field}` references in cfg | Resolved at boot from the live secret backend. |
 | 🟦 Service discovery (`--features consul`/`etcd`/`k8s`) | Configure the watcher; backend members come from the live SD source | Pool members refresh as upstream endpoints change. |

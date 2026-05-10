@@ -60,7 +60,7 @@ waf run
 waf validate --config config/prod.yaml
 ```
 
-This parses, resolves secrets, applies compliance profiles, and reports errors — without binding any listeners.
+This parses, resolves secrets, and reports errors — without binding any listeners.
 
 ### Graceful Operations
 
@@ -364,7 +364,7 @@ pair, and every applied change lands an admin chain entry.
 #### Detection-class toggles
 
 ```sh
-# Inspect the live mask + per-tier overrides + compliance lock-list
+# Inspect the live mask + per-tier overrides + declared compliance modes
 curl -s -b cookies.txt https://127.0.0.1:9443/api/detectors | jq
 
 # Disable the recon detector globally
@@ -384,9 +384,11 @@ curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
   https://127.0.0.1:9443/api/detectors | jq
 ```
 
-The compliance clamp prevents operators from disabling SQLi,
-XSS, path-traversal, or SSRF when `compliance.modes` is non-
-empty (PCI / HIPAA / SOC 2 / GDPR / FIPS).
+> Compliance lock-by-mode (auto-pinning detector classes when a
+> mode is active) is **deferred for now** — operators may freely
+> enable or disable any class regardless of `compliance.modes`.
+> See [`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md)
+> for the restoration plan.
 
 #### Load-mode override
 
@@ -492,22 +494,26 @@ waf audit verify --from /var/log/aegis/audit.ndjson
 | ECS | Elastic Common Schema | HTTP |
 | Kafka | JSON | Kafka producer |
 
-### Compliance Profiles
+### Compliance Profiles (deferred)
 
-Apply in config:
+`cfg.compliance.modes` accepts five tag values:
 
 ```yaml
 compliance:
   modes: [fips, pci, soc2, gdpr, hipaa]
 ```
 
-| Profile | Key Enforcement |
-|---------|----------------|
-| **FIPS** | aws-lc-rs TLS provider; reject RC4/DES/3DES/MD5; TLS ≥ 1.2 |
-| **PCI-DSS** | TLS ≥ 1.2; PAN masking; audit retention ≥ 90 days |
-| **SOC 2** | Audit hash chain enabled; admin trail; SLO alerts |
-| **GDPR** | PII pseudonymization; data residency pin; right-to-erasure endpoint |
-| **HIPAA** | PHI-safe log mode (PHI fields masked before sink write) |
+The dashboard's Compliance page surfaces the declared modes as
+documentation tags. **Per-regime enforcement (PAN masking, FIPS
+primitive allow-list, residency pinning, PHI log mode, automatic
+detector pinning, retention floors) is deferred for now** —
+declaring a mode does not change WAF behavior today. Operators
+may freely enable or disable any detector class regardless of
+which modes are set.
+
+The full per-regime restoration plan (including the historical
+detector pin baseline `sqli, xss, path_traversal, ssrf`) lives at
+[`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md).
 
 ### Data Residency & Erasure
 
@@ -640,7 +646,7 @@ Every alert includes a `runbook_url` pointing to the relevant operational runboo
 
 ```
 waf run       [--config PATH] [--workers N]    Start the gateway
-waf validate  [--config PATH] [--strict]       Validate config + compliance
+waf validate  [--config PATH] [--strict]       Validate config (parser + lint)
 waf audit     verify --from PATH               Verify audit chain integrity
 waf audit     export --since T --until T       Export audit events
 waf admin     set-password                     Hash admin password (argon2id)
