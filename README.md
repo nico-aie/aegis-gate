@@ -118,14 +118,15 @@ SOC-first dashboard.
   enable, rate-limit, DDoS gate all hot-swap with a visible
   `config_reload` audit entry.
 - **Per-tier risk thresholds** — every tier (critical / high /
-  medium / low) carries its own per-request block score and an
-  optional cumulative-IP-risk override pair (`challenge_at`,
-  `block_at`) plus a `challenges_enabled` toggle. Tiers fall
-  back to the global cumulative thresholds when overrides are
-  unset, so existing deployments see no behavior change. Lets
-  operators run stricter posture on Critical (e.g. hard
-  allow/block, no PoW) and looser on Low without forking the
-  global config.
+  medium / low) carries its own per-request block score plus a
+  `challenges_enabled` toggle (defaults `false` — challenges
+  opt-in). Lets operators flip a tier into hard allow/block
+  semantics (no PoW puzzle) without affecting other tiers — useful
+  for admin / payment / machine-only API tiers. The wire shape
+  also accepts per-tier `cumulative_challenge_at` /
+  `cumulative_block_at` overrides for API clients with strong
+  per-tier needs; the dashboard surfaces only the toggle since
+  most deployments are well-served by the global thresholds.
 - **Compliance modes** — `cfg.compliance.modes` accepts
   documentation tags (`fips`, `pci`, `soc2`, `gdpr`, `hipaa`)
   that surface on the dashboard's Compliance page. Lock-by-mode

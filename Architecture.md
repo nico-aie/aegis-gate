@@ -289,20 +289,33 @@ individual stages need not know their tier.
 > cumulative-IP risk distinction, and worked examples; this section
 > is the engineering source of truth.
 >
-> **2026-05-10 (Option B)** — every tier (`critical / high / medium / low`)
-> now carries optional `cumulative_challenge_at`, `cumulative_block_at`,
-> and `challenges_enabled: bool` fields alongside the existing
-> `risk_threshold` (per-request block score). When the data plane resolves
-> a route, it looks the matched tier up in the live `TierStore`
-> (shared via `ProxyContext.tiers: OnceLock<Arc<TierStore>>`) and consults
-> these per-tier values for the cumulative-IP-risk decision. Unset fields
-> fall back to the global `cfg.risk.thresholds`. With
-> `challenges_enabled = false`, `RiskLevel::Challenge` escalates straight
-> to block at the matched tier — useful for high-stakes tiers (admin /
-> payment) and machine-only tiers where PoW breaks clients. The contract
-> wire shape (`X-WAF-Action`, `X-WAF-Risk-Score`, response status / body)
-> is unchanged; per-tier thresholds only move *which threshold the
-> comparison uses*, not what we report.
+> **2026-05-10 (Option B + R2 + R3)** — every tier
+> (`critical / high / medium / low`) carries optional
+> `cumulative_challenge_at`, `cumulative_block_at`, and
+> `challenges_enabled: bool` fields alongside the existing
+> `risk_threshold` (per-request block score). When the data plane
+> resolves a route, it looks the matched tier up in the live
+> `TierStore` (shared via `ProxyContext.tiers: OnceLock<Arc<TierStore>>`)
+> and consults these per-tier values for the cumulative-IP-risk
+> decision. Unset fields fall back to the global
+> `cfg.risk.thresholds`. With `challenges_enabled = false` (the
+> per-tier default since R2), `RiskLevel::Challenge` escalates
+> straight to block at the matched tier — operators opt tiers into
+> the PoW rung instead of opting out, since most deployments want
+> hard allow/block semantics.
+>
+> **R3 (2026-05-10)** — the dashboard's Edit Tier modal surfaces
+> only `risk_threshold`, `challenges_enabled`, and the per-tier
+> detector-mask override. The two cumulative-threshold fields
+> (`cumulative_challenge_at` / `cumulative_block_at`) remain on the
+> wire shape so API clients can set them, but the UI doesn't expose
+> inputs because per-tier cumulative tuning is a niche use case;
+> most operators are well-served by the global thresholds on
+> Traffic Gates → #3.
+>
+> Contract wire shape (`X-WAF-Action`, `X-WAF-Risk-Score`, response
+> status / body) is unchanged; per-tier thresholds only move
+> *which threshold the comparison uses*, not what we report.
 
 Stages run in this order. Earlier stages can short-circuit later ones.
 

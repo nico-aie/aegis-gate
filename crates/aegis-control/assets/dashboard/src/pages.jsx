@@ -2741,9 +2741,6 @@ function PageTierConfig() {
                     {t.challenges_enabled === true && (
                       <span className="pill ok" title="Cumulative-IP-risk challenges are enabled on this tier (PoW puzzle on score crossing)">challenges on</span>
                     )}
-                    {(t.cumulative_challenge_at != null || t.cumulative_block_at != null) && (
-                      <span className="pill ok" title="Tier overrides the global cumulative IP risk thresholds">cumulative override</span>
-                    )}
                   </div>
                 </button>
               );
@@ -2836,22 +2833,13 @@ function PageTierConfig() {
 
                   <div style={{ color: 'var(--ink-dim)' }}>Cumulative IP gate</div>
                   <div>
-                    {selected.cumulative_challenge_at != null || selected.cumulative_block_at != null ? (
-                      <>
-                        challenge ≥ {selected.cumulative_challenge_at != null
-                          ? <strong className="num">{selected.cumulative_challenge_at}</strong>
-                          : <em>(global)</em>}
-                        {' · '}
-                        block ≥ {selected.cumulative_block_at != null
-                          ? <strong className="num">{selected.cumulative_block_at}</strong>
-                          : <em>(global)</em>}
-                      </>
+                    {selected.challenges_enabled === true ? (
+                      <><span style={{ color: 'var(--up)', fontWeight: 600 }}>challenges on</span> · PoW on threshold crossing</>
                     ) : (
-                      <em>inherits global thresholds (Traffic Gates → #3)</em>
+                      <>challenges off · escalate to block on threshold crossing</>
                     )}
-                    {selected.challenges_enabled === true && (
-                      <> · <span style={{ color: 'var(--up)', fontWeight: 600 }}>challenges on</span> (PoW on threshold)</>
-                    )}
+                    {' · '}
+                    thresholds: <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>
                   </div>
 
                   <div style={{ color: 'var(--ink-dim)' }}>Rules</div>
@@ -2948,26 +2936,21 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
   // stable, dashboard just doesn't expose the checkboxes any more.
   const preservedPipeline = tier.pipeline || [];
   const [risk, setRisk] = useStateP(tier.risk_threshold ?? 50);
-  // Option B per-tier overrides. Empty string in the input = inherit
-  // global; numbers cast to Some(n) on save.
-  const [cumChallenge, setCumChallenge] = useStateP(
-    tier.cumulative_challenge_at != null ? String(tier.cumulative_challenge_at) : ''
-  );
-  const [cumBlock, setCumBlock] = useStateP(
-    tier.cumulative_block_at != null ? String(tier.cumulative_block_at) : ''
-  );
+  // 2026-05-10 R3 — per-tier cumulative threshold inputs retired
+  // from the dashboard (operator-confirmed: in practice the
+  // global cumulative thresholds + the per-request block score
+  // cover the common needs; per-tier cumulative tuning is a
+  // niche use case). Wire shape kept intact so:
+  //   (a) values previously set via API persist across saves —
+  //       we round-trip `tier.cumulative_*` verbatim;
+  //   (b) restoring the inputs is a UI-only change.
+  const preservedCumChallenge = tier.cumulative_challenge_at ?? null;
+  const preservedCumBlock = tier.cumulative_block_at ?? null;
   // 2026-05-10 R2 — challenges default to OFF. Treat missing /
   // undefined as false (was: missing-as-true), matching the new
   // backend default.
   const [challengesEnabled, setChallengesEnabled] = useStateP(tier.challenges_enabled === true);
   const [showFlow, setShowFlow] = useStateP(false);
-
-  // Live cumulative thresholds for the inherit-fallback hint.
-  const riskApi = window.useRiskThresholdsApi
-    ? window.useRiskThresholdsApi()
-    : { data: null };
-  const globalChallenge = riskApi.data?.challenge_at;
-  const globalBlock = riskApi.data?.block_at;
 
   // 2026-05-10 — per-tier detector mask edit moved here from the
   // unified card (which now only edits Base). Operators get one
@@ -3014,28 +2997,8 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
   const overrideChanged =
     JSON.stringify(overrideMask) !== JSON.stringify(initialOverride.current);
 
-  const cumChallengeNum = cumChallenge === '' ? null : parseInt(cumChallenge, 10);
-  const cumBlockNum = cumBlock === '' ? null : parseInt(cumBlock, 10);
-
   const riskValid = risk >= 0 && risk <= 100;
-  const cumChallengeValid =
-    cumChallengeNum === null ||
-    (Number.isFinite(cumChallengeNum) && cumChallengeNum >= 0 && cumChallengeNum <= 100);
-  const cumBlockValid =
-    cumBlockNum === null ||
-    (Number.isFinite(cumBlockNum) && cumBlockNum >= 0 && cumBlockNum <= 100);
-  const cumOrderValid =
-    cumChallengeNum === null || cumBlockNum === null || cumChallengeNum < cumBlockNum;
-  const canSave = riskValid && cumChallengeValid && cumBlockValid && cumOrderValid && !busy;
-
-  // Clamp helper: keep the input within 0..=100 silently while
-  // letting operators clear the field (empty string = inherit).
-  const clampInput = (raw) => {
-    if (raw === '' || raw === null || raw === undefined) return '';
-    const n = parseInt(raw, 10);
-    if (!Number.isFinite(n)) return '';
-    return String(Math.max(0, Math.min(100, n)));
-  };
+  const canSave = riskValid && !busy;
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
@@ -3070,7 +3033,7 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
                 <ol style={{ margin: '6px 0 0', paddingLeft: 18 }}>
                   <li><strong>Traffic Gates</strong> (global, before tier matching) — access list, strike-block, rate-limit, DDoS. Configured on Traffic Gates page.</li>
                   <li><strong>Per-request block score</strong> (this tier) — when THIS one request's detector scores sum to ≥ the value below, block immediately.</li>
-                  <li><strong>Cumulative IP history</strong> (this tier) — when this IP's running cumulative score crosses the thresholds below, challenge or block. Score decays over time (~5 min half-life).</li>
+                  <li><strong>Cumulative IP history</strong> — IP's running score crosses the global thresholds (Traffic Gates → #3). On this tier, challenges either run or escalate to block based on the toggle below.</li>
                 </ol>
                 Otherwise → allow + forward to upstream. <code>X-WAF-Risk-Score</code> always reports the cumulative IP score (contract §5.1).
               </div>
@@ -3098,46 +3061,20 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
             )}
           </div>
 
-          {/* ── Cumulative IP history gate ────────────────────── */}
+          {/* ── Cumulative IP gate ──
+              R3 — Threshold inputs retired. Only the on/off toggle
+              remains per-tier. Threshold defaults are global; edit on
+              Traffic Gates → #3. */}
           <div className="form-row" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
               Cumulative IP gate
             </div>
-
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 10 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={challengesEnabled} onChange={e => setChallengesEnabled(e.target.checked)} />
               <span><strong>Allow challenges</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → escalate to block)</span></span>
             </label>
-
-            <div style={{ display: 'flex', gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <label>Challenge ≥ (0-100)</label>
-                <input className="ip" type="number" min="0" max="100"
-                  placeholder={globalChallenge != null ? `inherit · ${globalChallenge}` : 'inherit'}
-                  value={cumChallenge}
-                  onChange={e => setCumChallenge(clampInput(e.target.value))} />
-                {!cumChallengeValid && (
-                  <div className="form-hint warn">0-100 or empty.</div>
-                )}
-              </div>
-              <div style={{ flex: 1 }}>
-                <label>Block ≥ (0-100)</label>
-                <input className="ip" type="number" min="0" max="100"
-                  placeholder={globalBlock != null ? `inherit · ${globalBlock}` : 'inherit'}
-                  value={cumBlock}
-                  onChange={e => setCumBlock(clampInput(e.target.value))} />
-                {!cumBlockValid && (
-                  <div className="form-hint warn">0-100 or empty.</div>
-                )}
-              </div>
-            </div>
-            {!cumOrderValid && (
-              <div className="form-hint warn" style={{ marginTop: 6 }}>
-                Challenge must be &lt; block.
-              </div>
-            )}
             <div className="form-hint" style={{ marginTop: 6 }}>
-              Per-IP cumulative score · decays ~5 min half-life · empty inherits global. Edit defaults on <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>.
+              Cumulative thresholds are global — edit on <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>.
             </div>
           </div>
 
@@ -3200,8 +3137,6 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
 
           <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
             block≥{risk}
-            {' · '}challenge≥{cumChallenge === '' ? `g${globalChallenge ?? '?'}` : cumChallenge}
-            {' · '}cum_block≥{cumBlock === '' ? `g${globalBlock ?? '?'}` : cumBlock}
             {' · '}challenges {challengesEnabled ? 'on' : 'off'}
             {' · '}detectors {isOverriding
               ? `${Object.entries(overrideMask).filter(([, v]) => v).length}/${Object.keys(overrideMask).length}`
@@ -3214,8 +3149,10 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
             pipeline: preservedPipeline,
             risk_threshold: risk,
             block_threshold: tier.block_threshold ?? 100,
-            cumulative_challenge_at: cumChallengeNum,
-            cumulative_block_at: cumBlockNum,
+            // R3 — cumulative thresholds are not edited from the
+            // dashboard. Round-trip whatever the API has.
+            cumulative_challenge_at: preservedCumChallenge,
+            cumulative_block_at: preservedCumBlock,
             challenges_enabled: challengesEnabled,
             // 2026-05-10 — detector override delta. The parent's
             // saveTier() sequences a `PUT /api/detectors` (audit-
