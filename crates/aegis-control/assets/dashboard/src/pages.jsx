@@ -2293,6 +2293,20 @@ function DetectorMaskCard() {
 // or per-tier overrides above (all surfaced on this same page).
 function DetectorScorePanel({ scoreTable }) {
   const [expanded, setExpanded] = useStateP(false);
+  // 2026-05-10 — read live thresholds from /api/risk/thresholds
+  // so the explanatory text shows the operator's *current* values,
+  // not the hardcoded defaults. The Cumulative IP risk thresholds
+  // editor (Traffic Gates → #3) is the only authoritative source.
+  const riskApi = window.useRiskThresholdsApi
+    ? window.useRiskThresholdsApi()
+    : { data: null };
+  const liveChallengeAt = Number.isFinite(Number(riskApi.data?.challenge_at))
+    ? Number(riskApi.data.challenge_at)
+    : null;
+  const liveBlockAt = Number.isFinite(Number(riskApi.data?.block_at))
+    ? Number(riskApi.data.block_at)
+    : null;
+
   if (!scoreTable || scoreTable.length === 0) {
     return null;
   }
@@ -2334,11 +2348,29 @@ function DetectorScorePanel({ scoreTable }) {
       </div>
 
       <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.4, marginBottom: 6 }}>
-        Scores are calibrated against{' '}
-        <code style={{ fontSize: 10 }}>risk.thresholds.challenge_at</code> (40) and{' '}
-        <code style={{ fontSize: 10 }}>block_at</code> (80). To tune posture without
-        touching scores, use <code style={{ fontSize: 10 }}>set_profile log_only</code>,
-        adjust risk thresholds, add a <code style={{ fontSize: 10 }}>RaiseRisk(delta)</code> rule,
+        Scores are calibrated against your live cumulative IP risk
+        thresholds:{' '}
+        <code style={{ fontSize: 10 }}>challenge_at</code>{' '}
+        {liveChallengeAt !== null ? (
+          <strong style={{ color: 'var(--ink)' }}>= {liveChallengeAt}</strong>
+        ) : (
+          <span style={{ fontStyle: 'italic' }}>(loading…)</span>
+        )}
+        {' '}and{' '}
+        <code style={{ fontSize: 10 }}>block_at</code>{' '}
+        {liveBlockAt !== null ? (
+          <strong style={{ color: 'var(--ink)' }}>= {liveBlockAt}</strong>
+        ) : (
+          <span style={{ fontStyle: 'italic' }}>(loading…)</span>
+        )}.
+        {' '}Edit those on{' '}
+        <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>
+          Traffic Gates → #3 Cumulative IP risk thresholds
+        </a>
+        . To tune posture without touching detector scores, use{' '}
+        <code style={{ fontSize: 10 }}>set_profile log_only</code>,
+        adjust those thresholds, add a{' '}
+        <code style={{ fontSize: 10 }}>RaiseRisk(delta)</code> rule,
         or apply a per-tier override above. See the{' '}
         <a href="/docs/operator/risk-tuning" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
           operator risk-tuning guide
@@ -2649,8 +2681,11 @@ function PageTierConfig() {
                       Gates page (Rate Limit + DDoS gates). Showing the
                       field here was misleading — operators thought it
                       was an enforce knob. */}
-                  <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>
-                    risk ≥ <span className="num">{t.risk_threshold}</span>
+                  <div
+                    style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}
+                    title={`Per-request: this tier blocks a request when its detector scores sum to ${t.risk_threshold} or more`}
+                  >
+                    block when score ≥ <span className="num">{t.risk_threshold}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 6, fontSize: 10 }}>
                     <span className="pill neutral">{tierRouteCount} routes</span>
@@ -2668,9 +2703,9 @@ function PageTierConfig() {
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-                    {(selected.pipeline || []).length} pipeline stages · risk threshold <span className="num">{selected.risk_threshold}</span>
+                    {(selected.pipeline || []).length} pipeline stages · blocks a single request when its detector scores sum to ≥ <span className="num">{selected.risk_threshold}</span>
                     <span style={{ marginLeft: 8, opacity: 0.7 }}>
-                      · per-IP volumetric limits live on the <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a> page
+                      · per-IP volumetric limits + cumulative IP risk live on the <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a> page
                     </span>
                   </div>
                 </div>
@@ -2827,11 +2862,34 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
 
           <div className="form-row" style={{ display: 'flex', gap: 8, marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
             <div style={{ flex: 1 }}>
-              <label>Risk threshold (0-100) <span className="req">*</span></label>
+              <label>
+                Per-request block score (0-100) <span className="req">*</span>
+              </label>
               <input className="ip" type="number" min="0" max="100"
                 value={risk}
-                onChange={e => setRisk(parseInt(e.target.value, 10) || 0)} />
-              <div className="form-hint">Composite score that triggers a block. Lower = stricter.</div>
+                onChange={e => {
+                  // Cap at 100 — detector scores cap at 100 per
+                  // request (the contract's X-WAF-Risk-Score is
+                  // explicitly an integer 0-100, §5.1). Allowing
+                  // a tier threshold above 100 would be a
+                  // never-fires gate, which is better expressed
+                  // by `set_profile log_only` or by removing the
+                  // `risk` stage from the pipeline above.
+                  const v = parseInt(e.target.value, 10);
+                  if (!Number.isFinite(v)) { setRisk(0); return; }
+                  setRisk(Math.max(0, Math.min(100, v)));
+                }} />
+              <div className="form-hint">
+                <strong>This request is blocked when its detector scores sum to ≥ this value.</strong>
+                {' '}Per-request only — does not accumulate or decay across requests.
+                {' '}Lower = stricter. Defaults: critical 50 / high 70 / medium 80 / low 90.
+                {' '}Distinct from the cumulative IP risk thresholds (per-IP, decays —
+                edit on{' '}
+                <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>).
+                {' '}Capped at 100 because <code>X-WAF-Risk-Score</code> is bounded 0-100
+                by contract (§5.1); to disable per-request blocking on this tier,
+                drop the <code>risk</code> stage from the pipeline above instead.
+              </div>
               {!riskValid && (
                 <div className="form-hint warn">Must be between 0 and 100.</div>
               )}
