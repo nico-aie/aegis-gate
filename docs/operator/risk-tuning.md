@@ -113,28 +113,38 @@ Threshold changes are hot-reloadable (audit-mutated; takes effect within one tic
 
 **When to use:** "the WAF blocks our internal QA scanner after 3 probes — we want it to take 6 before blocking" → raise `challenge_at` and/or `block_at`. "we're seeing a credential-stuffing wave and need to ban faster" → enable Strike-Block on Traffic Gates → #2 then lower `strikes.block_at`.
 
-### 2.5 Per-tier overrides (Option B, 2026-05-10)
+### 2.5 Per-tier knobs (2026-05-10)
 
-When the global thresholds don't fit every route — e.g., your admin tier wants stricter posture and your public tier wants more permissive — set **per-tier cumulative thresholds** in the Tier editor on Detectors & Tiers:
+Each tier carries:
 
-```yaml
-# Conceptual shape (set via dashboard PUT /api/tiers/<name> today)
-tiers:
-  critical:
-    risk_threshold: 50
-    cumulative_challenge_at: 25     # stricter than global 40
-    cumulative_block_at:    50      # stricter than global 80
-    challenges_enabled:     false   # hard allow/block (no PoW)
-  low:
-    risk_threshold: 90
-    cumulative_challenge_at: 60     # more permissive
-    cumulative_block_at:    95
-    challenges_enabled:     true
+- `risk_threshold` (per-request block score) — **edit from dashboard**
+  (Detectors & Tiers → Edit tier).
+- `challenges_enabled` (boolean) — **edit from dashboard**
+  (same modal). Defaults to `false`: challenges are opt-in. With
+  `false`, IPs over the cumulative challenge threshold escalate
+  straight to **block** (403) instead of getting a PoW puzzle.
+  Useful for high-stakes tiers (admin, payments) and machine-only
+  API tiers where PoW breaks clients. With `true`, the tier emits
+  the regular 429 + PoW challenge body.
+- `cumulative_challenge_at` / `cumulative_block_at` — **API-only
+  per-tier overrides** (R3, 2026-05-10). The wire shape accepts
+  per-tier values; the dashboard does **not** surface inputs for
+  them because per-tier cumulative tuning is a niche need. By
+  default, every tier inherits the global thresholds edited on
+  Traffic Gates → #3. If you have a real reason for per-tier
+  cumulative thresholds (e.g. stricter Critical tier than the
+  global default), `PUT /api/tiers/<name>` accepts the fields:
+
+```json
+{
+  "pipeline": [...],
+  "risk_threshold": 50,
+  "block_threshold": 100,
+  "cumulative_challenge_at": 25,
+  "cumulative_block_at": 50,
+  "challenges_enabled": false
+}
 ```
-
-Tier overrides fall back to the global trio when left unset (`null` /
-omitted). This lets operators tune one tier at a time without
-copying every value.
 
 **Decision flow** for a single request (three independent gates, first one fires):
 

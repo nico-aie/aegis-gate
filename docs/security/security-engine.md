@@ -311,15 +311,19 @@ the challenge ladder, both editable live:
   `PUT /api/risk/thresholds` endpoint, hot-swap to the live tracker.
   YAML equivalent in `cfg.risk.thresholds`.
 
-- **Per-tier overrides (Option B, 2026-05-10)** — Dashboard →
-  **Detectors & Tiers → Edit tier** modal. Each tier carries
-  optional `cumulative_challenge_at` / `cumulative_block_at` /
-  `challenges_enabled` fields; unset values fall back to the global
-  defaults above. Audit-mutated `PUT /api/tiers/<name>`. Useful when
-  one tier (admin / payments) wants stricter posture than the public
-  default, or a machine-only tier wants to disable challenges
-  entirely (`challenges_enabled: false` → escalate to block instead
-  of emitting a 429 PoW).
+- **Per-tier `challenges_enabled` toggle** — Dashboard →
+  **Detectors & Tiers → Edit tier** modal. Defaults to `false`:
+  challenges are opt-in per tier. With `false`, the cumulative
+  challenge rung escalates straight to block on this tier (no
+  PoW emitted). Useful for admin / payment / machine-API tiers.
+  Audit-mutated `PUT /api/tiers/<name>` with the
+  `challenges_enabled` field.
+
+- **Per-tier `cumulative_challenge_at` / `cumulative_block_at`
+  overrides** — API-only. The wire shape accepts per-tier values
+  (`PUT /api/tiers/<name>`), but the dashboard does not surface
+  inputs because per-tier cumulative tuning is a niche need. By
+  default, every tier inherits the global thresholds.
 
 **A separate `strikes.block_at`** counter (config: `risk.strikes.block_at`,
 default 50) tracks **lifetime malicious-event count per IP** and never
