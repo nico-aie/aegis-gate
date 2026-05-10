@@ -9,12 +9,22 @@ deferred live in [`future/`](./future/).
 
 ```
 plans/
-├── README.md                 ← this file (entry point)
-├── plan.md                   ← AI-assistant guide for this repo
-├── implementation-matrix.md  ← doc-by-doc Implemented / Partial / Designed status
-├── future/                   ← deferred features (operator-confirmed, not yet built)
-└── archive/                  ← closed / shipped / paused plans (read-only history)
+├── README.md                       ← this file (entry point)
+├── plan.md                         ← AI-assistant guide for this repo
+├── implementation-matrix.md        ← doc-by-doc Implemented / Partial / Designed status
+├── dns-upstream-resolution.md      ← active plan (2026-05-11)
+├── future/                         ← deferred features (operator-confirmed, not yet built)
+└── archive/                        ← closed / shipped / paused plans (read-only history)
 ```
+
+## Active plans
+
+- [`dns-upstream-resolution.md`](./dns-upstream-resolution.md) —
+  Let operators address backends by hostname
+  (`api.example.com:443`) instead of pinning a `SocketAddr`.
+  Phase 1 (boot-time resolve) ≈ 2d, Phase 2 (background refresh
+  via hickory-resolver) ≈ 3d, Phase 3 (dashboard polish) ≈ 1d.
+  **Drafted 2026-05-11, not started.**
 
 ## Reference (kept at top level)
 
