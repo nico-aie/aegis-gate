@@ -468,22 +468,37 @@ pub struct Member {
 }
 ```
 
-- **Hostname-addressed members (PR-DNS-1, 2026-05-11, Phase 1).**
+- **Hostname-addressed members (PR-DNS-1 + PR-DNS-2, 2026-05-11).**
   `MemberConfig.addr` is a tagged enum `MemberAddrSpec::{Ip(SocketAddr),
   Hostname { host, port, refresh_seconds }}` parsed via untagged
   serde so the YAML stays a single string (`addr: api.example.com:443`).
-  At boot + dashboard PUT the resolver in
-  `crates/aegis-proxy/src/upstream/dns_resolve.rs` walks each pool,
-  calls `tokio::net::lookup_host` for every hostname (in parallel
-  across all members), and expands multi-A records into one
-  synthetic `Member` per resolved IP — same shape as Envoy's
-  STRICT_DNS. `host_header` defaults to the hostname when unset
-  so TLS SNI + outbound `Host:` line up. Unresolvable hostnames
-  fail loudly at boot (`UnresolvedHostname` validation error).
-  Phase 2 (planned, separate PR) replaces the one-shot resolver
-  with a background refresh loop backed by `hickory-resolver` so
-  cloud LB / K8s Service rotations are picked up without a
-  config reload.
+  - **Phase 1 (PR-DNS-1):** at boot + dashboard PUT the resolver
+    in `crates/aegis-proxy/src/upstream/dns_resolve.rs` walks each
+    pool, calls `tokio::net::lookup_host` for every hostname in
+    parallel, and expands multi-A records into one synthetic
+    `Member` per resolved IP — same shape as Envoy's STRICT_DNS.
+    `host_header` defaults to the hostname when unset so TLS SNI
+    + outbound `Host:` align. Unresolvable hostnames at dashboard
+    PUT fail loudly (`UnresolvedHostname`).
+  - **Phase 2 (PR-DNS-2):** per-pool background refresh task in
+    `crates/aegis-proxy/src/upstream/dns_refresh.rs`, backed by
+    `hickory-resolver` (pure-Rust, TTL-aware). One task per pool
+    with hostname members at boot. Cadence is
+    `min(record TTL, refresh_seconds override, 60 s default)`
+    clamped to `[10 s, 1 h]`. On IP-set change the task calls
+    `PoolRegistry::apply` (preserving operator-pinned static
+    members) and emits a `pool_dns_resolved` audit event with
+    `before` / `after` / `added` / `removed` IP lists. Resolver
+    outages soft-fail: last-known IPs stay in place, retry on
+    next tick. Boot path uses `SoftSkip` failure policy so a
+    transient outage doesn't abort startup; dashboard PUTs keep
+    `Strict` so typos surface at config-set time.
+  - **Phase 2 scope guard:** dashboard PUTs that add a new
+    hostname member to a pool get Phase 1's one-shot resolution
+    but don't spawn a new refresh task (the operator has to
+    persist + restart to get background refresh on that
+    hostname). Phase 2.5 / Phase 3 will reconcile refresh-task
+    membership on PUT.
 - **Active health check** per pool: periodic probe task.
 - **Passive ejection** on N consecutive 5xx / connect errors.
 - **Circuit breaker** per member with error-rate threshold + open duration.

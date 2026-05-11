@@ -32,6 +32,25 @@ use std::net::SocketAddr;
 
 use aegis_core::config::{MemberAddrSpec, MemberConfig, PoolConfig};
 
+/// How `expand_hostname_members` reacts to a hostname that fails
+/// to resolve.
+///
+/// **Strict (default)** — first failure aborts. Used by the
+/// dashboard PUT path so operators catch typos at config-set time.
+///
+/// **SoftSkip** — log warn + drop the failing hostname's members
+/// from the pool, keep going. Used by the Phase 2 boot path
+/// because the per-pool refresh task
+/// (`crate::upstream::dns_refresh::spawn_pool_refresh`) will
+/// retry the resolution every TTL tick — soft-failing at boot
+/// lets the proxy come up even when DNS is temporarily down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ResolveFailurePolicy {
+    #[default]
+    Strict,
+    SoftSkip,
+}
+
 /// One failure encountered while expanding hostnames in a config.
 #[derive(Debug, thiserror::Error)]
 pub enum DnsResolveError {
@@ -69,23 +88,45 @@ pub enum DnsResolveError {
 pub async fn expand_hostname_members(
     upstreams: HashMap<String, PoolConfig>,
 ) -> Result<HashMap<String, PoolConfig>, DnsResolveError> {
-    use futures::future::try_join_all;
+    expand_hostname_members_with_policy(upstreams, ResolveFailurePolicy::Strict).await
+}
+
+/// Same as [`expand_hostname_members`] but with an explicit
+/// failure policy. PR-DNS-2 wires `SoftSkip` into the boot path so
+/// transient resolver outages don't abort startup; dashboard PUTs
+/// keep using `Strict` so typos surface immediately.
+pub async fn expand_hostname_members_with_policy(
+    upstreams: HashMap<String, PoolConfig>,
+    policy: ResolveFailurePolicy,
+) -> Result<HashMap<String, PoolConfig>, DnsResolveError> {
+    use futures::future::join_all;
 
     let mut out: HashMap<String, PoolConfig> = HashMap::with_capacity(upstreams.len());
 
     for (pool_name, mut pool_cfg) in upstreams {
         // Resolve in parallel, then stitch back together so the
         // operator's authored ordering survives the expansion.
-        let resolutions = try_join_all(pool_cfg.members.iter().map(|mc| {
+        let resolutions = join_all(pool_cfg.members.iter().map(|mc| {
             let pool_name = pool_name.clone();
             let mc = mc.clone();
             async move { resolve_one(&pool_name, mc).await }
         }))
-        .await?;
+        .await;
 
-        let mut expanded: Vec<MemberConfig> = Vec::with_capacity(resolutions.iter().map(Vec::len).sum());
-        for batch in resolutions {
-            expanded.extend(batch);
+        let mut expanded: Vec<MemberConfig> = Vec::with_capacity(pool_cfg.members.len());
+        for r in resolutions {
+            match r {
+                Ok(batch) => expanded.extend(batch),
+                Err(e) => match policy {
+                    ResolveFailurePolicy::Strict => return Err(e),
+                    ResolveFailurePolicy::SoftSkip => {
+                        tracing::warn!(
+                            error = %e,
+                            "dns: skipping unresolved hostname member at boot (soft-failure); refresh task will retry",
+                        );
+                    }
+                },
+            }
         }
         pool_cfg.members = expanded;
         out.insert(pool_name, pool_cfg);
