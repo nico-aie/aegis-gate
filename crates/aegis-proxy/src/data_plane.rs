@@ -63,6 +63,7 @@ pub(crate) async fn handle_data_request(
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    route_activity: &aegis_control::metrics::route_activity::RouteActivityWindow,
     detector_latency_hist: &aegis_control::metrics::detector_latency::DetectorLatencyHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
@@ -87,6 +88,7 @@ pub(crate) async fn handle_data_request(
         verbosity,
         request_stage_hist,
         route_latency_hist,
+        route_activity,
         detector_latency_hist,
         bus,
         upstream_ctx,
@@ -109,6 +111,7 @@ pub(crate) async fn handle_data_request_inner(
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    route_activity: &aegis_control::metrics::route_activity::RouteActivityWindow,
     detector_latency_hist: &aegis_control::metrics::detector_latency::DetectorLatencyHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
@@ -687,6 +690,7 @@ pub(crate) async fn handle_data_request_inner(
             upstream_ctx,
             identity,
             route_latency_hist,
+            route_activity,
             request_start,
             peer_ip,
             bus,
@@ -818,6 +822,7 @@ pub(crate) async fn handle_data_request_inner(
                     upstream_ctx,
                     identity,
                     route_latency_hist,
+                    route_activity,
                     request_start,
                     peer_ip,
                     bus,
@@ -860,6 +865,7 @@ pub(crate) async fn forward_allow_to_upstream(
     ctx: &Arc<crate::proxy::ProxyContext>,
     identity: &aegis_core::ClientIdentity,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    route_activity: &aegis_control::metrics::route_activity::RouteActivityWindow,
     request_start: std::time::Instant,
     // TCP-T3c — source IP for the per-IP tunnel cap and for
     // `tcp_tunnel_open` / `tcp_tunnel_close` audit events.
@@ -929,6 +935,13 @@ pub(crate) async fn forward_allow_to_upstream(
     // is the same Arc<ProxyContext> the caller holds; safe to
     // hand out the &str here.
     *_route_guard.route.borrow_mut() = route_ctx.route_id.clone();
+    // P5 (2026-05-11) — record one hit in the per-route 60-second
+    // sliding-window counter. Fires for every resolved route (the
+    // latency guard records on exit; this one records on resolve
+    // so the activity pill lights up even for requests that get
+    // blocked by a downstream gate). Hot-path cost is one
+    // DashMap-shard lookup + one atomic fetch_add.
+    route_activity.record(&route_ctx.route_id);
 
     // MTLS-T4 — route-scoped client-identity gate.
     //
@@ -1937,6 +1950,10 @@ mod tcp_connect_tests {
             .expect("register route latency")
     }
 
+    fn route_activity_w() -> aegis_control::metrics::route_activity::RouteActivityWindow {
+        aegis_control::metrics::route_activity::RouteActivityWindow::new()
+    }
+
     fn tcp_route_cfg(allowlist_yaml: &str) -> WafConfig {
         let yaml = format!(
             r#"
@@ -2034,6 +2051,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2063,6 +2081,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2094,6 +2113,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2126,6 +2146,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2154,6 +2175,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2200,6 +2222,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             peer,
             &bus,
@@ -2235,6 +2258,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2280,6 +2304,7 @@ state: { backend: in_memory }
                 &ctx,
                 &ClientIdentity::Anonymous,
                 &rh,
+                &route_activity_w(),
                 Instant::now(),
                 peer,
                 &bus,
@@ -2324,6 +2349,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2365,6 +2391,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2433,6 +2460,10 @@ mod websocket_e2e_tests {
         let reg = aegis_control::metrics::MetricsRegistry::init();
         aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&reg)
             .expect("route latency histogram registers")
+    }
+
+    fn route_activity_w() -> aegis_control::metrics::route_activity::RouteActivityWindow {
+        aegis_control::metrics::route_activity::RouteActivityWindow::new()
     }
 
     /// Drive a real WebSocket client → WAF → echo backend
@@ -2520,6 +2551,7 @@ state: {{ backend: in_memory }}
                         &ctx,
                         &ClientIdentity::Anonymous,
                         &rh,
+                        &route_activity_w(),
                         Instant::now(),
                         peer.ip(),
                         &bus,

@@ -9542,6 +9542,20 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
   const [busy, setBusy] = useStateP(false);
   const [search, setSearch] = useStateP('');
   const [expandedRouteId, setExpandedRouteId] = useStateP(null);
+  // P5 (2026-05-11) — per-route activity in last 60s. Polled every
+  // 10s; the data plane increments the counter atomically on
+  // every resolved route. The pill tone is derived from the
+  // sample count rendered into the route table below.
+  const activityApi = window.useApi
+    ? window.useApi('/api/analytics/route-activity', { intervalMs: 10000, fallback: { routes: [] } })
+    : { data: { routes: [] } };
+  const activityMap = (() => {
+    const m = {};
+    for (const r of (activityApi.data?.routes || [])) {
+      m[r.route] = r;
+    }
+    return m;
+  })();
   // PR3 — Test route tool state.
   const [testOpen, setTestOpen] = useStateP(false);
   const [testHost, setTestHost] = useStateP('');
@@ -9829,6 +9843,38 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                       <div className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)', marginTop: 2 }}>
                         {r.priority || ''}
                       </div>
+                      {/* P5 (2026-05-11) — sliding-window activity
+                          pulse. Green > 1 req/min, amber 0-1
+                          req/min, red 0 req/min for ≥ 5 min,
+                          neutral when the route has never matched
+                          since boot. Tooltip carries the
+                          last-request age in seconds. */}
+                      {(() => {
+                        const a = activityMap[r.id];
+                        if (!a) {
+                          return (
+                            <div
+                              style={{ marginTop: 4 }}
+                              title="No requests have hit this route since process boot. Verify the host/path/method match the traffic you expect."
+                            >
+                              <span className="pill neutral" style={{ fontSize: 9, padding: '0 6px' }}>idle</span>
+                            </div>
+                          );
+                        }
+                        const cnt = a.last_60s_count || 0;
+                        const ageS = a.last_seen_age_s;
+                        let tone, label;
+                        if (cnt > 60) { tone = 'ok'; label = `${cnt}/min`; }
+                        else if (cnt > 0) { tone = 'ok'; label = `${cnt}/min`; }
+                        else if (ageS != null && ageS < 300) { tone = 'warn'; label = `${Math.floor(ageS)}s ago`; }
+                        else { tone = 'err'; label = ageS != null ? `${Math.floor(ageS / 60)}m ago` : 'silent'; }
+                        const tip = `last 60s: ${cnt} req` + (ageS != null ? ` · last seen ${ageS}s ago` : '');
+                        return (
+                          <div style={{ marginTop: 4 }} title={tip}>
+                            <span className={`pill ${tone}`} style={{ fontSize: 9, padding: '0 6px' }}>{label}</span>
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td style={r.enabled === false ? { opacity: 0.55 } : undefined}>
                       <div className="mono" style={{ fontSize: 12, fontWeight: 600 }}>
