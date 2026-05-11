@@ -8154,12 +8154,76 @@ function PageTrafficGates() {
         </div>
       </div>
 
+      <TrafficGatesFlowDiagram />
+
       <AccessListGateCard />
       <StrikeBlockGateCard />
       <CumulativeIpRiskCard />
       <RateLimitGateCard />
       <DdosGateCard />
     </>
+  );
+}
+
+// P6 (2026-05-11) — request-flow diagram at the top of Traffic
+// Gates. Operators reading the page before this couldn't tell
+// whether Strike-Block fires before or after Access List; the
+// page intro said "fire before the detector chain" but didn't
+// commit to the inter-gate order. Each chip is a click-scroll
+// target to its corresponding card below.
+function TrafficGatesFlowDiagram() {
+  const stages = [
+    { id: 'access-list',   label: '1. Access List',   target: 'access-list-card',  hint: 'IP / CIDR / country block + bypass' },
+    { id: 'strike-block',  label: '2. Strike-Block',  target: 'strike-block-card', hint: 'Lifetime malicious-event counter' },
+    { id: 'cumulative-ip', label: '3. Cumulative IP', target: 'cum-ip-risk-card',  hint: 'Per-IP risk score (decays over time)' },
+    { id: 'rate-limit',    label: '4. Rate Limit',    target: 'rate-limit-card',   hint: 'Global per-IP token bucket' },
+    { id: 'ddos',          label: '5. DDoS',          target: 'ddos-card',         hint: 'Sliding-window burst + EWMA spike' },
+  ];
+  const scrollToCard = (id) => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  return (
+    <div className="card" style={{ padding: '12px 14px', marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 8 }}>
+        Request flow — gates fire in this order; first short-circuit wins. The detector chain runs after every gate passes.
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--ink-mute)', fontFamily: 'var(--mono)' }}>
+          inbound
+        </span>
+        <span style={{ color: 'var(--ink-dim)' }}>→</span>
+        {stages.map((s, idx) => (
+          <React.Fragment key={s.id}>
+            <button
+              type="button"
+              onClick={() => scrollToCard(s.target)}
+              title={s.hint}
+              className="pill neutral"
+              style={{
+                cursor: 'pointer',
+                border: '1px solid var(--hairline-strong)',
+                background: 'var(--surface-2)',
+                fontSize: 11,
+              }}
+            >
+              {s.label}
+            </button>
+            <span style={{ color: 'var(--ink-dim)' }}>→</span>
+          </React.Fragment>
+        ))}
+        <span
+          style={{
+            fontSize: 11,
+            color: 'var(--ink-mute)',
+            fontFamily: 'var(--mono)',
+            paddingLeft: 4,
+          }}
+        >
+          detector chain
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -8170,7 +8234,7 @@ function AccessListGateCard() {
   const blackCount = (black.data?.entries || []).length;
   const whiteCount = (white.data?.entries || []).length;
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="access-list-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="1. Access List"
         sub="IP / CIDR / country blacklist + whitelist — fires first, cheapest gate"
@@ -8274,7 +8338,7 @@ function StrikeBlockGateCard() {
   const enabled = !!cfg?.enabled;
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="strike-block-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="2. Strike-Block"
         sub="Per-IP lifetime strike counter — permanent block once threshold crossed (opt-in)"
@@ -8468,7 +8532,7 @@ function CumulativeIpRiskCard() {
   }
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="cum-ip-risk-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="3. Cumulative IP risk thresholds"
         sub="Per-IP decaying score — challenge then block, recovers when score decays"
@@ -8539,7 +8603,7 @@ function RateLimitGateCard() {
   const [editing, setEditing] = useStateP(false);
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="rate-limit-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="4. Rate Limit"
         sub="Per-IP token bucket — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window."
@@ -8671,7 +8735,7 @@ function DdosGateCard() {
 
   if (!data || !data.enabled) {
     return (
-      <div className="card" style={{ marginBottom: 12 }}>
+      <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
         <window.SectionHeader
           title="5. DDoS Gate"
           sub="Per-IP sliding-window burst gate + EWMA spike mode — currently DISABLED"
@@ -8696,7 +8760,7 @@ function DdosGateCard() {
     : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'NORMAL' };
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="5. DDoS Gate"
         sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s)"
