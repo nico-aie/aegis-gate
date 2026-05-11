@@ -10,7 +10,7 @@
 | New bypass scripts| 5 (LT-21 – LT-25)                            |
 | Bypasses confirmed| **12 individual bypass cases**               |
 | Bug categories    | **5 distinct vulnerability classes**         |
-| Status            | ⚠ OPEN — awaiting fix planning               |
+| Status            | Closed               |
 
 ---
 
