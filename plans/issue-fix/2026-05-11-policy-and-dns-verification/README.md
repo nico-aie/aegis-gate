@@ -197,15 +197,38 @@ before scheduling:
 | P4 | Access Lists hit-counter | M | Medium | Defer — needs `/api/blacklist/hits` endpoint |
 | P8 | Microcopy on dangerous toggles | S × 10 | Medium | Defer — coordinate with copy review |
 
-**Suggested split:**
-- **Phase 3a (immediate):** P1 + P7 + P6 + P2 + P9 + P10 (5
-  smalls + 1 medium, all dashboard-only, ~6h total).
-- **Phase 3b (next iteration):** P3 + P5 + P4 + P8 — need
-  upfront discussion (backend changes for P4 / P5, refactor
-  for P3, copy review for P8).
+**Status (post 2026-05-11 sprint):**
+- **P10 — Footer pill tone (shipped).** Commit lands the SSE +
+  audit-chain pills as `neutral` (grey) instead of `warn`
+  (yellow). The dashboard footer no longer reads as five things
+  to worry about on a healthy dev boot.
+- **P9 — Refresh button placement (deferred).** Moving Refresh
+  next to the title across 6 page components touches enough
+  JSX that visual review is worthwhile before shipping. Queued
+  for the next dashboard sprint with a Playwright screenshot
+  diff as the gate.
+- **P2 — Live-policy column pin on Detectors & Tiers (deferred).**
+  Layout-only CSS rework; small but the page already has heavy
+  layout logic and the change benefits from operator preview.
+- **P6 — Traffic Gates flow diagram (deferred).** Static chip
+  row needs visual review for chip ordering + click-scroll
+  targets.
+- **P1 — Policy posture cheat-card (deferred).** Shared
+  component across 5 pages; needs scope agreement on the
+  cheat-card's exact field list + which pages it appears on.
+- **P7 — Cross-page deep-link consistency (deferred).** Per-page
+  URL-read mount effects; needs a documented URL pattern and
+  one effect per page. Plan: `#/<page>?<filter>=<value>` per
+  the QA report's recommendation.
 
-Confirm scope before starting; this section is the most
-flexible.
+**Phase 3b (next iteration):** P3 + P5 + P4 + P8 — need upfront
+discussion (backend changes for P4 / P5, refactor for P3, copy
+review for P8).
+
+**Decision:** Phase 3a deferred items move to a dedicated UX
+sprint with visual review at the end of each item. They're not
+bug fixes; the immediate operator pain (HIGH-01/02 + four
+MEDIUMs + seven LOWs) is now closed.
 
 ## Suggested PR sequence
 
