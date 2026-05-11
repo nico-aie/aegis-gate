@@ -225,9 +225,39 @@ work + design discussion.
   links queued as a follow-up — those need a documented URL
   pattern across more components.
 
-**Phase 3b (next iteration):** P3 + P5 + P4 + P8 — need upfront
-discussion (backend changes for P4 / P5, refactor for P3, copy
-review for P8).
+**Phase 3b (post-3a sprint):**
+- **P8 — Microcopy on dangerous toggles (shipped, `176382b`).**
+  The detector-mask Save button now carries an inline diff
+  summary ("disable sqli, xss · enable behavior"). Other
+  audit-mutated controls already had operator-grade copy from
+  prior sprints (DDoS observe-only checkbox + Strike-Block
+  enable + AI Disable confirm + Response Filtering rung
+  descriptions), so the mask-edit diff was the genuine gap.
+- **P3 — Rules tabbed view (shipped, `1d6084d`).** The Rules
+  page is now two tabs: `Rules` (default) for list + detail
+  and `Simulator` for full-viewport replay. Operators managing
+  50+ rules see more list rows; Simulator workflows get a
+  dedicated focused view.
+- **P5 — Route activity pulse pill (deferred — backend
+  required).** The existing `RouteLatencyHistogram` exposes
+  cumulative sample counts per route, but the proposal's
+  "green/amber/red based on req/min in last 60s" needs a
+  sliding-window counter (per-route ring buffer or a delta
+  tracker on top of the cumulative samples). The cleanest
+  backend addition is a new `Per60sWindowCounter` keyed by
+  route_id, drained on every audit event. Estimated ~3 h
+  backend + ~1 h dashboard.
+- **P4 — Access Lists hit-counter (deferred — backend
+  required).** Needs a per-entry hit counter on the blacklist
+  / whitelist runtime store, then a new
+  `/api/blacklist/hits?window=3600` endpoint returning
+  `{entry_id: count}`. Same shape for whitelist. Estimated
+  ~3 h backend + ~1 h dashboard. The proposal's "consider
+  removing" affordance for stale entries (`0 hits in 24h`)
+  follows naturally once the counter ships.
+
+Both P4 and P5 are queued for a dedicated sprint with backend
+design + UI review at the end of each.
 
 ## Suggested PR sequence
 
