@@ -210,8 +210,18 @@ async fn run_gateway_inner(
     let boot_ts = aegis_control::api::about::mark_started();
     tracing::info!(boot_ts = %boot_ts, "process boot timestamp stamped");
 
+    // 2026-05-11 PR #7 — replace NoopPipeline with the real impl.
+    // The data plane bypasses `SecurityPipeline::inbound()` and
+    // calls `run_all_filtered_timed(&detectors, ...)` directly, so
+    // the RuleSet attached here only matters if someone wires the
+    // trait's inbound path in the future. The on_body_frame
+    // wire-up reads `ResponseFilterConfig` from this `Pipeline`
+    // instance — that's the load-bearing piece. Defaults: scrub
+    // stack traces + mask internal IPs + redact DLP, all ON.
     let pipeline: Arc<dyn aegis_core::SecurityPipeline> =
-        Arc::new(aegis_security::NoopPipeline);
+        Arc::new(aegis_security::Pipeline::new(Arc::new(
+            aegis_security::RuleSet::new(),
+        )));
     let (state, state_summary) = state_select::select(&cfg)?;
     tracing::info!("state backend = {state_summary}");
 

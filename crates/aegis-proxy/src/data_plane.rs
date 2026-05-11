@@ -1379,8 +1379,9 @@ pub(crate) async fn forward_allow_to_upstream(
 
     match result {
         Ok(resp) => {
+            let status = resp.status();
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
-                if resp.status().is_server_error() {
+                if status.is_server_error() {
                     cb.record_failure();
                 } else {
                     cb.record_success();
@@ -1388,12 +1389,95 @@ pub(crate) async fn forward_allow_to_upstream(
             }
             tracing::Span::current().record(
                 "outcome",
-                if resp.status().is_server_error() {
+                if status.is_server_error() {
                     "upstream-5xx"
                 } else {
                     "ok"
                 },
             );
+            // 2026-05-11 PR #7 — response filtering wire-up.
+            // The forwarder buffers the entire upstream body
+            // into `Full::new(body_bytes)` (see
+            // `upstream/forward.rs:469-505`), so we apply
+            // response filtering as a single `on_body_frame` call
+            // here. Once the proxy supports streaming response
+            // bodies, this call site fans out per chunk and the
+            // shape stays the same. `OutboundAction::Rewrite`
+            // replaces the body; `Abort` 502s the request (DLP
+            // block path — not exercised by the default filter
+            // config but the contract shape is in place).
+            //
+            // Detector chain inbound work runs separately via
+            // `run_all_filtered_timed` earlier in the request
+            // path; `Pipeline::on_body_frame` is only used for
+            // outbound response scrubbing.
+            let (mut parts_out, body) = resp.into_parts();
+            // `Full<Bytes>::Error` is `Infallible` — the collect
+            // can't fail, but the trait still hands back a Result.
+            let body_bytes = {
+                use http_body_util::BodyExt as _;
+                match body.collect().await {
+                    Ok(c) => c.to_bytes(),
+                    Err(_) => Bytes::new(),
+                }
+            };
+            // Pipeline::on_body_frame ignores rctx + route in the
+            // shipping impl, but the trait sig requires both. Build
+            // a minimal RequestCtx from peer_ip + identity so
+            // future filter rungs that *do* read it (per-tenant
+            // DLP policy, audit attribution) have the fields they
+            // need without a second refactor.
+            let rctx_for_filter = aegis_core::context::RequestCtx {
+                request_id: String::new(),
+                received_at: request_start,
+                client: aegis_core::context::ClientInfo {
+                    ip: peer_ip,
+                    tls_fingerprint: None,
+                    h2_fingerprint: None,
+                    user_agent: None,
+                },
+                tenant_id: route_ctx.tenant_id.clone(),
+                trace_id: None,
+                fields: std::collections::BTreeMap::new(),
+            };
+            let action = ctx
+                .pipeline
+                .on_body_frame(&body_bytes, &rctx_for_filter, &route_ctx)
+                .await;
+            let final_bytes = match action {
+                aegis_core::pipeline::OutboundAction::PassThrough => body_bytes,
+                aegis_core::pipeline::OutboundAction::Rewrite(new_bytes) => {
+                    // content-length must follow the new payload
+                    // or hyper will hang / mis-frame.
+                    use hyper::header::{HeaderValue, CONTENT_LENGTH};
+                    if let Ok(v) = HeaderValue::from_str(&new_bytes.len().to_string()) {
+                        parts_out.headers.insert(CONTENT_LENGTH, v);
+                    }
+                    new_bytes
+                }
+                aegis_core::pipeline::OutboundAction::Abort { reason } => {
+                    let body_str = format!(
+                        "{{\"error\":\"response_aborted\",\"reason\":{}}}",
+                        serde_json::to_string(&reason).unwrap_or_else(|_| "\"\"".into()),
+                    );
+                    use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
+                    let aborted = hyper::Response::builder()
+                        .status(hyper::StatusCode::BAD_GATEWAY)
+                        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                        .header(
+                            CONTENT_LENGTH,
+                            HeaderValue::from_str(&body_str.len().to_string()).unwrap(),
+                        )
+                        .body(http_body_util::Full::new(bytes::Bytes::from(body_str)))
+                        .unwrap();
+                    return (
+                        aborted,
+                        DecisionTag::block("response-filter-abort")
+                            .with_tier(route_ctx.tier),
+                    );
+                }
+            };
+            let resp = Response::from_parts(parts_out, Full::new(final_bytes));
             // 5xx from upstream is not a WAF block — we proxied
             // faithfully; the contract action stays `allow` (the
             // upstream's failure is what the client sees).
