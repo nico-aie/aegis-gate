@@ -3549,6 +3549,23 @@ function ListPage({ kind }) {
   const raw = api.data?.entries ?? api.data ?? [];
   const data = Array.isArray(raw) ? raw : [];
 
+  // P4 (2026-05-11) — per-entry hit counts in the last 1h / 24h.
+  // Polled every 15s; the data plane increments the counter
+  // inside `AccessListStore::matches()` on each access-list
+  // match. Operators see which entries are still earning their
+  // keep and a "consider removing" link for entries that haven't
+  // matched anything in the last 24h.
+  const hitsPath = isBL ? '/api/blacklist/hits?window=3600' : '/api/whitelist/hits?window=3600';
+  const hits24Path = isBL ? '/api/blacklist/hits?window=86400' : '/api/whitelist/hits?window=86400';
+  const hits1hApi = window.useApi
+    ? window.useApi(hitsPath, { intervalMs: 15000, fallback: { hits: {} } })
+    : { data: { hits: {} } };
+  const hits24hApi = window.useApi
+    ? window.useApi(hits24Path, { intervalMs: 60000, fallback: { hits: {} } })
+    : { data: { hits: {} } };
+  const hits1h = hits1hApi.data?.hits || {};
+  const hits24h = hits24hApi.data?.hits || {};
+
   // CQF-T2 — Add entry form + per-row delete. Form is shown
   // inline in the page-head when "Add entry" is clicked; submit
   // lands via accessListAdd → audit-mutated POST.
@@ -3896,6 +3913,7 @@ function ListPage({ kind }) {
               <th>Value</th>
               <th>Note</th>
               <th style={{ width: 130 }}>{isBL ? 'Action' : 'Bypass'}</th>
+              <th style={{ width: 90 }} title="Per-entry hit count in the last hour · last day (hover for the 24h figure)">Hits · 1h</th>
               <th style={{ width: 130 }}>Expires</th>
               <th style={{ width: 130 }}>Created</th>
               <th style={{ width: 80 }}></th>
@@ -3903,7 +3921,7 @@ function ListPage({ kind }) {
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
                 {data.length === 0
                   ? 'No entries.'
                   : `No matches for "${search}". Clear the search to see all ${data.length} entries.`}
@@ -3924,6 +3942,24 @@ function ListPage({ kind }) {
                         : (e.bypass || []).map(b => <span key={b} className="pill neutral" style={{ fontSize: 9 }}>{b}</span>)}
                     </div>
                   )}
+                </td>
+                <td className="num">
+                  {(() => {
+                    const h1 = hits1h[e.id] || 0;
+                    const h24 = hits24h[e.id] || 0;
+                    const tone = h1 > 0 ? 'ok' : (h24 > 0 ? 'neutral' : 'warn');
+                    const tip = `last 1h: ${h1} · last 24h: ${h24}`;
+                    return (
+                      <span className={`pill ${tone}`} title={tip} style={{ fontSize: 10 }}>
+                        {h1}
+                        {h24 === 0 && h1 === 0 && (
+                          <span style={{ marginLeft: 4, fontSize: 9, fontStyle: 'italic' }}>
+                            · stale
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
                 </td>
                 <td className="num" style={{ color: e.expires_at ? 'var(--warn)' : 'var(--ink-dim)' }}>
                   {e.expires_at ? new Date(e.expires_at).toISOString().slice(0, 10) : 'never'}
