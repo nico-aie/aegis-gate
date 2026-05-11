@@ -859,7 +859,20 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; }
 .split-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gutter); }
 .split-list { display: grid; grid-template-columns: 280px 1fr; gap: var(--gutter); height: calc(100vh - 130px); }
 .split-list .left { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg); overflow: hidden; display: flex; flex-direction: column; }
-.split-list .right { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg); overflow: auto; }
+/* P2 (2026-05-11) — pin the right panel via the column's own
+   independent scroll. The grid already makes left/right
+   side-by-side; without this rule the right panel scrolled in
+   lockstep with the page (so on a tall route list, scrolling
+   down to find a tier card pushed the live-policy summary out
+   of view). Now the right column is its own scroll context. */
+.split-list .right {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  overflow: auto;
+  align-self: start;
+  max-height: 100%;
+}
 
 /* ===== Banner ===== */
 .banner {
