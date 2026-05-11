@@ -1594,6 +1594,134 @@ function PageAuditLog() {
   );
 }
 
+// ============== POLICY POSTURE CARD ==============
+//
+// P1 (2026-05-11) — single-line "current posture" cheat-card that
+// renders at the top of every Policy section page. Operators
+// landing on Rules / Access Lists / Detectors / Traffic Gates /
+// Routing & Upstreams previously had to read the whole page to
+// learn what the WAF was currently enforcing. The data was
+// already there across five APIs; this card cross-tabulates them
+// in one ~28px-tall row so page-entry orientation drops from
+// ~15s to ~2s.
+//
+// Chips are clickable — each one jumps to the relevant page.
+// Read-only summary; no mutation controls live here.
+function PolicyPostureCard() {
+  const modeApi = window.useModeApi ? window.useModeApi() : { data: null };
+  const tiersApi = window.useTiersApi ? window.useTiersApi() : { data: null };
+  const aiApi = window.useAiEnabledApi ? window.useAiEnabledApi() : { data: null };
+  const rulesApi = window.useApi
+    ? window.useApi('/api/rules', { intervalMs: 30000, fallback: { rules: [] } })
+    : { data: { rules: [] } };
+  const blApi = window.useApi
+    ? window.useApi('/api/blacklist', { intervalMs: 30000, fallback: { entries: [] } })
+    : { data: { entries: [] } };
+  const wlApi = window.useApi
+    ? window.useApi('/api/whitelist', { intervalMs: 30000, fallback: { entries: [] } })
+    : { data: { entries: [] } };
+  const ddosApi = window.useApi
+    ? window.useApi('/api/gates/ddos', { intervalMs: 30000, fallback: null })
+    : { data: null };
+
+  const mode = (modeApi.data?.mode || 'enforce').toUpperCase();
+  const tierCount = Array.isArray(tiersApi.data?.tiers) ? tiersApi.data.tiers.length : '—';
+  const aiOn = !!aiApi.data?.enabled && !!aiApi.data?.feature_present;
+  const aiFeaturePresent = !!aiApi.data?.feature_present;
+  const ruleCount = Array.isArray(rulesApi.data?.rules) ? rulesApi.data.rules.length : 0;
+  const blCount = Array.isArray(blApi.data?.entries) ? blApi.data.entries.length : 0;
+  const wlCount = Array.isArray(wlApi.data?.entries) ? wlApi.data.entries.length : 0;
+  const ddosObserve = ddosApi.data?.observe_only === true;
+  const ddosEnabled = ddosApi.data?.enabled === true;
+
+  const chips = [
+    {
+      label: mode === 'LOG_ONLY' ? 'SHADOW' : mode,
+      tone: mode === 'LOG_ONLY' ? 'warn' : 'ok',
+      title: mode === 'LOG_ONLY'
+        ? 'Mode: log_only — detections still recorded but no blocks. Flip from Settings.'
+        : 'Mode: enforce — blocks land. Flip from Settings.',
+      href: '#/settings',
+    },
+    {
+      label: `${tierCount} tier${tierCount === 1 ? '' : 's'}`,
+      tone: 'neutral',
+      title: 'Per-request risk tiers · Detectors & Tiers page',
+      href: '#/detectors',
+    },
+    {
+      label: aiFeaturePresent ? (aiOn ? 'AI on' : 'AI off') : 'AI absent',
+      tone: aiOn ? 'ok' : 'neutral',
+      title: aiFeaturePresent
+        ? (aiOn ? 'ML detector enabled · Detectors & Tiers' : 'ML detector disabled · Detectors & Tiers')
+        : 'Binary built without --features ai',
+      href: '#/detectors',
+    },
+    {
+      label: `${ruleCount} rule${ruleCount === 1 ? '' : 's'}`,
+      tone: 'neutral',
+      title: 'Custom rule corpus · Rules page',
+      href: '#/rules',
+    },
+    {
+      label: `${blCount} blacklist${blCount === 1 ? '' : ''}`,
+      tone: 'neutral',
+      title: 'Blacklist entries · Access Lists page',
+      href: '#/blacklist',
+    },
+    {
+      label: `${wlCount} whitelist${wlCount === 1 ? '' : ''}`,
+      tone: 'neutral',
+      title: 'Whitelist entries · Access Lists page',
+      href: '#/whitelist',
+    },
+    {
+      label: ddosEnabled
+        ? (ddosObserve ? 'DDoS observe' : 'DDoS enforce')
+        : 'DDoS off',
+      tone: ddosEnabled && !ddosObserve ? 'ok' : 'neutral',
+      title: ddosEnabled
+        ? (ddosObserve
+            ? 'DDoS gate in observe-only mode · Traffic Gates'
+            : 'DDoS gate enforcing · Traffic Gates')
+        : 'DDoS gate disabled · Traffic Gates',
+      href: '#/traffic-gates',
+    },
+  ];
+
+  return (
+    <div
+      className="card"
+      style={{
+        padding: '8px 12px',
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        fontSize: 11,
+      }}
+      role="status"
+      aria-label="Current WAF policy posture"
+    >
+      <span style={{ color: 'var(--ink-dim)', fontWeight: 600, letterSpacing: 0.4 }}>
+        POSTURE
+      </span>
+      {chips.map((c, i) => (
+        <a
+          key={i}
+          href={c.href}
+          className={`pill ${c.tone}`}
+          title={c.title}
+          style={{ textDecoration: 'none', fontSize: 11 }}
+        >
+          {c.label}
+        </a>
+      ))}
+    </div>
+  );
+}
+
 // ============== RULE MANAGER ==============
 // DSL body templates used when the API doesn't supply one.
 function defaultRuleBody(id) {
@@ -1900,6 +2028,7 @@ function PageRuleManager() {
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">
@@ -2844,6 +2973,7 @@ function PageTierConfig() {
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">
@@ -3510,6 +3640,7 @@ function ListPage({ kind }) {
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">
@@ -6168,6 +6299,7 @@ function PageUpstreams() {
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">
@@ -8140,6 +8272,7 @@ function PageInvestigation() {
 function PageTrafficGates() {
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Traffic Gates</h1>
