@@ -541,24 +541,21 @@ impl DashboardServices {
     }
 }
 
-/// Build a snapshot provider from a `WafConfig`. Reads pool names and
-/// member counts at *construction time* (closures clone the
-/// already-snapshot values) so changes to the live config aren't
-/// reflected — call `pool_snapshot_provider` again on hot reload.
+/// **Test / fallback** snapshot provider. Builds a static
+/// `PoolHealthSnapshot` from a `WafConfig` where every member
+/// reports healthy. Used by tests and as a stand-in when the
+/// production `PoolRegistry` isn't constructed yet.
 ///
-/// All pools report `healthy = total` (every member assumed up)
-/// until the cluster runtime lands real per-member health probes.
-/// This matches the in-process `Member::new()` default of
-/// `healthy: AtomicBool::new(true)` — the data plane *will* route
-/// to those members, so reporting "Down" in the dashboard while
-/// the proxy actually serves traffic was misleading.
+/// The **production binary path** does NOT use this — it
+/// installs `upstream_writer.live_snapshot()` from
+/// `aegis-proxy/src/accept.rs:135` (or equivalent), which reads
+/// each `Member`'s `is_healthy()` AtomicBool flipped by live
+/// health probes. See `aegis-proxy/src/upstream/registry.rs::
+/// live_snapshot` (LT-RUN-5 CORE-05 was a partial misread —
+/// production health is real).
 ///
-/// When a pool config carries a `health:` block, the live probe
-/// flips the member flag in `PoolRegistry`; this provider does
-/// not yet read those flags (carry-over noted in
-/// `Implement-Progress.md` — depends on membership-driven
-/// cluster runtime). Once that lands, replace the closure body
-/// with a live registry read.
+/// 2026-05-11 — doc clarified so the next audit doesn't
+/// re-raise the "fake health" claim against test-only code.
 pub fn pool_snapshot_provider(cfg: &aegis_core::config::WafConfig) -> PoolSnapshotProvider {
     let pools: Vec<PoolHealthEntry> = cfg
         .upstreams

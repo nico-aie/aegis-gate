@@ -181,12 +181,15 @@ upstreams:
 
     #[test]
     fn raft_returns_not_implemented() {
-        let cfg = aegis_core::load_config_str(&yaml_with_state(
+        // 2026-05-11 CORE-09/CTL-08 fix — raft is now rejected at
+        // WafConfig::validate() time (the lint layer), not at
+        // run() time. load_config_str calls validate(), so the
+        // error surfaces here instead of a layer deeper.
+        let err = aegis_core::load_config_str(&yaml_with_state(
             "state:\n  backend: raft",
         ))
-        .unwrap();
-        let err = run(&cfg, NodeId::new("test-1"))
-            .expect_err("raft should be rejected");
+        .expect_err("raft should be rejected at config load");
+        let err = format!("{err:?}");
         assert!(err.contains("raft"), "got: {err}");
     }
 
