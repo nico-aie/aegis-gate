@@ -404,6 +404,38 @@ impl WafConfig {
                 )));
             }
         }
+        // 2026-05-11 PROXY-02 — reject `match_type: regex|glob` at
+        // lint time. The resolver only supports prefix lookup via
+        // `PathTrie::find_all_prefixes` today; regex / glob routes
+        // get inserted into the trie as literal strings and never
+        // match real traffic. Pre-fix this was a silent
+        // mis-configuration trap (verified 2026-05-11 against
+        // `aegis-proxy/src/route/mod.rs::resolve_inner`). Loud-fail
+        // at boot instead of letting operators ship routes that
+        // never fire. When regex / glob lands, drop this guard.
+        for route in &self.routes {
+            match route.match_type {
+                MatchType::Exact | MatchType::Prefix => {}
+                MatchType::Regex => {
+                    return Err(crate::error::WafError::Config(format!(
+                        "route '{}' uses match_type: regex which is not implemented. \
+                         The resolver only supports prefix matching today; regex routes \
+                         would never fire. Switch to match_type: prefix or split into \
+                         multiple exact / prefix routes.",
+                        route.id,
+                    )));
+                }
+                MatchType::Glob => {
+                    return Err(crate::error::WafError::Config(format!(
+                        "route '{}' uses match_type: glob which is not implemented. \
+                         The resolver only supports prefix matching today; glob routes \
+                         would never fire. Switch to match_type: prefix or split into \
+                         multiple exact / prefix routes.",
+                        route.id,
+                    )));
+                }
+            }
+        }
         // TCP-T1 — every route resolving to a `scheme: tcp` pool
         // must carry a non-empty `tcp_destination_allowlist`, and
         // every entry must parse cleanly. Validation here
@@ -2784,6 +2816,62 @@ state:
     // -----------------------------------------------------------------------
     // validate() tests
     // -----------------------------------------------------------------------
+
+    // 2026-05-11 PROXY-02 — regex / glob routes must be rejected
+    // at validate() time because the resolver only supports
+    // prefix lookup today; without this guard, operators ship
+    // routes that never fire.
+    #[test]
+    fn validate_rejects_match_type_regex() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: api-v1
+    path: "/api/v[0-9]+"
+    match_type: regex
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+"#;
+        let err = super::load_config_str(yaml).expect_err("regex routes must fail validate");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("regex"), "got: {msg}");
+        assert!(msg.contains("not implemented"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_rejects_match_type_glob() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: api-glob
+    path: "/api/*"
+    match_type: glob
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+"#;
+        let err = super::load_config_str(yaml).expect_err("glob routes must fail validate");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("glob"), "got: {msg}");
+        assert!(msg.contains("not implemented"), "got: {msg}");
+    }
 
     #[test]
     fn validate_rejects_empty_listeners() {
