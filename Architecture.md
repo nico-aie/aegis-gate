@@ -382,10 +382,25 @@ Stages run in this order. Earlier stages can short-circuit later ones.
     - CAPTCHA providers behind a `CaptchaProvider` trait: Turnstile,
       hCaptcha, reCAPTCHA v3.
 
-12. **Response filter** (runs after the upstream responds). Security header
-    injection, stack-trace scrub, internal IP mask, information-leak header
-    strip, DLP outbound, ICAP RESPMOD. Streaming chunk processor so large
-    responses never balloon memory.
+12. **Response filter** (runs after the upstream responds, shipped 2026-05-11).
+    `Pipeline::on_body_frame` is the single hot trait method on
+    `SecurityPipeline` today (`inbound` is bypassed — the data plane calls
+    `run_all_filtered_timed` on the detector chain directly). Each upstream
+    response body runs through three independently toggleable rungs via
+    `ResponseFilterConfig` (held in an `ArcSwap` for hot-reload):
+    - `response_filter::scrub_stack_traces` — Node.js / JVM / Python / Rust /
+      PHP / .NET / Ruby / Go traces → `[REDACTED]`.
+    - `response_filter::mask_internal_ips` — RFC 1918 + loopback + link-local
+      → `[INTERNAL]`.
+    - `dlp::redact` — Luhn-validated credit cards, SSN, IBAN, email, AWS keys,
+      GitHub / Stripe / Slack tokens.
+    Clean responses pay one `Cow::Borrowed` check per rung and zero allocations;
+    only modified payloads re-emit (with `Content-Length` rewritten so hyper
+    doesn't mis-frame). Today the forwarder buffers the entire body into a
+    single `Full<Bytes>` frame; the per-frame interface is in place for the
+    streaming-body work that follows. Information-leak header stripping +
+    ICAP RESPMOD + OpenAPI response validation remain forward-looking
+    (`docs/security/response-filtering.md` calls out the gap).
 
 ---
 
