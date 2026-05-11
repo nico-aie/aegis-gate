@@ -92,6 +92,10 @@ pub(crate) async fn admin_accept_loop(
     // Phase-3 per-route latency. Same histogram the data plane
     // records into; admin reads percentiles from it.
     route_latency_hist: Arc<aegis_control::metrics::route_latency::RouteLatencyHistogram>,
+    // P5 (2026-05-11) — same per-route sliding-window counter the
+    // data plane writes to. Admin reads it for the
+    // `/api/analytics/route-activity` endpoint.
+    route_activity: aegis_control::metrics::route_activity::RouteActivityWindow,
     // Per-detector evaluation-duration histogram. Recorded by
     // the data plane around each `Detector::inspect` call.
     detector_latency_hist: Arc<aegis_control::metrics::detector_latency::DetectorLatencyHistogram>,
@@ -565,6 +569,7 @@ pub(crate) async fn admin_accept_loop(
     // the same series the data plane records.
     services.request_stage_hist = Some(request_stage_hist.clone());
     services.route_latency_hist = Some(route_latency_hist.clone());
+    services.route_activity = Some(route_activity.clone());
     services.detector_latency_hist = Some(detector_latency_hist.clone());
     // HACK-T3 — wire the same detector list the data plane
     // runs so `/api/rules/simulate` can evaluate against an
@@ -924,6 +929,10 @@ pub(crate) async fn accept_loop(
     verbosity: aegis_core::SharedVerbosity,
     request_stage_hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     route_latency_hist: Arc<aegis_control::metrics::route_latency::RouteLatencyHistogram>,
+    // P5 (2026-05-11) — sliding-window route activity counter.
+    // Recorded after route resolution so the dashboard's pulse
+    // pill can distinguish "live" from "dead" routes.
+    route_activity: aegis_control::metrics::route_activity::RouteActivityWindow,
     detector_latency_hist: Arc<aegis_control::metrics::detector_latency::DetectorLatencyHistogram>,
     bus: AuditBus,
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
@@ -968,6 +977,7 @@ pub(crate) async fn accept_loop(
         let verbosity = verbosity.clone();
         let request_stage_hist = request_stage_hist.clone();
         let route_latency_hist = route_latency_hist.clone();
+        let route_activity = route_activity.clone();
         let detector_latency_hist = detector_latency_hist.clone();
         let bus = bus.clone();
         let upstream_ctx = upstream_ctx.clone();
@@ -1060,6 +1070,7 @@ pub(crate) async fn accept_loop(
                 let verbosity = verbosity.clone();
                 let request_stage_hist = request_stage_hist.clone();
                 let route_latency_hist = route_latency_hist.clone();
+                let route_activity = route_activity.clone();
                 let detector_latency_hist = detector_latency_hist.clone();
                 let bus = bus.clone();
                 let upstream_ctx = upstream_ctx.clone();
@@ -1126,6 +1137,7 @@ pub(crate) async fn accept_loop(
                         &verbosity,
                         &request_stage_hist,
                         &route_latency_hist,
+                        &route_activity,
                         &detector_latency_hist,
                         &bus,
                         &upstream_ctx,

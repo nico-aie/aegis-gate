@@ -406,6 +406,31 @@ pub(crate) fn admin_router(
         // `{routes: [{route, p50_ms, p95_ms, p99_ms, samples}]}`
         // sorted by samples descending. Capped at ?limit=N
         // (default 20). Routes with no samples are omitted.
+        // P5 (2026-05-11) — sliding-window per-route activity. The
+        // dashboard reads this every ~10s and renders a pulse pill
+        // in the route table so dead routes are visible without
+        // synthetic traffic. Returns
+        // `{routes: [{route, last_60s_count, last_seen_age_s}]}`
+        // sorted by `last_60s_count` descending. Routes with zero
+        // recorded requests since boot are omitted.
+        "/api/analytics/route-activity" => {
+            let body = match services.route_activity.as_ref() {
+                None => serde_json::json!({"routes": []}).to_string(),
+                Some(w) => {
+                    let rows: Vec<serde_json::Value> = w
+                        .snapshot_all()
+                        .into_iter()
+                        .map(|(route, a)| serde_json::json!({
+                            "route": route,
+                            "last_60s_count": a.count_60s,
+                            "last_seen_age_s": a.last_seen_age_s,
+                        }))
+                        .collect();
+                    serde_json::json!({"routes": rows}).to_string()
+                }
+            };
+            json_body_response(200, body, "private, max-age=2")
+        }
         "/api/analytics/latency/routes" => {
             let limit = parse_query_u32(query, "limit", 20);
             let body = match services.route_latency_hist.as_ref() {

@@ -500,6 +500,13 @@ pub async fn run(
         aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
             .expect("route latency histogram registration failed"),
     );
+    // P5 (2026-05-11) — sliding-window per-route activity counter.
+    // Built once at boot; the same handle reaches the data plane
+    // (for `record`) and the admin endpoint (`GET /api/analytics/
+    // route-activity`). Cheap to clone — the inner `DashMap` is
+    // `Arc`-shared.
+    let route_activity =
+        aegis_control::metrics::route_activity::RouteActivityWindow::new();
     // Per-detector evaluation-duration histogram. Same wiring
     // pattern as `route_latency_hist`; data plane records around
     // each `Detector::inspect` call.
@@ -998,6 +1005,7 @@ pub async fn run(
         let verbosity = verbosity.clone();
         let request_stage_hist = request_stage_hist.clone();
         let route_latency_hist_l = route_latency_hist.clone();
+        let route_activity_l = route_activity.clone();
         let detector_latency_hist_l = detector_latency_hist.clone();
         let bus = bus.clone();
         let upstream_ctx_l = upstream_ctx.clone();
@@ -1025,6 +1033,7 @@ pub async fn run(
             verbosity,
             request_stage_hist,
             route_latency_hist_l,
+            route_activity_l,
             detector_latency_hist_l,
             bus,
             upstream_ctx_l,
@@ -1294,6 +1303,7 @@ pub async fn run(
     let admin_detectors = detectors.clone();
     let admin_request_stage_hist = request_stage_hist.clone();
     let admin_route_latency_hist = route_latency_hist.clone();
+    let admin_route_activity = route_activity.clone();
     let admin_detector_latency_hist = detector_latency_hist.clone();
     // MTLS-T10 Phase 2 — share the live trust store with the admin
     // listener so the audit-mutated PUT /api/mtls/ca-bundle?apply=true
@@ -1325,6 +1335,7 @@ pub async fn run(
         admin_detectors,
         admin_request_stage_hist,
         admin_route_latency_hist,
+        admin_route_activity,
         admin_detector_latency_hist,
         admin_client_trust,
         admin_inflight,

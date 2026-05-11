@@ -203,6 +203,14 @@ pub struct DashboardServices {
     /// `GET /api/analytics/latency/routes`.
     pub route_latency_hist:
         Option<std::sync::Arc<crate::metrics::route_latency::RouteLatencyHistogram>>,
+    /// P5 (2026-05-11) — per-route 60-second sliding-window
+    /// counter. Populated by the data plane on every resolved
+    /// route alongside `route_latency_hist`. Read by
+    /// `GET /api/analytics/route-activity`. Always `Some` once
+    /// `aegis-proxy::run` has constructed it; cheap to clone
+    /// (the inner `DashMap` is Arc-shared).
+    pub route_activity:
+        Option<crate::metrics::route_activity::RouteActivityWindow>,
     /// Per-detector evaluation-duration histogram. Same wiring
     /// pattern as `route_latency_hist`. `Some` once
     /// `aegis-proxy::run` has registered it; populated by the
@@ -503,6 +511,7 @@ impl DashboardServices {
                 // don't drive real requests so this stays None.
                 request_stage_hist: None,
                 route_latency_hist: None,
+                route_activity: None,
                 detector_latency_hist: None,
                 // Phase-3 incident overlay — empty at boot, fills
                 // as operators ack/snooze/resolve via the dashboard.
