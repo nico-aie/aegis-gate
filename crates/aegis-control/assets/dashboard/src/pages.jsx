@@ -9802,8 +9802,13 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
               className="ip"
               value={newPool.addr}
               onChange={e => setNewPool({ ...newPool, addr: e.target.value })}
-              placeholder="Type a new backend: IP:port  (e.g. 10.0.1.10:8080)"
+              placeholder="IP:port (10.0.1.10:8080) or hostname:port (api.example.com:443)"
             />
+            <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
+              Hostnames resolve via DNS at config-load time and expand
+              into one member per A/AAAA record. SNI defaults to the
+              hostname unless you set <code>host_header</code>.
+            </div>
             {usingNewPool && (
               <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
                 <div style={{ flex: 1 }}>

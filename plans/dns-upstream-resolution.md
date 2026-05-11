@@ -1,10 +1,18 @@
 # DNS-resolved upstream members
 
-> **Status (2026-05-11):** Planned, not started. Captured because
-> operators want to address backends by hostname
-> (`api.example.com:443`, `myservice.internal:8080`) rather than
-> being forced to pin a `SocketAddr` (`10.0.1.10:8080`). This plan
-> walks the design space and recommends a phased implementation.
+> **Status (2026-05-11):**
+> - **Phase 1 shipped (PR-DNS-1, this commit).** Operators can
+>   now write `addr: api.example.com:443` in `cfg.upstreams.*.members[]`
+>   or via the dashboard's Add Route modal. Hostnames are
+>   resolved at boot + dashboard PUT via
+>   `tokio::net::lookup_host`; multi-A records expand into N
+>   synthetic members; `host_header` defaults to the hostname so
+>   TLS SNI lines up. Unresolvable hostnames fail boot loudly.
+> - **Phase 2 (planned, separate PR):** background DNS refresh
+>   via `hickory-resolver`, soft-failure on boot, audit event
+>   on resolver changes. ~3 days of work; not started.
+> - **Phase 3 (planned):** dashboard "Resolved IPs" expandable
+>   on the pool detail view + DNS health badge per member.
 >
 > **Scope:** outbound only. Inbound `Host`-header matching is
 > already supported via `RouteConfig.host: Option<String>` and the
@@ -283,23 +291,35 @@ Add `hickory-resolver` (or upstream `trust-dns-resolver`):
 
 ## Phases
 
-### Phase 1 — Accept hostnames at boot (~2 days)
+### Phase 1 — Accept hostnames at boot (~2 days) — ✅ shipped 2026-05-11
 
 Smallest viable cut. Operators can use hostnames; resolution
 happens once at config load.
 
-- [ ] `MemberAddrSpec` enum + serde untagged variants.
-- [ ] Boot-time resolver: `Hostname → SocketAddr` via
-      `tokio::net::lookup_host` (no new dep yet).
-- [ ] Multi-A-record → N `MemberRef` expansion at load time.
-- [ ] Dashboard Add Route placeholder + helper text update.
-- [ ] Unit tests: serde round-trips, multi-IP expansion,
-      unresolvable-hostname error.
-- [ ] Hard error on unresolvable hostname at boot (Phase 2 will
-      soften this).
+- [x] `MemberAddrSpec` enum + serde untagged variants
+      (`crates/aegis-core/src/config.rs`).
+- [x] Boot-time resolver: `Hostname → SocketAddr` via
+      `tokio::net::lookup_host` (no new dep)
+      (`crates/aegis-proxy/src/upstream/dns_resolve.rs`).
+- [x] Multi-A-record → N `MemberConfig` expansion at load time
+      (one `MemberConfig` per resolved IP, same weight/zone,
+      `host_header` defaulted to the hostname when unset).
+- [x] Dashboard Add Route placeholder + helper text update
+      (`crates/aegis-control/assets/dashboard/src/pages.jsx`).
+- [x] Unit + integration tests: serde round-trips (10),
+      multi-IP expansion (1), unresolvable-hostname error (1),
+      SNI default (1), explicit `host_header` wins (1), IP
+      passes through untouched (1).
+- [x] Hard error on unresolvable hostname at boot (Phase 2 will
+      soften this) — `DnsResolveError::LookupFailed` /
+      `PoolValidationError::UnresolvedHostname`.
+- [x] Resolver also runs on dashboard PUT
+      (`/api/upstreams/config`, `/api/upstreams/pool/{id}`) so
+      operators can author hostnames live without a restart.
 
 **Outcome**: operators can use hostnames; DNS is honored at
-boot only. Stale IPs survive until next config reload / restart.
+boot + dashboard PUT. Stale IPs survive until next config reload
+/ restart (Phase 2 fixes).
 
 ### Phase 2 — Background refresh + soft failure (~3 days)
 

@@ -113,6 +113,26 @@ pub async fn run(
     readiness: ReadinessSignal,
     reload_source: ConfigReloadSource,
 ) -> aegis_core::Result<()> {
+    // 2026-05-11 (PR-DNS-1) — resolve any hostname-shaped upstream
+    // members before the boot snapshot is taken. The expansion is
+    // idempotent on IP-only configs (`MemberAddrSpec::Ip` passes
+    // through), so this is free for operators who didn't author any
+    // hostnames. Hostnames are walked in parallel via
+    // `tokio::net::lookup_host`; failure aborts boot loudly. Phase
+    // 2 will move this onto a background refresh loop with
+    // `hickory-resolver`; today's path resolves once at boot + once
+    // per cfg reload.
+    {
+        let raw = cfg_swap.load_full();
+        let mut next: WafConfig = (*raw).clone();
+        next.upstreams = crate::upstream::dns_resolve::expand_hostname_members(
+            next.upstreams,
+        )
+        .await
+        .map_err(|e| aegis_core::WafError::Config(e.to_string()))?;
+        cfg_swap.store(Arc::new(next));
+    }
+
     // Boot snapshot — every existing read site keeps `cfg` as
     // `Arc<WafConfig>`. Future per-handler `cfg.load()` calls
     // can read the latest revision without churning the whole
