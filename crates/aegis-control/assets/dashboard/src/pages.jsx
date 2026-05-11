@@ -176,11 +176,22 @@ function PageOverview() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Overview</h1>
+          <h1 className="page-title">
+            Overview
+            <window.PageTitleRefresh
+              onClick={() => {
+                stats.reload && stats.reload();
+                tsApi.reload && tsApi.reload();
+                distApi.reload && distApi.reload();
+                topApi.reload && topApi.reload();
+                upstreamsLive.reload && upstreamsLive.reload();
+              }}
+              label="Refresh all Overview tiles"
+            />
+          </h1>
           <p className="page-subtitle">Realtime WAF traffic monitoring · last update {tick}s</p>
         </div>
         <div className="page-actions">
-          <button className="btn"><window.I.Refresh /> Refresh</button>
           <button className="btn"><window.I.Download /> Export</button>
           <button className="btn primary"><window.I.External /> Open Grafana</button>
         </div>
@@ -887,7 +898,17 @@ function PageAttackEvents() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Attack Analytics</h1>
+          <h1 className="page-title">
+            Attack Analytics
+            <window.PageTitleRefresh
+              onClick={() => {
+                byDetector.reload && byDetector.reload();
+                botMix.reload && botMix.reload();
+                tiApi.reload && tiApi.reload();
+              }}
+              label="Refresh detector breakdown"
+            />
+          </h1>
           <p className="page-subtitle">
             Curated detector firings · OWASP + custom rules · last {win}
           </p>
@@ -896,11 +917,6 @@ function PageAttackEvents() {
           <select className="input select" value={win} onChange={e => setWin(e.target.value)} style={{ width: 90 }}>
             {Object.keys(ATTACK_WINDOWS).map(v => <option key={v}>{v}</option>)}
           </select>
-          <button className="btn" onClick={() => {
-            byDetector.reload && byDetector.reload();
-            botMix.reload && botMix.reload();
-            tiApi.reload && tiApi.reload();
-          }}><window.I.Refresh /></button>
         </div>
       </div>
 
@@ -1050,7 +1066,13 @@ function PageAnalytics() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Performance</h1>
+          <h1 className="page-title">
+            Performance
+            <window.PageTitleRefresh
+              onClick={() => ts.reload && ts.reload()}
+              label="Refresh performance series"
+            />
+          </h1>
           <p className="page-subtitle">
             Historical trends · {range} window
           </p>
@@ -1061,7 +1083,6 @@ function PageAnalytics() {
               <button key={r} className={`chip ${range === r ? 'active' : ''}`} onClick={() => setRange(r)}>{r}</button>
             ))}
           </div>
-          <button className="btn" onClick={() => ts.reload && ts.reload()}><window.I.Refresh /></button>
         </div>
       </div>
 
@@ -1428,7 +1449,13 @@ function PageAuditLog() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Audit Trail</h1>
+          <h1 className="page-title">
+            Audit Trail
+            <window.PageTitleRefresh
+              onClick={() => audit.reload && audit.reload()}
+              label="Refresh audit events"
+            />
+          </h1>
           <p className="page-subtitle">
             Hash-chained · {events.length.toLocaleString()} events shown
             <span style={{ marginLeft: 8 }}>
@@ -1442,11 +1469,6 @@ function PageAuditLog() {
               </span>
             )}
           </p>
-        </div>
-        <div className="page-actions">
-          <button className="btn" onClick={() => audit.reload && audit.reload()}>
-            <window.I.Refresh /> Refresh
-          </button>
         </div>
       </div>
       <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1880,13 +1902,16 @@ function PageRuleManager() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Rules</h1>
+          <h1 className="page-title">
+            Rules
+            <window.PageTitleRefresh
+              onClick={() => rulesApi.reload && rulesApi.reload()}
+              label="Reload rules"
+            />
+          </h1>
           <p className="page-subtitle">{merged.length} total · validate before apply · audit-chained</p>
         </div>
         <div className="page-actions">
-          <button className="btn" onClick={() => rulesApi.reload && rulesApi.reload()} disabled={busy}>
-            <window.I.Refresh /> Reload
-          </button>
           <button className="btn primary" onClick={() => setShowNew(true)} disabled={busy}>
             <window.I.Plus /> New rule
           </button>
@@ -2821,7 +2846,13 @@ function PageTierConfig() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Detectors &amp; Tiers</h1>
+          <h1 className="page-title">
+            Detectors &amp; Tiers
+            <window.PageTitleRefresh
+              onClick={() => { tiersApi.reload && tiersApi.reload(); routesApi.reload && routesApi.reload(); }}
+              label="Refresh tier + route data"
+            />
+          </h1>
           <p className="page-subtitle">
             Per-class detector mask (with per-tier overrides) + per-tier risk thresholds ·
             <span className="num"> {tiers.length}</span> active tiers ·
@@ -2832,11 +2863,6 @@ function PageTierConfig() {
               </span>
             </span>
           </p>
-        </div>
-        <div className="page-actions">
-          <button className="btn" onClick={() => { tiersApi.reload && tiersApi.reload(); routesApi.reload && routesApi.reload(); }}>
-            <window.I.Refresh /> Refresh
-          </button>
         </div>
       </div>
 
@@ -3486,7 +3512,13 @@ function ListPage({ kind }) {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">{isBL ? 'Blacklist' : 'Whitelist'}</h1>
+          <h1 className="page-title">
+            {isBL ? 'Blacklist' : 'Whitelist'}
+            <window.PageTitleRefresh
+              onClick={() => api.reload && api.reload()}
+              label={isBL ? 'Refresh blacklist' : 'Refresh whitelist'}
+            />
+          </h1>
           <p className="page-subtitle">
             {data.length.toLocaleString()} entries
             <span style={{ marginLeft: 8 }}>
@@ -3497,9 +3529,6 @@ function ListPage({ kind }) {
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn" onClick={() => api.reload && api.reload()}>
-            <window.I.Refresh /> Refresh
-          </button>
           {/* M005 — bulk import opens a CSV-paste modal */}
           <button
             className="btn"
@@ -6141,7 +6170,17 @@ function PageUpstreams() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Routing &amp; Upstreams</h1>
+          <h1 className="page-title">
+            Routing &amp; Upstreams
+            <window.PageTitleRefresh
+              onClick={() => {
+                cfgApi.reload && cfgApi.reload();
+                summaryApi.reload && summaryApi.reload();
+                routesApi.reload && routesApi.reload();
+              }}
+              label="Refresh route + pool data"
+            />
+          </h1>
           <p className="page-subtitle">
             {/* LOW-05 (2026-05-11) — the previous copy
                 `N routes → M pools (X members, Y unreferenced)`
@@ -6164,15 +6203,6 @@ function PageUpstreams() {
               {cfgApi.error ? 'fetch failed' : 'live · audit-mutated'}
             </span>
           </p>
-        </div>
-        <div className="page-actions">
-          <button className="btn" onClick={() => {
-            cfgApi.reload && cfgApi.reload();
-            summaryApi.reload && summaryApi.reload();
-            routesApi.reload && routesApi.reload();
-          }}>
-            <window.I.Refresh /> Refresh
-          </button>
         </div>
       </div>
 
@@ -9099,7 +9129,13 @@ function PageTopAttackers() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Top Attackers</h1>
+          <h1 className="page-title">
+            Top Attackers
+            <window.PageTitleRefresh
+              onClick={() => top.reload && top.reload()}
+              label="Refresh top attackers"
+            />
+          </h1>
           <p className="page-subtitle">
             Ranked by hits in the last {win} · pivot or block in one click
             {geoLoaded ? '' : ' · GeoIP DB not loaded — country / ASN columns will be empty until make geoip-link runs'}
@@ -9114,9 +9150,6 @@ function PageTopAttackers() {
           >
             {Object.keys(TOP_ATTACKERS_WINDOWS).map(v => <option key={v}>{v}</option>)}
           </select>
-          <button className="btn" onClick={() => top.reload && top.reload()}>
-            <window.I.Refresh />
-          </button>
         </div>
       </div>
 
