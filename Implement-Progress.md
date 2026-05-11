@@ -214,11 +214,17 @@ stack) → `3b01ade` (PR #8 SEC-18/SEC-21/CTL-20) → `<this PR>`
 
 ### Next-session hand-off
 
-The full 2026-05-11 sprint is closed. AI-T2..T9 still wait on the
-operator's `.onnx` file. The accept-loop drain refactor for FDP
-is the only durable open thread (one gap between "FDP library
-shipped" and "production hot-restart works end-to-end via
-SIGUSR2"). Nothing else is mid-flight.
+The full 2026-05-11 sprint is closed (now including PR-DNS-1 +
+PR-DNS-2 — hostname-addressed upstreams shipped end-to-end with
+background DNS refresh on TTL).
+
+AI-T2..T9 still wait on the operator's `.onnx` file — that's the
+only meaningful pre-existing open thread. The FDP accept-loop
+drain refactor that was previously flagged here was already
+shipped on 2026-05-03 PM (commit `6fc56c1` + `362c366`); SIGUSR2
+→ `perform_handover` is wired end-to-end and production
+hot-restart works via the polling task in `run.rs:1366`. Stale
+note retired here on 2026-05-11.
 
 ---
 
