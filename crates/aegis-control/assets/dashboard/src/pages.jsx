@@ -2903,7 +2903,19 @@ function PageTierConfig() {
     : { data: null };
   const tiers = tiersApi.data?.tiers || [];
   const routes = routesApi.data?.routes || [];
-  const [selectedName, setSelectedName] = useStateP(null);
+  // P7 (2026-05-11) — honor `#/detectors?tier=critical` on mount
+  // so deep-links from other surfaces (e.g. Live Feed → tier
+  // detail) land pre-selected. Parses once at first render; the
+  // tier-card click below still controls selection on the page.
+  const initialTier = (() => {
+    if (typeof window === 'undefined') return null;
+    const h = window.location.hash || '';
+    const q = h.indexOf('?');
+    if (q < 0) return null;
+    const p = new URLSearchParams(h.slice(q + 1));
+    return p.get('tier');
+  })();
+  const [selectedName, setSelectedName] = useStateP(initialTier);
   const [tierEditor, setTierEditor] = useStateP(null);  // null | tier object
   const [busy, setBusy] = useStateP(false);
 

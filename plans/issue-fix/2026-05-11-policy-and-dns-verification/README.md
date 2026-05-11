@@ -197,38 +197,37 @@ before scheduling:
 | P4 | Access Lists hit-counter | M | Medium | Defer — needs `/api/blacklist/hits` endpoint |
 | P8 | Microcopy on dangerous toggles | S × 10 | Medium | Defer — coordinate with copy review |
 
-**Status (post 2026-05-11 sprint):**
-- **P10 — Footer pill tone (shipped).** Commit lands the SSE +
-  audit-chain pills as `neutral` (grey) instead of `warn`
-  (yellow). The dashboard footer no longer reads as five things
-  to worry about on a healthy dev boot.
-- **P9 — Refresh button placement (deferred).** Moving Refresh
-  next to the title across 6 page components touches enough
-  JSX that visual review is worthwhile before shipping. Queued
-  for the next dashboard sprint with a Playwright screenshot
-  diff as the gate.
-- **P2 — Live-policy column pin on Detectors & Tiers (deferred).**
-  Layout-only CSS rework; small but the page already has heavy
-  layout logic and the change benefits from operator preview.
-- **P6 — Traffic Gates flow diagram (deferred).** Static chip
-  row needs visual review for chip ordering + click-scroll
-  targets.
-- **P1 — Policy posture cheat-card (deferred).** Shared
-  component across 5 pages; needs scope agreement on the
-  cheat-card's exact field list + which pages it appears on.
-- **P7 — Cross-page deep-link consistency (deferred).** Per-page
-  URL-read mount effects; needs a documented URL pattern and
-  one effect per page. Plan: `#/<page>?<filter>=<value>` per
-  the QA report's recommendation.
+**Status (post 2026-05-11 sprint):** Phase 3a six proposals
+shipped end-to-end. Phase 3b stays deferred pending backend
+work + design discussion.
+
+- **P10 — Footer pill tone (shipped, `7f2ed08`).** SSE +
+  audit-chain pills render `neutral` (grey) instead of `warn`
+  on a healthy dev boot.
+- **P9 — Refresh button placement (shipped, `f8274b9`).** New
+  `PageTitleRefresh` icon-button anchors next to the page
+  title across 9 pages. Top-right keeps the primary action.
+- **P6 — Traffic Gates flow diagram (shipped, `b0522af`).**
+  Request-flow chip row at the top of Traffic Gates with
+  click-scroll targets to each gate card.
+- **P2 — Live-policy column pin (shipped with P1, `594235c`).**
+  CSS-only fix — the right column on Detectors & Tiers now
+  has its own scroll context so the live-policy summary stays
+  anchored while operators scroll the tier list.
+- **P1 — Policy posture cheat-card (shipped, `594235c`).**
+  New `PolicyPostureCard` component reads 7 APIs and renders
+  a single-line click-through summary at the top of every
+  Policy page (Rules, Detectors & Tiers, Access Lists,
+  Routing & Upstreams, Traffic Gates).
+- **P7 — Deep-link consistency (partial, this commit).**
+  `#/detectors?tier=critical` reads on mount and pre-selects
+  the tier card. Routes / Access Lists / Audit-filter deep
+  links queued as a follow-up — those need a documented URL
+  pattern across more components.
 
 **Phase 3b (next iteration):** P3 + P5 + P4 + P8 — need upfront
 discussion (backend changes for P4 / P5, refactor for P3, copy
 review for P8).
-
-**Decision:** Phase 3a deferred items move to a dedicated UX
-sprint with visual review at the end of each item. They're not
-bug fixes; the immediate operator pain (HIGH-01/02 + four
-MEDIUMs + seven LOWs) is now closed.
 
 ## Suggested PR sequence
 
