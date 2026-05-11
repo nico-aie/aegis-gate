@@ -26,17 +26,29 @@ pub struct PasswordChangeResponse {
 }
 
 /// Verify a password change. The `verify_current` closure verifies
-/// the supplied current password against the stored hash; the
-/// `apply_new` closure stores the new hash. This indirection keeps
-/// `aegis-control` independent of the secret-provider plumbing.
-pub fn handle_password_change<V, A>(
+/// the supplied current password against the stored hash;
+/// `apply_new` stores the new hash; `invalidate_sessions` is called
+/// after a successful password change to drop every existing admin
+/// session. This indirection keeps `aegis-control` independent of
+/// the secret-provider plumbing.
+///
+/// **2026-05-11 PR #8 (CTL-20)** — session invalidation was missing
+/// from the original signature, leaving stolen session cookies
+/// valid after a password reset. The `invalidate_sessions` closure
+/// is now mandatory; production callers should hand it a closure
+/// that wipes the [`crate::admin_auth::session::AuthSessionStore`]
+/// for the user. Test bundles can pass `|| {}` if they're just
+/// exercising the validation surface.
+pub fn handle_password_change<V, A, I>(
     req: &PasswordChangeRequest,
     verify_current: V,
     apply_new: A,
+    invalidate_sessions: I,
 ) -> PasswordChangeResponse
 where
     V: FnOnce(&str) -> bool,
     A: FnOnce(&str) -> Result<(), String>,
+    I: FnOnce(),
 {
     if req.new.len() < 12 {
         return PasswordChangeResponse {
@@ -57,10 +69,16 @@ where
         };
     }
     match apply_new(&req.new) {
-        Ok(()) => PasswordChangeResponse {
-            ok: true,
-            error: None,
-        },
+        Ok(()) => {
+            // Invalidate sessions AFTER the new hash is persisted so
+            // a hash-store failure doesn't strand the operator with
+            // no way back in.
+            invalidate_sessions();
+            PasswordChangeResponse {
+                ok: true,
+                error: None,
+            }
+        }
         Err(e) => PasswordChangeResponse {
             ok: false,
             error: Some(e),
@@ -247,6 +265,7 @@ mod tests {
 
     #[test]
     fn password_too_short_rejected() {
+        let invalidated = std::cell::Cell::new(false);
         let r = handle_password_change(
             &PasswordChangeRequest {
                 current: "abcdefghijkl".into(),
@@ -254,13 +273,17 @@ mod tests {
             },
             |_| true,
             |_| Ok(()),
+            || invalidated.set(true),
         );
         assert!(!r.ok);
         assert!(r.error.unwrap().contains("12"));
+        // CTL-20 — sessions must NOT be invalidated on a failed change.
+        assert!(!invalidated.get());
     }
 
     #[test]
     fn password_same_as_current_rejected() {
+        let invalidated = std::cell::Cell::new(false);
         let r = handle_password_change(
             &PasswordChangeRequest {
                 current: "current-password-1".into(),
@@ -268,12 +291,15 @@ mod tests {
             },
             |_| true,
             |_| Ok(()),
+            || invalidated.set(true),
         );
         assert!(!r.ok);
+        assert!(!invalidated.get());
     }
 
     #[test]
     fn password_wrong_current_rejected() {
+        let invalidated = std::cell::Cell::new(false);
         let r = handle_password_change(
             &PasswordChangeRequest {
                 current: "wrong".into(),
@@ -281,12 +307,15 @@ mod tests {
             },
             |_| false,
             |_| Ok(()),
+            || invalidated.set(true),
         );
         assert!(!r.ok);
+        assert!(!invalidated.get());
     }
 
     #[test]
     fn password_change_succeeds_when_inputs_valid() {
+        let invalidated = std::cell::Cell::new(false);
         let r = handle_password_change(
             &PasswordChangeRequest {
                 current: "current-password-1".into(),
@@ -294,8 +323,29 @@ mod tests {
             },
             |_| true,
             |_| Ok(()),
+            || invalidated.set(true),
         );
         assert!(r.ok);
+        // CTL-20 — sessions MUST be invalidated on a successful change.
+        assert!(invalidated.get(), "session invalidation closure was not called");
+    }
+
+    #[test]
+    fn password_change_does_not_invalidate_when_apply_fails() {
+        // CTL-20 — if the hash store rejects the new password,
+        // sessions stay intact so the operator isn't stranded.
+        let invalidated = std::cell::Cell::new(false);
+        let r = handle_password_change(
+            &PasswordChangeRequest {
+                current: "current-password-1".into(),
+                new: "new-password-9999".into(),
+            },
+            |_| true,
+            |_| Err("hash store unavailable".into()),
+            || invalidated.set(true),
+        );
+        assert!(!r.ok);
+        assert!(!invalidated.get());
     }
 
     fn session(id: &str) -> SessionInfo {
