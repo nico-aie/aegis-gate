@@ -520,6 +520,27 @@ pub(crate) fn admin_router(
             let body = serde_json::json!({"entries": services.whitelist.list()});
             json_body_response(200, body.to_string(), "private, max-age=2")
         }
+        // P4 (2026-05-11) — per-entry hit counts. Window defaults
+        // to 3600 (1h); the dashboard's "consider removing"
+        // affordance for stale entries reads `?window=86400`. The
+        // ring is 1-hour-bucketed so any window smaller than 3600
+        // rounds up to one bucket.
+        "/api/blacklist/hits" => {
+            let window = parse_query_u64(query, "window", 3600);
+            let body = serde_json::json!({
+                "window_secs": window,
+                "hits": services.blacklist.hit_counts(window),
+            });
+            json_body_response(200, body.to_string(), "private, max-age=5")
+        }
+        "/api/whitelist/hits" => {
+            let window = parse_query_u64(query, "window", 3600);
+            let body = serde_json::json!({
+                "window_secs": window,
+                "hits": services.whitelist.hit_counts(window),
+            });
+            json_body_response(200, body.to_string(), "private, max-age=5")
+        }
         "/api/admin/sessions" => {
             let body = serde_json::json!({"sessions": services.sessions.list()});
             json_body_response(200, body.to_string(), "private, no-store")
