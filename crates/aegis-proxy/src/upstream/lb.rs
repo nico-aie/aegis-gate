@@ -78,26 +78,50 @@ fn pick_weighted<'a>(
     Some(healthy.last().unwrap().1)
 }
 
-/// Power-of-two-choices: pick 2 random candidates, choose the one with fewer
-/// inflight requests.
+/// Power-of-two-choices: pick 2 distinct random candidates,
+/// choose the one with fewer inflight requests.
+///
+/// **2026-05-11 PROXY-10 fix.** Pre-fix used a thread-local
+/// counter `(v % n, (v + 1 + (v / n)) % n)` which was deterministic
+/// — for small pools the two picks repeated identically across
+/// requests, collapsing P2C to round-robin and losing the load-
+/// balancing advantage. Now uses an atomic counter mixed with
+/// system-time nanos for a process-wide entropy source. No new
+/// crate dependency.
 fn pick_p2c<'a>(healthy: &[(usize, &'a Arc<Member>)]) -> Option<&'a Arc<Member>> {
-    if healthy.len() == 1 {
+    let n = healthy.len();
+    if n == 1 {
         return Some(healthy[0].1);
     }
-    // Simple deterministic pseudo-random using thread-local counter.
-    // For production, swap with proper RNG.
-    use std::cell::Cell;
-    thread_local! {
-        static P2C_CTR: Cell<usize> = const { Cell::new(0) };
+    // For n=2 P2C is just "pick the less-loaded of the two".
+    if n == 2 {
+        let m0 = healthy[0].1;
+        let m1 = healthy[1].1;
+        return Some(
+            if m0.inflight.load(Ordering::Relaxed) <= m1.inflight.load(Ordering::Relaxed) {
+                m0
+            } else {
+                m1
+            },
+        );
     }
-    let n = healthy.len();
-    let (a, b) = P2C_CTR.with(|c| {
-        let v = c.get();
-        c.set(v.wrapping_add(1));
-        (v % n, (v + 1 + (v / n)) % n)
-    });
-    let a_idx = if a == b { (a + 1) % n } else { a };
-    let ma = healthy[a_idx].1;
+    // For n >= 3 generate two distinct indices using a counter +
+    // sub-nanosecond entropy. Distribution doesn't need to be
+    // cryptographic — just "different per request, across the
+    // member list, on average".
+    static P2C_CTR: AtomicUsize = AtomicUsize::new(0);
+    let counter = P2C_CTR.fetch_add(1, Ordering::Relaxed);
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    let seed = counter.wrapping_mul(0x9E3779B1).wrapping_add(jitter);
+    let a = seed % n;
+    let mut b = seed.wrapping_div(n).wrapping_mul(0x9E3779B1) % n;
+    if b == a {
+        b = (a + 1) % n;
+    }
+    let ma = healthy[a].1;
     let mb = healthy[b].1;
     if ma.inflight.load(Ordering::Relaxed) <= mb.inflight.load(Ordering::Relaxed) {
         Some(ma)
@@ -106,16 +130,35 @@ fn pick_p2c<'a>(healthy: &[(usize, &'a Arc<Member>)]) -> Option<&'a Arc<Member>>
     }
 }
 
-/// Consistent hash: hash the key, then walk the sorted member ring.
+/// Consistent hash via Rendezvous Hashing (Highest Random Weight).
+///
+/// **2026-05-11 PROXY-11 fix.** Pre-fix used `DefaultHasher(key) %
+/// healthy.len()` — plain modulo hashing, which remaps roughly
+/// `(n-1)/n` of keys when a member is added or removed
+/// (~50% for n=2). Real consistent hashing needs to remap
+/// only `1/n` of keys on a member change. Rendezvous Hashing
+/// achieves this without maintaining a hash-ring data
+/// structure: for each request compute `hash(key, member_addr)`
+/// per healthy member and pick the max. O(N) per pick, no
+/// pool-lifecycle state to manage, monotonically optimal on
+/// member adds / removes (only the keys whose previous-winner
+/// changes get reassigned). `DefaultHasher::new()` is
+/// deterministic with no random seed, so the same `(key,
+/// member-set)` pair always picks the same member — exactly
+/// what session affinity needs.
 fn pick_consistent_hash<'a>(
     healthy: &[(usize, &'a Arc<Member>)],
     key: &str,
 ) -> Option<&'a Arc<Member>> {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    key.hash(&mut hasher);
-    let h = hasher.finish();
-    let idx = (h as usize) % healthy.len();
-    Some(healthy[idx].1)
+    healthy
+        .iter()
+        .max_by_key(|(_, m)| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut hasher);
+            m.addr.to_string().hash(&mut hasher);
+            hasher.finish()
+        })
+        .map(|(_, m)| *m)
 }
 
 #[cfg(test)]
@@ -278,6 +321,96 @@ mod tests {
             // but this is acceptable for consistent hashing in the baseline
             // implementation. The key stability invariant is tested above.
             let _ = after;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 2026-05-11 PROXY-10 / PROXY-11 — correctness property tests
+    // -----------------------------------------------------------------------
+
+    /// P2C — with N>=3 healthy members, picks should spread across
+    /// the pool (no single member receives >50% of picks). Pre-fix
+    /// the deterministic counter could concentrate picks on a
+    /// small subset.
+    #[test]
+    fn p2c_spreads_picks_across_pool() {
+        let members = make_members(5);
+        let strategy = LbStrategy::P2c;
+        let mut counts = vec![0usize; 5];
+        for _ in 0..1000 {
+            let m = strategy.pick(&members, None).unwrap();
+            let idx = (m.addr.port() - 3000) as usize;
+            counts[idx] += 1;
+        }
+        // Every member should get hit at least once across 1000
+        // picks. With uniform random selection each member sees
+        // ~200; we use a generous lower bound (50) to avoid
+        // flakiness from system-time-seeded entropy.
+        for (i, &c) in counts.iter().enumerate() {
+            assert!(
+                c >= 50,
+                "member {i} got {c} picks across 1000 (expected ~200); \
+                 the P2C entropy source is broken — picks are not spreading"
+            );
+        }
+        // No single member should dominate (>50%).
+        let max = *counts.iter().max().unwrap();
+        assert!(
+            max < 500,
+            "single member got {max}/1000 picks (>50%); P2C entropy is broken"
+        );
+    }
+
+    /// Rendezvous Hashing — adding or removing a member should
+    /// remap only ~1/n of the keys. Pre-fix used modulo, which
+    /// remapped ~(n-1)/n = ~50-80% of keys.
+    #[test]
+    fn consistent_hash_minimal_disruption_on_member_change() {
+        let members5 = make_members(5);
+        let members6 = make_members(6); // Same first 5 + one new
+
+        let strategy = LbStrategy::ConsistentHash;
+        let keys: Vec<String> = (0..1000).map(|i| format!("session-{i:06}")).collect();
+
+        let mut moved = 0usize;
+        for k in &keys {
+            let pick5 = strategy.pick(&members5, Some(k)).unwrap().addr;
+            let pick6 = strategy.pick(&members6, Some(k)).unwrap().addr;
+            if pick5 != pick6 {
+                moved += 1;
+            }
+        }
+
+        // With Rendezvous Hashing, the expected fraction of keys
+        // that move when adding the 6th member is 1/6 ≈ 17%.
+        // Allow generous slack (5% lower, 30% upper) for stochastic
+        // variance over 1000 keys.
+        let pct = (moved * 100) / keys.len();
+        assert!(
+            pct < 30,
+            "added 1 member to a pool of 5; {moved}/1000 keys remapped ({pct}%). \
+             Expected ~17% — the hash is not consistent across member changes."
+        );
+        assert!(
+            pct >= 5,
+            "added 1 member to a pool of 5; only {moved}/1000 keys remapped ({pct}%). \
+             Expected ~17% — the new member is unreachable."
+        );
+    }
+
+    /// Rendezvous Hashing — for a fixed (key, member-set), the
+    /// pick must be deterministic. Same key always lands on the
+    /// same member.
+    #[test]
+    fn consistent_hash_deterministic_for_session_affinity() {
+        let members = make_members(7);
+        let strategy = LbStrategy::ConsistentHash;
+        for k in ["user-1", "user-42", "abc-xyz-123", ""] {
+            let first = strategy.pick(&members, Some(k)).unwrap().addr;
+            for _ in 0..100 {
+                let again = strategy.pick(&members, Some(k)).unwrap().addr;
+                assert_eq!(first, again, "non-deterministic pick for key '{k}'");
+            }
         }
     }
 }
