@@ -126,17 +126,24 @@ pub struct WafConfig {
     /// is loud, not silent.
     #[serde(default)]
     pub ai: AiConfig,
-    /// 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS protection
-    /// (per-IP burst detection + EWMA spike mode + cluster-
-    /// wide auto-block via the state backend). Defaults to
-    /// `enabled: true, observe_only: true` so the detector
-    /// runs in shadow mode out of the box: every per-IP-flood
-    /// burst is counted, every spike is observed, but no
-    /// request is 503'd until the operator flips
-    /// `observe_only: false` after baking the metrics. See
-    /// `docs/security/ddos-protection.md` for the operator
-    /// guide and `plans/issue-fix/internal-audit-2026-05-09-ddos/`
-    /// for the wire-up plan.
+    /// DDoS protection — per-IP burst detection + EWMA spike
+    /// mode + cluster-wide auto-block via the state backend.
+    ///
+    /// **2026-05-11 CORE-01 fix.** Defaults are now documented
+    /// truthfully: `enabled: true, observe_only: false` —
+    /// **enforce by default**. The previous doc claimed shadow
+    /// mode by default, but `DdosConfig::default()` has always
+    /// set `observe_only: false` (the code is the source of
+    /// truth). Production posture is to enforce immediately;
+    /// operators who want a baking period can set
+    /// `observe_only: true` in YAML for the first deploy and
+    /// flip it off after metrics confirm the thresholds are
+    /// well-calibrated.
+    ///
+    /// See `docs/security/ddos-protection.md` for the operator
+    /// guide and
+    /// `plans/issue-fix/internal-audit-2026-05-09-ddos/` for
+    /// the original wire-up plan.
     #[serde(default)]
     pub ddos: DdosConfig,
 }
@@ -450,6 +457,46 @@ impl WafConfig {
         // Layer-1: runtime sizing constraints (workers >= 2, sane
         // blocking-pool size, sane stack).
         self.runtime.validate()?;
+        // 2026-05-11 CORE-09 / CTL-08 — reject not-implemented
+        // state-backend + reconcile-mode values at lint time
+        // instead of letting them pass `validate()` and then
+        // crash at boot in `aegis-bin/state_select.rs`. Tools
+        // that run `load_config_str()` + `validate()` as a lint
+        // step now catch these gaps.
+        if matches!(self.state.backend, StateBackendKind::Raft) {
+            return Err(crate::error::WafError::Config(
+                "state.backend = raft is not implemented (Phase B candidate). \
+                 Use `in_memory` or `redis`."
+                    .into(),
+            ));
+        }
+        if self.state.backend == StateBackendKind::Redis
+            && self.state.redis.as_ref().is_some_and(|r| r.cluster)
+        {
+            return Err(crate::error::WafError::Config(
+                "state.redis.cluster = true requires the redis_cluster backend, \
+                 which is not yet implemented (Phase B candidate). \
+                 Set `state.redis.cluster: false` or switch to single-node Redis."
+                    .into(),
+            ));
+        }
+        match self.state.reconcile.mode {
+            ReconcileMode::Max => {}
+            ReconcileMode::Latest => {
+                return Err(crate::error::WafError::Config(
+                    "state.reconcile.mode = latest is not implemented; \
+                     use `max` until a Phase B follow-up lands the latest-wins merge."
+                        .into(),
+                ));
+            }
+            ReconcileMode::FailSafe => {
+                return Err(crate::error::WafError::Config(
+                    "state.reconcile.mode = fail_safe is not implemented; \
+                     use `max` until a Phase B follow-up lands the fail-safe merge."
+                        .into(),
+                ));
+            }
+        }
         Ok(())
     }
 }

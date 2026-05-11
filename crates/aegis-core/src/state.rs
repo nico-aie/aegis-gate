@@ -51,10 +51,22 @@ impl BackendHealth {
     /// Default snapshot for backends that don't override `health()`.
     /// Keeps the trait backwards-compatible while still letting the
     /// dashboard render *something*.
+    ///
+    /// **2026-05-11 CORE-06 fix.** `connected` was previously
+    /// `false`, which actively signalled a problem ("backend
+    /// disconnected") for any backend that happened not to
+    /// override `health()`. The dashboard's data-plane status
+    /// pill went red on test stubs and third-party
+    /// integrations that were serving traffic just fine. The
+    /// trait default now returns "status unknown but assumed
+    /// up" (`connected: true`, `backend: "unknown"`) — the
+    /// honest answer is "we don't know," and the unknown
+    /// backend string makes the gap visible without colour-
+    /// flagging it as a failure.
     pub fn unknown() -> Self {
         Self {
             backend: "unknown",
-            connected: false,
+            connected: true,
             latency: None,
             key_count: None,
             replica_lag_ms: None,
@@ -191,9 +203,13 @@ mod tests {
 
     #[test]
     fn backend_health_unknown_returns_safe_defaults() {
+        // 2026-05-11 CORE-06 fix — `connected: true` (was false).
+        // The default unknown shape no longer red-flags backends
+        // that haven't overridden `health()`. See state.rs::
+        // BackendHealth::unknown for the rationale.
         let h = BackendHealth::unknown();
         assert_eq!(h.backend, "unknown");
-        assert!(!h.connected, "unknown backend is not connected");
+        assert!(h.connected, "unknown backend is assumed-up by default");
         assert!(h.latency.is_none());
         assert!(h.key_count.is_none());
         assert!(h.replica_lag_ms.is_none());
@@ -343,6 +359,7 @@ mod tests {
         let dummy = DummyBackend;
         let h = dummy.health().await;
         assert_eq!(h.backend, "unknown");
-        assert!(!h.connected);
+        // 2026-05-11 CORE-06 — default is now `connected: true`.
+        assert!(h.connected);
     }
 }

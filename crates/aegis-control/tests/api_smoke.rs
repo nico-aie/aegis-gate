@@ -259,11 +259,16 @@ async fn api_state_unwired_returns_unknown_backend() {
     // Drive the same render path the proxy's `/api/state` handler
     // uses. With no backend wired, fall through to
     // `BackendHealth::unknown()`.
+    //
+    // 2026-05-11 CORE-06 fix — `connected: true` now (was false).
+    // The default unknown shape signals "status unknown but
+    // assumed up" so the dashboard doesn't red-flag test stubs
+    // and third-party backends that haven't overridden health().
     let h = aegis_core::state::BackendHealth::unknown();
     let view = aegis_control::api::state::StateView::render(h);
     let body = serde_json::to_value(&view).unwrap();
     assert_eq!(body["backend"], "unknown");
-    assert_eq!(body["connected"], false);
+    assert_eq!(body["connected"], true);
     assert_eq!(body["circuit"]["state"], "closed");
 }
 
