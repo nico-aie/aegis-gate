@@ -85,7 +85,6 @@ hyper-util.workspace = true
 hyper-rustls.workspace = true
 webpki-roots.workspace = true
 instant-acme.workspace = true
-moka.workspace = true
 notify.workspace = true
 rcgen.workspace = true
 regex.workspace = true

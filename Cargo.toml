@@ -58,7 +58,8 @@ notify = "6"
 
 # Concurrency
 dashmap = "6"
-moka = { version = "0.12", features = ["future"] }
+# moka removed 2026-05-11 — the TierCache module that consumed it
+# had zero call sites in the request pipeline (PROXY-08/09).
 parking_lot = "0.12"
 
 # Matching

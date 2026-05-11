@@ -16,7 +16,14 @@ pub mod acme;
 pub mod acme_instant;
 pub mod admin_sse;
 pub mod benchmark;
-pub mod cache;
+// 2026-05-11 PROXY-08/09 — `cache` module retired. The `TierCache`
+// type was implemented + unit-tested but had zero call sites in
+// any handler / listener / pipeline. All configured cache tiers
+// (hot/warm TTLs, max-size limits) had no effect on live traffic.
+// Removed the module + the `moka` dependency. The
+// contract's `POST /__waf_control/flush_cache` endpoint stays
+// in place returning `{ok: true, supported: false}` per
+// v2.3 §9 (caching not operational is an acceptable report).
 pub mod cluster;
 pub mod cluster_lease;
 pub mod config_source;
