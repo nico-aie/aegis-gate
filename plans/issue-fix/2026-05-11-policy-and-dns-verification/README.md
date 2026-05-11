@@ -238,26 +238,30 @@ work + design discussion.
   and `Simulator` for full-viewport replay. Operators managing
   50+ rules see more list rows; Simulator workflows get a
   dedicated focused view.
-- **P5 — Route activity pulse pill (deferred — backend
-  required).** The existing `RouteLatencyHistogram` exposes
-  cumulative sample counts per route, but the proposal's
-  "green/amber/red based on req/min in last 60s" needs a
-  sliding-window counter (per-route ring buffer or a delta
-  tracker on top of the cumulative samples). The cleanest
-  backend addition is a new `Per60sWindowCounter` keyed by
-  route_id, drained on every audit event. Estimated ~3 h
-  backend + ~1 h dashboard.
-- **P4 — Access Lists hit-counter (deferred — backend
-  required).** Needs a per-entry hit counter on the blacklist
-  / whitelist runtime store, then a new
-  `/api/blacklist/hits?window=3600` endpoint returning
-  `{entry_id: count}`. Same shape for whitelist. Estimated
-  ~3 h backend + ~1 h dashboard. The proposal's "consider
-  removing" affordance for stale entries (`0 hits in 24h`)
-  follows naturally once the counter ships.
-
-Both P4 and P5 are queued for a dedicated sprint with backend
-design + UI review at the end of each.
+- **P5 — Route activity pulse pill (shipped, `bebca12`).**
+  New `RouteActivityWindow` in
+  `crates/aegis-control/src/metrics/route_activity.rs` — a
+  per-route 60-bucket ring of 1-second granularity plus a
+  `last_seen_ts` atomic. Hot path: one `DashMap` shard lookup +
+  one atomic `fetch_add` per match. Endpoint
+  `GET /api/analytics/route-activity` returns the snapshot;
+  dashboard renders a pulse pill in the route table
+  (green/warn/err/neutral by activity).
+- **P4 — Access Lists hit-counter (shipped, `3c59dcb`).**
+  Per-entry hit ring inside `AccessListStore`, incremented
+  inside `matches()` so callers can't forget. New endpoints
+  `GET /api/blacklist/hits?window=N` + `/api/whitelist/hits`;
+  dashboard's Access Lists table gains a `Hits · 1h` column
+  with a `· stale` annotation when an entry hasn't matched in
+  the last 24h.
+- **Multi-node aggregation (deferred — separate sprint).**
+  Both P4 + P5 counters live in-process today; multi-node
+  deployments will see partial per-node views on each
+  dashboard. The hybrid local + periodic-flush design is
+  captured in
+  [`plans/future/multi-node-metrics-aggregation.md`](../../future/multi-node-metrics-aggregation.md)
+  so the next sprint has a starting point. Single-node
+  deployments (the current hackathon shape) are unaffected.
 
 ## Suggested PR sequence
 
@@ -285,10 +289,13 @@ independent; pick any order. PR-UX-A waits on scope agreement.
 | 1 — MEDIUM | ~5h | Audit Trail readable; Add Route error UX honest; no header false-alarm; no orphan pools |
 | 2 — LOW | ~1.5h | Polish: hostname IDs, placeholders, toasts, contrast, copy, chevrons, tooltips |
 | 3a — UX-A | ~6h | Policy posture card, deep-link consistency, gate flow diagram, live-policy pin, refresh button placement, footer pill tone |
-| 3b — UX-B | TBD | Deferred until scope discussion |
+| 3b — UX-B | ~7h | P8 detector-mask diff summary, P3 Rules tabbed view, P5 route activity pulse, P4 access-list hit counter |
 
 **Total verified-bug effort (Phases 0.2 + 1 + 2):** ~8.5h.
-With Phase 3a: ~14.5h. Phase 3b TBD.
+With Phase 3a + 3b: ~21.5h. Multi-node aggregation for the P4
++ P5 counters is captured separately at
+[`plans/future/multi-node-metrics-aggregation.md`](../../future/multi-node-metrics-aggregation.md)
+(~9h, separate sprint).
 
 ## Decisions to lock in before starting
 
