@@ -106,6 +106,13 @@ tower-service = "0.3"
 futures = "0.3"
 tracing.workspace = true
 
+# PR-DNS-2 (2026-05-11) — pure-Rust async DNS resolver. Pulled
+# unconditionally; used by `upstream::dns_refresh` to TTL-aware
+# refresh hostname-addressed upstream members in the background.
+# Without this, hostname members are resolved at boot only
+# (Phase 1 shape).
+hickory-resolver.workspace = true
+
 # Optional — gated by the `redis` feature. Bringing these in
 # here (rather than as workspace.dependencies pulled by every
 # crate) keeps the dep tree pruned for builds that don't need

@@ -32,8 +32,9 @@ SOC-first dashboard.
   rustls connector for HTTPS, **per-member `host_header`
   override + SNI pinning** for multi-vhost backends,
   **hostname-addressed members (`addr: api.example.com:443`)
-  resolved + multi-A expanded at config-load time** so cloud
-  LBs / K8s Services / Consul work without manual `dig`-and-pin,
+  resolved + multi-A expanded at config-load time, with
+  background TTL-aware DNS refresh via `hickory-resolver`** so
+  cloud LBs / K8s Services / Consul rotate without a restart,
   active health checks + per-member circuit breaker,
   audit-mutated hot-swap (no restart).
 - **TLS** — rustls 0.23 inbound, ACME issuance + renewal,

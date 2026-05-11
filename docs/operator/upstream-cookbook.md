@@ -168,19 +168,41 @@ upstreams:
       scheme: auto
 ```
 
+**Background refresh (PR-DNS-2, 2026-05-11).** Each pool that
+has at least one hostname member also spawns a background DNS
+refresh task at boot. The task uses `hickory-resolver` (pure-
+Rust, TTL-aware) and re-resolves on the smaller of:
+
+- the record's TTL,
+- the `refresh_seconds` you set per member (optional),
+- `60 s` (nginx-style default when neither is informative).
+
+Clamped to `[10 s, 1 h]` so a TTL=1 storm doesn't hammer the
+resolver and an authoritative-claiming-day-long-TTL doesn't
+hide a rotation for too long. When the resolved IP set changes,
+the pool's member ring atomic-swaps and an audit event
+(`pool_dns_resolved`, `class: system`) lands in the Live Feed
+with before/after IP sets. Resolver outages keep the last-known
+IPs in place and retry on the next tick — no member drop on
+transient failure.
+
+**Soft-failure at boot (PR-DNS-2).** If a hostname is
+unresolvable at boot, the proxy logs a warn and starts with the
+DNS members for that hostname missing (operator-pinned IPs in
+the same pool still work). The refresh task retries; when DNS
+recovers, the missing members get added back on the next tick.
+
 When this is the wrong choice:
-- **Backend IP rotates within a session.** Phase 1 resolves
-  once at config load. If the LB rotates IPs *mid-session*
-  faster than your YAML hot-reload cadence, you'll bind to
-  stale IPs until the next reload. Phase 2 (planned, separate
-  PR) adds background DNS refresh on TTL.
 - **You need DNS-01 ACME against the hostname.** That's a
   separate ACME-side decision; the upstream resolver here
   doesn't interact with cert issuance.
-- **Hostname is unresolvable at boot.** Today's behaviour is
-  loud-fail: boot aborts with a stable
-  `dns: failed to resolve …` error. Phase 2 will soften to
-  "start with the pool empty, retry in the background".
+- **You add a hostname member to an existing pool via the
+  dashboard.** The dashboard PUT path runs Phase 1's one-shot
+  resolver immediately (so you can use the pool right away), but
+  Phase 2's background refresh task does **not** get spawned for
+  hostnames added at runtime. The hostname stays statically
+  resolved until you restart the WAF. Listing the hostname in
+  YAML and restarting picks up the background refresh.
 
 Override the SNI when the hostname you connect to differs from
 the SNI the backend expects (rare):

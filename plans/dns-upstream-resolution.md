@@ -1,16 +1,22 @@
 # DNS-resolved upstream members
 
 > **Status (2026-05-11):**
-> - **Phase 1 shipped (PR-DNS-1, this commit).** Operators can
+> - **Phase 1 shipped (PR-DNS-1, commit `9a73a99`).** Operators can
 >   now write `addr: api.example.com:443` in `cfg.upstreams.*.members[]`
 >   or via the dashboard's Add Route modal. Hostnames are
 >   resolved at boot + dashboard PUT via
 >   `tokio::net::lookup_host`; multi-A records expand into N
 >   synthetic members; `host_header` defaults to the hostname so
->   TLS SNI lines up. Unresolvable hostnames fail boot loudly.
-> - **Phase 2 (planned, separate PR):** background DNS refresh
->   via `hickory-resolver`, soft-failure on boot, audit event
->   on resolver changes. ~3 days of work; not started.
+>   TLS SNI lines up. Unresolvable hostnames fail dashboard PUT
+>   loudly; soft-failure at boot once Phase 2 ships.
+> - **Phase 2 shipped (PR-DNS-2, this commit).** Background DNS
+>   refresh via `hickory-resolver`. One per-pool task per pool
+>   with hostname members; TTL-aligned refresh cadence (clamped
+>   to `[10s, 1h]`); soft-failure on resolver outage keeps the
+>   last-known IPs in place; `pool_dns_resolved` audit event on
+>   each actual rotation. Boot path switched to `SoftSkip` failure
+>   policy so the refresh task can fill the pool once DNS comes
+>   back.
 > - **Phase 3 (planned):** dashboard "Resolved IPs" expandable
 >   on the pool detail view + DNS health badge per member.
 >
@@ -321,28 +327,40 @@ happens once at config load.
 boot + dashboard PUT. Stale IPs survive until next config reload
 / restart (Phase 2 fixes).
 
-### Phase 2 — Background refresh + soft failure (~3 days)
+### Phase 2 — Background refresh + soft failure (~3 days) — ✅ shipped 2026-05-11
 
 Production-grade.
 
-- [ ] Add `hickory-resolver` dependency.
-- [ ] `DnsSource: ServiceDiscovery` implementation.
-- [ ] Per-hostname resolver task wired to the pool's
-      `sd::watch::Receiver`.
-- [ ] Soft-failure: unresolvable hostname at boot logs warn,
-      pool starts with no resolved members (breaker open until
-      first successful resolution).
-- [ ] Configurable refresh cadence (`refresh_seconds` override,
-      else DNS TTL).
-- [ ] Audit events on resolution changes (`pool_dns_resolved`
-      with before/after IP set, similar to existing
-      `pool_member_replaced`).
-- [ ] Tests: resolver outage, record drop, TTL respect, soft
-      failure boot.
+- [x] Add `hickory-resolver` dependency (`0.26`, pulled
+      unconditionally — pure-Rust, ~80 KB compiled).
+- [x] Per-pool refresh task (instead of the originally-planned
+      `ServiceDiscovery::subscribe` watch channel — that trait
+      has no consumers in the codebase, so direct
+      `PoolRegistry::apply` calls are the simpler shape).
+      Lives in `crates/aegis-proxy/src/upstream/dns_refresh.rs`.
+- [x] Soft-failure: unresolvable hostname at boot logs warn,
+      pool starts without those members,
+      `dns_resolve::ResolveFailurePolicy::SoftSkip` is wired
+      into the boot path while dashboard PUTs keep `Strict`.
+- [x] Configurable refresh cadence: `min(record TTL,
+      refresh_seconds override, 60 s default)` clamped to
+      `[10 s, 1 h]`.
+- [x] Audit event `pool_dns_resolved` with `before` / `after` /
+      `added` / `removed` IP sets, classified `AuditClass::System`.
+- [x] Tests: spec extraction, member building, sleep cadence
+      with TTL / override / clamp variants, IP-only pool filter.
 
 **Outcome**: operators can hot-rotate upstream IPs through DNS
 without touching the WAF. Cloud LBs, K8s Services, Consul work
 out of the box.
+
+**Scope guard**: dashboard PUTs that add a new hostname to a
+pool **don't** spawn a new refresh task today — the new hostname
+gets Phase 1's one-shot resolution at PUT time and stays static
+until the next process restart. Phase 2.5 / Phase 3 will lift
+this restriction (typically by re-walking
+`current_pools()` for hostnames and reconciling refresh-task
+membership).
 
 ### Phase 3 — Dashboard polish (~1 day)
 

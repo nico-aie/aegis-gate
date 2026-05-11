@@ -143,10 +143,21 @@ api-elb.members
 
 `host_header` defaults to the hostname when unset — TLS SNI +
 outbound `Host:` align automatically. An explicit `host_header`
-in the YAML still wins. Unresolvable hostnames fail boot loudly
-with a `PoolValidationError::UnresolvedHostname` (Phase 2 will
-soften to "start empty, retry in background" via
-`hickory-resolver`; see `plans/dns-upstream-resolution.md`).
+in the YAML still wins.
+
+**Background refresh (PR-DNS-2).** Every pool with at least one
+hostname member spawns a `dns_refresh` task at boot, backed by
+`hickory-resolver` (pure-Rust, TTL-aware). Refresh cadence is
+`min(TTL, refresh_seconds, 60 s)` clamped to `[10 s, 1 h]`. On
+each tick the task diffs the resolved IP set against the
+last-applied set; only an actual change triggers
+`PoolRegistry::apply` + a `pool_dns_resolved` audit event.
+Resolver outages soft-fail (keep last-known IPs, retry).
+
+Boot is also soft-failure as of Phase 2: a hostname that can't
+resolve at startup logs a warn and the pool starts without those
+members; the refresh task fills them in once DNS recovers.
+Dashboard PUTs stay strict — typos surface immediately.
 
 ## Implementation
 
