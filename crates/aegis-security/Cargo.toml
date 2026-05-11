@@ -31,6 +31,7 @@ aegis-core = { path = "../aegis-core" }
 arc-swap.workspace = true
 async-trait.workspace = true
 blake3.workspace = true
+bytes = { workspace = true }
 chrono.workspace = true
 dashmap.workspace = true
 parking_lot.workspace = true

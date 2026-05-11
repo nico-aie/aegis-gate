@@ -61,14 +61,76 @@ fn path_heuristic(path: &str) -> (Tier, FailureMode) {
     (Tier::Low, FailureMode::FailOpen)
 }
 
-/// Stub pipeline that wires the rule engine into `SecurityPipeline`.
+/// Runtime knobs for the response-filter pipeline. Wrapped in an
+/// `ArcSwap` so the dashboard can flip the toggles without a
+/// restart. All three default to **on**: the contract requires
+/// that responses with internal stack traces / DLP payloads / RFC
+/// 1918 IPs not leak to clients, so the safe-by-default posture
+/// is "scrub everything." Operators can flip them off per-deploy
+/// if a downstream tier already handles the scrubbing.
+#[derive(Clone, Debug)]
+pub struct ResponseFilterConfig {
+    pub scrub_stack_traces: bool,
+    pub mask_internal_ips: bool,
+    pub redact_dlp: bool,
+}
+
+impl Default for ResponseFilterConfig {
+    fn default() -> Self {
+        Self {
+            scrub_stack_traces: true,
+            mask_internal_ips: true,
+            redact_dlp: true,
+        }
+    }
+}
+
+/// Production `SecurityPipeline` impl.
+///
+/// **2026-05-11 PR #7 wire-up.** Pre-fix `Pipeline::on_body_frame`
+/// always returned `PassThrough` and the binary entry point wired
+/// `NoopPipeline` instead. Inbound detection still ran (data plane
+/// calls `run_all_filtered_timed` directly), but every response
+/// body went out unfiltered — stack traces, internal IPs, and
+/// credit-card / SSN payloads in upstream errors all leaked.
+///
+/// Now `on_body_frame` runs:
+/// 1. `response_filter::scrub_stack_traces` — node.js / JVM /
+///    Python / Rust / PHP / .NET / Ruby / Go traces → `[REDACTED]`.
+/// 2. `response_filter::mask_internal_ips` — RFC 1918 + loopback +
+///    link-local → `[INTERNAL]`.
+/// 3. `dlp::redact` — credit cards (Luhn-validated), SSN, IBAN,
+///    emails, AWS keys, GitHub tokens, Stripe keys, Slack tokens.
+///
+/// Each step is independently toggleable via [`ResponseFilterConfig`].
+/// When all three are off the impl short-circuits to `PassThrough`
+/// so the per-frame cost goes to zero.
 pub struct Pipeline {
     rules: Arc<RuleSet>,
+    filter: arc_swap::ArcSwap<ResponseFilterConfig>,
 }
 
 impl Pipeline {
     pub fn new(rules: Arc<RuleSet>) -> Self {
-        Self { rules }
+        Self::with_filter(rules, ResponseFilterConfig::default())
+    }
+
+    pub fn with_filter(rules: Arc<RuleSet>, filter: ResponseFilterConfig) -> Self {
+        Self {
+            rules,
+            filter: arc_swap::ArcSwap::from_pointee(filter),
+        }
+    }
+
+    /// Hot-swap the response-filter config. Used by the dashboard's
+    /// audit-mutated PUT path so operators can flip a filter rung
+    /// off without a restart.
+    pub fn set_filter_config(&self, cfg: ResponseFilterConfig) {
+        self.filter.store(Arc::new(cfg));
+    }
+
+    pub fn filter_snapshot(&self) -> ResponseFilterConfig {
+        (**self.filter.load()).clone()
     }
 }
 
@@ -95,11 +157,49 @@ impl SecurityPipeline for Pipeline {
 
     async fn on_body_frame(
         &self,
-        _frame: &[u8],
+        frame: &[u8],
         _rctx: &RequestCtx,
         _route: &RouteCtx,
     ) -> OutboundAction {
-        OutboundAction::PassThrough
+        let cfg = self.filter.load();
+        if !cfg.scrub_stack_traces && !cfg.mask_internal_ips && !cfg.redact_dlp {
+            return OutboundAction::PassThrough;
+        }
+        // Binary bodies (`image/*`, `application/octet-stream`,
+        // protobuf, etc.) fail UTF-8 decode — short-circuit so we
+        // don't waste regex passes. The forwarder buffers full
+        // responses into a single frame today; once streaming
+        // lands we'll see this branch hit per chunk.
+        let Ok(text) = std::str::from_utf8(frame) else {
+            return OutboundAction::PassThrough;
+        };
+        let original_len = text.len();
+        let mut working = std::borrow::Cow::Borrowed(text);
+        if cfg.scrub_stack_traces {
+            let scrubbed = crate::response_filter::scrub_stack_traces(&working);
+            if scrubbed != *working {
+                working = std::borrow::Cow::Owned(scrubbed);
+            }
+        }
+        if cfg.mask_internal_ips {
+            let masked = crate::response_filter::mask_internal_ips(&working);
+            if masked != *working {
+                working = std::borrow::Cow::Owned(masked);
+            }
+        }
+        if cfg.redact_dlp {
+            let redacted = crate::dlp::redact(&working);
+            if redacted != *working {
+                working = std::borrow::Cow::Owned(redacted);
+            }
+        }
+        // Nothing changed → pass through. The hot path on clean
+        // responses (the vast majority) pays one Cow::Borrowed
+        // check per filter rung and zero allocations.
+        if matches!(&working, std::borrow::Cow::Borrowed(s) if s.len() == original_len) {
+            return OutboundAction::PassThrough;
+        }
+        OutboundAction::Rewrite(bytes::Bytes::from(working.into_owned()))
     }
 }
 

@@ -150,6 +150,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "blake3",
+ "bytes",
  "chrono",
  "dashmap",
  "http 1.4.0",
