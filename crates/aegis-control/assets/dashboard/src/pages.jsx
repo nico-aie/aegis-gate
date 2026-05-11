@@ -2509,9 +2509,40 @@ function DetectorMaskCard() {
             );
           })}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {isEditing ? (
             <>
+              {/* P8 (2026-05-11) — diff summary right next to Save so
+                  operators see exactly what's about to land. Each
+                  chip click during Edit mode is a silent toggle;
+                  this is the only place the about-to-save delta
+                  becomes visible before commit. */}
+              {(() => {
+                const turningOff = MASK_CLASSES.filter(c => mask[c] && !draft[c]);
+                const turningOn  = MASK_CLASSES.filter(c => !mask[c] && draft[c]);
+                if (turningOff.length === 0 && turningOn.length === 0) {
+                  return (
+                    <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+                      no changes yet
+                    </span>
+                  );
+                }
+                return (
+                  <span style={{ fontSize: 10, color: 'var(--ink-mute)' }}>
+                    {turningOff.length > 0 && (
+                      <span style={{ color: 'var(--down)' }}>
+                        disable {turningOff.join(', ')}
+                      </span>
+                    )}
+                    {turningOff.length > 0 && turningOn.length > 0 && ' · '}
+                    {turningOn.length > 0 && (
+                      <span style={{ color: 'var(--up)' }}>
+                        enable {turningOn.join(', ')}
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
               <button className="btn primary" disabled={busy} onClick={saveEdit} style={{ fontSize: 11, padding: '4px 10px' }}>Save</button>
               <button className="btn" disabled={busy} onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '4px 10px' }}>Cancel</button>
             </>
