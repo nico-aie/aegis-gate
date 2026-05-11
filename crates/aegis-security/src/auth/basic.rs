@@ -1,4 +1,14 @@
-/// Basic Auth verification against htpasswd-style entries.
+//! Basic-Auth verification stub — **deferred**, not on the active
+//! path.
+//!
+//! **2026-05-11 PR #9** — zero callers in `aegis-proxy/src/` +
+//! `aegis-bin/src/` as of this commit. Kept as a per-route auth
+//! shape for the day someone wires a `cfg.routes[i].auth.basic`
+//! field; today the only configured auth is mTLS (data plane)
+//! or argon2 session cookies (admin plane).
+
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// Basic auth store (username → hashed password).

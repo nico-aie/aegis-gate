@@ -1,3 +1,13 @@
+//! Forward-Auth (Traefik-style external auth) stub — **deferred**,
+//! not on the active path.
+//!
+//! **2026-05-11 PR #9** — zero callers in `aegis-proxy/src/` +
+//! `aegis-bin/src/` as of this commit. The contract doesn't
+//! require external-auth callouts; mTLS + admin session auth
+//! cover the configured surfaces today.
+
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// Forward auth configuration.
