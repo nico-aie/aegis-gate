@@ -42,7 +42,6 @@ use hyper_util::rt::TokioIo;
 
 use aegis_core::audit::AuditBus;
 use aegis_core::config::WafConfig;
-use aegis_core::pipeline::SecurityPipeline;
 use aegis_core::state::StateBackend;
 use aegis_core::ReadinessSignal;
 
@@ -98,7 +97,16 @@ pub enum ConfigReloadSource {
 /// the shared compliance clamp on the detector mask.
 pub async fn run(
     cfg_swap: Arc<arc_swap::ArcSwap<WafConfig>>,
-    _pipeline: Arc<dyn SecurityPipeline>,
+    // 2026-05-11 PR #7 — concrete `Arc<Pipeline>` (no longer the
+    // trait object) so the boot path can hand the same instance
+    // to both `ProxyContext` (via `Arc<dyn SecurityPipeline>`
+    // coercion) and `DashboardServices::response_filter_writer`
+    // (via `Arc<dyn ResponseFilterWriter>` coercion). The data
+    // plane reads `on_body_frame` through the trait object on
+    // `ProxyContext.pipeline`; the dashboard flips
+    // `ResponseFilterConfig` rungs through the same `Pipeline`
+    // instance via the writer trait.
+    pipeline: Arc<aegis_security::Pipeline>,
     state: Arc<dyn StateBackend>,
     lease_store: Arc<dyn aegis_core::cluster::LeaseStore>,
     bus: AuditBus,
@@ -567,17 +575,16 @@ pub async fn run(
     let verbosity = aegis_core::SharedVerbosity::from_config(&cfg.logging);
 
     // Carry-over A (post-2026-04-29 perf re-run) — the Allow
-    // branch in `handle_data_request` previously returned a
-    // synthetic `OK\n` body; we now resolve a real upstream
-    // member via `crate::proxy::ProxyContext` and call
-    // `crate::upstream::forward::forward()`. The `pipeline`
-    // field on ProxyContext is unused by the forward path,
-    // so passing the workspace `NoopPipeline` here is a
-    // placeholder until the parallel pipelines converge.
+    // 2026-05-11 PR #7 follow-up — hand the live `Pipeline` to
+    // `ProxyContext` so the data plane's `on_body_frame` call
+    // (response-filter rung) reaches the real filter chain. Prior
+    // to this commit the boot path constructed a fresh
+    // `NoopPipeline` here, silently dropping the response-filter
+    // wire-up that landed in `data_plane.rs` two commits ago.
     let upstream_ctx = Arc::new({
         let mut ctx = crate::proxy::ProxyContext::build(
             &cfg,
-            Arc::new(aegis_security::NoopPipeline),
+            pipeline.clone(),
         )?;
         // WS-T6 — share the registered metrics with the data-
         // plane bridge code.  Done before Arc-wrap so the field
@@ -1222,6 +1229,7 @@ pub async fn run(
         admin_upstream_writer,
         admin_route_writer,
         ai_runtime_toggle.clone(),
+        pipeline.clone(),
         admin_state_backend,
         admin_identity_tracker,
         admin_detectors,

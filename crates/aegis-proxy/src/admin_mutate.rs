@@ -2838,6 +2838,121 @@ pub(crate) async fn handle_ai_enabled_put(
     }
 }
 
+// ---------------------------------------------------------------------------
+// 2026-05-11 PR #7 — runtime toggle for the response-filter rungs
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn handle_response_filter_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::response_filter::ResponseFilterPatch;
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "response-filter-put");
+
+    let Some(writer) = services.response_filter_writer.as_ref().cloned() else {
+        // No writer wired — test bundles, no-pipeline builds. Return
+        // the same `feature_off` shape as `/api/ai/enabled` so the
+        // dashboard can render a clear "not wired" banner instead of
+        // a generic 500.
+        let body = serde_json::json!({
+            "ok": false,
+            "reason": "feature_off",
+            "message": "Response filter pipeline not wired in this build",
+        });
+        return json_body_response(409, body.to_string(), "private, no-store");
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let patch: ResponseFilterPatch = match serde_json::from_str(body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    let before_snap = writer.get();
+    let before = serde_json::json!({
+        "scrub_stack_traces": before_snap.scrub_stack_traces,
+        "mask_internal_ips":  before_snap.mask_internal_ips,
+        "redact_dlp":         before_snap.redact_dlp,
+    });
+    let after = serde_json::json!({
+        "scrub_stack_traces": patch.scrub_stack_traces,
+        "mask_internal_ips":  patch.mask_internal_ips,
+        "redact_dlp":         patch.redact_dlp,
+    });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/response-filter",
+        action: "response_filter_put",
+        reason: "operator updated response-filter rungs",
+    };
+
+    let writer_for_apply = Arc::clone(&writer);
+    let patch_for_apply = patch.clone();
+    let outcome = services.mutate.apply::<_, (), &'static str>(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            writer_for_apply.set(patch_for_apply);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "scrub_stack_traces": patch.scrub_stack_traces,
+                "mask_internal_ips":  patch.mask_internal_ips,
+                "redact_dlp":         patch.redact_dlp,
+                "request_id":         pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+pub(crate) async fn handle_response_filter_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let body = match services.response_filter_writer.as_ref() {
+        Some(w) => {
+            let snap = w.get();
+            serde_json::json!({
+                "scrub_stack_traces": snap.scrub_stack_traces,
+                "mask_internal_ips":  snap.mask_internal_ips,
+                "redact_dlp":         snap.redact_dlp,
+                "wired":              true,
+            })
+        }
+        None => serde_json::json!({
+            "scrub_stack_traces": true,
+            "mask_internal_ips":  true,
+            "redact_dlp":         true,
+            "wired":              false,
+        }),
+    };
+    json_response(200, &body)
+}
+
 pub(crate) async fn handle_ai_enabled_get(
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
