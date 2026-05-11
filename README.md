@@ -197,6 +197,24 @@ Open <https://127.0.0.1:9443/> · login `admin` / `aegis-test-1234`.
 > generation, real-upstream wiring, troubleshooting): →
 > [`QUICKSTART.md`](QUICKSTART.md).
 
+### Dashboard JSX workflow
+
+The dashboard is a pre-compiled `app.js` embedded into the
+release binary via `include_bytes!`. **`make build` auto-rebundles
+the JSX whenever any source under
+`crates/aegis-control/assets/dashboard/src/` is newer than the
+compiled `app.js`** — no manual step required.
+
+If you bypass make (`cargo build` directly), run
+`make dashboard` first or you'll embed the previous bundle.
+`make dashboard-force` rebuilds even when mtimes say the bundle
+is fresh — useful after toolchain bumps (Node, esbuild) where
+the output might shift without any source change.
+
+CI gates on `app.js` drift: a PR that edits JSX without
+committing the matching bundle fails the
+`dashboard-bundle-fresh` job.
+
 ### Feature flags
 
 `make build` defaults to `FEATURES="redis geoip alerts ai"`. Add
