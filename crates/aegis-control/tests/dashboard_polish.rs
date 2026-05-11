@@ -96,7 +96,12 @@ fn bundle_under_documented_budget() {
     // with `APP_JS_BUDGET` above. Bumped 2026-05-10 from 600 → 612 KB
     // alongside the Strike-Block edit modal + per-card GateExplain
     // strips on Traffic Gates.
-    const RAW_BUDGET_BYTES: usize = 612_000;
+    // Bumped 2026-05-11 from 612 → 624 KB after the Phase 3a UX
+    // sprint (Response Filtering card wire-up, DNS hostname
+    // placeholders, PolicyPostureCard on 5 Policy pages, Traffic
+    // Gates flow diagram, PageTitleRefresh, audit RULE extractor,
+    // modal-anchored save error, MED/LOW polish).
+    const RAW_BUDGET_BYTES: usize = 624_000;
     let mut total = 0usize;
     for path in ["index.html", "app.js", "aegis.css", "react.min.js", "react-dom.min.js", "i18n.json"] {
         let asset: EmbeddedAsset = lookup(path).unwrap_or_else(|| panic!("{path} must resolve"));
