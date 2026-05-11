@@ -4378,8 +4378,6 @@ function PageSettings() {
   const showRuntimeHint = !!runtime?.data;
 
   const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
-  const [stackTraces, setStackTraces] = useStateP(true);
-  const [redactJSON, setRedactJSON] = useStateP(true);
 
   async function toggleShadow() {
     if (busy) return;
@@ -4513,22 +4511,7 @@ function PageSettings() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Response Filtering</div>
-          <span className="pill warn" title="Toggles are local-only. Backend uses cfg.observability + cfg.dlp from waf.yaml.">not wired</span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div className={`toggle ${stackTraces ? 'on' : ''}`} onClick={() => setStackTraces(s => !s)} />
-            <div style={{ fontSize: 12 }}>Block stack traces in responses</div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div className={`toggle ${redactJSON ? 'on' : ''}`} onClick={() => setRedactJSON(s => !s)} />
-            <div style={{ fontSize: 12 }}>Redact JSON fields (password, secret, token, ssn)</div>
-          </div>
-        </div>
-      </div>
+      <ResponseFilterCard />
 
       {/* M004 (2026-05-07) — surface backend data already returned
           by /api/admin/sessions, /api/admin/break-glass,
@@ -4574,6 +4557,110 @@ function PageSettings() {
 // Visibility comes first; the mutation surfaces follow once the
 // audit-mutated handlers exist (DELETE /api/admin/sessions/{id},
 // POST /api/admin/break-glass, PUT /api/integrations).
+
+// 2026-05-11 PR #7 — three-rung response-filter live toggle.
+// Reads `/api/response-filter` for current state, flips rungs
+// through the audit-mutated PUT. Each rung is independently
+// togglable; defaults are all-on. The "wired: false" branch shows
+// when the binary boots without a `Pipeline` writer (test bundles)
+// — the toggles render in a read-only state with a warn pill.
+function ResponseFilterCard() {
+  const api = window.useResponseFilterApi
+    ? window.useResponseFilterApi()
+    : { data: null };
+  const data = api.data || {};
+  const wired = data.wired !== false; // default to wired so live state lights up before first poll
+  const [busy, setBusy] = useStateP(null); // which rung is currently in-flight, for the wait cursor
+
+  async function flip(rung) {
+    if (busy || !wired) return;
+    const patch = {
+      scrub_stack_traces: !!data.scrub_stack_traces,
+      mask_internal_ips:  !!data.mask_internal_ips,
+      redact_dlp:         !!data.redact_dlp,
+    };
+    patch[rung] = !patch[rung];
+    setBusy(rung);
+    try {
+      const r = await window.responseFilterPut(patch);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Response filter · ${rung} ${patch[rung] ? 'on' : 'off'}`, 'ok');
+        api.reload && api.reload();
+      } else if (r.status === 409 && r.reason === 'feature_off') {
+        window.aegisToast('Response filter pipeline not wired in this build', 'warn');
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Response filter toggle failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const rungs = [
+    {
+      key: 'scrub_stack_traces',
+      label: 'Scrub stack traces',
+      desc: 'Node.js / JVM / Python / Rust / PHP / .NET / Ruby / Go → [REDACTED]',
+    },
+    {
+      key: 'mask_internal_ips',
+      label: 'Mask internal IPs',
+      desc: 'RFC 1918 + loopback + link-local → [INTERNAL]',
+    },
+    {
+      key: 'redact_dlp',
+      label: 'Redact DLP payloads',
+      desc: 'Credit cards (Luhn), SSN, IBAN, email, AWS/GitHub/Stripe/Slack tokens',
+    },
+  ];
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div>
+          <div className="card-title">Response Filtering</div>
+          <div className="card-sub">
+            Hot-reloadable via audit-mutated PUT /api/response-filter ·
+            applied to every upstream response body via Pipeline::on_body_frame
+          </div>
+        </div>
+        {!wired && (
+          <span
+            className="pill warn"
+            title="Pipeline writer not wired in this build — toggles are read-only"
+          >
+            not wired
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {rungs.map(r => (
+          <div
+            key={r.key}
+            style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}
+          >
+            <div
+              className={`toggle ${data[r.key] ? 'on' : ''}`}
+              onClick={wired && busy !== r.key ? () => flip(r.key) : undefined}
+              style={{
+                cursor: !wired ? 'not-allowed' : busy === r.key ? 'wait' : 'pointer',
+                opacity: !wired ? 0.5 : 1,
+                marginTop: 2,
+              }}
+            />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{r.label}</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+                {r.desc}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function SettingsSessionsCard() {
   const sessions = window.useAdminSessionsApi

@@ -63,6 +63,13 @@ pub(crate) async fn admin_accept_loop(
     // `PUT /api/ai/enabled` handler in `admin_mutate.rs` reads
     // it from `services.ai_toggle` (set further down).
     ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
+    // 2026-05-11 PR #7 — live `Pipeline` whose `ResponseFilterConfig`
+    // the audit-mutated `PUT /api/response-filter` handler flips.
+    // Same `Arc<Pipeline>` instance the data plane reads
+    // `on_body_frame` through via `upstream_ctx.pipeline`; stashing
+    // it here instead of downcasting the trait object keeps the
+    // writer-trait machinery decoupled from `SecurityPipeline`.
+    response_filter_pipeline: Arc<aegis_security::Pipeline>,
     // SC-T1 — typed-erased state backend handle so the
     // `/api/state` endpoint can call `health()` without a separate
     // provider closure. Passed through to `services.state_backend`.
@@ -484,6 +491,14 @@ pub(crate) async fn admin_accept_loop(
             toggle as Arc<dyn aegis_control::api::ai_toggle::AiToggleWriter>,
         );
     }
+    // 2026-05-11 PR #7 — surface the live `Pipeline` as the
+    // response-filter writer so `PUT /api/response-filter` can
+    // hot-swap `ResponseFilterConfig` rungs. Same Arc instance the
+    // data plane reads `on_body_frame` through.
+    services.response_filter_writer = Some(
+        response_filter_pipeline
+            as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
+    );
 
     // MTLS-T6 — wire the IdentityTracker so the read-only
     // /api/mtls/* endpoints have a live data source. MTLS-T3

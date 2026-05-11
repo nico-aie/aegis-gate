@@ -1032,6 +1032,31 @@ async function aiEnabledPut(enabled) {
   return { status: r.status, ...json };
 }
 
+// 2026-05-11 PR #7 — runtime toggle for the three-rung
+// response-filter (`Pipeline::on_body_frame`). GET is open-on-
+// session; PUT is audit-mutated + CSRF-gated.
+function useResponseFilterApi() {
+  return useApi('/api/response-filter', {
+    intervalMs: 15000,
+    fallback: { scrub_stack_traces: true, mask_internal_ips: true, redact_dlp: true, wired: false },
+  });
+}
+async function responseFilterPut(patch) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/response-filter', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({
+      scrub_stack_traces: !!patch.scrub_stack_traces,
+      mask_internal_ips:  !!patch.mask_internal_ips,
+      redact_dlp:         !!patch.redact_dlp,
+    }),
+  });
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
+
 // RT-T6 — route mutation helpers. Mirror poolUpsert / poolDelete
 // so the RouteEditModal + DeleteRouteModal flow behaves the same
 // way (CSRF cookie + header, status passed through).
@@ -1262,6 +1287,8 @@ Object.assign(window, {
   routeUpsert, routeDelete, routeTest,
   // AI-T10 — AI detector runtime on/off
   useAiEnabledApi, aiEnabledPut,
+  // 2026-05-11 PR #7 — response-filter rung toggles
+  useResponseFilterApi, responseFilterPut,
   // TI-T — audit-mutated tier edits
   tierPut,
   useRoutesApi, useTiersApi,

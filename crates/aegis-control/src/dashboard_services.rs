@@ -158,6 +158,16 @@ pub struct DashboardServices {
     /// "feature not present" banner instead of a misleading 500.
     pub ai_toggle:
         Option<std::sync::Arc<dyn crate::api::ai_toggle::AiToggleWriter>>,
+    /// PR #7 (2026-05-11) — writer handle for the live
+    /// `Pipeline`'s `ResponseFilterConfig`. The bin crate stashes
+    /// the same `Arc<Pipeline>` instance the data plane reads
+    /// `on_body_frame` through; the audit-mutated
+    /// `PUT /api/response-filter` handler flips rungs via this
+    /// writer without bouncing the proxy. `None` for test bundles
+    /// that don't boot `aegis-bin` — the GET handler returns the
+    /// empty-state view with `wired: false`.
+    pub response_filter_writer:
+        Option<std::sync::Arc<dyn crate::api::response_filter::ResponseFilterWriter>>,
     /// MTLS-T6 — live per-identity sliding-window tracker. The
     /// `/api/mtls/connections` and `/api/mtls/failures`
     /// endpoints read snapshots from this. `None` for test
@@ -476,6 +486,11 @@ impl DashboardServices {
                 // `ai` feature is on AND `cfg.ai.enabled` is
                 // true).
                 ai_toggle: None,
+                // PR #7 — wired by `aegis-bin` once the live
+                // `Pipeline` is built. Until then the GET handler
+                // returns `wired: false` so the dashboard renders
+                // the read-only empty state.
+                response_filter_writer: None,
                 // MTLS-T6 — wired by the proxy boot path. Until
                 // then `/api/mtls/connections` + `/api/mtls/failures`
                 // serve empty-state bodies.

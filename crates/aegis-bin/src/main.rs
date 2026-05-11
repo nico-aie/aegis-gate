@@ -218,7 +218,16 @@ async fn run_gateway_inner(
     // wire-up reads `ResponseFilterConfig` from this `Pipeline`
     // instance — that's the load-bearing piece. Defaults: scrub
     // stack traces + mask internal IPs + redact DLP, all ON.
-    let pipeline: Arc<dyn aegis_core::SecurityPipeline> =
+    // PR #7 (2026-05-11) — concrete `Arc<Pipeline>` so the proxy
+    // boot path can hand the same instance to both the data
+    // plane (via `Arc<dyn SecurityPipeline>` coercion in
+    // `ProxyContext::build`) and the dashboard
+    // (`response_filter_writer`). The data plane bypasses
+    // `SecurityPipeline::inbound()` and calls
+    // `run_all_filtered_timed(&detectors, ...)` directly;
+    // `on_body_frame` is the only hot trait method, and the
+    // dashboard PUT flips its `ResponseFilterConfig` rungs.
+    let pipeline: Arc<aegis_security::Pipeline> =
         Arc::new(aegis_security::Pipeline::new(Arc::new(
             aegis_security::RuleSet::new(),
         )));
