@@ -1654,7 +1654,15 @@ function RuleSimulator() {
             Replay a hypothetical request against the live detector chain — no traffic, no audit emit.
           </div>
         </div>
-        <span className="pill neutral">Tier A</span>
+        {/* LOW-07 (2026-05-11) — tooltip + link so operators new
+            to the framework see what "Tier A" means here vs. the
+            Critical/High/Medium/Low tiers on Detectors & Tiers. */}
+        <a
+          href="#/detectors"
+          className="pill neutral"
+          style={{ textDecoration: 'none' }}
+          title="Tier A bonus surface — runs the live detector chain in a sandbox so operators can preview verdicts before persisting a rule. The Critical/High/Medium/Low tiers on the Detectors page are a different concept (request risk tier)."
+        >Tier A</a>
       </div>
       <div style={{ padding: 14, display: 'grid', gridTemplateColumns: '110px 1fr 1fr', gap: 8, alignItems: 'start' }}>
         <select className="input select" value={method} onChange={e => setMethod(e.target.value)}>
@@ -3006,7 +3014,7 @@ function PageTierConfig() {
                           <td className="mono">{r.upstream}</td>
                           <td>
                             {auth.length === 0 ? (
-                              <span className="pill" style={{ opacity: 0.5 }} title="Any identity admitted (default open)">open</span>
+                              <span className="pill" style={{ opacity: 0.65 }} title="Any identity admitted (default open)">open</span>
                             ) : (
                               auth.map(k => (
                                 <span
@@ -6135,9 +6143,20 @@ function PageUpstreams() {
         <div>
           <h1 className="page-title">Routing &amp; Upstreams</h1>
           <p className="page-subtitle">
-            <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} →
-            <span className="num"> {names.length}</span> pool{names.length === 1 ? '' : 's'}
-            {' '}({totalMembers} member{totalMembers === 1 ? '' : 's'}{orphaned ? `, ${orphaned} unreferenced` : ''}){' · '}
+            {/* LOW-05 (2026-05-11) — the previous copy
+                `N routes → M pools (X members, Y unreferenced)`
+                implied "those N routes use M pools". When some of
+                those pools are orphans, the implication is wrong.
+                New copy splits routed vs unrouted explicitly. */}
+            <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} ·
+            <span className="num"> {names.length - orphaned}</span> pool{(names.length - orphaned) === 1 ? '' : 's'} routed
+            {orphaned > 0 && (
+              <>
+                {' · '}
+                <span className="num">{orphaned}</span> pool{orphaned === 1 ? '' : 's'} unrouted
+              </>
+            )}
+            {' '}({totalMembers} member{totalMembers === 1 ? '' : 's'}){' · '}
             <span
               className={`pill ${cfgApi.error ? 'warn' : 'ok'}`}
               title="Routes + pools land via the audit-mutated pipeline; the proxy hot-swaps without restart."
@@ -9844,7 +9863,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             <label>Route ID <span className="req">*</span></label>
             <input className="ip" value={d.id} disabled={!isAdd}
               onChange={e => set('id', e.target.value)}
-              placeholder="vnexpress" />
+              placeholder="my-route" />
             {idClash && <div className="form-hint warn">A route with this ID already exists.</div>}
           </div>
 
@@ -9933,7 +9952,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
                   </label>
                   <input className="ip" value={newPool.host_header}
                     onChange={e => setNewPool({ ...newPool, host_header: e.target.value })}
-                    placeholder="vnexpress.net (for multi-vhost / public TLS)" />
+                    placeholder="api.example.com (for multi-vhost / public TLS)" />
                 </div>
               </div>
             )}
