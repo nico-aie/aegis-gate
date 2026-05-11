@@ -800,8 +800,30 @@ async function adminLogout() {
 // itself is read-only but reuses the dashboard's gated POST
 // path).
 async function rulesSimulate(body) {
+  // 2026-05-11 F-01 — previous version built the CSRF token but
+  // never sent it as a header, and the function had no return
+  // statement so callers got `undefined`. The simulator panel's
+  // `setResult(undefined)` then made every render guard
+  // (`result && result.status === 200`) false and the result
+  // never appeared in the UI even though the API returned 200
+  // with a well-formed JSON body.
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/api/rules/simulate', { method: 'POST', body: JSON.stringify(body) });
+  const r = await fetch('/api/rules/simulate', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'content-type': 'application/json',
+      'x-csrf-token': csrf,
+    },
+    body: JSON.stringify(body),
+  });
+  const parsed = await r.json().catch(() => ({}));
+  // Return a single shape the simulator panel can render:
+  // HTTP status + whatever the backend put in the body. The
+  // body keys (decision_action, rule_id, risk_score,
+  // detectors_fired, signals, tier, muted_detectors) are
+  // spread on top so the component reads them directly.
+  return { status: r.status, ...parsed };
 }
 
 // HACK-T1 — live hooks for PageAttackEvents. Each one is

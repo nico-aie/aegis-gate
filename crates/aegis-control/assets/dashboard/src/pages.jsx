@@ -1286,12 +1286,31 @@ function PageAnalytics() {
 
 // ============== AUDIT LOG ==============
 function PageAuditLog() {
-  const [ipFilter, setIpFilter] = useStateP('');
-  const [ruleIdFilter, setRuleIdFilter] = useStateP('');
-  const [requestIdFilter, setRequestIdFilter] = useStateP('');
+  // F-03 (2026-05-11) — honor `#/audit?rule_id=...&ip=...&request_id=...`
+  // hash params on mount so deep-links from the Rules Stats tab,
+  // request inspector, and other surfaces land pre-filtered.
+  // Parses once at mount; subsequent in-page typing wins via the
+  // controlled-input state below.
+  const initialFromHash = (() => {
+    const m = typeof location !== 'undefined' && location.hash.match(/\?(.+)$/);
+    if (!m) return {};
+    const p = new URLSearchParams(m[1]);
+    return {
+      ruleId: p.get('rule_id') || '',
+      ip: p.get('ip') || '',
+      requestId: p.get('request_id') || '',
+    };
+  })();
+  const [ipFilter, setIpFilter] = useStateP(initialFromHash.ip || '');
+  const [ruleIdFilter, setRuleIdFilter] = useStateP(initialFromHash.ruleId || '');
+  const [requestIdFilter, setRequestIdFilter] = useStateP(initialFromHash.requestId || '');
   const [windowKey, setWindowKey] = useStateP('all');
   const [pageLimit, setPageLimit] = useStateP(200);
-  const [debouncedQ, setDebouncedQ] = useStateP({ ip: '', ruleId: '', requestId: '' });
+  const [debouncedQ, setDebouncedQ] = useStateP({
+    ip: initialFromHash.ip || '',
+    ruleId: initialFromHash.ruleId || '',
+    requestId: initialFromHash.requestId || '',
+  });
   // FIX 2026-05-04 — Audit Trail page now defaults to admin /
   // access / system events, hiding per-request `detection`
   // events. Operators reading this page want config history,
@@ -1925,7 +1944,16 @@ function PageRuleManager() {
                 {tab === 'stats' && (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
                     <span>Per-rule statistics ship in a follow-up.</span>
-                    <span style={{ fontSize: 11 }}>For now: filter <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Log</a> by <code>rule_id={selected.id}</code> to see every match.</span>
+                    {/* F-03 (2026-05-11) — deep-link the rule_id so
+                        Audit Trail pre-fills the filter. Previously
+                        landed operators on an unfiltered audit view
+                        with thousands of rows. */}
+                    <span style={{ fontSize: 11 }}>
+                      For now: <a
+                        href={`#/audit?rule_id=${encodeURIComponent(selected.id)}`}
+                        style={{ color: 'var(--accent)' }}
+                      >Open Audit Log filtered by <code>rule_id={selected.id}</code> →</a>
+                    </span>
                   </div>
                 )}
               </div>
@@ -1997,6 +2025,22 @@ function DeleteRuleModal({ ruleId, busy, onCancel, onConfirm }) {
 }
 
 function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNewEnabled, onCancel, onSave, busy }) {
+  // F-02 (2026-05-11) — track whether the operator has attempted
+  // to submit so we can show inline validation errors on empty
+  // required fields instead of silently no-op'ing. Pre-fix the
+  // Save button was just `disabled` when Rule ID was empty,
+  // giving operators no signal that anything was wrong.
+  const [attempted, setAttempted] = useStateP(false);
+  const idRef = useRefP(null);
+  const idEmpty = !newId.trim();
+  const handleSave = () => {
+    if (idEmpty) {
+      setAttempted(true);
+      if (idRef.current) idRef.current.focus();
+      return;
+    }
+    onSave();
+  };
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
@@ -2010,8 +2054,23 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
         </div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <span className="field-label">Rule ID</span>
-            <input className="input" value={newId} onChange={e => setNewId(e.target.value)} placeholder="custom-xss-001" autoFocus />
+            <span className="field-label">
+              Rule ID <span style={{ color: 'var(--down)' }}>*</span>
+            </span>
+            <input
+              ref={idRef}
+              className="input"
+              value={newId}
+              onChange={e => setNewId(e.target.value)}
+              placeholder="custom-xss-001"
+              aria-required="true"
+              aria-invalid={attempted && idEmpty}
+              autoFocus
+              style={attempted && idEmpty ? { borderColor: 'var(--down)' } : undefined}
+            />
+            {attempted && idEmpty && (
+              <span style={{ fontSize: 11, color: 'var(--down)' }}>Rule ID is required.</span>
+            )}
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span className="field-label">DSL body</span>
@@ -2029,7 +2088,11 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
         </div>
         <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn primary" onClick={onSave} disabled={busy || !newId.trim()}>Save</button>
+          {/* F-02 — Save is no longer disabled when the field is
+              empty; clicking with an empty value surfaces the
+              inline error + focuses the field, so operators see
+              what they missed instead of an inert button. */}
+          <button className="btn primary" onClick={handleSave} disabled={busy}>Save</button>
         </div>
       </div>
     </div>
@@ -2499,8 +2562,23 @@ function AiDetectorRow() {
   const attackPct = total > 0 ? ((metrics.attack / total) * 100).toFixed(1) : '0.0';
   const fbTotal = metrics?.fallback ? Object.values(metrics.fallback).reduce((a, b) => a + b, 0) : 0;
 
+  // F-06 (2026-05-11) — confirm before disabling. Enabling is
+  // safe to flip immediately; disabling has broader traffic
+  // impact (attack detection stops on the next request) so the
+  // operator gets a confirm() prompt. Mirrors the Rules Delete +
+  // Access Lists Remove styled-modal pattern — small enough that
+  // a one-line confirm here is fine.
   async function flip() {
     if (busy || !featurePresent) return;
+    if (runtimeOn) {
+      const ok = window.confirm(
+        'Disable the AI detector?\n\n' +
+        'Attack detection from the ML model stops on the next request. ' +
+        'The regex/heuristic detectors keep running. ' +
+        'You can re-enable from this same button.'
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     try {
       const r = await window.aiEnabledPut(!runtimeOn);
@@ -3194,6 +3272,12 @@ function ListPage({ kind }) {
   const [draftExpiry, setDraftExpiry] = useStateP(''); // YYYY-MM-DDTHH:mm (datetime-local)
   const [search, setSearch] = useStateP('');
   const [showImport, setShowImport] = useStateP(false);
+  // F-02 (2026-05-11) — submit-attempt tracking so the Add form
+  // shows inline validation on empty Value instead of a silently
+  // disabled button. The value ref also lets us focus the field
+  // after a failed submit.
+  const [attempted, setAttempted] = useStateP(false);
+  const valueRef = useRefP(null);
 
   // Filter entries by search term against value + note + kind.
   const filtered = useMemoP(() => {
@@ -3209,7 +3293,14 @@ function ListPage({ kind }) {
 
   async function submitAdd() {
     const value = draftValue.trim();
-    if (!value || busy) return;
+    if (busy) return;
+    // F-02 — surface a visible "Value is required" error +
+    // focus the field instead of silently no-op'ing.
+    if (!value) {
+      setAttempted(true);
+      if (valueRef.current) valueRef.current.focus();
+      return;
+    }
     setBusy(true);
     try {
       const id = `${kind}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -3304,9 +3395,21 @@ function ListPage({ kind }) {
     }
   }
 
+  // F-07 (2026-05-11) — replaced native window.confirm() with
+  // a styled modal so the Remove flow looks consistent with the
+  // Rules Delete and Detector Disable patterns. Native confirm()
+  // bypasses the dark theme and is auto-dismissible by some
+  // browser settings.
+  const [pendingDelete, setPendingDelete] = useStateP(null); // null | entry object
+
   async function deleteRow(entry) {
     if (busy) return;
-    if (!confirm(`Remove ${kind} entry ${entry.kind}:${entry.value}?`)) return;
+    setPendingDelete(entry);
+  }
+
+  async function confirmDeleteRow() {
+    const entry = pendingDelete;
+    if (!entry || busy) return;
     setBusy(true);
     try {
       const r = await window.accessListDelete(kind, entry.id);
@@ -3321,6 +3424,7 @@ function ListPage({ kind }) {
       window.aegisToast(`Remove error: ${e.message || e}`, 'err');
     } finally {
       setBusy(false);
+      setPendingDelete(null);
     }
   }
 
@@ -3356,7 +3460,11 @@ function ListPage({ kind }) {
             onClick={() => setShowForm(v => !v)}
             disabled={busy}
           >
-            <window.I.Plus /> {showForm ? 'Cancel' : 'Add entry'}
+            {/* F-08 — drop the `+` icon in the Cancel state.
+                `+` semantically means "add"; pairing it with
+                Cancel is contradictory. Drop the icon entirely
+                when collapsing the form. */}
+            {showForm ? 'Cancel' : <><window.I.Plus /> Add entry</>}
           </button>
         </div>
       </div>
@@ -3403,8 +3511,11 @@ function ListPage({ kind }) {
               </select>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 220 }}>
-              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Value</label>
+              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                Value <span style={{ color: 'var(--down)' }}>*</span>
+              </label>
               <input
+                ref={valueRef}
                 type="text"
                 value={draftValue}
                 onChange={e => setDraftValue(
@@ -3421,8 +3532,17 @@ function ListPage({ kind }) {
                   /* country */             'CN'
                 }
                 disabled={busy}
-                style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace' }}
+                aria-required="true"
+                aria-invalid={attempted && !draftValue.trim()}
+                style={{
+                  padding: '6px 8px', background: 'var(--canvas-2)',
+                  border: `1px solid ${attempted && !draftValue.trim() ? 'var(--down)' : 'var(--hairline)'}`,
+                  borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace',
+                }}
               />
+              {attempted && !draftValue.trim() && (
+                <span style={{ fontSize: 11, color: 'var(--down)' }}>Value is required.</span>
+              )}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 2, minWidth: 200 }}>
               <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Note (optional)</label>
@@ -3466,7 +3586,7 @@ function ListPage({ kind }) {
             <button
               className="btn primary"
               onClick={submitAdd}
-              disabled={busy || !draftValue.trim()}
+              disabled={busy}
             >
               Submit
             </button>
@@ -3543,7 +3663,53 @@ function ListPage({ kind }) {
           onImport={bulkImport}
         />
       )}
+      {pendingDelete && (
+        <RemoveAccessListEntryModal
+          kind={kind}
+          entry={pendingDelete}
+          busy={busy}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
     </>
+  );
+}
+
+// F-07 (2026-05-11) — styled confirmation modal for the Access
+// Lists Remove flow, replacing native window.confirm(). Mirrors
+// DeleteRuleModal / DeleteRouteModal so all three "destructive
+// remove" surfaces share one visual language.
+function RemoveAccessListEntryModal({ kind, entry, busy, onCancel, onConfirm }) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="modal-head">
+          <div className="modal-title">
+            Remove {kind} entry <code>{entry.kind}:{entry.value}</code>?
+          </div>
+          <button className="btn btn-sm" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          <p style={{ fontSize: 13, lineHeight: 1.5 }}>
+            Removing <code>{entry.kind}:{entry.value}</code> is audit-mutated and
+            cannot be undone. New requests stop matching this entry on the
+            next request; in-flight requests finish on the old list.
+          </p>
+          {entry.note && (
+            <p style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 8 }}>
+              Note on this entry: <em>{entry.note}</em>
+            </p>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn danger" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Removing…' : 'Remove'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
