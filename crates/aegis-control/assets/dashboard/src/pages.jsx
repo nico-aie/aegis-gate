@@ -1285,6 +1285,52 @@ function PageAnalytics() {
 }
 
 // ============== AUDIT LOG ==============
+
+// MED-01 (2026-05-11) — extract the resource ID for the RULE
+// column. Admin mutations (`rule_create`, `route_upsert`,
+// `pool_upsert`, etc.) carry `rule_id: null` at the event's top
+// level; the actual ID lives in `fields.resource` (e.g.
+// `/api/rules/<id>`) or, for whole-section replaces, in the
+// `fields.diff.after.<section>.<id>` map. The earlier renderer
+// only checked the top-level field, so the RULE column read
+// `—` even for the very events that mutated rules.
+//
+// Logic per QA report:
+//   1. Try the top-level `rule_id` (covers data-plane events).
+//   2. For action prefixes `rule_*` / `route_*` / `pool_*`, parse
+//      `fields.resource` as `/api/<section>/<id>`.
+//   3. Fall back to the first key of `fields.diff.after.<section>`.
+//   4. Otherwise return null so the cell renders as `—`.
+function extractResourceId(event) {
+  if (!event) return null;
+  if (event.rule_id) return event.rule_id;
+  const action = event.action || '';
+  const fields = event.fields || {};
+  const section = action.startsWith('rule_')
+    ? 'rules'
+    : action.startsWith('route_')
+      ? 'routes'
+      : action.startsWith('pool_')
+        ? 'pools'
+        : null;
+  if (!section) return null;
+  // Step 2 — parse `/api/<plural>/<id>` style resource paths.
+  const resource = typeof fields.resource === 'string' ? fields.resource : '';
+  const apiBase = action.startsWith('pool_') ? '/api/upstreams/pool/' : `/api/${section}/`;
+  if (resource.startsWith(apiBase)) {
+    const tail = resource.slice(apiBase.length);
+    // Tail might be empty (whole-section PUT); keep walking.
+    if (tail && !tail.includes('/')) return tail;
+  }
+  // Step 3 — walk the diff for a single key under .after.<section>.
+  const after = fields.diff && fields.diff.after;
+  if (after && typeof after === 'object' && after[section]) {
+    const keys = Object.keys(after[section]);
+    if (keys.length === 1) return keys[0];
+  }
+  return null;
+}
+
 function PageAuditLog() {
   // F-03 (2026-05-11) — honor `#/audit?rule_id=...&ip=...&request_id=...`
   // hash params on mount so deep-links from the Rules Stats tab,
@@ -1493,7 +1539,7 @@ function PageAuditLog() {
                   <td><span className={`pill ${classPill(e.class)}`}>{e.class}</span></td>
                   <td className="mono" style={{ color: 'var(--ink)' }}>{e.action}</td>
                   <td className="mono">{e.client_ip || '—'}</td>
-                  <td className="mono dim" style={{ fontSize: 11 }}>{e.rule_id || '—'}</td>
+                  <td className="mono dim" style={{ fontSize: 11 }}>{extractResourceId(e) || '—'}</td>
                   <td className="dim">{e.reason}</td>
                   <td className="mono" style={{ fontSize: 10, color: 'var(--brand-yellow)' }}>{e.request_id}</td>
                 </tr>
@@ -9200,24 +9246,45 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
     );
   })();
 
-  const openAdd = () => setEditor({ mode: 'add', draft: emptyRouteDraft() });
-  const openEdit = (route) => setEditor({ mode: 'edit', draft: routeToDraft(route) });
+  // MED-02 (2026-05-11) — modal-anchored save error. The earlier
+  // shape toasted save failures bottom-right while the modal
+  // body kept rendering a *separate* "pool name already exists"
+  // inline hint — the two surfaces could disagree (toast: catch-
+  // all collision; inline: pool name collision) and the operator
+  // had to read both to figure out the real cause. Now the modal
+  // owns its own error block; the local hint stays purely
+  // advisory.
+  const [saveError, setSaveError] = useStateP(null);
+  const openAdd = () => { setSaveError(null); setEditor({ mode: 'add', draft: emptyRouteDraft() }); };
+  const openEdit = (route) => { setSaveError(null); setEditor({ mode: 'edit', draft: routeToDraft(route) }); };
+  const closeEditor = () => { setSaveError(null); setEditor(null); };
 
   async function saveRoute(draft) {
     setBusy(true);
+    setSaveError(null);
     try {
       // Inline pool create — modal sets draft.newPool when the
       // operator typed a backend address instead of picking an
       // existing pool. Pool name = route id in that flow.
+      //
+      // MED-04 (2026-05-11) — track whether THIS save created
+      // the pool. If the route POST below fails, the pool we
+      // just created sits orphaned in "Pools without routes"
+      // unless we roll it back. Compensating-delete keeps the
+      // operator's "save failed, nothing happened" mental model
+      // honest (a server-side atomic endpoint is the cleaner
+      // long-term fix, queued separately).
+      let createdPool = null;
       if (draft.newPool && draft.newPool.addr) {
         const poolName = draft.upstream;
         const poolBody = poolBodyFromInlineForm(draft.newPool);
         const pr = await window.poolUpsert(poolName, poolBody);
         if (!(pr.status === 200 && pr.ok)) {
           const msg = pr.message || pr.error || pr.reason || `HTTP ${pr.status}`;
-          window.aegisToast(`Pool create failed: ${msg}`, 'err');
+          setSaveError(`Pool create failed: ${msg}`);
           return;
         }
+        createdPool = poolName;
         cfgReload && cfgReload();
       }
       const body = routeBodyFromDraft(draft);
@@ -9225,10 +9292,32 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Route "${draft.id}" saved`, 'ok');
         routesApi.reload && routesApi.reload();
+        setSaveError(null);
         setEditor(null);
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
-        window.aegisToast(`Save failed: ${msg}`, 'err');
+        setSaveError(`Save failed: ${msg}`);
+        // MED-04 — compensating delete for the pool we created
+        // moments ago. If this rollback itself fails, the operator
+        // is told via the error block so they can clean up
+        // manually from "Pools without routes".
+        if (createdPool) {
+          try {
+            const del = await window.poolDelete(createdPool);
+            if (del.status === 200 && del.ok) {
+              cfgReload && cfgReload();
+            } else {
+              const dmsg = del.message || del.error || del.reason || `HTTP ${del.status}`;
+              setSaveError(
+                `Save failed: ${msg}\n\nAdditionally: the just-created pool "${createdPool}" could not be rolled back (${dmsg}). Remove it manually from "Pools without routes" below.`
+              );
+            }
+          } catch (e) {
+            setSaveError(
+              `Save failed: ${msg}\n\nAdditionally: rolling back the just-created pool "${createdPool}" threw an exception (${e?.message || e}). Remove it manually from "Pools without routes" below.`
+            );
+          }
+        }
       }
     } finally {
       setBusy(false);
@@ -9549,8 +9638,10 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
           existingIds={routes.map(r => r.id)}
           poolNames={poolNames}
           onSave={saveRoute}
-          onCancel={() => setEditor(null)}
+          onCancel={closeEditor}
           busy={busy}
+          saveError={saveError}
+          clearSaveError={() => setSaveError(null)}
         />
       )}
 
@@ -9672,7 +9763,7 @@ const ROUTE_AUTH_CHOICES = [
   ['anonymous', 'Anonymous — admit unauthenticated clients (note: making the route public)'],
 ];
 
-function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy }) {
+function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy, saveError, clearSaveError }) {
   const [d, setD] = useStateP(() => ({
     ...initial,
     methods: typeof initial.methods === 'string'
@@ -9693,6 +9784,19 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   });
   const usingNewPool = newPool.addr.trim().length > 0;
 
+  // MED-02 (2026-05-11) — clear the save error whenever the
+  // operator edits anything. The previous shape kept the toast +
+  // inline hint visible until the next save; now the error
+  // disappears as soon as the operator starts addressing it.
+  const setWithErrorClear = (updater) => {
+    if (clearSaveError) clearSaveError();
+    setD(updater);
+  };
+  const setNewPoolWithErrorClear = (updater) => {
+    if (clearSaveError) clearSaveError();
+    setNewPool(updater);
+  };
+
   const [showAdvanced, setShowAdvanced] = useStateP(
     !isAdd && (
       (d.match_type && d.match_type !== 'prefix') ||
@@ -9708,11 +9812,11 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
     : poolNames.includes(d.upstream);
   const canSave = idValid && pathValid && upstreamValid && !busy;
 
-  const set = (k, v) => setD({ ...d, [k]: v });
+  const set = (k, v) => setWithErrorClear({ ...d, [k]: v });
   const toggleSet = (k, v) => {
     const cur = new Set(d[k] || []);
     cur.has(v) ? cur.delete(v) : cur.add(v);
-    setD({ ...d, [k]: Array.from(cur) });
+    setWithErrorClear({ ...d, [k]: Array.from(cur) });
   };
 
   // One-line preview always visible at the bottom of the form.
@@ -9801,7 +9905,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             <input
               className="ip"
               value={newPool.addr}
-              onChange={e => setNewPool({ ...newPool, addr: e.target.value })}
+              onChange={e => setNewPoolWithErrorClear({ ...newPool, addr: e.target.value })}
               placeholder="IP:port (10.0.1.10:8080) or hostname:port (api.example.com:443)"
             />
             <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
@@ -9947,6 +10051,28 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
           <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
             {matchPreview}
           </div>
+
+          {/* MED-02 (2026-05-11) — server-error block, modal-
+              anchored. Replaces the older bottom-right toast so
+              the operator's eye doesn't need to ping two
+              corners of the page. Pre-wrap preserves the
+              compensating-delete addendum that MED-04 emits
+              when a rolled-back pool can't be removed. */}
+          {saveError && (
+            <div style={{
+              marginTop: 12,
+              padding: '10px 12px',
+              border: '1px solid var(--danger, #b9425a)',
+              background: 'rgba(185, 66, 90, 0.12)',
+              borderRadius: 4,
+              fontSize: 12,
+              color: 'var(--ink)',
+              whiteSpace: 'pre-wrap',
+            }} role="alert">
+              <strong style={{ display: 'block', marginBottom: 4 }}>Save failed</strong>
+              {saveError.replace(/^Save failed:\s*/, '')}
+            </div>
+          )}
 
         </div>
         <div className="modal-foot">

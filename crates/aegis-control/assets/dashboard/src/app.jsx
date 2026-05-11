@@ -131,19 +131,20 @@ function TopBar() {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        {/* L002 (2026-05-07) — surface what UNKNOWN means without
-            requiring tribal knowledge. The pill reflects
-            `cfg.admin.environment` from /api/about. UNKNOWN means
-            the operator never set it; it's the default of the
-            environment-tagging system, not an error. */}
-        <span
-          className={`env-pill ${env}`}
-          title={
-            env === 'unknown'
-              ? 'Environment not labelled. Set cfg.admin.environment in waf.yaml ("dev", "staging", "prod") to clear this pill.'
-              : `Environment: ${env}`
-          }
-        >● {env.toUpperCase()}</span>
+        {/* MED-03 (2026-05-11) — hide the env pill entirely when
+            the env is "unknown" rather than rendering a red
+            "UNKNOWN" alarm. Operators on a fresh dev boot were
+            getting a P1-shaped pill at the top of every page on
+            an otherwise healthy cluster; the pill should reflect
+            actual operational signal, not a missing config
+            label. Labeled envs (dev, staging, prod) still render
+            so operators see *which* env they're on. */}
+        {env !== 'unknown' && (
+          <span
+            className={`env-pill ${env}`}
+            title={`Environment: ${env}`}
+          >● {env.toUpperCase()}</span>
+        )}
         {status.data?.mtls_break_glass_active && (
           <span
             className="pill down"
