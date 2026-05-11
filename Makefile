@@ -105,7 +105,28 @@ reset-cert: ## Delete + regenerate the dev cert
 
 ##@ Build
 
-build: ## cargo build --release with $(FEATURES)
+# Dashboard JSX sources — the bundler concatenates these in order.
+# Order matches `crates/aegis-control/assets/dashboard/build.sh`.
+DASHBOARD_DIR    := crates/aegis-control/assets/dashboard
+DASHBOARD_SRCS   := \
+  $(DASHBOARD_DIR)/src/widgets.jsx \
+  $(DASHBOARD_DIR)/src/data.jsx \
+  $(DASHBOARD_DIR)/src/pages.jsx \
+  $(DASHBOARD_DIR)/src/help.jsx \
+  $(DASHBOARD_DIR)/src/app.jsx
+DASHBOARD_BUNDLE := $(DASHBOARD_DIR)/app.js
+
+# 2026-05-11 — rebundle whenever any JSX source (or the bundler
+# script itself) is newer than `app.js`. The bundle is embedded
+# into the Rust binary via `include_bytes!`
+# (`crates/aegis-control/src/dashboard/assets.rs:42`); cargo
+# tracks that and rebuilds the binary automatically when the
+# bundle changes, but it can't tell that the bundle itself is
+# stale relative to the JSX sources — that's this rule's job.
+$(DASHBOARD_BUNDLE): $(DASHBOARD_SRCS) $(DASHBOARD_DIR)/build.sh
+	@bash $(DASHBOARD_DIR)/build.sh
+
+build: $(DASHBOARD_BUNDLE) ## cargo build --release with $(FEATURES) — rebundles dashboard if JSX is newer
 	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES)"
 
 stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd (FORCE=1 to refresh, KEEP=1 to acknowledge drift)
@@ -147,11 +168,24 @@ stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd 
 	@echo "    ./waf validate --config ./waf.yaml"
 	@echo "    ./waf run                     # picks up ./waf.yaml automatically"
 
-build-debug: ## cargo build (debug) for fast iteration
+build-debug: $(DASHBOARD_BUNDLE) ## cargo build (debug) for fast iteration — rebundles dashboard if JSX is newer
 	@$(CARGO) build --workspace
 
-dashboard: ## Rebuild the dashboard JSX bundle (run after editing src/*.jsx)
-	@bash crates/aegis-control/assets/dashboard/build.sh
+# 2026-05-11 — `dashboard` is now an alias for the file-target
+# rule above so the staleness check works the same way no matter
+# which entry point the operator calls. Explicit re-bundling via
+# `make dashboard` is still useful when you want to verify the
+# bundle changed without triggering a full cargo build.
+.PHONY: dashboard
+dashboard: $(DASHBOARD_BUNDLE) ## Rebuild the dashboard JSX bundle if any src/*.jsx is newer
+
+# Force a fresh rebundle even when nothing changed — useful for
+# CI sanity checks and after toolchain bumps (esbuild version,
+# Node version) where the bundle output might shift without any
+# source-mtime change.
+.PHONY: dashboard-force
+dashboard-force: ## Force a fresh dashboard rebundle even if app.js is up-to-date
+	@bash $(DASHBOARD_DIR)/build.sh
 
 ##@ Run
 
