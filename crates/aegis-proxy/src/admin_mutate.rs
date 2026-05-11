@@ -231,6 +231,25 @@ pub(crate) async fn handle_upstreams_config_put(
         }
     };
 
+    // 2026-05-11 (PR-DNS-1) — resolve any hostname members before
+    // they reach the live `PoolRegistry`. The before/after audit
+    // view reflects the operator's authored shape (which may carry
+    // hostnames); the registry-bound config carries the resolved
+    // IP literals so the LB strategies have something to distribute
+    // across.
+    let resolved_pools = match crate::upstream::dns_resolve::expand_hostname_members(
+        parsed.pools.clone(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
+
     let before = upstreams_audit_view(cfg, &cfg.upstreams);
     let after = upstreams_audit_view(cfg, &parsed.pools);
     let count = parsed.pools.len();
@@ -251,7 +270,7 @@ pub(crate) async fn handle_upstreams_config_put(
         reason: "operator replaced upstream pool table",
     };
     let writer_for_apply = Arc::clone(&writer);
-    let pools_for_apply = parsed.pools;
+    let pools_for_apply = resolved_pools;
     let outcome = services.mutate.apply(
         &req_ctx,
         before,
@@ -317,6 +336,20 @@ pub(crate) async fn handle_pool_upsert(
 
     let before = upstreams_audit_view(cfg, &cfg.upstreams);
     let after = upstreams_audit_view(cfg, &next);
+
+    // 2026-05-11 (PR-DNS-1) — resolve hostnames in the candidate
+    // map so the registry only ever sees IP-literal members. The
+    // audit view (`after`) keeps the operator's authored shape so
+    // hostnames show up in the chain.
+    let next = match crate::upstream::dns_resolve::expand_hostname_members(next).await {
+        Ok(r) => r,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
+
     let resource = format!("/api/upstreams/pool/{pool_id}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",

@@ -30,9 +30,12 @@ SOC-first dashboard.
   (`round_robin`, `weighted_round_robin`, `least_conn`,
   `consistent_hash`, `p2c`), pooled HTTP/1.1 keep-alive,
   rustls connector for HTTPS, **per-member `host_header`
-  override + SNI pinning** for multi-vhost backends, active
-  health checks + per-member circuit breaker, audit-mutated
-  hot-swap (no restart).
+  override + SNI pinning** for multi-vhost backends,
+  **hostname-addressed members (`addr: api.example.com:443`)
+  resolved + multi-A expanded at config-load time** so cloud
+  LBs / K8s Services / Consul work without manual `dig`-and-pin,
+  active health checks + per-member circuit breaker,
+  audit-mutated hot-swap (no restart).
 - **TLS** — rustls 0.23 inbound, ACME issuance + renewal,
   OCSP stapling, hot-reloadable cert store, optional mTLS
   with SAN allow-list and audit-chained CA bundle hot-swap.

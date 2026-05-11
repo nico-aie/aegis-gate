@@ -468,6 +468,22 @@ pub struct Member {
 }
 ```
 
+- **Hostname-addressed members (PR-DNS-1, 2026-05-11, Phase 1).**
+  `MemberConfig.addr` is a tagged enum `MemberAddrSpec::{Ip(SocketAddr),
+  Hostname { host, port, refresh_seconds }}` parsed via untagged
+  serde so the YAML stays a single string (`addr: api.example.com:443`).
+  At boot + dashboard PUT the resolver in
+  `crates/aegis-proxy/src/upstream/dns_resolve.rs` walks each pool,
+  calls `tokio::net::lookup_host` for every hostname (in parallel
+  across all members), and expands multi-A records into one
+  synthetic `Member` per resolved IP — same shape as Envoy's
+  STRICT_DNS. `host_header` defaults to the hostname when unset
+  so TLS SNI + outbound `Host:` line up. Unresolvable hostnames
+  fail loudly at boot (`UnresolvedHostname` validation error).
+  Phase 2 (planned, separate PR) replaces the one-shot resolver
+  with a background refresh loop backed by `hickory-resolver` so
+  cloud LB / K8s Service rotations are picked up without a
+  config reload.
 - **Active health check** per pool: periodic probe task.
 - **Passive ejection** on N consecutive 5xx / connect errors.
 - **Circuit breaker** per member with error-rate threshold + open duration.

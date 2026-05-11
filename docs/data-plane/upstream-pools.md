@@ -115,6 +115,39 @@ upstreams:
     members: [...]
 ```
 
+### Hostname-addressed members (PR-DNS-1, 2026-05-11)
+
+`addr:` accepts either an IP literal (`10.0.1.10:8443`) or a
+hostname (`api.example.com:443`). Hostnames are resolved at
+config-load + dashboard-PUT time via `tokio::net::lookup_host`;
+multi-A records expand into one synthetic member per resolved
+IP, so the LB strategies above distribute across all of them.
+
+```yaml
+upstreams:
+  api-elb:
+    members:
+      - addr: api.example.com:443
+    connection:
+      scheme: https
+```
+
+Wire shape after expansion (illustrative):
+
+```text
+api-elb.members
+  ├── 52.84.150.17:443   weight=1  host_header=api.example.com  (from A)
+  ├── 52.84.150.42:443   weight=1  host_header=api.example.com  (from A)
+  └── 52.84.150.99:443   weight=1  host_header=api.example.com  (from A)
+```
+
+`host_header` defaults to the hostname when unset — TLS SNI +
+outbound `Host:` align automatically. An explicit `host_header`
+in the YAML still wins. Unresolvable hostnames fail boot loudly
+with a `PoolValidationError::UnresolvedHostname` (Phase 2 will
+soften to "start empty, retry in background" via
+`hickory-resolver`; see `plans/dns-upstream-resolution.md`).
+
 ## Implementation
 
 - `src/upstream/pool.rs` — `Pool`, `Member`, state machine
