@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::ast::{Condition, MatchOp, Rule};
+use super::ast::{Condition, MatchOp, Rule, RuleAction};
 
 const MAX_NESTING_DEPTH: usize = 8;
 const MAX_PRIORITY: u32 = 10_000;
@@ -12,6 +12,16 @@ pub enum LintError {
     NestingTooDeep { rule_id: String, depth: usize },
     PriorityOutOfRange { rule_id: String, priority: u32 },
     InvalidRegex { rule_id: String, pattern: String, err: String },
+    /// 2026-05-11 PR #8 (SEC-21) — `RuleAction::RateLimit` parses
+    /// successfully but the rule evaluator at `eval.rs:107` returns
+    /// `Action::RateLimited` on every match without consulting a
+    /// counter, so every matching request would be throttled. The
+    /// rest of the proxy ignores the `Action::RateLimited` decision
+    /// class today (the IpRateLimiter is wired off `cfg.rate_limit`,
+    /// not off rules). Reject the action at lint time so config
+    /// validation fails loudly rather than letting operators ship a
+    /// "block everything that matches" rule.
+    UnwiredAction { rule_id: String, action: String, reason: String },
 }
 
 impl std::fmt::Display for LintError {
@@ -26,6 +36,9 @@ impl std::fmt::Display for LintError {
             }
             LintError::InvalidRegex { rule_id, pattern, err } => {
                 write!(f, "rule {rule_id}: invalid regex `{pattern}`: {err}")
+            }
+            LintError::UnwiredAction { rule_id, action, reason } => {
+                write!(f, "rule {rule_id}: action `{action}` is not wired in this build: {reason}")
             }
         }
     }
@@ -63,6 +76,23 @@ pub fn lint(rules: &[Rule]) -> Vec<LintError> {
 
         // Regex compilation.
         check_regexes(&rule.condition, &rule.id, &mut errors);
+
+        // SEC-21 — `RuleAction::RateLimit` is not wired to a real
+        // per-IP counter today (eval.rs:107 returns RateLimited on
+        // every match). Reject the action at lint time so operators
+        // get a clear error message instead of shipping a rule that
+        // throttles every matching request.
+        if let RuleAction::RateLimit { .. } = rule.action {
+            errors.push(LintError::UnwiredAction {
+                rule_id: rule.id.clone(),
+                action: "rate_limit".into(),
+                reason: "rule-scoped rate-limit counter is not implemented; \
+                         use `cfg.rate_limit` (global per-IP) for now, or \
+                         file a feature request to wire a rule-scoped \
+                         token-bucket against the state backend"
+                    .into(),
+            });
+        }
     }
 
     errors
@@ -191,6 +221,30 @@ mod tests {
     fn lint_max_priority_accepted() {
         let rules = vec![make_rule("max-pri", 10_000, Condition::True)];
         assert!(lint(&rules).is_empty());
+    }
+
+    #[test]
+    fn lint_rejects_rate_limit_action() {
+        let rule = Rule {
+            id: "rl-rule".into(),
+            priority: 100,
+            scope: Scope::Global,
+            condition: Condition::True,
+            action: RuleAction::RateLimit {
+                key: "ip".into(),
+                limit: 100,
+                window_s: 60,
+            },
+        };
+        let errs = lint(&[rule]);
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LintError::UnwiredAction { action, .. } if action == "rate_limit"
+            )),
+            "expected UnwiredAction(rate_limit) lint error, got: {:?}",
+            errs,
+        );
     }
 
     #[test]
