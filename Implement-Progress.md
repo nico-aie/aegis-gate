@@ -43,7 +43,17 @@
   zero on unmodified bodies.)
 - **Active track:** none open. The `plans/issue-fix/2026-05-11-policy-qa-and-audits/`
   triage is the most recently closed track (9 sub-PRs, see Recent
-  History). AI-T2..T9 wait on the operator's `.onnx` file.
+  History). DNS-resolved upstream members shipped end-to-end
+  (Phase 1 + Phase 2, commits `9a73a99` + `b77111b`).
+- **AI detector:** **shipped** — AI-T1..T9 all closed
+  (`80362e8` end-to-end against the operator-supplied ONNX,
+  `f2ae002` dashboard hot-enable). Live on the Detectors page;
+  the `aegis_ai_*` metrics back the prediction-breakdown bar in
+  `AiDetectorRow`. Deferred items live under §8 "Out of scope"
+  of `plans/archive/ai-detector.md`: model hot-reload, per-route
+  threshold overrides, drift detection, adversarial-input
+  detection, SHAP/LIME, ensembles, GPU inference — none required
+  for v1.
 - **DDoS posture:** **enforce by default** (`cfg.ddos.observe_only:
   false` is the shipped default — 7c9e5dc landed 2026-05-09; CORE-01
   documented this 2026-05-11). Operators wanting log-only mode opt
@@ -218,13 +228,27 @@ The full 2026-05-11 sprint is closed (now including PR-DNS-1 +
 PR-DNS-2 — hostname-addressed upstreams shipped end-to-end with
 background DNS refresh on TTL).
 
-AI-T2..T9 still wait on the operator's `.onnx` file — that's the
-only meaningful pre-existing open thread. The FDP accept-loop
-drain refactor that was previously flagged here was already
-shipped on 2026-05-03 PM (commit `6fc56c1` + `362c366`); SIGUSR2
-→ `perform_handover` is wired end-to-end and production
-hot-restart works via the polling task in `run.rs:1366`. Stale
-note retired here on 2026-05-11.
+Two stale "open thread" notes were retired here on 2026-05-11:
+- **AI-T2..T9** — flagged as "waiting on the operator's .onnx
+  file" but actually shipped on 2026-05-03 PM in `80362e8`
+  (operator handed over the model that day; AI-T1..T5 landed
+  end-to-end). T6 metrics, T7 `make ai-link`, T8 integration
+  test, and T9 dashboard `AiDetectorRow` all in tree. The
+  hot-enable PUT (`f2ae002`, 2026-05-09) closed the only
+  follow-up. Genuinely-open AI work is the §8 "out of scope"
+  list (model hot-reload, drift detection, per-route threshold,
+  SHAP/LIME, ensembles, GPU) — none required for v1.
+- **FDP accept-loop drain refactor** — flagged as "the one
+  durable open thread" but actually shipped on 2026-05-03 PM
+  in `362c366` + `6fc56c1`. SIGUSR2 → `perform_handover` is
+  wired end-to-end via the polling task in `run.rs:1366`;
+  `InFlightCounter::admit` is wired on both planes
+  (`accept.rs:848` admin, `accept.rs:987` data).
+
+Nothing else is mid-flight. Future tracks beyond the two
+retired notes: DNS Phase 3 (dashboard "Resolved IPs"
+expandable, ~1 day) and AI model hot-reload (~½–1 day) are the
+two smallest visible follow-ups.
 
 ---
 
