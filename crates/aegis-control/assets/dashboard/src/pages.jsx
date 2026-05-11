@@ -2026,6 +2026,16 @@ function PageRuleManager() {
     setSelectedId(id);
   }
 
+  // P3 (2026-05-11) — tab the Rules page so Simulator is its own
+  // full-viewport surface. Pre-fix the Simulator panel always
+  // pinned ~200px at the top of the page even when the operator
+  // was editing rule #47 they weren't simulating. Operators
+  // managing 50+ rules can now see more list rows; Simulator
+  // workflows get their own focused view. Default tab is Rules
+  // so existing muscle memory + deep-links land where operators
+  // expect.
+  const [activeTab, setActiveTab] = useStateP('rules');
+
   return (
     <>
       <PolicyPostureCard />
@@ -2047,8 +2057,34 @@ function PageRuleManager() {
         </div>
       </div>
 
-      <RuleSimulator />
+      {/* P3 tab bar — `chip active`/`chip` styling reuses the same
+          chip pattern the Performance + Top Attackers windows
+          use, so operators don't need to learn a new affordance. */}
+      <div className="card" style={{ padding: '6px 10px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button
+          className={`chip ${activeTab === 'rules' ? 'active' : ''}`}
+          onClick={() => setActiveTab('rules')}
+          style={{ fontSize: 12 }}
+        >
+          Rules <span style={{ opacity: 0.6, marginLeft: 4 }}>· {merged.length}</span>
+        </button>
+        <button
+          className={`chip ${activeTab === 'simulator' ? 'active' : ''}`}
+          onClick={() => setActiveTab('simulator')}
+          style={{ fontSize: 12 }}
+        >
+          Simulator
+        </button>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
+          {activeTab === 'rules'
+            ? 'List + detail view'
+            : 'Replay a hypothetical request against the live detector chain — no traffic, no audit emit'}
+        </span>
+      </div>
 
+      {activeTab === 'simulator' && <RuleSimulator />}
+
+      {activeTab === 'rules' && (
       <div className="split-list">
         <div className="left">
           <div style={{ padding: 10, borderBottom: '1px solid var(--hairline)' }}>
@@ -2177,6 +2213,7 @@ function PageRuleManager() {
           )}
         </div>
       </div>
+      )}
 
       {showNew && (
         <NewRuleModal
