@@ -6895,6 +6895,12 @@ const LB_OPTIONS = [
 // endpoint expects (humantime-style strings: "10s" / "3s" /
 // "30s"). Symmetrical with `poolViewFromConfig` below.
 function poolConfigFromForm(d) {
+  // HIGH-RU-01 (2026-05-12) — include `scheme` on save and
+  // derive `tls` from it.  The previous shape omitted `scheme`,
+  // so a `tls` flip silently reset the saved scheme to `auto`
+  // server-side (via `#[serde(default)]`). Sending both keeps
+  // the legacy `tls` flag consistent with the canonical scheme.
+  const scheme = d.connection?.scheme || 'auto';
   const cfg = {
     members: (d.members || []).map(m => ({
       addr: (m.addr || '').trim(),
@@ -6913,7 +6919,8 @@ function poolConfigFromForm(d) {
       max_idle_per_host: Number(d.connection?.max_idle_per_host) || 32,
       idle_timeout: humanTimeFromMs(Number(d.connection?.idle_timeout_ms) || 30000),
       keep_alive: !!d.connection?.keep_alive,
-      tls: !!d.connection?.tls,
+      scheme,
+      tls: tlsFromScheme(scheme, d.connection?.tls),
     },
   };
   if (d.health_enabled) {
@@ -7301,25 +7308,48 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                 />
                 <span className="field-label" style={{ marginBottom: 0 }}>HTTP keep-alive</span>
               </label>
+              {/* HIGH-RU-01 (2026-05-12) — `tls` is only operator-
+                  editable when scheme is `auto`. For every explicit
+                  scheme the derived value applies, so a contradicting
+                  toggle would mislead. Disabled checkbox shows the
+                  derived state for clarity. */}
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input
                   type="checkbox"
-                  checked={d.connection.tls}
+                  checked={tlsFromScheme(d.connection.scheme || 'auto', d.connection.tls)}
+                  disabled={(d.connection.scheme || 'auto') !== 'auto'}
                   onChange={e => setD(prev => ({
                     ...prev,
                     connection: { ...prev.connection, tls: e.target.checked },
                   }))}
                 />
-                <span className="field-label" style={{ marginBottom: 0 }}>Upstream TLS (legacy `tls` flag)</span>
+                <span className="field-label" style={{ marginBottom: 0 }}>
+                  Upstream TLS
+                  {(d.connection.scheme || 'auto') !== 'auto' && (
+                    <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>
+                      {' '}(derived from scheme)
+                    </span>
+                  )}
+                </span>
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span className="field-label" style={{ marginBottom: 0 }}>Scheme</span>
                 <select
                   value={d.connection.scheme || 'auto'}
-                  onChange={e => setD(prev => ({
-                    ...prev,
-                    connection: { ...prev.connection, scheme: e.target.value },
-                  }))}
+                  onChange={e => {
+                    // HIGH-RU-01 — keep `tls` in lock-step with the
+                    // new scheme so the form's checkbox reflects what
+                    // we'll actually save.
+                    const next = e.target.value;
+                    setD(prev => ({
+                      ...prev,
+                      connection: {
+                        ...prev.connection,
+                        scheme: next,
+                        tls: tlsFromScheme(next, prev.connection?.tls),
+                      },
+                    }));
+                  }}
                   style={{ padding: '4px 6px', borderRadius: 4, border: '1px solid var(--hairline)', fontSize: 12 }}
                 >
                   <option value="auto">auto — h1/h2 via TLS toggle (also bridges WS)</option>
@@ -10550,11 +10580,37 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
 // + scheme + host_header + health, plus an "Other routes using
 // this pool" reminder so they know who else they'd affect by
 // editing the pool.
+
+// HIGH-RU-01 (2026-05-12) — derive the legacy `tls` flag from
+// the canonical `scheme`. The server's `UpstreamScheme::uses_tls`
+// already treats `tls` as advisory when `scheme` is explicit,
+// but the saved wire shape `{scheme: "https", tls: false}` reads
+// as a contradiction to operators inspecting the API. Keep the
+// two fields in lock-step at the dashboard boundary.
+//
+// `auto` honours the user-controlled `tls` checkbox; every other
+// scheme derives from the protocol semantics.
+function tlsFromScheme(scheme, fallbackTls) {
+  switch (scheme) {
+    case 'https':
+    case 'grpc':
+      return true;
+    case 'http':
+    case 'h2c':
+    case 'tcp':
+      return false;
+    case 'auto':
+    default:
+      return !!fallbackTls;
+  }
+}
+
 // Build a `PoolConfig` body from the inline-add-pool form
 // fields the RouteEditModal collects when the operator chooses
 // "+ Create new pool". Mirrors `poolConfigFromForm` for the
 // fields that are exposed inline (rest take server defaults).
 function poolBodyFromInlineForm(np) {
+  const scheme = np.scheme || 'auto';
   return {
     members: [{
       addr: (np.addr || '').trim(),
@@ -10563,7 +10619,10 @@ function poolBodyFromInlineForm(np) {
     }],
     lb: 'round_robin',
     connection: {
-      scheme: np.scheme || 'auto',
+      scheme,
+      // HIGH-RU-01 — derive tls from scheme so the saved pool
+      // reads as `{scheme: "https", tls: true}` end-to-end.
+      tls: tlsFromScheme(scheme, false),
       keep_alive: true,
       max_idle_per_host: 32,
       idle_timeout: '30s',
