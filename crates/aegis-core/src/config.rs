@@ -907,7 +907,15 @@ pub struct ConnectionPoolConfig {
 /// Upstream protocol selector for `ConnectionPoolConfig.scheme`.
 /// See `aegis-proxy/src/upstream/forward.rs::build_client` for
 /// how each variant maps to the hyper connector.
-#[derive(Copy, Clone, Debug, Default, serde::Serialize, Deserialize, PartialEq, Eq)]
+///
+/// HIGH-RU-02 (2026-05-12) — `Hash` is needed so the per-process
+/// upstream-client cache in `forward.rs::PoolKey` can include the
+/// scheme as part of its key.  Without that, a hot-reload that
+/// flips scheme (e.g. `auto → https`) hit the stale cache entry
+/// built for the prior scheme, and `build_client`'s scheme-
+/// dependent ALPN / `http2_only` flags didn't take effect until
+/// the WAF process restarted.
+#[derive(Copy, Clone, Debug, Default, serde::Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamScheme {
     /// ALPN auto-negotiation. The TLS toggle (`tls: bool`)
