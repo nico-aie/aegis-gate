@@ -8132,12 +8132,12 @@ function PageInvestigation() {
     : { data: null };
   const rawEvents = audit.data?.events || [];
 
-  // MED-SO-02 (2026-05-12) — the dashboard sends ip / rule_id /
-  // request_id query params to /api/audit/since but the server
-  // ignores them today (cursor + limit are the only honoured
-  // filters in admin_get.rs). Client-side filter the events so
-  // the KPI roll-up + audit timeline reflect the pivot, not the
-  // whole audit ring. PR-UX-A2 lifts this into the server.
+  // MED-SO-02 (2026-05-12) — PR-UX-A2 now filters server-side
+  // (admin_get.rs parses ip / rule_id / request_id query params
+  // and `AuditFilter` short-circuits in the ring walk). This
+  // client-side pass remains as a defence-in-depth no-op so the
+  // dashboard still works correctly against older WAF binaries
+  // that don't yet honour the query params.
   const events = useMemoP(() => {
     if (!activePivot) return rawEvents;
     const needle = activePivot.toLowerCase();
