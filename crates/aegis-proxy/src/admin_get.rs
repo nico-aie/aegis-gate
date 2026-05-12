@@ -878,7 +878,14 @@ fn parse_query_u32(query: &str, key: &str, default: u32) -> u32 {
 /// everything else untouched. Not a full URL spec decoder —
 /// `+` is *not* mapped to space (that's a form-encoding rule,
 /// not a query-string rule).
-fn percent_decode(s: &str) -> String {
+///
+/// MED-ADM-01 (2026-05-12) — also used by the admin dispatcher
+/// to decode path segments before handing them to mutation
+/// handlers. Without this, ids like `<sli>-<Nh>:<ts>` arrive
+/// at the overlay store with literal `%3A`, masking
+/// `enrich()`'s `:`-encoded lookup. Apply exactly once at the
+/// dispatch layer (`req.uri().path()` returns the encoded form).
+pub(crate) fn percent_decode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -935,5 +942,50 @@ fn csv_escape(s: &str) -> String {
         format!("\"{escaped}\"")
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod percent_decode_tests {
+    use super::percent_decode;
+
+    #[test]
+    fn passthrough_for_unencoded_input() {
+        assert_eq!(percent_decode("abc-123"), "abc-123");
+        assert_eq!(percent_decode("DataPlaneAvailability-1h:1778574385"), "DataPlaneAvailability-1h:1778574385");
+    }
+
+    #[test]
+    fn decodes_colon_in_incident_id() {
+        // MED-ADM-01 — the dashboard URL-encodes the `:` in the
+        // ack id; the dispatcher decodes before handing to the
+        // overlay-store key.
+        let encoded = "DataPlaneAvailability-1h%3A1778574385";
+        assert_eq!(
+            percent_decode(encoded),
+            "DataPlaneAvailability-1h:1778574385",
+            "%3A must decode to ':' so overlay key matches enrich() lookup",
+        );
+    }
+
+    #[test]
+    fn decodes_mixed_case_hex() {
+        // Browsers may emit upper or lowercase hex.
+        assert_eq!(percent_decode("a%3ab"), "a:b");
+        assert_eq!(percent_decode("a%3Ab"), "a:b");
+    }
+
+    #[test]
+    fn leaves_malformed_escapes_alone() {
+        // `%` not followed by two hex digits must NOT crash.
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("%2"), "%2");
+    }
+
+    #[test]
+    fn handles_empty_and_only_escapes() {
+        assert_eq!(percent_decode(""), "");
+        assert_eq!(percent_decode("%20%2F%3A"), " /:");
     }
 }
