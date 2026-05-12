@@ -77,6 +77,10 @@ const ROUTE_REDIRECTS = {
   // `#/live-feed` but the route is `#/live`. Alias the long form
   // so guessed-by-label bookmarks resolve.
   'live-feed': 'live',
+  // LOW-OBS-02 (2026-05-12) — same pattern: sidebar reads
+  // "Health & SLOs" but the route is `#/health`. Alias the
+  // longer guess.
+  'health-slos': 'health',
 };
 
 // 2026-05-07 — H002 fix. `location.hash.slice(2)` returns

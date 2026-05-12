@@ -1176,8 +1176,12 @@ function PageAnalytics() {
     ? Math.max(...blockRatioPct)
     : 0;
   const peakIdx = blockRatioPct.indexOf(peakBlockPct);
+  // LOW-OBS-05 (2026-05-12) — pin to 24h HH:MM so the Block
+  // ratio peak-time reads coherently with the rest of the
+  // dashboard.  Forcing `hour12: false` avoids the en-US 12h/AM-PM
+  // rendering that the QA pass flagged as visually mixed.
   const peakTs = peakIdx >= 0 && points[peakIdx]
-    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
     : '—';
 
   const hasSeries = points.length > 0;
@@ -1329,11 +1333,25 @@ function PageAnalytics() {
                   title="Latency p50/p95/p99 by route"
                   sub={rows.length > 0
                     ? `${rows.length} active route${rows.length === 1 ? '' : 's'} · live histogram`
-                    : 'no per-route samples yet'}
+                    : 'no resolved-route samples in window'}
                 />
                 {rows.length === 0 ? (
+                  // LOW-OBS-01 (2026-05-12) — the previous copy
+                  // ("no per-route samples yet · drive traffic with
+                  // make mock-load") read as broken when the Error
+                  // rate by route card right above it was populated.
+                  // Both read from the audit ring but per-route
+                  // latency only buckets resolved requests; blocked
+                  // traffic never reaches a route resolver so it
+                  // doesn't surface here.  Explicit copy so the
+                  // operator reads the two cards coherently.
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    Drive traffic with <code>make mock-load</code>; per-route series populate as routes resolve.
+                    Per-route latency populates as resolved requests
+                    arrive. Blocked traffic doesn't reach a route
+                    resolver, so it lands in <em>Error rate by route</em>{' '}
+                    (above) instead of here. Try{' '}
+                    <code>make mock-load</code> to drive allow-class
+                    requests.
                   </div>
                 ) : (
                   <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
@@ -1441,7 +1459,12 @@ function PageAnalytics() {
 //   2. For action prefixes `rule_*` / `route_*` / `pool_*`, parse
 //      `fields.resource` as `/api/<section>/<id>`.
 //   3. Fall back to the first key of `fields.diff.after.<section>`.
-//   4. Otherwise return null so the cell renders as `—`.
+//   4. LOW-OBS-04 (2026-05-12) — fall back to the joined
+//      `fields.detectors[]` for detection rows whose top-level
+//      `rule_id` is null but whose detector list is populated.
+//      Brings PageAuditLog to parity with the Investigation
+//      timeline (MED-SO-06 fix).
+//   5. Otherwise return null so the cell renders as `—`.
 function extractResourceId(event) {
   if (!event) return null;
   if (event.rule_id) return event.rule_id;
@@ -1454,21 +1477,27 @@ function extractResourceId(event) {
       : action.startsWith('pool_')
         ? 'pools'
         : null;
-  if (!section) return null;
-  // Step 2 — parse `/api/<plural>/<id>` style resource paths.
-  const resource = typeof fields.resource === 'string' ? fields.resource : '';
-  const apiBase = action.startsWith('pool_') ? '/api/upstreams/pool/' : `/api/${section}/`;
-  if (resource.startsWith(apiBase)) {
-    const tail = resource.slice(apiBase.length);
-    // Tail might be empty (whole-section PUT); keep walking.
-    if (tail && !tail.includes('/')) return tail;
+  if (section) {
+    // Step 2 — parse `/api/<plural>/<id>` style resource paths.
+    const resource = typeof fields.resource === 'string' ? fields.resource : '';
+    const apiBase = action.startsWith('pool_') ? '/api/upstreams/pool/' : `/api/${section}/`;
+    if (resource.startsWith(apiBase)) {
+      const tail = resource.slice(apiBase.length);
+      // Tail might be empty (whole-section PUT); keep walking.
+      if (tail && !tail.includes('/')) return tail;
+    }
+    // Step 3 — walk the diff for a single key under .after.<section>.
+    const after = fields.diff && fields.diff.after;
+    if (after && typeof after === 'object' && after[section]) {
+      const keys = Object.keys(after[section]);
+      if (keys.length === 1) return keys[0];
+    }
   }
-  // Step 3 — walk the diff for a single key under .after.<section>.
-  const after = fields.diff && fields.diff.after;
-  if (after && typeof after === 'object' && after[section]) {
-    const keys = Object.keys(after[section]);
-    if (keys.length === 1) return keys[0];
-  }
+  // Step 4 — LOW-OBS-04. Detection rows often carry the
+  // detector breakdown under `fields.detectors[]` while the
+  // top-level rule_id is null (e.g. WAF blocked by `recon_path`).
+  const detectors = Array.isArray(fields.detectors) ? fields.detectors : [];
+  if (detectors.length) return detectors.join(',');
   return null;
 }
 
@@ -5646,7 +5675,19 @@ function AlertChannelsCard({ receiversApi }) {
         window.aegisToast(`Test → ${parts.join(' · ') || 'sent'}`, 'ok');
         receiversApi.reload && receiversApi.reload();
       } else {
-        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        // LOW-OBS-03 (2026-05-12) — surface the upstream reason
+        // instead of the generic "unknown error". The server
+        // response is `{ ok:false, failed: [{name, reason}, ...] }`
+        // when dispatch fails, so the meaningful text lives at
+        // `failed[0].reason` (e.g. "VipTalk returned 401
+        // Unauthorized"). Fall back to the legacy
+        // message/error/reason fields in case some other handler
+        // shape lands here.
+        const fail = Array.isArray(r?.failed) && r.failed.length > 0 ? r.failed[0] : null;
+        const failReason = fail?.reason;
+        const msg = failReason
+          || (r && (r.message || r.error || r.reason))
+          || 'unknown error';
         window.aegisToast(`Test failed: ${msg}`, 'err');
       }
     } finally {
