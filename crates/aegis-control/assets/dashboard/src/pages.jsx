@@ -7727,20 +7727,40 @@ function PageIncidents() {
   const overlayById = new Map(overlay.map(i => [i.id, i]));
   const rawAlerts = alerts.data?.alerts || alerts.data?.firing || incidents.data?.raw_alerts?.alerts || [];
 
+  // MED-SO-03 (2026-05-12) — parse the alert.name as
+  // `<sli>-<window>` so the SLI column shows the meaningful
+  // half and the window chips next to it.
+  // Examples: `DataPlaneAvailability-1h`, `LatencyP99-72h`.
+  function sliFromAlertName(name) {
+    if (!name) return { sli: 'unknown', window: '' };
+    const m = /^(.+)-([0-9]+[smhd])$/.exec(name);
+    return m ? { sli: m[1], window: m[2] } : { sli: name, window: '' };
+  }
+
   // Derive a unified "incident list" from raw alerts + overlay.
+  // 2026-05-12 — the firing-alerts shape from `/api/incidents`
+  // surfaces `name` / `since` / `severity` / `runbook_url`
+  // (NOT `sli` / `fired_at` / `budget_consumed_pct`). The
+  // earlier reader pulled the wrong field names and rendered
+  // `unknown` / `—` for every row. MED-SO-03.
   const merged = (Array.isArray(rawAlerts) ? rawAlerts : []).map(a => {
-    const id = a.id || `${a.sli || a.kind}:${a.fired_at ? Date.parse(a.fired_at) / 1000 | 0 : 0}`;
-    const o = overlayById.get(id);
+    const name = a.name || a.sli || a.kind || 'unknown';
+    const fired_at = a.since || a.fired_at;
+    const { sli, window: sliWindow } = sliFromAlertName(name);
+    const id = a.id || `${name}:${fired_at ? Date.parse(fired_at) / 1000 | 0 : 0}`;
+    const o = overlayById.get(id) || overlayById.get(name);
     return {
       id,
-      sli: a.sli || a.kind || 'unknown',
+      name,
+      sli,
+      sli_window: sliWindow,
       severity: (a.severity || 'warn').toLowerCase(),
-      fired_at: a.fired_at,
+      fired_at,
       burn_rate: a.burn_rate,
       budget_consumed_pct: a.budget_consumed_pct,
       window_hours: a.window_hours,
       runbook_url: a.runbook_url,
-      status: o?.status || 'firing',
+      status: o?.status || o?.state || 'firing',
       acked_at: o?.acked_at,
       acked_by: o?.acked_by,
       snoozed_until: o?.snoozed_until,
@@ -7769,7 +7789,18 @@ function PageIncidents() {
       // the result either way: success → green toast + reload;
       // failure → red toast with the backend reason.
       if (r && r.status >= 200 && r.status < 300) {
-        window.aegisToast(`Incident ${action} ok`, 'ok');
+        // MED-SO-04 (2026-05-12) — the audit chain captures the
+        // mutation, but the server-side incidents overlay store
+        // isn't wired yet, so the row state doesn't transition
+        // until that lands. Toast as `warn` with honest copy so
+        // operators don't think the lifecycle UI is broken when
+        // it's actually waiting on the overlay endpoint.
+        const reflected = !!(incidents.data?.incidents || []).length;
+        const tone = reflected ? 'ok' : 'warn';
+        const msg = reflected
+          ? `Incident ${action} ok`
+          : `${action} recorded to audit chain · lifecycle UI pending (server overlay not yet wired)`;
+        window.aegisToast(msg, tone);
         if (incidents.reload) incidents.reload();
         if (alerts.reload) alerts.reload();
       } else {
@@ -7858,9 +7889,16 @@ function PageIncidents() {
                     </span>
                   </td>
                   <td><span className={`pill ${m.severity === 'critical' ? 'down' : 'warn'}`}>{m.severity}</span></td>
-                  <td><code style={{ fontSize: 11 }}>{m.sli}</code></td>
+                  <td>
+                    <code style={{ fontSize: 11 }}>{m.sli}</code>
+                    {m.sli_window && (
+                      <span className="pill neutral" style={{ fontSize: 9, marginLeft: 4, padding: '0 6px' }}>{m.sli_window}</span>
+                    )}
+                  </td>
                   <td title={m.fired_at}>{fmtRel(m.fired_at)}</td>
-                  <td className="num">{m.budget_consumed_pct ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}</td>
+                  <td className="num" title={m.budget_consumed_pct != null ? `${m.budget_consumed_pct.toFixed(2)}% of error budget consumed` : 'Budget metric not available on this build'}>
+                    {m.budget_consumed_pct != null ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}
+                  </td>
                   <td>{m.acked_by || '—'} {m.acked_at && <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>· {fmtRel(m.acked_at)}</span>}</td>
                   <td style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{m.note || '—'}</td>
                   <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -7950,7 +7988,35 @@ function PageInvestigation() {
   const audit = window.useAuditLogApi
     ? window.useAuditLogApi({ ...auditQ, limit: 200 })
     : { data: null };
-  const events = audit.data?.events || [];
+  const rawEvents = audit.data?.events || [];
+
+  // MED-SO-02 (2026-05-12) — the dashboard sends ip / rule_id /
+  // request_id query params to /api/audit/since but the server
+  // ignores them today (cursor + limit are the only honoured
+  // filters in admin_get.rs). Client-side filter the events so
+  // the KPI roll-up + audit timeline reflect the pivot, not the
+  // whole audit ring. PR-UX-A2 lifts this into the server.
+  const events = useMemoP(() => {
+    if (!activePivot) return rawEvents;
+    const needle = activePivot.toLowerCase();
+    return rawEvents.filter(row => {
+      const e = row.event || row;
+      if (effectiveKind === 'ip') {
+        return (e.client_ip || '').toLowerCase() === needle;
+      }
+      if (effectiveKind === 'request_id') {
+        return (e.request_id || '').toLowerCase() === needle;
+      }
+      if (effectiveKind === 'rule_id') {
+        const ruleId = (e.rule_id || '').toLowerCase();
+        if (ruleId === needle) return true;
+        const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+        const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+        return detectors.some(d => String(d).toLowerCase() === needle);
+      }
+      return true;
+    });
+  }, [rawEvents, activePivot, effectiveKind]);
 
   // Top-attackers table: when pivoting on an IP, find the row.
   const topAttackers = window.useApi
@@ -7972,7 +8038,12 @@ function PageInvestigation() {
     ? window.useBotMixApi(3600)
     : { data: null };
 
-  // Stats roll-up over the audit window.
+  // Stats roll-up over the (now pivot-filtered) audit window.
+  // MED-SO-06 (2026-05-12) — detectors live under
+  // `event.fields.detectors[]`; the top-level `event.detector` /
+  // `event.detectors` keys are placeholders the audit ring
+  // doesn't emit.  Walk `fields.detectors` for the breakdown so
+  // the inline panel matches the by-detector aggregator.
   const summary = useMemoP(() => {
     if (!events.length) return null;
     const byAction = {};
@@ -7982,11 +8053,19 @@ function PageInvestigation() {
     let earliest = Infinity, latest = -Infinity;
     for (const row of events) {
       const e = row.event || row;
+      const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
       const a = e.action || 'unknown';
       byAction[a] = (byAction[a] || 0) + 1;
-      const d = e.detector || (e.detectors && e.detectors[0]) || e.rule_id || 'n/a';
-      byDetector[d] = (byDetector[d] || 0) + 1;
-      const p = e.path || '/';
+      const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+      if (detectors.length) {
+        for (const d of detectors) {
+          const key = String(d);
+          byDetector[key] = (byDetector[key] || 0) + 1;
+        }
+      } else if (e.rule_id) {
+        byDetector[e.rule_id] = (byDetector[e.rule_id] || 0) + 1;
+      }
+      const p = f.path || e.path || '/';
       byPath[p] = (byPath[p] || 0) + 1;
       if (e.client_ip) ips.add(e.client_ip);
       const ts = e.ts ? Date.parse(e.ts) : NaN;
@@ -8049,10 +8128,45 @@ function PageInvestigation() {
         // Default mode: recent requests + Attack-Analytics top
         // strip.  All hooks live at the top of the function;
         // here we just consume them.
-        const detectorBars = (insightsByDetector.data?.detectors ?? [])
-          .map(d => ({ label: d.name, value: d.count, color: detectorColor(d.name) }))
-          .sort((a, b) => b.value - a.value);
-        const totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+        //
+        // MED-SO-05 (2026-05-12) — when /api/attacks/by-detector
+        // returns empty (fresh process, aggregator hasn't started
+        // bucketing yet, or any other hook-level failure) fall
+        // back to deriving the breakdown from the audit ring so
+        // the card matches what Live-Feed and Audit-Trail see.
+        // The audit ring carries `event.fields.detectors[]` per
+        // detection — exactly what the aggregator buckets server
+        // side. Same window (last 1h) by clipping to the live
+        // ring window.
+        const apiDetectors = insightsByDetector.data?.detectors ?? [];
+        let detectorBars;
+        let totalDetections;
+        let breakdownSource;
+        if (apiDetectors.length > 0) {
+          detectorBars = apiDetectors
+            .map(d => ({ label: d.name, value: d.count, color: detectorColor(d.name) }))
+            .sort((a, b) => b.value - a.value);
+          totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+          breakdownSource = 'by-detector aggregator';
+        } else {
+          const counts = {};
+          for (const row of rawEvents) {
+            const e = row.event || row;
+            const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+            const list = Array.isArray(f.detectors) && f.detectors.length
+              ? f.detectors
+              : (e.rule_id ? [e.rule_id] : []);
+            for (const name of list) {
+              const key = String(name);
+              counts[key] = (counts[key] || 0) + 1;
+            }
+          }
+          detectorBars = Object.entries(counts)
+            .map(([name, value]) => ({ label: name, value, color: detectorColor(name) }))
+            .sort((a, b) => b.value - a.value);
+          totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+          breakdownSource = 'audit ring (fallback)';
+        }
         const botCategories = insightsBotMix.data?.categories ?? [];
         const botColorFor = name => ({
           verified:  'var(--up)',
@@ -8088,7 +8202,7 @@ function PageInvestigation() {
               <div className="col-6 card">
                 <window.SectionHeader
                   title="Detector breakdown"
-                  sub={`${totalDetections.toLocaleString()} detections · last 1h`}
+                  sub={`${totalDetections.toLocaleString()} detections · last 1h · ${breakdownSource}`}
                 />
                 {detectorBars.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
@@ -8333,12 +8447,29 @@ function PageInvestigation() {
           </div>
 
           <div className="card">
-            <window.SectionHeader title={`Audit timeline (newest first, ${events.length} of last 200)`} />
+            <window.SectionHeader
+              title={`Audit timeline (newest first, ${events.length} of last 200)`}
+              sub={activePivot ? `filtered to ${effectiveKind || 'pivot'}: ${activePivot}` : undefined}
+            />
             <table className="tbl tbl-compact">
               <thead><tr><th>ts</th><th>action</th><th>ip</th><th>method</th><th>path</th><th>rule_id</th></tr></thead>
               <tbody>
                 {events.slice(0, 100).map((row, i) => {
+                  // MED-SO-06 (2026-05-12) — request fields live under
+                  // `event.fields.{method,path}`; the rule identifier
+                  // comes from `extractResourceId(e)` for admin rows
+                  // and `event.rule_id` / detectors list for detection
+                  // rows.  Live-Feed already reads from `fields.*`;
+                  // this brings Investigation to parity.
                   const e = row.event || row;
+                  const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+                  const method = f.method || e.method || '—';
+                  const path = f.path || e.path || '/';
+                  const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+                  const ruleCell = e.rule_id
+                    || (detectors.length ? detectors.join(',') : null)
+                    || extractResourceId(e)
+                    || '—';
                   return (
                     <tr key={i}>
                       <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
@@ -8346,9 +8477,9 @@ function PageInvestigation() {
                       </td>
                       <td><span className={`pill ${e.action === 'block' ? 'down' : e.action === 'allow' ? 'up' : 'warn'}`}>{e.action || '—'}</span></td>
                       <td className="num">{e.client_ip || '—'}</td>
-                      <td>{e.method || '—'}</td>
-                      <td><code style={{ fontSize: 11 }}>{(e.path || '/').slice(0, 60)}</code></td>
-                      <td><code style={{ fontSize: 11 }}>{e.rule_id || e.detector || '—'}</code></td>
+                      <td>{method}</td>
+                      <td><code style={{ fontSize: 11 }}>{path.slice(0, 60)}</code></td>
+                      <td><code style={{ fontSize: 11 }}>{ruleCell}</code></td>
                     </tr>
                   );
                 })}
