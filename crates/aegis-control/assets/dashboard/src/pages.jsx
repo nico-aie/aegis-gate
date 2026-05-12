@@ -639,6 +639,32 @@ function RequestDetail({ data }) {
 }
 
 // ============== LIVE FEED ==============
+// PR-UX-A3 (2026-05-12) — Suggested action heuristic. Same
+// signal the operator would reach for: bias toward block when
+// the event already blocked + carried meaningful risk, suggest
+// investigation when a request was challenged or the risk
+// trend is elevated, otherwise stay silent. Returns a small
+// `{label, tone, title}` so the cell renders consistently with
+// the rest of the dashboard's pill palette.
+function suggestedAction(ev) {
+  if (!ev) return null;
+  const action = (ev.action || '').toLowerCase();
+  const risk = typeof ev.risk === 'number' ? ev.risk : null;
+  if (action === 'block' && risk != null && risk >= 70) {
+    return { label: 'Block IP', tone: 'down', title: `Risk ${risk} · already blocked once — consider adding to blacklist` };
+  }
+  if (action === 'challenge') {
+    return { label: 'Investigate', tone: 'warn', title: 'Challenge fired — review request shape before allowing' };
+  }
+  if (action === 'allow' && risk != null && risk >= 60) {
+    return { label: 'Watch', tone: 'warn', title: `Risk ${risk} on an allowed request — IP trending` };
+  }
+  if (action === 'block') {
+    return { label: 'Review', tone: 'neutral', title: 'Blocked at low risk — verify rule scope' };
+  }
+  return null;
+}
+
 function PageLiveFeed() {
   const [paused, setPaused] = useStateP(false);
   const { events, connected } = window.useRealLiveFeed(80, paused);
@@ -646,6 +672,9 @@ function PageLiveFeed() {
   const [filterTier, setFilterTier] = useStateP('all');
   const [search, setSearch] = useStateP('');
   const [selected, setSelected] = useStateP(null);
+  // PR-UX-A3 keyboard nav cursor — index into `recent`.
+  const [cursorIdx, setCursorIdx] = useStateP(-1);
+  const searchInputRef = useRefP(null);
 
   // CQF-T4 — drawer footer actions. Block IP / Whitelist write
   // through the audit-mutated POST endpoints shipped in CQF-T2.
@@ -713,6 +742,49 @@ function PageLiveFeed() {
 
   const recent = filtered.slice().reverse();
 
+  // PR-UX-A3 (2026-05-12) — keyboard shortcuts. j/k advance the
+  // selection cursor, Enter opens the drawer for the cursor row,
+  // Esc closes the drawer, Space toggles pause, `/` focuses the
+  // search input. Mirrors Gmail/Vim conventions familiar to most
+  // SOC analysts. Disabled while the user is typing in an input
+  // so j/k don't eat keystrokes inside the search box.
+  useEffectP(() => {
+    const isTextInput = (el) => {
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+    };
+    const onKey = (ev) => {
+      if (isTextInput(document.activeElement) && ev.key !== 'Escape') return;
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (ev.key === 'j') {
+        ev.preventDefault();
+        setCursorIdx(i => Math.min(i + 1, recent.length - 1));
+      } else if (ev.key === 'k') {
+        ev.preventDefault();
+        setCursorIdx(i => Math.max(i - 1, 0));
+      } else if (ev.key === 'Enter') {
+        if (cursorIdx >= 0 && cursorIdx < recent.length) {
+          ev.preventDefault();
+          setSelected(recent[cursorIdx]);
+        }
+      } else if (ev.key === 'Escape') {
+        if (selected) {
+          ev.preventDefault();
+          setSelected(null);
+        }
+      } else if (ev.key === ' ') {
+        ev.preventDefault();
+        setPaused(p => !p);
+      } else if (ev.key === '/') {
+        ev.preventDefault();
+        if (searchInputRef.current) searchInputRef.current.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [recent, cursorIdx, selected]);
+
   return (
     <>
       <SecOpsPostureCard />
@@ -733,12 +805,15 @@ function PageLiveFeed() {
           </button>
         </div>
       </div>
-      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <window.I.Activity />
         <span>
           <strong>Live Feed</strong> shows every <em>request</em> the WAF inspected
           (allow / block / challenge). For configuration mutations and a
           chained, durable trail, see <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail →</a>.
+        </span>
+        <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10 }}>
+          <kbd>j</kbd>/<kbd>k</kbd> nav · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close · <kbd>Space</kbd> pause · <kbd>/</kbd> search
         </span>
       </div>
 
@@ -759,7 +834,14 @@ function PageLiveFeed() {
           </select>
           <div style={{ position: 'relative', flex: 1, maxWidth: 320 }}>
             <span style={{ position: 'absolute', left: 8, top: 7, color: 'var(--ink-faint)' }}><window.I.Search /></span>
-            <input className="input" style={{ paddingLeft: 28 }} placeholder="Filter by IP, path…" value={search} onChange={e => setSearch(e.target.value)} />
+            <input
+              ref={searchInputRef}
+              className="input"
+              style={{ paddingLeft: 28 }}
+              placeholder="Filter by IP, path…   (press / to focus)"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
           </div>
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
             <span className={`pill ${connected ? 'ok' : 'warn'}`} style={{ marginRight: 6 }}>
@@ -785,12 +867,21 @@ function PageLiveFeed() {
                 <th style={{ width: 80 }}>Risk</th>
                 <th style={{ width: 80 }}>Action</th>
                 <th style={{ width: 160 }}>Rules</th>
+                <th
+                  style={{ width: 100 }}
+                  title="Suggested next step based on action + risk score"
+                >Suggested</th>
                 <th style={{ width: 60 }}></th>
               </tr>
             </thead>
             <tbody>
-              {recent.map(e => (
-                <tr key={e.id} className={e.id === recent[0]?.id ? 'flash' : ''} onClick={() => setSelected(e)}>
+              {recent.map((e, idx) => (
+                <tr
+                  key={e.id}
+                  className={`${e.id === recent[0]?.id ? 'flash' : ''} ${idx === cursorIdx ? 'kb-cursor' : ''}`}
+                  style={idx === cursorIdx ? { outline: '1px solid var(--accent)' } : undefined}
+                  onClick={() => { setCursorIdx(idx); setSelected(e); }}
+                >
                   <td className="num dim">{e.ts}</td>
                   <td className="mono">{e.ip}</td>
                   <td><span className="mono" style={{ color: e.method === 'POST' ? 'var(--info)' : e.method === 'DELETE' ? 'var(--down)' : 'var(--ink-mute)' }}>{e.method}</span></td>
@@ -815,6 +906,14 @@ function PageLiveFeed() {
                   <td><window.RiskMeter value={e.risk} /></td>
                   <td><window.ActionPill value={e.action} /></td>
                   <td className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{e.rules.join(', ') || '—'}</td>
+                  <td>
+                    {(() => {
+                      const s = suggestedAction(e);
+                      return s
+                        ? <span className={`pill ${s.tone}`} style={{ fontSize: 10 }} title={s.title}>{s.label}</span>
+                        : <span className="dim mono" style={{ fontSize: 10 }}>—</span>;
+                    })()}
+                  </td>
                   <td onClick={ev => ev.stopPropagation()}>
                     <button className="icon-btn" title="Inspect"><window.I.External /></button>
                   </td>
