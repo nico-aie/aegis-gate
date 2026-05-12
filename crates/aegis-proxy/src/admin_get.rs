@@ -183,11 +183,20 @@ pub(crate) fn admin_router(
             )
         }
         "/api/audit/since" => {
+            // PR-UX-A2 (2026-05-12) — parse the optional pivot
+            // filter so Investigation can ask the server for
+            // just the rows it needs instead of grabbing 200 and
+            // client-filtering.
             let cursor = parse_query_u64(query, "cursor", 0);
             let limit = parse_query_u32(query, "limit", 200);
+            let filter = aegis_control::api::audit::AuditFilter {
+                ip: parse_query_str(query, "ip").map(percent_decode),
+                request_id: parse_query_str(query, "request_id").map(percent_decode),
+                rule_id: parse_query_str(query, "rule_id").map(percent_decode),
+            };
             json_body_response(
                 200,
-                services.audit.render_since(cursor, limit),
+                services.audit.render_since_filtered(cursor, limit, &filter),
                 "private, no-store",
             )
         }
@@ -861,6 +870,32 @@ fn parse_query_u32(query: &str, key: &str, default: u32) -> u32 {
         }
     }
     default
+}
+
+/// PR-UX-A2 (2026-05-12) — minimal percent-decode for query
+/// params we want to compare byte-for-byte against stored
+/// values (audit ring filter). Handles `%XX` sequences; leaves
+/// everything else untouched. Not a full URL spec decoder —
+/// `+` is *not* mapped to space (that's a form-encoding rule,
+/// not a query-string rule).
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h = (bytes[i + 1] as char).to_digit(16);
+            let l = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (h, l) {
+                out.push(((h << 4) | l) as u8 as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 /// Same shape as `parse_query_u32` but returns the raw string slice.
