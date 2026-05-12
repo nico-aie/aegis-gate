@@ -73,6 +73,10 @@ const ROUTE_REDIRECTS = {
   // Documentation, bookmarks, and intuitive guesses (#/routing)
   // used to silently land on Overview pre-H002. Now they redirect.
   'routing':   'upstreams',
+  // LOW-SO-02 (2026-05-12) — sidebar label "Live Feed" suggests
+  // `#/live-feed` but the route is `#/live`. Alias the long form
+  // so guessed-by-label bookmarks resolve.
+  'live-feed': 'live',
 };
 
 // 2026-05-07 — H002 fix. `location.hash.slice(2)` returns
