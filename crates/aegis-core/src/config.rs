@@ -701,6 +701,25 @@ pub struct RouteConfig {
     pub path: String,
     #[serde(default = "default_match_type")]
     pub match_type: MatchType,
+    /// 2026-05-12 — when `true` (the default) the route's `path`
+    /// prefix is removed from the request URI before the upstream
+    /// sees it. Example: route `path: "/news"` + request
+    /// `/news/article.html` → upstream gets `/article.html`. This
+    /// is the common "mount point" semantics most reverse proxies
+    /// adopt (nginx `proxy_pass` with trailing slash, traefik's
+    /// `StripPrefix`, envoy's `prefix_rewrite`).
+    ///
+    /// Set to `false` for path-preserving forwarding (the legacy
+    /// behaviour) when the upstream expects to see the full path
+    /// (e.g. API gateways behind an `/api/` mount).
+    ///
+    /// Only applies to `match_type: prefix` and `match_type: exact`.
+    /// For `regex` / `glob` matches the field is ignored (there's
+    /// no single literal prefix to strip).  Also a no-op for the
+    /// catch-all `path: "/"` route — stripping a single slash
+    /// would leave the request without a path at all.
+    #[serde(default = "default_strip_prefix")]
+    pub strip_prefix: bool,
     #[serde(default)]
     pub methods: Option<Vec<String>>,
     pub upstream: String,
@@ -826,6 +845,10 @@ fn default_total_deadline() -> Duration {
 
 fn default_match_type() -> MatchType {
     MatchType::Prefix
+}
+
+fn default_strip_prefix() -> bool {
+    true
 }
 
 #[derive(Clone, Deserialize, Debug, PartialEq)]

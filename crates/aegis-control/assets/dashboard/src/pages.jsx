@@ -10726,6 +10726,10 @@ function emptyRouteDraft() {
     auth_required: [],
     default: false,
     enabled: true,
+    // 2026-05-12 — strip the route prefix on forward by default.
+    // Mirrors the server-side default and the operator-friendly
+    // mount-point semantics.
+    strip_prefix: true,
   };
 }
 function routeToDraft(r) {
@@ -10740,6 +10744,11 @@ function routeToDraft(r) {
     auth_required: r.auth_required || [],
     default: !!r.default,
     enabled: r.enabled !== false, // default to true if missing
+    // 2026-05-12 — `strip_prefix` defaults to `true` server-side
+    // for routes saved before this field existed, but the patch
+    // serializer emits it explicitly for fresh routes. Reads as
+    // `true` when the field is missing.
+    strip_prefix: r.strip_prefix !== false,
   };
 }
 function routeBodyFromDraft(d) {
@@ -10758,6 +10767,9 @@ function routeBodyFromDraft(d) {
     upstream: d.upstream,
     default: !!d.default,
     enabled: d.enabled !== false,
+    // 2026-05-12 — always send `strip_prefix` so a flip from true
+    // to false round-trips through the audit-mutated PUT.
+    strip_prefix: d.strip_prefix !== false,
   };
   if (d.host.trim()) body.host = d.host.trim();
   if (methods.length > 0) body.methods = methods;
@@ -10862,7 +10874,11 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
     const ms = (d.methods || []).length > 0 ? d.methods.join(',') : 'ANY';
     const host = d.host.trim() || '*';
     const path = d.path.trim() || '/';
-    return `${ms}  ${host}${path}  →  ${d.upstream || '<pick a pool>'}`;
+    const pool = d.upstream || '<pick a pool>';
+    const stripNote = d.strip_prefix && (d.match_type === 'prefix' || d.match_type === 'exact') && path !== '/'
+      ? '  · strip prefix'
+      : '';
+    return `${ms}  ${host}${path}  →  ${pool}${stripNote}`;
   })();
 
   return (
@@ -10968,6 +10984,65 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
               </div>
             )}
           </div>
+
+          {/* 2026-05-12 — strip-prefix toggle. The forwarder
+              precomputes whether to strip at compile time based on
+              this flag + match_type + path, so the only gating
+              choice the operator has to make is "mount-point style"
+              vs "path-preserving". Default `true` matches the
+              nginx/traefik/envoy mental model. */}
+          {(() => {
+            const matchType = d.match_type || 'prefix';
+            const path = (d.path || '').trim();
+            const supportsStrip = (matchType === 'prefix' || matchType === 'exact') && path !== '/';
+            const upstreamPathPreview = (() => {
+              const incoming = path && path.startsWith('/') ? `${path}/article.html` : '/example';
+              if (!supportsStrip || !d.strip_prefix) return incoming;
+              return incoming.startsWith(path) && incoming.length > path.length
+                ? incoming.slice(path.length) || '/'
+                : '/';
+            })();
+            return (
+              <div className="form-row" style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!d.strip_prefix}
+                    disabled={!supportsStrip}
+                    onChange={e => set('strip_prefix', e.target.checked)}
+                  />
+                  <span>
+                    Strip route prefix when forwarding
+                    {!supportsStrip && (
+                      <span style={{ color: 'var(--ink-dim)', fontSize: 11, marginLeft: 4 }}>
+                        — n/a for {matchType === 'regex' || matchType === 'glob'
+                          ? <>match-type <code>{matchType}</code></>
+                          : <>catch-all route <code>/</code></>}
+                      </span>
+                    )}
+                  </span>
+                </label>
+                <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
+                  {supportsStrip ? (
+                    <>
+                      With strip on, the upstream sees the request path with{' '}
+                      <code>{path}</code> removed. With it off, the upstream
+                      sees the full path verbatim.
+                      <br />
+                      <span style={{ fontFamily: 'var(--mono)' }}>
+                        Example: <code>{path}/article.html</code> →{' '}
+                        upstream gets <code>{upstreamPathPreview}</code>
+                      </span>
+                    </>
+                  ) : matchType === 'regex' || matchType === 'glob' ? (
+                    <>Regex / glob matches have no single literal prefix to strip — leave the field off.</>
+                  ) : (
+                    <>The catch-all route forwards every path verbatim — stripping <code>/</code> would leave the request without a path component.</>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Advanced — collapsed by default. */}
           <div style={{ marginTop: 12 }}>

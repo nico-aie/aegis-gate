@@ -1378,12 +1378,23 @@ pub(crate) async fn forward_allow_to_upstream(
     };
     tracing::Span::current().record("member", tracing::field::display(&member.addr));
 
+    // 2026-05-12 — strip the route prefix from the upstream URI
+    // when the route opts in (`strip_prefix: true`, the default).
+    // The compiled `path_strip_prefix` is `Some(prefix)` only when
+    // the strip is safe to apply (prefix/exact match types, no
+    // catch-all). Path-only rewrite — query / fragment / host /
+    // scheme pass through unchanged.
+    let upstream_uri = match &route_ctx.path_strip_prefix {
+        Some(prefix) => strip_uri_prefix(&parts.uri, prefix),
+        None => parts.uri.clone(),
+    };
+
     member.inflight.fetch_add(1, Ordering::Relaxed);
     let result = crate::upstream::forward::forward(
         member,
         &pool.connection,
         parts.method,
-        parts.uri,
+        upstream_uri,
         parts.headers,
         body_bytes,
     )
@@ -1736,6 +1747,100 @@ async fn forward_connect_tunnel(
 }
 
 /// TCP-T3c — render a CONNECT-deny response + emit the audit
+/// 2026-05-12 — rewrite the request URI to drop a literal path
+/// prefix.  Used by routes that opt into `strip_prefix: true`
+/// (the default) so the upstream sees a "mount-point-relative"
+/// path:
+///
+///   route path `/news`, request `/news/article.html`
+///                          → upstream `/article.html`
+///   route path `/news`, request `/news` (exact)
+///                          → upstream `/`
+///   route path `/api`,  request `/api?q=1`
+///                          → upstream `/?q=1` (query preserved)
+///
+/// Only the path component is rewritten — scheme, authority,
+/// query, and fragment pass through unchanged.  A `Uri` build
+/// failure (extremely unlikely given a valid input) is silently
+/// fatal: we return the input unchanged so the request still
+/// has SOME path to send.
+fn strip_uri_prefix(uri: &http::Uri, prefix: &str) -> http::Uri {
+    let path = uri.path();
+    let rest = match path.strip_prefix(prefix) {
+        Some(r) if r.is_empty() => "/",
+        Some(r) if r.starts_with('/') => r,
+        // Path matched the prefix as a string-only substring (e.g.
+        // route `/api` matched `/apifoo` — should not happen in
+        // practice because the router uses segment-boundary matching,
+        // but stay defensive). Forward unchanged rather than producing
+        // a malformed URL.
+        Some(_) => return uri.clone(),
+        // No prefix match at all (concurrent reload, stale ctx) —
+        // pass through.
+        None => return uri.clone(),
+    };
+    let mut builder = http::Uri::builder();
+    if let Some(s) = uri.scheme() {
+        builder = builder.scheme(s.clone());
+    }
+    if let Some(a) = uri.authority() {
+        builder = builder.authority(a.clone());
+    }
+    let pq = match uri.query() {
+        Some(q) => format!("{rest}?{q}"),
+        None => rest.to_string(),
+    };
+    builder
+        .path_and_query(pq)
+        .build()
+        .unwrap_or_else(|_| uri.clone())
+}
+
+#[cfg(test)]
+mod strip_uri_prefix_tests {
+    use super::strip_uri_prefix;
+    use http::Uri;
+
+    fn rewrite(input: &str, prefix: &str) -> String {
+        let u: Uri = input.parse().unwrap();
+        strip_uri_prefix(&u, prefix).to_string()
+    }
+
+    #[test]
+    fn strips_prefix_keeping_remainder() {
+        assert_eq!(rewrite("/news/article.html", "/news"), "/article.html");
+        assert_eq!(rewrite("/news/a/b/c", "/news"), "/a/b/c");
+    }
+
+    #[test]
+    fn exact_match_collapses_to_root_slash() {
+        assert_eq!(rewrite("/news", "/news"), "/");
+    }
+
+    #[test]
+    fn preserves_query_string() {
+        assert_eq!(
+            rewrite("/news/article.html?utm=src&id=1", "/news"),
+            "/article.html?utm=src&id=1",
+        );
+        assert_eq!(rewrite("/news?id=1", "/news"), "/?id=1");
+    }
+
+    #[test]
+    fn non_segment_prefix_match_passes_through_unchanged() {
+        // `/news` is a string-prefix of `/newsroom` but not a
+        // segment prefix; forwarding `/newsroom` after stripping
+        // would yield `room` (no leading slash). Be defensive and
+        // pass through.
+        assert_eq!(rewrite("/newsroom", "/news"), "/newsroom");
+    }
+
+    #[test]
+    fn missing_prefix_passes_through_unchanged() {
+        assert_eq!(rewrite("/something/else", "/news"), "/something/else");
+    }
+}
+
 /// event. Centralised so every deny path uses the same shape
 /// (audit class `Access`, `x-waf-rule-id` response header,
 /// plain-text body with the message).
