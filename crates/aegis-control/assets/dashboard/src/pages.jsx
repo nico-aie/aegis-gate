@@ -6763,6 +6763,19 @@ function PageUpstreams() {
             </span>
           </p>
         </div>
+        {/* MED-RU-03 (2026-05-12) — surface "+ Add pool" at the
+            page level so operators can author a standalone pool
+            from a clean state.  Previously the button only
+            appeared inside the "Pools without routes" panel,
+            which is hidden until an orphan already exists. */}
+        <div className="page-actions">
+          <button
+            type="button"
+            className="btn"
+            onClick={openPoolAdd}
+            title="Author a pool without a route (members, scheme, TLS, health, circuit breaker). Routes that want to use it later just pick it from the 'Forward to' dropdown."
+          >+ Add pool</button>
+        </div>
       </div>
 
       {/* How it works — one-line orientation. */}
@@ -6820,6 +6833,18 @@ function PageUpstreams() {
           </button>
           {showOrphans && (
             <div style={{ borderTop: '1px solid var(--hairline)', padding: 8 }}>
+              {/* MED-RU-03 (2026-05-12) — explain how orphans arise.
+                  Pre-fix the operator had no clue whether an orphan
+                  was authored deliberately or leaked from a failed
+                  route create. */}
+              <div style={{ padding: '4px 8px 8px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                Pools listed here have no route forwarding to them yet.
+                That's expected when you used <strong>+ Add pool</strong>{' '}
+                to author one ahead of its route, or when you deleted
+                a route without removing the underlying pool. Wire a
+                route to one of them via <strong>+ Add route</strong>,
+                or remove the pool below.
+              </div>
               <table className="tbl tbl-compact">
                 <thead><tr><th>Pool</th><th>Members</th><th>Scheme</th><th style={{ width: 160 }}></th></tr></thead>
                 <tbody>
@@ -6843,11 +6868,6 @@ function PageUpstreams() {
                   })}
                 </tbody>
               </table>
-              <div style={{ padding: '6px 8px 0', fontSize: 11, color: 'var(--ink-dim)' }}>
-                Or use <strong>+ Add pool</strong>{' '}
-                <button className="btn btn-sm" onClick={openPoolAdd} style={{ marginLeft: 4 }}>+ Add pool</button>
-                {' '}to create one without a route.
-              </div>
             </div>
           )}
         </div>
@@ -6990,6 +7010,33 @@ function poolFormFromView(view) {
   };
 }
 
+// MED-RU-03 (2026-05-12) — orphan-leak audit.
+//
+// `PoolEditModal` is opened from two surfaces:
+//   1. "+ Add pool" at the top of Routing & Upstreams (standalone).
+//   2. "+ Create new pool" inside `RouteEditModal` (child modal).
+//
+// Both paths must guarantee that closing the modal without an
+// explicit save produces NO `POOL_UPSERT` event:
+//
+//   - Cancel button       → `onCancel()` → parent flips its state
+//                           flag, no API call. ✓ safe
+//   - Click on backdrop   → routes through onCancel via the
+//                           `.modal-backdrop onClick`. ✓ safe
+//   - Escape / unmount    → parent component unmounts the modal
+//                           the same way; no API call. ✓ safe
+//
+// On `Save`, `onSave({name, body})` runs `poolUpsert` and the
+// modal stays open until success — so a server-side failure
+// leaves the modal in its current state and a second click can
+// retry without committing the previous attempt.  ✓ safe
+//
+// The only `POOL_UPSERT` audit-chain entry this modal can
+// produce is an intentional, operator-confirmed save.  If an
+// orphan pool appears in "Pools without routes" today, it was
+// either (a) authored via "+ Add pool" deliberately, (b) left
+// over from a route that was later deleted, or (c) seeded by
+// the YAML at boot — never from a stray cancel here.
 function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel, onSave, busy }) {
   const [name, setName] = useStateP(initialName || '');
   const [d, setD] = useStateP(() => poolFormFromView(initialPool));
@@ -10147,30 +10194,15 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
     setBusy(true);
     setSaveError(null);
     try {
-      // Inline pool create — modal sets draft.newPool when the
-      // operator typed a backend address instead of picking an
-      // existing pool. Pool name = route id in that flow.
-      //
-      // MED-04 (2026-05-11) — track whether THIS save created
-      // the pool. If the route POST below fails, the pool we
-      // just created sits orphaned in "Pools without routes"
-      // unless we roll it back. Compensating-delete keeps the
-      // operator's "save failed, nothing happened" mental model
-      // honest (a server-side atomic endpoint is the cleaner
-      // long-term fix, queued separately).
-      let createdPool = null;
-      if (draft.newPool && draft.newPool.addr) {
-        const poolName = draft.upstream;
-        const poolBody = poolBodyFromInlineForm(draft.newPool);
-        const pr = await window.poolUpsert(poolName, poolBody);
-        if (!(pr.status === 200 && pr.ok)) {
-          const msg = pr.message || pr.error || pr.reason || `HTTP ${pr.status}`;
-          setSaveError(`Pool create failed: ${msg}`);
-          return;
-        }
-        createdPool = poolName;
-        cfgReload && cfgReload();
-      }
+      // MED-RU-03 (2026-05-12) — Add Route no longer creates a
+      // pool as a side-effect. The "+ Create new pool" affordance
+      // in RouteEditModal opens a child PoolEditModal that writes
+      // the pool independently (audit-chained) before the route
+      // is submitted here, so by this point the pool already
+      // exists in the live config. The previous MED-04
+      // compensating-delete logic is retired along with the
+      // inline-backend path; if the operator wants to clean up an
+      // unused pool they use "Pools without routes" → Delete.
       const body = routeBodyFromDraft(draft);
       const r = await window.routeUpsert(draft.id, body);
       if (r.status === 200 && r.ok) {
@@ -10181,27 +10213,6 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         setSaveError(`Save failed: ${msg}`);
-        // MED-04 — compensating delete for the pool we created
-        // moments ago. If this rollback itself fails, the operator
-        // is told via the error block so they can clean up
-        // manually from "Pools without routes".
-        if (createdPool) {
-          try {
-            const del = await window.poolDelete(createdPool);
-            if (del.status === 200 && del.ok) {
-              cfgReload && cfgReload();
-            } else {
-              const dmsg = del.message || del.error || del.reason || `HTTP ${del.status}`;
-              setSaveError(
-                `Save failed: ${msg}\n\nAdditionally: the just-created pool "${createdPool}" could not be rolled back (${dmsg}). Remove it manually from "Pools without routes" below.`
-              );
-            }
-          } catch (e) {
-            setSaveError(
-              `Save failed: ${msg}\n\nAdditionally: rolling back the just-created pool "${createdPool}" threw an exception (${e?.message || e}). Remove it manually from "Pools without routes" below.`
-            );
-          }
-        }
       }
     } finally {
       setBusy(false);
@@ -10558,6 +10569,7 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
           busy={busy}
           saveError={saveError}
           clearSaveError={() => setSaveError(null)}
+          cfgReload={cfgReload}
         />
       )}
 
@@ -10605,30 +10617,13 @@ function tlsFromScheme(scheme, fallbackTls) {
   }
 }
 
-// Build a `PoolConfig` body from the inline-add-pool form
-// fields the RouteEditModal collects when the operator chooses
-// "+ Create new pool". Mirrors `poolConfigFromForm` for the
-// fields that are exposed inline (rest take server defaults).
-function poolBodyFromInlineForm(np) {
-  const scheme = np.scheme || 'auto';
-  return {
-    members: [{
-      addr: (np.addr || '').trim(),
-      weight: 1,
-      ...(np.host_header && np.host_header.trim() ? { host_header: np.host_header.trim() } : {}),
-    }],
-    lb: 'round_robin',
-    connection: {
-      scheme,
-      // HIGH-RU-01 — derive tls from scheme so the saved pool
-      // reads as `{scheme: "https", tls: true}` end-to-end.
-      tls: tlsFromScheme(scheme, false),
-      keep_alive: true,
-      max_idle_per_host: 32,
-      idle_timeout: '30s',
-    },
-  };
-}
+// MED-RU-03 (2026-05-12) — `poolBodyFromInlineForm` retired.
+// The Add Route modal no longer collects backend-address +
+// scheme inline; pool creation goes through the same
+// `PoolEditModal` + `poolConfigFromForm` path as standalone
+// "+ Add pool". That keeps the wire shape canonical (one
+// builder instead of two that drift) and the audit chain
+// honest (each pool create is its own `POOL_UPSERT` event).
 
 // Form-shape helpers — `methods` and `auth_required` are
 // **arrays** in the form draft so the checkbox UI can read /
@@ -10708,7 +10703,7 @@ const ROUTE_AUTH_CHOICES = [
   ['anonymous', 'Anonymous — admit unauthenticated clients (note: making the route public)'],
 ];
 
-function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy, saveError, clearSaveError }) {
+function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy, saveError, clearSaveError, cfgReload }) {
   const [d, setD] = useStateP(() => ({
     ...initial,
     methods: typeof initial.methods === 'string'
@@ -10721,13 +10716,17 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const isAdd = mode === 'add';
   const idClash = isAdd && existingIds.includes(d.id.trim());
 
-  // The "Forward to" target is decided by what the operator
-  // types: empty address field → use the dropdown (existing
-  // pool); typing an address → create a new pool. No toggle.
-  const [newPool, setNewPool] = useStateP({
-    addr: '', scheme: 'https', host_header: '',
-  });
-  const usingNewPool = newPool.addr.trim().length > 0;
+  // MED-RU-03 (2026-05-12) — Add Route used to also create a pool
+  // as a hidden side-effect of the "type a backend inline" path.
+  // That made the failure modes confusing ("did the pool fail or
+  // the route?") and left orphan pools on operator cancels or
+  // route validation errors. Decouple: pool creation now lives
+  // in a CHILD PoolEditModal opened via "+ Create new pool",
+  // and the Add Route modal authors only the route. Audit chain
+  // gets two distinct events (`POOL_UPSERT` + `ROUTE_CREATE`)
+  // when a fresh pool is involved, which is also better forensics.
+  const [createPoolOpen, setCreatePoolOpen] = useStateP(false);
+  const [createPoolBusy, setCreatePoolBusy] = useStateP(false);
 
   // MED-02 (2026-05-11) — clear the save error whenever the
   // operator edits anything. The previous shape kept the toast +
@@ -10736,10 +10735,6 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const setWithErrorClear = (updater) => {
     if (clearSaveError) clearSaveError();
     setD(updater);
-  };
-  const setNewPoolWithErrorClear = (updater) => {
-    if (clearSaveError) clearSaveError();
-    setNewPool(updater);
   };
 
   const [showAdvanced, setShowAdvanced] = useStateP(
@@ -10752,9 +10747,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
 
   const idValid = d.id.trim().length > 0 && !idClash;
   const pathValid = d.path.trim().startsWith('/');
-  const upstreamValid = usingNewPool
-    ? (d.id.trim().length > 0 && !poolNames.includes(d.id.trim()))
-    : poolNames.includes(d.upstream);
+  const upstreamValid = poolNames.includes(d.upstream);
   const canSave = idValid && pathValid && upstreamValid && !busy;
 
   const set = (k, v) => setWithErrorClear({ ...d, [k]: v });
@@ -10764,15 +10757,35 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
     setWithErrorClear({ ...d, [k]: Array.from(cur) });
   };
 
+  // MED-RU-03 — handle a saved-from-child pool. The child modal
+  // already wrote it (audit-chained); we just select the new
+  // name in the dropdown and refresh the parent's pool list.
+  // Errors stay surfaced inside the child modal's own toast path;
+  // by the time onSave fires here the write is committed.
+  async function handleChildPoolSave({ name, body }) {
+    setCreatePoolBusy(true);
+    try {
+      const r = await window.poolUpsert(name, body);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Pool "${name}" saved`, 'ok');
+        if (cfgReload) cfgReload();
+        setD(prev => ({ ...prev, upstream: name }));
+        setCreatePoolOpen(false);
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Pool save failed: ${msg}`, 'err');
+      }
+    } finally {
+      setCreatePoolBusy(false);
+    }
+  }
+
   // One-line preview always visible at the bottom of the form.
   const matchPreview = (() => {
     const ms = (d.methods || []).length > 0 ? d.methods.join(',') : 'ANY';
     const host = d.host.trim() || '*';
     const path = d.path.trim() || '/';
-    return `${ms}  ${host}${path}  →  ${
-      usingNewPool ? `${d.id.trim() || '<route-id>'} (new · ${newPool.addr})`
-                   : (d.upstream || '<pick a pool>')
-    }`;
+    return `${ms}  ${host}${path}  →  ${d.upstream || '<pick a pool>'}`;
   })();
 
   return (
@@ -10836,58 +10849,45 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             </div>
           </div>
 
-          {/* Forward to — combined: dropdown OR type a new address. */}
+          {/* MED-RU-03 (2026-05-12) — Forward to: pick an existing
+              pool, or click "+ Create new pool" to open a child
+              modal. The modal authors only the route now; pool
+              creation is an explicit audit-chained step.  Pools
+              that exist without routes show up in "Pools without
+              routes" on the page — same lifecycle as the standalone
+              "+ Add pool" entry. */}
           <div className="form-row" style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
             <label>Forward to <span className="req">*</span></label>
-            <select className="ip"
-              value={usingNewPool ? '' : d.upstream}
-              disabled={usingNewPool}
-              onChange={e => set('upstream', e.target.value)}>
-              <option value="">{poolNames.length === 0 ? '— no pools yet —' : '— pick an existing pool —'}</option>
-              {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-            <div style={{ fontSize: 11, color: 'var(--ink-dim)', textAlign: 'center', margin: '6px 0' }}>— or —</div>
-            <input
-              className="ip"
-              value={newPool.addr}
-              onChange={e => setNewPoolWithErrorClear({ ...newPool, addr: e.target.value })}
-              placeholder="IP:port (10.0.1.10:8080) or hostname:port (api.example.com:443)"
-            />
-            <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
-              Hostnames resolve via DNS at config-load time and expand
-              into one member per A/AAAA record. SNI defaults to the
-              hostname unless you set <code>host_header</code>.
+            <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+              <select
+                className="ip"
+                style={{ flex: 1 }}
+                value={d.upstream}
+                onChange={e => set('upstream', e.target.value)}
+              >
+                <option value="">{poolNames.length === 0 ? '— no pools yet —' : '— pick a pool —'}</option>
+                {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => { if (clearSaveError) clearSaveError(); setCreatePoolOpen(true); }}
+                title="Open the full pool editor to author a new upstream (members, scheme, TLS, health, circuit breaker). Saves immediately and audit-chains as a separate event from this route."
+                style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+              >+ Create new pool</button>
             </div>
-            {usingNewPool && (
-              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 11 }}>Scheme</label>
-                  <select className="ip" value={newPool.scheme}
-                    onChange={e => setNewPool({ ...newPool, scheme: e.target.value })}>
-                    <option value="auto">auto</option>
-                    <option value="http">http</option>
-                    <option value="https">https</option>
-                    <option value="h2c">h2c</option>
-                    <option value="grpc">grpc</option>
-                    <option value="tcp">tcp</option>
-                  </select>
-                </div>
-                <div style={{ flex: 2 }}>
-                  <label style={{ fontSize: 11 }}>
-                    Host header <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(SNI override · optional)</span>
-                  </label>
-                  <input className="ip" value={newPool.host_header}
-                    onChange={e => setNewPool({ ...newPool, host_header: e.target.value })}
-                    placeholder="api.example.com (for multi-vhost / public TLS)" />
-                </div>
+            {poolNames.length === 0 && (
+              <div className="form-hint">
+                No pools yet — click <strong>+ Create new pool</strong> to author one.
               </div>
             )}
-            {usingNewPool && (
-              <div className="form-hint">
-                Will create pool <code>{d.id.trim() || '<route-id>'}</code> with this single member.
-                {poolNames.includes(d.id.trim()) && (
-                  <span className="warn"> — that pool name already exists; pick it from the dropdown above instead.</span>
-                )}
+            {d.upstream && (
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
+                Selected: <code>{d.upstream}</code>{' '}
+                {(() => {
+                  const p = (poolNames || []).includes(d.upstream);
+                  return p ? '· existing pool' : '· (pool no longer in the live config — refresh)';
+                })()}
               </div>
             )}
           </div>
@@ -11023,19 +11023,35 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
         <div className="modal-foot">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
           <button className="btn primary" disabled={!canSave} onClick={() => {
-            const out = { ...d };
-            if (usingNewPool) {
-              out.upstream = d.id.trim();
-              out.newPool = newPool;
-            } else {
-              out.newPool = null;
-            }
-            onSave(out);
+            // MED-RU-03 (2026-05-12) — the route modal no longer
+            // creates pools as a side-effect. The "newPool" sentinel
+            // stays `null` so the parent's saveRoute skips the
+            // inline-pool branch and only emits a ROUTE_CREATE.
+            onSave({ ...d, newPool: null });
           }}>
             {busy ? 'Saving…' : (isAdd ? 'Create route' : 'Save')}
           </button>
         </div>
       </div>
+      {/* MED-RU-03 (2026-05-12) — child PoolEditModal for the
+          "+ Create new pool" flow. Saves immediately (audit-chained);
+          on success the new pool is selected in the route's
+          dropdown. Operator cancel of the child modal is a no-op
+          (no API call). Operator cancel of the PARENT route modal
+          after creating a pool leaves the pool intact (matches
+          the standalone "+ Add pool" semantics — pools can exist
+          without routes by design). */}
+      {createPoolOpen && (
+        <PoolEditModal
+          mode="add"
+          existingNames={poolNames}
+          initialName=""
+          initialPool={null}
+          onCancel={() => setCreatePoolOpen(false)}
+          onSave={handleChildPoolSave}
+          busy={createPoolBusy}
+        />
+      )}
     </div>
   );
 }
