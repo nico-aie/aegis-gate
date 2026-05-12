@@ -32,7 +32,18 @@ function PageOverview() {
   const upstreamsLive = window.useUpstreamsApi
     ? window.useUpstreamsApi()
     : { data: null };
-  const tsApi = window.useTimeseriesApi(60, 1);    // /api/stats/timeseries — 60s window, 1s buckets
+  // LOW-SO-01 (2026-05-12) — the 1m/5m/15m/1h pills below now
+  // drive the timeseries window + bucket size so the chart and
+  // its subtitle stay in sync. Buckets pick the round number
+  // that keeps the rendered series under ~120 points.
+  const TRAFFIC_WINDOWS = [
+    { label: '1m',  windowSecs: 60,    bucketSecs: 1   },
+    { label: '5m',  windowSecs: 300,   bucketSecs: 5   },
+    { label: '15m', windowSecs: 900,   bucketSecs: 10  },
+    { label: '1h',  windowSecs: 3600,  bucketSecs: 30  },
+  ];
+  const [trafficWindow, setTrafficWindow] = useStateP(TRAFFIC_WINDOWS[0]);
+  const tsApi = window.useTimeseriesApi(trafficWindow.windowSecs, trafficWindow.bucketSecs);
   const distApi = window.useAttacksDistributionApi(900); // /api/attacks/distribution — 15m
   const topApi = window.useAttacksTopApi(900, 5);  // /api/attacks/top — 5 attackers, 15m
   const tick = window.useTicking(2000);
@@ -340,11 +351,19 @@ function PageOverview() {
           <div className="card-head">
             <div>
               <div className="card-title">Traffic vs Blocked</div>
-              <div className="card-sub">Realtime · 60s window · 1s buckets</div>
+              <div className="card-sub">
+                Realtime · {trafficWindow.label} window · {trafficWindow.bucketSecs}s buckets
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
-              {['1m', '5m', '15m', '1h'].map((w, i) => (
-                <button key={w} className={`chip ${i === 0 ? 'active' : ''}`}>{w}</button>
+              {TRAFFIC_WINDOWS.map(w => (
+                <button
+                  key={w.label}
+                  className={`chip ${trafficWindow.label === w.label ? 'active' : ''}`}
+                  onClick={() => setTrafficWindow(w)}
+                >
+                  {w.label}
+                </button>
               ))}
             </div>
           </div>
@@ -8222,13 +8241,27 @@ function PageInvestigation() {
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
                     {botCategories.length === 1 && botCategories[0].name === 'unknown' ? (
                       <>
+                        {/* LOW-SO-04 (2026-05-12) — empty state was
+                            "no bot signal yet" even on busy WAFs.
+                            The classifier only emits non-`unknown`
+                            categories when a JA4 baseline is loaded
+                            AND the request fingerprint matches one
+                            of the configured profiles.  Bare UA
+                            strings (curl, Googlebot, Firefox) by
+                            themselves don't suffice. */}
                         Bot classifier wired but every request landed in
                         <code style={{ margin: '0 4px' }}>unknown</code>.
-                        This profile has no JA4 baseline — see{' '}
+                        This profile has no JA4 baseline loaded — see{' '}
                         <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>.
                       </>
                     ) : (
-                      <>No bot classifications recorded.</>
+                      <>
+                        No bot classifications recorded yet. The
+                        classifier emits when JA4 fingerprints match
+                        a configured profile — UA-only traffic
+                        without a fingerprint baseline stays in the
+                        <code style={{ margin: '0 4px' }}>unknown</code> bucket.
+                      </>
                     )}
                   </div>
                 ) : (
@@ -9644,9 +9677,20 @@ function PageTopAttackers() {
                       {isFp ? (
                         <span className="dim mono" title="ja4 fingerprint identifier — no IP available">{a.identifier}</span>
                       ) : (
+                        // LOW-SO-03 (2026-05-12) — explicit onClick
+                        // anchors the navigation even when an ancestor
+                        // event handler tries to preventDefault on
+                        // bubbling clicks. Matches the row's Pivot
+                        // button so the underlined identifier is a
+                        // shortcut to the same place.
                         <a
                           href={`#/investigation?pivot=${encodeURIComponent(a.identifier)}&kind=ip`}
-                          style={{ color: 'var(--accent)' }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            location.hash = `/investigation?pivot=${encodeURIComponent(a.identifier)}&kind=ip`;
+                          }}
+                          style={{ color: 'var(--accent)', cursor: 'pointer' }}
+                          title={`Pivot Investigation on ${a.identifier}`}
                         >{a.identifier}</a>
                       )}
                     </td>
