@@ -185,6 +185,7 @@ function PageOverview() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">
@@ -714,6 +715,7 @@ function PageLiveFeed() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Live Feed</h1>
@@ -1731,6 +1733,126 @@ function PolicyPostureCard() {
           key={i}
           href={c.href}
           className={`pill ${c.tone}`}
+          title={c.title}
+          style={{ textDecoration: 'none', fontSize: 11 }}
+        >
+          {c.label}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+// PR-UX-A1 (2026-05-12) — Security Ops cheat card.  Mirrors the
+// shape of `PolicyPostureCard` (compact horizontal pill strip,
+// click-through chips) but focused on the "what's happening
+// right now" view an analyst needs at a glance: blocks-in-window,
+// firing alerts, top attacker, audit ring lag, and a one-click
+// jump back to Investigation.
+//
+// Mounted on the five Sec Ops pages (Overview, Live Feed,
+// Incidents, Investigation, Top Attackers) so the analyst sees
+// the same heartbeat no matter where they navigate.
+function SecOpsPostureCard() {
+  const stats = window.useStatsApi ? window.useStatsApi() : { data: null };
+  const incidents = window.useApi
+    ? window.useApi('/api/incidents', { intervalMs: 5000, fallback: null })
+    : { data: null };
+  const topApi = window.useApi
+    ? window.useApi('/api/attacks/top?window=3600&limit=1', { intervalMs: 10000, fallback: null })
+    : { data: null };
+  const witness = window.useApi
+    ? window.useApi('/api/audit/witness', { intervalMs: 15000, fallback: null })
+    : { data: null };
+
+  const blocksTotal = stats.data?.blocks_total ?? 0;
+  const blockRate = stats.data?.block_rate_pct;
+  const requestRate = stats.data?.request_rate;
+  const firingCount = Array.isArray(incidents.data?.incidents)
+    ? incidents.data.incidents.filter(i => i.status === 'firing').length
+    : (Array.isArray(incidents.data?.raw_alerts?.firing) ? incidents.data.raw_alerts.firing.length : 0);
+  const ackedCount = Array.isArray(incidents.data?.incidents)
+    ? incidents.data.incidents.filter(i => i.status === 'acknowledged').length
+    : 0;
+  const topAttacker = (topApi.data?.attackers || [])[0];
+  const witnessLag = witness.data?.lag_seconds;
+  const witnessFresh = typeof witnessLag === 'number' && witnessLag < 60;
+
+  const chips = [
+    {
+      label: typeof requestRate === 'number'
+        ? `${requestRate.toFixed(1)} req/s`
+        : '— req/s',
+      tone: 'neutral',
+      title: 'Live request rate · /api/stats',
+      href: '#/overview',
+    },
+    {
+      label: typeof blockRate === 'number'
+        ? `${blockRate.toFixed(1)}% blocked`
+        : `${blocksTotal.toLocaleString()} blocked`,
+      tone: 'neutral',
+      title: 'Block rate · process-lifetime · /api/stats',
+      href: '#/live',
+    },
+    {
+      label: firingCount > 0 ? `${firingCount} firing` : 'no alerts',
+      tone: firingCount > 0 ? 'warn' : 'ok',
+      title: firingCount > 0
+        ? `${firingCount} alert${firingCount === 1 ? '' : 's'} firing · ${ackedCount} acked`
+        : 'No SLO alerts firing',
+      href: '#/incidents',
+    },
+    topAttacker
+      ? {
+          label: topAttacker.country
+            ? `top: ${topAttacker.identifier} · ${topAttacker.country}`
+            : `top: ${topAttacker.identifier}`,
+          tone: 'neutral',
+          title: `Top attacker last 1h · ${topAttacker.hits} hits`,
+          href: `#/investigation?pivot=${encodeURIComponent(topAttacker.identifier)}&kind=ip`,
+        }
+      : {
+          label: 'no attackers',
+          tone: 'ok',
+          title: 'No ranked attackers in the last hour',
+          href: '#/top-attackers',
+        },
+    {
+      label: witness.data?.last_signature_ts
+        ? (witnessFresh ? 'audit fresh' : `audit lag ${witnessLag}s`)
+        : 'no witness yet',
+      tone: witnessFresh ? 'ok' : 'neutral',
+      title: witness.data?.last_signature_ts
+        ? `Last chain witness · ${witnessLag}s ago`
+        : 'No audit chain witness recorded yet',
+      href: '#/audit',
+    },
+  ];
+
+  return (
+    <div
+      className="card"
+      style={{
+        padding: '8px 12px',
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        fontSize: 11,
+      }}
+      role="status"
+      aria-label="Current Security Ops posture"
+    >
+      <span style={{ color: 'var(--ink-dim)', fontWeight: 600, letterSpacing: 0.4 }}>
+        SEC OPS
+      </span>
+      {chips.map(c => (
+        <a
+          key={c.label}
+          className={`pill ${c.tone}`}
+          href={c.href}
           title={c.title}
           style={{ textDecoration: 'none', fontSize: 11 }}
         >
@@ -7845,6 +7967,7 @@ function PageIncidents() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Incidents</h1>
@@ -8106,6 +8229,7 @@ function PageInvestigation() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Investigation</h1>
@@ -9612,6 +9736,7 @@ function PageTopAttackers() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">
