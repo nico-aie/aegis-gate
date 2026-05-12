@@ -25,6 +25,11 @@ struct CompiledRoute {
     /// report and routes API can render the path without extra book-
     /// keeping in `HostGroup`.
     path: String,
+    /// 2026-05-12 — precomputed prefix to strip from the request
+    /// path before forwarding (resolved at compile time from
+    /// `RouteConfig.strip_prefix` + `match_type` gating). `None`
+    /// means forward the path unchanged.
+    path_strip_prefix: Option<String>,
     methods: Option<Vec<String>>,
     upstream: String,
     tier: Tier,
@@ -468,6 +473,7 @@ impl CompiledRouteTable {
                     id: rc.id.clone(),
                     host: host_matcher.clone(),
                     path: rc.path.clone(),
+                    path_strip_prefix: compile_path_strip_prefix(rc),
                     methods,
                     upstream: rc.upstream.clone(),
                     tier,
@@ -581,7 +587,95 @@ impl CompiledRoute {
             pool_scheme: self.pool_scheme,
             tcp_destination_allowlist: self.tcp_destination_allowlist.clone(),
             max_concurrent_tunnels_per_ip: self.max_concurrent_tunnels_per_ip,
+            path_strip_prefix: self.path_strip_prefix.clone(),
         }
+    }
+}
+
+/// 2026-05-12 — resolve the precomputed strip-prefix for a route.
+/// Centralised so the unit tests below and the production build
+/// agree on the gating rules:
+///
+///   - `strip_prefix == false`     → `None` (path-preserving).
+///   - `match_type == Regex|Glob`  → `None` (no single literal
+///     prefix to strip; `regex` captures could express it but
+///     that's a separate feature).
+///   - `path == "/"`               → `None` (stripping a single
+///     slash leaves the request without a path component).
+///   - Otherwise                   → `Some(path.clone())`.
+fn compile_path_strip_prefix(
+    cfg: &RouteConfig,
+) -> Option<String> {
+    if !cfg.strip_prefix {
+        return None;
+    }
+    use aegis_core::config::MatchType;
+    if !matches!(cfg.match_type, MatchType::Prefix | MatchType::Exact) {
+        return None;
+    }
+    if cfg.path == "/" {
+        return None;
+    }
+    Some(cfg.path.clone())
+}
+
+#[cfg(test)]
+mod strip_prefix_tests {
+    use super::*;
+    use aegis_core::config::MatchType;
+
+    fn cfg(path: &str, match_type: MatchType, strip: bool) -> RouteConfig {
+        RouteConfig {
+            id: "t".into(),
+            host: None,
+            path: path.into(),
+            match_type,
+            strip_prefix: strip,
+            methods: None,
+            upstream: "u".into(),
+            tier_override: None,
+            failure_mode: None,
+            quota: None,
+            auth_required: Vec::new(),
+            tcp_destination_allowlist: Vec::new(),
+            max_concurrent_tunnels_per_ip: 0,
+            default: false,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn prefix_match_strips_path_when_enabled() {
+        let c = cfg("/news", MatchType::Prefix, true);
+        assert_eq!(compile_path_strip_prefix(&c).as_deref(), Some("/news"));
+    }
+
+    #[test]
+    fn disabled_returns_none_regardless_of_match_type() {
+        let c = cfg("/news", MatchType::Prefix, false);
+        assert!(compile_path_strip_prefix(&c).is_none());
+    }
+
+    #[test]
+    fn catch_all_route_never_strips() {
+        let c = cfg("/", MatchType::Prefix, true);
+        assert!(compile_path_strip_prefix(&c).is_none());
+    }
+
+    #[test]
+    fn regex_and_glob_skip_stripping() {
+        let r = cfg("/api/.*", MatchType::Regex, true);
+        assert!(compile_path_strip_prefix(&r).is_none());
+        let g = cfg("/files/*", MatchType::Glob, true);
+        assert!(compile_path_strip_prefix(&g).is_none());
+    }
+
+    #[test]
+    fn exact_match_strips_full_path_when_enabled() {
+        // Exact match means request_path == route_path, so the
+        // strip leaves "/" — the forwarder handles that.
+        let c = cfg("/login", MatchType::Exact, true);
+        assert_eq!(compile_path_strip_prefix(&c).as_deref(), Some("/login"));
     }
 }
 
