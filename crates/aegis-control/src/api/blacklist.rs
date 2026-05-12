@@ -163,6 +163,17 @@ pub struct AccessListEntry {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// For whitelist: list of detector / action names to bypass.
     /// `vec!["all"]` triggers an extra confirm in the UI.
+    ///
+    /// HIGH-SO-01 (2026-05-12) — `#[serde(default)]` so the
+    /// no-bypass case (an empty `Vec`) can be omitted on the
+    /// wire. The dashboard's Top Attackers Block POST shipped
+    /// without this field for a while and the resulting
+    /// `missing field bypass` 400 broke the SOC's primary
+    /// "click Block on attacker" workflow end-to-end. The
+    /// dashboard fix in the same PR explicitly sends `bypass: []`;
+    /// this belt protects future callers from tripping the same
+    /// wire.
+    #[serde(default)]
     pub bypass: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -439,6 +450,24 @@ mod tests {
             bypass: vec![],
             created_at: chrono::Utc::now(),
         }
+    }
+
+    #[test]
+    fn deserialize_accepts_body_without_bypass_field() {
+        // HIGH-SO-01 (2026-05-12) — the dashboard's Top Attackers
+        // Block POST shipped for a while without `bypass`. The
+        // server-side belt is `#[serde(default)]` so future
+        // callers omitting the no-bypass case don't trip a 400.
+        let raw = r#"{
+            "id": "qa",
+            "kind": "ip",
+            "value": "203.0.113.99",
+            "note": "no bypass field",
+            "created_at": "2026-05-12T00:00:00Z"
+        }"#;
+        let e: AccessListEntry = serde_json::from_str(raw)
+            .expect("body without `bypass` must deserialize");
+        assert!(e.bypass.is_empty(), "missing bypass should default to []");
     }
 
     #[test]

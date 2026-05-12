@@ -9420,9 +9420,17 @@ function PageTopAttackers() {
     setBusyId(identifier);
     try {
       const id = `top-attacker-${identifier.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+      // HIGH-SO-01 (2026-05-12) — include `bypass: []` so the
+      // server's AccessListEntry deserializer accepts the body.
+      // Without this the POST 400s with `missing field bypass`
+      // and the entire SOC "block this attacker" workflow is
+      // broken end-to-end. The server-side belt
+      // (`#[serde(default)]` on the field) ships in the same PR
+      // so future callers can't trip the same wire.
+      const created_at = new Date().toISOString();
       const body = identifier.startsWith('fp:')
-        ? { id, kind: 'fingerprint', value: identifier, note: `blocked from Top Attackers · last 1h` }
-        : { id, kind: identifier.includes('/') ? 'cidr' : 'ip', value: identifier, note: `blocked from Top Attackers · last 1h` };
+        ? { id, kind: 'fingerprint', value: identifier, note: `blocked from Top Attackers · last 1h`, bypass: [], created_at }
+        : { id, kind: identifier.includes('/') ? 'cidr' : 'ip', value: identifier, note: `blocked from Top Attackers · last 1h`, bypass: [], created_at };
       const r = await window.accessListAdd('blacklist', body);
       if (r.ok) {
         window.aegisToast(`Blocked ${identifier}`, 'ok');
