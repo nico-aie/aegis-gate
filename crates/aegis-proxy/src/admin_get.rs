@@ -216,6 +216,22 @@ pub(crate) fn admin_router(
                     let seq = entry.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
                     let e = entry.get("event").unwrap_or(entry);
                     let getter = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                    // LOW-ADM-04 (2026-05-12) — detection rows carry
+                    // method/path under `event.fields.*`, not at the
+                    // top level (top-level is null for those rows).
+                    // Same fallback pattern the Investigation timeline
+                    // and Audit Trail RULE column adopted in
+                    // MED-SO-06 / LOW-OBS-04.
+                    let fields_get = |k: &str| {
+                        e.get("fields")
+                            .and_then(|f| f.get(k))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                    };
+                    let with_fields = |k: &str| {
+                        let top = getter(k);
+                        if top.is_empty() { fields_get(k) } else { top }
+                    };
                     csv.push_str(&format!(
                         "{},{},{},{},{},{},{},{},{},{}\n",
                         seq,
@@ -223,8 +239,8 @@ pub(crate) fn admin_router(
                         csv_escape(getter("class")),
                         csv_escape(getter("action")),
                         csv_escape(getter("client_ip")),
-                        csv_escape(getter("method")),
-                        csv_escape(getter("path")),
+                        csv_escape(with_fields("method")),
+                        csv_escape(with_fields("path")),
                         csv_escape(getter("rule_id")),
                         csv_escape(getter("reason")),
                         csv_escape(getter("request_id")),

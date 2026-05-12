@@ -78,8 +78,8 @@ function TabGetStarted() {
       cta: 'Open Detectors & Tiers →', to: '#/detectors',
     },
     {
-      n: 5, t: 'Configure the four traffic gates',
-      d: 'Traffic Gates surfaces the four binary short-circuits that fire before the detector chain: access list, strike-block, rate limit, DDoS gate. Live config + edit modal for rate limit and DDoS thresholds (audit-mutated, hot-reload). Watch the Spike-active banner during volumetric incidents.',
+      n: 5, t: 'Configure the five traffic-gate surfaces',
+      d: 'Traffic Gates surfaces five pre-detector controls: four binary short-circuits (access list, strike-block, rate limit, DDoS gate) plus one cumulative IP-risk tuner. Live config + edit modal for rate limit and DDoS thresholds (audit-mutated, hot-reload). Watch the Spike-active banner during volumetric incidents.',
       cta: 'Open Traffic Gates →', to: '#/traffic-gates',
     },
     {
@@ -141,7 +141,7 @@ function TabHowItWorks() {
           <ol style={{ marginTop: 8, paddingLeft: 18 }}>
             <li><strong>Listener</strong> accepts the connection on <code>:8080</code> (HTTP) or <code>:8443</code> (TLS, with SNI-driven cert selection).</li>
             <li><strong>Route resolution</strong> matches the request's host + path + method against the route table (first-match-wins, top to bottom).</li>
-            <li><strong>Traffic gates</strong> — four binary short-circuits fire in cheapest-first order before the detector chain: <em>access list</em> (IP/CIDR/ASN/country), <em>strike-block</em> (lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code>; opt-in, default off since 2026-05-10), <em>rate limit</em> (token bucket → 429), <em>DDoS gate</em> (per-IP sliding-window auto-block → 403 + 5-min TTL). All four configurable from the Traffic Gates page; all four hot-reloadable. The cumulative IP risk thresholds (#3 on the page) tune the score-based challenge / block path that follows the detector chain — same page so the per-IP-risk story sits in one place.</li>
+            <li><strong>Traffic gates</strong> — five surfaces fire before the detector chain in cheapest-first order: four binary short-circuits — <em>access list</em> (IP/CIDR/ASN/country), <em>strike-block</em> (lifetime per-IP strikes ≥ <code>risk.strikes.block_at</code>; opt-in, default off since 2026-05-10), <em>rate limit</em> (token bucket → 429), <em>DDoS gate</em> (per-IP sliding-window auto-block → 403 + 5-min TTL) — plus one <em>cumulative IP risk tuner</em> (#3 on the page) that tunes the score-based challenge / block path running on top of the detector chain. All five surfaces live on the Traffic Gates page; all are hot-reloadable.</li>
             <li><strong>Detector chain</strong> — every detector enabled in the mask runs on the request: SQLi, XSS, path traversal, SSRF, header injection, body abuse, recon, brute_force, command_injection, template_injection, nosql_injection, open_redirect, plus the AI detector if it's on.</li>
             <li><strong>Risk + tier gate</strong> — detector signals add to a per-request composite score; if it crosses the route's tier threshold (critical 50 / high 70 / medium 80 / low 90), the request is blocked (HTTP 403 / 429). Separately, every detector hit also increments the client IP's <em>cumulative IP risk score</em>, which has its own thresholds on the Traffic Gates page → "Cumulative IP risk thresholds" (next to Strike-Block).</li>
             <li><strong>Forward</strong> — if allowed, the request is proxied to the route's upstream pool with the configured scheme, load-balancing, host-header rewrite, etc.</li>
@@ -242,7 +242,7 @@ function TabGlossary() {
     ['Tier',
       'A per-request policy bundle — risk_threshold (per-request block score, 0-100) plus a challenges_enabled toggle (defaults false; opt-in PoW rung). Four canonical tiers: critical / high / medium / low. Routes inherit the default or pin via tier_override. challenges_enabled = false escalates the cumulative-IP-risk challenge rung straight to block on that tier (no PoW). Cumulative threshold values are global by default (edit on Traffic Gates → #3); per-tier cumulative_challenge_at / cumulative_block_at overrides exist on the wire shape but are API-only (the dashboard doesn\'t surface inputs).'],
     ['Traffic gates',
-      'Four binary block-or-pass short-circuits that run before the detector chain (in firing order): access list, strike-block, rate limit, DDoS gate. Cheapest-first so a known-bad IP costs minimum CPU. Distinct from the signal-emitting detector chain — gates read shared cluster state and return a yes/no decision, not a score. All four are configured from the Traffic Gates page.'],
+      'Five pre-detector surfaces on the Traffic Gates page: four binary block-or-pass short-circuits (access list, strike-block, rate limit, DDoS gate — fire in cheapest-first order so a known-bad IP costs minimum CPU) plus one cumulative IP-risk tuner that drives the score-based challenge / block path running on top of the detector chain. The binary gates return yes/no decisions; the tuner sets thresholds.'],
     ['Rate limit',
       'Per-IP token bucket (sliding-window count). Returns 429 + X-WAF-Action: rate_limit when exceeded; recovery is automatic as the window slides. Configured at e.g. 1000 req / 60 s — tuned for "API rate fairness" (catches abusive clients gracefully). Audit-mutated PUT /api/rate-limit; per-IP state preserved across edits.'],
     ['DDoS gate',
