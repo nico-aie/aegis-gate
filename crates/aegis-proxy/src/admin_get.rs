@@ -240,16 +240,16 @@ pub(crate) fn admin_router(
         }
         // Phase-3: enriched alert view with operator overlay
         // (ack/snooze/resolve from `services.incidents`).
+        // MED-SO-04 (2026-05-12) — previously the overlay was
+        // composed against `Vec::new()`, so `incidents` was
+        // permanently `[]` and the lifecycle UI never reflected
+        // ack/snooze/resolve. Pull the live `SloAlert`s from the
+        // tracking handler's engine accessor so the overlay
+        // joins against today's firing list.
         "/api/incidents" => {
-            // Pull the raw firing alerts via the same path
-            // /api/alerts uses, then enrich with the overlay.
             let raw_json = services.tracking.render_alerts();
-            // The render returns {alerts: [...], placeholder?: bool}.
-            // We need the underlying SloAlerts; the renderer doesn't
-            // expose them directly, so re-derive via slo() if available.
-            // For Phase-3 we keep this simple: return the overlay
-            // store as-is (clients merge with /api/alerts).
-            let overlay = services.incidents.enrich(Vec::new());
+            let active = services.tracking.active_alerts();
+            let overlay = services.incidents.enrich(active);
             let body = serde_json::json!({
                 "raw_alerts": serde_json::from_str::<serde_json::Value>(&raw_json)
                     .unwrap_or(serde_json::Value::Null),
