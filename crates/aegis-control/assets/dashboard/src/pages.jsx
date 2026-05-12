@@ -7065,11 +7065,55 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
   );
   const canSave = trimmedName !== '' && !nameTaken && memberOk && healthOk && cbOk;
 
+  // HIGH-RU-01 follow-up (2026-05-12) — auto-infer scheme from
+  // the member port so an operator who types `znews.vn:443` and
+  // hits Save without touching the scheme dropdown gets a
+  // working TLS pool instead of `scheme: auto + tls: false`
+  // (which produces `http://host:443/` and an upstream 400
+  // "plain HTTP to HTTPS port"). The inference only fires when
+  // the operator hasn't already picked a non-auto scheme — so
+  // explicit selections are never overridden.
+  function inferSchemeFromPort(port) {
+    if (port === 443) return 'https';
+    if (port === 80)  return 'http';
+    return null;
+  }
+  function portFromAddr(addr) {
+    const m = /:(\d+)\s*$/.exec((addr || '').trim());
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : null;
+  }
   function setMember(i, key, val) {
-    setD(prev => ({
-      ...prev,
-      members: prev.members.map((m, idx) => idx === i ? { ...m, [key]: val } : m),
-    }));
+    setD(prev => {
+      const nextMembers = prev.members.map((m, idx) =>
+        idx === i ? { ...m, [key]: val } : m,
+      );
+      // Only re-derive scheme when the operator edits an address
+      // AND the current scheme is still the unspecified `auto`.
+      // Picking https / http / h2c / grpc / tcp explicitly locks
+      // the choice.
+      if (key !== 'addr') {
+        return { ...prev, members: nextMembers };
+      }
+      const currentScheme = prev.connection?.scheme || 'auto';
+      if (currentScheme !== 'auto') {
+        return { ...prev, members: nextMembers };
+      }
+      const inferred = inferSchemeFromPort(portFromAddr(val));
+      if (!inferred) {
+        return { ...prev, members: nextMembers };
+      }
+      return {
+        ...prev,
+        members: nextMembers,
+        connection: {
+          ...prev.connection,
+          scheme: inferred,
+          tls: tlsFromScheme(inferred, prev.connection?.tls),
+        },
+      };
+    });
   }
   function addMember() {
     setD(prev => ({
@@ -7408,6 +7452,39 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                 </select>
               </label>
             </div>
+            {/* HIGH-RU-01 follow-up (2026-05-12) — explicit warning
+                when the form is about to save a pool that will talk
+                plain HTTP to a TLS port. Catches the case where the
+                operator opens an existing `scheme: auto + tls: false`
+                pool with a :443 member (which produces an upstream
+                400 "plain HTTP to HTTPS port"). The auto-infer on
+                member edit handles fresh forms; this banner closes
+                the gap for already-saved pools. */}
+            {(() => {
+              const scheme = d.connection.scheme || 'auto';
+              const usesTls = tlsFromScheme(scheme, d.connection.tls);
+              if (usesTls) return null;
+              const tlsPortMember = (d.members || []).find(m => {
+                const p = portFromAddr(m.addr);
+                return p === 443 || p === 8443;
+              });
+              if (!tlsPortMember) return null;
+              return (
+                <div
+                  className="callout warn"
+                  style={{ marginTop: 8, padding: '8px 10px', fontSize: 11 }}
+                  role="alert"
+                >
+                  <strong>TLS / port mismatch.</strong>{' '}
+                  Member <code>{tlsPortMember.addr}</code> is on a TLS
+                  port but this pool will forward plain HTTP
+                  ({scheme === 'auto' ? <>scheme <code>auto</code> + TLS off</> : <>scheme <code>{scheme}</code></>}).
+                  Most <code>:443</code> upstreams answer with{' '}
+                  <em>400 plain HTTP to HTTPS port</em>. Flip the
+                  scheme to <code>https</code> to fix.
+                </div>
+              );
+            })()}
             {/* 2026-05-03 — protocol matrix that explains exactly
                 what each scheme handles, including WS upgrades
                 (which are auto-detected on http/https/auto and
