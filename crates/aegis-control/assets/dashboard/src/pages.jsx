@@ -1,6 +1,33 @@
 /* global React */
 const { useState: useStateP, useEffect: useEffectP, useMemo: useMemoP, useRef: useRefP, Fragment } = React;
 
+// LOW-ADM-05 (2026-05-12) — 24-hour clock helpers.  Without
+// these, `Date.toLocaleString()` / `Date.toLocaleTimeString()`
+// rendered en-US 12-hour AM/PM in places (Config history,
+// HEARTBEAT column) while the rest of the dashboard read as
+// 24-hour, which the QA pass flagged as inconsistent.  Pin
+// `hour12: false` here so every wall-clock string the dashboard
+// emits reads the same way.
+//
+// Two helpers because the call sites need different precision:
+//   - `fmtClockTime(d)`         → "12:28:45"
+//   - `fmtAbsoluteTimestamp(d)` → "May 12, 12:28:45"
+// Both fall back to "—" for null / invalid Dates.
+function fmtClockTime(d) {
+  const date = d instanceof Date ? d : (d ? new Date(d) : null);
+  if (!date || isNaN(date.getTime())) return '—';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+function fmtAbsoluteTimestamp(d) {
+  const date = d instanceof Date ? d : (d ? new Date(d) : null);
+  if (!date || isNaN(date.getTime())) return '—';
+  return date.toLocaleString([], {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    month: 'short', day: 'numeric',
+    hour12: false,
+  });
+}
+
 // ============== OVERVIEW ==============
 // Color palette for OWASP categories — used to overlay a colour on
 // API-returned `name` strings (which are stable identifiers like
@@ -4454,7 +4481,9 @@ function ConfigVersionsCard() {
           <tbody>
             {versions.map(v => {
               const isOpen = expanded === v.seq;
-              const ts = v.ts ? new Date(v.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' }) : '—';
+              // LOW-ADM-05 (2026-05-12) — pin 24h so Config
+              // history TIME reads consistent with Audit Trail.
+              const ts = fmtAbsoluteTimestamp(v.ts);
               return (
                 <Fragment key={`${v.seq}-${v.request_id}`}>
                   <tr style={{ cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : v.seq)}>
@@ -6305,7 +6334,8 @@ function PageTracking() {
                   <td><span className={`pill ${c.id === cluster.data?.leader_node ? 'solid-yellow' : 'neutral'}`}>
                     {c.id === cluster.data?.leader_node ? 'leader' : 'follower'}
                   </span></td>
-                  <td className="num dim">{c.last_heartbeat ? new Date(c.last_heartbeat).toLocaleTimeString() : '—'}</td>
+                  {/* LOW-ADM-05 (2026-05-12) — 24h heartbeat. */}
+                  <td className="num dim">{fmtClockTime(c.last_heartbeat)}</td>
                   <td>{(c.leases || []).length === 0 ? <span className="dim">—</span> : c.leases.map(l => <span key={l} className="pill info" style={{ marginRight: 4 }}>{l}</span>)}</td>
                 </tr>
               ))}
@@ -9754,19 +9784,16 @@ function PageReports() {
   }
 
   const cards = [
+    // LOW-ADM-02 (2026-05-12) — the audit ring is capped at 200
+    // events, so `?limit=1000` returns the same payload as
+    // `?limit=200`. Collapse to a single honest card; a wider
+    // export will land when cold-tier streaming ships.
     {
-      id: 'audit-200',
-      title: 'Audit trail (last 200 events)',
-      sub: 'CSV of every chained event — request decisions + config mutations',
+      id: 'audit-ring',
+      title: 'Audit trail (full ring · last 200 events)',
+      sub: 'CSV of every chained event — request decisions + config mutations. Ring is capped at 200 in this build; wider exports require cold-tier streaming (deferred).',
       kind: 'href',
       href: '/api/reports/audit.csv?limit=200',
-    },
-    {
-      id: 'audit-1000',
-      title: 'Audit trail (last 1000 events)',
-      sub: 'Larger window for weekly review',
-      kind: 'href',
-      href: '/api/reports/audit.csv?limit=1000',
     },
     {
       id: 'top-7d',
