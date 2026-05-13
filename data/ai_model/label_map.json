@@ -1,13 +1,4 @@
 {
-  "0": "16 - Dictionary-based Password Attack",
-  "1": "Fake the Source of Data",
-  "2": "HTTP abusion",
-  "3": "Injection",
-  "4": "Log4Shell",
-  "5": "Manipulation",
-  "6": "Normal",
-  "7": "SSTI",
-  "8": "Scanning for Vulnerable Software",
-  "9": "XSS",
-  "10": "XXE"
+  "0": "Normal",
+  "1": "Attack"
 }

@@ -1,16 +1,32 @@
-//! AI-T2 — 26-feature extractor for the ONNX classifier.
+//! AI-T2 — 27-feature extractor for the ONNX binary classifier.
 //!
 //! The trained model was fed feature vectors of length
 //! [`NUM_FEATURES`] during training.  Inference must produce the
-//! SAME 26 floats in the SAME order — any drift here corrupts
+//! SAME 27 floats in the SAME order — any drift here corrupts
 //! the model's input distribution and its predictions become
 //! garbage.
+//!
+//! ## Input format
+//!
+//! Accepts both shapes the training pipeline emits:
+//!
+//! - **Single-line** (legacy): `"METHOD /url body"`
+//! - **Multi-line** (current): `"METHOD /url body\nHeader: value\n…"`
+//!   where header values (User-Agent, Cookie, Referer, …) are
+//!   appended to the request line on subsequent lines.
+//!
+//! The first line is parsed as `METHOD URL BODY` (BODY = anything
+//! after the second space).  All remaining lines are joined and
+//! contribute their text to the "full" string the count- and
+//! regex-features run against — so a `User-Agent: sqlmap/1.7`
+//! header trips `scanner_count` exactly the way it did during
+//! training.
 //!
 //! ## Feature layout
 //!
 //! | idx | name                  | source                    | scale  |
 //! |-----|-----------------------|---------------------------|--------|
-//! |  0  | request_len           | total bytes               | raw    |
+//! |  0  | request_len           | total bytes (incl. hdrs)  | raw    |
 //! |  1  | method_id             | GET=0 POST=1 …            | id     |
 //! |  2  | path_len              | URL up to `?`             | raw    |
 //! |  3  | query_len             | URL after `?`             | raw    |
@@ -36,6 +52,7 @@
 //! | 23  | hex_encode_count      | `0xDEADBEEF` (raw)        | raw    |
 //! | 24  | crlf_inject_count     | `%0a` `\\r\\n` (raw)      | raw    |
 //! | 25  | double_encode_count   | `%25XX` (raw)             | raw    |
+//! | 26  | ssti_count            | `{{...}}` `${...}` `<%=` (decoded) | raw |
 //!
 //! Counts marked **(raw)** are computed from the un-decoded
 //! request bytes — `pct_encoded_count` would be self-defeating
@@ -55,7 +72,7 @@ use regex::Regex;
 
 /// Length of one feature vector. The model's input shape is
 /// `[batch, NUM_FEATURES]`.
-pub const NUM_FEATURES: usize = 26;
+pub const NUM_FEATURES: usize = 27;
 
 /// Static names — useful for debugging / logging the top-3
 /// contributors when `cfg.ai.explain` is on (future work).
@@ -87,6 +104,7 @@ pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "hex_encode_count",
     "crlf_inject_count",
     "double_encode_count",
+    "ssti_count",
 ];
 
 // ─── Regex patterns — case-insensitive, compiled once ────────
@@ -143,6 +161,13 @@ static CRLF_INJ: Lazy<Regex> =
 
 static DOUBLE_PCT: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"%25[0-9a-fA-F]{2}").expect("double-encoded pct regex"));
+
+static SSTI_MARKERS: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})",
+    )
+    .expect("ssti marker regex compiles")
+});
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -212,20 +237,32 @@ fn shannon_entropy(s: &str) -> f32 {
 
 // ─── Public extractor ────────────────────────────────────────
 
-/// Extract a 26-feature vector from a single HTTP request
-/// rendered as `"METHOD /path?query body"` (the training
-/// pipeline's text shape).  See the module-level docs for the
-/// exact layout.
+/// Extract a 27-feature vector from a single HTTP request
+/// rendered as either:
 ///
-/// Allocation budget: one [`String`] for the URL-decoded full
-/// request, plus one [`String`] for its lowercase variant.
-/// Both bounded by request size; well below the 5 ms budget
-/// the model needs.
+/// - `"METHOD /path?query body"` (single-line, legacy)
+/// - `"METHOD /path?query body\nHeader: value\n…"` (multi-line,
+///   matches the training pipeline)
+///
+/// See the module-level docs for the exact feature layout.
+///
+/// Allocation budget: one [`String`] for headers joined into one
+/// line, one for the URL-decoded full request, and one for its
+/// lowercase variant.  All bounded by request size; well below
+/// the 5 ms budget the model needs.
 pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
-    // Three-piece split: METHOD / URL / BODY.  The body part
-    // is everything after the second space.  Missing parts
+    // Split first line from headers (if any).
+    let (first_line, headers_text): (&str, String) = match request.find('\n') {
+        Some(nl) => (
+            &request[..nl],
+            request[nl + 1..].replace('\n', " "),
+        ),
+        None => (request, String::new()),
+    };
+
+    // Three-piece split: METHOD / URL / BODY.  Missing parts
     // default to GET / "/" / "".
-    let mut parts = request.splitn(3, ' ');
+    let mut parts = first_line.splitn(3, ' ');
     let method = parts.next().unwrap_or("GET");
     let url = parts.next().unwrap_or("/");
     let body = parts.next().unwrap_or("");
@@ -236,12 +273,20 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         None => (url, ""),
     };
 
-    // "Full" string used for most counts: URL + body when
-    // present, URL alone otherwise.  Matches training shape.
-    let full = if body.is_empty() {
-        url.to_string()
-    } else {
-        format!("{url} {body}")
+    // "Full" string used for most counts: URL + body + header
+    // values when present.  Matches training shape — regex
+    // patterns scan User-Agent, Cookie, Referer, etc.
+    let full = {
+        let mut s = url.to_string();
+        if !body.is_empty() {
+            s.push(' ');
+            s.push_str(body);
+        }
+        if !headers_text.is_empty() {
+            s.push(' ');
+            s.push_str(&headers_text);
+        }
+        s
     };
     let full_dec = url_decode(&full);
     let full_dec_lower = full_dec.to_ascii_lowercase();
@@ -249,7 +294,8 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     // Total chars; clamp to 1 to keep ratios well-defined.
     let total_chars = full.chars().count().max(1) as f32;
 
-    // Param count — one per `&` plus one for non-empty.
+    // Param count — one per `&` plus one for non-empty.  Query
+    // and body params count; header values don't.
     let num_params = {
         let q = if query.is_empty() {
             0
@@ -281,12 +327,12 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     let semicolon_count = full.matches(';').count() as f32;
 
     [
-        request.len() as f32,                                // 0  request_len
+        request.len() as f32,                                // 0  request_len (incl. headers)
         method_id(method),                                   // 1  method_id
         path.len() as f32,                                   // 2  path_len
         query.len() as f32,                                  // 3  query_len
-        body.len() as f32,                                   // 4  body_len
-        num_params,                                          // 5  num_params
+        body.len() as f32,                                   // 4  body_len (first line only)
+        num_params,                                          // 5  num_params (query + body)
         shannon_entropy(&full),                              // 6  entropy
         digit_count / total_chars,                           // 7  digit_ratio
         upper_count / total_chars,                           // 8  upper_ratio
@@ -307,6 +353,7 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         HEX_LITERAL.find_iter(&full).count() as f32,         // 23 hex_encode_count     (raw)
         CRLF_INJ.find_iter(&full).count() as f32,            // 24 crlf_inject_count    (raw)
         DOUBLE_PCT.find_iter(&full).count() as f32,          // 25 double_encode_count  (raw)
+        SSTI_MARKERS.find_iter(&full_dec).count() as f32,    // 26 ssti_count           (decoded)
     ]
 }
 
@@ -319,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_is_exactly_26_features() {
+    fn vector_is_exactly_27_features() {
         let v = extract_features("GET / HTTP/1.1");
         assert_eq!(v.len(), NUM_FEATURES);
         assert_eq!(FEATURE_NAMES.len(), NUM_FEATURES);
@@ -361,13 +408,14 @@ mod tests {
     fn clean_get_root_has_low_attack_signals() {
         let v = extract_features("GET / HTTP/1.1");
         // No SQL / XSS / ptrav / cmd / scanner / SSRF / PHP /
-        // null bytes / hex / crlf / double-encode markers.
+        // null bytes / hex / crlf / double-encode / ssti markers.
         assert_eq!(v[15], 0.0, "sql_keyword_count");
         assert_eq!(v[16], 0.0, "xss_pattern_count");
         assert_eq!(v[17], 0.0, "path_traversal_count");
         assert_eq!(v[18], 0.0, "cmd_injection_count");
         assert_eq!(v[19], 0.0, "scanner_count");
         assert_eq!(v[20], 0.0, "ssrf_count");
+        assert_eq!(v[26], 0.0, "ssti_count");
     }
 
     #[test]
@@ -406,6 +454,15 @@ mod tests {
     }
 
     #[test]
+    fn scanner_ua_in_header_lights_scanner_count() {
+        // Multi-line: header on second line still trips the
+        // scanner regex because the extractor folds headers
+        // into the `full` string.
+        let v = extract_features("GET /admin\nUser-Agent: sqlmap/1.7");
+        assert!(v[19] >= 1.0, "scanner_count via header, got {}", v[19]);
+    }
+
+    #[test]
     fn double_encode_lights_up() {
         // %2527 = double-encoded single quote.
         let v = extract_features("GET /?q=%2527OR%25201%253D1");
@@ -429,6 +486,18 @@ mod tests {
     fn cmd_injection_lights_up() {
         let v = extract_features("GET /ping?host=8.8.8.8;cat /etc/passwd");
         assert!(v[18] >= 1.0, "cmd_injection_count, got {}", v[18]);
+    }
+
+    #[test]
+    fn ssti_lights_up_on_jinja_arithmetic() {
+        let v = extract_features("GET /search?q={{7*7}}");
+        assert!(v[26] >= 1.0, "ssti_count for {{...}}, got {}", v[26]);
+    }
+
+    #[test]
+    fn ssti_lights_up_on_spel() {
+        let v = extract_features("GET /?q=${T(java.lang.Runtime).getRuntime().exec('id')}");
+        assert!(v[26] >= 1.0, "ssti_count for ${{...}}, got {}", v[26]);
     }
 
     #[test]
@@ -457,6 +526,7 @@ mod tests {
             "GET /<script>alert(1)</script>",
             "GET /%00",
             "GET /a/b/c",
+            "GET /\nUser-Agent: sqlmap/1.7",
             "",
         ];
         for s in inputs {
