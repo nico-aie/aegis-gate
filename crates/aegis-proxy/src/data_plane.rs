@@ -63,6 +63,7 @@ pub(crate) async fn handle_data_request(
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    route_activity: &aegis_control::metrics::route_activity::RouteActivityWindow,
     detector_latency_hist: &aegis_control::metrics::detector_latency::DetectorLatencyHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
@@ -87,6 +88,7 @@ pub(crate) async fn handle_data_request(
         verbosity,
         request_stage_hist,
         route_latency_hist,
+        route_activity,
         detector_latency_hist,
         bus,
         upstream_ctx,
@@ -109,6 +111,7 @@ pub(crate) async fn handle_data_request_inner(
     verbosity: &aegis_core::SharedVerbosity,
     request_stage_hist: &aegis_control::metrics::request_duration::RequestStageHistogram,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    route_activity: &aegis_control::metrics::route_activity::RouteActivityWindow,
     detector_latency_hist: &aegis_control::metrics::detector_latency::DetectorLatencyHistogram,
     bus: &AuditBus,
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
@@ -687,6 +690,7 @@ pub(crate) async fn handle_data_request_inner(
             upstream_ctx,
             identity,
             route_latency_hist,
+            route_activity,
             request_start,
             peer_ip,
             bus,
@@ -700,7 +704,39 @@ pub(crate) async fn handle_data_request_inner(
         // Challenge, and Block based on the post-state vs the
         // configured `RiskThresholds`.
         risk.record_clean(peer_ip);
-        match risk.level(peer_ip) {
+
+        // 2026-05-10 — Option B per-tier overrides. Look up the
+        // matched tier's cumulative thresholds + challenges_enabled
+        // flag from the live TierStore. None / missing fields fall
+        // back to the global thresholds, so existing deployments
+        // without tier overrides see no behavior change.
+        let global = risk.thresholds();
+        let (challenge_at, block_at, challenges_enabled) =
+            match upstream_ctx.tiers.get() {
+                Some(store) => match store.get(tier.as_str()) {
+                    Some(t) => (
+                        t.cumulative_challenge_at.unwrap_or(global.challenge_at),
+                        t.cumulative_block_at.unwrap_or(global.block_at),
+                        t.challenges_enabled,
+                    ),
+                    None => (global.challenge_at, global.block_at, true),
+                },
+                None => (global.challenge_at, global.block_at, true),
+            };
+        let level = risk.level_with(peer_ip, challenge_at, block_at);
+        // 2026-05-10 — when the matched tier has challenges_enabled
+        // = false, the challenge rung is removed from the tier's
+        // response ladder. Cumulative score crossing challenge_at
+        // escalates straight to block instead of emitting a 429
+        // PoW. Lets operators run high-stakes tiers (admin APIs,
+        // payment paths) with hard allow/block semantics.
+        let level = match level {
+            aegis_security::risk::RiskLevel::Challenge if !challenges_enabled => {
+                aegis_security::risk::RiskLevel::Block
+            }
+            other => other,
+        };
+        match level {
             aegis_security::risk::RiskLevel::Block => {
                 // NEW-4 (2026-05-08) — stamp the snapshot score
                 // on the DecisionTag so the response stamper
@@ -786,6 +822,7 @@ pub(crate) async fn handle_data_request_inner(
                     upstream_ctx,
                     identity,
                     route_latency_hist,
+                    route_activity,
                     request_start,
                     peer_ip,
                     bus,
@@ -828,6 +865,7 @@ pub(crate) async fn forward_allow_to_upstream(
     ctx: &Arc<crate::proxy::ProxyContext>,
     identity: &aegis_core::ClientIdentity,
     route_latency_hist: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+    route_activity: &aegis_control::metrics::route_activity::RouteActivityWindow,
     request_start: std::time::Instant,
     // TCP-T3c — source IP for the per-IP tunnel cap and for
     // `tcp_tunnel_open` / `tcp_tunnel_close` audit events.
@@ -897,6 +935,13 @@ pub(crate) async fn forward_allow_to_upstream(
     // is the same Arc<ProxyContext> the caller holds; safe to
     // hand out the &str here.
     *_route_guard.route.borrow_mut() = route_ctx.route_id.clone();
+    // P5 (2026-05-11) — record one hit in the per-route 60-second
+    // sliding-window counter. Fires for every resolved route (the
+    // latency guard records on exit; this one records on resolve
+    // so the activity pill lights up even for requests that get
+    // blocked by a downstream gate). Hot-path cost is one
+    // DashMap-shard lookup + one atomic fetch_add.
+    route_activity.record(&route_ctx.route_id);
 
     // MTLS-T4 — route-scoped client-identity gate.
     //
@@ -1333,12 +1378,23 @@ pub(crate) async fn forward_allow_to_upstream(
     };
     tracing::Span::current().record("member", tracing::field::display(&member.addr));
 
+    // 2026-05-12 — strip the route prefix from the upstream URI
+    // when the route opts in (`strip_prefix: true`, the default).
+    // The compiled `path_strip_prefix` is `Some(prefix)` only when
+    // the strip is safe to apply (prefix/exact match types, no
+    // catch-all). Path-only rewrite — query / fragment / host /
+    // scheme pass through unchanged.
+    let upstream_uri = match &route_ctx.path_strip_prefix {
+        Some(prefix) => strip_uri_prefix(&parts.uri, prefix),
+        None => parts.uri.clone(),
+    };
+
     member.inflight.fetch_add(1, Ordering::Relaxed);
     let result = crate::upstream::forward::forward(
         member,
         &pool.connection,
         parts.method,
-        parts.uri,
+        upstream_uri,
         parts.headers,
         body_bytes,
     )
@@ -1347,8 +1403,9 @@ pub(crate) async fn forward_allow_to_upstream(
 
     match result {
         Ok(resp) => {
+            let status = resp.status();
             if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
-                if resp.status().is_server_error() {
+                if status.is_server_error() {
                     cb.record_failure();
                 } else {
                     cb.record_success();
@@ -1356,12 +1413,95 @@ pub(crate) async fn forward_allow_to_upstream(
             }
             tracing::Span::current().record(
                 "outcome",
-                if resp.status().is_server_error() {
+                if status.is_server_error() {
                     "upstream-5xx"
                 } else {
                     "ok"
                 },
             );
+            // 2026-05-11 PR #7 — response filtering wire-up.
+            // The forwarder buffers the entire upstream body
+            // into `Full::new(body_bytes)` (see
+            // `upstream/forward.rs:469-505`), so we apply
+            // response filtering as a single `on_body_frame` call
+            // here. Once the proxy supports streaming response
+            // bodies, this call site fans out per chunk and the
+            // shape stays the same. `OutboundAction::Rewrite`
+            // replaces the body; `Abort` 502s the request (DLP
+            // block path — not exercised by the default filter
+            // config but the contract shape is in place).
+            //
+            // Detector chain inbound work runs separately via
+            // `run_all_filtered_timed` earlier in the request
+            // path; `Pipeline::on_body_frame` is only used for
+            // outbound response scrubbing.
+            let (mut parts_out, body) = resp.into_parts();
+            // `Full<Bytes>::Error` is `Infallible` — the collect
+            // can't fail, but the trait still hands back a Result.
+            let body_bytes = {
+                use http_body_util::BodyExt as _;
+                match body.collect().await {
+                    Ok(c) => c.to_bytes(),
+                    Err(_) => Bytes::new(),
+                }
+            };
+            // Pipeline::on_body_frame ignores rctx + route in the
+            // shipping impl, but the trait sig requires both. Build
+            // a minimal RequestCtx from peer_ip + identity so
+            // future filter rungs that *do* read it (per-tenant
+            // DLP policy, audit attribution) have the fields they
+            // need without a second refactor.
+            let rctx_for_filter = aegis_core::context::RequestCtx {
+                request_id: String::new(),
+                received_at: request_start,
+                client: aegis_core::context::ClientInfo {
+                    ip: peer_ip,
+                    tls_fingerprint: None,
+                    h2_fingerprint: None,
+                    user_agent: None,
+                },
+                tenant_id: route_ctx.tenant_id.clone(),
+                trace_id: None,
+                fields: std::collections::BTreeMap::new(),
+            };
+            let action = ctx
+                .pipeline
+                .on_body_frame(&body_bytes, &rctx_for_filter, &route_ctx)
+                .await;
+            let final_bytes = match action {
+                aegis_core::pipeline::OutboundAction::PassThrough => body_bytes,
+                aegis_core::pipeline::OutboundAction::Rewrite(new_bytes) => {
+                    // content-length must follow the new payload
+                    // or hyper will hang / mis-frame.
+                    use hyper::header::{HeaderValue, CONTENT_LENGTH};
+                    if let Ok(v) = HeaderValue::from_str(&new_bytes.len().to_string()) {
+                        parts_out.headers.insert(CONTENT_LENGTH, v);
+                    }
+                    new_bytes
+                }
+                aegis_core::pipeline::OutboundAction::Abort { reason } => {
+                    let body_str = format!(
+                        "{{\"error\":\"response_aborted\",\"reason\":{}}}",
+                        serde_json::to_string(&reason).unwrap_or_else(|_| "\"\"".into()),
+                    );
+                    use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
+                    let aborted = hyper::Response::builder()
+                        .status(hyper::StatusCode::BAD_GATEWAY)
+                        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+                        .header(
+                            CONTENT_LENGTH,
+                            HeaderValue::from_str(&body_str.len().to_string()).unwrap(),
+                        )
+                        .body(http_body_util::Full::new(bytes::Bytes::from(body_str)))
+                        .unwrap();
+                    return (
+                        aborted,
+                        DecisionTag::block("response-filter-abort")
+                            .with_tier(route_ctx.tier),
+                    );
+                }
+            };
+            let resp = Response::from_parts(parts_out, Full::new(final_bytes));
             // 5xx from upstream is not a WAF block — we proxied
             // faithfully; the contract action stays `allow` (the
             // upstream's failure is what the client sees).
@@ -1607,6 +1747,100 @@ async fn forward_connect_tunnel(
 }
 
 /// TCP-T3c — render a CONNECT-deny response + emit the audit
+/// 2026-05-12 — rewrite the request URI to drop a literal path
+/// prefix.  Used by routes that opt into `strip_prefix: true`
+/// (the default) so the upstream sees a "mount-point-relative"
+/// path:
+///
+///   route path `/news`, request `/news/article.html`
+///                          → upstream `/article.html`
+///   route path `/news`, request `/news` (exact)
+///                          → upstream `/`
+///   route path `/api`,  request `/api?q=1`
+///                          → upstream `/?q=1` (query preserved)
+///
+/// Only the path component is rewritten — scheme, authority,
+/// query, and fragment pass through unchanged.  A `Uri` build
+/// failure (extremely unlikely given a valid input) is silently
+/// fatal: we return the input unchanged so the request still
+/// has SOME path to send.
+fn strip_uri_prefix(uri: &http::Uri, prefix: &str) -> http::Uri {
+    let path = uri.path();
+    let rest = match path.strip_prefix(prefix) {
+        Some(r) if r.is_empty() => "/",
+        Some(r) if r.starts_with('/') => r,
+        // Path matched the prefix as a string-only substring (e.g.
+        // route `/api` matched `/apifoo` — should not happen in
+        // practice because the router uses segment-boundary matching,
+        // but stay defensive). Forward unchanged rather than producing
+        // a malformed URL.
+        Some(_) => return uri.clone(),
+        // No prefix match at all (concurrent reload, stale ctx) —
+        // pass through.
+        None => return uri.clone(),
+    };
+    let mut builder = http::Uri::builder();
+    if let Some(s) = uri.scheme() {
+        builder = builder.scheme(s.clone());
+    }
+    if let Some(a) = uri.authority() {
+        builder = builder.authority(a.clone());
+    }
+    let pq = match uri.query() {
+        Some(q) => format!("{rest}?{q}"),
+        None => rest.to_string(),
+    };
+    builder
+        .path_and_query(pq)
+        .build()
+        .unwrap_or_else(|_| uri.clone())
+}
+
+#[cfg(test)]
+mod strip_uri_prefix_tests {
+    use super::strip_uri_prefix;
+    use http::Uri;
+
+    fn rewrite(input: &str, prefix: &str) -> String {
+        let u: Uri = input.parse().unwrap();
+        strip_uri_prefix(&u, prefix).to_string()
+    }
+
+    #[test]
+    fn strips_prefix_keeping_remainder() {
+        assert_eq!(rewrite("/news/article.html", "/news"), "/article.html");
+        assert_eq!(rewrite("/news/a/b/c", "/news"), "/a/b/c");
+    }
+
+    #[test]
+    fn exact_match_collapses_to_root_slash() {
+        assert_eq!(rewrite("/news", "/news"), "/");
+    }
+
+    #[test]
+    fn preserves_query_string() {
+        assert_eq!(
+            rewrite("/news/article.html?utm=src&id=1", "/news"),
+            "/article.html?utm=src&id=1",
+        );
+        assert_eq!(rewrite("/news?id=1", "/news"), "/?id=1");
+    }
+
+    #[test]
+    fn non_segment_prefix_match_passes_through_unchanged() {
+        // `/news` is a string-prefix of `/newsroom` but not a
+        // segment prefix; forwarding `/newsroom` after stripping
+        // would yield `room` (no leading slash). Be defensive and
+        // pass through.
+        assert_eq!(rewrite("/newsroom", "/news"), "/newsroom");
+    }
+
+    #[test]
+    fn missing_prefix_passes_through_unchanged() {
+        assert_eq!(rewrite("/something/else", "/news"), "/something/else");
+    }
+}
+
 /// event. Centralised so every deny path uses the same shape
 /// (audit class `Access`, `x-waf-rule-id` response header,
 /// plain-text body with the message).
@@ -1821,6 +2055,10 @@ mod tcp_connect_tests {
             .expect("register route latency")
     }
 
+    fn route_activity_w() -> aegis_control::metrics::route_activity::RouteActivityWindow {
+        aegis_control::metrics::route_activity::RouteActivityWindow::new()
+    }
+
     fn tcp_route_cfg(allowlist_yaml: &str) -> WafConfig {
         let yaml = format!(
             r#"
@@ -1918,6 +2156,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -1947,6 +2186,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -1978,6 +2218,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2010,6 +2251,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2038,6 +2280,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2084,6 +2327,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             peer,
             &bus,
@@ -2119,6 +2363,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2164,6 +2409,7 @@ state: { backend: in_memory }
                 &ctx,
                 &ClientIdentity::Anonymous,
                 &rh,
+                &route_activity_w(),
                 Instant::now(),
                 peer,
                 &bus,
@@ -2208,6 +2454,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2249,6 +2496,7 @@ state: { backend: in_memory }
             &ctx,
             &ClientIdentity::Anonymous,
             &rh,
+            &route_activity_w(),
             Instant::now(),
             "198.51.100.1".parse().unwrap(),
             &bus,
@@ -2317,6 +2565,10 @@ mod websocket_e2e_tests {
         let reg = aegis_control::metrics::MetricsRegistry::init();
         aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&reg)
             .expect("route latency histogram registers")
+    }
+
+    fn route_activity_w() -> aegis_control::metrics::route_activity::RouteActivityWindow {
+        aegis_control::metrics::route_activity::RouteActivityWindow::new()
     }
 
     /// Drive a real WebSocket client → WAF → echo backend
@@ -2404,6 +2656,7 @@ state: {{ backend: in_memory }}
                         &ctx,
                         &ClientIdentity::Anonymous,
                         &rh,
+                        &route_activity_w(),
                         Instant::now(),
                         peer.ip(),
                         &bus,

@@ -63,6 +63,13 @@ pub(crate) async fn admin_accept_loop(
     // `PUT /api/ai/enabled` handler in `admin_mutate.rs` reads
     // it from `services.ai_toggle` (set further down).
     ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
+    // 2026-05-11 PR #7 — live `Pipeline` whose `ResponseFilterConfig`
+    // the audit-mutated `PUT /api/response-filter` handler flips.
+    // Same `Arc<Pipeline>` instance the data plane reads
+    // `on_body_frame` through via `upstream_ctx.pipeline`; stashing
+    // it here instead of downcasting the trait object keeps the
+    // writer-trait machinery decoupled from `SecurityPipeline`.
+    response_filter_pipeline: Arc<aegis_security::Pipeline>,
     // SC-T1 — typed-erased state backend handle so the
     // `/api/state` endpoint can call `health()` without a separate
     // provider closure. Passed through to `services.state_backend`.
@@ -85,6 +92,10 @@ pub(crate) async fn admin_accept_loop(
     // Phase-3 per-route latency. Same histogram the data plane
     // records into; admin reads percentiles from it.
     route_latency_hist: Arc<aegis_control::metrics::route_latency::RouteLatencyHistogram>,
+    // P5 (2026-05-11) — same per-route sliding-window counter the
+    // data plane writes to. Admin reads it for the
+    // `/api/analytics/route-activity` endpoint.
+    route_activity: aegis_control::metrics::route_activity::RouteActivityWindow,
     // Per-detector evaluation-duration histogram. Recorded by
     // the data plane around each `Detector::inspect` call.
     detector_latency_hist: Arc<aegis_control::metrics::detector_latency::DetectorLatencyHistogram>,
@@ -322,6 +333,13 @@ pub(crate) async fn admin_accept_loop(
     services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
 
+    // 2026-05-10 — share the TierStore between DashboardServices
+    // (PUT /api/tiers/{name}) and ProxyContext (data plane reads
+    // per-tier challenge/block thresholds + challenges_enabled
+    // for Option B). Single Arc so dashboard edits become live in
+    // the data plane on the next request, no restart.
+    let _ = upstream_ctx.tiers.set(services.tiers.clone());
+
     // 2026-05-05 — late-register the AttacksAggregator's reset
     // cleaner with the v2.3 control plane. The aggregator backs the
     // dashboard's Top Attackers / By-Detector / Bot Mix charts; per
@@ -477,6 +495,14 @@ pub(crate) async fn admin_accept_loop(
             toggle as Arc<dyn aegis_control::api::ai_toggle::AiToggleWriter>,
         );
     }
+    // 2026-05-11 PR #7 — surface the live `Pipeline` as the
+    // response-filter writer so `PUT /api/response-filter` can
+    // hot-swap `ResponseFilterConfig` rungs. Same Arc instance the
+    // data plane reads `on_body_frame` through.
+    services.response_filter_writer = Some(
+        response_filter_pipeline
+            as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
+    );
 
     // MTLS-T6 — wire the IdentityTracker so the read-only
     // /api/mtls/* endpoints have a live data source. MTLS-T3
@@ -543,6 +569,7 @@ pub(crate) async fn admin_accept_loop(
     // the same series the data plane records.
     services.request_stage_hist = Some(request_stage_hist.clone());
     services.route_latency_hist = Some(route_latency_hist.clone());
+    services.route_activity = Some(route_activity.clone());
     services.detector_latency_hist = Some(detector_latency_hist.clone());
     // HACK-T3 — wire the same detector list the data plane
     // runs so `/api/rules/simulate` can evaluate against an
@@ -902,6 +929,10 @@ pub(crate) async fn accept_loop(
     verbosity: aegis_core::SharedVerbosity,
     request_stage_hist: Arc<aegis_control::metrics::request_duration::RequestStageHistogram>,
     route_latency_hist: Arc<aegis_control::metrics::route_latency::RouteLatencyHistogram>,
+    // P5 (2026-05-11) — sliding-window route activity counter.
+    // Recorded after route resolution so the dashboard's pulse
+    // pill can distinguish "live" from "dead" routes.
+    route_activity: aegis_control::metrics::route_activity::RouteActivityWindow,
     detector_latency_hist: Arc<aegis_control::metrics::detector_latency::DetectorLatencyHistogram>,
     bus: AuditBus,
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
@@ -946,6 +977,7 @@ pub(crate) async fn accept_loop(
         let verbosity = verbosity.clone();
         let request_stage_hist = request_stage_hist.clone();
         let route_latency_hist = route_latency_hist.clone();
+        let route_activity = route_activity.clone();
         let detector_latency_hist = detector_latency_hist.clone();
         let bus = bus.clone();
         let upstream_ctx = upstream_ctx.clone();
@@ -1038,6 +1070,7 @@ pub(crate) async fn accept_loop(
                 let verbosity = verbosity.clone();
                 let request_stage_hist = request_stage_hist.clone();
                 let route_latency_hist = route_latency_hist.clone();
+                let route_activity = route_activity.clone();
                 let detector_latency_hist = detector_latency_hist.clone();
                 let bus = bus.clone();
                 let upstream_ctx = upstream_ctx.clone();
@@ -1104,6 +1137,7 @@ pub(crate) async fn accept_loop(
                         &verbosity,
                         &request_stage_hist,
                         &route_latency_hist,
+                        &route_activity,
                         &detector_latency_hist,
                         &bus,
                         &upstream_ctx,

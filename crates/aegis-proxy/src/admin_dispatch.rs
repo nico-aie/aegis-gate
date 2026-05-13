@@ -42,7 +42,8 @@ use crate::admin_mutate::{
     handle_alert_receivers_put, handle_detectors_put, handle_loadmode_put,
     handle_logging_put, handle_mode_put, handle_mtls_sans_delete,
     handle_mtls_sans_put, handle_mtls_sans_test, handle_pool_delete,
-    handle_ai_enabled_get, handle_ai_enabled_put, handle_pool_upsert,
+    handle_ai_enabled_get, handle_ai_enabled_put, handle_response_filter_get,
+    handle_response_filter_put, handle_pool_upsert,
     handle_risk_reset, handle_risk_thresholds_put, handle_route_delete,
     handle_route_upsert, handle_rules_delete, handle_rules_post,
     handle_rules_put, handle_rules_toggle, handle_tier_put,
@@ -159,11 +160,19 @@ pub(crate) async fn handle_admin_request(
     // CI-T4 — alert ack. Audit-mutated; CSRF-gated. The ack
     // store lives on `services.tracking`; render_alerts() then
     // moves the alert from `firing` to `resolved`.
+    //
+    // MED-ADM-01 (2026-05-12) — `req.uri().path()` returns the
+    // percent-encoded path, so ids like `<sli>-<Nh>:<ts>` arrive
+    // as `<sli>-<Nh>%3A<ts>`.  Decode here before handing to the
+    // handler so the overlay-store key matches what `enrich()`
+    // looks up via `alert_id(&a)`.  Apply exactly once at this
+    // layer; the handler MUST NOT decode again.
     if method == hyper::Method::POST && path.starts_with("/api/alerts/") {
         let suffix = &path["/api/alerts/".len()..];
-        if let Some(alert_id) = suffix.strip_suffix("/ack") {
-            if !alert_id.is_empty() && !alert_id.contains('/') {
-                return handle_alert_ack(req, alert_id, services).await;
+        if let Some(raw_id) = suffix.strip_suffix("/ack") {
+            if !raw_id.is_empty() && !raw_id.contains('/') {
+                let alert_id = crate::admin_get::percent_decode(raw_id);
+                return handle_alert_ack(req, &alert_id, services).await;
             }
         }
     }
@@ -175,19 +184,22 @@ pub(crate) async fn handle_admin_request(
     // /api/alerts consumers see the same view.
     if method == hyper::Method::POST && path.starts_with("/api/incidents/") {
         let suffix = &path["/api/incidents/".len()..];
-        if let Some(id) = suffix.strip_suffix("/ack") {
-            if !id.is_empty() && !id.contains('/') {
-                return crate::admin_mutate::handle_incident_ack(req, id, services).await;
+        if let Some(raw_id) = suffix.strip_suffix("/ack") {
+            if !raw_id.is_empty() && !raw_id.contains('/') {
+                let id = crate::admin_get::percent_decode(raw_id);
+                return crate::admin_mutate::handle_incident_ack(req, &id, services).await;
             }
         }
-        if let Some(id) = suffix.strip_suffix("/snooze") {
-            if !id.is_empty() && !id.contains('/') {
-                return crate::admin_mutate::handle_incident_snooze(req, id, services).await;
+        if let Some(raw_id) = suffix.strip_suffix("/snooze") {
+            if !raw_id.is_empty() && !raw_id.contains('/') {
+                let id = crate::admin_get::percent_decode(raw_id);
+                return crate::admin_mutate::handle_incident_snooze(req, &id, services).await;
             }
         }
-        if let Some(id) = suffix.strip_suffix("/resolve") {
-            if !id.is_empty() && !id.contains('/') {
-                return crate::admin_mutate::handle_incident_resolve(req, id, services).await;
+        if let Some(raw_id) = suffix.strip_suffix("/resolve") {
+            if !raw_id.is_empty() && !raw_id.contains('/') {
+                let id = crate::admin_get::percent_decode(raw_id);
+                return crate::admin_mutate::handle_incident_resolve(req, &id, services).await;
             }
         }
     }
@@ -210,6 +222,9 @@ pub(crate) async fn handle_admin_request(
     }
     if method == hyper::Method::PUT && path == "/api/rate-limit" {
         return crate::admin_mutate::handle_rate_limit_put(req, services).await;
+    }
+    if method == hyper::Method::PUT && path == "/api/gates/strikes" {
+        return crate::admin_mutate::handle_strikes_put(req, services).await;
     }
 
     // CC-T2.1.b — alert-receivers writes. Audit-mutated; CSRF-
@@ -288,6 +303,21 @@ pub(crate) async fn handle_admin_request(
         }
         if method == hyper::Method::PUT {
             return handle_ai_enabled_put(req, services).await;
+        }
+    }
+
+    // 2026-05-11 PR #7 — response-filter rung toggles. Audit-mutated
+    // PUT; CSRF-gated. GET is open-on-session so the dashboard's
+    // Security Engine tile can render the toggle state. Defaults are
+    // all-on; this endpoint lets operators flip a rung off without
+    // restart when an environment proves problematic (e.g. a JSON
+    // service that legitimately contains an internal-shaped IP).
+    if path == "/api/response-filter" {
+        if method == hyper::Method::GET {
+            return handle_response_filter_get(services).await;
+        }
+        if method == hyper::Method::PUT {
+            return handle_response_filter_put(req, services).await;
         }
     }
 

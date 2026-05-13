@@ -196,6 +196,14 @@ pub enum PoolValidationError {
     InvalidHealthTimeout { interval_ms: u64, timeout_ms: u64 },
     /// `circuit_breaker.error_rate_threshold` outside `[0.0, 1.0]`.
     InvalidCircuitThreshold { value: f64 },
+    /// 2026-05-11 (PR-DNS-1) — a hostname-shaped `MemberAddrSpec`
+    /// reached the pool builder without being resolved. The boot
+    /// path runs `aegis_proxy::upstream::dns_resolve::
+    /// expand_hostname_members` before `build_pools`; this error
+    /// fires only when someone wires `build_pools` directly with
+    /// a config that contains a `Hostname` member (e.g. a test or
+    /// a future caller that forgot the resolver step).
+    UnresolvedHostname { host: String, port: u16 },
 }
 
 impl PoolValidationError {
@@ -207,6 +215,7 @@ impl PoolValidationError {
             Self::ZeroWeight { .. } => "zero_weight",
             Self::InvalidHealthTimeout { .. } => "invalid_health_timeout",
             Self::InvalidCircuitThreshold { .. } => "invalid_circuit_threshold",
+            Self::UnresolvedHostname { .. } => "unresolved_hostname",
         }
     }
 }
@@ -226,6 +235,10 @@ impl std::fmt::Display for PoolValidationError {
             Self::InvalidCircuitThreshold { value } => write!(
                 f,
                 "circuit_breaker.error_rate_threshold ({value}) must be in [0.0, 1.0]"
+            ),
+            Self::UnresolvedHostname { host, port } => write!(
+                f,
+                "hostname member `{host}:{port}` not resolved — DNS lookup must run before build_pools"
             ),
         }
     }

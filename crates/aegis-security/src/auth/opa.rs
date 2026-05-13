@@ -1,3 +1,17 @@
+//! OPA (Open Policy Agent) callout stub — **deferred**, not on
+//! the active path.
+//!
+//! **2026-05-11 PR #9** — zero callers in `aegis-proxy/src/` +
+//! `aegis-bin/src/` as of this commit. Today's policy is
+//! expressed through rules (`aegis-security::rules`) + tier
+//! config which the contract accepts. OPA would be an external
+//! policy-evaluation layer — roadmap, not required.
+//!
+//! Kept around as a roadmap shape — see
+//! `plans/future/unwired-stubs-catalog.md`.
+
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// OPA decision request.

@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::tier::Tier;
 
@@ -126,17 +126,24 @@ pub struct WafConfig {
     /// is loud, not silent.
     #[serde(default)]
     pub ai: AiConfig,
-    /// 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS protection
-    /// (per-IP burst detection + EWMA spike mode + cluster-
-    /// wide auto-block via the state backend). Defaults to
-    /// `enabled: true, observe_only: true` so the detector
-    /// runs in shadow mode out of the box: every per-IP-flood
-    /// burst is counted, every spike is observed, but no
-    /// request is 503'd until the operator flips
-    /// `observe_only: false` after baking the metrics. See
-    /// `docs/security/ddos-protection.md` for the operator
-    /// guide and `plans/issue-fix/internal-audit-2026-05-09-ddos/`
-    /// for the wire-up plan.
+    /// DDoS protection — per-IP burst detection + EWMA spike
+    /// mode + cluster-wide auto-block via the state backend.
+    ///
+    /// **2026-05-11 CORE-01 fix.** Defaults are now documented
+    /// truthfully: `enabled: true, observe_only: false` —
+    /// **enforce by default**. The previous doc claimed shadow
+    /// mode by default, but `DdosConfig::default()` has always
+    /// set `observe_only: false` (the code is the source of
+    /// truth). Production posture is to enforce immediately;
+    /// operators who want a baking period can set
+    /// `observe_only: true` in YAML for the first deploy and
+    /// flip it off after metrics confirm the thresholds are
+    /// well-calibrated.
+    ///
+    /// See `docs/security/ddos-protection.md` for the operator
+    /// guide and
+    /// `plans/issue-fix/internal-audit-2026-05-09-ddos/` for
+    /// the original wire-up plan.
     #[serde(default)]
     pub ddos: DdosConfig,
 }
@@ -397,6 +404,38 @@ impl WafConfig {
                 )));
             }
         }
+        // 2026-05-11 PROXY-02 — reject `match_type: regex|glob` at
+        // lint time. The resolver only supports prefix lookup via
+        // `PathTrie::find_all_prefixes` today; regex / glob routes
+        // get inserted into the trie as literal strings and never
+        // match real traffic. Pre-fix this was a silent
+        // mis-configuration trap (verified 2026-05-11 against
+        // `aegis-proxy/src/route/mod.rs::resolve_inner`). Loud-fail
+        // at boot instead of letting operators ship routes that
+        // never fire. When regex / glob lands, drop this guard.
+        for route in &self.routes {
+            match route.match_type {
+                MatchType::Exact | MatchType::Prefix => {}
+                MatchType::Regex => {
+                    return Err(crate::error::WafError::Config(format!(
+                        "route '{}' uses match_type: regex which is not implemented. \
+                         The resolver only supports prefix matching today; regex routes \
+                         would never fire. Switch to match_type: prefix or split into \
+                         multiple exact / prefix routes.",
+                        route.id,
+                    )));
+                }
+                MatchType::Glob => {
+                    return Err(crate::error::WafError::Config(format!(
+                        "route '{}' uses match_type: glob which is not implemented. \
+                         The resolver only supports prefix matching today; glob routes \
+                         would never fire. Switch to match_type: prefix or split into \
+                         multiple exact / prefix routes.",
+                        route.id,
+                    )));
+                }
+            }
+        }
         // TCP-T1 — every route resolving to a `scheme: tcp` pool
         // must carry a non-empty `tcp_destination_allowlist`, and
         // every entry must parse cleanly. Validation here
@@ -450,6 +489,46 @@ impl WafConfig {
         // Layer-1: runtime sizing constraints (workers >= 2, sane
         // blocking-pool size, sane stack).
         self.runtime.validate()?;
+        // 2026-05-11 CORE-09 / CTL-08 — reject not-implemented
+        // state-backend + reconcile-mode values at lint time
+        // instead of letting them pass `validate()` and then
+        // crash at boot in `aegis-bin/state_select.rs`. Tools
+        // that run `load_config_str()` + `validate()` as a lint
+        // step now catch these gaps.
+        if matches!(self.state.backend, StateBackendKind::Raft) {
+            return Err(crate::error::WafError::Config(
+                "state.backend = raft is not implemented (Phase B candidate). \
+                 Use `in_memory` or `redis`."
+                    .into(),
+            ));
+        }
+        if self.state.backend == StateBackendKind::Redis
+            && self.state.redis.as_ref().is_some_and(|r| r.cluster)
+        {
+            return Err(crate::error::WafError::Config(
+                "state.redis.cluster = true requires the redis_cluster backend, \
+                 which is not yet implemented (Phase B candidate). \
+                 Set `state.redis.cluster: false` or switch to single-node Redis."
+                    .into(),
+            ));
+        }
+        match self.state.reconcile.mode {
+            ReconcileMode::Max => {}
+            ReconcileMode::Latest => {
+                return Err(crate::error::WafError::Config(
+                    "state.reconcile.mode = latest is not implemented; \
+                     use `max` until a Phase B follow-up lands the latest-wins merge."
+                        .into(),
+                ));
+            }
+            ReconcileMode::FailSafe => {
+                return Err(crate::error::WafError::Config(
+                    "state.reconcile.mode = fail_safe is not implemented; \
+                     use `max` until a Phase B follow-up lands the fail-safe merge."
+                        .into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -622,6 +701,25 @@ pub struct RouteConfig {
     pub path: String,
     #[serde(default = "default_match_type")]
     pub match_type: MatchType,
+    /// 2026-05-12 — when `true` (the default) the route's `path`
+    /// prefix is removed from the request URI before the upstream
+    /// sees it. Example: route `path: "/news"` + request
+    /// `/news/article.html` → upstream gets `/article.html`. This
+    /// is the common "mount point" semantics most reverse proxies
+    /// adopt (nginx `proxy_pass` with trailing slash, traefik's
+    /// `StripPrefix`, envoy's `prefix_rewrite`).
+    ///
+    /// Set to `false` for path-preserving forwarding (the legacy
+    /// behaviour) when the upstream expects to see the full path
+    /// (e.g. API gateways behind an `/api/` mount).
+    ///
+    /// Only applies to `match_type: prefix` and `match_type: exact`.
+    /// For `regex` / `glob` matches the field is ignored (there's
+    /// no single literal prefix to strip).  Also a no-op for the
+    /// catch-all `path: "/"` route — stripping a single slash
+    /// would leave the request without a path at all.
+    #[serde(default = "default_strip_prefix")]
+    pub strip_prefix: bool,
     #[serde(default)]
     pub methods: Option<Vec<String>>,
     pub upstream: String,
@@ -749,6 +847,10 @@ fn default_match_type() -> MatchType {
     MatchType::Prefix
 }
 
+fn default_strip_prefix() -> bool {
+    true
+}
+
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchType {
@@ -828,7 +930,15 @@ pub struct ConnectionPoolConfig {
 /// Upstream protocol selector for `ConnectionPoolConfig.scheme`.
 /// See `aegis-proxy/src/upstream/forward.rs::build_client` for
 /// how each variant maps to the hyper connector.
-#[derive(Copy, Clone, Debug, Default, serde::Serialize, Deserialize, PartialEq, Eq)]
+///
+/// HIGH-RU-02 (2026-05-12) — `Hash` is needed so the per-process
+/// upstream-client cache in `forward.rs::PoolKey` can include the
+/// scheme as part of its key.  Without that, a hot-reload that
+/// flips scheme (e.g. `auto → https`) hit the stale cache entry
+/// built for the prior scheme, and `build_client`'s scheme-
+/// dependent ALPN / `http2_only` flags didn't take effect until
+/// the WAF process restarted.
+#[derive(Copy, Clone, Debug, Default, serde::Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamScheme {
     /// ALPN auto-negotiation. The TLS toggle (`tls: bool`)
@@ -973,6 +1083,131 @@ mod upstream_scheme_tests {
     }
 }
 
+#[cfg(test)]
+mod member_addr_spec_tests {
+    use super::*;
+
+    #[test]
+    fn ip_string_round_trips() {
+        // Bare IP:port — the legacy shape every config that
+        // predates PR-DNS-1 uses.
+        let raw = "\"127.0.0.1:8080\"";
+        let parsed: MemberAddrSpec = serde_json::from_str(raw).unwrap();
+        let MemberAddrSpec::Ip(sa) = parsed else { panic!("expected Ip variant") };
+        assert_eq!(sa.to_string(), "127.0.0.1:8080");
+        assert_eq!(serde_json::to_string(&MemberAddrSpec::Ip(sa)).unwrap(), raw);
+    }
+
+    #[test]
+    fn ipv6_string_round_trips_through_ip_variant() {
+        // RFC 3986 bracket notation — `[host]:port`. Must hit the
+        // `SocketAddr::from_str` branch first; the host:port split
+        // would otherwise fold the `:` characters into the port.
+        let raw = "\"[::1]:8443\"";
+        let parsed: MemberAddrSpec = serde_json::from_str(raw).unwrap();
+        assert!(matches!(parsed, MemberAddrSpec::Ip(_)));
+    }
+
+    #[test]
+    fn hostname_string_falls_back_to_hostname_variant() {
+        let raw = "\"api.example.com:443\"";
+        let parsed: MemberAddrSpec = serde_json::from_str(raw).unwrap();
+        let MemberAddrSpec::Hostname { host, port, refresh_seconds } = parsed else {
+            panic!("expected Hostname variant");
+        };
+        assert_eq!(host, "api.example.com");
+        assert_eq!(port, 443);
+        assert!(refresh_seconds.is_none(), "string form should leave refresh_seconds unset");
+    }
+
+    #[test]
+    fn map_shape_parses_with_refresh_override() {
+        let yaml = "\
+host: api.example.com
+port: 443
+refresh_seconds: 120
+";
+        let parsed: MemberAddrSpec = serde_yaml::from_str(yaml).unwrap();
+        let MemberAddrSpec::Hostname { host, port, refresh_seconds } = parsed else {
+            panic!("expected Hostname variant");
+        };
+        assert_eq!(host, "api.example.com");
+        assert_eq!(port, 443);
+        assert_eq!(refresh_seconds, Some(120));
+    }
+
+    #[test]
+    fn serialize_always_uses_string_form() {
+        // Stable wire shape — Hostname members serialise as
+        // `host:port` so dashboard PUT round-trips don't churn YAML.
+        let v = MemberAddrSpec::Hostname {
+            host: "api.example.com".into(),
+            port: 443,
+            refresh_seconds: Some(60),
+        };
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(s, "\"api.example.com:443\"");
+    }
+
+    #[test]
+    fn rejects_empty_hostname() {
+        let raw = "\":443\"";
+        let err = serde_json::from_str::<MemberAddrSpec>(raw).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn rejects_hostname_with_slash() {
+        let raw = "\"api/example.com:443\"";
+        let err = serde_json::from_str::<MemberAddrSpec>(raw).unwrap_err();
+        assert!(
+            err.to_string().contains("must not contain `/`"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn rejects_bad_port() {
+        let raw = "\"api.example.com:not-a-port\"";
+        let err = serde_json::from_str::<MemberAddrSpec>(raw).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid port"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn member_config_parses_mixed_yaml_with_both_shapes() {
+        // The real operator surface — a YAML pool with one IP
+        // member and one hostname member side by side.
+        let yaml = "\
+addr: 10.0.1.10:8080
+";
+        let m: MemberConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(m.addr, MemberAddrSpec::Ip(_)));
+        assert_eq!(m.addr.port(), 8080);
+
+        let yaml = "\
+addr: api.example.com:443
+";
+        let m: MemberConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(m.addr, MemberAddrSpec::Hostname { .. }));
+        assert_eq!(m.addr.hostname(), Some("api.example.com"));
+        assert_eq!(m.addr.port(), 443);
+    }
+
+    #[test]
+    fn display_matches_operator_authored_shape() {
+        let ip: MemberAddrSpec = serde_json::from_str("\"10.0.0.1:8080\"").unwrap();
+        assert_eq!(ip.display(), "10.0.0.1:8080");
+        let host: MemberAddrSpec = serde_json::from_str("\"api.example.com:443\"").unwrap();
+        assert_eq!(host.display(), "api.example.com:443");
+    }
+}
+
 fn default_pool_max_idle_per_host() -> usize {
     32
 }
@@ -999,9 +1234,172 @@ pub enum LbStrategy {
     P2c,
 }
 
+/// 2026-05-11 (PR-DNS-1) — wire shape for `MemberConfig.addr`.
+/// Operators can address a backend by either an IP literal or a
+/// hostname; YAML keeps the single-string form for both, while the
+/// internal enum gives the boot path enough structure to resolve
+/// hostnames and pick a sensible SNI default.
+///
+/// **Serde shape.** `#[serde(untagged)]` against a single string —
+/// we first try `SocketAddr::from_str` for the strict "IP:port"
+/// case, falling back to a `host:port` hostname split. This means
+/// the YAML stays:
+///
+/// ```yaml
+/// members:
+///   - addr: 10.0.1.10:8080         # parses as Ip
+///   - addr: api.example.com:443    # parses as Hostname
+/// ```
+///
+/// without operators having to opt into a different tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemberAddrSpec {
+    /// IP:port literal — exactly the original behaviour.
+    Ip(SocketAddr),
+    /// Hostname + port. Resolved via DNS at boot/config-load time;
+    /// multi-A records expand into N synthetic members (Phase 1).
+    /// Phase 2 (not in this commit) adds background refresh on TTL.
+    Hostname {
+        host: String,
+        port: u16,
+        /// Override the DNS-honored TTL refresh cadence (seconds).
+        /// `None` honours the record's TTL (Phase 2 honours this;
+        /// Phase 1 ignores the field, kept on the wire so YAML
+        /// authored against the spec doesn't break later).
+        refresh_seconds: Option<u32>,
+    },
+}
+
+impl MemberAddrSpec {
+    /// Port number the operator configured.
+    pub fn port(&self) -> u16 {
+        match self {
+            Self::Ip(sa) => sa.port(),
+            Self::Hostname { port, .. } => *port,
+        }
+    }
+
+    /// Hostname for SNI / outbound `Host:` header. `None` for IP
+    /// literals (the existing path picks `addr.to_string()` or
+    /// `host_header` in that case); `Some(host)` for hostnames so
+    /// the forwarder can default SNI to the configured name
+    /// without operators having to repeat themselves in
+    /// `host_header`.
+    pub fn hostname(&self) -> Option<&str> {
+        match self {
+            Self::Ip(_) => None,
+            Self::Hostname { host, .. } => Some(host.as_str()),
+        }
+    }
+
+    /// Display form for operator-facing surfaces (audit log,
+    /// dashboard, error messages). Hostname members render as
+    /// `host:port`; IP members render as `ip:port`.
+    pub fn display(&self) -> String {
+        match self {
+            Self::Ip(sa) => sa.to_string(),
+            Self::Hostname { host, port, .. } => format!("{host}:{port}"),
+        }
+    }
+}
+
+impl std::fmt::Display for MemberAddrSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display())
+    }
+}
+
+impl<'de> Deserialize<'de> for MemberAddrSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        // Two accepted shapes:
+        //   - bare string:  `addr: api.example.com:443`
+        //   - tagged map:   `addr: { host: api.example.com, port: 443, refresh_seconds: 60 }`
+        //
+        // We delegate to `serde_yaml::Value` (via `serde_json::Value` —
+        // serde-compatible across both formats) so the same code
+        // works for YAML config + JSON dashboard PUTs.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Str(String),
+            Map {
+                host: String,
+                port: u16,
+                #[serde(default)]
+                refresh_seconds: Option<u32>,
+            },
+        }
+
+        match Raw::deserialize(deserializer)? {
+            Raw::Str(s) => parse_addr_string(&s).map_err(D::Error::custom),
+            Raw::Map { host, port, refresh_seconds } => {
+                validate_hostname(&host).map_err(D::Error::custom)?;
+                Ok(MemberAddrSpec::Hostname { host, port, refresh_seconds })
+            }
+        }
+    }
+}
+
+impl Serialize for MemberAddrSpec {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        // Stable wire shape — always the single-string form so
+        // round-trips through the dashboard PUT path stay tidy.
+        ser.serialize_str(&self.display())
+    }
+}
+
+/// Parse `addr: <string>` into a `MemberAddrSpec`. Tries the strict
+/// `SocketAddr` form first (so `127.0.0.1:8080` always wins);
+/// falls back to `host:port` split if that fails.
+fn parse_addr_string(s: &str) -> Result<MemberAddrSpec, String> {
+    use std::str::FromStr;
+    if let Ok(sa) = SocketAddr::from_str(s) {
+        return Ok(MemberAddrSpec::Ip(sa));
+    }
+    // `host:port` split — port is everything after the last `:`,
+    // which keeps IPv6 strings (`[::1]:8080`) routed through the
+    // earlier `SocketAddr` branch.
+    let (host, port_str) = s.rsplit_once(':').ok_or_else(|| {
+        format!("invalid address `{s}` — expected `IP:port` or `host:port`")
+    })?;
+    let port: u16 = port_str.parse().map_err(|_| {
+        format!("invalid port `{port_str}` in `{s}`")
+    })?;
+    validate_hostname(host)?;
+    Ok(MemberAddrSpec::Hostname {
+        host: host.to_string(),
+        port,
+        refresh_seconds: None,
+    })
+}
+
+/// Surface-level hostname sanity. We're not running RFC 1035 — we
+/// just want to reject obviously-broken input (empty host, host
+/// containing `/`, host starting with `-`) so the resolver gets a
+/// fair chance. Wider validation is the resolver's job.
+fn validate_hostname(host: &str) -> Result<(), String> {
+    if host.is_empty() {
+        return Err("hostname must not be empty".into());
+    }
+    if host.contains('/') || host.contains(' ') {
+        return Err(format!("invalid hostname `{host}` — must not contain `/` or whitespace"));
+    }
+    if host.starts_with('-') || host.ends_with('-') {
+        return Err(format!("invalid hostname `{host}` — must not start or end with `-`"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct MemberConfig {
-    pub addr: SocketAddr,
+    /// Backend address — either an IP literal (`10.0.1.10:8080`) or
+    /// a hostname (`api.example.com:443`). Hostnames are resolved
+    /// at boot/config-load and expanded into one `Member` per
+    /// resolved IP, so the LB strategies (round-robin, p2c,
+    /// consistent-hash) distribute across all A/AAAA results.
+    pub addr: MemberAddrSpec,
     #[serde(default = "default_weight")]
     pub weight: u32,
     #[serde(default)]
@@ -1507,11 +1905,28 @@ impl Default for TrustRecoveryConfig {
 /// counter (never decays); once `block_at` is reached, the IP is
 /// blocked at the data plane until an operator runs
 /// `PUT /api/risk/{ip}/reset`.
-#[derive(Clone, Debug, Deserialize)]
+///
+/// 2026-05-10 — `enabled` defaults to `false`. Strike-Block is
+/// now opt-in because (a) the contract's `X-WAF-Risk-Score`
+/// requires accumulation+decay semantics that can be tested in
+/// isolation, and Strike-Block's never-decay counter can keep
+/// an IP locked even after the cumulative score has decayed
+/// below threshold; and (b) operators caught off-guard by a
+/// permanent block found the YAML knob hard to discover.
+/// Enable from Dashboard → Traffic Gates → Strike-Block card →
+/// Edit, audit-mutated PUT /api/gates/strikes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StrikeConfig {
-    /// Number of strikes that triggers a permanent block. Per the
-    /// user-confirmed default, strikes never decay — the operator
-    /// must reset them via the audit-mutation pipeline.
+    /// Master enable/disable for the Strike-Block gate. When
+    /// `false`, `is_strike_blocked()` always returns `false` —
+    /// detector hits still increment the lifetime counter
+    /// (operators see it climb in `/api/risk`), but the data
+    /// plane does not 403 on threshold cross. Defaults to
+    /// `false`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Number of strikes that triggers the gate. Only honored
+    /// when `enabled = true`.
     #[serde(default = "default_strike_block_at")]
     pub block_at: u32,
 }
@@ -1523,6 +1938,7 @@ fn default_strike_block_at() -> u32 {
 impl Default for StrikeConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             block_at: default_strike_block_at(),
         }
     }
@@ -2719,6 +3135,62 @@ state:
     // -----------------------------------------------------------------------
     // validate() tests
     // -----------------------------------------------------------------------
+
+    // 2026-05-11 PROXY-02 — regex / glob routes must be rejected
+    // at validate() time because the resolver only supports
+    // prefix lookup today; without this guard, operators ship
+    // routes that never fire.
+    #[test]
+    fn validate_rejects_match_type_regex() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: api-v1
+    path: "/api/v[0-9]+"
+    match_type: regex
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+"#;
+        let err = super::load_config_str(yaml).expect_err("regex routes must fail validate");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("regex"), "got: {msg}");
+        assert!(msg.contains("not implemented"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_rejects_match_type_glob() {
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: api-glob
+    path: "/api/*"
+    match_type: glob
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:9000"
+state:
+  backend: in_memory
+"#;
+        let err = super::load_config_str(yaml).expect_err("glob routes must fail validate");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("glob"), "got: {msg}");
+        assert!(msg.contains("not implemented"), "got: {msg}");
+    }
 
     #[test]
     fn validate_rejects_empty_listeners() {

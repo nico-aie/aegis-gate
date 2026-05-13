@@ -535,29 +535,29 @@ mod tests {
     }
 
     #[test]
-    fn apply_forces_locked_classes_back_on_under_compliance() {
+    fn apply_does_not_force_classes_back_on_while_lock_is_deferred() {
+        // 2026-05-10 — compliance lock is deferred. PCI mode is
+        // declared but the snapshot's per-class mask is applied
+        // verbatim; sqli is NOT forced back on. Restore the
+        // force-back behavior by repopulating COMPLIANCE_PINNED.
         let mask = SharedDetectorMask::default();
-        // Snapshot disables sqli — PCI mode requires sqli ON.
         let snap = snap_for(&full_state_disabling(DetectorClass::Sqli));
         let outcome = apply_snapshot_with_compliance(
             snap,
             &mask,
             &[ComplianceMode::Pci],
         );
-        match outcome {
-            ApplyOutcome::AppliedWithCompliance { forced } => {
-                assert!(forced.contains(&"sqli".to_string()));
-            }
-            other => panic!("expected AppliedWithCompliance, got {other:?}"),
-        }
-        // sqli is back on after the clamp.
-        assert!(mask.load().is_enabled(DetectorClass::Sqli));
+        assert_eq!(outcome, ApplyOutcome::Applied);
+        assert!(
+            !mask.load().is_enabled(DetectorClass::Sqli),
+            "lock is deferred — sqli stays off as requested by snapshot"
+        );
     }
 
     #[test]
-    fn apply_preserves_unrelated_disables_when_clamping() {
-        // Snapshot disables sqli (pinned by PCI) AND recon (NOT pinned).
-        // Clamp should force sqli back on but leave recon disabled.
+    fn apply_preserves_unrelated_disables() {
+        // Snapshot disables sqli + recon. With the compliance lock
+        // deferred, both stay off.
         let mask = SharedDetectorMask::default();
         let state = MaskState::new(
             DetectorMask::all_enabled()
@@ -571,7 +571,7 @@ mod tests {
             &[ComplianceMode::Pci],
         );
         let live = mask.load();
-        assert!(live.is_enabled(DetectorClass::Sqli), "sqli forced on");
+        assert!(!live.is_enabled(DetectorClass::Sqli), "sqli stays off (deferred)");
         assert!(!live.is_enabled(DetectorClass::Recon), "recon stays off");
     }
 
@@ -614,9 +614,11 @@ mod tests {
     }
 
     #[test]
-    fn live_apply_forces_locked_classes_back_on_under_pci() {
+    fn live_apply_does_not_force_classes_on_while_lock_is_deferred() {
+        // 2026-05-10 — compliance lock is deferred. Operator-disabled
+        // sqli + xss stay off even when PCI mode is active. Restore
+        // the force-back behavior by repopulating COMPLIANCE_PINNED.
         let mask = SharedDetectorMask::default();
-        // Operator-disabled sqli + xss; PCI pins both.
         mask.store_state(MaskState::new(
             DetectorMask::all_enabled()
                 .with(DetectorClass::Sqli, false)
@@ -624,22 +626,18 @@ mod tests {
         ));
 
         let outcome = apply_live_mask_with_compliance(&mask, &[ComplianceMode::Pci]);
-        match outcome {
-            ApplyOutcome::AppliedWithCompliance { forced } => {
-                assert!(forced.contains(&"sqli".to_string()));
-                assert!(forced.contains(&"xss".to_string()));
-            }
-            other => panic!("expected AppliedWithCompliance, got {other:?}"),
-        }
+        assert_eq!(outcome, ApplyOutcome::Applied);
         let live = mask.load();
-        assert!(live.is_enabled(DetectorClass::Sqli));
-        assert!(live.is_enabled(DetectorClass::Xss));
+        assert!(!live.is_enabled(DetectorClass::Sqli), "sqli stays off (deferred)");
+        assert!(!live.is_enabled(DetectorClass::Xss), "xss stays off (deferred)");
     }
 
     #[test]
-    fn live_apply_preserves_unrelated_disables() {
+    fn live_apply_preserves_all_disables_while_lock_is_deferred() {
+        // 2026-05-10 — compliance lock is deferred. Both sqli (was
+        // pinned) and recon (never pinned) stay off when PCI mode is
+        // declared.
         let mask = SharedDetectorMask::default();
-        // Recon is NOT pinned by any compliance profile.
         mask.store_state(MaskState::new(
             DetectorMask::all_enabled()
                 .with(DetectorClass::Sqli, false)
@@ -648,12 +646,15 @@ mod tests {
 
         apply_live_mask_with_compliance(&mask, &[ComplianceMode::Pci]);
         let live = mask.load();
-        assert!(live.is_enabled(DetectorClass::Sqli), "sqli forced on");
+        assert!(!live.is_enabled(DetectorClass::Sqli), "sqli stays off (deferred)");
         assert!(!live.is_enabled(DetectorClass::Recon), "recon stays off");
     }
 
     #[test]
-    fn live_apply_clamps_per_tier_overrides() {
+    fn live_apply_does_not_clamp_per_tier_overrides_while_deferred() {
+        // 2026-05-10 — compliance lock is deferred. Per-tier overrides
+        // pass through verbatim; sqli stays off in the High override
+        // even when PCI is active.
         let mask = SharedDetectorMask::default();
         mask.store_state(
             MaskState::new(DetectorMask::all_enabled()).with_override(
@@ -663,15 +664,13 @@ mod tests {
         );
 
         let outcome = apply_live_mask_with_compliance(&mask, &[ComplianceMode::Pci]);
-        match outcome {
-            ApplyOutcome::AppliedWithCompliance { forced } => {
-                assert!(forced.iter().any(|s| s.contains("override[high]:sqli")));
-            }
-            other => panic!("expected AppliedWithCompliance, got {other:?}"),
-        }
+        assert_eq!(outcome, ApplyOutcome::Applied);
         let live = mask.load_state();
         let override_high = live.override_for(Tier::High).expect("override preserved");
-        assert!(override_high.is_enabled(DetectorClass::Sqli));
+        assert!(
+            !override_high.is_enabled(DetectorClass::Sqli),
+            "lock is deferred — per-tier sqli override stays off"
+        );
     }
 
     #[test]

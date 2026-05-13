@@ -9,9 +9,138 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+
+/// P4 (2026-05-11) — per-entry hit-counter window. Each entry
+/// in the list gets a small ring of 1-hour buckets covering the
+/// last 24 hours so the dashboard can render `HITS · 1h` and
+/// `HITS · 24h` without operator-supplied window arithmetic.
+///
+/// Ring shape: 24 buckets × 1-hour granularity. The dashboard
+/// currently asks for 1h / 24h windows; finer granularity would
+/// need bucket size + count adjustments. Wall-clock seconds are
+/// the addressable unit (`SystemTime::now()`).
+///
+/// Memory: 24 × 8 bytes per ring + DashMap overhead = ~256 bytes
+/// per entry. A list with 10k entries → 2.5 MB. Fine.
+const HIT_BUCKET_COUNT: usize = 24;
+const HIT_BUCKET_SECS: u64 = 3600;
+
+struct EntryHitRing {
+    buckets: [AtomicU64; HIT_BUCKET_COUNT],
+    last_bucket_ts: AtomicU64,
+}
+
+impl EntryHitRing {
+    fn new() -> Self {
+        Self {
+            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            last_bucket_ts: AtomicU64::new(0),
+        }
+    }
+
+    fn bucket_idx(secs: u64) -> usize {
+        ((secs / HIT_BUCKET_SECS) as usize) % HIT_BUCKET_COUNT
+    }
+
+    fn record(&self, now_secs: u64) {
+        let idx = Self::bucket_idx(now_secs);
+        let prev_ts = self.last_bucket_ts.swap(now_secs, Ordering::Relaxed);
+        let prev_bucket = now_secs / HIT_BUCKET_SECS;
+        let prev_bucket_prev = prev_ts / HIT_BUCKET_SECS;
+        let span = HIT_BUCKET_COUNT as u64;
+        if prev_bucket.saturating_sub(prev_bucket_prev) >= span {
+            // Ring fully expired; reset every bucket.
+            for b in &self.buckets {
+                b.store(0, Ordering::Relaxed);
+            }
+        } else if prev_bucket != prev_bucket_prev {
+            // Rolled into a new bucket — reset only the one we're
+            // about to write so older buckets remain summable
+            // until their turn rotates.
+            self.buckets[idx].store(0, Ordering::Relaxed);
+        }
+        self.buckets[idx].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Sum the buckets covering the last `window_secs` seconds.
+    /// `window_secs` is rounded UP to the next bucket boundary
+    /// because the ring's granularity is `HIT_BUCKET_SECS`.
+    fn snapshot(&self, now_secs: u64, window_secs: u64) -> u64 {
+        let last = self.last_bucket_ts.load(Ordering::Relaxed);
+        let last_bucket = last / HIT_BUCKET_SECS;
+        let now_bucket = now_secs / HIT_BUCKET_SECS;
+        // How many buckets back to read (inclusive of current).
+        let mut want = (window_secs + HIT_BUCKET_SECS - 1) / HIT_BUCKET_SECS;
+        if want == 0 {
+            want = 1;
+        }
+        if want > HIT_BUCKET_COUNT as u64 {
+            want = HIT_BUCKET_COUNT as u64;
+        }
+        let oldest_bucket = now_bucket.saturating_sub(want - 1);
+        if last_bucket < oldest_bucket {
+            // No hits inside the window.
+            return 0;
+        }
+        let mut total = 0u64;
+        for b in (oldest_bucket..=now_bucket).rev() {
+            let idx = (b as usize) % HIT_BUCKET_COUNT;
+            // We can't tell "this bucket holds data for B" vs
+            // "for B - HIT_BUCKET_COUNT" from the bucket itself,
+            // so use `last_bucket_ts` to bound: any bucket whose
+            // expected time is older than `last_bucket -
+            // HIT_BUCKET_COUNT` is implicitly empty.
+            if last_bucket.saturating_sub(b) < HIT_BUCKET_COUNT as u64 {
+                total = total.saturating_add(self.buckets[idx].load(Ordering::Relaxed));
+            }
+        }
+        total
+    }
+}
+
+fn current_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
+}
+
+/// Per-list per-entry hit counter. Built once when the
+/// `AccessListStore` is constructed; the data plane increments
+/// inside `matches()` so callers don't have to remember.
+#[derive(Default, Clone)]
+struct AccessListHits {
+    rings: Arc<DashMap<String, Arc<EntryHitRing>>>,
+}
+
+impl AccessListHits {
+    fn record(&self, entry_id: &str) {
+        let now = current_secs();
+        let entry = self
+            .rings
+            .entry(entry_id.to_string())
+            .or_insert_with(|| Arc::new(EntryHitRing::new()));
+        entry.record(now);
+    }
+
+    fn snapshot_window(&self, window_secs: u64) -> HashMap<String, u64> {
+        let now = current_secs();
+        self.rings
+            .iter()
+            .map(|kv| (kv.key().clone(), kv.value().snapshot(now, window_secs)))
+            .collect()
+    }
+
+    fn forget(&self, entry_id: &str) {
+        self.rings.remove(entry_id);
+    }
+}
 
 /// Boundary trait the access-list matcher consults for
 /// `kind: country` entries. Implemented in `aegis-proxy` by
@@ -34,6 +163,17 @@ pub struct AccessListEntry {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// For whitelist: list of detector / action names to bypass.
     /// `vec!["all"]` triggers an extra confirm in the UI.
+    ///
+    /// HIGH-SO-01 (2026-05-12) — `#[serde(default)]` so the
+    /// no-bypass case (an empty `Vec`) can be omitted on the
+    /// wire. The dashboard's Top Attackers Block POST shipped
+    /// without this field for a while and the resulting
+    /// `missing field bypass` 400 broke the SOC's primary
+    /// "click Block on attacker" workflow end-to-end. The
+    /// dashboard fix in the same PR explicitly sends `bypass: []`;
+    /// this belt protects future callers from tripping the same
+    /// wire.
+    #[serde(default)]
     pub bypass: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -74,6 +214,11 @@ pub struct AccessListStore {
     inner: Arc<Mutex<AccessListState>>,
     /// Compliance clamp applied to every put / bulk insert.
     pub clamp: ComplianceClamp,
+    /// P4 (2026-05-11) — per-entry hit counter. Recorded inside
+    /// `matches()` so callers can't forget to increment. Read by
+    /// the `/api/blacklist/hits?window=N` + `/api/whitelist/hits`
+    /// endpoints.
+    hits: AccessListHits,
 }
 
 impl AccessListStore {
@@ -85,7 +230,16 @@ impl AccessListStore {
         Self {
             inner: Arc::new(Mutex::new(AccessListState::default())),
             clamp,
+            hits: AccessListHits::default(),
         }
+    }
+
+    /// P4 — windowed per-entry hit snapshot. Returns
+    /// `{entry_id: count}` over the last `window_secs` seconds,
+    /// rounded up to the 1-hour bucket granularity. Entries with
+    /// zero recorded hits since boot are omitted.
+    pub fn hit_counts(&self, window_secs: u64) -> HashMap<String, u64> {
+        self.hits.snapshot_window(window_secs)
     }
 
     pub fn list(&self) -> Vec<AccessListEntry> {
@@ -119,8 +273,18 @@ impl AccessListStore {
     }
 
     pub fn delete(&self, id: &str) -> bool {
-        let mut s = self.inner.lock().expect("access list poisoned");
-        s.entries.remove(id).is_some()
+        let removed = {
+            let mut s = self.inner.lock().expect("access list poisoned");
+            s.entries.remove(id).is_some()
+        };
+        if removed {
+            // Forget the hit history too — keeping it around would
+            // surface stale counts if an operator added an entry,
+            // it racked up hits, removed it, and re-added with the
+            // same id.
+            self.hits.forget(id);
+        }
+        removed
     }
 
     /// Runtime check: does ANY entry in the list match the given
@@ -174,7 +338,11 @@ impl AccessListStore {
                 _ => false,
             };
             if matched {
-                return Some(entry.id.clone());
+                let id = entry.id.clone();
+                // P4 — record the hit inside `matches()` so callers
+                // can't forget to increment.
+                self.hits.record(&id);
+                return Some(id);
             }
         }
         None
@@ -282,6 +450,24 @@ mod tests {
             bypass: vec![],
             created_at: chrono::Utc::now(),
         }
+    }
+
+    #[test]
+    fn deserialize_accepts_body_without_bypass_field() {
+        // HIGH-SO-01 (2026-05-12) — the dashboard's Top Attackers
+        // Block POST shipped for a while without `bypass`. The
+        // server-side belt is `#[serde(default)]` so future
+        // callers omitting the no-bypass case don't trip a 400.
+        let raw = r#"{
+            "id": "qa",
+            "kind": "ip",
+            "value": "203.0.113.99",
+            "note": "no bypass field",
+            "created_at": "2026-05-12T00:00:00Z"
+        }"#;
+        let e: AccessListEntry = serde_json::from_str(raw)
+            .expect("body without `bypass` must deserialize");
+        assert!(e.bypass.is_empty(), "missing bypass should default to []");
     }
 
     #[test]

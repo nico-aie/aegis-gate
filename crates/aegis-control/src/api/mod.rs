@@ -20,6 +20,7 @@ pub mod mtls;
 pub mod mtls_ca_bundle;
 pub mod mtls_mode;
 pub mod mutation;
+pub mod response_filter;
 pub mod risk;
 pub mod rollback;
 pub mod routes;

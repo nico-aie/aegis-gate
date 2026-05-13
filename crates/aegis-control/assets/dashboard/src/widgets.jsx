@@ -496,10 +496,32 @@ function aegisToast(message, kind = 'info', detail = null) {
   }));
 }
 
+// P9 (2026-05-11) — page-title-anchored Refresh button. Operators
+// hit Refresh far more often than the destructive top-right
+// actions ("+ New rule", "+ Add route", etc.); putting them in the
+// same cluster meant a "Refresh" muscle-memory move was one
+// careful click away from a creation flow. This icon-only
+// circular button sits next to the page title so it's the natural
+// first click on a page load, leaving top-right for primary
+// actions.
+function PageTitleRefresh({ onClick, label }) {
+  return React.createElement(
+    'button',
+    {
+      type: 'button',
+      onClick,
+      className: 'refresh-icon',
+      title: label || 'Refresh this page',
+      'aria-label': 'Refresh',
+    },
+    React.createElement(window.I.Refresh, null),
+  );
+}
+
 Object.assign(window, {
   I, Sparkline, StatTile, TrafficChart, Donut, WorldMap, RiskHeatmap,
   RiskMeter, ActionPill, TierPill, Drawer, StackedBar, BarList, SectionHeader,
-  ToastContainer, aegisToast,
+  ToastContainer, aegisToast, PageTitleRefresh,
   // FIX 2026-05-04 — exposed so PageOverview can resolve country
   // codes to centroid coords before passing blips to WorldMap.
   centroidFor,

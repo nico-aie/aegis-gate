@@ -1,6 +1,33 @@
 /* global React */
 const { useState: useStateP, useEffect: useEffectP, useMemo: useMemoP, useRef: useRefP, Fragment } = React;
 
+// LOW-ADM-05 (2026-05-12) — 24-hour clock helpers.  Without
+// these, `Date.toLocaleString()` / `Date.toLocaleTimeString()`
+// rendered en-US 12-hour AM/PM in places (Config history,
+// HEARTBEAT column) while the rest of the dashboard read as
+// 24-hour, which the QA pass flagged as inconsistent.  Pin
+// `hour12: false` here so every wall-clock string the dashboard
+// emits reads the same way.
+//
+// Two helpers because the call sites need different precision:
+//   - `fmtClockTime(d)`         → "12:28:45"
+//   - `fmtAbsoluteTimestamp(d)` → "May 12, 12:28:45"
+// Both fall back to "—" for null / invalid Dates.
+function fmtClockTime(d) {
+  const date = d instanceof Date ? d : (d ? new Date(d) : null);
+  if (!date || isNaN(date.getTime())) return '—';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+function fmtAbsoluteTimestamp(d) {
+  const date = d instanceof Date ? d : (d ? new Date(d) : null);
+  if (!date || isNaN(date.getTime())) return '—';
+  return date.toLocaleString([], {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    month: 'short', day: 'numeric',
+    hour12: false,
+  });
+}
+
 // ============== OVERVIEW ==============
 // Color palette for OWASP categories — used to overlay a colour on
 // API-returned `name` strings (which are stable identifiers like
@@ -21,23 +48,6 @@ const CAT_COLOR = {
 };
 function colorFor(name) { return CAT_COLOR[name] || '#6B7280'; }
 
-// CQF-T6 — live RiskHeatmap. Reads from useTopRiskPathsApi
-// (audit ring grouped by path → max risk per path → top 8).
-// Renders an honest empty state when no audit events have
-// arrived yet, rather than the previous hardcoded JSX rows.
-function RiskHeatmapLive() {
-  const { rows } = window.useTopRiskPathsApi(200, 8);
-  if (!rows || rows.length === 0) {
-    return (
-      <div style={{ padding: 18, fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic', textAlign: 'center' }}>
-        No risk-bearing audit events in the recent window.
-        Drive some traffic (or a probe) to populate the heatmap.
-      </div>
-    );
-  }
-  return <window.RiskHeatmap rows={rows} h={200} />;
-}
-
 function PageOverview() {
   const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
   // 2026-05-03 — Overview Upstream card used to read
@@ -49,7 +59,18 @@ function PageOverview() {
   const upstreamsLive = window.useUpstreamsApi
     ? window.useUpstreamsApi()
     : { data: null };
-  const tsApi = window.useTimeseriesApi(60, 1);    // /api/stats/timeseries — 60s window, 1s buckets
+  // LOW-SO-01 (2026-05-12) — the 1m/5m/15m/1h pills below now
+  // drive the timeseries window + bucket size so the chart and
+  // its subtitle stay in sync. Buckets pick the round number
+  // that keeps the rendered series under ~120 points.
+  const TRAFFIC_WINDOWS = [
+    { label: '1m',  windowSecs: 60,    bucketSecs: 1   },
+    { label: '5m',  windowSecs: 300,   bucketSecs: 5   },
+    { label: '15m', windowSecs: 900,   bucketSecs: 10  },
+    { label: '1h',  windowSecs: 3600,  bucketSecs: 30  },
+  ];
+  const [trafficWindow, setTrafficWindow] = useStateP(TRAFFIC_WINDOWS[0]);
+  const tsApi = window.useTimeseriesApi(trafficWindow.windowSecs, trafficWindow.bucketSecs);
   const distApi = window.useAttacksDistributionApi(900); // /api/attacks/distribution — 15m
   const topApi = window.useAttacksTopApi(900, 5);  // /api/attacks/top — 5 attackers, 15m
   const tick = window.useTicking(2000);
@@ -191,13 +212,25 @@ function PageOverview() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Overview</h1>
+          <h1 className="page-title">
+            Overview
+            <window.PageTitleRefresh
+              onClick={() => {
+                stats.reload && stats.reload();
+                tsApi.reload && tsApi.reload();
+                distApi.reload && distApi.reload();
+                topApi.reload && topApi.reload();
+                upstreamsLive.reload && upstreamsLive.reload();
+              }}
+              label="Refresh all Overview tiles"
+            />
+          </h1>
           <p className="page-subtitle">Realtime WAF traffic monitoring · last update {tick}s</p>
         </div>
         <div className="page-actions">
-          <button className="btn"><window.I.Refresh /> Refresh</button>
           <button className="btn"><window.I.Download /> Export</button>
           <button className="btn primary"><window.I.External /> Open Grafana</button>
         </div>
@@ -346,11 +379,19 @@ function PageOverview() {
           <div className="card-head">
             <div>
               <div className="card-title">Traffic vs Blocked</div>
-              <div className="card-sub">Realtime · 60s window · 1s buckets</div>
+              <div className="card-sub">
+                Realtime · {trafficWindow.label} window · {trafficWindow.bucketSecs}s buckets
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
-              {['1m', '5m', '15m', '1h'].map((w, i) => (
-                <button key={w} className={`chip ${i === 0 ? 'active' : ''}`}>{w}</button>
+              {TRAFFIC_WINDOWS.map(w => (
+                <button
+                  key={w.label}
+                  className={`chip ${trafficWindow.label === w.label ? 'active' : ''}`}
+                  onClick={() => setTrafficWindow(w)}
+                >
+                  {w.label}
+                </button>
               ))}
             </div>
           </div>
@@ -376,27 +417,6 @@ function PageOverview() {
             </div>
           </div>
         </div>
-      </div>
-
-      {/* Risk heatmap (wow #2) */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head">
-          <div>
-            <div className="card-title">Risk heatmap — top paths × intensity</div>
-            <div className="card-sub">
-              Top 8 paths by max risk score over the most-recent
-              200 audit events. Live · derived from /api/audit/since.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 10, color: 'var(--ink-dim)' }}>
-            <span>low</span>
-            {['#1E2329','#3B2A1A','#6B4710','#A87715','#E0A415','#FCD535'].map(c => (
-              <span key={c} style={{ width: 14, height: 10, background: c, display: 'inline-block', borderRadius: 1 }} />
-            ))}
-            <span>high</span>
-          </div>
-        </div>
-        <RiskHeatmapLive />
       </div>
 
       {/* Top attackers */}
@@ -646,6 +666,32 @@ function RequestDetail({ data }) {
 }
 
 // ============== LIVE FEED ==============
+// PR-UX-A3 (2026-05-12) — Suggested action heuristic. Same
+// signal the operator would reach for: bias toward block when
+// the event already blocked + carried meaningful risk, suggest
+// investigation when a request was challenged or the risk
+// trend is elevated, otherwise stay silent. Returns a small
+// `{label, tone, title}` so the cell renders consistently with
+// the rest of the dashboard's pill palette.
+function suggestedAction(ev) {
+  if (!ev) return null;
+  const action = (ev.action || '').toLowerCase();
+  const risk = typeof ev.risk === 'number' ? ev.risk : null;
+  if (action === 'block' && risk != null && risk >= 70) {
+    return { label: 'Block IP', tone: 'down', title: `Risk ${risk} · already blocked once — consider adding to blacklist` };
+  }
+  if (action === 'challenge') {
+    return { label: 'Investigate', tone: 'warn', title: 'Challenge fired — review request shape before allowing' };
+  }
+  if (action === 'allow' && risk != null && risk >= 60) {
+    return { label: 'Watch', tone: 'warn', title: `Risk ${risk} on an allowed request — IP trending` };
+  }
+  if (action === 'block') {
+    return { label: 'Review', tone: 'neutral', title: 'Blocked at low risk — verify rule scope' };
+  }
+  return null;
+}
+
 function PageLiveFeed() {
   const [paused, setPaused] = useStateP(false);
   const { events, connected } = window.useRealLiveFeed(80, paused);
@@ -653,6 +699,9 @@ function PageLiveFeed() {
   const [filterTier, setFilterTier] = useStateP('all');
   const [search, setSearch] = useStateP('');
   const [selected, setSelected] = useStateP(null);
+  // PR-UX-A3 keyboard nav cursor — index into `recent`.
+  const [cursorIdx, setCursorIdx] = useStateP(-1);
+  const searchInputRef = useRefP(null);
 
   // CQF-T4 — drawer footer actions. Block IP / Whitelist write
   // through the audit-mutated POST endpoints shipped in CQF-T2.
@@ -720,8 +769,52 @@ function PageLiveFeed() {
 
   const recent = filtered.slice().reverse();
 
+  // PR-UX-A3 (2026-05-12) — keyboard shortcuts. j/k advance the
+  // selection cursor, Enter opens the drawer for the cursor row,
+  // Esc closes the drawer, Space toggles pause, `/` focuses the
+  // search input. Mirrors Gmail/Vim conventions familiar to most
+  // SOC analysts. Disabled while the user is typing in an input
+  // so j/k don't eat keystrokes inside the search box.
+  useEffectP(() => {
+    const isTextInput = (el) => {
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+    };
+    const onKey = (ev) => {
+      if (isTextInput(document.activeElement) && ev.key !== 'Escape') return;
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (ev.key === 'j') {
+        ev.preventDefault();
+        setCursorIdx(i => Math.min(i + 1, recent.length - 1));
+      } else if (ev.key === 'k') {
+        ev.preventDefault();
+        setCursorIdx(i => Math.max(i - 1, 0));
+      } else if (ev.key === 'Enter') {
+        if (cursorIdx >= 0 && cursorIdx < recent.length) {
+          ev.preventDefault();
+          setSelected(recent[cursorIdx]);
+        }
+      } else if (ev.key === 'Escape') {
+        if (selected) {
+          ev.preventDefault();
+          setSelected(null);
+        }
+      } else if (ev.key === ' ') {
+        ev.preventDefault();
+        setPaused(p => !p);
+      } else if (ev.key === '/') {
+        ev.preventDefault();
+        if (searchInputRef.current) searchInputRef.current.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [recent, cursorIdx, selected]);
+
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Live Feed</h1>
@@ -739,12 +832,15 @@ function PageLiveFeed() {
           </button>
         </div>
       </div>
-      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <window.I.Activity />
         <span>
           <strong>Live Feed</strong> shows every <em>request</em> the WAF inspected
           (allow / block / challenge). For configuration mutations and a
           chained, durable trail, see <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail →</a>.
+        </span>
+        <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10 }}>
+          <kbd>j</kbd>/<kbd>k</kbd> nav · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close · <kbd>Space</kbd> pause · <kbd>/</kbd> search
         </span>
       </div>
 
@@ -765,7 +861,14 @@ function PageLiveFeed() {
           </select>
           <div style={{ position: 'relative', flex: 1, maxWidth: 320 }}>
             <span style={{ position: 'absolute', left: 8, top: 7, color: 'var(--ink-faint)' }}><window.I.Search /></span>
-            <input className="input" style={{ paddingLeft: 28 }} placeholder="Filter by IP, path…" value={search} onChange={e => setSearch(e.target.value)} />
+            <input
+              ref={searchInputRef}
+              className="input"
+              style={{ paddingLeft: 28 }}
+              placeholder="Filter by IP, path…   (press / to focus)"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
           </div>
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
             <span className={`pill ${connected ? 'ok' : 'warn'}`} style={{ marginRight: 6 }}>
@@ -791,12 +894,21 @@ function PageLiveFeed() {
                 <th style={{ width: 80 }}>Risk</th>
                 <th style={{ width: 80 }}>Action</th>
                 <th style={{ width: 160 }}>Rules</th>
+                <th
+                  style={{ width: 100 }}
+                  title="Suggested next step based on action + risk score"
+                >Suggested</th>
                 <th style={{ width: 60 }}></th>
               </tr>
             </thead>
             <tbody>
-              {recent.map(e => (
-                <tr key={e.id} className={e.id === recent[0]?.id ? 'flash' : ''} onClick={() => setSelected(e)}>
+              {recent.map((e, idx) => (
+                <tr
+                  key={e.id}
+                  className={`${e.id === recent[0]?.id ? 'flash' : ''} ${idx === cursorIdx ? 'kb-cursor' : ''}`}
+                  style={idx === cursorIdx ? { outline: '1px solid var(--accent)' } : undefined}
+                  onClick={() => { setCursorIdx(idx); setSelected(e); }}
+                >
                   <td className="num dim">{e.ts}</td>
                   <td className="mono">{e.ip}</td>
                   <td><span className="mono" style={{ color: e.method === 'POST' ? 'var(--info)' : e.method === 'DELETE' ? 'var(--down)' : 'var(--ink-mute)' }}>{e.method}</span></td>
@@ -821,6 +933,14 @@ function PageLiveFeed() {
                   <td><window.RiskMeter value={e.risk} /></td>
                   <td><window.ActionPill value={e.action} /></td>
                   <td className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{e.rules.join(', ') || '—'}</td>
+                  <td>
+                    {(() => {
+                      const s = suggestedAction(e);
+                      return s
+                        ? <span className={`pill ${s.tone}`} style={{ fontSize: 10 }} title={s.title}>{s.label}</span>
+                        : <span className="dim mono" style={{ fontSize: 10 }}>—</span>;
+                    })()}
+                  </td>
                   <td onClick={ev => ev.stopPropagation()}>
                     <button className="icon-btn" title="Inspect"><window.I.External /></button>
                   </td>
@@ -925,7 +1045,17 @@ function PageAttackEvents() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Attack Analytics</h1>
+          <h1 className="page-title">
+            Attack Analytics
+            <window.PageTitleRefresh
+              onClick={() => {
+                byDetector.reload && byDetector.reload();
+                botMix.reload && botMix.reload();
+                tiApi.reload && tiApi.reload();
+              }}
+              label="Refresh detector breakdown"
+            />
+          </h1>
           <p className="page-subtitle">
             Curated detector firings · OWASP + custom rules · last {win}
           </p>
@@ -934,11 +1064,6 @@ function PageAttackEvents() {
           <select className="input select" value={win} onChange={e => setWin(e.target.value)} style={{ width: 90 }}>
             {Object.keys(ATTACK_WINDOWS).map(v => <option key={v}>{v}</option>)}
           </select>
-          <button className="btn" onClick={() => {
-            byDetector.reload && byDetector.reload();
-            botMix.reload && botMix.reload();
-            tiApi.reload && tiApi.reload();
-          }}><window.I.Refresh /></button>
         </div>
       </div>
 
@@ -1058,12 +1183,10 @@ function PageAnalytics() {
   const routeLatency = window.useRouteLatencyApi ? window.useRouteLatencyApi() : { data: null };
   const detectorLatency = window.useDetectorLatencyApi ? window.useDetectorLatencyApi() : { data: null };
   const routes = window.useAnalyticsRoutesApi ? window.useAnalyticsRoutesApi() : { data: null };
-  // HACK-T1 — SLO + Cert summaries also retired from static
-  // fixtures. Both endpoints already shipped (Tracking page
-  // consumes them); we just expose them on Analytics too so
-  // operators don't have to switch tabs.
-  const sloApi = window.useSloApi();
-  const certsApi = window.useCertsApi();
+  // 2026-05-10 — SLO + Cert summaries removed from Performance.
+  // The canonical home is the Health & SLOs page (root-cause hint
+  // when below target + full cert table). Performance focuses on
+  // throughput / latency / route-level metrics instead.
 
   const points = ts.data?.points ?? [];
   const reqOverTime = points.map(p => p.total);
@@ -1080,8 +1203,12 @@ function PageAnalytics() {
     ? Math.max(...blockRatioPct)
     : 0;
   const peakIdx = blockRatioPct.indexOf(peakBlockPct);
+  // LOW-OBS-05 (2026-05-12) — pin to 24h HH:MM so the Block
+  // ratio peak-time reads coherently with the rest of the
+  // dashboard.  Forcing `hour12: false` avoids the en-US 12h/AM-PM
+  // rendering that the QA pass flagged as visually mixed.
   const peakTs = peakIdx >= 0 && points[peakIdx]
-    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
     : '—';
 
   const hasSeries = points.length > 0;
@@ -1090,7 +1217,13 @@ function PageAnalytics() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Performance</h1>
+          <h1 className="page-title">
+            Performance
+            <window.PageTitleRefresh
+              onClick={() => ts.reload && ts.reload()}
+              label="Refresh performance series"
+            />
+          </h1>
           <p className="page-subtitle">
             Historical trends · {range} window
           </p>
@@ -1101,7 +1234,6 @@ function PageAnalytics() {
               <button key={r} className={`chip ${range === r ? 'active' : ''}`} onClick={() => setRange(r)}>{r}</button>
             ))}
           </div>
-          <button className="btn" onClick={() => ts.reload && ts.reload()}><window.I.Refresh /></button>
         </div>
       </div>
 
@@ -1228,11 +1360,25 @@ function PageAnalytics() {
                   title="Latency p50/p95/p99 by route"
                   sub={rows.length > 0
                     ? `${rows.length} active route${rows.length === 1 ? '' : 's'} · live histogram`
-                    : 'no per-route samples yet'}
+                    : 'no resolved-route samples in window'}
                 />
                 {rows.length === 0 ? (
+                  // LOW-OBS-01 (2026-05-12) — the previous copy
+                  // ("no per-route samples yet · drive traffic with
+                  // make mock-load") read as broken when the Error
+                  // rate by route card right above it was populated.
+                  // Both read from the audit ring but per-route
+                  // latency only buckets resolved requests; blocked
+                  // traffic never reaches a route resolver so it
+                  // doesn't surface here.  Explicit copy so the
+                  // operator reads the two cards coherently.
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    Drive traffic with <code>make mock-load</code>; per-route series populate as routes resolve.
+                    Per-route latency populates as resolved requests
+                    arrive. Blocked traffic doesn't reach a route
+                    resolver, so it lands in <em>Error rate by route</em>{' '}
+                    (above) instead of here. Try{' '}
+                    <code>make mock-load</code> to drive allow-class
+                    requests.
                   </div>
                 ) : (
                   <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
@@ -1320,65 +1466,94 @@ function PageAnalytics() {
         </div>
       </div>
 
-      <div className="grid-12">
-        <div className="col-8 card">
-          <window.SectionHeader title="SLO budget remaining" sub="live engine" />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {(sloApi.data?.slis ?? []).length === 0 && (
-              <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                SLO engine warming up — no SLI data yet.
-              </div>
-            )}
-            {(sloApi.data?.slis ?? []).map(s => {
-              const remainPct = Math.round((s.budget_remaining ?? 0) * 100);
-              return (
-                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 12, alignItems: 'center', fontSize: 12 }}>
-                  <span>{s.name}</span>
-                  <span className="dim">{s.target.toFixed(2)}%</span>
-                  <span className="num" style={{ color: 'var(--ink)' }}>{s.current.toFixed(2)}%</span>
-                  <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${remainPct}%`, height: '100%', background: remainPct < 30 ? 'var(--down)' : remainPct < 60 ? 'var(--warn)' : 'var(--up)' }} />
-                  </div>
-                  <span className="num right" style={{ color: remainPct < 30 ? 'var(--down)' : 'var(--ink-mute)' }}>{remainPct}% left</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div className="col-4 card">
-          <window.SectionHeader title="Cert freshness" sub={`${(certsApi.data?.certs ?? []).length} certificates`} />
-          {(certsApi.data?.certs ?? []).length === 0 ? (
-            <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-              No certificates configured.
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {(certsApi.data?.certs ?? []).slice(0, 5).map(c => {
-                const days = c.days_to_expiry ?? c.days ?? 0;
-                const tone = days < 7 ? 'down' : days < 30 ? 'warn' : 'up';
-                return (
-                  <div key={c.host} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                    <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }} className="mono">{c.host}</div>
-                    <span className={`pill ${tone}`}>{days}d</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
     </>
   );
 }
 
 // ============== AUDIT LOG ==============
+
+// MED-01 (2026-05-11) — extract the resource ID for the RULE
+// column. Admin mutations (`rule_create`, `route_upsert`,
+// `pool_upsert`, etc.) carry `rule_id: null` at the event's top
+// level; the actual ID lives in `fields.resource` (e.g.
+// `/api/rules/<id>`) or, for whole-section replaces, in the
+// `fields.diff.after.<section>.<id>` map. The earlier renderer
+// only checked the top-level field, so the RULE column read
+// `—` even for the very events that mutated rules.
+//
+// Logic per QA report:
+//   1. Try the top-level `rule_id` (covers data-plane events).
+//   2. For action prefixes `rule_*` / `route_*` / `pool_*`, parse
+//      `fields.resource` as `/api/<section>/<id>`.
+//   3. Fall back to the first key of `fields.diff.after.<section>`.
+//   4. LOW-OBS-04 (2026-05-12) — fall back to the joined
+//      `fields.detectors[]` for detection rows whose top-level
+//      `rule_id` is null but whose detector list is populated.
+//      Brings PageAuditLog to parity with the Investigation
+//      timeline (MED-SO-06 fix).
+//   5. Otherwise return null so the cell renders as `—`.
+function extractResourceId(event) {
+  if (!event) return null;
+  if (event.rule_id) return event.rule_id;
+  const action = event.action || '';
+  const fields = event.fields || {};
+  const section = action.startsWith('rule_')
+    ? 'rules'
+    : action.startsWith('route_')
+      ? 'routes'
+      : action.startsWith('pool_')
+        ? 'pools'
+        : null;
+  if (section) {
+    // Step 2 — parse `/api/<plural>/<id>` style resource paths.
+    const resource = typeof fields.resource === 'string' ? fields.resource : '';
+    const apiBase = action.startsWith('pool_') ? '/api/upstreams/pool/' : `/api/${section}/`;
+    if (resource.startsWith(apiBase)) {
+      const tail = resource.slice(apiBase.length);
+      // Tail might be empty (whole-section PUT); keep walking.
+      if (tail && !tail.includes('/')) return tail;
+    }
+    // Step 3 — walk the diff for a single key under .after.<section>.
+    const after = fields.diff && fields.diff.after;
+    if (after && typeof after === 'object' && after[section]) {
+      const keys = Object.keys(after[section]);
+      if (keys.length === 1) return keys[0];
+    }
+  }
+  // Step 4 — LOW-OBS-04. Detection rows often carry the
+  // detector breakdown under `fields.detectors[]` while the
+  // top-level rule_id is null (e.g. WAF blocked by `recon_path`).
+  const detectors = Array.isArray(fields.detectors) ? fields.detectors : [];
+  if (detectors.length) return detectors.join(',');
+  return null;
+}
+
 function PageAuditLog() {
-  const [ipFilter, setIpFilter] = useStateP('');
-  const [ruleIdFilter, setRuleIdFilter] = useStateP('');
-  const [requestIdFilter, setRequestIdFilter] = useStateP('');
+  // F-03 (2026-05-11) — honor `#/audit?rule_id=...&ip=...&request_id=...`
+  // hash params on mount so deep-links from the Rules Stats tab,
+  // request inspector, and other surfaces land pre-filtered.
+  // Parses once at mount; subsequent in-page typing wins via the
+  // controlled-input state below.
+  const initialFromHash = (() => {
+    const m = typeof location !== 'undefined' && location.hash.match(/\?(.+)$/);
+    if (!m) return {};
+    const p = new URLSearchParams(m[1]);
+    return {
+      ruleId: p.get('rule_id') || '',
+      ip: p.get('ip') || '',
+      requestId: p.get('request_id') || '',
+    };
+  })();
+  const [ipFilter, setIpFilter] = useStateP(initialFromHash.ip || '');
+  const [ruleIdFilter, setRuleIdFilter] = useStateP(initialFromHash.ruleId || '');
+  const [requestIdFilter, setRequestIdFilter] = useStateP(initialFromHash.requestId || '');
   const [windowKey, setWindowKey] = useStateP('all');
   const [pageLimit, setPageLimit] = useStateP(200);
-  const [debouncedQ, setDebouncedQ] = useStateP({ ip: '', ruleId: '', requestId: '' });
+  const [debouncedQ, setDebouncedQ] = useStateP({
+    ip: initialFromHash.ip || '',
+    ruleId: initialFromHash.ruleId || '',
+    requestId: initialFromHash.requestId || '',
+  });
   // FIX 2026-05-04 — Audit Trail page now defaults to admin /
   // access / system events, hiding per-request `detection`
   // events. Operators reading this page want config history,
@@ -1450,7 +1625,13 @@ function PageAuditLog() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Audit Trail</h1>
+          <h1 className="page-title">
+            Audit Trail
+            <window.PageTitleRefresh
+              onClick={() => audit.reload && audit.reload()}
+              label="Refresh audit events"
+            />
+          </h1>
           <p className="page-subtitle">
             Hash-chained · {events.length.toLocaleString()} events shown
             <span style={{ marginLeft: 8 }}>
@@ -1464,11 +1645,6 @@ function PageAuditLog() {
               </span>
             )}
           </p>
-        </div>
-        <div className="page-actions">
-          <button className="btn" onClick={() => audit.reload && audit.reload()}>
-            <window.I.Refresh /> Refresh
-          </button>
         </div>
       </div>
       <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1561,7 +1737,7 @@ function PageAuditLog() {
                   <td><span className={`pill ${classPill(e.class)}`}>{e.class}</span></td>
                   <td className="mono" style={{ color: 'var(--ink)' }}>{e.action}</td>
                   <td className="mono">{e.client_ip || '—'}</td>
-                  <td className="mono dim" style={{ fontSize: 11 }}>{e.rule_id || '—'}</td>
+                  <td className="mono dim" style={{ fontSize: 11 }}>{extractResourceId(e) || '—'}</td>
                   <td className="dim">{e.reason}</td>
                   <td className="mono" style={{ fontSize: 10, color: 'var(--brand-yellow)' }}>{e.request_id}</td>
                 </tr>
@@ -1591,6 +1767,254 @@ function PageAuditLog() {
         )}
       </div>
     </>
+  );
+}
+
+// ============== POLICY POSTURE CARD ==============
+//
+// P1 (2026-05-11) — single-line "current posture" cheat-card that
+// renders at the top of every Policy section page. Operators
+// landing on Rules / Access Lists / Detectors / Traffic Gates /
+// Routing & Upstreams previously had to read the whole page to
+// learn what the WAF was currently enforcing. The data was
+// already there across five APIs; this card cross-tabulates them
+// in one ~28px-tall row so page-entry orientation drops from
+// ~15s to ~2s.
+//
+// Chips are clickable — each one jumps to the relevant page.
+// Read-only summary; no mutation controls live here.
+function PolicyPostureCard() {
+  const modeApi = window.useModeApi ? window.useModeApi() : { data: null };
+  const tiersApi = window.useTiersApi ? window.useTiersApi() : { data: null };
+  const aiApi = window.useAiEnabledApi ? window.useAiEnabledApi() : { data: null };
+  const rulesApi = window.useApi
+    ? window.useApi('/api/rules', { intervalMs: 30000, fallback: { rules: [] } })
+    : { data: { rules: [] } };
+  const blApi = window.useApi
+    ? window.useApi('/api/blacklist', { intervalMs: 30000, fallback: { entries: [] } })
+    : { data: { entries: [] } };
+  const wlApi = window.useApi
+    ? window.useApi('/api/whitelist', { intervalMs: 30000, fallback: { entries: [] } })
+    : { data: { entries: [] } };
+  const ddosApi = window.useApi
+    ? window.useApi('/api/gates/ddos', { intervalMs: 30000, fallback: null })
+    : { data: null };
+
+  const mode = (modeApi.data?.mode || 'enforce').toUpperCase();
+  const tierCount = Array.isArray(tiersApi.data?.tiers) ? tiersApi.data.tiers.length : '—';
+  const aiOn = !!aiApi.data?.enabled && !!aiApi.data?.feature_present;
+  const aiFeaturePresent = !!aiApi.data?.feature_present;
+  const ruleCount = Array.isArray(rulesApi.data?.rules) ? rulesApi.data.rules.length : 0;
+  const blCount = Array.isArray(blApi.data?.entries) ? blApi.data.entries.length : 0;
+  const wlCount = Array.isArray(wlApi.data?.entries) ? wlApi.data.entries.length : 0;
+  const ddosObserve = ddosApi.data?.observe_only === true;
+  const ddosEnabled = ddosApi.data?.enabled === true;
+
+  const chips = [
+    {
+      label: mode === 'LOG_ONLY' ? 'SHADOW' : mode,
+      tone: mode === 'LOG_ONLY' ? 'warn' : 'ok',
+      title: mode === 'LOG_ONLY'
+        ? 'Mode: log_only — detections still recorded but no blocks. Flip from Settings.'
+        : 'Mode: enforce — blocks land. Flip from Settings.',
+      href: '#/settings',
+    },
+    {
+      label: `${tierCount} tier${tierCount === 1 ? '' : 's'}`,
+      tone: 'neutral',
+      title: 'Per-request risk tiers · Detectors & Tiers page',
+      href: '#/detectors',
+    },
+    {
+      label: aiFeaturePresent ? (aiOn ? 'AI on' : 'AI off') : 'AI absent',
+      tone: aiOn ? 'ok' : 'neutral',
+      title: aiFeaturePresent
+        ? (aiOn ? 'ML detector enabled · Detectors & Tiers' : 'ML detector disabled · Detectors & Tiers')
+        : 'Binary built without --features ai',
+      href: '#/detectors',
+    },
+    {
+      label: `${ruleCount} rule${ruleCount === 1 ? '' : 's'}`,
+      tone: 'neutral',
+      title: 'Custom rule corpus · Rules page',
+      href: '#/rules',
+    },
+    {
+      label: `${blCount} blacklist${blCount === 1 ? '' : ''}`,
+      tone: 'neutral',
+      title: 'Blacklist entries · Access Lists page',
+      href: '#/blacklist',
+    },
+    {
+      label: `${wlCount} whitelist${wlCount === 1 ? '' : ''}`,
+      tone: 'neutral',
+      title: 'Whitelist entries · Access Lists page',
+      href: '#/whitelist',
+    },
+    {
+      label: ddosEnabled
+        ? (ddosObserve ? 'DDoS observe' : 'DDoS enforce')
+        : 'DDoS off',
+      tone: ddosEnabled && !ddosObserve ? 'ok' : 'neutral',
+      title: ddosEnabled
+        ? (ddosObserve
+            ? 'DDoS gate in observe-only mode · Traffic Gates'
+            : 'DDoS gate enforcing · Traffic Gates')
+        : 'DDoS gate disabled · Traffic Gates',
+      href: '#/traffic-gates',
+    },
+  ];
+
+  return (
+    <div
+      className="card"
+      style={{
+        padding: '8px 12px',
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        fontSize: 11,
+      }}
+      role="status"
+      aria-label="Current WAF policy posture"
+    >
+      <span style={{ color: 'var(--ink-dim)', fontWeight: 600, letterSpacing: 0.4 }}>
+        POSTURE
+      </span>
+      {chips.map((c, i) => (
+        <a
+          key={i}
+          href={c.href}
+          className={`pill ${c.tone}`}
+          title={c.title}
+          style={{ textDecoration: 'none', fontSize: 11 }}
+        >
+          {c.label}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+// PR-UX-A1 (2026-05-12) — Security Ops cheat card.  Mirrors the
+// shape of `PolicyPostureCard` (compact horizontal pill strip,
+// click-through chips) but focused on the "what's happening
+// right now" view an analyst needs at a glance: blocks-in-window,
+// firing alerts, top attacker, audit ring lag, and a one-click
+// jump back to Investigation.
+//
+// Mounted on the five Sec Ops pages (Overview, Live Feed,
+// Incidents, Investigation, Top Attackers) so the analyst sees
+// the same heartbeat no matter where they navigate.
+function SecOpsPostureCard() {
+  const stats = window.useStatsApi ? window.useStatsApi() : { data: null };
+  const incidents = window.useApi
+    ? window.useApi('/api/incidents', { intervalMs: 5000, fallback: null })
+    : { data: null };
+  const topApi = window.useApi
+    ? window.useApi('/api/attacks/top?window=3600&limit=1', { intervalMs: 10000, fallback: null })
+    : { data: null };
+  const witness = window.useApi
+    ? window.useApi('/api/audit/witness', { intervalMs: 15000, fallback: null })
+    : { data: null };
+
+  const blocksTotal = stats.data?.blocks_total ?? 0;
+  const blockRate = stats.data?.block_rate_pct;
+  const requestRate = stats.data?.request_rate;
+  const firingCount = Array.isArray(incidents.data?.incidents)
+    ? incidents.data.incidents.filter(i => i.status === 'firing').length
+    : (Array.isArray(incidents.data?.raw_alerts?.firing) ? incidents.data.raw_alerts.firing.length : 0);
+  const ackedCount = Array.isArray(incidents.data?.incidents)
+    ? incidents.data.incidents.filter(i => i.status === 'acknowledged').length
+    : 0;
+  const topAttacker = (topApi.data?.attackers || [])[0];
+  const witnessLag = witness.data?.lag_seconds;
+  const witnessFresh = typeof witnessLag === 'number' && witnessLag < 60;
+
+  const chips = [
+    {
+      label: typeof requestRate === 'number'
+        ? `${requestRate.toFixed(1)} req/s`
+        : '— req/s',
+      tone: 'neutral',
+      title: 'Live request rate · /api/stats',
+      href: '#/overview',
+    },
+    {
+      label: typeof blockRate === 'number'
+        ? `${blockRate.toFixed(1)}% blocked`
+        : `${blocksTotal.toLocaleString()} blocked`,
+      tone: 'neutral',
+      title: 'Block rate · process-lifetime · /api/stats',
+      href: '#/live',
+    },
+    {
+      label: firingCount > 0 ? `${firingCount} firing` : 'no alerts',
+      tone: firingCount > 0 ? 'warn' : 'ok',
+      title: firingCount > 0
+        ? `${firingCount} alert${firingCount === 1 ? '' : 's'} firing · ${ackedCount} acked`
+        : 'No SLO alerts firing',
+      href: '#/incidents',
+    },
+    topAttacker
+      ? {
+          label: topAttacker.country
+            ? `top: ${topAttacker.identifier} · ${topAttacker.country}`
+            : `top: ${topAttacker.identifier}`,
+          tone: 'neutral',
+          title: `Top attacker last 1h · ${topAttacker.hits} hits`,
+          href: `#/investigation?pivot=${encodeURIComponent(topAttacker.identifier)}&kind=ip`,
+        }
+      : {
+          label: 'no attackers',
+          tone: 'ok',
+          title: 'No ranked attackers in the last hour',
+          href: '#/top-attackers',
+        },
+    {
+      label: witness.data?.last_signature_ts
+        ? (witnessFresh ? 'audit fresh' : `audit lag ${witnessLag}s`)
+        : 'no witness yet',
+      tone: witnessFresh ? 'ok' : 'neutral',
+      title: witness.data?.last_signature_ts
+        ? `Last chain witness · ${witnessLag}s ago`
+        : 'No audit chain witness recorded yet',
+      href: '#/audit',
+    },
+  ];
+
+  return (
+    <div
+      className="card"
+      style={{
+        padding: '8px 12px',
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        fontSize: 11,
+      }}
+      role="status"
+      aria-label="Current Security Ops posture"
+    >
+      <span style={{ color: 'var(--ink-dim)', fontWeight: 600, letterSpacing: 0.4 }}>
+        SEC OPS
+      </span>
+      {chips.map(c => (
+        <a
+          key={c.label}
+          className={`pill ${c.tone}`}
+          href={c.href}
+          title={c.title}
+          style={{ textDecoration: 'none', fontSize: 11 }}
+        >
+          {c.label}
+        </a>
+      ))}
+    </div>
   );
 }
 
@@ -1676,7 +2100,15 @@ function RuleSimulator() {
             Replay a hypothetical request against the live detector chain — no traffic, no audit emit.
           </div>
         </div>
-        <span className="pill neutral">Tier A</span>
+        {/* LOW-07 (2026-05-11) — tooltip + link so operators new
+            to the framework see what "Tier A" means here vs. the
+            Critical/High/Medium/Low tiers on Detectors & Tiers. */}
+        <a
+          href="#/detectors"
+          className="pill neutral"
+          style={{ textDecoration: 'none' }}
+          title="Tier A bonus surface — runs the live detector chain in a sandbox so operators can preview verdicts before persisting a rule. The Critical/High/Medium/Low tiers on the Detectors page are a different concept (request risk tier)."
+        >Tier A</a>
       </div>
       <div style={{ padding: 14, display: 'grid', gridTemplateColumns: '110px 1fr 1fr', gap: 8, alignItems: 'start' }}>
         <select className="input select" value={method} onChange={e => setMethod(e.target.value)}>
@@ -1890,25 +2322,65 @@ function PageRuleManager() {
     setSelectedId(id);
   }
 
+  // P3 (2026-05-11) — tab the Rules page so Simulator is its own
+  // full-viewport surface. Pre-fix the Simulator panel always
+  // pinned ~200px at the top of the page even when the operator
+  // was editing rule #47 they weren't simulating. Operators
+  // managing 50+ rules can now see more list rows; Simulator
+  // workflows get their own focused view. Default tab is Rules
+  // so existing muscle memory + deep-links land where operators
+  // expect.
+  const [activeTab, setActiveTab] = useStateP('rules');
+
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Rules</h1>
+          <h1 className="page-title">
+            Rules
+            <window.PageTitleRefresh
+              onClick={() => rulesApi.reload && rulesApi.reload()}
+              label="Reload rules"
+            />
+          </h1>
           <p className="page-subtitle">{merged.length} total · validate before apply · audit-chained</p>
         </div>
         <div className="page-actions">
-          <button className="btn" onClick={() => rulesApi.reload && rulesApi.reload()} disabled={busy}>
-            <window.I.Refresh /> Reload
-          </button>
           <button className="btn primary" onClick={() => setShowNew(true)} disabled={busy}>
             <window.I.Plus /> New rule
           </button>
         </div>
       </div>
 
-      <RuleSimulator />
+      {/* P3 tab bar — `chip active`/`chip` styling reuses the same
+          chip pattern the Performance + Top Attackers windows
+          use, so operators don't need to learn a new affordance. */}
+      <div className="card" style={{ padding: '6px 10px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button
+          className={`chip ${activeTab === 'rules' ? 'active' : ''}`}
+          onClick={() => setActiveTab('rules')}
+          style={{ fontSize: 12 }}
+        >
+          Rules <span style={{ opacity: 0.6, marginLeft: 4 }}>· {merged.length}</span>
+        </button>
+        <button
+          className={`chip ${activeTab === 'simulator' ? 'active' : ''}`}
+          onClick={() => setActiveTab('simulator')}
+          style={{ fontSize: 12 }}
+        >
+          Simulator
+        </button>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
+          {activeTab === 'rules'
+            ? 'List + detail view'
+            : 'Replay a hypothetical request against the live detector chain — no traffic, no audit emit'}
+        </span>
+      </div>
 
+      {activeTab === 'simulator' && <RuleSimulator />}
+
+      {activeTab === 'rules' && (
       <div className="split-list">
         <div className="left">
           <div style={{ padding: 10, borderBottom: '1px solid var(--hairline)' }}>
@@ -2012,7 +2484,16 @@ function PageRuleManager() {
                 {tab === 'stats' && (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
                     <span>Per-rule statistics ship in a follow-up.</span>
-                    <span style={{ fontSize: 11 }}>For now: filter <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Log</a> by <code>rule_id={selected.id}</code> to see every match.</span>
+                    {/* F-03 (2026-05-11) — deep-link the rule_id so
+                        Audit Trail pre-fills the filter. Previously
+                        landed operators on an unfiltered audit view
+                        with thousands of rows. */}
+                    <span style={{ fontSize: 11 }}>
+                      For now: <a
+                        href={`#/audit?rule_id=${encodeURIComponent(selected.id)}`}
+                        style={{ color: 'var(--accent)' }}
+                      >Open Audit Log filtered by <code>rule_id={selected.id}</code> →</a>
+                    </span>
                   </div>
                 )}
               </div>
@@ -2028,6 +2509,7 @@ function PageRuleManager() {
           )}
         </div>
       </div>
+      )}
 
       {showNew && (
         <NewRuleModal
@@ -2084,6 +2566,22 @@ function DeleteRuleModal({ ruleId, busy, onCancel, onConfirm }) {
 }
 
 function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNewEnabled, onCancel, onSave, busy }) {
+  // F-02 (2026-05-11) — track whether the operator has attempted
+  // to submit so we can show inline validation errors on empty
+  // required fields instead of silently no-op'ing. Pre-fix the
+  // Save button was just `disabled` when Rule ID was empty,
+  // giving operators no signal that anything was wrong.
+  const [attempted, setAttempted] = useStateP(false);
+  const idRef = useRefP(null);
+  const idEmpty = !newId.trim();
+  const handleSave = () => {
+    if (idEmpty) {
+      setAttempted(true);
+      if (idRef.current) idRef.current.focus();
+      return;
+    }
+    onSave();
+  };
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
@@ -2097,8 +2595,23 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
         </div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <span className="field-label">Rule ID</span>
-            <input className="input" value={newId} onChange={e => setNewId(e.target.value)} placeholder="custom-xss-001" autoFocus />
+            <span className="field-label">
+              Rule ID <span style={{ color: 'var(--down)' }}>*</span>
+            </span>
+            <input
+              ref={idRef}
+              className="input"
+              value={newId}
+              onChange={e => setNewId(e.target.value)}
+              placeholder="custom-xss-001"
+              aria-required="true"
+              aria-invalid={attempted && idEmpty}
+              autoFocus
+              style={attempted && idEmpty ? { borderColor: 'var(--down)' } : undefined}
+            />
+            {attempted && idEmpty && (
+              <span style={{ fontSize: 11, color: 'var(--down)' }}>Rule ID is required.</span>
+            )}
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span className="field-label">DSL body</span>
@@ -2116,7 +2629,11 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
         </div>
         <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn primary" onClick={onSave} disabled={busy || !newId.trim()}>Save</button>
+          {/* F-02 — Save is no longer disabled when the field is
+              empty; clicking with an empty value surfaces the
+              inline error + focuses the field, so operators see
+              what they missed instead of an inert button. */}
+          <button className="btn primary" onClick={handleSave} disabled={busy}>Save</button>
         </div>
       </div>
     </div>
@@ -2159,10 +2676,25 @@ function DetectorMaskCard() {
   const overrides = api.data?.overrides || {};
   const lockedClasses = api.data?.locked_classes || [];
   const complianceModes = api.data?.compliance_modes || [];
+  const scoreTable = api.data?.score_table || [];
 
   const [busy, setBusy] = useStateP(false);
   const [editing, setEditing] = useStateP(null);
   const [draft, setDraft] = useStateP({});
+
+  // 2026-05-10 — compute the dominant score + tier per class so
+  // each chip in the mask grid carries a small score badge tinted
+  // by the 5-tier framework (probe / phishing / header / broad /
+  // high / critical). Operators see "sqli · 60" with a critical
+  // tint instead of bare "sqli", so the mask + scores are
+  // legible from one card without expanding anything.
+  const dominantByClass = {};
+  for (const row of scoreTable) {
+    const prev = dominantByClass[row.class];
+    if (!prev || row.score > prev.score) {
+      dominantByClass[row.class] = { score: row.score, tier: row.tier, tag: row.tag };
+    }
+  }
 
   if (!baseMask) {
     return (
@@ -2235,16 +2767,54 @@ function DetectorMaskCard() {
     }
   }
 
-  const renderRow = (label, mask, target) => {
+  // 2026-05-10 — `isInherited` flag drives a visual + behavioral
+  // distinction for tier rows that have no explicit override set.
+  // The row still renders (so operators can see "this tier exists,
+  // currently inheriting Base") with the Base mask greyed out;
+  // clicking Edit creates the override on save.
+  const renderRow = (label, mask, target, isInherited = false) => {
     const isEditing = editing === target;
     const view = isEditing ? draft : mask;
     return (
-      <div key={target} style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>{label}</div>
+      <div
+        key={target}
+        style={{
+          borderTop: '1px solid var(--hairline)',
+          padding: '10px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          opacity: isInherited && !isEditing ? 0.65 : 1,
+        }}
+      >
+        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>
+          {label}
+          {isInherited && !isEditing && (
+            <div style={{ fontSize: 9, color: 'var(--ink-dim)', fontWeight: 400, fontStyle: 'italic', marginTop: 2 }}>
+              inheriting Base
+            </div>
+          )}
+        </div>
         <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {MASK_CLASSES.map(cls => {
             const enabled = !!view[cls];
             const locked = lockedClasses.includes(cls);
+            // Each class has a dominant score + tier (highest-weight
+            // signal that class can emit). Render that score inline
+            // so operators see "sqli · 60" instead of just "sqli" —
+            // the calibrated tier tint backs each enabled chip so
+            // posture is readable at a glance without expanding the
+            // reference table below.
+            const dominant = dominantByClass[cls];
+            const tierStyle = dominant ? (SCORE_TIER_STYLE[dominant.tier] || SCORE_TIER_STYLE.probe) : null;
+            const baseTitle = dominant
+              ? `${cls} → top score ${dominant.score} (${tierStyle.label}) via tag ${dominant.tag}`
+              : cls;
+            const titleText = locked
+              ? `${baseTitle}\n\n🔒 pinned by active compliance mode`
+              : `${baseTitle}\n\n${enabled ? 'enabled — click to disable' : 'disabled — click to enable'}`;
+            const chipBg = enabled && tierStyle ? tierStyle.bg : 'transparent';
+            const chipFg = enabled && tierStyle ? tierStyle.fg : 'var(--ink-dim)';
             return (
               <button
                 key={cls}
@@ -2253,34 +2823,71 @@ function DetectorMaskCard() {
                   setDraft(d => ({ ...d, [cls]: !d[cls] }));
                 }}
                 disabled={!isEditing || locked || busy}
-                title={locked ? `${cls} is pinned by active compliance mode` : (enabled ? 'enabled — click to disable' : 'disabled — click to enable')}
-                className={`pill ${enabled ? 'ok' : 'neutral'}`}
+                title={titleText}
                 style={{
                   fontSize: 10,
                   cursor: isEditing && !locked ? 'pointer' : 'default',
-                  opacity: locked ? 0.6 : 1,
+                  opacity: locked ? 0.6 : (enabled ? 1 : 0.55),
                   padding: '2px 8px',
+                  borderRadius: 4,
+                  background: chipBg,
+                  color: chipFg,
+                  fontWeight: enabled ? 600 : 500,
                   border: isEditing && !locked ? '1px dashed var(--hairline)' : '1px solid transparent',
+                  textDecoration: enabled ? 'none' : 'line-through',
                 }}
               >
-                {locked && '🔒 '}{cls}{!enabled && ' · off'}
+                {locked && '🔒 '}{cls}{dominant ? ` · ${dominant.score}` : ''}
               </button>
             );
           })}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {isEditing ? (
             <>
+              {/* P8 (2026-05-11) — diff summary right next to Save so
+                  operators see exactly what's about to land. Each
+                  chip click during Edit mode is a silent toggle;
+                  this is the only place the about-to-save delta
+                  becomes visible before commit. */}
+              {(() => {
+                const turningOff = MASK_CLASSES.filter(c => mask[c] && !draft[c]);
+                const turningOn  = MASK_CLASSES.filter(c => !mask[c] && draft[c]);
+                if (turningOff.length === 0 && turningOn.length === 0) {
+                  return (
+                    <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+                      no changes yet
+                    </span>
+                  );
+                }
+                return (
+                  <span style={{ fontSize: 10, color: 'var(--ink-mute)' }}>
+                    {turningOff.length > 0 && (
+                      <span style={{ color: 'var(--down)' }}>
+                        disable {turningOff.join(', ')}
+                      </span>
+                    )}
+                    {turningOff.length > 0 && turningOn.length > 0 && ' · '}
+                    {turningOn.length > 0 && (
+                      <span style={{ color: 'var(--up)' }}>
+                        enable {turningOn.join(', ')}
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
               <button className="btn primary" disabled={busy} onClick={saveEdit} style={{ fontSize: 11, padding: '4px 10px' }}>Save</button>
               <button className="btn" disabled={busy} onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '4px 10px' }}>Cancel</button>
             </>
           ) : (
-            <>
-              <button className="btn" disabled={busy || editing !== null} onClick={() => startEdit(target, mask)} style={{ fontSize: 11, padding: '4px 10px' }}>Edit</button>
-              {target !== 'base' && (
-                <button className="btn danger" disabled={busy || editing !== null} onClick={() => clearOverride(target)} style={{ fontSize: 11, padding: '4px 10px' }}>Clear</button>
-              )}
-            </>
+            <button
+              className="btn"
+              disabled={busy || editing !== null}
+              onClick={() => startEdit(target, mask)}
+              style={{ fontSize: 11, padding: '4px 10px' }}
+            >
+              Edit
+            </button>
           )}
         </div>
       </div>
@@ -2288,38 +2895,38 @@ function DetectorMaskCard() {
   };
 
   return (
-    <div className="card" style={{ marginBottom: 12, padding: 0 }}>
+    <div data-component="detector-mask-card" className="card" style={{ marginBottom: 12, padding: 0 }}>
       <div className="card-head" style={{ padding: 12 }}>
         <div>
-          <div className="card-title">Detectors</div>
+          <div className="card-title">
+            Base detector mask
+            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              default for all tiers
+            </span>
+          </div>
           <div className="card-subtitle">
-            Per-class on/off mask. Locked classes (🔒) are pinned by
-            active compliance modes
-            {complianceModes.length > 0 && (
-              <> ({complianceModes.join(', ')})</>
-            )}
-            . Audit-mutated; takes effect within one hot-reload tick.
+            Per-class on/off baseline. Each chip shows the dominant
+            score for that class, tinted by the 5-tier framework.
+            Operators may freely enable or disable any class —
+            compliance lock-by-mode is deferred for now.
+            {' '}Audit-mutated; takes effect within one hot-reload tick.
           </div>
         </div>
       </div>
 
-      {/* Mask grid — base + per-tier overrides. */}
-      {renderRow('Base', baseMask, 'base')}
-      {Object.keys(overrides).length === 0 ? (
-        <div style={{ borderTop: '1px solid var(--hairline)', padding: '8px 12px', fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
-          No per-tier overrides — base mask applies to every tier.
-        </div>
-      ) : (
-        Object.entries(overrides).map(([tier, mask]) => renderRow(tier, mask, tier))
-      )}
-
-      {/* Read-only risk-score catalog (#293) — surfaced so
-          operators can see the calibrated 5-tier ladder without
-          scraping detector source files. NOT editable by design;
-          see docs/operator/risk-tuning.md for the rationale + the
-          safe knobs available (set_profile log_only, risk
-          thresholds, RaiseRisk rules, per-tier overrides). */}
+      {/* 2026-05-10 R2 — Risk score reference moved ABOVE the Base
+          row so operators see the calibrated 5-tier framework
+          (probe / phishing / header / broad / high / critical) FIRST,
+          which makes the score badges on the chips below
+          self-explaining. Per-tier override summary line removed
+          entirely — per-tier customization happens in the Edit
+          Tier modal, no inline summary needed. */}
       <DetectorScorePanel scoreTable={api.data?.score_table || []} />
+
+      {/* Base row — the only mask edited on this card. Per-tier
+          overrides moved into the Edit Tier modal so operators
+          have one focused surface per tier. */}
+      {renderRow('Base mask', baseMask, 'base')}
 
       {/* AI detector — folded into the same card. AI lives outside
           the bitmask (separate AtomicBool flipped via PUT
@@ -2330,19 +2937,38 @@ function DetectorMaskCard() {
   );
 }
 
-// Read-only score catalog. Renders one chip per `(class, tag)` row
-// from `/api/detectors`'s `score_table`. The chip's colour follows
-// the documented 5-tier framework; hover shows the operator-facing
-// note. A footer link guides operators to the risk-tuning doc when
-// they want to adjust posture without touching the score ladder.
+// Read-only score reference — sits inside the unified Detectors
+// card. The tier legend is always visible so operators can decode
+// the chip colours in the mask grid above without hunting; the
+// per-tag breakdown stays behind a "Show full table" toggle to
+// keep the card compact for routine operation.
+//
+// Why read-only: the score each detector emits is a calibrated
+// ladder that interacts with `risk.thresholds.challenge_at` (40)
+// and `block_at` (80). Editing scores arbitrarily breaks the
+// score↔threshold contract. To tune posture, operators reach for
+// `set_profile log_only`, the threshold knobs, RaiseRisk rules,
+// or per-tier overrides above (all surfaced on this same page).
 function DetectorScorePanel({ scoreTable }) {
   const [expanded, setExpanded] = useStateP(false);
+  // 2026-05-10 — read live thresholds from /api/risk/thresholds
+  // so the explanatory text shows the operator's *current* values,
+  // not the hardcoded defaults. The Cumulative IP risk thresholds
+  // editor (Traffic Gates → #3) is the only authoritative source.
+  const riskApi = window.useRiskThresholdsApi
+    ? window.useRiskThresholdsApi()
+    : { data: null };
+  const liveChallengeAt = Number.isFinite(Number(riskApi.data?.challenge_at))
+    ? Number(riskApi.data.challenge_at)
+    : null;
+  const liveBlockAt = Number.isFinite(Number(riskApi.data?.block_at))
+    ? Number(riskApi.data.block_at)
+    : null;
+
   if (!scoreTable || scoreTable.length === 0) {
     return null;
   }
 
-  // Group by class so the operator reads them the same way the
-  // mask grid renders.
   const byClass = {};
   for (const row of scoreTable) {
     if (!byClass[row.class]) byClass[row.class] = [];
@@ -2351,81 +2977,102 @@ function DetectorScorePanel({ scoreTable }) {
   const classOrder = Object.keys(byClass);
 
   return (
-    <div style={{ borderTop: '1px solid var(--hairline)' }}>
+    <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+          Risk score reference
+        </span>
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>
+          · read-only · 5-tier framework · {scoreTable.length} signal types
+        </span>
+      </div>
+
+      {/* Always-visible tier legend — decodes the chip tints in
+          the mask grid above so operators do not need to expand
+          anything for routine reading. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        {Object.entries(SCORE_TIER_STYLE).map(([tier, style]) => (
+          <span
+            key={tier}
+            title={`${style.label} tier`}
+            style={{
+              fontSize: 10, padding: '2px 8px', borderRadius: 4,
+              background: style.bg, color: style.fg, fontWeight: 600,
+            }}
+          >
+            {style.label}
+          </span>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.4, marginBottom: 6 }}>
+        Scores are calibrated against your live cumulative IP risk
+        thresholds:{' '}
+        <code style={{ fontSize: 10 }}>challenge_at</code>{' '}
+        {liveChallengeAt !== null ? (
+          <strong style={{ color: 'var(--ink)' }}>= {liveChallengeAt}</strong>
+        ) : (
+          <span style={{ fontStyle: 'italic' }}>(loading…)</span>
+        )}
+        {' '}and{' '}
+        <code style={{ fontSize: 10 }}>block_at</code>{' '}
+        {liveBlockAt !== null ? (
+          <strong style={{ color: 'var(--ink)' }}>= {liveBlockAt}</strong>
+        ) : (
+          <span style={{ fontStyle: 'italic' }}>(loading…)</span>
+        )}.
+        {' '}Edit those on{' '}
+        <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>
+          Traffic Gates → #3 Cumulative IP risk thresholds
+        </a>
+        . To tune posture without touching detector scores, use{' '}
+        <code style={{ fontSize: 10 }}>set_profile log_only</code>,
+        adjust those thresholds, add a{' '}
+        <code style={{ fontSize: 10 }}>RaiseRisk(delta)</code> rule,
+        or apply a per-tier override above. See the{' '}
+        <a href="/docs/operator/risk-tuning" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+          operator risk-tuning guide
+        </a>.
+      </div>
+
       <button
         onClick={() => setExpanded(e => !e)}
         className="btn"
         style={{
-          width: '100%', textAlign: 'left', background: 'transparent',
-          border: 'none', padding: '10px 12px', fontSize: 12,
-          color: 'var(--ink)', fontWeight: 600, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'transparent', border: '1px solid var(--hairline)',
+          padding: '4px 10px', fontSize: 11, color: 'var(--ink-dim)',
+          cursor: 'pointer', borderRadius: 4,
         }}
       >
-        <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{expanded ? '▼' : '▶'}</span>
-        Risk score reference <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }}>· read-only · {scoreTable.length} signal types</span>
+        {expanded ? '▼ Hide full table' : '▶ Show full per-tag table'}
       </button>
 
       {expanded && (
-        <div style={{ padding: '4px 12px 12px' }}>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 8, lineHeight: 1.4 }}>
-            The score each detector emits is a calibrated ladder that interacts with{' '}
-            <code style={{ fontSize: 10 }}>risk.thresholds.challenge_at</code> (40) and{' '}
-            <code style={{ fontSize: 10 }}>block_at</code> (80). Editing scores in the
-            UI is intentionally not supported because arbitrary changes break the
-            score↔threshold interaction.{' '}
-            <strong>To tune posture</strong>, use <code style={{ fontSize: 10 }}>set_profile log_only</code>,
-            adjust <code style={{ fontSize: 10 }}>risk.thresholds</code>, add a
-            <code style={{ fontSize: 10 }}> RaiseRisk(delta)</code> rule, or
-            apply a per-tier override above. See the{' '}
-            <a href="/docs/operator/risk-tuning" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
-              operator risk-tuning guide
-            </a>.
-          </div>
-
-          {/* Tier-legend strip — chip colour decoder. */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-            {Object.entries(SCORE_TIER_STYLE).map(([tier, style]) => (
-              <span
-                key={tier}
-                title={`${style.label} tier`}
-                style={{
-                  fontSize: 10, padding: '2px 8px', borderRadius: 4,
-                  background: style.bg, color: style.fg, fontWeight: 600,
-                }}
-              >
-                {style.label}
-              </span>
-            ))}
-          </div>
-
-          {/* Per-class score table. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, auto) 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
-            {classOrder.map(cls => (
-              <React.Fragment key={cls}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)' }}>{cls}</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {byClass[cls].map(row => {
-                    const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
-                    return (
-                      <span
-                        key={`${row.class}-${row.tag}`}
-                        title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}`}
-                        style={{
-                          fontSize: 10, padding: '2px 8px', borderRadius: 4,
-                          background: tierStyle.bg, color: tierStyle.fg,
-                          fontWeight: 500, fontFamily: 'monospace',
-                          cursor: 'help',
-                        }}
-                      >
-                        {row.tag} · {row.score}
-                      </span>
-                    );
-                  })}
-                </div>
-              </React.Fragment>
-            ))}
-          </div>
+        <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'minmax(140px, auto) 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
+          {classOrder.map(cls => (
+            <React.Fragment key={cls}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)' }}>{cls}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {byClass[cls].map(row => {
+                  const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
+                  return (
+                    <span
+                      key={`${row.class}-${row.tag}`}
+                      title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}`}
+                      style={{
+                        fontSize: 10, padding: '2px 8px', borderRadius: 4,
+                        background: tierStyle.bg, color: tierStyle.fg,
+                        fontWeight: 500, fontFamily: 'monospace',
+                        cursor: 'help',
+                      }}
+                    >
+                      {row.tag} · {row.score}
+                    </span>
+                  );
+                })}
+              </div>
+            </React.Fragment>
+          ))}
         </div>
       )}
     </div>
@@ -2487,8 +3134,23 @@ function AiDetectorRow() {
   const attackPct = total > 0 ? ((metrics.attack / total) * 100).toFixed(1) : '0.0';
   const fbTotal = metrics?.fallback ? Object.values(metrics.fallback).reduce((a, b) => a + b, 0) : 0;
 
+  // F-06 (2026-05-11) — confirm before disabling. Enabling is
+  // safe to flip immediately; disabling has broader traffic
+  // impact (attack detection stops on the next request) so the
+  // operator gets a confirm() prompt. Mirrors the Rules Delete +
+  // Access Lists Remove styled-modal pattern — small enough that
+  // a one-line confirm here is fine.
   async function flip() {
     if (busy || !featurePresent) return;
+    if (runtimeOn) {
+      const ok = window.confirm(
+        'Disable the AI detector?\n\n' +
+        'Attack detection from the ML model stops on the next request. ' +
+        'The regex/heuristic detectors keep running. ' +
+        'You can re-enable from this same button.'
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     try {
       const r = await window.aiEnabledPut(!runtimeOn);
@@ -2526,7 +3188,9 @@ function AiDetectorRow() {
             </span>
           )}
           {!featurePresent && (
-            <span>rebuild with <code>--features ai</code> + set <code>cfg.ai.enabled = true</code></span>
+            <span>
+              rebuild with <code>--features ai</code> and set <code>cfg.ai.model_path</code> to a valid ONNX file (run <code>make ai-link MODEL=&lt;path&gt;</code>)
+            </span>
           )}
           <button
             type="button"
@@ -2594,19 +3258,65 @@ function AiDetectorRow() {
 function PageTierConfig() {
   const tiersApi = window.useTiersApi();
   const routesApi = window.useRoutesApi();
+  // 2026-05-10 — read at the top so we don't violate the Rules of
+  // Hooks. The Live Policy summary in the right pane consumes
+  // `detectorsApi.data?.overrides[selected.name]` and `?.mask` to
+  // show whether the tier inherits Base or has an explicit override.
+  const detectorsApi = window.useDetectorsApi
+    ? window.useDetectorsApi()
+    : { data: null };
   const tiers = tiersApi.data?.tiers || [];
   const routes = routesApi.data?.routes || [];
-  const [selectedName, setSelectedName] = useStateP(null);
+  // P7 (2026-05-11) — honor `#/detectors?tier=critical` on mount
+  // so deep-links from other surfaces (e.g. Live Feed → tier
+  // detail) land pre-selected. Parses once at first render; the
+  // tier-card click below still controls selection on the page.
+  const initialTier = (() => {
+    if (typeof window === 'undefined') return null;
+    const h = window.location.hash || '';
+    const q = h.indexOf('?');
+    if (q < 0) return null;
+    const p = new URLSearchParams(h.slice(q + 1));
+    return p.get('tier');
+  })();
+  const [selectedName, setSelectedName] = useStateP(initialTier);
   const [tierEditor, setTierEditor] = useStateP(null);  // null | tier object
   const [busy, setBusy] = useStateP(false);
 
   async function saveTier(name, body) {
     setBusy(true);
     try {
+      // 2026-05-10 — pull the detector-override delta out of the
+      // body (TierEditModal stuffs it under __detectorOverride
+      // when the operator changed mask state). Sequence the
+      // detectors PUT first because (a) it's the one most likely
+      // to fail validation (compliance clamp etc.) and (b) the
+      // tier PUT touches different state, so partial failure
+      // leaves the system in a coherent intermediate.
+      const detectorOverride = body.__detectorOverride;
+      delete body.__detectorOverride;
+
+      if (detectorOverride) {
+        const detPayload = detectorOverride.mask
+          ? { overrides: { [name]: detectorOverride.mask } }
+          : { overrides: { [name]: null } };
+        const dr = await window.detectorsPut(detPayload);
+        const detOk = dr && typeof dr.status === 'number' && dr.status >= 200 && dr.status < 300;
+        if (!detOk) {
+          const msg = (dr && (dr.message || dr.error || dr.reason)) || `status ${dr?.status ?? '?'}`;
+          window.aegisToast(`Detector override save failed: ${msg}`, 'err');
+          return;
+        }
+      }
+
       const r = await window.tierPut(name, body);
       if (r.status === 200 && r.ok) {
-        window.aegisToast(`Tier "${name}" updated`, 'ok');
+        const detSuffix = detectorOverride
+          ? (detectorOverride.mask ? ' · detector override saved' : ' · detector override cleared')
+          : '';
+        window.aegisToast(`Tier "${name}" updated${detSuffix}`, 'ok');
         tiersApi.reload && tiersApi.reload();
+        detectorsApi.reload && detectorsApi.reload();
         setTierEditor(null);
       } else {
         const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
@@ -2639,11 +3349,18 @@ function PageTierConfig() {
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Detectors</h1>
+          <h1 className="page-title">
+            Detectors &amp; Tiers
+            <window.PageTitleRefresh
+              onClick={() => { tiersApi.reload && tiersApi.reload(); routesApi.reload && routesApi.reload(); }}
+              label="Refresh tier + route data"
+            />
+          </h1>
           <p className="page-subtitle">
-            Pipeline assignment per tier ·
+            Per-class detector mask (with per-tier overrides) + per-tier risk thresholds ·
             <span className="num"> {tiers.length}</span> active tiers ·
             <span className="num"> {routes.length}</span> routes
             <span style={{ marginLeft: 8 }}>
@@ -2652,11 +3369,6 @@ function PageTierConfig() {
               </span>
             </span>
           </p>
-        </div>
-        <div className="page-actions">
-          <button className="btn" onClick={() => { tiersApi.reload && tiersApi.reload(); routesApi.reload && routesApi.reload(); }}>
-            <window.I.Refresh /> Refresh
-          </button>
         </div>
       </div>
 
@@ -2677,7 +3389,6 @@ function PageTierConfig() {
             )}
             {tiers.map(t => {
               const tierRouteCount = routes.filter(r => matchTier(r, t.name)).length;
-              const detectorCount = (t.pipeline || []).filter(p => !['rate', 'rules', 'risk', 'challenge'].includes(p)).length;
               return (
                 <button key={t.name} onClick={() => setSelectedName(t.name)}
                   style={{ display: 'block', width: '100%', textAlign: 'left', padding: 14, border: 'none', borderBottom: '1px solid var(--hairline)',
@@ -2685,19 +3396,17 @@ function PageTierConfig() {
                     borderLeft: selected && selected.name === t.name ? '3px solid var(--brand-yellow)' : '3px solid transparent',
                     cursor: 'pointer', color: 'inherit' }}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{t.name}</div>
-                  {/* 2026-05-09 — `block_threshold` (req/s) is descriptive
-                      metadata, not enforced. Source comment in
-                      crates/aegis-control/src/api/tiers.rs:36-44 confirms.
-                      Real per-IP volumetric limits live on the Traffic
-                      Gates page (Rate Limit + DDoS gates). Showing the
-                      field here was misleading — operators thought it
-                      was an enforce knob. */}
-                  <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}>
-                    risk ≥ <span className="num">{t.risk_threshold}</span>
+                  <div
+                    style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 6 }}
+                    title={`Per-request: this tier blocks a request when its detector scores sum to ${t.risk_threshold} or more`}
+                  >
+                    block when score ≥ <span className="num">{t.risk_threshold}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 6, fontSize: 10 }}>
                     <span className="pill neutral">{tierRouteCount} routes</span>
-                    <span className="pill neutral">{detectorCount} detectors</span>
+                    {t.challenges_enabled === true && (
+                      <span className="pill ok" title="Cumulative-IP-risk challenges are enabled on this tier (PoW puzzle on score crossing)">challenges on</span>
+                    )}
                   </div>
                 </button>
               );
@@ -2711,10 +3420,19 @@ function PageTierConfig() {
                 <div>
                   <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-                    {(selected.pipeline || []).length} pipeline stages · risk threshold <span className="num">{selected.risk_threshold}</span>
-                    <span style={{ marginLeft: 8, opacity: 0.7 }}>
-                      · per-IP volumetric limits live on the <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a> page
-                    </span>
+                    Per-request block ≥ <span className="num">{selected.risk_threshold}</span>
+                    {' · '}
+                    cumulative challenge {selected.cumulative_challenge_at != null
+                      ? <>≥ <span className="num">{selected.cumulative_challenge_at}</span></>
+                      : <span style={{ fontStyle: 'italic' }}>inherit</span>}
+                    {' · '}
+                    cumulative block {selected.cumulative_block_at != null
+                      ? <>≥ <span className="num">{selected.cumulative_block_at}</span></>
+                      : <span style={{ fontStyle: 'italic' }}>inherit</span>}
+                    {' · '}
+                    challenges {selected.challenges_enabled === true
+                      ? <span style={{ color: 'var(--up)' }}>on</span>
+                      : 'off'}
                   </div>
                 </div>
                 <button className="btn" onClick={() => setTierEditor(selected)} disabled={busy}>
@@ -2722,12 +3440,85 @@ function PageTierConfig() {
                 </button>
               </div>
 
+              {/* 2026-05-10 — replaced the dead "Pipeline (N stages)"
+                  pill list. Per `docs/security/security-engine.md`,
+                  pipeline is descriptive metadata only — the runtime
+                  detector gate is the per-tier mask grid at the top
+                  of this page. This summary points operators at the
+                  three surfaces where this tier's live policy is
+                  actually configured. */}
               <div style={{ background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 6, padding: 12, marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>Pipeline ({(selected.pipeline || []).length} stages)</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {(selected.pipeline || []).map(p => (
-                    <span key={p} className="pill neutral" style={{ fontSize: 10 }}>{p}</span>
-                  ))}
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>
+                  Live policy for <span className="mono">{selected.name}</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, max-content) 1fr', gap: '6px 12px', fontSize: 11, lineHeight: 1.5 }}>
+                  <div style={{ color: 'var(--ink-dim)' }}>Detectors that run</div>
+                  <div>
+                    {(() => {
+                      // Pure projection over `detectorsApi.data` — the
+                      // hook itself is called at the top of
+                      // PageTierConfig (Rules of Hooks).
+                      const tierOverride = detectorsApi.data?.overrides?.[selected.name];
+                      const baseMask = detectorsApi.data?.mask;
+                      const explicit = !!tierOverride;
+                      const effective = tierOverride || baseMask || {};
+                      const enabledCount = Object.entries(effective).filter(([, v]) => v).length;
+                      const totalCount = Object.keys(effective).length;
+                      return (
+                        <>
+                          {explicit ? (
+                            <strong>{enabledCount}/{totalCount} enabled</strong>
+                          ) : (
+                            <>
+                              <em>inherits Base</em> ({totalCount > 0 ? `${enabledCount}/${totalCount} enabled` : 'loading…'})
+                            </>
+                          )}
+                          {' · '}
+                          <a
+                            href="#detector-mask-grid"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              const card = document.querySelector('[data-component="detector-mask-card"]');
+                              if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }}
+                            style={{ color: 'var(--accent)' }}
+                          >
+                            {explicit ? 'Edit override ↑' : 'Override on mask grid ↑'}
+                          </a>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Per-request gate</div>
+                  <div>
+                    Block when this single request's detector scores sum to ≥
+                    {' '}<strong className="num">{selected.risk_threshold}</strong>.
+                    Edit on this card → <em>Edit tier</em>.
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Cumulative IP gate</div>
+                  <div>
+                    {selected.challenges_enabled === true ? (
+                      <><span style={{ color: 'var(--up)', fontWeight: 600 }}>challenges on</span> · PoW on threshold crossing</>
+                    ) : (
+                      <>challenges off · escalate to block on threshold crossing</>
+                    )}
+                    {' · '}
+                    thresholds: <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Rules</div>
+                  <div>
+                    Authored on <a href="#/rules" style={{ color: 'var(--accent)' }}>Rules</a>;
+                    rules can be tier-scoped via their DSL (priority order: global → tier → route → session).
+                  </div>
+
+                  <div style={{ color: 'var(--ink-dim)' }}>Volumetric gates</div>
+                  <div>
+                    Rate-limit + DDoS run <strong>before</strong> tier classification — global, configured on
+                    {' '}<a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a>.
+                  </div>
                 </div>
               </div>
 
@@ -2755,7 +3546,7 @@ function PageTierConfig() {
                           <td className="mono">{r.upstream}</td>
                           <td>
                             {auth.length === 0 ? (
-                              <span className="pill" style={{ opacity: 0.5 }} title="Any identity admitted (default open)">open</span>
+                              <span className="pill" style={{ opacity: 0.65 }} title="Any identity admitted (default open)">open</span>
                             ) : (
                               auth.map(k => (
                                 <span
@@ -2797,117 +3588,245 @@ function PageTierConfig() {
 // Pipeline stages the four canonical tiers use today. Order
 // matters for the canonical sort below. Heads up — this list
 // is **descriptive metadata** today: the data plane gates
-// detectors via the global detector mask (PUT /api/detectors),
-// not by walking this list. Toggling a stage off here surfaces
-// the change in the audit chain + the tier list, but doesn't
-// currently disable the detector at runtime. Real tier-scoped
-// execution is a follow-up.
-const TIER_PIPELINE_STAGES = [
-  ['rate', 'Rate-limit gate'],
-  ['rules', 'Custom rule engine'],
-  ['sqli', 'SQL injection detector'],
-  ['xss', 'Cross-site scripting detector'],
-  ['ssrf', 'SSRF detector'],
-  ['path_traversal', 'Path traversal detector'],
-  ['header_inj', 'Header injection / CRLF'],
-  ['bots', 'Bot management'],
-  ['ai', 'AI-based attack detector (ML / ONNX)'],
-  ['risk', 'Composite risk scoring'],
-  ['challenge', 'JS / CAPTCHA challenge ladder'],
-];
+// 2026-05-10 — TIER_PIPELINE_STAGES checkbox grid retired (Option B).
+// Every stage in the previous list was either descriptive metadata
+// or already configurable elsewhere (detector mask, Traffic Gates,
+// Rules page). The Tier editor now focuses on the four real
+// per-tier knobs: per-request block score, cumulative challenge
+// threshold, cumulative block threshold, and the challenges
+// on/off toggle. The wire shape still carries `pipeline` so
+// existing YAML loads; we POST whatever the tier already had.
 
 function TierEditModal({ tier, onCancel, onSave, busy }) {
-  const [pipelineSet, setPipelineSet] = useStateP(() => new Set(tier.pipeline || []));
-  const [risk, setRisk] = useStateP(tier.risk_threshold || 50);
-  const [block, setBlock] = useStateP(tier.block_threshold || 100);
+  // Preserve the existing pipeline list verbatim — wire shape stays
+  // stable, dashboard just doesn't expose the checkboxes any more.
+  const preservedPipeline = tier.pipeline || [];
+  const [risk, setRisk] = useStateP(tier.risk_threshold ?? 50);
+  // 2026-05-10 R3 — per-tier cumulative threshold inputs retired
+  // from the dashboard (operator-confirmed: in practice the
+  // global cumulative thresholds + the per-request block score
+  // cover the common needs; per-tier cumulative tuning is a
+  // niche use case). Wire shape kept intact so:
+  //   (a) values previously set via API persist across saves —
+  //       we round-trip `tier.cumulative_*` verbatim;
+  //   (b) restoring the inputs is a UI-only change.
+  const preservedCumChallenge = tier.cumulative_challenge_at ?? null;
+  const preservedCumBlock = tier.cumulative_block_at ?? null;
+  // 2026-05-10 R2 — challenges default to OFF. Treat missing /
+  // undefined as false (was: missing-as-true), matching the new
+  // backend default.
+  const [challengesEnabled, setChallengesEnabled] = useStateP(tier.challenges_enabled === true);
+  const [showFlow, setShowFlow] = useStateP(false);
 
-  const togglePipeline = (s) => {
-    const next = new Set(pipelineSet);
-    next.has(s) ? next.delete(s) : next.add(s);
-    setPipelineSet(next);
+  // 2026-05-10 — per-tier detector mask edit moved here from the
+  // unified card (which now only edits Base). Operators get one
+  // focused surface per tier: thresholds + challenges + detector
+  // overrides. On save we sequence the existing detectors PUT and
+  // tiers PUT — both audit-mutated, both idempotent.
+  const detectorsApi = window.useDetectorsApi
+    ? window.useDetectorsApi()
+    : { data: null };
+  const baseMask = detectorsApi.data?.mask || {};
+  const existingOverride = detectorsApi.data?.overrides?.[tier.name] || null;
+  // `overrideMask` is null when the operator hasn't decided to
+  // override yet (inherits Base) or has cleared the override; an
+  // object when actively customizing.
+  const [overrideMask, setOverrideMask] = useStateP(
+    existingOverride ? { ...existingOverride } : null
+  );
+  // Track the original state so we know whether to emit a
+  // detectors PUT on save (no PUT if nothing changed).
+  const initialOverride = useRefP(existingOverride);
+  // Re-seed when the modal opens for a different tier — the
+  // existingOverride read happens after the hook resolves.
+  useEffectP(() => {
+    if (detectorsApi.data) {
+      setOverrideMask(existingOverride ? { ...existingOverride } : null);
+      initialOverride.current = existingOverride;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tier.name, !!detectorsApi.data]);
+
+  const isOverriding = !!overrideMask;
+  const startOverride = () => {
+    // Seed with the current Base mask so the operator sees what's
+    // running today + can toggle classes off/on.
+    setOverrideMask({ ...baseMask });
   };
-  const orderedPipeline = TIER_PIPELINE_STAGES
-    .map(([s]) => s)
-    .filter(s => pipelineSet.has(s));
+  const dropOverride = () => {
+    setOverrideMask(null);
+  };
+  const toggleOverrideClass = (cls) => {
+    setOverrideMask((m) => (m ? { ...m, [cls]: !m[cls] } : m));
+  };
+  // Whether the in-modal state differs from what the server has.
+  const overrideChanged =
+    JSON.stringify(overrideMask) !== JSON.stringify(initialOverride.current);
 
   const riskValid = risk >= 0 && risk <= 100;
-  const blockValid = block >= 1;
-  const pipelineValid = orderedPipeline.length > 0;
-  const canSave = riskValid && blockValid && pipelineValid && !busy;
+  const canSave = riskValid && !busy;
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 620 }}>
         <div className="modal-head">
           <div className="modal-title">Edit tier · {tier.name}</div>
           <button className="btn btn-sm" onClick={onCancel}>×</button>
         </div>
         <div className="modal-body">
-          <div className="form-row">
-            <label>Pipeline stages <span className="req">*</span></label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
-              {TIER_PIPELINE_STAGES.map(([s, label]) => {
-                const on = pipelineSet.has(s);
-                return (
-                  <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}>
-                    <input type="checkbox" checked={on} onChange={() => togglePipeline(s)} />
-                    <code style={{ minWidth: 110 }}>{s}</code>
-                    <span style={{ color: 'var(--ink-dim)' }}>— {label}</span>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="form-hint">
-              <strong>Heads up.</strong> This list is descriptive metadata today —
-              the data plane gates detectors via the <strong>Detectors mask</strong> at
-              the top of this page, not by walking this list. Edit the mask there to
-              actually disable a detector. Per-tier execution is a follow-up.
-            </div>
-            {!pipelineValid && (
-              <div className="form-hint warn">Pipeline must have at least one stage.</div>
+          {/* Collapsible decision-flow primer for operators new to
+              the page. Default collapsed — power users skip it. */}
+          <div style={{ marginBottom: 14, border: '1px solid var(--hairline)', borderRadius: 4 }}>
+            <button
+              type="button"
+              onClick={() => setShowFlow(s => !s)}
+              style={{
+                width: '100%', textAlign: 'left', background: 'transparent',
+                border: 'none', padding: '8px 12px', cursor: 'pointer',
+                fontSize: 11, fontWeight: 600, color: 'var(--ink)',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{showFlow ? '▼' : '▶'}</span>
+              How is a request blocked or challenged on this tier?
+              <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }}>
+                {showFlow ? 'click to collapse' : 'click to expand'}
+              </span>
+            </button>
+            {showFlow && (
+              <div style={{ padding: '4px 12px 12px', fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+                Three independent gates run in order; the first one that fires wins.
+                <ol style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  <li><strong>Traffic Gates</strong> (global, before tier matching) — access list, strike-block, rate-limit, DDoS. Configured on Traffic Gates page.</li>
+                  <li><strong>Per-request block score</strong> (this tier) — when THIS one request's detector scores sum to ≥ the value below, block immediately.</li>
+                  <li><strong>Cumulative IP history</strong> — IP's running score crosses the global thresholds (Traffic Gates → #3). On this tier, challenges either run or escalate to block based on the toggle below.</li>
+                </ol>
+                Otherwise → allow + forward to upstream. <code>X-WAF-Risk-Score</code> always reports the cumulative IP score (contract §5.1).
+              </div>
             )}
           </div>
 
-          <div className="form-row" style={{ display: 'flex', gap: 8, marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
-            <div style={{ flex: 1 }}>
-              <label>Risk threshold (0-100) <span className="req">*</span></label>
-              <input className="ip" type="number" min="0" max="100"
-                value={risk}
-                onChange={e => setRisk(parseInt(e.target.value, 10) || 0)} />
-              <div className="form-hint">Composite score that triggers a block. Lower = stricter.</div>
-              {!riskValid && (
-                <div className="form-hint warn">Must be between 0 and 100.</div>
-              )}
+          {/* ── Per-request gate ───────────────────────────────── */}
+          <div className="form-row">
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Per-request gate
             </div>
-            {/* 2026-05-09 — Block threshold (req/s) input removed.
-                The field exists on `Tier` for legacy reasons but
-                is **descriptive metadata only** — the data plane
-                doesn't enforce per-tier req/s caps (source comment
-                in crates/aegis-control/src/api/tiers.rs:36-44).
-                Real per-IP volumetric limits live on the Traffic
-                Gates page (Rate Limit + DDoS gates). The form
-                still POSTs `block_threshold` (using the existing
-                `block` state) so the audit-mutated PUT surface
-                doesn't change. Keeping the field hidden in the UI
-                means operators stop tuning a knob that does
-                nothing. */}
+            <label>Block score (0-100) <span className="req">*</span></label>
+            <input className="ip" type="number" min="0" max="100"
+              value={risk}
+              onChange={e => {
+                const v = parseInt(e.target.value, 10);
+                if (!Number.isFinite(v)) { setRisk(0); return; }
+                setRisk(Math.max(0, Math.min(100, v)));
+              }} />
+            <div className="form-hint">
+              Block when this request's detector scores sum ≥ this value. Lower = stricter.
+            </div>
+            {!riskValid && (
+              <div className="form-hint warn">Must be between 0 and 100.</div>
+            )}
+          </div>
+
+          {/* ── Cumulative IP gate ──
+              R3 — Threshold inputs retired. Only the on/off toggle
+              remains per-tier. Threshold defaults are global; edit on
+              Traffic Gates → #3. */}
+          <div className="form-row" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Cumulative IP gate
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input type="checkbox" checked={challengesEnabled} onChange={e => setChallengesEnabled(e.target.checked)} />
+              <span><strong>Allow challenges</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → escalate to block)</span></span>
+            </label>
+            <div className="form-hint" style={{ marginTop: 6 }}>
+              Cumulative thresholds are global — edit on <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>.
+            </div>
+          </div>
+
+          {/* ── Detector overrides (per-tier mask) ─────────── */}
+          <div className="form-row" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Detectors
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={isOverriding}
+                onChange={() => isOverriding ? dropOverride() : startOverride()}
+              />
+              <span><strong>Override Base mask</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → inherit Base)</span></span>
+            </label>
+
+            {isOverriding && overrideMask && (
+              <>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                  {MASK_CLASSES.map(cls => {
+                    const enabled = !!overrideMask[cls];
+                    const baseEnabled = !!baseMask[cls];
+                    const differsFromBase = enabled !== baseEnabled;
+                    return (
+                      <button
+                        key={cls}
+                        type="button"
+                        onClick={() => toggleOverrideClass(cls)}
+                        title={`${cls} — ${enabled ? 'on' : 'off'}${differsFromBase ? ` (Base: ${baseEnabled ? 'on' : 'off'})` : ''}`}
+                        style={{
+                          fontSize: 10, padding: '3px 9px', borderRadius: 4,
+                          background: enabled ? 'rgba(14,203,129,0.14)' : 'transparent',
+                          color: enabled ? 'var(--up)' : 'var(--ink-dim)',
+                          fontWeight: differsFromBase ? 700 : 500,
+                          border: differsFromBase ? '1px solid var(--brand-yellow)' : '1px solid var(--hairline)',
+                          textDecoration: enabled ? 'none' : 'line-through',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {cls}{!enabled && ' · off'}
+                      </button>
+                    );
+                  })}
+                </div>
+                {(() => {
+                  const diff = MASK_CLASSES.filter(c => !!overrideMask[c] !== !!baseMask[c]).length;
+                  return (
+                    <div className="form-hint">
+                      {diff === 0
+                        ? 'Matches Base. Toggle a chip to diverge.'
+                        : <><strong>{diff}</strong> {diff === 1 ? 'class differs' : 'classes differ'} from Base (yellow border).</>}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
           </div>
 
           <div style={{ marginTop: 14, padding: 8, background: 'var(--canvas-2)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--mono)' }}>
-            {tier.name}: pipeline=[{orderedPipeline.join(', ')}], risk≥{risk}
-          </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
-            <strong>Note:</strong> per-IP volumetric limits (req/s caps, sustained-burst auto-block) live on the{' '}
-            <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates</a> page,
-            not here. This tier's pipeline + risk threshold drive the detector chain after the gates pass.
+            block≥{risk}
+            {' · '}challenges {challengesEnabled ? 'on' : 'off'}
+            {' · '}detectors {isOverriding
+              ? `${Object.entries(overrideMask).filter(([, v]) => v).length}/${Object.keys(overrideMask).length}`
+              : 'base'}
           </div>
         </div>
         <div className="modal-foot">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
           <button className="btn primary" disabled={!canSave} onClick={() => onSave({
-            pipeline: orderedPipeline,
+            pipeline: preservedPipeline,
             risk_threshold: risk,
-            block_threshold: block,
+            block_threshold: tier.block_threshold ?? 100,
+            // R3 — cumulative thresholds are not edited from the
+            // dashboard. Round-trip whatever the API has.
+            cumulative_challenge_at: preservedCumChallenge,
+            cumulative_block_at: preservedCumBlock,
+            challenges_enabled: challengesEnabled,
+            // 2026-05-10 — detector override delta. The parent's
+            // saveTier() sequences a `PUT /api/detectors` (audit-
+            // mutated) when this is non-null. `null` means "no
+            // change to detectors" (skip the second PUT).
+            __detectorOverride: overrideChanged
+              ? { mask: overrideMask, hadBefore: !!initialOverride.current }
+              : null,
           })}>
             {busy ? 'Saving…' : 'Save'}
           </button>
@@ -2926,6 +3845,23 @@ function ListPage({ kind }) {
   const raw = api.data?.entries ?? api.data ?? [];
   const data = Array.isArray(raw) ? raw : [];
 
+  // P4 (2026-05-11) — per-entry hit counts in the last 1h / 24h.
+  // Polled every 15s; the data plane increments the counter
+  // inside `AccessListStore::matches()` on each access-list
+  // match. Operators see which entries are still earning their
+  // keep and a "consider removing" link for entries that haven't
+  // matched anything in the last 24h.
+  const hitsPath = isBL ? '/api/blacklist/hits?window=3600' : '/api/whitelist/hits?window=3600';
+  const hits24Path = isBL ? '/api/blacklist/hits?window=86400' : '/api/whitelist/hits?window=86400';
+  const hits1hApi = window.useApi
+    ? window.useApi(hitsPath, { intervalMs: 15000, fallback: { hits: {} } })
+    : { data: { hits: {} } };
+  const hits24hApi = window.useApi
+    ? window.useApi(hits24Path, { intervalMs: 60000, fallback: { hits: {} } })
+    : { data: { hits: {} } };
+  const hits1h = hits1hApi.data?.hits || {};
+  const hits24h = hits24hApi.data?.hits || {};
+
   // CQF-T2 — Add entry form + per-row delete. Form is shown
   // inline in the page-head when "Add entry" is clicked; submit
   // lands via accessListAdd → audit-mutated POST.
@@ -2939,6 +3875,12 @@ function ListPage({ kind }) {
   const [draftExpiry, setDraftExpiry] = useStateP(''); // YYYY-MM-DDTHH:mm (datetime-local)
   const [search, setSearch] = useStateP('');
   const [showImport, setShowImport] = useStateP(false);
+  // F-02 (2026-05-11) — submit-attempt tracking so the Add form
+  // shows inline validation on empty Value instead of a silently
+  // disabled button. The value ref also lets us focus the field
+  // after a failed submit.
+  const [attempted, setAttempted] = useStateP(false);
+  const valueRef = useRefP(null);
 
   // Filter entries by search term against value + note + kind.
   const filtered = useMemoP(() => {
@@ -2954,7 +3896,14 @@ function ListPage({ kind }) {
 
   async function submitAdd() {
     const value = draftValue.trim();
-    if (!value || busy) return;
+    if (busy) return;
+    // F-02 — surface a visible "Value is required" error +
+    // focus the field instead of silently no-op'ing.
+    if (!value) {
+      setAttempted(true);
+      if (valueRef.current) valueRef.current.focus();
+      return;
+    }
     setBusy(true);
     try {
       const id = `${kind}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -3049,9 +3998,21 @@ function ListPage({ kind }) {
     }
   }
 
+  // F-07 (2026-05-11) — replaced native window.confirm() with
+  // a styled modal so the Remove flow looks consistent with the
+  // Rules Delete and Detector Disable patterns. Native confirm()
+  // bypasses the dark theme and is auto-dismissible by some
+  // browser settings.
+  const [pendingDelete, setPendingDelete] = useStateP(null); // null | entry object
+
   async function deleteRow(entry) {
     if (busy) return;
-    if (!confirm(`Remove ${kind} entry ${entry.kind}:${entry.value}?`)) return;
+    setPendingDelete(entry);
+  }
+
+  async function confirmDeleteRow() {
+    const entry = pendingDelete;
+    if (!entry || busy) return;
     setBusy(true);
     try {
       const r = await window.accessListDelete(kind, entry.id);
@@ -3066,14 +4027,22 @@ function ListPage({ kind }) {
       window.aegisToast(`Remove error: ${e.message || e}`, 'err');
     } finally {
       setBusy(false);
+      setPendingDelete(null);
     }
   }
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">{isBL ? 'Blacklist' : 'Whitelist'}</h1>
+          <h1 className="page-title">
+            {isBL ? 'Blacklist' : 'Whitelist'}
+            <window.PageTitleRefresh
+              onClick={() => api.reload && api.reload()}
+              label={isBL ? 'Refresh blacklist' : 'Refresh whitelist'}
+            />
+          </h1>
           <p className="page-subtitle">
             {data.length.toLocaleString()} entries
             <span style={{ marginLeft: 8 }}>
@@ -3084,9 +4053,6 @@ function ListPage({ kind }) {
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn" onClick={() => api.reload && api.reload()}>
-            <window.I.Refresh /> Refresh
-          </button>
           {/* M005 — bulk import opens a CSV-paste modal */}
           <button
             className="btn"
@@ -3101,7 +4067,11 @@ function ListPage({ kind }) {
             onClick={() => setShowForm(v => !v)}
             disabled={busy}
           >
-            <window.I.Plus /> {showForm ? 'Cancel' : 'Add entry'}
+            {/* F-08 — drop the `+` icon in the Cancel state.
+                `+` semantically means "add"; pairing it with
+                Cancel is contradictory. Drop the icon entirely
+                when collapsing the form. */}
+            {showForm ? 'Cancel' : <><window.I.Plus /> Add entry</>}
           </button>
         </div>
       </div>
@@ -3148,8 +4118,11 @@ function ListPage({ kind }) {
               </select>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 220 }}>
-              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Value</label>
+              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                Value <span style={{ color: 'var(--down)' }}>*</span>
+              </label>
               <input
+                ref={valueRef}
                 type="text"
                 value={draftValue}
                 onChange={e => setDraftValue(
@@ -3166,8 +4139,17 @@ function ListPage({ kind }) {
                   /* country */             'CN'
                 }
                 disabled={busy}
-                style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace' }}
+                aria-required="true"
+                aria-invalid={attempted && !draftValue.trim()}
+                style={{
+                  padding: '6px 8px', background: 'var(--canvas-2)',
+                  border: `1px solid ${attempted && !draftValue.trim() ? 'var(--down)' : 'var(--hairline)'}`,
+                  borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace',
+                }}
               />
+              {attempted && !draftValue.trim() && (
+                <span style={{ fontSize: 11, color: 'var(--down)' }}>Value is required.</span>
+              )}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 2, minWidth: 200 }}>
               <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Note (optional)</label>
@@ -3211,7 +4193,7 @@ function ListPage({ kind }) {
             <button
               className="btn primary"
               onClick={submitAdd}
-              disabled={busy || !draftValue.trim()}
+              disabled={busy}
             >
               Submit
             </button>
@@ -3227,6 +4209,7 @@ function ListPage({ kind }) {
               <th>Value</th>
               <th>Note</th>
               <th style={{ width: 130 }}>{isBL ? 'Action' : 'Bypass'}</th>
+              <th style={{ width: 90 }} title="Per-entry hit count in the last hour · last day (hover for the 24h figure)">Hits · 1h</th>
               <th style={{ width: 130 }}>Expires</th>
               <th style={{ width: 130 }}>Created</th>
               <th style={{ width: 80 }}></th>
@@ -3234,7 +4217,7 @@ function ListPage({ kind }) {
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
                 {data.length === 0
                   ? 'No entries.'
                   : `No matches for "${search}". Clear the search to see all ${data.length} entries.`}
@@ -3255,6 +4238,24 @@ function ListPage({ kind }) {
                         : (e.bypass || []).map(b => <span key={b} className="pill neutral" style={{ fontSize: 9 }}>{b}</span>)}
                     </div>
                   )}
+                </td>
+                <td className="num">
+                  {(() => {
+                    const h1 = hits1h[e.id] || 0;
+                    const h24 = hits24h[e.id] || 0;
+                    const tone = h1 > 0 ? 'ok' : (h24 > 0 ? 'neutral' : 'warn');
+                    const tip = `last 1h: ${h1} · last 24h: ${h24}`;
+                    return (
+                      <span className={`pill ${tone}`} title={tip} style={{ fontSize: 10 }}>
+                        {h1}
+                        {h24 === 0 && h1 === 0 && (
+                          <span style={{ marginLeft: 4, fontSize: 9, fontStyle: 'italic' }}>
+                            · stale
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
                 </td>
                 <td className="num" style={{ color: e.expires_at ? 'var(--warn)' : 'var(--ink-dim)' }}>
                   {e.expires_at ? new Date(e.expires_at).toISOString().slice(0, 10) : 'never'}
@@ -3288,7 +4289,53 @@ function ListPage({ kind }) {
           onImport={bulkImport}
         />
       )}
+      {pendingDelete && (
+        <RemoveAccessListEntryModal
+          kind={kind}
+          entry={pendingDelete}
+          busy={busy}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
     </>
+  );
+}
+
+// F-07 (2026-05-11) — styled confirmation modal for the Access
+// Lists Remove flow, replacing native window.confirm(). Mirrors
+// DeleteRuleModal / DeleteRouteModal so all three "destructive
+// remove" surfaces share one visual language.
+function RemoveAccessListEntryModal({ kind, entry, busy, onCancel, onConfirm }) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="modal-head">
+          <div className="modal-title">
+            Remove {kind} entry <code>{entry.kind}:{entry.value}</code>?
+          </div>
+          <button className="btn btn-sm" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          <p style={{ fontSize: 13, lineHeight: 1.5 }}>
+            Removing <code>{entry.kind}:{entry.value}</code> is audit-mutated and
+            cannot be undone. New requests stop matching this entry on the
+            next request; in-flight requests finish on the old list.
+          </p>
+          {entry.note && (
+            <p style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 8 }}>
+              Note on this entry: <em>{entry.note}</em>
+            </p>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn danger" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Removing…' : 'Remove'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3434,7 +4481,9 @@ function ConfigVersionsCard() {
           <tbody>
             {versions.map(v => {
               const isOpen = expanded === v.seq;
-              const ts = v.ts ? new Date(v.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' }) : '—';
+              // LOW-ADM-05 (2026-05-12) — pin 24h so Config
+              // history TIME reads consistent with Audit Trail.
+              const ts = fmtAbsoluteTimestamp(v.ts);
               return (
                 <Fragment key={`${v.seq}-${v.request_id}`}>
                   <tr style={{ cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : v.seq)}>
@@ -3956,52 +5005,7 @@ function PageSettings() {
   const runtime = window.useRuntimeApi();
   const showRuntimeHint = !!runtime?.data;
 
-  // CQF-T8 — risk thresholds wired to /api/risk/thresholds.
-  // The endpoint shipped via CI-T12; this wiring closes the
-  // CQA-T10 partial. The slider's "Allow ≤ X" is challenge_at-1
-  // and "Challenge ≤ Y" is block_at-1; we mirror the API's
-  // `challenge_at` / `block_at` directly into local state.
-  const riskApi = window.useRiskThresholdsApi();
-  const [allow, setAllow] = useStateP(0);
-  const [challenge, setChallenge] = useStateP(0);
-  const [riskBusy, setRiskBusy] = useStateP(false);
-  // Sync local sliders with whatever the live API reports —
-  // first load, hot-reload, or another operator's PUT.
-  useEffectP(() => {
-    if (!riskApi.data) return;
-    const ca = Number(riskApi.data.challenge_at);
-    const ba = Number(riskApi.data.block_at);
-    if (Number.isFinite(ca)) setAllow(Math.max(0, ca - 1));
-    if (Number.isFinite(ba)) setChallenge(Math.max(0, ba - 1));
-  }, [riskApi.data?.challenge_at, riskApi.data?.block_at]);
-
-  async function saveRiskThresholds() {
-    if (riskBusy) return;
-    setRiskBusy(true);
-    try {
-      const body = {
-        challenge_at: allow + 1,
-        block_at: challenge + 1,
-        max: Number(riskApi.data?.max) || 100,
-      };
-      const r = await window.settingsRiskThresholdsPut(body);
-      if (r && r.ok) {
-        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
-        riskApi.reload && riskApi.reload();
-      } else {
-        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
-        window.aegisToast(`Risk threshold save failed: ${msg}`, 'err');
-      }
-    } catch (e) {
-      window.aegisToast(`Risk threshold error: ${e.message || e}`, 'err');
-    } finally {
-      setRiskBusy(false);
-    }
-  }
-
   const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
-  const [stackTraces, setStackTraces] = useStateP(true);
-  const [redactJSON, setRedactJSON] = useStateP(true);
 
   async function toggleShadow() {
     if (busy) return;
@@ -4093,53 +5097,19 @@ function PageSettings() {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Cumulative IP risk thresholds</div>
-          <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`}>
-            {riskApi.error ? 'fetch failed' : 'live'}
-          </span>
-          {riskApi.data && (
-            <span style={{ fontSize: 11, color: 'var(--ink-dim)', marginLeft: 'auto' }}>
-              live: challenge ≥ {riskApi.data.challenge_at} · block ≥ {riskApi.data.block_at}
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--ink-mute)', marginBottom: 10, lineHeight: 1.5 }}>
-          Per-source-IP score that <strong>accumulates across requests</strong> and decays exponentially
-          (half-life <span className="num">{riskApi.data?.decay_half_life || '5m'}</span> from <code>risk.decay_half_life</code>).
-          Gates the challenge ladder for <em>future</em> requests from this IP.
-          {' '}
-          <strong>Distinct from</strong> the per-request <em>tier risk threshold</em> (50 / 70 / 80 / 90 by tier)
-          which blocks <em>this</em> request based on its detector hits — that one lives on the Detectors page → Edit tier.
-          {' '}
-          See <a href="/docs/security/security-engine.md" target="_blank" rel="noreferrer">security-engine.md § Risk model</a>.
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
-            </div>
-            <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
-          </div>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
-            </div>
-            <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
-            </div>
-            <button
-              className="btn primary"
-              disabled={riskBusy}
-              onClick={saveRiskThresholds}
-              style={{ fontSize: 11, padding: '4px 12px' }}
-            >
-              Save thresholds
-            </button>
+      {/* 2026-05-10 — "Cumulative IP risk thresholds" card moved to
+          Traffic Gates → next to Strike-Block, so the per-IP-risk
+          knobs (lifetime strikes + decaying score thresholds) live
+          on one page with a side-by-side semantics callout. */}
+      <div className="card" style={{ marginBottom: 12, padding: 14, background: 'var(--surface-2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <window.I.Shield />
+          <div style={{ flex: 1, fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.5 }}>
+            <strong style={{ color: 'var(--ink)' }}>Cumulative IP risk thresholds moved.</strong>{' '}
+            They now live with Strike-Block on the
+            {' '}
+            <a href="#/traffic-gates" style={{ color: 'var(--accent)', fontWeight: 600 }}>Traffic Gates</a>
+            {' '}page so the full per-IP-risk story (lifetime strikes vs. decaying score) sits in one place.
           </div>
         </div>
       </div>
@@ -4169,22 +5139,7 @@ function PageSettings() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Response Filtering</div>
-          <span className="pill warn" title="Toggles are local-only. Backend uses cfg.observability + cfg.dlp from waf.yaml.">not wired</span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div className={`toggle ${stackTraces ? 'on' : ''}`} onClick={() => setStackTraces(s => !s)} />
-            <div style={{ fontSize: 12 }}>Block stack traces in responses</div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div className={`toggle ${redactJSON ? 'on' : ''}`} onClick={() => setRedactJSON(s => !s)} />
-            <div style={{ fontSize: 12 }}>Redact JSON fields (password, secret, token, ssn)</div>
-          </div>
-        </div>
-      </div>
+      <ResponseFilterCard />
 
       {/* M004 (2026-05-07) — surface backend data already returned
           by /api/admin/sessions, /api/admin/break-glass,
@@ -4230,6 +5185,110 @@ function PageSettings() {
 // Visibility comes first; the mutation surfaces follow once the
 // audit-mutated handlers exist (DELETE /api/admin/sessions/{id},
 // POST /api/admin/break-glass, PUT /api/integrations).
+
+// 2026-05-11 PR #7 — three-rung response-filter live toggle.
+// Reads `/api/response-filter` for current state, flips rungs
+// through the audit-mutated PUT. Each rung is independently
+// togglable; defaults are all-on. The "wired: false" branch shows
+// when the binary boots without a `Pipeline` writer (test bundles)
+// — the toggles render in a read-only state with a warn pill.
+function ResponseFilterCard() {
+  const api = window.useResponseFilterApi
+    ? window.useResponseFilterApi()
+    : { data: null };
+  const data = api.data || {};
+  const wired = data.wired !== false; // default to wired so live state lights up before first poll
+  const [busy, setBusy] = useStateP(null); // which rung is currently in-flight, for the wait cursor
+
+  async function flip(rung) {
+    if (busy || !wired) return;
+    const patch = {
+      scrub_stack_traces: !!data.scrub_stack_traces,
+      mask_internal_ips:  !!data.mask_internal_ips,
+      redact_dlp:         !!data.redact_dlp,
+    };
+    patch[rung] = !patch[rung];
+    setBusy(rung);
+    try {
+      const r = await window.responseFilterPut(patch);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Response filter · ${rung} ${patch[rung] ? 'on' : 'off'}`, 'ok');
+        api.reload && api.reload();
+      } else if (r.status === 409 && r.reason === 'feature_off') {
+        window.aegisToast('Response filter pipeline not wired in this build', 'warn');
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Response filter toggle failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const rungs = [
+    {
+      key: 'scrub_stack_traces',
+      label: 'Scrub stack traces',
+      desc: 'Node.js / JVM / Python / Rust / PHP / .NET / Ruby / Go → [REDACTED]',
+    },
+    {
+      key: 'mask_internal_ips',
+      label: 'Mask internal IPs',
+      desc: 'RFC 1918 + loopback + link-local → [INTERNAL]',
+    },
+    {
+      key: 'redact_dlp',
+      label: 'Redact DLP payloads',
+      desc: 'Credit cards (Luhn), SSN, IBAN, email, AWS/GitHub/Stripe/Slack tokens',
+    },
+  ];
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div>
+          <div className="card-title">Response Filtering</div>
+          <div className="card-sub">
+            Hot-reloadable via audit-mutated PUT /api/response-filter ·
+            applied to every upstream response body via Pipeline::on_body_frame
+          </div>
+        </div>
+        {!wired && (
+          <span
+            className="pill warn"
+            title="Pipeline writer not wired in this build — toggles are read-only"
+          >
+            not wired
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {rungs.map(r => (
+          <div
+            key={r.key}
+            style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}
+          >
+            <div
+              className={`toggle ${data[r.key] ? 'on' : ''}`}
+              onClick={wired && busy !== r.key ? () => flip(r.key) : undefined}
+              style={{
+                cursor: !wired ? 'not-allowed' : busy === r.key ? 'wait' : 'pointer',
+                opacity: !wired ? 0.5 : 1,
+                marginTop: 2,
+              }}
+            />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{r.label}</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+                {r.desc}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function SettingsSessionsCard() {
   const sessions = window.useAdminSessionsApi
@@ -4645,7 +5704,19 @@ function AlertChannelsCard({ receiversApi }) {
         window.aegisToast(`Test → ${parts.join(' · ') || 'sent'}`, 'ok');
         receiversApi.reload && receiversApi.reload();
       } else {
-        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        // LOW-OBS-03 (2026-05-12) — surface the upstream reason
+        // instead of the generic "unknown error". The server
+        // response is `{ ok:false, failed: [{name, reason}, ...] }`
+        // when dispatch fails, so the meaningful text lives at
+        // `failed[0].reason` (e.g. "VipTalk returned 401
+        // Unauthorized"). Fall back to the legacy
+        // message/error/reason fields in case some other handler
+        // shape lands here.
+        const fail = Array.isArray(r?.failed) && r.failed.length > 0 ? r.failed[0] : null;
+        const failReason = fail?.reason;
+        const msg = failReason
+          || (r && (r.message || r.error || r.reason))
+          || 'unknown error';
         window.aegisToast(`Test failed: ${msg}`, 'err');
       }
     } finally {
@@ -5082,7 +6153,10 @@ function PageTracking() {
 
       <div className="grid-12" style={{ marginBottom: 12 }}>
         <div className="col-6 card">
-          <window.SectionHeader title="SLO budget" sub="live engine · burn windows pending wiring" />
+          <window.SectionHeader
+            title="SLO budget"
+            sub="Service-level objectives — current value vs. target, plus error-budget remaining over the rolling window. Budget drains when current drops below target."
+          />
           {/* S7 (2026-05-08) — root-cause hint when an SLO is below
               target. Pre-fix: the SOC analyst saw a red SLO and had
               to cross-reference attack logs manually to find the
@@ -5090,27 +6164,58 @@ function PageTracking() {
               link to the audit trail filtered to it. */}
           <SloRootCauseHint slis={slo.data?.slis || []} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(slo.data?.slis || []).length === 0 && (
+            {(slo.data?.slis || []).length === 0 ? (
               <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                No SLO data — engine warming up.
+                No SLO data yet — drive some traffic to populate the SLI window
+                {' ('}<code>cfg.slo</code> defines the SLIs).
               </div>
-            )}
-            {(slo.data?.slis || []).map(s => {
-              const tone = s.budget_remaining > 0.5 ? 'up' : s.budget_remaining > 0.1 ? 'warn' : 'down';
-              return (
-                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}>
-                  <span>{s.name}</span>
-                  <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
-                    {s.current.toFixed(2)}%
-                  </span>
-                  <span className="dim">{s.target.toFixed(2)}%</span>
-                  <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
-                  </div>
-                  <span className={`pill ${tone}`}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
+            ) : (
+              <>
+                {/* Column headers — without these, the three percentages
+                    in each row read as a mystery wall to operators new
+                    to the page. 2026-05-10. */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '180px 80px 80px 1fr 80px',
+                  gap: 10,
+                  alignItems: 'center',
+                  fontSize: 10,
+                  color: 'var(--ink-dim)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.5,
+                  paddingBottom: 4,
+                  borderBottom: '1px solid var(--hairline)',
+                  marginBottom: 4,
+                }}>
+                  <span>SLI</span>
+                  <span>Current</span>
+                  <span>Target</span>
+                  <span>Error budget</span>
+                  <span style={{ textAlign: 'right' }}>Remaining</span>
                 </div>
-              );
-            })}
+                {(slo.data?.slis || []).map(s => {
+                  const tone = s.budget_remaining > 0.5 ? 'up' : s.budget_remaining > 0.1 ? 'warn' : 'down';
+                  const meeting = s.current >= s.target;
+                  return (
+                    <div
+                      key={s.name}
+                      title={`${s.name} — currently ${s.current.toFixed(2)}% (target ${s.target.toFixed(2)}%). ${meeting ? 'Meeting target.' : 'Below target — error budget is draining.'}`}
+                      style={{ display: 'grid', gridTemplateColumns: '180px 80px 80px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}
+                    >
+                      <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
+                      <span className="num" style={{ color: `var(--${tone === 'up' ? 'up' : tone === 'warn' ? 'warn' : 'down'})` }}>
+                        {s.current.toFixed(2)}%
+                      </span>
+                      <span className="dim">{s.target.toFixed(2)}%</span>
+                      <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 3, overflow: 'hidden' }}>
+                        <div style={{ width: `${(s.budget_remaining * 100).toFixed(0)}%`, height: '100%', background: tone === 'up' ? 'var(--up)' : tone === 'warn' ? 'var(--warn)' : 'var(--down)' }} />
+                      </div>
+                      <span className={`pill ${tone}`} style={{ textAlign: 'right' }}>{(s.budget_remaining * 100).toFixed(0)}% left</span>
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         </div>
         <div className="col-6 card">
@@ -5229,7 +6334,8 @@ function PageTracking() {
                   <td><span className={`pill ${c.id === cluster.data?.leader_node ? 'solid-yellow' : 'neutral'}`}>
                     {c.id === cluster.data?.leader_node ? 'leader' : 'follower'}
                   </span></td>
-                  <td className="num dim">{c.last_heartbeat ? new Date(c.last_heartbeat).toLocaleTimeString() : '—'}</td>
+                  {/* LOW-ADM-05 (2026-05-12) — 24h heartbeat. */}
+                  <td className="num dim">{fmtClockTime(c.last_heartbeat)}</td>
                   <td>{(c.leases || []).length === 0 ? <span className="dim">—</span> : c.leases.map(l => <span key={l} className="pill info" style={{ marginRight: 4 }}>{l}</span>)}</td>
                 </tr>
               ))}
@@ -5620,13 +6726,35 @@ function PageUpstreams() {
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Routing &amp; Upstreams</h1>
+          <h1 className="page-title">
+            Routing &amp; Upstreams
+            <window.PageTitleRefresh
+              onClick={() => {
+                cfgApi.reload && cfgApi.reload();
+                summaryApi.reload && summaryApi.reload();
+                routesApi.reload && routesApi.reload();
+              }}
+              label="Refresh route + pool data"
+            />
+          </h1>
           <p className="page-subtitle">
-            <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} →
-            <span className="num"> {names.length}</span> pool{names.length === 1 ? '' : 's'}
-            {' '}({totalMembers} member{totalMembers === 1 ? '' : 's'}{orphaned ? `, ${orphaned} unreferenced` : ''}){' · '}
+            {/* LOW-05 (2026-05-11) — the previous copy
+                `N routes → M pools (X members, Y unreferenced)`
+                implied "those N routes use M pools". When some of
+                those pools are orphans, the implication is wrong.
+                New copy splits routed vs unrouted explicitly. */}
+            <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} ·
+            <span className="num"> {names.length - orphaned}</span> pool{(names.length - orphaned) === 1 ? '' : 's'} routed
+            {orphaned > 0 && (
+              <>
+                {' · '}
+                <span className="num">{orphaned}</span> pool{orphaned === 1 ? '' : 's'} unrouted
+              </>
+            )}
+            {' '}({totalMembers} member{totalMembers === 1 ? '' : 's'}){' · '}
             <span
               className={`pill ${cfgApi.error ? 'warn' : 'ok'}`}
               title="Routes + pools land via the audit-mutated pipeline; the proxy hot-swaps without restart."
@@ -5635,14 +6763,18 @@ function PageUpstreams() {
             </span>
           </p>
         </div>
+        {/* MED-RU-03 (2026-05-12) — surface "+ Add pool" at the
+            page level so operators can author a standalone pool
+            from a clean state.  Previously the button only
+            appeared inside the "Pools without routes" panel,
+            which is hidden until an orphan already exists. */}
         <div className="page-actions">
-          <button className="btn" onClick={() => {
-            cfgApi.reload && cfgApi.reload();
-            summaryApi.reload && summaryApi.reload();
-            routesApi.reload && routesApi.reload();
-          }}>
-            <window.I.Refresh /> Refresh
-          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={openPoolAdd}
+            title="Author a pool without a route (members, scheme, TLS, health, circuit breaker). Routes that want to use it later just pick it from the 'Forward to' dropdown."
+          >+ Add pool</button>
         </div>
       </div>
 
@@ -5701,6 +6833,18 @@ function PageUpstreams() {
           </button>
           {showOrphans && (
             <div style={{ borderTop: '1px solid var(--hairline)', padding: 8 }}>
+              {/* MED-RU-03 (2026-05-12) — explain how orphans arise.
+                  Pre-fix the operator had no clue whether an orphan
+                  was authored deliberately or leaked from a failed
+                  route create. */}
+              <div style={{ padding: '4px 8px 8px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                Pools listed here have no route forwarding to them yet.
+                That's expected when you used <strong>+ Add pool</strong>{' '}
+                to author one ahead of its route, or when you deleted
+                a route without removing the underlying pool. Wire a
+                route to one of them via <strong>+ Add route</strong>,
+                or remove the pool below.
+              </div>
               <table className="tbl tbl-compact">
                 <thead><tr><th>Pool</th><th>Members</th><th>Scheme</th><th style={{ width: 160 }}></th></tr></thead>
                 <tbody>
@@ -5724,11 +6868,6 @@ function PageUpstreams() {
                   })}
                 </tbody>
               </table>
-              <div style={{ padding: '6px 8px 0', fontSize: 11, color: 'var(--ink-dim)' }}>
-                Or use <strong>+ Add pool</strong>{' '}
-                <button className="btn btn-sm" onClick={openPoolAdd} style={{ marginLeft: 4 }}>+ Add pool</button>
-                {' '}to create one without a route.
-              </div>
             </div>
           )}
         </div>
@@ -5776,6 +6915,12 @@ const LB_OPTIONS = [
 // endpoint expects (humantime-style strings: "10s" / "3s" /
 // "30s"). Symmetrical with `poolViewFromConfig` below.
 function poolConfigFromForm(d) {
+  // HIGH-RU-01 (2026-05-12) — include `scheme` on save and
+  // derive `tls` from it.  The previous shape omitted `scheme`,
+  // so a `tls` flip silently reset the saved scheme to `auto`
+  // server-side (via `#[serde(default)]`). Sending both keeps
+  // the legacy `tls` flag consistent with the canonical scheme.
+  const scheme = d.connection?.scheme || 'auto';
   const cfg = {
     members: (d.members || []).map(m => ({
       addr: (m.addr || '').trim(),
@@ -5794,7 +6939,8 @@ function poolConfigFromForm(d) {
       max_idle_per_host: Number(d.connection?.max_idle_per_host) || 32,
       idle_timeout: humanTimeFromMs(Number(d.connection?.idle_timeout_ms) || 30000),
       keep_alive: !!d.connection?.keep_alive,
-      tls: !!d.connection?.tls,
+      scheme,
+      tls: tlsFromScheme(scheme, d.connection?.tls),
     },
   };
   if (d.health_enabled) {
@@ -5860,10 +7006,43 @@ function poolFormFromView(view) {
       idle_timeout_ms:   view.connection?.idle_timeout_ms   ?? 30000,
       keep_alive:        view.connection?.keep_alive ?? true,
       tls:               view.connection?.tls       ?? false,
+      // 2026-05-13 — load the saved scheme into the form state so
+      // the Edit Pool dropdown reflects the live config.  Without
+      // this the dropdown defaulted to `auto` (its fallback when
+      // `d.connection.scheme` is undefined) and a Save without an
+      // explicit pick silently downgraded the saved scheme.
+      scheme:            view.connection?.scheme || 'auto',
     },
   };
 }
 
+// MED-RU-03 (2026-05-12) — orphan-leak audit.
+//
+// `PoolEditModal` is opened from two surfaces:
+//   1. "+ Add pool" at the top of Routing & Upstreams (standalone).
+//   2. "+ Create new pool" inside `RouteEditModal` (child modal).
+//
+// Both paths must guarantee that closing the modal without an
+// explicit save produces NO `POOL_UPSERT` event:
+//
+//   - Cancel button       → `onCancel()` → parent flips its state
+//                           flag, no API call. ✓ safe
+//   - Click on backdrop   → routes through onCancel via the
+//                           `.modal-backdrop onClick`. ✓ safe
+//   - Escape / unmount    → parent component unmounts the modal
+//                           the same way; no API call. ✓ safe
+//
+// On `Save`, `onSave({name, body})` runs `poolUpsert` and the
+// modal stays open until success — so a server-side failure
+// leaves the modal in its current state and a second click can
+// retry without committing the previous attempt.  ✓ safe
+//
+// The only `POOL_UPSERT` audit-chain entry this modal can
+// produce is an intentional, operator-confirmed save.  If an
+// orphan pool appears in "Pools without routes" today, it was
+// either (a) authored via "+ Add pool" deliberately, (b) left
+// over from a route that was later deleted, or (c) seeded by
+// the YAML at boot — never from a stray cancel here.
 function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel, onSave, busy }) {
   const [name, setName] = useStateP(initialName || '');
   const [d, setD] = useStateP(() => poolFormFromView(initialPool));
@@ -5892,11 +7071,55 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
   );
   const canSave = trimmedName !== '' && !nameTaken && memberOk && healthOk && cbOk;
 
+  // HIGH-RU-01 follow-up (2026-05-12) — auto-infer scheme from
+  // the member port so an operator who types `znews.vn:443` and
+  // hits Save without touching the scheme dropdown gets a
+  // working TLS pool instead of `scheme: auto + tls: false`
+  // (which produces `http://host:443/` and an upstream 400
+  // "plain HTTP to HTTPS port"). The inference only fires when
+  // the operator hasn't already picked a non-auto scheme — so
+  // explicit selections are never overridden.
+  function inferSchemeFromPort(port) {
+    if (port === 443) return 'https';
+    if (port === 80)  return 'http';
+    return null;
+  }
+  function portFromAddr(addr) {
+    const m = /:(\d+)\s*$/.exec((addr || '').trim());
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : null;
+  }
   function setMember(i, key, val) {
-    setD(prev => ({
-      ...prev,
-      members: prev.members.map((m, idx) => idx === i ? { ...m, [key]: val } : m),
-    }));
+    setD(prev => {
+      const nextMembers = prev.members.map((m, idx) =>
+        idx === i ? { ...m, [key]: val } : m,
+      );
+      // Only re-derive scheme when the operator edits an address
+      // AND the current scheme is still the unspecified `auto`.
+      // Picking https / http / h2c / grpc / tcp explicitly locks
+      // the choice.
+      if (key !== 'addr') {
+        return { ...prev, members: nextMembers };
+      }
+      const currentScheme = prev.connection?.scheme || 'auto';
+      if (currentScheme !== 'auto') {
+        return { ...prev, members: nextMembers };
+      }
+      const inferred = inferSchemeFromPort(portFromAddr(val));
+      if (!inferred) {
+        return { ...prev, members: nextMembers };
+      }
+      return {
+        ...prev,
+        members: nextMembers,
+        connection: {
+          ...prev.connection,
+          scheme: inferred,
+          tls: tlsFromScheme(inferred, prev.connection?.tls),
+        },
+      };
+    });
   }
   function addMember() {
     setD(prev => ({
@@ -6182,25 +7405,48 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                 />
                 <span className="field-label" style={{ marginBottom: 0 }}>HTTP keep-alive</span>
               </label>
+              {/* HIGH-RU-01 (2026-05-12) — `tls` is only operator-
+                  editable when scheme is `auto`. For every explicit
+                  scheme the derived value applies, so a contradicting
+                  toggle would mislead. Disabled checkbox shows the
+                  derived state for clarity. */}
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input
                   type="checkbox"
-                  checked={d.connection.tls}
+                  checked={tlsFromScheme(d.connection.scheme || 'auto', d.connection.tls)}
+                  disabled={(d.connection.scheme || 'auto') !== 'auto'}
                   onChange={e => setD(prev => ({
                     ...prev,
                     connection: { ...prev.connection, tls: e.target.checked },
                   }))}
                 />
-                <span className="field-label" style={{ marginBottom: 0 }}>Upstream TLS (legacy `tls` flag)</span>
+                <span className="field-label" style={{ marginBottom: 0 }}>
+                  Upstream TLS
+                  {(d.connection.scheme || 'auto') !== 'auto' && (
+                    <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>
+                      {' '}(derived from scheme)
+                    </span>
+                  )}
+                </span>
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span className="field-label" style={{ marginBottom: 0 }}>Scheme</span>
                 <select
                   value={d.connection.scheme || 'auto'}
-                  onChange={e => setD(prev => ({
-                    ...prev,
-                    connection: { ...prev.connection, scheme: e.target.value },
-                  }))}
+                  onChange={e => {
+                    // HIGH-RU-01 — keep `tls` in lock-step with the
+                    // new scheme so the form's checkbox reflects what
+                    // we'll actually save.
+                    const next = e.target.value;
+                    setD(prev => ({
+                      ...prev,
+                      connection: {
+                        ...prev.connection,
+                        scheme: next,
+                        tls: tlsFromScheme(next, prev.connection?.tls),
+                      },
+                    }));
+                  }}
                   style={{ padding: '4px 6px', borderRadius: 4, border: '1px solid var(--hairline)', fontSize: 12 }}
                 >
                   <option value="auto">auto — h1/h2 via TLS toggle (also bridges WS)</option>
@@ -6212,6 +7458,39 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                 </select>
               </label>
             </div>
+            {/* HIGH-RU-01 follow-up (2026-05-12) — explicit warning
+                when the form is about to save a pool that will talk
+                plain HTTP to a TLS port. Catches the case where the
+                operator opens an existing `scheme: auto + tls: false`
+                pool with a :443 member (which produces an upstream
+                400 "plain HTTP to HTTPS port"). The auto-infer on
+                member edit handles fresh forms; this banner closes
+                the gap for already-saved pools. */}
+            {(() => {
+              const scheme = d.connection.scheme || 'auto';
+              const usesTls = tlsFromScheme(scheme, d.connection.tls);
+              if (usesTls) return null;
+              const tlsPortMember = (d.members || []).find(m => {
+                const p = portFromAddr(m.addr);
+                return p === 443 || p === 8443;
+              });
+              if (!tlsPortMember) return null;
+              return (
+                <div
+                  className="callout warn"
+                  style={{ marginTop: 8, padding: '8px 10px', fontSize: 11 }}
+                  role="alert"
+                >
+                  <strong>TLS / port mismatch.</strong>{' '}
+                  Member <code>{tlsPortMember.addr}</code> is on a TLS
+                  port but this pool will forward plain HTTP
+                  ({scheme === 'auto' ? <>scheme <code>auto</code> + TLS off</> : <>scheme <code>{scheme}</code></>}).
+                  Most <code>:443</code> upstreams answer with{' '}
+                  <em>400 plain HTTP to HTTPS port</em>. Flip the
+                  scheme to <code>https</code> to fix.
+                </div>
+              );
+            })()}
             {/* 2026-05-03 — protocol matrix that explains exactly
                 what each scheme handles, including WS upgrades
                 (which are auto-detected on http/https/auto and
@@ -6919,20 +8198,40 @@ function PageIncidents() {
   const overlayById = new Map(overlay.map(i => [i.id, i]));
   const rawAlerts = alerts.data?.alerts || alerts.data?.firing || incidents.data?.raw_alerts?.alerts || [];
 
+  // MED-SO-03 (2026-05-12) — parse the alert.name as
+  // `<sli>-<window>` so the SLI column shows the meaningful
+  // half and the window chips next to it.
+  // Examples: `DataPlaneAvailability-1h`, `LatencyP99-72h`.
+  function sliFromAlertName(name) {
+    if (!name) return { sli: 'unknown', window: '' };
+    const m = /^(.+)-([0-9]+[smhd])$/.exec(name);
+    return m ? { sli: m[1], window: m[2] } : { sli: name, window: '' };
+  }
+
   // Derive a unified "incident list" from raw alerts + overlay.
+  // 2026-05-12 — the firing-alerts shape from `/api/incidents`
+  // surfaces `name` / `since` / `severity` / `runbook_url`
+  // (NOT `sli` / `fired_at` / `budget_consumed_pct`). The
+  // earlier reader pulled the wrong field names and rendered
+  // `unknown` / `—` for every row. MED-SO-03.
   const merged = (Array.isArray(rawAlerts) ? rawAlerts : []).map(a => {
-    const id = a.id || `${a.sli || a.kind}:${a.fired_at ? Date.parse(a.fired_at) / 1000 | 0 : 0}`;
-    const o = overlayById.get(id);
+    const name = a.name || a.sli || a.kind || 'unknown';
+    const fired_at = a.since || a.fired_at;
+    const { sli, window: sliWindow } = sliFromAlertName(name);
+    const id = a.id || `${name}:${fired_at ? Date.parse(fired_at) / 1000 | 0 : 0}`;
+    const o = overlayById.get(id) || overlayById.get(name);
     return {
       id,
-      sli: a.sli || a.kind || 'unknown',
+      name,
+      sli,
+      sli_window: sliWindow,
       severity: (a.severity || 'warn').toLowerCase(),
-      fired_at: a.fired_at,
+      fired_at,
       burn_rate: a.burn_rate,
       budget_consumed_pct: a.budget_consumed_pct,
       window_hours: a.window_hours,
       runbook_url: a.runbook_url,
-      status: o?.status || 'firing',
+      status: o?.status || o?.state || 'firing',
       acked_at: o?.acked_at,
       acked_by: o?.acked_by,
       snoozed_until: o?.snoozed_until,
@@ -6961,6 +8260,15 @@ function PageIncidents() {
       // the result either way: success → green toast + reload;
       // failure → red toast with the backend reason.
       if (r && r.status >= 200 && r.status < 300) {
+        // LOW-FINAL-01 (2026-05-13) — collapse the previous
+        // "lifecycle UI pending" warn fallback.  It was a
+        // stop-gap from when MED-SO-04 / MED-OBS-01 left the
+        // overlay-store write broken; commits `e6b307c` +
+        // `cadd01b` closed the round-trip end-to-end and the
+        // regression test
+        // `ack_then_enrich_returns_acknowledged_status` guards
+        // against re-opening that class of bug.  The 2xx path is
+        // now unambiguous.
         window.aegisToast(`Incident ${action} ok`, 'ok');
         if (incidents.reload) incidents.reload();
         if (alerts.reload) alerts.reload();
@@ -6987,6 +8295,7 @@ function PageIncidents() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Incidents</h1>
@@ -7050,9 +8359,16 @@ function PageIncidents() {
                     </span>
                   </td>
                   <td><span className={`pill ${m.severity === 'critical' ? 'down' : 'warn'}`}>{m.severity}</span></td>
-                  <td><code style={{ fontSize: 11 }}>{m.sli}</code></td>
+                  <td>
+                    <code style={{ fontSize: 11 }}>{m.sli}</code>
+                    {m.sli_window && (
+                      <span className="pill neutral" style={{ fontSize: 9, marginLeft: 4, padding: '0 6px' }}>{m.sli_window}</span>
+                    )}
+                  </td>
                   <td title={m.fired_at}>{fmtRel(m.fired_at)}</td>
-                  <td className="num">{m.budget_consumed_pct ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}</td>
+                  <td className="num" title={m.budget_consumed_pct != null ? `${m.budget_consumed_pct.toFixed(2)}% of error budget consumed` : 'Budget metric not available on this build'}>
+                    {m.budget_consumed_pct != null ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}
+                  </td>
                   <td>{m.acked_by || '—'} {m.acked_at && <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>· {fmtRel(m.acked_at)}</span>}</td>
                   <td style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{m.note || '—'}</td>
                   <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -7142,7 +8458,35 @@ function PageInvestigation() {
   const audit = window.useAuditLogApi
     ? window.useAuditLogApi({ ...auditQ, limit: 200 })
     : { data: null };
-  const events = audit.data?.events || [];
+  const rawEvents = audit.data?.events || [];
+
+  // MED-SO-02 (2026-05-12) — PR-UX-A2 now filters server-side
+  // (admin_get.rs parses ip / rule_id / request_id query params
+  // and `AuditFilter` short-circuits in the ring walk). This
+  // client-side pass remains as a defence-in-depth no-op so the
+  // dashboard still works correctly against older WAF binaries
+  // that don't yet honour the query params.
+  const events = useMemoP(() => {
+    if (!activePivot) return rawEvents;
+    const needle = activePivot.toLowerCase();
+    return rawEvents.filter(row => {
+      const e = row.event || row;
+      if (effectiveKind === 'ip') {
+        return (e.client_ip || '').toLowerCase() === needle;
+      }
+      if (effectiveKind === 'request_id') {
+        return (e.request_id || '').toLowerCase() === needle;
+      }
+      if (effectiveKind === 'rule_id') {
+        const ruleId = (e.rule_id || '').toLowerCase();
+        if (ruleId === needle) return true;
+        const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+        const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+        return detectors.some(d => String(d).toLowerCase() === needle);
+      }
+      return true;
+    });
+  }, [rawEvents, activePivot, effectiveKind]);
 
   // Top-attackers table: when pivoting on an IP, find the row.
   const topAttackers = window.useApi
@@ -7164,7 +8508,12 @@ function PageInvestigation() {
     ? window.useBotMixApi(3600)
     : { data: null };
 
-  // Stats roll-up over the audit window.
+  // Stats roll-up over the (now pivot-filtered) audit window.
+  // MED-SO-06 (2026-05-12) — detectors live under
+  // `event.fields.detectors[]`; the top-level `event.detector` /
+  // `event.detectors` keys are placeholders the audit ring
+  // doesn't emit.  Walk `fields.detectors` for the breakdown so
+  // the inline panel matches the by-detector aggregator.
   const summary = useMemoP(() => {
     if (!events.length) return null;
     const byAction = {};
@@ -7174,11 +8523,19 @@ function PageInvestigation() {
     let earliest = Infinity, latest = -Infinity;
     for (const row of events) {
       const e = row.event || row;
+      const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
       const a = e.action || 'unknown';
       byAction[a] = (byAction[a] || 0) + 1;
-      const d = e.detector || (e.detectors && e.detectors[0]) || e.rule_id || 'n/a';
-      byDetector[d] = (byDetector[d] || 0) + 1;
-      const p = e.path || '/';
+      const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+      if (detectors.length) {
+        for (const d of detectors) {
+          const key = String(d);
+          byDetector[key] = (byDetector[key] || 0) + 1;
+        }
+      } else if (e.rule_id) {
+        byDetector[e.rule_id] = (byDetector[e.rule_id] || 0) + 1;
+      }
+      const p = f.path || e.path || '/';
       byPath[p] = (byPath[p] || 0) + 1;
       if (e.client_ip) ips.add(e.client_ip);
       const ts = e.ts ? Date.parse(e.ts) : NaN;
@@ -7200,6 +8557,7 @@ function PageInvestigation() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Investigation</h1>
@@ -7241,10 +8599,45 @@ function PageInvestigation() {
         // Default mode: recent requests + Attack-Analytics top
         // strip.  All hooks live at the top of the function;
         // here we just consume them.
-        const detectorBars = (insightsByDetector.data?.detectors ?? [])
-          .map(d => ({ label: d.name, value: d.count, color: detectorColor(d.name) }))
-          .sort((a, b) => b.value - a.value);
-        const totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+        //
+        // MED-SO-05 (2026-05-12) — when /api/attacks/by-detector
+        // returns empty (fresh process, aggregator hasn't started
+        // bucketing yet, or any other hook-level failure) fall
+        // back to deriving the breakdown from the audit ring so
+        // the card matches what Live-Feed and Audit-Trail see.
+        // The audit ring carries `event.fields.detectors[]` per
+        // detection — exactly what the aggregator buckets server
+        // side. Same window (last 1h) by clipping to the live
+        // ring window.
+        const apiDetectors = insightsByDetector.data?.detectors ?? [];
+        let detectorBars;
+        let totalDetections;
+        let breakdownSource;
+        if (apiDetectors.length > 0) {
+          detectorBars = apiDetectors
+            .map(d => ({ label: d.name, value: d.count, color: detectorColor(d.name) }))
+            .sort((a, b) => b.value - a.value);
+          totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+          breakdownSource = 'by-detector aggregator';
+        } else {
+          const counts = {};
+          for (const row of rawEvents) {
+            const e = row.event || row;
+            const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+            const list = Array.isArray(f.detectors) && f.detectors.length
+              ? f.detectors
+              : (e.rule_id ? [e.rule_id] : []);
+            for (const name of list) {
+              const key = String(name);
+              counts[key] = (counts[key] || 0) + 1;
+            }
+          }
+          detectorBars = Object.entries(counts)
+            .map(([name, value]) => ({ label: name, value, color: detectorColor(name) }))
+            .sort((a, b) => b.value - a.value);
+          totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+          breakdownSource = 'audit ring (fallback)';
+        }
         const botCategories = insightsBotMix.data?.categories ?? [];
         const botColorFor = name => ({
           verified:  'var(--up)',
@@ -7280,7 +8673,7 @@ function PageInvestigation() {
               <div className="col-6 card">
                 <window.SectionHeader
                   title="Detector breakdown"
-                  sub={`${totalDetections.toLocaleString()} detections · last 1h`}
+                  sub={`${totalDetections.toLocaleString()} detections · last 1h · ${breakdownSource}`}
                 />
                 {detectorBars.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
@@ -7300,13 +8693,27 @@ function PageInvestigation() {
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
                     {botCategories.length === 1 && botCategories[0].name === 'unknown' ? (
                       <>
+                        {/* LOW-SO-04 (2026-05-12) — empty state was
+                            "no bot signal yet" even on busy WAFs.
+                            The classifier only emits non-`unknown`
+                            categories when a JA4 baseline is loaded
+                            AND the request fingerprint matches one
+                            of the configured profiles.  Bare UA
+                            strings (curl, Googlebot, Firefox) by
+                            themselves don't suffice. */}
                         Bot classifier wired but every request landed in
                         <code style={{ margin: '0 4px' }}>unknown</code>.
-                        This profile has no JA4 baseline — see{' '}
+                        This profile has no JA4 baseline loaded — see{' '}
                         <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>.
                       </>
                     ) : (
-                      <>No bot classifications recorded.</>
+                      <>
+                        No bot classifications recorded yet. The
+                        classifier emits when JA4 fingerprints match
+                        a configured profile — UA-only traffic
+                        without a fingerprint baseline stays in the
+                        <code style={{ margin: '0 4px' }}>unknown</code> bucket.
+                      </>
                     )}
                   </div>
                 ) : (
@@ -7525,12 +8932,29 @@ function PageInvestigation() {
           </div>
 
           <div className="card">
-            <window.SectionHeader title={`Audit timeline (newest first, ${events.length} of last 200)`} />
+            <window.SectionHeader
+              title={`Audit timeline (newest first, ${events.length} of last 200)`}
+              sub={activePivot ? `filtered to ${effectiveKind || 'pivot'}: ${activePivot}` : undefined}
+            />
             <table className="tbl tbl-compact">
               <thead><tr><th>ts</th><th>action</th><th>ip</th><th>method</th><th>path</th><th>rule_id</th></tr></thead>
               <tbody>
                 {events.slice(0, 100).map((row, i) => {
+                  // MED-SO-06 (2026-05-12) — request fields live under
+                  // `event.fields.{method,path}`; the rule identifier
+                  // comes from `extractResourceId(e)` for admin rows
+                  // and `event.rule_id` / detectors list for detection
+                  // rows.  Live-Feed already reads from `fields.*`;
+                  // this brings Investigation to parity.
                   const e = row.event || row;
+                  const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+                  const method = f.method || e.method || '—';
+                  const path = f.path || e.path || '/';
+                  const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+                  const ruleCell = e.rule_id
+                    || (detectors.length ? detectors.join(',') : null)
+                    || extractResourceId(e)
+                    || '—';
                   return (
                     <tr key={i}>
                       <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
@@ -7538,9 +8962,9 @@ function PageInvestigation() {
                       </td>
                       <td><span className={`pill ${e.action === 'block' ? 'down' : e.action === 'allow' ? 'up' : 'warn'}`}>{e.action || '—'}</span></td>
                       <td className="num">{e.client_ip || '—'}</td>
-                      <td>{e.method || '—'}</td>
-                      <td><code style={{ fontSize: 11 }}>{(e.path || '/').slice(0, 60)}</code></td>
-                      <td><code style={{ fontSize: 11 }}>{e.rule_id || e.detector || '—'}</code></td>
+                      <td>{method}</td>
+                      <td><code style={{ fontSize: 11 }}>{path.slice(0, 60)}</code></td>
+                      <td><code style={{ fontSize: 11 }}>{ruleCell}</code></td>
                     </tr>
                   );
                 })}
@@ -7559,169 +8983,6 @@ function PageInvestigation() {
   );
 }
 
-function PageThreatIntel() {
-  const ti = window.useApi ? window.useApi('/api/threat-intel/hits', { intervalMs: 30000, fallback: null }) : { data: null };
-  const feeds = window.useThreatIntelFeedsApi ? window.useThreatIntelFeedsApi() : { data: null };
-  const geo = window.useGeoipStatusApi ? window.useGeoipStatusApi() : { data: null };
-  const hits = ti.data?.hits || [];
-  const feedList = feeds.data?.feeds || [];
-  const featureBuilt = feeds.data?.feature_built !== false; // null = unknown, treat as on
-  const noFeedsAndNoGeo = feedList.length === 0 && !geo.data?.db_loaded;
-
-  return (
-    <>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">Threat Intel</h1>
-          <p className="page-subtitle">TAXII / MISP feeds · GeoIP DB · recent indicator matches</p>
-        </div>
-      </div>
-
-      {/* SOC-UX: when nothing is wired, lead with a clear "what
-          this page is for + what it needs" panel instead of three
-          empty stat cards.  Hides automatically once any feed or
-          GeoIP DB is configured. */}
-      {noFeedsAndNoGeo && (
-        <div className="card" style={{ padding: 16, marginBottom: 12, borderLeft: '3px solid var(--accent)' }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>What you'll see here</div>
-          <div style={{ fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.6 }}>
-            Threat Intel surfaces three signals once you wire them:
-            <ul style={{ marginTop: 6, paddingLeft: 18 }}>
-              <li><strong>Feeds</strong> — TAXII / MISP indicator subscriptions; hits attribute traffic to known-bad infrastructure.</li>
-              <li><strong>Indicator hits</strong> — every request whose IP / domain matched a feed entry.</li>
-              <li><strong>GeoIP</strong> — country + ASN enrichment on the Overview map and the access-list <code>kind: country</code> matcher.</li>
-            </ul>
-            Until a feed is configured this page reads honestly empty — it is not a bug.
-            See <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Threat Intel setup</a>.
-          </div>
-        </div>
-      )}
-
-      <div className="grid-12" style={{ marginBottom: 12 }}>
-        <div className="col-4 card" style={{ padding: 12 }}>
-          <div className="card-title">Configured feeds</div>
-          <div className="num" style={{ fontSize: 24 }}>{feedList.length}</div>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-            {feeds.data?.configured_in_yaml ? 'from YAML' : 'no feeds configured'}
-          </div>
-        </div>
-        <div className="col-4 card" style={{ padding: 12 }}>
-          <div className="card-title">Recent matches</div>
-          <div className="num" style={{ fontSize: 24 }}>{hits.length}</div>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>indicator hits in current window</div>
-        </div>
-        <div className="col-4 card" style={{ padding: 12 }}>
-          <div className="card-title">GeoIP DB</div>
-          <div style={{ fontSize: 18 }}>
-            {geo.data?.db_loaded ? (
-              <span className="pill ok">loaded</span>
-            ) : geo.data?.feature_built ? (
-              <span className="pill warn">no .mmdb</span>
-            ) : (
-              <span className="pill" style={{ opacity: 0.5 }}>feature off</span>
-            )}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-            {geo.data?.feature_built
-              ? geo.data?.db_loaded ? `${geo.data?.indicator_count?.toLocaleString() || 0} indicators` : 'set geoip.path in config'
-              : 'rebuild with FEATURES="redis geoip"'}
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Configured feeds" sub="from cfg.threat_intel.feeds" />
-        {feedList.length === 0 ? (
-          <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
-            No threat-intel feeds configured. Add to <code>config/*.yaml</code>:
-            <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8, textAlign: 'left', fontSize: 11 }}>
-{`threat_intel:
-  feeds:
-    - kind: taxii
-      url: "https://example.org/taxii/api"
-      collection: "indicators"
-      interval: "10m"`}
-            </pre>
-            <div style={{ marginTop: 8, fontSize: 11 }}>
-              Then restart the WAF. A feed-management UI (add/remove without restart) isn't built yet — for now this page is read-only.
-            </div>
-          </div>
-        ) : (
-          <table className="tbl tbl-compact">
-            <thead><tr><th>Kind</th><th>Source</th><th>Last fetch</th><th>Indicators</th><th>Status</th></tr></thead>
-            <tbody>
-              {feedList.map((f, i) => (
-                <tr key={i}>
-                  <td><span className="pill">{f.kind || 'taxii'}</span></td>
-                  <td className="num">{f.source || f.url || f.name}</td>
-                  <td>{f.last_fetch_at ? new Date(f.last_fetch_at).toLocaleString() : '—'}</td>
-                  <td className="num">{f.indicator_count || 0}</td>
-                  <td><span className={`pill ${f.error ? 'down' : 'ok'}`}>{f.error ? 'error' : 'ok'}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Recent indicator hits" sub={`${hits.length} matches in current window`} />
-        {hits.length === 0 ? (
-          <div style={{ padding: 16, textAlign: 'center', color: 'var(--ink-dim)', fontSize: 12 }}>
-            No threat-intel matches recorded. Either no feeds configured (above), or no traffic matched.
-          </div>
-        ) : (
-          <table className="tbl tbl-compact">
-            <thead><tr><th>Feed</th><th>Indicator</th><th>Hits</th><th>Last seen</th></tr></thead>
-            <tbody>
-              {hits.map((h, i) => (
-                <tr key={i}>
-                  <td>{h.feed}</td>
-                  <td className="num">{h.indicator}</td>
-                  <td className="num">{h.hits}</td>
-                  <td>{h.last_seen ? new Date(h.last_seen).toLocaleString() : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="card">
-        <window.SectionHeader title="GeoIP DB" sub="MaxMind .mmdb status" />
-        <div style={{ padding: 16, fontSize: 12 }}>
-          {geo.data?.feature_built === false ? (
-            <div>
-              The <code>geoip</code> Cargo feature is not enabled in this build. Rebuild with:
-              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8 }}>
-                FEATURES="redis geoip" make build
-              </pre>
-            </div>
-          ) : geo.data?.db_loaded ? (
-            <div>
-              GeoLite2 DB loaded from <code>{geo.data?.db_path || '?'}</code>{' '}
-              ({geo.data?.indicator_count?.toLocaleString() || 0} country mappings).
-              The Overview map renders attacker country blips automatically.
-            </div>
-          ) : (
-            <div>
-              GeoIP feature is built but no <code>.mmdb</code> file is loaded. Configure:
-              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, marginTop: 8 }}>
-{`geoip:
-  enabled: true
-  path: /path/to/GeoLite2-City.mmdb`}
-              </pre>
-              Free download:{' '}
-              <a href="https://www.maxmind.com/en/geolite2/signup" target="_blank" rel="noopener" style={{ color: 'var(--accent)' }}>
-                maxmind.com/en/geolite2/signup
-              </a>
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  );
-}
 
 // 2026-05-09 — Traffic Gates page. Operator-facing surface for the
 // four request-flow gates that fire BEFORE the detector chain:
@@ -7743,23 +9004,91 @@ function PageThreatIntel() {
 function PageTrafficGates() {
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Traffic Gates</h1>
           <p className="page-subtitle">
-            Four request-flow short-circuits that fire <strong>before</strong> the detector chain.
-            Each is a binary block-or-pass gate, not a `Detector` trait
-            impl — see the <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors</a> page
-            for the signal-emitting pipeline that runs after these gates pass.
+            Five per-flow controls that fire <strong>before</strong> the detector chain — four binary
+            block-or-pass gates plus the cumulative IP-risk threshold tuner. Each card carries its
+            own "how does it work" explanation. See
+            {' '}
+            <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors &amp; Tiers</a>
+            {' '}for the signal-emitting pipeline that runs after these gates pass.
           </p>
         </div>
       </div>
 
+      <TrafficGatesFlowDiagram />
+
       <AccessListGateCard />
       <StrikeBlockGateCard />
+      <CumulativeIpRiskCard />
       <RateLimitGateCard />
       <DdosGateCard />
     </>
+  );
+}
+
+// P6 (2026-05-11) — request-flow diagram at the top of Traffic
+// Gates. Operators reading the page before this couldn't tell
+// whether Strike-Block fires before or after Access List; the
+// page intro said "fire before the detector chain" but didn't
+// commit to the inter-gate order. Each chip is a click-scroll
+// target to its corresponding card below.
+function TrafficGatesFlowDiagram() {
+  const stages = [
+    { id: 'access-list',   label: '1. Access List',   target: 'access-list-card',  hint: 'IP / CIDR / country block + bypass' },
+    { id: 'strike-block',  label: '2. Strike-Block',  target: 'strike-block-card', hint: 'Lifetime malicious-event counter' },
+    { id: 'cumulative-ip', label: '3. Cumulative IP', target: 'cum-ip-risk-card',  hint: 'Per-IP risk score (decays over time)' },
+    { id: 'rate-limit',    label: '4. Rate Limit',    target: 'rate-limit-card',   hint: 'Global per-IP token bucket' },
+    { id: 'ddos',          label: '5. DDoS',          target: 'ddos-card',         hint: 'Sliding-window burst + EWMA spike' },
+  ];
+  const scrollToCard = (id) => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  return (
+    <div className="card" style={{ padding: '12px 14px', marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 8 }}>
+        Request flow — gates fire in this order; first short-circuit wins. The detector chain runs after every gate passes.
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--ink-mute)', fontFamily: 'var(--mono)' }}>
+          inbound
+        </span>
+        <span style={{ color: 'var(--ink-dim)' }}>→</span>
+        {stages.map((s, idx) => (
+          <React.Fragment key={s.id}>
+            <button
+              type="button"
+              onClick={() => scrollToCard(s.target)}
+              title={s.hint}
+              className="pill neutral"
+              style={{
+                cursor: 'pointer',
+                border: '1px solid var(--hairline-strong)',
+                background: 'var(--surface-2)',
+                fontSize: 11,
+              }}
+            >
+              {s.label}
+            </button>
+            <span style={{ color: 'var(--ink-dim)' }}>→</span>
+          </React.Fragment>
+        ))}
+        <span
+          style={{
+            fontSize: 11,
+            color: 'var(--ink-mute)',
+            fontFamily: 'var(--mono)',
+            paddingLeft: 4,
+          }}
+        >
+          detector chain
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -7770,58 +9099,359 @@ function AccessListGateCard() {
   const blackCount = (black.data?.entries || []).length;
   const whiteCount = (white.data?.entries || []).length;
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="access-list-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="1. Access List"
         sub="IP / CIDR / country blacklist + whitelist — fires first, cheapest gate"
       />
       <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
-        <div style={{ flex: 1, display: 'flex', gap: 16 }}>
+        <div style={{ flex: 1, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
           <span className="pill err" style={{ fontSize: 11 }}>{blackCount} blacklist {blackCount === 1 ? 'entry' : 'entries'}</span>
           <span className="pill ok" style={{ fontSize: 11 }}>{whiteCount} whitelist {whiteCount === 1 ? 'entry' : 'entries'}</span>
-          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-            Returns 403 + <code>X-WAF-Action: block</code> on blacklist hit.
-            Whitelist bypasses detectors but not other gates.
-          </span>
         </div>
         <a href="#/access-lists" className="btn primary" style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none' }}>
           Edit lists →
         </a>
       </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Operator-curated IP / CIDR / ASN / country blacklist or whitelist. Match → terminate request before the detector chain.'],
+          ['Response', '403 + ', <code key="c">X-WAF-Action: block</code>, ' on blacklist hit. Whitelist bypasses detectors but not other gates.'],
+          ['Recovery', <span key="r">Manual — operator removes the entry on Access Lists. No automatic expiry unless an entry is created with a TTL.</span>],
+          ['Tunable', 'Add / remove entries on the Access Lists page (audit-mutated, hot-reload).'],
+        ]}
+      />
     </div>
   );
 }
 
-// 2. Strike-block summary — sourced from /api/risk.
-function StrikeBlockGateCard() {
-  const risk = window.useApi ? window.useApi('/api/risk', { intervalMs: 5000, fallback: null }) : { data: null };
-  const blockAt = risk.data?.config?.strikes?.block_at ?? null;
-  const blockedCount = (risk.data?.entries || []).filter(e => e.strikes >= (blockAt ?? 999999)).length;
-  const totalTracked = (risk.data?.entries || []).length;
+// Compact "how does it work" strip used at the bottom of every
+// gate card on this page. Renders a 2-column key/value grid so
+// operators can read the operating semantics without having to
+// open the operator doc. Keeps wording tight (one-liner per row).
+//
+// 2026-05-10 — collapsible. Defaults to collapsed (just the header
+// row + chevron) so the five cards on the page stay compact for
+// routine ops; an operator clicks the header to dump the full
+// rows when they need the explanation.
+function GateExplain({ rows }) {
+  const [expanded, setExpanded] = useStateP(false);
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div style={{
+      borderTop: '1px solid var(--hairline)',
+      background: 'var(--surface-2)',
+      fontSize: 11,
+      color: 'var(--ink-dim)',
+      lineHeight: 1.5,
+    }}>
+      <button
+        type="button"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          background: 'transparent',
+          border: 'none',
+          padding: '10px 16px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 11,
+          fontWeight: 600,
+          color: 'var(--ink)',
+        }}
+      >
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)', width: 10, display: 'inline-block' }}>
+          {expanded ? '▼' : '▶'}
+        </span>
+        How does it work?
+        <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400, marginLeft: 'auto' }}>
+          {expanded ? 'click to collapse' : `${rows.length} rows · click to expand`}
+        </span>
+      </button>
+      {expanded && (
+        <div style={{ padding: '0 16px 12px', display: 'grid', gridTemplateColumns: 'minmax(96px, max-content) 1fr', gap: '4px 12px' }}>
+          {rows.map(([k, ...v], i) => (
+            <React.Fragment key={i}>
+              <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{k}</div>
+              <div>{v}</div>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 2. Strike-Block — per-IP lifetime strike counter. Reads
+// /api/gates/strikes for live `enabled` + `block_at` and the
+// telemetry counts (tracked_ips, at_or_over_threshold).
+// Operators flip enable/disable + tune block_at via the Edit
+// modal — audit-mutated PUT /api/gates/strikes; per-IP strike
+// state is preserved across edits.
+//
+// 2026-05-10 — Strike-Block defaults to *disabled* in production
+// (opt-in). The lifetime counter never decays, which can interact
+// awkwardly with the contract's risk-score decay invariant; opt-in
+// keeps the never-decay knob explicit.
+function StrikeBlockGateCard() {
+  const sb = window.useApi ? window.useApi('/api/gates/strikes', { intervalMs: 10000, fallback: null }) : { data: null };
+  const cfg = sb.data;
+  const [editing, setEditing] = useStateP(false);
+  const enabled = !!cfg?.enabled;
+
+  return (
+    <div id="strike-block-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="2. Strike-Block"
-        sub="Per-IP lifetime strike counter — permanent block once threshold crossed"
+        sub="Per-IP lifetime strike counter — permanent block once threshold crossed (opt-in)"
       />
-      <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
-        <div style={{ flex: 1, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-          {blockAt !== null && (
-            <span className="pill neutral" style={{ fontSize: 11 }}>
-              <code style={{ fontSize: 10 }}>strikes.block_at</code>: <strong>{blockAt}</strong>
+      <div style={{ padding: 16 }}>
+        {!cfg ? (
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>Loading…</div>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 12 }}>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Status</div>
+                <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4, color: enabled ? 'var(--ok)' : 'var(--ink-dim)' }}>
+                  {enabled ? 'ENABLED' : 'DISABLED'}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>
+                  {enabled ? 'gate is firing' : 'gate is off (opt-in)'}
+                </div>
+              </div>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Block at</div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, opacity: enabled ? 1 : 0.5 }}>{cfg.block_at}</div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>lifetime strikes</div>
+              </div>
+              <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>At-or-over</div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: cfg.at_or_over_threshold > 0 ? 'var(--down)' : 'var(--ink)' }}>
+                  {cfg.at_or_over_threshold}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>
+                  of {cfg.tracked_ips} tracked {cfg.tracked_ips === 1 ? 'IP' : 'IPs'}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+                {enabled
+                  ? <>Gate is firing. {cfg.at_or_over_threshold > 0
+                      ? <strong>{cfg.at_or_over_threshold} {cfg.at_or_over_threshold === 1 ? 'IP is' : 'IPs are'} currently 403'd</strong>
+                      : 'No IP at or above threshold.'}{' '}Per-IP strikes preserved across edits.</>
+                  : <>Gate is off — strike counts still climb in <code>/api/risk</code> for forensics, but the data plane does not 403. Enable to opt in.</>
+                }
+              </div>
+              <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
+                Edit
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Each detector hit increments the IP\'s lifetime strike counter by 1. When it crosses block_at, the IP 403s at the gate before any further detector cost.'],
+          ['Counter', <span key="c"><strong>Lifetime, never decays.</strong> An IP that hits block_at stays blocked across days unless an operator resets it.</span>],
+          ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: risk-strikes</code>, '. ', <code key="rs">X-WAF-Risk-Score</code>, ' continues to report the (decayed) cumulative score, distinct from the strike count.'],
+          ['Recovery', <span key="r">Manual — <code>POST /api/risk/&lt;ip&gt;/reset</code> per IP, or disable the gate entirely from this card.</span>],
+          ['Tunable', <span key="t">Edit modal on this card — flip <code>enabled</code> and tune <code>block_at</code>. Audit-mutated <code>PUT /api/gates/strikes</code>; per-IP strike state preserved across edits.</span>],
+          ['When to use', 'Production hardening for repeat offenders. For benchmark / risk-decay lifecycle tests, leave disabled (default) so cumulative score is the only score-based gate.'],
+        ]}
+      />
+      {editing && (
+        <StrikesEditModal
+          current={cfg}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); sb.reload && sb.reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function StrikesEditModal({ current, onClose, onSaved }) {
+  const [enabled, setEnabled] = useStateP(!!current?.enabled);
+  const [blockAt, setBlockAt] = useStateP(current?.block_at ?? 50);
+  const [busy, setBusy] = useStateP(false);
+  const [err, setErr] = useStateP(null);
+
+  async function save() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await window.csrfMutate('/api/gates/strikes', {
+        method: 'PUT',
+        body: { enabled, block_at: parseInt(blockAt, 10) },
+      });
+      if (r && r.ok !== false && (r.status === undefined || (r.status >= 200 && r.status < 300))) {
+        window.aegisToast && window.aegisToast(`Strike-Block ${enabled ? 'enabled' : 'disabled'} · block_at=${blockAt}`, 'ok');
+        onSaved();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+        setErr(msg);
+      }
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+        <div className="modal-head">
+          <div className="modal-title">Edit Strike-Block gate</div>
+          <button className="btn btn-sm" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body" style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className={`toggle ${enabled ? 'on' : ''}`} onClick={busy ? undefined : () => setEnabled(e => !e)} style={{ cursor: busy ? 'wait' : 'pointer' }} />
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>Enabled</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                When off, strikes still accumulate for forensics but the data plane does not 403.
+              </div>
+            </div>
+          </div>
+          <label style={{ fontSize: 12, opacity: enabled ? 1 : 0.55 }}>
+            Block at (lifetime strikes)
+            <input className="input" type="number" min="1" value={blockAt}
+              onChange={e => setBlockAt(e.target.value)} disabled={busy}
+              style={{ marginTop: 4, width: '100%' }} />
+          </label>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5, padding: 10, background: 'var(--surface-2)', borderRadius: 4 }}>
+            <strong>Caveat:</strong> the strike counter never decays. With <code>enabled = true</code>,
+            an IP that hits <code>block_at</code> stays 403'd until you disable the gate or reset
+            it via <code>POST /api/risk/&lt;ip&gt;/reset</code>. For benchmark / risk-decay lifecycle
+            tests, leave the gate disabled — the cumulative IP risk thresholds (#3 below) carry
+            the contract's accumulation+decay invariant.
+            {' '}
+            Per-IP strike state is preserved across this edit; flipping the gate off then on
+            re-applies any IPs already at-or-over the threshold.
+          </div>
+          {err && <div style={{ fontSize: 11, color: 'var(--down)' }}>Error: {err}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn primary" onClick={save} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 2026-05-10 — moved from PageSettings into Traffic Gates so all
+// per-IP-risk knobs (strike threshold, cumulative challenge_at,
+// cumulative block_at) sit on one page. The two thresholds gate
+// the challenge ladder for the *cumulative* per-IP score (decays
+// over time); the strike-block threshold above gates the lifetime
+// strike counter (never decays). Wired to /api/risk/thresholds
+// via window.useRiskThresholdsApi + window.settingsRiskThresholdsPut
+// — the same hooks Settings used to call.
+function CumulativeIpRiskCard() {
+  const riskApi = window.useRiskThresholdsApi();
+  const [allow, setAllow] = useStateP(0);
+  const [challenge, setChallenge] = useStateP(0);
+  const [riskBusy, setRiskBusy] = useStateP(false);
+
+  // Sync local sliders with whatever the live API reports —
+  // first load, hot-reload, or another operator's PUT.
+  useEffectP(() => {
+    if (!riskApi.data) return;
+    const ca = Number(riskApi.data.challenge_at);
+    const ba = Number(riskApi.data.block_at);
+    if (Number.isFinite(ca)) setAllow(Math.max(0, ca - 1));
+    if (Number.isFinite(ba)) setChallenge(Math.max(0, ba - 1));
+  }, [riskApi.data?.challenge_at, riskApi.data?.block_at]);
+
+  async function saveRiskThresholds() {
+    if (riskBusy) return;
+    setRiskBusy(true);
+    try {
+      const body = {
+        challenge_at: allow + 1,
+        block_at: challenge + 1,
+        max: Number(riskApi.data?.max) || 100,
+      };
+      const r = await window.settingsRiskThresholdsPut(body);
+      if (r && r.ok) {
+        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
+        riskApi.reload && riskApi.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Risk threshold save failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Risk threshold error: ${e.message || e}`, 'err');
+    } finally {
+      setRiskBusy(false);
+    }
+  }
+
+  return (
+    <div id="cum-ip-risk-card" className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="3. Cumulative IP risk thresholds"
+        sub="Per-IP decaying score — challenge then block, recovers when score decays"
+      />
+      <div style={{ padding: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`} style={{ fontSize: 11 }}>
+            {riskApi.error ? 'fetch failed' : 'live'}
+          </span>
+          {riskApi.data && (
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              currently: challenge ≥ <strong>{riskApi.data.challenge_at}</strong> · block ≥ <strong>{riskApi.data.block_at}</strong>
+              {' · '}half-life <span className="num">{riskApi.data?.decay_half_life || '5m'}</span>
             </span>
           )}
-          <span className={`pill ${blockedCount > 0 ? 'err' : 'ok'}`} style={{ fontSize: 11 }}>
-            {blockedCount} {blockedCount === 1 ? 'IP' : 'IPs'} permanently blocked
-          </span>
-          <span className="pill neutral" style={{ fontSize: 11 }}>
-            {totalTracked} tracked
-          </span>
         </div>
-        <a href="#/settings" className="btn" style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none' }}>
-          Edit thresholds →
-        </a>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
+            </div>
+            <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
+          </div>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
+            </div>
+            <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
+            </div>
+            <button
+              className="btn primary"
+              disabled={riskBusy}
+              onClick={saveRiskThresholds}
+              style={{ fontSize: 11, padding: '4px 12px' }}
+            >
+              Save thresholds
+            </button>
+          </div>
+        </div>
       </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Each detector hit adds weight to the IP\'s cumulative score (sum of signals). Crossing challenge_at serves a JS/CAPTCHA challenge; crossing block_at refuses requests at the gate.'],
+          ['Counter', <span key="c"><strong>Decays exponentially</strong> (half-life ~5m from <code>risk.decay_half_life</code>). Score drifts down between hits; an IP that stops attacking eventually recovers.</span>],
+          ['Response', <span key="rsp">429 + <code>X-WAF-Action: challenge</code> when above challenge_at; 403 + <code>X-WAF-Action: block</code> + <code>X-WAF-Rule-Id: risk-score</code> when above block_at. <code>X-WAF-Risk-Score</code> reports this same accumulated score, satisfying the contract's accumulation+decay invariant.</span>],
+          ['Recovery', 'Automatic — score decays toward zero as time passes without new detector hits.'],
+          ['Tunable', <span key="t">Sliders above. Audit-mutated <code>PUT /api/risk/thresholds</code>; takes effect on the next request.</span>],
+          ['Distinct from', <span key="d">The per-request <em>tier risk threshold</em> (50/70/80/90 by tier) which blocks <em>this</em> request based on its detector hits. That one lives on <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors &amp; Tiers</a> → Edit tier.</span>],
+        ]}
+      />
     </div>
   );
 }
@@ -7838,9 +9468,9 @@ function RateLimitGateCard() {
   const [editing, setEditing] = useStateP(false);
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="rate-limit-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
-        title="3. Rate Limit"
+        title="4. Rate Limit"
         sub="Per-IP token bucket — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window."
       />
       <div style={{ padding: 16 }}>
@@ -7872,6 +9502,16 @@ function RateLimitGateCard() {
           </>
         )}
       </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Per-IP token bucket counts requests within a sliding window. When the count exceeds limit, the request is denied.'],
+          ['Counter', <span key="c">In-process per-IP timestamp deque (per node). <strong>Window slides → automatic recovery.</strong></span>],
+          ['Response', '429 + ', <code key="rc">X-WAF-Action: rate_limit</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ip-rate-limit</code>, '. Misbehaving clients can back off and retry.'],
+          ['Recovery', 'Automatic — IP allowed again as soon as the window slides past old timestamps.'],
+          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/rate-limit</code>; per-IP timestamp state preserved.</span>],
+          ['When to use', '"Steady-state per-IP budget" — APIs with rate fairness. For sustained-burst quarantine (DDoS-grade), use the DDoS gate (#5) instead.'],
+        ]}
+      />
       {editing && (
         <RateLimitEditModal
           current={cfg}
@@ -7948,7 +9588,7 @@ function RateLimitEditModal({ current, onClose, onSaved }) {
   );
 }
 
-// 4. DDoS gate — full operator surface. Per-IP sliding-window
+// 5. DDoS gate — full operator surface. Per-IP sliding-window
 // burst counter + EWMA spike-mode ticker. Returns 403 +
 // X-WAF-Action: block on burst-exceed (different from rate-limit
 // gate which returns 429). Hot-reloadable via PUT /api/gates/ddos
@@ -7960,9 +9600,9 @@ function DdosGateCard() {
 
   if (!data || !data.enabled) {
     return (
-      <div className="card" style={{ marginBottom: 12 }}>
+      <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
         <window.SectionHeader
-          title="4. DDoS Gate"
+          title="5. DDoS Gate"
           sub="Per-IP sliding-window burst gate + EWMA spike mode — currently DISABLED"
         />
         <div style={{ padding: 16 }}>
@@ -7985,9 +9625,9 @@ function DdosGateCard() {
     : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'NORMAL' };
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
-        title="4. DDoS Gate"
+        title="5. DDoS Gate"
         sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s)"
       />
       <div style={{ padding: 16 }}>
@@ -8064,14 +9704,17 @@ function DdosGateCard() {
           </div>
         </div>
 
-        {/* Difference from rate-limit + operator guide */}
-        <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5, padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
-          <strong style={{ color: 'var(--ink)' }}>How this differs from Rate Limit (above):</strong>{' '}
-          The rate-limit gate is a <em>steady-state per-IP token bucket</em> — when the bucket exceeds, the request is rejected with 429 but the IP can retry after the window. The DDoS gate is a <em>sustained-burst trigger</em> — exceeding `per_ip_limit` writes a `block_ttl_s`-second auto-block to the cluster keyspace; subsequent requests from that IP are 403'd for the full TTL.{' '}
-          Hot-reloadable; per-IP state preserved across edits.{' '}
-          <a href="/docs/operator/traffic-gates" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Full operator guide</a>.
-        </div>
       </div>
+      <GateExplain
+        rows={[
+          ['How it fires', 'Per-IP sliding-window burst counter (StateBackend-backed, cluster-wide). When count exceeds per_ip_limit within the window, the IP is added to the auto-block keyspace.'],
+          ['Counter', <span key="c">Cluster-shared per-IP window. EWMA spike mode raises detection sensitivity when overall RPS exceeds <strong>spike_multiplier × baseline</strong>.</span>],
+          ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ddos</code>, '. Subsequent requests from the IP are 403\'d for the full TTL.'],
+          ['Recovery', <span key="r"><strong>TTL\'d</strong> — IP is rejected for <code>block_ttl_s</code> (default 300s), then automatically allowed again. Tighter recovery than rate-limit\'s instant retry.</span>],
+          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/gates/ddos</code>; per-IP StateBackend window preserved across edits.</span>],
+          ['When to use', '"Sustained-burst quarantine" — DDoS-grade protection. For "API rate fairness" use Rate Limit (#4) instead; the two are complementary.'],
+        ]}
+      />
       {editing && (
         <DdosEditModal
           current={cfg}
@@ -8194,162 +9837,6 @@ function DdosEditModal({ current, onClose, onSaved }) {
   );
 }
 
-// Run-6 UX S6 — small badge surfacing the WAF mode (enforce /
-// log_only) on the Compliance page heading. Sourced from
-// /api/mode (audit-mutated, polled every 5 s). Green when
-// enforcing (the safe default); yellow when log_only (the
-// shadow-mode warning state operators want to notice).
-function ComplianceModeBadge() {
-  const modeApi = window.useModeApi ? window.useModeApi() : { data: null };
-  const mode = modeApi.data?.mode || 'enforce';
-  const cls = mode === 'enforce' ? 'pill ok' : 'pill warn';
-  const label = mode === 'enforce' ? 'ENFORCING' : 'LOG-ONLY';
-  return (
-    <span
-      className={cls}
-      title={`WAF is currently ${mode} — sourced from /api/mode`}
-      style={{ marginLeft: 12, fontSize: 11, verticalAlign: 'middle' }}
-    >
-      {label}
-    </span>
-  );
-}
-
-// 2026-05-09 page audit — the previous `COMPLIANCE_CLAMPS` const
-// invented per-regime granularity (PCI pins these 4, HIPAA pins
-// these 4, SOC2 these 5, ...) that didn't exist in code. The Rust
-// truth at `crates/aegis-control/src/api/detectors.rs::COMPLIANCE_PINNED`
-// pins the same 4 classes (sqli, xss, path_traversal, ssrf) when
-// ANY compliance mode is active. Dashboard now reads the
-// authoritative `locked_classes` from the live `/api/detectors`
-// response so it can never drift from the Rust source.
-//
-// All operator-recognised compliance mode IDs (matched against
-// `ComplianceMode` in `crates/aegis-core/src/config.rs`). Used to
-// render the "available modes" reference; the active subset
-// comes from /api/status::compliance.modes.
-const COMPLIANCE_MODES = ['pci_dss', 'hipaa', 'soc2', 'gdpr', 'fips'];
-
-function PageCompliance() {
-  const status = window.useStatusApi ? window.useStatusApi() : { data: null };
-  const detectors = window.useApi ? window.useApi('/api/detectors', { intervalMs: 30000, fallback: null }) : { data: null };
-  const modes = status.data?.compliance?.modes || status.data?.compliance_modes || [];
-  const lockedClasses = detectors.data?.locked_classes || [];
-
-  return (
-    <>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">
-            Compliance Profile
-            {/* Run-6 UX S6 — visible enforce/log_only badge so a SOC
-                analyst on call recognises the current enforcement
-                state at a glance without hunting through Settings. */}
-            <ComplianceModeBadge />
-          </h1>
-          <p className="page-subtitle">PCI · HIPAA · SOC2 · GDPR · FIPS — clamp configurator (read-only · YAML-driven)</p>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader title="Active modes" sub={modes.length === 0 ? 'no modes pinned' : `${modes.length} mode${modes.length === 1 ? '' : 's'} active`} />
-        <div style={{ padding: 16 }}>
-          {modes.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-              No <code>compliance.modes</code> set in the running config. To activate, edit your YAML's <code>compliance:</code> block and restart:
-              <pre style={{ background: 'var(--surface-2)', padding: 8, borderRadius: 4, margin: '8px 0 0', overflow: 'auto', fontSize: 11 }}>
-{`compliance:
-  modes:
-    - pci_dss
-    - soc2`}
-              </pre>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {modes.map(m => <span key={m} className="pill ok">{m.toUpperCase()}</span>)}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 2026-05-09 — replaced the old per-mode pinning table that
-          invented regulatory granularity not present in code. The
-          actual Rust pinning rule is one-size-fits-all (any active
-          mode locks the same 4 classes), so the dashboard now
-          shows that truth instead of the made-up per-regime
-          breakdown. The page-audit doc explains the change:
-          plans/issue-fix/2026-05-09-page-audit/README.md. */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader
-          title="Locked detector classes"
-          sub="These detectors cannot be disabled while ANY compliance mode is active"
-        />
-        <div style={{ padding: 16 }}>
-          {modes.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-              No compliance mode is active, so no detector classes are pinned.
-              Activate a mode (above) to lock the regulatory baseline detectors.
-            </div>
-          ) : lockedClasses.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-              <span className="pill warn" style={{ fontSize: 11, marginRight: 8 }}>backend not reporting locked classes</span>
-              The active mode list reports {modes.length} active mode{modes.length === 1 ? '' : 's'} but
-              <code> /api/detectors </code> returned an empty <code>locked_classes</code>.
-              This shouldn't happen — please check the backend logs.
-            </div>
-          ) : (
-            <>
-              <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginBottom: 8 }}>
-                {lockedClasses.length} detector class{lockedClasses.length === 1 ? '' : 'es'} pinned by the active compliance mode{modes.length === 1 ? '' : 's'} ({modes.join(', ')}):
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {lockedClasses.map(c => (
-                  <span key={c} className="pill warn" style={{ fontSize: 11 }}>🔒 {c}</span>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <window.SectionHeader
-          title="Recognised compliance modes"
-          sub="The five modes the binary accepts in cfg.compliance.modes"
-        />
-        <div style={{ padding: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {COMPLIANCE_MODES.map(m => {
-            const active = modes.includes(m);
-            return (
-              <span
-                key={m}
-                className={active ? 'pill ok' : 'pill'}
-                style={{ fontSize: 11, opacity: active ? 1 : 0.55 }}
-                title={active ? `${m} is active in cfg.compliance.modes` : `${m} is recognised but not active`}
-              >
-                {m.toUpperCase().replace('_', '-')} {active && '· active'}
-              </span>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 12, padding: 12, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-        <window.I.Info />
-        <div style={{ lineHeight: 1.5 }}>
-          <strong>How pinning works today (2026-05-09):</strong> activating ANY compliance mode locks the
-          same four detector classes (<code>sqli</code>, <code>xss</code>, <code>path_traversal</code>, <code>ssrf</code>) —
-          there is no per-regime differentiation in the binary. Source-of-truth: <code>COMPLIANCE_PINNED</code> in <code>crates/aegis-control/src/api/detectors.rs</code>.
-          {' '}A future feature could implement real per-regime pinning (PCI 6.5, HIPAA §164.312, SOC 2 CC 6.1, GDPR Art. 32(1)(b),
-          FIPS each map to slightly different detector sets when read strictly) — tracked in <code>plans/issue-fix/2026-05-09-page-audit/</code>.
-          {' '}Runtime clamp editor (toggle modes without YAML + restart) isn't built yet —
-          edit <code>cfg.compliance.modes</code> in YAML and reload for now.
-          Detector tier overrides remain editable on the <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors</a> page.
-        </div>
-      </div>
-    </>
-  );
-}
 
 // M006 (2026-05-07) — escape one CSV cell. Wraps in quotes when
 // the value contains commas, quotes, or newlines (RFC 4180);
@@ -8455,19 +9942,16 @@ function PageReports() {
   }
 
   const cards = [
+    // LOW-ADM-02 (2026-05-12) — the audit ring is capped at 200
+    // events, so `?limit=1000` returns the same payload as
+    // `?limit=200`. Collapse to a single honest card; a wider
+    // export will land when cold-tier streaming ships.
     {
-      id: 'audit-200',
-      title: 'Audit trail (last 200 events)',
-      sub: 'CSV of every chained event — request decisions + config mutations',
+      id: 'audit-ring',
+      title: 'Audit trail (full ring · last 200 events)',
+      sub: 'CSV of every chained event — request decisions + config mutations. Ring is capped at 200 in this build; wider exports require cold-tier streaming (deferred).',
       kind: 'href',
       href: '/api/reports/audit.csv?limit=200',
-    },
-    {
-      id: 'audit-1000',
-      title: 'Audit trail (last 1000 events)',
-      sub: 'Larger window for weekly review',
-      kind: 'href',
-      href: '/api/reports/audit.csv?limit=1000',
     },
     {
       id: 'top-7d',
@@ -8549,9 +10033,17 @@ function PageTopAttackers() {
     setBusyId(identifier);
     try {
       const id = `top-attacker-${identifier.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+      // HIGH-SO-01 (2026-05-12) — include `bypass: []` so the
+      // server's AccessListEntry deserializer accepts the body.
+      // Without this the POST 400s with `missing field bypass`
+      // and the entire SOC "block this attacker" workflow is
+      // broken end-to-end. The server-side belt
+      // (`#[serde(default)]` on the field) ships in the same PR
+      // so future callers can't trip the same wire.
+      const created_at = new Date().toISOString();
       const body = identifier.startsWith('fp:')
-        ? { id, kind: 'fingerprint', value: identifier, note: `blocked from Top Attackers · last 1h` }
-        : { id, kind: identifier.includes('/') ? 'cidr' : 'ip', value: identifier, note: `blocked from Top Attackers · last 1h` };
+        ? { id, kind: 'fingerprint', value: identifier, note: `blocked from Top Attackers · last 1h`, bypass: [], created_at }
+        : { id, kind: identifier.includes('/') ? 'cidr' : 'ip', value: identifier, note: `blocked from Top Attackers · last 1h`, bypass: [], created_at };
       const r = await window.accessListAdd('blacklist', body);
       if (r.ok) {
         window.aegisToast(`Blocked ${identifier}`, 'ok');
@@ -8569,9 +10061,16 @@ function PageTopAttackers() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Top Attackers</h1>
+          <h1 className="page-title">
+            Top Attackers
+            <window.PageTitleRefresh
+              onClick={() => top.reload && top.reload()}
+              label="Refresh top attackers"
+            />
+          </h1>
           <p className="page-subtitle">
             Ranked by hits in the last {win} · pivot or block in one click
             {geoLoaded ? '' : ' · GeoIP DB not loaded — country / ASN columns will be empty until make geoip-link runs'}
@@ -8586,9 +10085,6 @@ function PageTopAttackers() {
           >
             {Object.keys(TOP_ATTACKERS_WINDOWS).map(v => <option key={v}>{v}</option>)}
           </select>
-          <button className="btn" onClick={() => top.reload && top.reload()}>
-            <window.I.Refresh />
-          </button>
         </div>
       </div>
 
@@ -8631,9 +10127,20 @@ function PageTopAttackers() {
                       {isFp ? (
                         <span className="dim mono" title="ja4 fingerprint identifier — no IP available">{a.identifier}</span>
                       ) : (
+                        // LOW-SO-03 (2026-05-12) — explicit onClick
+                        // anchors the navigation even when an ancestor
+                        // event handler tries to preventDefault on
+                        // bubbling clicks. Matches the row's Pivot
+                        // button so the underlined identifier is a
+                        // shortcut to the same place.
                         <a
                           href={`#/investigation?pivot=${encodeURIComponent(a.identifier)}&kind=ip`}
-                          style={{ color: 'var(--accent)' }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            location.hash = `/investigation?pivot=${encodeURIComponent(a.identifier)}&kind=ip`;
+                          }}
+                          style={{ color: 'var(--accent)', cursor: 'pointer' }}
+                          title={`Pivot Investigation on ${a.identifier}`}
                         >{a.identifier}</a>
                       )}
                     </td>
@@ -8704,6 +10211,20 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
   const [busy, setBusy] = useStateP(false);
   const [search, setSearch] = useStateP('');
   const [expandedRouteId, setExpandedRouteId] = useStateP(null);
+  // P5 (2026-05-11) — per-route activity in last 60s. Polled every
+  // 10s; the data plane increments the counter atomically on
+  // every resolved route. The pill tone is derived from the
+  // sample count rendered into the route table below.
+  const activityApi = window.useApi
+    ? window.useApi('/api/analytics/route-activity', { intervalMs: 10000, fallback: { routes: [] } })
+    : { data: { routes: [] } };
+  const activityMap = (() => {
+    const m = {};
+    for (const r of (activityApi.data?.routes || [])) {
+      m[r.route] = r;
+    }
+    return m;
+  })();
   // PR3 — Test route tool state.
   const [testOpen, setTestOpen] = useStateP(false);
   const [testHost, setTestHost] = useStateP('');
@@ -8737,35 +10258,42 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
     );
   })();
 
-  const openAdd = () => setEditor({ mode: 'add', draft: emptyRouteDraft() });
-  const openEdit = (route) => setEditor({ mode: 'edit', draft: routeToDraft(route) });
+  // MED-02 (2026-05-11) — modal-anchored save error. The earlier
+  // shape toasted save failures bottom-right while the modal
+  // body kept rendering a *separate* "pool name already exists"
+  // inline hint — the two surfaces could disagree (toast: catch-
+  // all collision; inline: pool name collision) and the operator
+  // had to read both to figure out the real cause. Now the modal
+  // owns its own error block; the local hint stays purely
+  // advisory.
+  const [saveError, setSaveError] = useStateP(null);
+  const openAdd = () => { setSaveError(null); setEditor({ mode: 'add', draft: emptyRouteDraft() }); };
+  const openEdit = (route) => { setSaveError(null); setEditor({ mode: 'edit', draft: routeToDraft(route) }); };
+  const closeEditor = () => { setSaveError(null); setEditor(null); };
 
   async function saveRoute(draft) {
     setBusy(true);
+    setSaveError(null);
     try {
-      // Inline pool create — modal sets draft.newPool when the
-      // operator typed a backend address instead of picking an
-      // existing pool. Pool name = route id in that flow.
-      if (draft.newPool && draft.newPool.addr) {
-        const poolName = draft.upstream;
-        const poolBody = poolBodyFromInlineForm(draft.newPool);
-        const pr = await window.poolUpsert(poolName, poolBody);
-        if (!(pr.status === 200 && pr.ok)) {
-          const msg = pr.message || pr.error || pr.reason || `HTTP ${pr.status}`;
-          window.aegisToast(`Pool create failed: ${msg}`, 'err');
-          return;
-        }
-        cfgReload && cfgReload();
-      }
+      // MED-RU-03 (2026-05-12) — Add Route no longer creates a
+      // pool as a side-effect. The "+ Create new pool" affordance
+      // in RouteEditModal opens a child PoolEditModal that writes
+      // the pool independently (audit-chained) before the route
+      // is submitted here, so by this point the pool already
+      // exists in the live config. The previous MED-04
+      // compensating-delete logic is retired along with the
+      // inline-backend path; if the operator wants to clean up an
+      // unused pool they use "Pools without routes" → Delete.
       const body = routeBodyFromDraft(draft);
       const r = await window.routeUpsert(draft.id, body);
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Route "${draft.id}" saved`, 'ok');
         routesApi.reload && routesApi.reload();
+        setSaveError(null);
         setEditor(null);
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
-        window.aegisToast(`Save failed: ${msg}`, 'err');
+        setSaveError(`Save failed: ${msg}`);
       }
     } finally {
       setBusy(false);
@@ -8948,6 +10476,38 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                       <div className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)', marginTop: 2 }}>
                         {r.priority || ''}
                       </div>
+                      {/* P5 (2026-05-11) — sliding-window activity
+                          pulse. Green > 1 req/min, amber 0-1
+                          req/min, red 0 req/min for ≥ 5 min,
+                          neutral when the route has never matched
+                          since boot. Tooltip carries the
+                          last-request age in seconds. */}
+                      {(() => {
+                        const a = activityMap[r.id];
+                        if (!a) {
+                          return (
+                            <div
+                              style={{ marginTop: 4 }}
+                              title="No requests have hit this route since process boot. Verify the host/path/method match the traffic you expect."
+                            >
+                              <span className="pill neutral" style={{ fontSize: 9, padding: '0 6px' }}>idle</span>
+                            </div>
+                          );
+                        }
+                        const cnt = a.last_60s_count || 0;
+                        const ageS = a.last_seen_age_s;
+                        let tone, label;
+                        if (cnt > 60) { tone = 'ok'; label = `${cnt}/min`; }
+                        else if (cnt > 0) { tone = 'ok'; label = `${cnt}/min`; }
+                        else if (ageS != null && ageS < 300) { tone = 'warn'; label = `${Math.floor(ageS)}s ago`; }
+                        else { tone = 'err'; label = ageS != null ? `${Math.floor(ageS / 60)}m ago` : 'silent'; }
+                        const tip = `last 60s: ${cnt} req` + (ageS != null ? ` · last seen ${ageS}s ago` : '');
+                        return (
+                          <div style={{ marginTop: 4 }} title={tip}>
+                            <span className={`pill ${tone}`} style={{ fontSize: 9, padding: '0 6px' }}>{label}</span>
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td style={r.enabled === false ? { opacity: 0.55 } : undefined}>
                       <div className="mono" style={{ fontSize: 12, fontWeight: 600 }}>
@@ -9086,8 +10646,11 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
           existingIds={routes.map(r => r.id)}
           poolNames={poolNames}
           onSave={saveRoute}
-          onCancel={() => setEditor(null)}
+          onCancel={closeEditor}
           busy={busy}
+          saveError={saveError}
+          clearSaveError={() => setSaveError(null)}
+          cfgReload={cfgReload}
         />
       )}
 
@@ -9110,26 +10673,38 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
 // + scheme + host_header + health, plus an "Other routes using
 // this pool" reminder so they know who else they'd affect by
 // editing the pool.
-// Build a `PoolConfig` body from the inline-add-pool form
-// fields the RouteEditModal collects when the operator chooses
-// "+ Create new pool". Mirrors `poolConfigFromForm` for the
-// fields that are exposed inline (rest take server defaults).
-function poolBodyFromInlineForm(np) {
-  return {
-    members: [{
-      addr: (np.addr || '').trim(),
-      weight: 1,
-      ...(np.host_header && np.host_header.trim() ? { host_header: np.host_header.trim() } : {}),
-    }],
-    lb: 'round_robin',
-    connection: {
-      scheme: np.scheme || 'auto',
-      keep_alive: true,
-      max_idle_per_host: 32,
-      idle_timeout: '30s',
-    },
-  };
+
+// HIGH-RU-01 (2026-05-12) — derive the legacy `tls` flag from
+// the canonical `scheme`. The server's `UpstreamScheme::uses_tls`
+// already treats `tls` as advisory when `scheme` is explicit,
+// but the saved wire shape `{scheme: "https", tls: false}` reads
+// as a contradiction to operators inspecting the API. Keep the
+// two fields in lock-step at the dashboard boundary.
+//
+// `auto` honours the user-controlled `tls` checkbox; every other
+// scheme derives from the protocol semantics.
+function tlsFromScheme(scheme, fallbackTls) {
+  switch (scheme) {
+    case 'https':
+    case 'grpc':
+      return true;
+    case 'http':
+    case 'h2c':
+    case 'tcp':
+      return false;
+    case 'auto':
+    default:
+      return !!fallbackTls;
+  }
 }
+
+// MED-RU-03 (2026-05-12) — `poolBodyFromInlineForm` retired.
+// The Add Route modal no longer collects backend-address +
+// scheme inline; pool creation goes through the same
+// `PoolEditModal` + `poolConfigFromForm` path as standalone
+// "+ Add pool". That keeps the wire shape canonical (one
+// builder instead of two that drift) and the audit chain
+// honest (each pool create is its own `POOL_UPSERT` event).
 
 // Form-shape helpers — `methods` and `auth_required` are
 // **arrays** in the form draft so the checkbox UI can read /
@@ -9155,6 +10730,10 @@ function emptyRouteDraft() {
     auth_required: [],
     default: false,
     enabled: true,
+    // 2026-05-12 — strip the route prefix on forward by default.
+    // Mirrors the server-side default and the operator-friendly
+    // mount-point semantics.
+    strip_prefix: true,
   };
 }
 function routeToDraft(r) {
@@ -9169,6 +10748,11 @@ function routeToDraft(r) {
     auth_required: r.auth_required || [],
     default: !!r.default,
     enabled: r.enabled !== false, // default to true if missing
+    // 2026-05-12 — `strip_prefix` defaults to `true` server-side
+    // for routes saved before this field existed, but the patch
+    // serializer emits it explicitly for fresh routes. Reads as
+    // `true` when the field is missing.
+    strip_prefix: r.strip_prefix !== false,
   };
 }
 function routeBodyFromDraft(d) {
@@ -9187,6 +10771,9 @@ function routeBodyFromDraft(d) {
     upstream: d.upstream,
     default: !!d.default,
     enabled: d.enabled !== false,
+    // 2026-05-12 — always send `strip_prefix` so a flip from true
+    // to false round-trips through the audit-mutated PUT.
+    strip_prefix: d.strip_prefix !== false,
   };
   if (d.host.trim()) body.host = d.host.trim();
   if (methods.length > 0) body.methods = methods;
@@ -9209,7 +10796,7 @@ const ROUTE_AUTH_CHOICES = [
   ['anonymous', 'Anonymous — admit unauthenticated clients (note: making the route public)'],
 ];
 
-function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy }) {
+function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy, saveError, clearSaveError, cfgReload }) {
   const [d, setD] = useStateP(() => ({
     ...initial,
     methods: typeof initial.methods === 'string'
@@ -9222,13 +10809,26 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const isAdd = mode === 'add';
   const idClash = isAdd && existingIds.includes(d.id.trim());
 
-  // The "Forward to" target is decided by what the operator
-  // types: empty address field → use the dropdown (existing
-  // pool); typing an address → create a new pool. No toggle.
-  const [newPool, setNewPool] = useStateP({
-    addr: '', scheme: 'https', host_header: '',
-  });
-  const usingNewPool = newPool.addr.trim().length > 0;
+  // MED-RU-03 (2026-05-12) — Add Route used to also create a pool
+  // as a hidden side-effect of the "type a backend inline" path.
+  // That made the failure modes confusing ("did the pool fail or
+  // the route?") and left orphan pools on operator cancels or
+  // route validation errors. Decouple: pool creation now lives
+  // in a CHILD PoolEditModal opened via "+ Create new pool",
+  // and the Add Route modal authors only the route. Audit chain
+  // gets two distinct events (`POOL_UPSERT` + `ROUTE_CREATE`)
+  // when a fresh pool is involved, which is also better forensics.
+  const [createPoolOpen, setCreatePoolOpen] = useStateP(false);
+  const [createPoolBusy, setCreatePoolBusy] = useStateP(false);
+
+  // MED-02 (2026-05-11) — clear the save error whenever the
+  // operator edits anything. The previous shape kept the toast +
+  // inline hint visible until the next save; now the error
+  // disappears as soon as the operator starts addressing it.
+  const setWithErrorClear = (updater) => {
+    if (clearSaveError) clearSaveError();
+    setD(updater);
+  };
 
   const [showAdvanced, setShowAdvanced] = useStateP(
     !isAdd && (
@@ -9240,27 +10840,49 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
 
   const idValid = d.id.trim().length > 0 && !idClash;
   const pathValid = d.path.trim().startsWith('/');
-  const upstreamValid = usingNewPool
-    ? (d.id.trim().length > 0 && !poolNames.includes(d.id.trim()))
-    : poolNames.includes(d.upstream);
+  const upstreamValid = poolNames.includes(d.upstream);
   const canSave = idValid && pathValid && upstreamValid && !busy;
 
-  const set = (k, v) => setD({ ...d, [k]: v });
+  const set = (k, v) => setWithErrorClear({ ...d, [k]: v });
   const toggleSet = (k, v) => {
     const cur = new Set(d[k] || []);
     cur.has(v) ? cur.delete(v) : cur.add(v);
-    setD({ ...d, [k]: Array.from(cur) });
+    setWithErrorClear({ ...d, [k]: Array.from(cur) });
   };
+
+  // MED-RU-03 — handle a saved-from-child pool. The child modal
+  // already wrote it (audit-chained); we just select the new
+  // name in the dropdown and refresh the parent's pool list.
+  // Errors stay surfaced inside the child modal's own toast path;
+  // by the time onSave fires here the write is committed.
+  async function handleChildPoolSave({ name, body }) {
+    setCreatePoolBusy(true);
+    try {
+      const r = await window.poolUpsert(name, body);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Pool "${name}" saved`, 'ok');
+        if (cfgReload) cfgReload();
+        setD(prev => ({ ...prev, upstream: name }));
+        setCreatePoolOpen(false);
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Pool save failed: ${msg}`, 'err');
+      }
+    } finally {
+      setCreatePoolBusy(false);
+    }
+  }
 
   // One-line preview always visible at the bottom of the form.
   const matchPreview = (() => {
     const ms = (d.methods || []).length > 0 ? d.methods.join(',') : 'ANY';
     const host = d.host.trim() || '*';
     const path = d.path.trim() || '/';
-    return `${ms}  ${host}${path}  →  ${
-      usingNewPool ? `${d.id.trim() || '<route-id>'} (new · ${newPool.addr})`
-                   : (d.upstream || '<pick a pool>')
-    }`;
+    const pool = d.upstream || '<pick a pool>';
+    const stripNote = d.strip_prefix && (d.match_type === 'prefix' || d.match_type === 'exact') && path !== '/'
+      ? '  · strip prefix'
+      : '';
+    return `${ms}  ${host}${path}  →  ${pool}${stripNote}`;
   })();
 
   return (
@@ -9277,7 +10899,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             <label>Route ID <span className="req">*</span></label>
             <input className="ip" value={d.id} disabled={!isAdd}
               onChange={e => set('id', e.target.value)}
-              placeholder="vnexpress" />
+              placeholder="my-route" />
             {idClash && <div className="form-hint warn">A route with this ID already exists.</div>}
           </div>
 
@@ -9324,56 +10946,107 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             </div>
           </div>
 
-          {/* Forward to — combined: dropdown OR type a new address. */}
+          {/* MED-RU-03 (2026-05-12) — Forward to: pick an existing
+              pool, or click "+ Create new pool" to open a child
+              modal. The modal authors only the route now; pool
+              creation is an explicit audit-chained step.  Pools
+              that exist without routes show up in "Pools without
+              routes" on the page — same lifecycle as the standalone
+              "+ Add pool" entry. */}
           <div className="form-row" style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
             <label>Forward to <span className="req">*</span></label>
-            <select className="ip"
-              value={usingNewPool ? '' : d.upstream}
-              disabled={usingNewPool}
-              onChange={e => set('upstream', e.target.value)}>
-              <option value="">{poolNames.length === 0 ? '— no pools yet —' : '— pick an existing pool —'}</option>
-              {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-            <div style={{ fontSize: 11, color: 'var(--ink-dim)', textAlign: 'center', margin: '6px 0' }}>— or —</div>
-            <input
-              className="ip"
-              value={newPool.addr}
-              onChange={e => setNewPool({ ...newPool, addr: e.target.value })}
-              placeholder="Type a new backend: IP:port  (e.g. 10.0.1.10:8080)"
-            />
-            {usingNewPool && (
-              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 11 }}>Scheme</label>
-                  <select className="ip" value={newPool.scheme}
-                    onChange={e => setNewPool({ ...newPool, scheme: e.target.value })}>
-                    <option value="auto">auto</option>
-                    <option value="http">http</option>
-                    <option value="https">https</option>
-                    <option value="h2c">h2c</option>
-                    <option value="grpc">grpc</option>
-                    <option value="tcp">tcp</option>
-                  </select>
-                </div>
-                <div style={{ flex: 2 }}>
-                  <label style={{ fontSize: 11 }}>
-                    Host header <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(SNI override · optional)</span>
-                  </label>
-                  <input className="ip" value={newPool.host_header}
-                    onChange={e => setNewPool({ ...newPool, host_header: e.target.value })}
-                    placeholder="vnexpress.net (for multi-vhost / public TLS)" />
-                </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+              <select
+                className="ip"
+                style={{ flex: 1 }}
+                value={d.upstream}
+                onChange={e => set('upstream', e.target.value)}
+              >
+                <option value="">{poolNames.length === 0 ? '— no pools yet —' : '— pick a pool —'}</option>
+                {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => { if (clearSaveError) clearSaveError(); setCreatePoolOpen(true); }}
+                title="Open the full pool editor to author a new upstream (members, scheme, TLS, health, circuit breaker). Saves immediately and audit-chains as a separate event from this route."
+                style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+              >+ Create new pool</button>
+            </div>
+            {poolNames.length === 0 && (
+              <div className="form-hint">
+                No pools yet — click <strong>+ Create new pool</strong> to author one.
               </div>
             )}
-            {usingNewPool && (
-              <div className="form-hint">
-                Will create pool <code>{d.id.trim() || '<route-id>'}</code> with this single member.
-                {poolNames.includes(d.id.trim()) && (
-                  <span className="warn"> — that pool name already exists; pick it from the dropdown above instead.</span>
-                )}
+            {d.upstream && (
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
+                Selected: <code>{d.upstream}</code>{' '}
+                {(() => {
+                  const p = (poolNames || []).includes(d.upstream);
+                  return p ? '· existing pool' : '· (pool no longer in the live config — refresh)';
+                })()}
               </div>
             )}
           </div>
+
+          {/* 2026-05-12 — strip-prefix toggle. The forwarder
+              precomputes whether to strip at compile time based on
+              this flag + match_type + path, so the only gating
+              choice the operator has to make is "mount-point style"
+              vs "path-preserving". Default `true` matches the
+              nginx/traefik/envoy mental model. */}
+          {(() => {
+            const matchType = d.match_type || 'prefix';
+            const path = (d.path || '').trim();
+            const supportsStrip = (matchType === 'prefix' || matchType === 'exact') && path !== '/';
+            const upstreamPathPreview = (() => {
+              const incoming = path && path.startsWith('/') ? `${path}/article.html` : '/example';
+              if (!supportsStrip || !d.strip_prefix) return incoming;
+              return incoming.startsWith(path) && incoming.length > path.length
+                ? incoming.slice(path.length) || '/'
+                : '/';
+            })();
+            return (
+              <div className="form-row" style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!d.strip_prefix}
+                    disabled={!supportsStrip}
+                    onChange={e => set('strip_prefix', e.target.checked)}
+                  />
+                  <span>
+                    Strip route prefix when forwarding
+                    {!supportsStrip && (
+                      <span style={{ color: 'var(--ink-dim)', fontSize: 11, marginLeft: 4 }}>
+                        — n/a for {matchType === 'regex' || matchType === 'glob'
+                          ? <>match-type <code>{matchType}</code></>
+                          : <>catch-all route <code>/</code></>}
+                      </span>
+                    )}
+                  </span>
+                </label>
+                <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
+                  {supportsStrip ? (
+                    <>
+                      With strip on, the upstream sees the request path with{' '}
+                      <code>{path}</code> removed. With it off, the upstream
+                      sees the full path verbatim.
+                      <br />
+                      <span style={{ fontFamily: 'var(--mono)' }}>
+                        Example: <code>{path}/article.html</code> →{' '}
+                        upstream gets <code>{upstreamPathPreview}</code>
+                      </span>
+                    </>
+                  ) : matchType === 'regex' || matchType === 'glob' ? (
+                    <>Regex / glob matches have no single literal prefix to strip — leave the field off.</>
+                  ) : (
+                    <>The catch-all route forwards every path verbatim — stripping <code>/</code> would leave the request without a path component.</>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Advanced — collapsed by default. */}
           <div style={{ marginTop: 12 }}>
@@ -9480,23 +11153,61 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             {matchPreview}
           </div>
 
+          {/* MED-02 (2026-05-11) — server-error block, modal-
+              anchored. Replaces the older bottom-right toast so
+              the operator's eye doesn't need to ping two
+              corners of the page. Pre-wrap preserves the
+              compensating-delete addendum that MED-04 emits
+              when a rolled-back pool can't be removed. */}
+          {saveError && (
+            <div style={{
+              marginTop: 12,
+              padding: '10px 12px',
+              border: '1px solid var(--danger, #b9425a)',
+              background: 'rgba(185, 66, 90, 0.12)',
+              borderRadius: 4,
+              fontSize: 12,
+              color: 'var(--ink)',
+              whiteSpace: 'pre-wrap',
+            }} role="alert">
+              <strong style={{ display: 'block', marginBottom: 4 }}>Save failed</strong>
+              {saveError.replace(/^Save failed:\s*/, '')}
+            </div>
+          )}
+
         </div>
         <div className="modal-foot">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
           <button className="btn primary" disabled={!canSave} onClick={() => {
-            const out = { ...d };
-            if (usingNewPool) {
-              out.upstream = d.id.trim();
-              out.newPool = newPool;
-            } else {
-              out.newPool = null;
-            }
-            onSave(out);
+            // MED-RU-03 (2026-05-12) — the route modal no longer
+            // creates pools as a side-effect. The "newPool" sentinel
+            // stays `null` so the parent's saveRoute skips the
+            // inline-pool branch and only emits a ROUTE_CREATE.
+            onSave({ ...d, newPool: null });
           }}>
             {busy ? 'Saving…' : (isAdd ? 'Create route' : 'Save')}
           </button>
         </div>
       </div>
+      {/* MED-RU-03 (2026-05-12) — child PoolEditModal for the
+          "+ Create new pool" flow. Saves immediately (audit-chained);
+          on success the new pool is selected in the route's
+          dropdown. Operator cancel of the child modal is a no-op
+          (no API call). Operator cancel of the PARENT route modal
+          after creating a pool leaves the pool intact (matches
+          the standalone "+ Add pool" semantics — pools can exist
+          without routes by design). */}
+      {createPoolOpen && (
+        <PoolEditModal
+          mode="add"
+          existingNames={poolNames}
+          initialName=""
+          initialPool={null}
+          onCancel={() => setCreatePoolOpen(false)}
+          onSave={handleChildPoolSave}
+          busy={createPoolBusy}
+        />
+      )}
     </div>
   );
 }
@@ -9547,9 +11258,9 @@ Object.assign(window, {
   // Phase 2 — merged Access Lists, plus Phase 3 stubs.
   // PageHelp is owned by help.jsx (loaded after this file).
   PageAccessLists,
-  PageIncidents, PageInvestigation, PageThreatIntel,
+  PageIncidents, PageInvestigation,
   PageTopAttackers,
-  PageCompliance, PageReports,
+  PageReports,
   // 2026-05-09 — Traffic Gates page surfaces the four request-flow
   // gates (access list, strike-block, rate-limit, DDoS) with
   // telemetry + cross-links. New page slot in Policy menu group.

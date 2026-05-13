@@ -66,8 +66,20 @@ impl IncidentState {
 }
 
 /// Stable ID for an alert.
+///
+/// MED-OBS-01 (2026-05-12) — the format includes `window_hours`
+/// so multi-window alerts (1h / 6h / 72h on the same SLI) track
+/// as distinct incidents.  Critically, this format also matches
+/// the id the dashboard synthesizes when it POSTs to
+/// `/api/incidents/<id>/ack`: the alerts API renders
+/// `name = "{sli}-{window}h"` (see `tracking.rs::from_engine`),
+/// and the dashboard does `id = format!("{name}:{ts}")`.  Before
+/// this fix the overlay was written under the dashboard's key
+/// but `enrich()` looked it up by the bare `{sli}:{ts}` key —
+/// so ack POST returned 200 but the GET shape still reported
+/// `firing` with `acked_at: null`.
 pub fn alert_id(a: &SloAlert) -> String {
-    format!("{:?}:{}", a.sli, a.fired_at.timestamp())
+    format!("{:?}-{}h:{}", a.sli, a.window_hours, a.fired_at.timestamp())
 }
 
 /// In-process incident state.
@@ -291,5 +303,70 @@ mod tests {
         let a1 = alert(SliKind::DataPlaneAvailability, 1700000000);
         let a2 = alert(SliKind::DataPlaneAvailability, 1700000001);
         assert_ne!(alert_id(&a1), alert_id(&a2));
+    }
+
+    // MED-OBS-01 (2026-05-12) regression coverage.
+
+    fn alert_with_window(sli: SliKind, ts: i64, window_hours: u64) -> SloAlert {
+        SloAlert {
+            sli,
+            severity: AlertSeverity::Page,
+            fired_at: DateTime::from_timestamp(ts, 0).unwrap(),
+            resolved_at: None,
+            burn_rate: 999.99,
+            budget_consumed_pct: 99999.99,
+            window_hours,
+            runbook_url: "".into(),
+        }
+    }
+
+    #[test]
+    fn alert_id_format_includes_window_hours_and_timestamp() {
+        // Must match the dashboard-synthesized id:
+        //   alerts API name = "<SliKind>-<N>h"
+        //   dashboard id    = "<name>:<ts>"
+        // → "<SliKind>-<N>h:<ts>"
+        let a = alert_with_window(SliKind::DataPlaneAvailability, 1778570234, 1);
+        assert_eq!(
+            alert_id(&a),
+            "DataPlaneAvailability-1h:1778570234",
+            "format must match the dashboard ack URL synthesis"
+        );
+    }
+
+    #[test]
+    fn alert_id_differs_for_different_window_hours_on_same_sli() {
+        let a1 = alert_with_window(SliKind::DataPlaneAvailability, 1700000000, 1);
+        let a72 = alert_with_window(SliKind::DataPlaneAvailability, 1700000000, 72);
+        assert_ne!(
+            alert_id(&a1),
+            alert_id(&a72),
+            "multi-window alerts must track as distinct incidents"
+        );
+    }
+
+    #[test]
+    fn ack_then_enrich_returns_acknowledged_status() {
+        // The MED-OBS-01 regression: the ack handler writes the
+        // overlay under whatever id the path param carries, then
+        // enrich() looks it up by `alert_id(&a)`.  Before the fix
+        // these two strings disagreed; after the fix they match.
+        let tracker = IncidentTracker::new();
+        let a = alert_with_window(SliKind::DataPlaneAvailability, 1778570234, 1);
+        let stored_id = alert_id(&a);
+        tracker.ack(&stored_id, Some("admin".into()), None);
+
+        let enriched = tracker.enrich(vec![a]);
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(
+            enriched[0].status,
+            IncidentStatus::Acknowledged,
+            "ack write must round-trip through enrich"
+        );
+        assert!(
+            enriched[0].acked_at.is_some(),
+            "acked_at must populate after the ack write"
+        );
+        assert_eq!(enriched[0].acked_by.as_deref(), Some("admin"));
     }
 }

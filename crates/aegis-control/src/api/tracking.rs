@@ -557,6 +557,18 @@ impl TrackingHandler {
         serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
 
+    /// MED-SO-04 (2026-05-12) — expose the engine's live firing
+    /// alerts so the `/api/incidents` handler can compose them
+    /// with the operator overlay (ack / snooze / resolve).
+    /// Returns `Vec::new()` when no engine is wired (single-node
+    /// boot before `set_slo_engine` runs, tests).
+    pub fn active_alerts(&self) -> Vec<crate::slo::SloAlert> {
+        match self.slo() {
+            None => Vec::new(),
+            Some(engine) => engine.active_alerts(),
+        }
+    }
+
     /// Aggregate snapshot. Cached for 2s (per the docs spec for the
     /// tracking-snapshot family). Composes upstream summary +
     /// placeholders for the others.
@@ -646,6 +658,12 @@ mod tests {
         for k in ["name", "current", "target", "budget_remaining"] {
             assert!(slis[0][k].is_number() || slis[0][k].is_string());
         }
+    }
+
+    #[test]
+    fn active_alerts_empty_when_no_engine_wired() {
+        let h = handler();
+        assert!(h.active_alerts().is_empty());
     }
 
     #[test]

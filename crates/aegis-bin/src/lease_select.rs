@@ -46,9 +46,30 @@ pub fn derive_node_id(cfg: &WafConfig) -> NodeId {
             return NodeId::new(explicit);
         }
     }
+    // LOW-01 (2026-05-11) — HOSTNAME isn't reliably exported in
+    // every shell (macOS interactive shells expose it as a
+    // built-in but don't `export` it). Fall back to the
+    // `hostname(1)` utility, which is on every Unix path, before
+    // the literal "unknown-host" string. Dashboard operators
+    // were seeing `unknown-host-NNNNN-NNNNN` even on a healthy
+    // single-node dev boot.
     let host = std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("HOST"))
-        .unwrap_or_else(|_| "unknown-host".to_string());
+        .ok()
+        .or_else(|| std::env::var("HOST").ok())
+        .or_else(|| {
+            std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .and_then(|out| {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if s.is_empty() { None } else { Some(s) }
+                    } else {
+                        None
+                    }
+                })
+        })
+        .unwrap_or_else(|| "unknown-host".to_string());
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -181,12 +202,15 @@ upstreams:
 
     #[test]
     fn raft_returns_not_implemented() {
-        let cfg = aegis_core::load_config_str(&yaml_with_state(
+        // 2026-05-11 CORE-09/CTL-08 fix — raft is now rejected at
+        // WafConfig::validate() time (the lint layer), not at
+        // run() time. load_config_str calls validate(), so the
+        // error surfaces here instead of a layer deeper.
+        let err = aegis_core::load_config_str(&yaml_with_state(
             "state:\n  backend: raft",
         ))
-        .unwrap();
-        let err = run(&cfg, NodeId::new("test-1"))
-            .expect_err("raft should be rejected");
+        .expect_err("raft should be rejected at config load");
+        let err = format!("{err:?}");
         assert!(err.contains("raft"), "got: {err}");
     }
 

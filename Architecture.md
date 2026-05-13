@@ -288,6 +288,34 @@ individual stages need not know their tier.
 > first. That doc carries the visual flowchart, the per-request vs
 > cumulative-IP risk distinction, and worked examples; this section
 > is the engineering source of truth.
+>
+> **2026-05-10 (Option B + R2 + R3)** — every tier
+> (`critical / high / medium / low`) carries optional
+> `cumulative_challenge_at`, `cumulative_block_at`, and
+> `challenges_enabled: bool` fields alongside the existing
+> `risk_threshold` (per-request block score). When the data plane
+> resolves a route, it looks the matched tier up in the live
+> `TierStore` (shared via `ProxyContext.tiers: OnceLock<Arc<TierStore>>`)
+> and consults these per-tier values for the cumulative-IP-risk
+> decision. Unset fields fall back to the global
+> `cfg.risk.thresholds`. With `challenges_enabled = false` (the
+> per-tier default since R2), `RiskLevel::Challenge` escalates
+> straight to block at the matched tier — operators opt tiers into
+> the PoW rung instead of opting out, since most deployments want
+> hard allow/block semantics.
+>
+> **R3 (2026-05-10)** — the dashboard's Edit Tier modal surfaces
+> only `risk_threshold`, `challenges_enabled`, and the per-tier
+> detector-mask override. The two cumulative-threshold fields
+> (`cumulative_challenge_at` / `cumulative_block_at`) remain on the
+> wire shape so API clients can set them, but the UI doesn't expose
+> inputs because per-tier cumulative tuning is a niche use case;
+> most operators are well-served by the global thresholds on
+> Traffic Gates → #3.
+>
+> Contract wire shape (`X-WAF-Action`, `X-WAF-Risk-Score`, response
+> status / body) is unchanged; per-tier thresholds only move
+> *which threshold the comparison uses*, not what we report.
 
 Stages run in this order. Earlier stages can short-circuit later ones.
 
@@ -354,10 +382,25 @@ Stages run in this order. Earlier stages can short-circuit later ones.
     - CAPTCHA providers behind a `CaptchaProvider` trait: Turnstile,
       hCaptcha, reCAPTCHA v3.
 
-12. **Response filter** (runs after the upstream responds). Security header
-    injection, stack-trace scrub, internal IP mask, information-leak header
-    strip, DLP outbound, ICAP RESPMOD. Streaming chunk processor so large
-    responses never balloon memory.
+12. **Response filter** (runs after the upstream responds, shipped 2026-05-11).
+    `Pipeline::on_body_frame` is the single hot trait method on
+    `SecurityPipeline` today (`inbound` is bypassed — the data plane calls
+    `run_all_filtered_timed` on the detector chain directly). Each upstream
+    response body runs through three independently toggleable rungs via
+    `ResponseFilterConfig` (held in an `ArcSwap` for hot-reload):
+    - `response_filter::scrub_stack_traces` — Node.js / JVM / Python / Rust /
+      PHP / .NET / Ruby / Go traces → `[REDACTED]`.
+    - `response_filter::mask_internal_ips` — RFC 1918 + loopback + link-local
+      → `[INTERNAL]`.
+    - `dlp::redact` — Luhn-validated credit cards, SSN, IBAN, email, AWS keys,
+      GitHub / Stripe / Slack tokens.
+    Clean responses pay one `Cow::Borrowed` check per rung and zero allocations;
+    only modified payloads re-emit (with `Content-Length` rewritten so hyper
+    doesn't mis-frame). Today the forwarder buffers the entire body into a
+    single `Full<Bytes>` frame; the per-frame interface is in place for the
+    streaming-body work that follows. Information-leak header stripping +
+    ICAP RESPMOD + OpenAPI response validation remain forward-looking
+    (`docs/security/response-filtering.md` calls out the gap).
 
 ---
 
@@ -425,6 +468,37 @@ pub struct Member {
 }
 ```
 
+- **Hostname-addressed members (PR-DNS-1 + PR-DNS-2, 2026-05-11).**
+  `MemberConfig.addr` is a tagged enum `MemberAddrSpec::{Ip(SocketAddr),
+  Hostname { host, port, refresh_seconds }}` parsed via untagged
+  serde so the YAML stays a single string (`addr: api.example.com:443`).
+  - **Phase 1 (PR-DNS-1):** at boot + dashboard PUT the resolver
+    in `crates/aegis-proxy/src/upstream/dns_resolve.rs` walks each
+    pool, calls `tokio::net::lookup_host` for every hostname in
+    parallel, and expands multi-A records into one synthetic
+    `Member` per resolved IP — same shape as Envoy's STRICT_DNS.
+    `host_header` defaults to the hostname when unset so TLS SNI
+    + outbound `Host:` align. Unresolvable hostnames at dashboard
+    PUT fail loudly (`UnresolvedHostname`).
+  - **Phase 2 (PR-DNS-2):** per-pool background refresh task in
+    `crates/aegis-proxy/src/upstream/dns_refresh.rs`, backed by
+    `hickory-resolver` (pure-Rust, TTL-aware). One task per pool
+    with hostname members at boot. Cadence is
+    `min(record TTL, refresh_seconds override, 60 s default)`
+    clamped to `[10 s, 1 h]`. On IP-set change the task calls
+    `PoolRegistry::apply` (preserving operator-pinned static
+    members) and emits a `pool_dns_resolved` audit event with
+    `before` / `after` / `added` / `removed` IP lists. Resolver
+    outages soft-fail: last-known IPs stay in place, retry on
+    next tick. Boot path uses `SoftSkip` failure policy so a
+    transient outage doesn't abort startup; dashboard PUTs keep
+    `Strict` so typos surface at config-set time.
+  - **Phase 2 scope guard:** dashboard PUTs that add a new
+    hostname member to a pool get Phase 1's one-shot resolution
+    but don't spawn a new refresh task (the operator has to
+    persist + restart to get background refresh on that
+    hostname). Phase 2.5 / Phase 3 will reconcile refresh-task
+    membership on PUT.
 - **Active health check** per pool: periodic probe task.
 - **Passive ejection** on N consecutive 5xx / connect errors.
 - **Circuit breaker** per member with error-rate threshold + open duration.
@@ -833,24 +907,21 @@ pub struct CompiledPattern {
 
 ---
 
-## 24. Compliance Profiles
+## 24. Compliance Profiles (deferred)
 
-Modes **stack**; the strictest wins; conflicting config is refused at load
-time.
+`cfg.compliance.modes` accepts five tag values today (`fips`, `pci`,
+`soc2`, `gdpr`, `hipaa`) and the dashboard's Compliance page surfaces
+the active list, but **the auto-pinning behavior described in earlier
+revisions of this document is deferred for now.** Operators may freely
+enable or disable any detector class regardless of which modes are
+declared. The full per-regime enforcement plan (FIPS primitive
+allow-list, PCI-DSS PAN masking, SOC 2 export hooks, GDPR residency
+pinning, HIPAA PHI log suppression, mode stacking, dry-run validation)
+lives at [`plans/future/compliance-profiles.md`](plans/future/compliance-profiles.md).
 
-- **FIPS 140-2/3**: only `aws-lc-rs` FIPS primitives; TLS / HMAC / PRNG on
-  FIPS allowlist.
-- **PCI-DSS v4.0**: PAN masking in logs + responses; TLS 1.2+ only on
-  PCI-scope listeners; ≥ 90-day audit retention; no CVV / CVC stored.
-- **SOC 2**: hash-chained audit log, admin change trail, access review
-  exports, SLI/SLO monitoring.
-- **GDPR**: PII redaction before logs leave the node, residency pinning,
-  right-to-erasure endpoint, retention ceilings.
-- **HIPAA**: PHI-safe log mode suppressing bodies + flagged headers on PHI
-  routes; BAA dedication flags.
-
-A **compliance-mode profile** flips all of the above into the strictest
-setting with a single config switch.
+Code anchor: the Rust pin list at
+`crates/aegis-control/src/api/detectors.rs::COMPLIANCE_PINNED` is
+intentionally empty; repopulate it to bring lock-by-mode back.
 
 ---
 
@@ -865,8 +936,8 @@ setting with a single config switch.
 - **Hot binary reload** on `SIGUSR2`: new process inherits the listening FD
   via `SCM_RIGHTS` (or systemd socket activation); old process drains; new
   process accepts; rollback on readiness-probe failure.
-- **Dry-run validator** on every config change: full compile + lint +
-  compliance check before the `ArcSwap` swap. Malformed updates refused;
+- **Dry-run validator** on every config change: full compile + lint
+  before the `ArcSwap` swap. Malformed updates refused;
   running config preserved.
 - **TLS cert hot reload** via `ArcSwap<CertStore>`: in-flight handshakes
   finish on the old cert; new ones pick up the new cert.
@@ -1115,7 +1186,7 @@ with a meaningful subset of the requirements.
 | **13** | Bot management | JA4/h2 fingerprints, rDNS verification, CAPTCHA providers, escalation ladder |
 | **14** | Content scan | ICAP REQMOD/RESPMOD, magic-byte, archive-bomb |
 | **15** | Adaptive shed | Gradient2, priority queue, per-route soft/hard |
-| **16** | Compliance profiles | FIPS gate, PCI, SOC 2, GDPR, HIPAA, stacking logic |
+| **16** | Compliance profiles (deferred) | Mode tags accepted; auto-pinning + per-regime enforcement parked in `plans/future/compliance-profiles.md` |
 | **17** | HA + clustering | gossip membership, leader lease, rolling restart story |
 | **18** | GitOps | signed-commit verification, GitSyncer, dashboard→PR round-trip |
 | **19** | DR / backup | config export/import, state snapshots, restore validation |
@@ -1153,8 +1224,8 @@ with a meaningful subset of the requirements.
   requests.
 - **Dry-run**: malformed rule file refused; running config untouched;
   dashboard shows the error.
-- **Compliance**: FIPS profile boots; PCI profile refuses TLS 1.1; GDPR
-  residency exporter refuses cross-region delivery.
+- **Compliance**: declared modes surface on the Compliance dashboard
+  (lock-by-mode deferred — see `plans/future/compliance-profiles.md`).
 - **SLO**: burn-rate alert fires via Alertmanager on a synthetic regression.
 
 ---

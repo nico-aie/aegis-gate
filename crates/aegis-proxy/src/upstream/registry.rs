@@ -125,6 +125,28 @@ impl PoolRegistry {
                 .members
                 .iter()
                 .map(|mc| {
+                    // 2026-05-11 (PR-DNS-1) — hostnames must have
+                    // been resolved into IP literals before this
+                    // point. The boot path runs
+                    // `aegis_proxy::upstream::dns_resolve::
+                    // expand_hostname_members` first; if anyone
+                    // builds a registry from a hostname-shaped
+                    // config we fail loudly with a stable
+                    // `PoolValidationError` instead of silently
+                    // dropping the member.
+                    let sa = match &mc.addr {
+                        aegis_core::config::MemberAddrSpec::Ip(sa) => *sa,
+                        aegis_core::config::MemberAddrSpec::Hostname {
+                            host,
+                            port,
+                            ..
+                        } => {
+                            return Err(PoolValidationError::UnresolvedHostname {
+                                host: host.clone(),
+                                port: *port,
+                            });
+                        }
+                    };
                     // 2026-05-03 PM — when the operator pinned a
                     // Host header on this member, register the
                     // hostname → addr mapping with the global
@@ -135,16 +157,16 @@ impl PoolRegistry {
                     // boot or reloading cfg simply re-installs.
                     if let Some(host) = mc.host_header.as_deref() {
                         crate::upstream::pinned_resolver::global()
-                            .register(host.to_string(), mc.addr);
+                            .register(host.to_string(), sa);
                     }
-                    Arc::new(Member::with_host_override(
-                        mc.addr,
+                    Ok(Arc::new(Member::with_host_override(
+                        sa,
                         mc.weight,
                         mc.zone.clone(),
                         mc.host_header.clone(),
-                    ))
+                    )))
                 })
-                .collect();
+                .collect::<Result<Vec<_>, PoolValidationError>>()?;
             let strategy = match cfg.lb {
                 aegis_core::config::LbStrategy::RoundRobin => {
                     LbStrategy::RoundRobin(AtomicUsize::new(0))

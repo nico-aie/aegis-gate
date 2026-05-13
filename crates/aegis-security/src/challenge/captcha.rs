@@ -1,3 +1,22 @@
+//! CAPTCHA provider stubs — **deferred**, not on the active path.
+//!
+//! **2026-05-11 PR #9** — `CaptchaProvider` and the three vendor
+//! impls (`Turnstile`, `HCaptcha`, `ReCaptchaV3`) have zero
+//! callers in `aegis-proxy/src/` + `aegis-bin/src/` as of this
+//! commit. Each vendor stub returns `Ok(true)` — so if you wire
+//! the trait into the challenge ladder without first wiring the
+//! real HTTP verify calls, you'll bypass CAPTCHA entirely.
+//!
+//! Contract v2.3 §3 only requires that "client must solve a JS
+//! challenge OR proof-of-work." PoW (`super::pow::PowIssuer`) is
+//! the production-shipped path and satisfies the contract.
+//!
+//! Kept around as a roadmap shape — see
+//! `plans/future/unwired-stubs-catalog.md` for the wiring
+//! sequence the next implementer should follow.
+
+#![allow(dead_code)]
+
 use std::net::IpAddr;
 
 /// CAPTCHA provider trait.

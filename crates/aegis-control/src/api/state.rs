@@ -235,9 +235,14 @@ mod tests {
     fn unknown_backend_renders_safely() {
         // The default trait impl returns `BackendHealth::unknown()`;
         // the dashboard must still get a parseable response.
+        //
+        // 2026-05-11 CORE-06 fix — `connected` flipped to `true`
+        // in the default unknown shape so backends that haven't
+        // overridden `health()` don't red-flag the dashboard.
+        // Asserting `true` here pins the new contract.
         let view = StateView::render(BackendHealth::unknown());
         assert_eq!(view.backend, "unknown");
-        assert!(!view.connected);
+        assert!(view.connected);
         let json = serde_json::to_string(&view).unwrap();
         assert!(json.contains("\"backend\":\"unknown\""));
     }

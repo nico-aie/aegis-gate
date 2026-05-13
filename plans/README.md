@@ -1,67 +1,108 @@
 # Plans
 
-Living plans for **active** and **recently-shipped** tracks. Closed
-reference-only plans live in [`archive/`](./archive/) — readable
-but no longer guiding new work.
+Cleaned up 2026-05-10. The top level holds tracking + reference
+files only — every closed or paused plan lives in
+[`archive/`](./archive/), and feature plans we've intentionally
+deferred live in [`future/`](./future/).
 
-## Active
+## Layout
 
-| Track | Plan | Status |
-|---|---|---|
-| **Hackathon Round-1 stress test** | [`hackathon-stress-test.md`](./hackathon-stress-test.md) | Harness + mock upstream + 15-min k6 mixed-traffic shipped. Awaiting benchmark team's source-IP fan-out + latency target. |
-| **AI-assistant sweep tooling** | [`ai-assistant-testing-kickoff.md`](./ai-assistant-testing-kickoff.md) | Tooling shipped 2026-05-03 (`tests/sweeps/` + `make sweep-validate`). Awaiting sweep #1 schedule. |
-| **Multi-node deployment** | [`multi-node-deployment/`](./multi-node-deployment/) | Proposal drafted 2026-05-08. Active-Active behind L4 LB + Redis cluster. Awaiting SA Team answers on machine count, network model, Redis availability. |
-| **2026-05-07 QA fixes (tester-n)** | [`issue-fix/tester-n-2026-05-07/`](./issue-fix/tester-n-2026-05-07/) | C001+C002+H001+H002+H003 + M001+M002+M003+M004(read-only)+M005+M006+M007+M008 + L001-L004 shipped on `develop` 2026-05-08. Awaiting Test/UI re-check + M004 mutation backend follow-up + M009 operator action. |
-| **2026-05-07 QA regression (tester-n rerun)** | [`issue-fix/tester-n-2026-05-07-regression/`](./issue-fix/tester-n-2026-05-07-regression/) | Run-2 closed 15/18 of Run-1 + opened 5 new findings (NEW-1..NEW-5). Plan drafted 2026-05-08. Phase 1 (NEW-1 + C002 follow-up) starts first; Phase 2 NEW-2 PoW challenge body is the largest item. |
-| **2026-05-08 QA Run-3 (tester-n)** | [`issue-fix/tester-n-2026-05-08-run3/`](./issue-fix/tester-n-2026-05-08-run3/) | Run-3 closed all 5 Run-2 findings + opened 3 new (RUN3-NEW-1 HIGH bench-dev waf.yaml drift, RUN3-NEW-2 MEDIUM /__waf_control/healthz, RUN3-NEW-3 LOW SPA login redirect after reset_state). Plan drafted 2026-05-08. ~1.5h, 3 small PRs. |
-| **2026-05-08 QA Run-4 security (tester-n)** | [`issue-fix/tester-n-2026-05-08-run4/`](./issue-fix/tester-n-2026-05-08-run4/) | Run-4 (security focus) — 6 findings; 2 misreads, 1 design-decision, 3 real fixes. SEC-C001 (HIGH, hard-abort bench-dev drift), SEC-M002 (MEDIUM, dedicated command_injection detector), SEC-M001+M003 (DOC + risk cap), SEC-L001+L002 (Docker recon + XFH). ~3.5h, 4 PRs. |
-| **2026-05-08 QA Run-5 (tester-n) — security & load** | [`issue-fix/tester-n-2026-05-08-run5/`](./issue-fix/tester-n-2026-05-08-run5/) | Run-5 — 18/18 contract pass + 5,000 RPS sustained. v3 dataset (220 cases / 14 classes) opens 8 coverage gaps. Phase 1: SSTI/NoSQL/Log4Shell (RCE classes). Phase 2: framework recon, open redirect, prototype pollution. Phase 3: traversal evasion + SSRF userinfo + XFH internal-IP. Score-tier framework documented. ~6.5h, 5-6 PRs. |
+```
+plans/
+├── README.md                       ← this file (entry point)
+├── plan.md                         ← AI-assistant guide for this repo
+├── implementation-matrix.md        ← doc-by-doc Implemented / Partial / Designed status
+├── dns-upstream-resolution.md      ← active plan (2026-05-11)
+├── future/                         ← deferred features (operator-confirmed, not yet built)
+└── archive/                        ← closed / shipped / paused plans (read-only history)
+```
 
-## Recently shipped (kept for fix-lookup)
+## Active plans
 
-| Track | Plan | Notes |
-|---|---|---|
-| **AI detector** integration | [`ai-detector.md`](./ai-detector.md) · [per-detector doc](../docs/security/detectors/ai-detector.md) | **Shipped 2026-05-03** — T1..T9 all live. `ort` 2.0-rc.12, 26-feature extractor, binary attack/normal verdict. Treated like any other detector: `enabled`/`disabled` via the Detectors page (audit-mutated `PUT /api/ai/enabled`). Mean inference 694 µs, +1.1 ms p95 / +2.3 ms p99 chained behind regex (laptop hardware). Perf comparison + p99 vs 5 ms target: `tests/results/run-ai-compare-2026-05-03/REPORT.md`. Config simplified 2026-05-04 (dropped dead `mode`/`tiers`/`timeout`/`explain` knobs). |
-| TCP CONNECT tunneling (Phase 4) | [`tcp-forwarder-phase-4.md`](./tcp-forwarder-phase-4.md) | TCP-T1..T6 shipped 2026-05-03. |
-| Binary handover (fd-pass) | [`binary-handover-fd-pass.md`](./binary-handover-fd-pass.md) | FDP-T1..T6 library + accept-loop drain refactor shipped 2026-05-03. |
-| WebSocket bridge | [`websocket-bridge.md`](./websocket-bridge.md) | WS-T1..T6 shipped 2026-05-03 (T5 e2e test, T6 metrics + Live-Feed pill). |
+- [`dns-upstream-resolution.md`](./dns-upstream-resolution.md) —
+  Let operators address backends by hostname
+  (`api.example.com:443`) instead of pinning a `SocketAddr`.
+  Phase 1 (boot-time resolve) ≈ 2d, Phase 2 (background refresh
+  via hickory-resolver) ≈ 3d, Phase 3 (dashboard polish) ≈ 1d.
+  **Drafted 2026-05-11, not started.**
 
-## Phase B production-packaging
+## Reference (kept at top level)
 
-[`phase-b/`](./phase-b/) — B1..B5 closed; B6-T1..T3 closed (Dockerfile +
-Helm + CI v2.3 contract gate). **B6-T4** (HSM) deferred — no design
-pass. **B6-T5** (binary handover) ✅ closed via FDP-T1..T6.
+- [`plan.md`](./plan.md) — assistant protocol + repo conventions.
+  Read this when picking up a new task.
+- [`implementation-matrix.md`](./implementation-matrix.md) —
+  status of every documented feature: Implemented / Partial /
+  Designed / Deferred.
 
-## Reference
+## `future/`
 
-- [`plan.md`](./plan.md) — AI assistant guide + protocol for this repo
-- [`implementation-matrix.md`](./implementation-matrix.md) — doc-by-doc Implemented / Partial / Designed status
+Features we've decided to defer. Each plan captures the
+restoration spec so a future revisit doesn't have to recompose
+context from scattered comments.
 
-## Archive
+- [`compliance-profiles.md`](./future/compliance-profiles.md) —
+  per-regime detector pinning + clamp enforcement (FIPS / PCI /
+  SOC 2 / GDPR / HIPAA). Modes still parse and surface as
+  documentation tags today; the lock is a no-op until the pin
+  list is repopulated. **Status: Deferred 2026-05-10.**
 
-[`archive/`](./archive/) — closed plans kept for history. Recent
-archivals (2026-05-03):
+> **Adding a future plan**: new file in `future/<short-slug>.md`
+> with sections "Status / Why deferred / Code anchor / Future
+> plan / Restoration checklist". Mirror `compliance-profiles.md`.
 
-- `benchmark-mode.md` (folded into B5-T2)
-- `cluster-ingress-lb.md` (HA-T1..T5 shipped run-05)
-- `console-api-integration.md` (CI-T1..T12 shipped)
-- `console-config-pages.md` (CC-T\* shipped)
-- `console-fixups.md` (CQF-T1..T16 shipped)
-- `console-qa.md` (closed)
-- `console-soc-refactor.md` (folded into the SOC-UX pass)
-- `control.md` (M3 shipped)
-- `dashboard-redesign.md` (DD-T0..T8 shipped)
-- `dashboard-enterprise/` (D-M1..D-M6 superseded by DD-T\*)
-- `followups-rollback-and-sans.md` (HACK-T4 + MTLS-T7 shipped)
-- `hackathon-readiness.md` (HACK-T1..T5 + follow-ups shipped)
-- `interop-contract.md` / `interop-dry-run.md` (IT-T + DR-T shipped)
-- `mtls.md` (T1..T11 shipped)
-- `post-k6-followup.md` (P1..P8 + F-T1..F-T10 shipped)
-- `post-run-08.md` (AF-T1 / HP-T1 / TLS-T1 shipped)
-- `proxy.md` (M1 shipped)
-- `proxy-refactor.md` (PRE-T1..T8 shipped)
-- `scaling-config.md` (SC-T1..T5 shipped)
-- `security.md` (M2 shipped)
+## `archive/`
 
-For a full implementation log of what's shipped where, see
+Closed plans kept for history. Files are individual feature
+tracks that shipped or paused; subfolders bundle related work:
+
+- [`archive/issue-fix/`](./archive/issue-fix/) — QA-driven fix
+  plans (run-by-run; tester-n + tester-l + page-audit + DDoS
+  internal audit).
+- [`archive/phase-b-2026/`](./archive/phase-b-2026/) — Phase B
+  production-packaging tracks (B1..B6).
+- [`archive/multi-node-deployment/`](./archive/multi-node-deployment/) —
+  multi-node proposal awaiting SA Team answers (paused, not
+  rejected). Move to `future/` if a revisit is scheduled.
+- [`archive/dashboard-enterprise/`](./archive/dashboard-enterprise/) —
+  D-M1..D-M6 (superseded by DD-T\*).
+
+Top-level archive files (one per shipped track, in alphabetical
+order): `ai-assistant-testing-kickoff.md`, `ai-detector.md`,
+`benchmark-mode.md`, `binary-handover-fd-pass.md`,
+`cluster-ingress-lb.md`, `console-api-integration.md`,
+`console-config-pages.md`, `console-fixups.md`, `console-qa.md`,
+`console-soc-refactor.md`, `control.md`, `dashboard-redesign.md`,
+`followups-rollback-and-sans.md`, `hackathon-readiness.md`,
+`hackathon-stress-test.md`, `interop-contract.md`,
+`interop-dry-run.md`, `mtls.md`, `post-k6-followup.md`,
+`post-run-08.md`, `proxy.md`, `proxy-refactor.md`,
+`scaling-config.md`, `security.md`, `tcp-forwarder-phase-4.md`,
+`websocket-bridge.md`.
+
+For the implementation log of what's shipped, see
 [`../Implement-Progress.md`](../Implement-Progress.md).
+
+## Working with plans
+
+When picking up new work:
+
+1. **Search `archive/` first** — existing-feature context is
+   usually there.
+2. **Check `future/`** — if the feature is deferred, the
+   restoration checklist tells you what changes are needed.
+3. **Active multi-step work** — drop a plan in `plans/`
+   directly (e.g. `plans/<feature>.md`); promote to
+   `archive/` once the work ships.
+4. **Don't restart `archive/`** — closed plans are reference;
+   if you need to extend old work, write a new plan that
+   references the archived one.
+
+## Recent cleanups
+
+- 2026-05-10 — folded ~25 top-level shipped plans into
+  `archive/`; moved `issue-fix/`, `phase-b/`,
+  `multi-node-deployment/` into `archive/`. Top level now
+  has README + `plan.md` + `implementation-matrix.md` +
+  `future/` + `archive/` only.
+- 2026-05-10 — created `future/compliance-profiles.md`
+  alongside the lock-by-mode deferral.

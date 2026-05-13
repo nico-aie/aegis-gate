@@ -36,9 +36,38 @@ costs the least CPU.
 | # | Gate | Module | Returns | Trigger |
 |---|---|---|---|---|
 | 1 | **Access list** | `aegis-control/src/api/blacklist.rs` | 403 + `X-WAF-Action: block` | IP / CIDR / country on the operator blacklist |
-| 2 | **Strike-block** | `aegis-security/src/risk/tracker.rs` | 403 + `X-WAF-Action: block` | Per-IP lifetime strikes ≥ `risk.strikes.block_at` (default 50) |
+| 2 | **Strike-block** | `aegis-security/src/risk/tracker.rs` | 403 + `X-WAF-Action: block` + `X-WAF-Rule-Id: risk-strikes` | Per-IP lifetime strikes ≥ `risk.strikes.block_at` (default 50) **AND** `risk.strikes.enabled = true` (opt-in, default `false` since 2026-05-10) |
 | 3 | **Rate-limit** | `aegis-security/src/rate_limit/` | 429 + `X-WAF-Action: rate_limit` | Token bucket exceeded for this request |
 | 4 | **DDoS gate** | `aegis-security/src/ddos.rs` | 403 + `X-WAF-Action: block` | Per-IP sliding-window burst exceeded **OR** previously auto-blocked |
+
+> The **Cumulative IP risk thresholds** (#3 on the dashboard's
+> Traffic Gates page) is not a fifth short-circuit gate — it
+> tunes how the cumulative score from the regular detector
+> chain produces `challenge` (≥ `risk.thresholds.challenge_at`,
+> default 40) and `block` (≥ `risk.thresholds.block_at`,
+> default 80) actions. The decaying score it gates is what
+> `X-WAF-Risk-Score` reports on every response (contract §5.1),
+> which is why operators tune it on the same page as the four
+> per-flow gates.
+
+### Strike-Block default + contract notes
+
+Strike-Block is **opt-in (disabled by default)** as of 2026-05-10.
+The lifetime strike counter never decays, which can interact
+awkwardly with the contract's `X-WAF-Risk-Score` accumulation+
+decay invariant (§5.1, §7) — an IP that has accumulated 50
+strikes stays 403'd even after the cumulative score has decayed
+back below threshold. Leaving the gate disabled keeps cumulative
+IP risk thresholds (#3 on the dashboard) as the only score-based
+block path, so a benchmark "send N attacks → wait → send benign
+→ expect allow" lifecycle test passes cleanly.
+
+When you do enable Strike-Block (production hardening for
+repeat offenders), `X-WAF-Risk-Score` continues to report the
+*decayed cumulative score* — the strike count is a separate
+counter that the response stamper does not surface. The
+distinct `X-WAF-Rule-Id: risk-strikes` tag lets operators
+attribute blocks to this gate in the audit log and dashboards.
 
 ### Rate Limit vs DDoS — what's the difference?
 
@@ -84,10 +113,13 @@ The Traffic Gates page polls `/api/blacklist`, `/api/whitelist`,
 
 ### Tuning the four gates
 
-| Gate | Tune via | Hot-reload? |
+| Gate / Knob | Tune via | Hot-reload? |
 |---|---|---|
 | Access list | Dashboard → Access Lists page (`POST /api/blacklist` etc.) | ✅ yes — audit-mutated |
-| Strike-block threshold | Dashboard → Settings → Risk thresholds (`PUT /api/risk/thresholds`) | ✅ yes — audit-mutated |
+| Strike-block (enable + threshold) | Dashboard → Traffic Gates → Strike-Block card → Edit (`PUT /api/gates/strikes`) — toggles `enabled` and tunes `block_at`. Reset a single IP via `POST /api/risk/<ip>/reset`. | ✅ yes — audit-mutated (2026-05-10) |
+| Cumulative IP risk thresholds (global defaults) | Dashboard → Traffic Gates → Cumulative IP risk card (`PUT /api/risk/thresholds`) | ✅ yes — audit-mutated (moved 2026-05-10) |
+| Per-tier `challenges_enabled` toggle | Dashboard → Detectors & Tiers → Edit tier (`PUT /api/tiers/<name>`) | ✅ yes — audit-mutated (defaults to `false` on every tier — challenges are opt-in) |
+| Per-tier `cumulative_challenge_at` / `cumulative_block_at` overrides | API only — `PUT /api/tiers/<name>` accepts the fields, but the dashboard does not surface inputs (use the global thresholds above unless you have a strong per-tier need) | ✅ yes — audit-mutated |
 | Rate-limit | Dashboard → Traffic Gates → Rate Limit card → Edit (`PUT /api/rate-limit`) | ✅ yes — audit-mutated (2026-05-09) |
 | DDoS thresholds | Dashboard → Traffic Gates → DDoS card → Edit (`PUT /api/gates/ddos`) | ✅ yes — audit-mutated (2026-05-09) |
 

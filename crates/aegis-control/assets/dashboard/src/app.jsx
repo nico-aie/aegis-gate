@@ -22,23 +22,30 @@ const NAV = [
     { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: 'NEW', tone: 'warn' },
     { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: 'NEW', tone: 'warn' },
     { id: 'top-attackers', label: 'Top Attackers',    icon: <window.I.Siren />,    badge: null },
-    { id: 'threat-intel',  label: 'Threat Intel',     icon: <window.I.Globe />,    badge: null },
+    // 2026-05-10 — Threat Intel sidebar entry retired. Backend
+    // (TAXII / MISP feed scraper, ThreatIntelStore) still ships
+    // and matches indicators in the data plane; the dashboard
+    // surface was empty in every default config (no feeds wired,
+    // GeoIP behind a build feature). Re-add this entry when a
+    // default profile populates `cfg.threat_intel.feeds`.
   ]},
   { group: 'Policy', items: [
     // 2026-05-09 — reordered per operator request. The flow now
     // mirrors the request lifecycle: traffic enters via a route
     // → hits the four request-flow gates → runs the detector
-    // chain → operator-authored rules apply → compliance clamps.
+    // chain → operator-authored rules apply.
     // "Traffic Gates" is the new page surfacing all four binary
     // gates (access list, strike-block, rate-limit, DDoS) with
     // telemetry + edit controls. Access Lists keeps its dedicated
     // CRUD page since the entry-by-entry editor is heavyweight.
+    // 2026-05-10 — Compliance sidebar entry retired alongside the
+    // lock-by-mode deferral (see plans/future/compliance-profiles.md).
+    // Re-add when the lock returns.
     { id: 'upstreams',     label: 'Routing & Upstreams', icon: <window.I.Server />, badge: null },
     { id: 'traffic-gates', label: 'Traffic Gates',    icon: <window.I.Shield />,   badge: 'NEW', tone: 'warn' },
     { id: 'access-lists',  label: 'Access Lists',     icon: <window.I.Ban />,      badge: null },
-    { id: 'detectors',     label: 'Detectors',        icon: <window.I.Cluster />,  badge: null },
+    { id: 'detectors',     label: 'Detectors & Tiers', icon: <window.I.Cluster />, badge: null },
     { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
-    { id: 'compliance',    label: 'Compliance',       icon: <window.I.Check />,    badge: null },
   ]},
   { group: 'Observability', items: [
     { id: 'performance',   label: 'Performance',      icon: <window.I.Gauge />,    badge: 'NEW', tone: 'warn' },
@@ -66,6 +73,14 @@ const ROUTE_REDIRECTS = {
   // Documentation, bookmarks, and intuitive guesses (#/routing)
   // used to silently land on Overview pre-H002. Now they redirect.
   'routing':   'upstreams',
+  // LOW-SO-02 (2026-05-12) — sidebar label "Live Feed" suggests
+  // `#/live-feed` but the route is `#/live`. Alias the long form
+  // so guessed-by-label bookmarks resolve.
+  'live-feed': 'live',
+  // LOW-OBS-02 (2026-05-12) — same pattern: sidebar reads
+  // "Health & SLOs" but the route is `#/health`. Alias the
+  // longer guess.
+  'health-slos': 'health',
 };
 
 // 2026-05-07 — H002 fix. `location.hash.slice(2)` returns
@@ -124,19 +139,20 @@ function TopBar() {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        {/* L002 (2026-05-07) — surface what UNKNOWN means without
-            requiring tribal knowledge. The pill reflects
-            `cfg.admin.environment` from /api/about. UNKNOWN means
-            the operator never set it; it's the default of the
-            environment-tagging system, not an error. */}
-        <span
-          className={`env-pill ${env}`}
-          title={
-            env === 'unknown'
-              ? 'Environment not labelled. Set cfg.admin.environment in waf.yaml ("dev", "staging", "prod") to clear this pill.'
-              : `Environment: ${env}`
-          }
-        >● {env.toUpperCase()}</span>
+        {/* MED-03 (2026-05-11) — hide the env pill entirely when
+            the env is "unknown" rather than rendering a red
+            "UNKNOWN" alarm. Operators on a fresh dev boot were
+            getting a P1-shaped pill at the top of every page on
+            an otherwise healthy cluster; the pill should reflect
+            actual operational signal, not a missing config
+            label. Labeled envs (dev, staging, prod) still render
+            so operators see *which* env they're on. */}
+        {env !== 'unknown' && (
+          <span
+            className={`env-pill ${env}`}
+            title={`Environment: ${env}`}
+          >● {env.toUpperCase()}</span>
+        )}
         {status.data?.mtls_break_glass_active && (
           <span
             className="pill down"
@@ -400,8 +416,16 @@ function StatusBar({ tick }) {
 
   return (
     <div className="statusbar">
+      {/* P10 (2026-05-11) — footer pill tone. Pre-fix, every pill
+          rendered with a warn / down color even on healthy dev
+          boots (SSE was `led warn`, Audit chain was `pill warn`,
+          GitOps was `pill off-but-styled-as-alarm`). The footer
+          read as five things to worry about. Now: demo /
+          off-by-config pills render neutral; reserve warn/down
+          tones for real concerns (audit chain SUSPENDED, leader
+          lost, etc.). */}
       <span title="Demo indicator — SSE state isn't observed at the topbar level">
-        <span className="led warn"></span> SSE (demo)
+        <span className="led neutral"></span> SSE (demo)
       </span>
       <span className="dim">|</span>
       <span>Cluster <span className={`num ${total === 0 ? 'dim' : ''}`}>
@@ -409,7 +433,7 @@ function StatusBar({ tick }) {
       </span></span>
       <span className="dim">|</span>
       <span title="Demo indicator — chain verify isn't exposed in realtime; use `waf audit verify`">
-        Audit chain <span className="pill warn">demo</span>
+        Audit chain <span className="pill neutral">demo</span>
       </span>
       <span className="dim">|</span>
       <span>GitOps <span className={`pill ${gitopsTone}`}>{gitopsState}</span></span>
@@ -582,13 +606,13 @@ function App() {
     // Attack-Analytics merged into Investigation (2026-05-03).
     // Old hash links keep working — redirect to Investigation.
     case 'attack-analytics': page = <window.PageInvestigation />; break;
-    case 'threat-intel':     page = <window.PageThreatIntel />; break;
+    // Threat-intel + Compliance pages retired 2026-05-10. Stale
+    // deep links fall through to the default `PageOverview` below.
     case 'rules':            page = <window.PageRuleManager />; break;
     case 'detectors':        page = <window.PageTierConfig />; break;
     case 'access-lists':     page = <window.PageAccessLists />; break;
     case 'upstreams':        page = <window.PageUpstreams />; break;
     case 'traffic-gates':    page = <window.PageTrafficGates />; break;
-    case 'compliance':       page = <window.PageCompliance />; break;
     case 'performance':      page = <window.PageAnalytics />; break;
     case 'health':           page = <window.PageTracking />; break;
     case 'audit':            page = <window.PageAuditLog />; break;

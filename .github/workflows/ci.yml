@@ -244,6 +244,44 @@ jobs:
           path: waf_audit.log
 
   # ---------------------------------------------------------------
+  # Dashboard bundle freshness — fails if any PR ships JSX edits
+  # without re-running the bundler. 2026-05-11 QA HIGH-01 shipped
+  # because three PRs edited `pages.jsx` without rebuilding
+  # `app.js`; the resulting binary embedded the stale bundle and
+  # masked the response-filter dashboard + DNS hostname helper for
+  # operators. The Makefile fix in `0a9d815` makes `make build`
+  # auto-rebundle, but operators may bypass make (e.g. running
+  # `cargo build` directly). This gate covers that.
+  #
+  # Hosted ubuntu-latest ships Node + npm by default; `npx esbuild`
+  # downloads on first run (~5s, cached for the runner). Fast lane —
+  # no Rust toolchain needed.
+  # ---------------------------------------------------------------
+  dashboard-bundle-fresh:
+    name: dashboard bundle freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Rebundle dashboard
+        run: bash crates/aegis-control/assets/dashboard/build.sh
+
+      - name: Verify app.js is up-to-date
+        run: |
+          if ! git diff --exit-code crates/aegis-control/assets/dashboard/app.js; then
+            echo "::error::Dashboard JSX changed but app.js was not rebundled."
+            echo "::error::Run 'make dashboard' (or 'make build') locally and commit the new app.js."
+            exit 1
+          fi
+          echo "app.js matches a fresh rebundle ✓"
+
+  # ---------------------------------------------------------------
   # Helm chart lint + template — fails fast on chart syntax / value
   # errors before they reach a real cluster.
   # ---------------------------------------------------------------
@@ -305,19 +343,20 @@ jobs:
   ci-pass:
     name: ci-pass
     runs-on: ubuntu-latest
-    needs: [lint, test, smoke, contract-v23, helm]
+    needs: [lint, test, smoke, contract-v23, helm, dashboard-bundle-fresh]
     if: always()
     steps:
       - name: Verify all jobs passed
         run: |
           fail=0
-          for job in lint test smoke contract-v23 helm; do
+          for job in lint test smoke contract-v23 helm dashboard-bundle-fresh; do
             case "$job" in
-              lint)         result="${{ needs.lint.result }}" ;;
-              test)         result="${{ needs.test.result }}" ;;
-              smoke)        result="${{ needs.smoke.result }}" ;;
-              contract-v23) result="${{ needs['contract-v23'].result }}" ;;
-              helm)         result="${{ needs.helm.result }}" ;;
+              lint)                    result="${{ needs.lint.result }}" ;;
+              test)                    result="${{ needs.test.result }}" ;;
+              smoke)                   result="${{ needs.smoke.result }}" ;;
+              contract-v23)            result="${{ needs['contract-v23'].result }}" ;;
+              helm)                    result="${{ needs.helm.result }}" ;;
+              dashboard-bundle-fresh)  result="${{ needs['dashboard-bundle-fresh'].result }}" ;;
             esac
             echo "  $job: $result"
             [[ "$result" == "success" ]] || fail=1
