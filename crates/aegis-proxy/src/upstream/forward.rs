@@ -255,9 +255,19 @@ fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
     // `WantsProtocols3`), so we can't conditionally call
     // `.enable_http2()` on a single bound; build either
     // [h1] or [h1+h2] via separate branches.
+    // 2026-05-13 — only advertise HTTP/2 to upstreams that EXPLICITLY
+    // require it (`grpc`, `h2c`).  `auto` and `https` previously
+    // advertised both h1 + h2, but real-world edges (nginx with
+    // certain header configurations — verified against
+    // `znews.vn` returning a generic 400 with `server: TTTT` over
+    // h2 while accepting the identical request over h1) reject
+    // hyper's HTTP/2 framing on requests that direct curl-over-h2
+    // handles fine.  HTTP/1.1 is the universal lowest-common-
+    // denominator for reverse-proxy forwarding; operators who
+    // need h2 to a backend pick `grpc` or `h2c` explicitly.
     let advertise_h2 = matches!(
         cfg.scheme,
-        UpstreamScheme::Auto | UpstreamScheme::Https | UpstreamScheme::Grpc
+        UpstreamScheme::Grpc | UpstreamScheme::H2c,
     );
     let connector = if advertise_h2 {
         hyper_rustls::HttpsConnectorBuilder::new()
@@ -432,7 +442,20 @@ pub async fn forward(
     // layer.
     let url_authority = if cfg.scheme.uses_tls(cfg.tls) {
         match member.host_override.as_deref() {
-            Some(h) => format!("{}:{}", h, member.addr.port()),
+            // 2026-05-13 — omit the port when it's the default for
+            // the scheme (443/https, 80/http). Some upstream edges
+            // (e.g. znews.vn's nginx) return 400 when the HTTP/2
+            // `:authority` carries the redundant port while peer
+            // `Host` doesn't — being conservative here is what curl
+            // and browsers do anyway.
+            Some(h) => {
+                let port = member.addr.port();
+                if port == 443 {
+                    h.to_string()
+                } else {
+                    format!("{}:{}", h, port)
+                }
+            }
             None => member.addr.to_string(),
         }
     } else {
@@ -443,6 +466,14 @@ pub async fn forward(
         .map_err(|e: http::uri::InvalidUri| {
             ForwardError::BadRequest(e.to_string())
         })?;
+    tracing::debug!(
+        target_uri = %target_uri,
+        cfg_scheme = ?cfg.scheme,
+        cfg_tls = cfg.tls,
+        member_addr = %member.addr,
+        host_override = ?member.host_override,
+        "upstream forward target URI",
+    );
 
     let mut builder = Request::builder().method(method).uri(target_uri);
     if let Some(h) = builder.headers_mut() {
