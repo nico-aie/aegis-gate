@@ -943,7 +943,20 @@ def main():
     scale = args.count / declared_total
 
     counts: dict[str, int] = {}
-    seen_ids: set[str] = set()
+    # Dedup keys on CONTENT (what the HTTP replayer actually
+    # sends), not the synthetic `id` field — IDs include a global
+    # counter so two byte-identical cases would have different
+    # IDs and slip past an id-only dedup.
+    seen_content: set[int] = set()
+
+    def content_hash(c: dict) -> int:
+        return hash((
+            c["method"],
+            c["path"],
+            c.get("query", ""),
+            c.get("body", ""),
+            tuple(sorted(c["headers"].items())),
+        ))
 
     print(f"writing attacks to {attacks_path}")
     with attacks_path.open("w") as fh:
@@ -952,22 +965,46 @@ def main():
             target = max(1, int(round(klass_spec["target_count"] * scale)))
             written = 0
             attempts = 0
-            max_attempts = target * 5
+            # Generous attempt budget — small classes (websocket,
+            # http_smuggling) have tiny base corpora so the
+            # collision rate climbs as the target approaches the
+            # combinatorial ceiling. 20× target covers it.
+            max_attempts = target * 20
             while written < target and attempts < max_attempts:
                 attempts += 1
                 idx_global += 1
                 case = generate_case(klass_spec, idx_global, rng)
-                if case["id"] in seen_ids:
+                ch = content_hash(case)
+                if ch in seen_content:
                     continue
-                seen_ids.add(case["id"])
+                seen_content.add(ch)
                 fh.write(json.dumps(case, separators=(",", ":")) + "\n")
                 written += 1
+            if written < target:
+                print(f"  {klass_spec['name']:<22} {written:>6} "
+                      f"(combinatorial ceiling — payloads×paths×obfs×headers ran out)")
+            else:
+                print(f"  {klass_spec['name']:<22} {written:>6}")
             counts[klass_spec["name"]] = written
-            print(f"  {klass_spec['name']:<22} {written:>6}")
     print(f"writing clean baselines to {clean_path}")
+    seen_clean: set[int] = set()
+    written_clean = 0
+    attempts = 0
+    max_attempts = args.clean_count * 50  # small pool → high attempts
     with clean_path.open("w") as fh:
-        for i in range(args.clean_count):
-            fh.write(json.dumps(generate_clean_case(i, rng), separators=(",", ":")) + "\n")
+        idx = 0
+        while written_clean < args.clean_count and attempts < max_attempts:
+            attempts += 1
+            idx += 1
+            case = generate_clean_case(idx, rng)
+            ch = content_hash(case)
+            if ch in seen_clean:
+                continue
+            seen_clean.add(ch)
+            fh.write(json.dumps(case, separators=(",", ":")) + "\n")
+            written_clean += 1
+    if written_clean < args.clean_count:
+        print(f"  (clean ceiling reached at {written_clean:,} — small path×header pool)")
 
     meta = {
         "version": "4.0",
