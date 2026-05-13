@@ -8260,18 +8260,16 @@ function PageIncidents() {
       // the result either way: success → green toast + reload;
       // failure → red toast with the backend reason.
       if (r && r.status >= 200 && r.status < 300) {
-        // MED-SO-04 (2026-05-12) — the audit chain captures the
-        // mutation, but the server-side incidents overlay store
-        // isn't wired yet, so the row state doesn't transition
-        // until that lands. Toast as `warn` with honest copy so
-        // operators don't think the lifecycle UI is broken when
-        // it's actually waiting on the overlay endpoint.
-        const reflected = !!(incidents.data?.incidents || []).length;
-        const tone = reflected ? 'ok' : 'warn';
-        const msg = reflected
-          ? `Incident ${action} ok`
-          : `${action} recorded to audit chain · lifecycle UI pending (server overlay not yet wired)`;
-        window.aegisToast(msg, tone);
+        // LOW-FINAL-01 (2026-05-13) — collapse the previous
+        // "lifecycle UI pending" warn fallback.  It was a
+        // stop-gap from when MED-SO-04 / MED-OBS-01 left the
+        // overlay-store write broken; commits `e6b307c` +
+        // `cadd01b` closed the round-trip end-to-end and the
+        // regression test
+        // `ack_then_enrich_returns_acknowledged_status` guards
+        // against re-opening that class of bug.  The 2xx path is
+        // now unambiguous.
+        window.aegisToast(`Incident ${action} ok`, 'ok');
         if (incidents.reload) incidents.reload();
         if (alerts.reload) alerts.reload();
       } else {

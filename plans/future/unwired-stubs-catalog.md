@@ -141,6 +141,30 @@ control/src/audit/sinks/` consuming the `AuditBus`.
 
 ---
 
+## Audit cold-tier export
+
+**Status:** In-memory `AuditRing` capped at 200 events
+(`crates/aegis-control/src/api/audit.rs::DEFAULT_CAP`); restart
+loses the chain.  `/api/cold-tier` is a placeholder returning
+`{"feature_present": false}`.  The dashboard's Reports card is
+already honest about the cap ("Audit trail · full ring · last
+200 events") — operator-visible surface is clean.
+
+**Contract status:** Not required.  The contract specifies the
+audit-chain shape + tamper-evident hash linking; persistence
+window is a separate concern.
+
+**Action if added:** Two design shapes documented at
+`plans/future/audit-cold-tier-export.md`:
+- v1 — JSONL append (`data/audit/chain-<date>.jsonl`).  ~30 LoC.
+- v2 — embedded sqlite with range queries.  ~1 day.
+Recommendation: ship v1 first; layer v2 if query power becomes
+the bottleneck.  Promotes `/api/cold-tier` to a real endpoint
+and updates `/api/reports/audit.csv` to support
+`?from=<ts>&to=<ts>` from the cold tier.
+
+---
+
 ## License validator
 
 **Status:** No `license` module in `aegis-security` or
