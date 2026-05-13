@@ -7006,6 +7006,12 @@ function poolFormFromView(view) {
       idle_timeout_ms:   view.connection?.idle_timeout_ms   ?? 30000,
       keep_alive:        view.connection?.keep_alive ?? true,
       tls:               view.connection?.tls       ?? false,
+      // 2026-05-13 — load the saved scheme into the form state so
+      // the Edit Pool dropdown reflects the live config.  Without
+      // this the dropdown defaulted to `auto` (its fallback when
+      // `d.connection.scheme` is undefined) and a Save without an
+      // explicit pick silently downgraded the saved scheme.
+      scheme:            view.connection?.scheme || 'auto',
     },
   };
 }
