@@ -12,13 +12,12 @@
 //!
 //! ## Binary verdict semantics
 //!
-//! Operators don't need to know which of the model's 11 classes
-//! fired — the WAF only needs `attack | not-attack`.  The
-//! detector emits one tag (`"ai"`), not 11 (`"ai_sqli"`,
-//! `"ai_xss"`, …).  When the model is later retrained as a
-//! pure binary classifier, this code path doesn't change at
-//! all — `Model::predict` already collapses the verdict to a
-//! `is_attack: bool` field.
+//! The bundled model is a pure binary classifier
+//! (`0` = Normal, `1` = Attack — see `data/ai_model/label_map.json`).
+//! The detector emits one tag (`"ai"`) regardless of which class
+//! fired.  The code path stays binary; swapping in a multi-class
+//! model later only requires updating the `normal_class_idx`
+//! passed to `Model::load`.
 //!
 //! ## Failure mode
 //!
@@ -78,10 +77,11 @@ pub mod fallback_reason {
     pub const TENSOR_BUILD: &str = "tensor_build";
 }
 
-/// Default index of the `Normal` class in the shipped 11-class
-/// model.  See `data/ai_model/label_map.json`.  When a future
-/// model swaps the layout, override at construction.
-pub const DEFAULT_NORMAL_CLASS_IDX: i64 = 6;
+/// Default index of the `Normal` class in the shipped binary
+/// model.  See `data/ai_model/label_map.json` — `{"0":"Normal",
+/// "1":"Attack"}`.  Override at construction when a future model
+/// swaps the layout.
+pub const DEFAULT_NORMAL_CLASS_IDX: i64 = 0;
 
 /// Model wrapped in `Arc` so cheap clones share the underlying
 /// `ort::Session`.
@@ -180,8 +180,23 @@ impl AiDetector {
         self
     }
 
-    /// Render the request into the `"METHOD /path?query body"`
-    /// shape the feature extractor + the trained model expect.
+    /// Render the request into the multi-line shape the
+    /// feature extractor + the trained model expect:
+    ///
+    /// ```text
+    /// METHOD /path?query body
+    /// User-Agent: …
+    /// Cookie: …
+    /// Referer: …
+    /// ```
+    ///
+    /// Only the three headers the training pipeline saw are
+    /// folded in — scanner UA detection lives in `User-Agent`,
+    /// session-shape signals in `Cookie`, and origin-rewrite /
+    /// SSRF hints in `Referer`.  Other headers are ignored to
+    /// keep the feature distribution close to what the model
+    /// was trained on.  The legacy single-line shape still
+    /// parses cleanly (extractor handles both).
     fn build_request_string(req: &RequestView<'_>) -> String {
         let method = req.method.as_str();
         // Path-and-query, falling back to "/" for empty URIs.
@@ -195,15 +210,42 @@ impl AiDetector {
         // upload would blow the latency budget.  4 KiB matches
         // the corpus the model was trained on.
         let body_bytes = req.body.peek(4096);
-        if body_bytes.is_empty() {
-            format!("{method} {pq}")
-        } else {
+
+        let mut out = String::with_capacity(64 + body_bytes.len());
+        out.push_str(method);
+        out.push(' ');
+        out.push_str(pq);
+        if !body_bytes.is_empty() {
+            out.push(' ');
             // Lossy UTF-8 — non-text payloads still produce a
             // string suitable for regex feature counts, which
             // is what the training pipeline did.
             let body = String::from_utf8_lossy(body_bytes);
-            format!("{method} {pq} {body}")
+            out.push_str(&body);
         }
+
+        // Headers the training pipeline included.  Skip silently
+        // when a header is missing or its value isn't valid
+        // UTF-8 (regexes only run on the textual portion).
+        for hdr in ["user-agent", "cookie", "referer"] {
+            if let Some(value) = req.headers.get(hdr).and_then(|v| v.to_str().ok()) {
+                out.push('\n');
+                // RFC 9110 header names are case-insensitive;
+                // emit the canonical spelling the training set
+                // used so the textual line shape matches.
+                let canonical = match hdr {
+                    "user-agent" => "User-Agent",
+                    "cookie"     => "Cookie",
+                    "referer"    => "Referer",
+                    _ => hdr,
+                };
+                out.push_str(canonical);
+                out.push_str(": ");
+                out.push_str(value);
+            }
+        }
+
+        out
     }
 }
 
@@ -328,6 +370,45 @@ mod tests {
             "expected ≤ 4 KiB body cap, got {}",
             s.len()
         );
+    }
+
+    #[test]
+    fn build_request_string_folds_in_user_agent() {
+        let m = http::Method::GET;
+        let u: http::Uri = "/admin".parse().unwrap();
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            "user-agent",
+            http::HeaderValue::from_static("sqlmap/1.7"),
+        );
+        let b = BodyPeek::empty();
+        let req = view_for(&m, &u, &h, &b);
+        let s = AiDetector::build_request_string(&req);
+        assert_eq!(s, "GET /admin\nUser-Agent: sqlmap/1.7");
+    }
+
+    #[test]
+    fn build_request_string_folds_in_cookie_and_referer() {
+        let m = http::Method::GET;
+        let u: http::Uri = "/dashboard".parse().unwrap();
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            "user-agent",
+            http::HeaderValue::from_static("Mozilla/5.0"),
+        );
+        h.insert("cookie", http::HeaderValue::from_static("sid=abc"));
+        h.insert(
+            "referer",
+            http::HeaderValue::from_static("https://example.com/"),
+        );
+        let b = BodyPeek::empty();
+        let req = view_for(&m, &u, &h, &b);
+        let s = AiDetector::build_request_string(&req);
+        // Order is User-Agent → Cookie → Referer (the order
+        // build_request_string iterates).
+        assert!(s.contains("\nUser-Agent: Mozilla/5.0"));
+        assert!(s.contains("\nCookie: sid=abc"));
+        assert!(s.contains("\nReferer: https://example.com/"));
     }
 
     // The model load + predict path needs a real .onnx file so

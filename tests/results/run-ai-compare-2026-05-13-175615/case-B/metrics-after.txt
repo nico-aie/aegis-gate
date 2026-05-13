@@ -1,0 +1,196 @@
+# HELP aegis_ai_fallback_total AI detector fall-through count by reason. Increments when the WAF can't or shouldn't trust an AI verdict (inference error, below-threshold confidence, tensor-shape mismatch).
+# TYPE aegis_ai_fallback_total counter
+aegis_ai_fallback_total{reason="inference_error"} 0
+aegis_ai_fallback_total{reason="low_confidence"} 1820
+aegis_ai_fallback_total{reason="tensor_build"} 0
+# HELP aegis_ai_inference_duration_seconds AI inference wall-clock duration (one observation per inference). Buckets cover the sub-millisecond model envelope plus headroom for stalls.
+# TYPE aegis_ai_inference_duration_seconds histogram
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.0001"} 0
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.00025"} 0
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.0005"} 106
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.001"} 7783
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.0025"} 9079
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.005"} 9084
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.01"} 9089
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.025"} 9089
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="0.1"} 9089
+aegis_ai_inference_duration_seconds_bucket{verdict="attack",le="+Inf"} 9089
+aegis_ai_inference_duration_seconds_sum{verdict="attack"} 8.381031999999985
+aegis_ai_inference_duration_seconds_count{verdict="attack"} 9089
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.0001"} 0
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.00025"} 0
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.0005"} 125
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.001"} 12800
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.0025"} 14806
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.005"} 14813
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.01"} 14818
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.025"} 14818
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="0.1"} 14818
+aegis_ai_inference_duration_seconds_bucket{verdict="normal",le="+Inf"} 14818
+aegis_ai_inference_duration_seconds_sum{verdict="normal"} 13.630663999999893
+aegis_ai_inference_duration_seconds_count{verdict="normal"} 14818
+# HELP aegis_ai_predictions_total AI detector predictions, labelled by verdict (attack | normal). One increment per inference.
+# TYPE aegis_ai_predictions_total counter
+aegis_ai_predictions_total{verdict="attack"} 9089
+aegis_ai_predictions_total{verdict="normal"} 14818
+# HELP aegis_runtime_active_workers Number of active tokio worker threads in the runtime. Read from tokio::runtime::Handle::current().metrics().num_workers(). Constant for the process lifetime under the multi-threaded scheduler.
+# TYPE aegis_runtime_active_workers gauge
+aegis_runtime_active_workers 0
+# HELP aegis_runtime_blocking_queue_depth Number of queued blocking-pool tasks waiting for a worker. Steadily-rising depth = blocking pool saturated; size up `runtime.blocking_threads` or move work off `tokio::task::spawn_blocking`.
+# TYPE aegis_runtime_blocking_queue_depth gauge
+aegis_runtime_blocking_queue_depth 0
+# HELP aegis_runtime_blocking_threads Number of currently-spawned blocking threads in the runtime's blocking pool. Bounded by `runtime.blocking_threads` config. Watch for sustained values at the cap — indicates work shedding into the blocking pool faster than it drains.
+# TYPE aegis_runtime_blocking_threads gauge
+aegis_runtime_blocking_threads 0
+# HELP aegis_runtime_io_driver_fd_count Number of file descriptors registered with the tokio I/O driver. Includes every TCP socket, every TLS stream, every Redis pool conn. Useful for catching FD leaks (sustained climb without a corresponding RPS climb).
+# TYPE aegis_runtime_io_driver_fd_count gauge
+aegis_runtime_io_driver_fd_count 0
+# HELP aegis_websocket_active Currently-active WebSocket tunnels bridged by the WAF. Incremented on upgrade, decremented when the bridge task exits.
+# TYPE aegis_websocket_active gauge
+aegis_websocket_active 0
+# HELP aegis_websocket_close_total Total WebSocket bridge close events (clean + error + EOF). Pair with aegis_websocket_open_total to derive in-flight; per-tunnel reasons live on the audit-bus websocket_close event.
+# TYPE aegis_websocket_close_total counter
+aegis_websocket_close_total 0
+# HELP aegis_websocket_open_total Total successful WebSocket upgrades the data plane bridged.
+# TYPE aegis_websocket_open_total counter
+aegis_websocket_open_total 0
+# HELP waf_audit_events_total Total events emitted to the AuditBus, labelled by class (detection / admin / access / system).
+# TYPE waf_audit_events_total counter
+waf_audit_events_total{class="access"} 16638
+waf_audit_events_total{class="admin"} 0
+waf_audit_events_total{class="detection"} 31176
+waf_audit_events_total{class="system"} 0
+# HELP waf_detector_evaluation_duration_ms Per-detector evaluation time (milliseconds). Labelled by `class` (sqli, xss, path_traversal, ssrf, header_injection, body_abuse, recon, brute_force).
+# TYPE waf_detector_evaluation_duration_ms histogram
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="0.05"} 0
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="0.1"} 0
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="0.25"} 0
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="0.5"} 186
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="1"} 20006
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="2.5"} 23883
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="5"} 23893
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="10"} 23904
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="25"} 23907
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="50"} 23907
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="100"} 23907
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="250"} 23907
+waf_detector_evaluation_duration_ms_bucket{class="ai",le="+Inf"} 23907
+waf_detector_evaluation_duration_ms_sum{class="ai"} 22645.78782700012
+waf_detector_evaluation_duration_ms_count{class="ai"} 23907
+# HELP waf_detector_hits_total Total detector firings per detector class. Incremented once per detector that emits at least one Signal on a given request, regardless of how many sub-tags the detector reported. Mirrors aegis_security::detectors::DetectorClass values.
+# TYPE waf_detector_hits_total counter
+waf_detector_hits_total{class="ai"} 7269
+waf_detector_hits_total{class="body_abuse"} 0
+waf_detector_hits_total{class="brute_force"} 0
+waf_detector_hits_total{class="command_injection"} 0
+waf_detector_hits_total{class="header_injection"} 0
+waf_detector_hits_total{class="nosql_injection"} 0
+waf_detector_hits_total{class="open_redirect"} 0
+waf_detector_hits_total{class="path_traversal"} 0
+waf_detector_hits_total{class="recon"} 0
+waf_detector_hits_total{class="sqli"} 0
+waf_detector_hits_total{class="ssrf"} 0
+waf_detector_hits_total{class="template_injection"} 0
+waf_detector_hits_total{class="xss"} 0
+# HELP waf_request_duration_ms Time spent in each WAF pipeline stage (milliseconds).
+# TYPE waf_request_duration_ms histogram
+waf_request_duration_ms_bucket{stage="detect",le="0.05"} 0
+waf_request_duration_ms_bucket{stage="detect",le="0.1"} 0
+waf_request_duration_ms_bucket{stage="detect",le="0.25"} 0
+waf_request_duration_ms_bucket{stage="detect",le="0.5"} 181
+waf_request_duration_ms_bucket{stage="detect",le="1"} 19952
+waf_request_duration_ms_bucket{stage="detect",le="2.5"} 23883
+waf_request_duration_ms_bucket{stage="detect",le="5"} 23893
+waf_request_duration_ms_bucket{stage="detect",le="10"} 23904
+waf_request_duration_ms_bucket{stage="detect",le="25"} 23907
+waf_request_duration_ms_bucket{stage="detect",le="50"} 23907
+waf_request_duration_ms_bucket{stage="detect",le="100"} 23907
+waf_request_duration_ms_bucket{stage="detect",le="250"} 23907
+waf_request_duration_ms_bucket{stage="detect",le="+Inf"} 23907
+waf_request_duration_ms_sum{stage="detect"} 22693.268113000144
+waf_request_duration_ms_count{stage="detect"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.05"} 23906
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.1"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.25"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.5"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="1"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="2.5"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="5"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="10"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="25"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="50"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="100"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="250"} 23907
+waf_request_duration_ms_bucket{stage="rate_limit",le="+Inf"} 23907
+waf_request_duration_ms_sum{stage="rate_limit"} 40.03253199999987
+waf_request_duration_ms_count{stage="rate_limit"} 23907
+waf_request_duration_ms_bucket{stage="total",le="0.05"} 0
+waf_request_duration_ms_bucket{stage="total",le="0.1"} 0
+waf_request_duration_ms_bucket{stage="total",le="0.25"} 0
+waf_request_duration_ms_bucket{stage="total",le="0.5"} 0
+waf_request_duration_ms_bucket{stage="total",le="1"} 36
+waf_request_duration_ms_bucket{stage="total",le="2.5"} 23809
+waf_request_duration_ms_bucket{stage="total",le="5"} 23886
+waf_request_duration_ms_bucket{stage="total",le="10"} 23897
+waf_request_duration_ms_bucket{stage="total",le="25"} 23905
+waf_request_duration_ms_bucket{stage="total",le="50"} 23907
+waf_request_duration_ms_bucket{stage="total",le="100"} 23907
+waf_request_duration_ms_bucket{stage="total",le="250"} 23907
+waf_request_duration_ms_bucket{stage="total",le="+Inf"} 23907
+waf_request_duration_ms_sum{stage="total"} 37398.48508600026
+waf_request_duration_ms_count{stage="total"} 23907
+# HELP waf_requests_total Total data-plane requests handled by the WAF, labelled by the decision action emitted (allow / block / challenge / rate_limit / timeout / circuit_breaker).
+# TYPE waf_requests_total counter
+waf_requests_total{action="allow"} 16638
+waf_requests_total{action="block"} 7269
+waf_requests_total{action="challenge"} 0
+waf_requests_total{action="circuit_breaker"} 0
+waf_requests_total{action="rate_limit"} 0
+waf_requests_total{action="timeout"} 0
+# HELP waf_route_request_duration_ms Per-route end-to-end request duration (milliseconds). Labelled by `route` (the route_id from the matched route table entry). Bucket layout matches `waf_request_duration_ms` so dashboards can compose both sources.
+# TYPE waf_route_request_duration_ms histogram
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.05"} 0
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.1"} 0
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.25"} 0
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.5"} 0
+waf_route_request_duration_ms_bucket{route="catch-all",le="1"} 1
+waf_route_request_duration_ms_bucket{route="catch-all",le="2.5"} 16564
+waf_route_request_duration_ms_bucket{route="catch-all",le="5"} 16624
+waf_route_request_duration_ms_bucket{route="catch-all",le="10"} 16629
+waf_route_request_duration_ms_bucket{route="catch-all",le="25"} 16636
+waf_route_request_duration_ms_bucket{route="catch-all",le="50"} 16638
+waf_route_request_duration_ms_bucket{route="catch-all",le="100"} 16638
+waf_route_request_duration_ms_bucket{route="catch-all",le="250"} 16638
+waf_route_request_duration_ms_bucket{route="catch-all",le="+Inf"} 16638
+waf_route_request_duration_ms_sum{route="catch-all"} 26620.046924999948
+waf_route_request_duration_ms_count{route="catch-all"} 16638
+# HELP waf_state_backend_ops_total Total state-backend operations performed by the WAF, labelled by op (get / set / del / incr_window / token_bucket / get_risk / add_risk / auto_block / is_auto_blocked / put_nonce / consume_nonce) and outcome (ok / error).
+# TYPE waf_state_backend_ops_total counter
+waf_state_backend_ops_total{op="add_risk",outcome="error"} 0
+waf_state_backend_ops_total{op="add_risk",outcome="ok"} 0
+waf_state_backend_ops_total{op="auto_block",outcome="error"} 0
+waf_state_backend_ops_total{op="auto_block",outcome="ok"} 0
+waf_state_backend_ops_total{op="consume_nonce",outcome="error"} 0
+waf_state_backend_ops_total{op="consume_nonce",outcome="ok"} 0
+waf_state_backend_ops_total{op="del",outcome="error"} 0
+waf_state_backend_ops_total{op="del",outcome="ok"} 1
+waf_state_backend_ops_total{op="get",outcome="error"} 0
+waf_state_backend_ops_total{op="get",outcome="ok"} 1
+waf_state_backend_ops_total{op="get_risk",outcome="error"} 0
+waf_state_backend_ops_total{op="get_risk",outcome="ok"} 0
+waf_state_backend_ops_total{op="incr_window",outcome="error"} 0
+waf_state_backend_ops_total{op="incr_window",outcome="ok"} 0
+waf_state_backend_ops_total{op="is_auto_blocked",outcome="error"} 0
+waf_state_backend_ops_total{op="is_auto_blocked",outcome="ok"} 23907
+waf_state_backend_ops_total{op="put_nonce",outcome="error"} 0
+waf_state_backend_ops_total{op="put_nonce",outcome="ok"} 0
+waf_state_backend_ops_total{op="set",outcome="error"} 0
+waf_state_backend_ops_total{op="set",outcome="ok"} 1
+waf_state_backend_ops_total{op="token_bucket",outcome="error"} 0
+waf_state_backend_ops_total{op="token_bucket",outcome="ok"} 0
+# HELP waf_upstream_members_healthy Count of upstream pool members currently passing health probes per pool. Equals total when no probe is configured (assumed healthy).
+# TYPE waf_upstream_members_healthy gauge
+waf_upstream_members_healthy{pool="stub-pool"} 1
+# HELP waf_upstream_members_total Configured count of upstream pool members per pool.
+# TYPE waf_upstream_members_total gauge
+waf_upstream_members_total{pool="stub-pool"} 1

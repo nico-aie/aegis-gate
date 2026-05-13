@@ -1,9 +1,15 @@
 /// WAF feature extraction — exact port of ml_waf/features.py.
 /// 26 dense float32 features per HTTP request string.
+///
+/// Input format (multi-line):
+///   Line 0:  "METHOD /url [body]"
+///   Lines 1+: "Header: value"   (User-Agent, Cookie, Referer, etc.)
+///
+/// Old single-line format "METHOD /url body" is still accepted.
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-pub const NUM_FEATURES: usize = 26;
+pub const NUM_FEATURES: usize = 27;
 
 pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "request_len",
@@ -32,6 +38,7 @@ pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "hex_encode_count",
     "crlf_inject_count",
     "double_encode_count",
+    "ssti_count",
 ];
 
 static SQL_RE: Lazy<Regex> = Lazy::new(|| {
@@ -71,16 +78,22 @@ static CRLF_RE: Lazy<Regex> =
 static DBL_ENC_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"%25[0-9a-fA-F]{2}").unwrap());
 
+static SSTI_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?is)(\{\{.*?\}\})|(\$\{[^}]{1,200}\})|(#\{[^}]{1,200}\})|(<%=.*?%>)|(\?\s*new\s*\()|(__(class|mro|subclasses|globals|builtins|import)__)|(freemarker\.template|velocity\.tools)|(\{\s*\d+\s*\*\s*\d+\s*\})"
+    ).unwrap()
+});
+
 fn method_id(method: &str) -> f32 {
     match method.to_ascii_uppercase().as_str() {
-        "GET" => 0.0,
-        "POST" => 1.0,
-        "PUT" => 2.0,
-        "DELETE" => 3.0,
-        "PATCH" => 4.0,
-        "HEAD" => 5.0,
+        "GET"     => 0.0,
+        "POST"    => 1.0,
+        "PUT"     => 2.0,
+        "DELETE"  => 3.0,
+        "PATCH"   => 4.0,
+        "HEAD"    => 5.0,
         "OPTIONS" => 6.0,
-        _ => 7.0,
+        _         => 7.0,
     }
 }
 
@@ -128,41 +141,46 @@ fn shannon_entropy(s: &str) -> f32 {
 }
 
 /// Extract 26 WAF features from a raw HTTP request string.
+///
+/// Accepts both formats:
+///   Single-line : "METHOD /url body"
+///   Multi-line  : "METHOD /url body\nUser-Agent: ...\nCookie: ..."
 pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
-    let mut parts = request.splitn(3, ' ');
+    // Split into the request line and optional header lines.
+    let (first_line, headers_text): (&str, String) = match request.find('\n') {
+        Some(nl) => (&request[..nl], request[nl + 1..].replace('\n', " ")),
+        None     => (request, String::new()),
+    };
+
+    let mut parts = first_line.splitn(3, ' ');
     let method = parts.next().unwrap_or("GET");
-    let url = parts.next().unwrap_or("/");
-    let body = parts.next().unwrap_or("");
+    let url    = parts.next().unwrap_or("/");
+    let body   = parts.next().unwrap_or("");
 
-    let (path, query) = if let Some(pos) = url.find('?') {
-        (&url[..pos], &url[pos + 1..])
-    } else {
-        (url, "")
+    let (path, query) = match url.find('?') {
+        Some(pos) => (&url[..pos], &url[pos + 1..]),
+        None      => (url, ""),
     };
 
-    let full: String = if body.is_empty() {
-        url.to_string()
-    } else {
-        format!("{} {}", url, body)
+    // `full` includes url + body + header values so every regex pattern
+    // also scans User-Agent, Cookie, Referer, etc. — mirrors Python logic.
+    let full = {
+        let mut s = url.to_string();
+        if !body.is_empty()         { s.push(' '); s.push_str(body); }
+        if !headers_text.is_empty() { s.push(' '); s.push_str(&headers_text); }
+        s
     };
 
-    // Decoded version — catches payloads hidden behind percent-encoding
     let full_dec = url_decode(&full);
-
     let n = full.chars().count().max(1) as f32;
 
-    let num_params = (if query.is_empty() {
-        0
-    } else {
-        query.matches('&').count() + 1
-    }) + (if body.is_empty() {
-        0
-    } else {
-        body.matches('&').count() + 1
-    });
+    // num_params counts query-string and body params, not header values.
+    let num_params =
+        (if query.is_empty() { 0 } else { query.matches('&').count() + 1 })
+        + (if body.is_empty()  { 0 } else { body.matches('&').count() + 1 });
 
-    let digit_count = full.chars().filter(|c| c.is_ascii_digit()).count() as f32;
-    let upper_count = full.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
+    let digit_count  = full.chars().filter(|c| c.is_ascii_digit()).count() as f32;
+    let upper_count  = full.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
     let special_count = full
         .chars()
         .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';' | '=' | '%' | '&' | '+'))
@@ -172,31 +190,32 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     let path_traversal = full_dec_lower.matches("../").count() as f32;
 
     [
-        request.len() as f32,                                  // 0  request_len
-        method_id(method),                                     // 1  method_id
-        path.len() as f32,                                     // 2  path_len
-        query.len() as f32,                                    // 3  query_len
-        body.len() as f32,                                     // 4  body_len
-        num_params as f32,                                     // 5  num_params
-        shannon_entropy(&full),                                // 6  entropy
-        digit_count / n,                                       // 7  digit_ratio
-        upper_count / n,                                       // 8  upper_ratio
-        special_count,                                         // 9  special_char_count
-        full.matches('\'').count() as f32,                     // 10 single_quote_count
-        full.matches('"').count() as f32,                      // 11 double_quote_count
-        (full.matches('<').count() + full.matches('>').count()) as f32, // 12 angle_bracket_count
-        full.matches(';').count() as f32,                      // 13 semicolon_count
-        PCT_RE.find_iter(&full).count() as f32,                // 14 pct_encoded_count    (raw)
-        SQL_RE.find_iter(&full_dec).count() as f32,            // 15 sql_keyword_count    (decoded)
-        XSS_RE.find_iter(&full_dec).count() as f32,            // 16 xss_pattern_count    (decoded)
-        path_traversal,                                        // 17 path_traversal_count (decoded)
-        CMD_RE.find_iter(&full_dec).count() as f32,            // 18 cmd_injection_count  (decoded)
-        SCANNER_RE.find_iter(&full_dec).count() as f32,        // 19 scanner_count        (decoded)
-        SSRF_RE.find_iter(&full_dec).count() as f32,           // 20 ssrf_count           (decoded)
-        PHP_RE.find_iter(&full_dec).count() as f32,            // 21 php_pattern_count    (decoded)
-        NULL_BYTE_RE.find_iter(&full).count() as f32,          // 22 null_byte_count      (raw)
-        HEX_ENCODE_RE.find_iter(&full).count() as f32,         // 23 hex_encode_count     (raw)
-        CRLF_RE.find_iter(&full).count() as f32,               // 24 crlf_inject_count    (raw)
-        DBL_ENC_RE.find_iter(&full).count() as f32,            // 25 double_encode_count  (raw)
+        request.len() as f32,                                              // 0  total length (incl. headers)
+        method_id(method),                                                 // 1
+        path.len() as f32,                                                 // 2
+        query.len() as f32,                                                // 3
+        body.len() as f32,                                                 // 4  body from first line only
+        num_params as f32,                                                 // 5  query + body params
+        shannon_entropy(&full),                                            // 6
+        digit_count / n,                                                   // 7
+        upper_count / n,                                                   // 8
+        special_count,                                                     // 9
+        full.matches('\'').count() as f32,                                 // 10
+        full.matches('"').count() as f32,                                  // 11
+        (full.matches('<').count() + full.matches('>').count()) as f32,    // 12
+        full.matches(';').count() as f32,                                  // 13
+        PCT_RE.find_iter(&full).count() as f32,                            // 14 raw
+        SQL_RE.find_iter(&full_dec).count() as f32,                        // 15 decoded
+        XSS_RE.find_iter(&full_dec).count() as f32,                        // 16 decoded
+        path_traversal,                                                    // 17 decoded
+        CMD_RE.find_iter(&full_dec).count() as f32,                        // 18 decoded
+        SCANNER_RE.find_iter(&full_dec).count() as f32,                    // 19 decoded
+        SSRF_RE.find_iter(&full_dec).count() as f32,                       // 20 decoded
+        PHP_RE.find_iter(&full_dec).count() as f32,                        // 21 decoded
+        NULL_BYTE_RE.find_iter(&full).count() as f32,                      // 22 raw
+        HEX_ENCODE_RE.find_iter(&full).count() as f32,                     // 23 raw
+        CRLF_RE.find_iter(&full).count() as f32,                           // 24 raw
+        DBL_ENC_RE.find_iter(&full).count() as f32,                        // 25 raw
+        SSTI_RE.find_iter(&full_dec).count() as f32,                       // 26 decoded
     ]
 }
