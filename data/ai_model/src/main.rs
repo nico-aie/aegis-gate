@@ -40,21 +40,9 @@ fn load_csv(path: &str) -> Vec<Row> {
     }
 }
 
-fn load_label_map(path: &str) -> (HashMap<i64, String>, HashMap<String, i64>) {
-    let raw: HashMap<String, String> =
-        serde_json::from_str(&std::fs::read_to_string(path).expect("cannot read label_map.json"))
-            .expect("invalid JSON");
-    let idx2name: HashMap<i64, String> =
-        raw.iter().map(|(k, v)| (k.parse::<i64>().unwrap(), v.clone())).collect();
-    let name2idx: HashMap<String, i64> =
-        idx2name.iter().map(|(&i, n)| (n.clone(), i)).collect();
-    (idx2name, name2idx)
-}
-
 // ─── Feature extraction (parallel via rayon) ──────────────────────────────────
 
 fn build_feature_matrix(requests: &[&str]) -> Array2<f32> {
-    // Each thread computes its own [f32; 26] row; matrix is filled sequentially.
     let feats: Vec<[f32; NUM_FEATURES]> =
         requests.par_iter().map(|req| extract_features(req)).collect();
     let n = feats.len();
@@ -69,38 +57,69 @@ fn build_feature_matrix(requests: &[&str]) -> Array2<f32> {
 
 // ─── Inference ────────────────────────────────────────────────────────────────
 
-fn predict_batch(session: &mut Session, requests: &[&str]) -> Vec<i64> {
+/// Returns (labels, prob_attack_scores).
+/// ONNX binary model:
+///   "label"         → int64  (N,)    — 0=Normal, 1=Attack
+///   "probabilities" → float32 (N, 2) — [P(Normal), P(Attack)]
+fn predict_batch(session: &mut Session, requests: &[&str]) -> (Vec<i64>, Vec<f32>) {
     if requests.is_empty() {
-        return vec![];
+        return (vec![], vec![]);
     }
+    let n = requests.len();
     let mat = build_feature_matrix(requests);
     let input = ort::value::Tensor::from_array(mat).expect("tensor creation failed");
     let outputs = session.run(inputs!["X" => input]).expect("inference failed");
+
     let (_, labels) = outputs["label"]
         .try_extract_tensor::<i64>()
-        .expect("extract label tensor failed");
-    labels.to_vec()
+        .expect("extract label tensor");
+    let label_vec = labels.to_vec();
+
+    let (_, probs) = outputs["probabilities"]
+        .try_extract_tensor::<f32>()
+        .expect("extract probabilities tensor");
+
+    // Supports (N, 2) flat layout [p_normal_0, p_attack_0, p_normal_1, p_attack_1, ...]
+    let n_cols = probs.len() / n.max(1);
+    let scores: Vec<f32> = if n_cols >= 2 {
+        (0..n).map(|i| probs[i * n_cols + 1]).collect()
+    } else {
+        // (N,) — single attack probability output
+        (0..n).map(|i| probs[i]).collect()
+    };
+
+    (label_vec, scores)
 }
 
-fn predict_all(session: &mut Session, requests: &[&str], batch_size: usize) -> Vec<i64> {
-    let mut preds = Vec::with_capacity(requests.len());
+fn predict_all(
+    session: &mut Session,
+    requests: &[&str],
+    batch_size: usize,
+) -> (Vec<i64>, Vec<f32>) {
+    let mut labels = Vec::with_capacity(requests.len());
+    let mut scores = Vec::with_capacity(requests.len());
     for chunk in requests.chunks(batch_size) {
-        preds.extend(predict_batch(session, chunk));
+        let (l, s) = predict_batch(session, chunk);
+        labels.extend(l);
+        scores.extend(s);
     }
-    preds
+    (labels, scores)
 }
 
 // ─── Metrics ──────────────────────────────────────────────────────────────────
 
-struct ClassReport {
-    name: String,
-    support: usize,
+struct BinaryMetrics {
     tp: usize,
     fp: usize,
     fn_: usize,
+    tn: usize,
 }
 
-impl ClassReport {
+impl BinaryMetrics {
+    fn accuracy(&self) -> f64 {
+        let total = self.tp + self.fp + self.fn_ + self.tn;
+        if total == 0 { 0.0 } else { (self.tp + self.tn) as f64 / total as f64 }
+    }
     fn precision(&self) -> f64 {
         let d = self.tp + self.fp;
         if d == 0 { 0.0 } else { self.tp as f64 / d as f64 }
@@ -114,74 +133,40 @@ impl ClassReport {
         let r = self.recall();
         if p + r == 0.0 { 0.0 } else { 2.0 * p * r / (p + r) }
     }
+    fn total(&self) -> usize {
+        self.tp + self.fp + self.fn_ + self.tn
+    }
 }
 
-fn compute_metrics(
-    y_true: &[i64],
+fn compute_binary(
+    y_true: &[i64],   // 0=Normal, 1=Attack
     y_pred: &[i64],
-    idx2name: &HashMap<i64, String>,
-) -> Vec<ClassReport> {
-    let mut tp: HashMap<i64, usize> = HashMap::new();
-    let mut fp: HashMap<i64, usize> = HashMap::new();
-    let mut fn_: HashMap<i64, usize> = HashMap::new();
-    let mut support: HashMap<i64, usize> = HashMap::new();
-
+) -> BinaryMetrics {
+    let mut tp = 0usize;
+    let mut fp = 0usize;
+    let mut fn_ = 0usize;
+    let mut tn = 0usize;
     for (&t, &p) in y_true.iter().zip(y_pred.iter()) {
-        *support.entry(t).or_insert(0) += 1;
-        if t == p {
-            *tp.entry(t).or_insert(0) += 1;
-        } else {
-            *fn_.entry(t).or_insert(0) += 1;
-            *fp.entry(p).or_insert(0) += 1;
+        match (t, p) {
+            (1, 1) => tp += 1,
+            (0, 1) => fp += 1,
+            (1, 0) => fn_ += 1,
+            _      => tn += 1,
         }
     }
-
-    let mut classes: Vec<i64> = support.keys().copied().collect();
-    classes.sort();
-    classes
-        .into_iter()
-        .map(|idx| ClassReport {
-            name: idx2name.get(&idx).cloned().unwrap_or_else(|| idx.to_string()),
-            support: *support.get(&idx).unwrap_or(&0),
-            tp: *tp.get(&idx).unwrap_or(&0),
-            fp: *fp.get(&idx).unwrap_or(&0),
-            fn_: *fn_.get(&idx).unwrap_or(&0),
-        })
-        .collect()
+    BinaryMetrics { tp, fp, fn_, tn }
 }
 
-fn print_class_report(reports: &[ClassReport]) {
-    println!(
-        "\n  {:<44} {:>9} {:>9} {:>9} {:>9}",
-        "Class", "Prec", "Recall", "F1", "Support"
-    );
-    println!("  {}", "-".repeat(84));
-    for r in reports {
-        println!(
-            "  {:<44} {:>9.4} {:>9.4} {:>9.4} {:>9}",
-            r.name,
-            r.precision(),
-            r.recall(),
-            r.f1(),
-            r.support
-        );
+fn score_stats(scores: &[f32]) -> (f32, f32, f32) {
+    if scores.is_empty() {
+        return (0.0, 0.0, 0.0);
     }
-    let n = reports.len() as f64;
-    if n > 0.0 {
-        let (sp, sr, sf) = reports
-            .iter()
-            .fold((0.0_f64, 0.0_f64, 0.0_f64), |a, r| {
-                (a.0 + r.precision(), a.1 + r.recall(), a.2 + r.f1())
-            });
-        println!("  {}", "-".repeat(84));
-        println!(
-            "  {:<44} {:>9.4} {:>9.4} {:>9.4}",
-            "macro avg",
-            sp / n,
-            sr / n,
-            sf / n
-        );
-    }
+    let mean = scores.iter().sum::<f32>() / scores.len() as f32;
+    let mut sorted = scores.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p50 = sorted[sorted.len() / 2];
+    let p95 = sorted[(sorted.len() as f32 * 0.95) as usize];
+    (mean, p50, p95)
 }
 
 // ─── Per-source evaluation ────────────────────────────────────────────────────
@@ -189,20 +174,18 @@ fn print_class_report(reports: &[ClassReport]) {
 struct SourceResult {
     name: String,
     samples: usize,
-    multi_acc: f64,
-    binary_acc: f64,
-    attack_prec: f64,
-    attack_rec: f64,
-    attack_f1: f64,
+    accuracy: f64,
+    precision: f64,
+    recall: f64,
+    f1: f64,
+    fn_count: usize,
+    fp_count: usize,
 }
 
 fn evaluate_source(
     session: &mut Session,
     name: &str,
     rows: &[Row],
-    idx2name: &HashMap<i64, String>,
-    name2idx: &HashMap<String, i64>,
-    normal_idx: i64,
     batch_size: usize,
 ) -> Option<SourceResult> {
     if rows.is_empty() {
@@ -215,99 +198,111 @@ fn evaluate_source(
     println!(" Source : {name}  ({} samples)", rows.len());
     println!("{sep}");
 
-    let mut dist_map: HashMap<&str, usize> = HashMap::new();
+    // Class distribution
+    let mut dist: HashMap<&str, usize> = HashMap::new();
     for r in rows {
-        *dist_map.entry(r.category.as_str()).or_insert(0) += 1;
+        *dist.entry(r.category.as_str()).or_insert(0) += 1;
     }
-    let mut dist: Vec<_> = dist_map.into_iter().collect();
-    dist.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut dist_vec: Vec<_> = dist.into_iter().collect();
+    dist_vec.sort_by(|a, b| b.1.cmp(&a.1));
     println!(" Class distribution:");
-    for (cat, n) in &dist {
+    for (cat, n) in &dist_vec {
         println!("   {:<44} {:>7}", cat, n);
     }
 
     let t0 = Instant::now();
     let requests: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
-    let preds = predict_all(session, &requests, batch_size);
+    let (preds, scores) = predict_all(session, &requests, batch_size);
     let elapsed = t0.elapsed().as_secs_f64();
 
-    // Drop rows whose category is unknown to the model
-    let mut y_true: Vec<i64> = Vec::with_capacity(rows.len());
-    let mut y_pred: Vec<i64> = Vec::with_capacity(rows.len());
-    for (row, &pred) in rows.iter().zip(preds.iter()) {
-        if let Some(&tidx) = name2idx.get(row.category.as_str()) {
-            y_true.push(tidx);
-            y_pred.push(pred);
-        }
-    }
-    let total = y_true.len();
-    let correct = y_true.iter().zip(y_pred.iter()).filter(|(t, p)| t == p).count();
-    let multi_acc = correct as f64 / total as f64;
+    // Map category string → binary label (0=Normal, 1=Attack)
+    let y_true: Vec<i64> = rows
+        .iter()
+        .map(|r| if r.category == "Normal" { 0 } else { 1 })
+        .collect();
+
+    let m = compute_binary(&y_true, &preds);
+    let total = m.total();
 
     println!(
-        "\n Elapsed : {elapsed:.2}s  ({:.0} req/s)",
+        "\n Elapsed  : {elapsed:.2}s  ({:.0} req/s)",
         total as f64 / elapsed
     );
-    println!(" Multi-class accuracy : {multi_acc:.4}");
 
-    let reports = compute_metrics(&y_true, &y_pred, idx2name);
-    print_class_report(&reports);
+    println!("\n Binary classification (Normal=0 / Attack=1)");
+    println!("   Accuracy  : {:.4}", m.accuracy());
+    println!("   Precision : {:.4}   Recall : {:.4}   F1 : {:.4}", m.precision(), m.recall(), m.f1());
+    println!("   TP={:<7} FP={:<7} FN={:<7} TN={}", m.tp, m.fp, m.fn_, m.tn);
 
-    // Binary: Normal=0 vs Attack=1
-    let bin_true: Vec<u8> = y_true.iter().map(|&x| if x == normal_idx { 0 } else { 1 }).collect();
-    let bin_pred: Vec<u8> = y_pred.iter().map(|&x| if x == normal_idx { 0 } else { 1 }).collect();
+    // Score stats split by true class
+    let atk_scores: Vec<f32> = y_true.iter().zip(scores.iter())
+        .filter(|(&t, _)| t == 1)
+        .map(|(_, &s)| s)
+        .collect();
+    let norm_scores: Vec<f32> = y_true.iter().zip(scores.iter())
+        .filter(|(&t, _)| t == 0)
+        .map(|(_, &s)| s)
+        .collect();
 
-    let tp = bin_true.iter().zip(bin_pred.iter()).filter(|(&t, &p)| t == 1 && p == 1).count();
-    let fp = bin_true.iter().zip(bin_pred.iter()).filter(|(&t, &p)| t == 0 && p == 1).count();
-    let fn_ = bin_true.iter().zip(bin_pred.iter()).filter(|(&t, &p)| t == 1 && p == 0).count();
-    let tn = bin_true.iter().zip(bin_pred.iter()).filter(|(&t, &p)| t == 0 && p == 0).count();
-    let bin_acc = (tp + tn) as f64 / total as f64;
-    let atk_p = if tp + fp > 0 { tp as f64 / (tp + fp) as f64 } else { 0.0 };
-    let atk_r = if tp + fn_ > 0 { tp as f64 / (tp + fn_) as f64 } else { 0.0 };
-    let atk_f1 = if atk_p + atk_r > 0.0 { 2.0 * atk_p * atk_r / (atk_p + atk_r) } else { 0.0 };
+    if !atk_scores.is_empty() {
+        let (m, p50, p95) = score_stats(&atk_scores);
+        println!("\n P(Attack) for TRUE attacks  : mean={m:.4}  p50={p50:.4}  p95={p95:.4}");
+    }
+    if !norm_scores.is_empty() {
+        let (m, p50, p95) = score_stats(&norm_scores);
+        println!(" P(Attack) for TRUE normal   : mean={m:.4}  p50={p50:.4}  p95={p95:.4}");
+    }
 
-    println!("\n Binary (Normal vs Attack)");
-    println!(
-        "   accuracy={bin_acc:.4}  attack  prec={atk_p:.4}  recall={atk_r:.4}  f1={atk_f1:.4}"
-    );
-    println!("   TP={tp}  FP={fp}  FN={fn_}  TN={tn}");
-
-    // Top confusion pairs
-    let n_errors = y_true.iter().zip(y_pred.iter()).filter(|(t, p)| t != p).count();
-    if n_errors > 0 {
-        let mut pairs: HashMap<(i64, i64), usize> = HashMap::new();
-        for (&t, &p) in y_true.iter().zip(y_pred.iter()) {
-            if t != p {
-                *pairs.entry((t, p)).or_insert(0) += 1;
-            }
+    // False negatives sample — most dangerous misses
+    let fn_samples: Vec<_> = y_true.iter().zip(preds.iter()).zip(scores.iter())
+        .zip(rows.iter())
+        .filter(|(((&t, &p), _), _)| t == 1 && p == 0)
+        .map(|(((_, _), &s), r)| (s, r.text.as_str()))
+        .collect();
+    if !fn_samples.is_empty() {
+        let show_n = fn_samples.len().min(3);
+        println!("\n False Negatives (attack missed, showing {show_n}/{}):", fn_samples.len());
+        let mut sorted = fn_samples;
+        sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for (score, text) in sorted.iter().take(show_n) {
+            let first_line = text.lines().next().unwrap_or("");
+            println!("   score={score:.4}  {}", &first_line[..first_line.len().min(100)]);
         }
-        let mut sorted: Vec<_> = pairs.iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(a.1));
-        println!("\n Top confusion pairs ({n_errors} errors / {total}):");
-        for ((t, p), cnt) in sorted.iter().take(8) {
-            let tn = idx2name.get(t).map(|s| s.as_str()).unwrap_or("?");
-            let pn = idx2name.get(p).map(|s| s.as_str()).unwrap_or("?");
-            println!("   {tn:<44} -> {pn:<44} {cnt:>5}");
+    }
+
+    // False positives sample — legitimate traffic blocked
+    let fp_samples: Vec<_> = y_true.iter().zip(preds.iter()).zip(scores.iter())
+        .zip(rows.iter())
+        .filter(|(((&t, &p), _), _)| t == 0 && p == 1)
+        .map(|(((_, _), &s), r)| (s, r.text.as_str()))
+        .collect();
+    if !fp_samples.is_empty() {
+        let show_n = fp_samples.len().min(3);
+        println!("\n False Positives (legitimate blocked, showing {show_n}/{}):", fp_samples.len());
+        let mut sorted = fp_samples;
+        sorted.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        for (score, text) in sorted.iter().take(show_n) {
+            let first_line = text.lines().next().unwrap_or("");
+            println!("   score={score:.4}  {}", &first_line[..first_line.len().min(100)]);
         }
     }
 
     Some(SourceResult {
         name: name.to_string(),
         samples: total,
-        multi_acc,
-        binary_acc: bin_acc,
-        attack_prec: atk_p,
-        attack_rec: atk_r,
-        attack_f1: atk_f1,
+        accuracy: m.accuracy(),
+        precision: m.precision(),
+        recall: m.recall(),
+        f1: m.f1(),
+        fn_count: m.fn_,
+        fp_count: m.fp,
     })
 }
 
 // ─── Benchmark ────────────────────────────────────────────────────────────────
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
-    if sorted.is_empty() {
-        return 0.0;
-    }
+    if sorted.is_empty() { return 0.0; }
     let idx = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
     sorted[idx.min(sorted.len() - 1)]
 }
@@ -326,21 +321,12 @@ fn benchmark(session: &mut Session, requests: &[String]) {
     let n = strs.len();
 
     for &batch in &[1usize, 10, 100, 1_000, 10_000] {
-        if batch > n {
-            continue;
-        }
+        if batch > n { continue; }
         let chunk: Vec<&str> = (0..batch).map(|i| strs[(i * n / batch) % n]).collect();
 
-        for _ in 0..5 {
-            predict_batch(session, &chunk);
-        }
-        let reps = match batch {
-            1 => 2_000,
-            10 => 1_000,
-            100 => 500,
-            1_000 => 100,
-            _ => 20,
-        };
+        for _ in 0..5 { predict_batch(session, &chunk); }
+
+        let reps = match batch { 1 => 2_000, 10 => 1_000, 100 => 500, 1_000 => 100, _ => 20 };
         let mut latencies: Vec<f64> = Vec::with_capacity(reps);
         for _ in 0..reps {
             let t = Instant::now();
@@ -351,22 +337,14 @@ fn benchmark(session: &mut Session, requests: &[String]) {
         let mean_ms = latencies.iter().sum::<f64>() / reps as f64;
         let rps = 1_000.0 / mean_ms;
         latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let (p50, p95, p99, max) = (
-            percentile(&latencies, 50.0),
-            percentile(&latencies, 95.0),
-            percentile(&latencies, 99.0),
-            *latencies.last().unwrap_or(&0.0),
-        );
         let f = |v: f64| format!("{:.3}ms", v);
         println!(
             "  {:>6}  {:>10.0}  {:>9}  {:>9}  {:>9}  {:>9}  {:>9}",
-            batch,
-            rps,
-            f(mean_ms),
-            f(p50),
-            f(p95),
-            f(p99),
-            f(max)
+            batch, rps, f(mean_ms),
+            f(percentile(&latencies, 50.0)),
+            f(percentile(&latencies, 95.0)),
+            f(percentile(&latencies, 99.0)),
+            f(*latencies.last().unwrap_or(&0.0)),
         );
     }
 }
@@ -376,23 +354,31 @@ fn benchmark(session: &mut Session, requests: &[String]) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let model_path = "waf_model.onnx";
-    let label_map_path = "label_map.json";
-    let eval_dir = "eval_data";
-    let unified_csv = "dataset_unified.csv";
+    // Support running from either ml_waf/ or ml_waf/waf_infer/
+    let root = if std::path::Path::new("waf_model.onnx").exists() {
+        "."
+    } else {
+        ".."
+    };
+    let model_path  = format!("{root}/waf_model.onnx");
+    let eval_dir    = format!("{root}/eval_data");
+    let unified_csv = format!("{root}/dataset_unified.csv");
+    let model_path  = model_path.as_str();
+    let eval_dir    = eval_dir.as_str();
+    let unified_csv = unified_csv.as_str();
 
     let batch_size: usize = get_flag(&args, "--batch-size")
         .and_then(|s| s.parse().ok())
         .unwrap_or(8192);
-    let do_bench = args.iter().any(|a| a == "--bench");
+    let do_bench  = args.iter().any(|a| a == "--bench");
     let bench_only = args.iter().any(|a| a == "--bench-only");
 
-    let all_sources = ["legitimate", "malicious", "srbh", "csic", "huggingface", "modern"];
+    let all_sources     = ["legitimate", "malicious", "srbh", "csic", "huggingface", "modern"];
     let default_sources = ["legitimate", "malicious", "modern"];
     let sources: Vec<String> = match get_flag(&args, "--source").as_deref() {
         Some("all") => all_sources.iter().map(|s| s.to_string()).collect(),
-        Some(s) => s.split(',').map(|x| x.trim().to_string()).collect(),
-        None => default_sources.iter().map(|s| s.to_string()).collect(),
+        Some(s)     => s.split(',').map(|x| x.trim().to_string()).collect(),
+        None        => default_sources.iter().map(|s| s.to_string()).collect(),
     };
 
     println!("Loading ONNX model : {model_path}");
@@ -401,17 +387,9 @@ fn main() {
         .commit_from_file(model_path)
         .expect("failed to load ONNX model — run train.py first");
 
-    let (idx2name, name2idx) = load_label_map(label_map_path);
-    let normal_idx = *name2idx.get("Normal").expect("Normal not in label_map");
-
-    let mut class_list: Vec<_> = idx2name.iter().collect();
-    class_list.sort_by_key(|(&k, _)| k);
-    println!(
-        "Classes ({})        : [{}]",
-        idx2name.len(),
-        class_list.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", ")
-    );
+    println!("Classifier         : binary  (Normal=0 | Attack=1)");
     println!("Batch size         : {batch_size}");
+    println!("Score              : P(Attack) — higher = more likely attack");
 
     // ── Evaluation ────────────────────────────────────────────────────────────
     let mut results: Vec<SourceResult> = vec![];
@@ -421,15 +399,7 @@ fn main() {
             let csv_path = format!("{eval_dir}/{src}.csv");
             println!("\nLoading {src} from {csv_path} ...");
             let rows = load_csv(&csv_path);
-            if let Some(r) = evaluate_source(
-                &mut session,
-                src,
-                &rows,
-                &idx2name,
-                &name2idx,
-                normal_idx,
-                batch_size,
-            ) {
+            if let Some(r) = evaluate_source(&mut session, src, &rows, batch_size) {
                 results.push(r);
             }
         }
@@ -438,20 +408,23 @@ fn main() {
     // ── Summary table ─────────────────────────────────────────────────────────
     if results.len() > 1 {
         println!("\n{}", "=".repeat(80));
-        println!(" SUMMARY");
+        println!(" SUMMARY  (binary: Normal=0 / Attack=1)");
         println!("{}", "=".repeat(80));
         println!(
-            "  {:<14} {:>8}  {:>9}  {:>7}  {:>6}  {:>6}  {:>7}",
-            "Source", "Samples", "Multi-Acc", "Bin-Acc", "Atk-P", "Atk-R", "Atk-F1"
+            "  {:<14} {:>8}  {:>8}  {:>9}  {:>7}  {:>7}  {:>5}  {:>5}",
+            "Source", "Samples", "Accuracy", "Precision", "Recall", "F1", "FN", "FP"
         );
-        println!("  {}", "-".repeat(72));
+        println!("  {}", "-".repeat(76));
         for r in &results {
             println!(
-                "  {:<14} {:>8}  {:>9.4}  {:>7.4}  {:>6.4}  {:>6.4}  {:>7.4}",
-                r.name, r.samples, r.multi_acc, r.binary_acc,
-                r.attack_prec, r.attack_rec, r.attack_f1
+                "  {:<14} {:>8}  {:>8.4}  {:>9.4}  {:>7.4}  {:>7.4}  {:>5}  {:>5}",
+                r.name, r.samples, r.accuracy, r.precision, r.recall, r.f1,
+                r.fn_count, r.fp_count
             );
         }
+        println!();
+        println!("  FN = False Negative (attack that slipped through)");
+        println!("  FP = False Positive (legitimate request blocked)");
     }
 
     // ── Benchmark ─────────────────────────────────────────────────────────────

@@ -1,12 +1,12 @@
-/// Single-request WAF inference tool.
-///
-/// Usage:
-///   cargo run --bin predict                        # run hardcoded examples
-///   cargo run --bin predict -- "GET /login?user=admin' OR 1=1--"
-///   cargo run --bin predict -- "POST /api/upload" "username=test&pass=hello"
-///
-/// Request format: METHOD /path?query [body]
-/// All three parts are space-separated, matching how extract_features() parses them.
+//! Single-request WAF inference — binary classifier (Normal / Attack) with score.
+//!
+//! Usage:
+//!   cargo run --bin predict                         # run built-in examples
+//!   cargo run --bin predict -- "GET /path?q=test"   # single-line request
+//!   cargo run --bin predict -- $'GET /path\nUser-Agent: sqlmap\nCookie: id=1'
+//!
+//! Multi-line requests: use \n to separate the request line from headers.
+//! Output: verdict (Normal / Attack) + P(Attack) score + non-zero features.
 
 #[path = "../features.rs"]
 mod features;
@@ -14,93 +14,204 @@ mod features;
 use features::{FEATURE_NAMES, NUM_FEATURES, extract_features};
 use ndarray::Array2;
 use ort::{inputs, session::Session};
-use std::collections::HashMap;
 
-fn load_label_map(path: &str) -> HashMap<i64, String> {
-    let raw: HashMap<String, String> =
-        serde_json::from_str(&std::fs::read_to_string(path).expect("cannot read label_map.json"))
-            .expect("invalid JSON");
-    raw.iter().map(|(k, v)| (k.parse::<i64>().unwrap(), v.clone())).collect()
-}
+// ─── Inference ────────────────────────────────────────────────────────────────
 
-fn predict_one(session: &mut Session, request: &str) -> i64 {
+/// Returns (prob_attack, verdict_str).
+///
+/// ONNX binary model outputs:
+///   "label"         → int64  (N,)    — 0=Normal, 1=Attack
+///   "probabilities" → float32 (N, 2) — [P(Normal), P(Attack)]
+fn predict(session: &mut Session, request: &str) -> (f32, &'static str) {
     let feat = extract_features(request);
     let mut mat = Array2::<f32>::zeros((1, NUM_FEATURES));
     for (j, &v) in feat.iter().enumerate() {
         mat[[0, j]] = v;
     }
-    let input = ort::value::Tensor::from_array(mat).expect("tensor creation failed");
-    let outputs = session.run(inputs!["X" => input]).expect("inference failed");
-    let (_, labels) = outputs["label"]
-        .try_extract_tensor::<i64>()
-        .expect("extract label tensor failed");
-    labels[0]
+    let input = ort::value::Tensor::from_array(mat).expect("tensor");
+    let outputs = session.run(inputs!["X" => input]).expect("inference");
+
+    // probabilities shape is (1, 2): [P(Normal), P(Attack)]
+    let (_, probs) = outputs["probabilities"]
+        .try_extract_tensor::<f32>()
+        .expect("extract probabilities");
+
+    // Handle both (1,2) and (1,1) output shapes defensively.
+    let prob_attack = if probs.len() >= 2 { probs[1] } else { probs[0] };
+    let verdict = if prob_attack >= 0.5 { "Attack" } else { "Normal" };
+    (prob_attack, verdict)
 }
 
-fn print_features(request: &str) {
+// ─── Display ──────────────────────────────────────────────────────────────────
+
+fn show(session: &mut Session, hint: &str, request: &str) {
+    let divider = "─".repeat(68);
+    println!();
+    println!("┌─ [{hint}]");
+
+    // Print request lines
+    let lines: Vec<&str> = request.lines().collect();
+    println!("│  Request  : {}", lines[0]);
+    for hdr in &lines[1..] {
+        println!("│             {hdr}");
+    }
+    println!("│  {divider}");
+
+    let (prob_attack, verdict) = predict(session, request);
+    let prob_normal = 1.0 - prob_attack;
+
+    // Visual risk bar  ████░░░░░░
+    let filled = (prob_attack * 20.0).round() as usize;
+    let bar: String = "█".repeat(filled) + &"░".repeat(20 - filled);
+
+    let risk_label = match (prob_attack * 100.0) as u32 {
+        0..=19   => "LOW",
+        20..=49  => "MEDIUM-LOW",
+        50..=74  => "MEDIUM-HIGH",
+        75..=89  => "HIGH",
+        _        => "CRITICAL",
+    };
+
+    println!("│  Result   : {verdict}");
+    println!("│  P(Attack): {prob_attack:.4}   P(Normal): {prob_normal:.4}");
+    println!("│  Risk     : [{bar}] {risk_label}");
+
+    // Non-zero features
     let feat = extract_features(request);
-    println!("  Features:");
-    for (name, &val) in FEATURE_NAMES.iter().zip(feat.iter()) {
-        if val != 0.0 {
-            println!("    {:<28} = {}", name, val);
+    let nonzero: Vec<_> = FEATURE_NAMES
+        .iter()
+        .zip(feat.iter())
+        .filter(|(_, &v)| v != 0.0)
+        .collect();
+    if !nonzero.is_empty() {
+        println!("│  Features :");
+        for (name, val) in &nonzero {
+            println!("│    {:<28} = {val}", name);
         }
     }
+    println!("└─");
 }
 
-fn run(session: &mut Session, idx2name: &HashMap<i64, String>, request: &str) {
-    println!("\nRequest : {:?}", request);
-    let label_idx = predict_one(session, request);
-    let label = idx2name.get(&label_idx).map(|s| s.as_str()).unwrap_or("Unknown");
-    println!("Result  : {} (class {})", label, label_idx);
-    print_features(request);
-}
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let model_path = "waf_model.onnx";
-    let label_map_path = "label_map.json";
+    // When running from the waf_infer directory, model sits one level up.
+    let model_path = if std::path::Path::new("waf_model.onnx").exists() {
+        "waf_model.onnx"
+    } else {
+        "../waf_model.onnx"
+    };
 
-    println!("Loading model: {model_path}");
+    println!("Loading model : {model_path}");
     let mut session = Session::builder()
         .expect("ORT session builder failed")
         .commit_from_file(model_path)
-        .expect("failed to load ONNX model");
+        .expect("failed to load ONNX model — run: python train.py");
 
-    let idx2name = load_label_map(label_map_path);
-    println!(
-        "Classes: {}",
-        {
-            let mut v: Vec<_> = idx2name.iter().collect();
-            v.sort_by_key(|(&k, _)| k);
-            v.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", ")
-        }
-    );
-    println!("{}", "=".repeat(72));
+    println!("Classifier    : binary  (Normal = 0 | Attack = 1)");
+    println!("Score         : P(Attack) — higher means more likely an attack");
+    println!("{}", "═".repeat(70));
 
-    // ── CLI mode: use argument(s) as the request string ───────────────────────
-    let cli_args: Vec<String> = std::env::args().skip(1).collect();
-    if !cli_args.is_empty() {
-        let request = cli_args.join(" ");
-        run(&mut session, &idx2name, &request);
+    // ── CLI mode ─────────────────────────────────────────────────────────────
+    let cli: Vec<String> = std::env::args().skip(1).collect();
+    if !cli.is_empty() {
+        // Allow \n literal to embed headers: "GET /path\nUser-Agent: sqlmap"
+        let request = cli.join(" ").replace("\\n", "\n");
+        show(&mut session, "CLI", &request);
         return;
     }
 
-    // ── Hardcoded examples ────────────────────────────────────────────────────
+    // ── Built-in examples ────────────────────────────────────────────────────
     let examples: &[(&str, &str)] = &[
-        // (label hint, request string)
-        ("Normal",         "GET /index.html HTTP/1.1"),
-        ("Normal",         "POST /api/login HTTP/1.1 username=alice&password=secret123"),
-        ("SQLi",           "GET /search?q=1'+OR+'1'='1 HTTP/1.1"),
-        ("SQLi",           "GET /user?id=1 UNION SELECT username,password FROM users-- HTTP/1.1"),
-        ("XSS",            "GET /page?name=<script>alert(document.cookie)</script> HTTP/1.1"),
-        ("XSS",            "POST /comment HTTP/1.1 body=<img src=x onerror=alert(1)>"),
-        ("Path Traversal", "GET /files?path=../../../../etc/passwd HTTP/1.1"),
-        ("Command Inj",    "GET /ping?host=127.0.0.1;cat /etc/shadow HTTP/1.1"),
-        ("SSRF",           "GET /fetch?url=http://169.254.169.254/latest/meta-data/ HTTP/1.1"),
-        ("Scanner",        "GET /admin HTTP/1.1 User-Agent: sqlmap/1.7"),
+        // ── Legitimate traffic ──────────────────────────────────────────────
+        (
+            "Normal — static file",
+            "GET /static/css/main.min.css\n\
+             User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0\n\
+             Referer: https://example.com/",
+        ),
+        (
+            "Normal — JSON API",
+            "POST /api/v1/login {\"username\":\"alice\",\"password\":\"s3cr3t!\"}\n\
+             Content-Type: application/json\n\
+             User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/126.0",
+        ),
+        (
+            "Normal — search with query params",
+            "GET /search?q=laptop+bag&category=electronics&page=2\n\
+             User-Agent: Mozilla/5.0 (X11; Linux x86_64) Firefox/115.0\n\
+             Referer: https://shop.example.com/",
+        ),
+        (
+            "Normal — authenticated REST call",
+            "PUT /api/v2/users/42 {\"name\":\"Bob\",\"email\":\"bob@example.com\"}\n\
+             Content-Type: application/json\n\
+             Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYm9iIn0.sig\n\
+             User-Agent: Mozilla/5.0 Chrome/126.0",
+        ),
+
+        // ── SQL Injection ───────────────────────────────────────────────────
+        (
+            "SQLi — UNION SELECT",
+            "GET /user?id=1'+UNION+SELECT+username,password+FROM+users--\n\
+             User-Agent: Mozilla/5.0 Firefox/115.0",
+        ),
+        (
+            "SQLi — scanner User-Agent",
+            "GET /index.php?id=1\n\
+             User-Agent: sqlmap/1.7.8#stable (https://sqlmap.org)\n\
+             Cookie: session=abc123",
+        ),
+        (
+            "SQLi — injection in Cookie",
+            "GET /profile\n\
+             User-Agent: Mozilla/5.0 Chrome/126.0\n\
+             Cookie: user_id=1'; DROP TABLE users; --",
+        ),
+
+        // ── XSS ─────────────────────────────────────────────────────────────
+        (
+            "XSS — script tag in query",
+            "GET /page?name=<script>alert(document.cookie)</script>\n\
+             User-Agent: Mozilla/5.0 Chrome/126.0",
+        ),
+        (
+            "XSS — event handler in JSON body",
+            "POST /comment {\"text\":\"<img src=x onerror=alert(1)>\"}\n\
+             Content-Type: application/json\n\
+             User-Agent: Mozilla/5.0 Firefox/115.0",
+        ),
+
+        // ── Path Traversal ───────────────────────────────────────────────────
+        (
+            "Path Traversal — /etc/passwd",
+            "GET /download?file=../../../../etc/passwd\n\
+             User-Agent: Mozilla/5.0 Chrome/126.0",
+        ),
+
+        // ── Command Injection ────────────────────────────────────────────────
+        (
+            "Command Injection — shell pipe",
+            "GET /ping?host=127.0.0.1;cat+/etc/shadow\n\
+             User-Agent: Mozilla/5.0 Chrome/126.0",
+        ),
+
+        // ── SSRF ─────────────────────────────────────────────────────────────
+        (
+            "SSRF — AWS metadata",
+            "GET /proxy?url=http://169.254.169.254/latest/meta-data/iam/\n\
+             User-Agent: Mozilla/5.0 Chrome/126.0",
+        ),
+
+        // ── Scanner ──────────────────────────────────────────────────────────
+        (
+            "Scanner — Nikto User-Agent",
+            "GET /admin/config.php\n\
+             User-Agent: Mozilla/5.00 (Nikto/2.1.6) (Evasions:None) (Test:map_codes)",
+        ),
     ];
 
     for (hint, req) in examples {
-        println!("\n[Expected: {}]", hint);
-        run(&mut session, &idx2name, req);
+        show(&mut session, hint, req);
     }
 }
