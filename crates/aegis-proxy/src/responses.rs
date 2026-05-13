@@ -100,7 +100,14 @@ pub(crate) fn dashboard_response(
                 .status(200)
                 .header("content-type", asset.content_type)
                 .header("etag", format!("\"{}\"", asset.etag))
-                .header("cache-control", "public, max-age=3600, must-revalidate"),
+                // 2026-05-11 post-QA HIGH-01 — per-asset
+                // cache-control. App-bundled assets (app.js,
+                // index.html, aegis.css, i18n.json) ride on
+                // `no-cache, must-revalidate`; vendored React UMD
+                // bundles keep the 1-hour long cache. See
+                // `aegis_control::dashboard::assets::EmbeddedAsset.
+                // cache_control` for the policy table.
+                .header("cache-control", asset.cache_control),
         )
         .body(Full::new(Bytes::from_static(asset.bytes)))
         .unwrap(),

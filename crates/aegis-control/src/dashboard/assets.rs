@@ -24,7 +24,34 @@ pub struct EmbeddedAsset {
     pub content_type: &'static str,
     /// Strong ETag — lowercase hex of the BLAKE3 digest of `bytes`.
     pub etag: &'static str,
+    /// Cache-Control header value to serve with this asset.
+    ///
+    /// **2026-05-11 (post-QA HIGH-01).** App-bundled assets that
+    /// change on every dashboard rebuild (`app.js`, `index.html`,
+    /// `aegis.css`, `i18n.json`) get `no-cache, must-revalidate`
+    /// — browser asks every time but the ETag/304 short-circuits
+    /// to a 304 Not Modified when the bundle hasn't changed, so
+    /// bandwidth cost is unchanged. The shipping QA found the
+    /// previous blanket `public, max-age=3600` masked a freshly-
+    /// rebuilt dashboard for up to an hour after each rebuild.
+    ///
+    /// Third-party UMD bundles that ship unchanged across
+    /// dashboard rebuilds (`react.min.js`, `react-dom.min.js`)
+    /// keep the long cache — their content doesn't churn so
+    /// there's no staleness risk.
+    pub cache_control: &'static str,
 }
+
+/// Cache-Control for assets that rebuild with every dashboard
+/// change. Browser revalidates on every request; ETag/304
+/// short-circuits to 0 bytes when content matches.
+pub const ASSET_CACHE_NO_CACHE: &str = "no-cache, must-revalidate";
+
+/// Cache-Control for vendored third-party assets whose content
+/// is byte-stable across dashboard rebuilds (React UMD bundles).
+/// The 1-hour TTL bounds the staleness window for accidental
+/// version bumps without making every page nav re-fetch ~150 KB.
+pub const ASSET_CACHE_LONG: &str = "public, max-age=3600, must-revalidate";
 
 const HTML: &str = "text/html; charset=utf-8";
 const JS: &str = "application/javascript; charset=utf-8";
@@ -32,15 +59,17 @@ const CSS: &str = "text/css; charset=utf-8";
 const SVG: &str = "image/svg+xml";
 const JSON: &str = "application/json; charset=utf-8";
 
-/// Build a `(path, &'static bytes, content_type)` triple from a path
-/// literal under `crates/aegis-control/assets/dashboard/`. Path is
-/// relative to this source file.
+/// Build a `(path, &'static bytes, content_type, cache_control)`
+/// tuple from a path literal under
+/// `crates/aegis-control/assets/dashboard/`. Path is relative to
+/// this source file.
 macro_rules! embed {
-    ($path:literal, $ct:expr) => {
+    ($path:literal, $ct:expr, $cc:expr) => {
         (
             $path,
             include_bytes!(concat!("../../assets/dashboard/", $path)) as &[u8],
             $ct,
+            $cc,
         )
     };
 }
@@ -51,20 +80,27 @@ macro_rules! embed {
 /// pre-compiled `app.js` produced by
 /// `crates/aegis-control/assets/dashboard/build.sh`; the source
 /// JSX lives under `assets/dashboard/src/`.
-const RAW: &[(&str, &[u8], &str)] = &[
-    embed!("index.html", HTML),
-    embed!("app.js", JS),
-    embed!("aegis.css", CSS),
-    embed!("react.min.js", JS),
-    embed!("react-dom.min.js", JS),
-    embed!("i18n.json", JSON),
+///
+/// **Cache policy (per-asset, post-2026-05-11 QA HIGH-01).** The
+/// fourth column picks `ASSET_CACHE_NO_CACHE` for assets that
+/// rebuild on every dashboard change (`app.js`, `index.html`,
+/// `aegis.css`, `i18n.json`) and `ASSET_CACHE_LONG` for vendor
+/// UMD bundles that ship unchanged across dashboard rebuilds
+/// (`react.min.js`, `react-dom.min.js`).
+const RAW: &[(&str, &[u8], &str, &str)] = &[
+    embed!("index.html",      HTML, ASSET_CACHE_NO_CACHE),
+    embed!("app.js",          JS,   ASSET_CACHE_NO_CACHE),
+    embed!("aegis.css",       CSS,  ASSET_CACHE_NO_CACHE),
+    embed!("react.min.js",    JS,   ASSET_CACHE_LONG),
+    embed!("react-dom.min.js",JS,   ASSET_CACHE_LONG),
+    embed!("i18n.json",       JSON, ASSET_CACHE_NO_CACHE),
 ];
 
 static ASSETS: OnceLock<HashMap<&'static str, EmbeddedAsset>> = OnceLock::new();
 
 fn build_table() -> HashMap<&'static str, EmbeddedAsset> {
     RAW.iter()
-        .map(|(path, bytes, content_type)| {
+        .map(|(path, bytes, content_type, cache_control)| {
             // BLAKE3 to_hex() yields lowercase hex; leaking the boxed
             // string promotes the ETag to a 'static lifetime so it
             // satisfies `EmbeddedAsset::etag: &'static str`. Leaks are
@@ -77,6 +113,7 @@ fn build_table() -> HashMap<&'static str, EmbeddedAsset> {
                     bytes,
                     content_type,
                     etag,
+                    cache_control,
                 },
             )
         })
@@ -139,6 +176,7 @@ fn read_asset_from_disk(
         bytes,
         content_type: embedded.content_type,
         etag,
+        cache_control: embedded.cache_control,
     })
 }
 
@@ -192,6 +230,39 @@ mod tests {
             let expected = blake3::hash(asset.bytes).to_hex().to_string();
             assert_eq!(asset.etag, expected, "etag mismatch for {path:?}");
         }
+    }
+
+    #[test]
+    fn cache_control_per_asset_matches_policy() {
+        // 2026-05-11 post-QA HIGH-01 — app-bundled assets must
+        // serve `no-cache, must-revalidate` so a rebundle reaches
+        // operators on next nav. Vendor UMD bundles keep the
+        // 1-hour public cache.
+        let no_cache: &[&str] = &["index.html", "app.js", "aegis.css", "i18n.json"];
+        let long_cache: &[&str] = &["react.min.js", "react-dom.min.js"];
+        for path in no_cache {
+            let asset = lookup(path).unwrap();
+            assert_eq!(
+                asset.cache_control, ASSET_CACHE_NO_CACHE,
+                "{path:?} must ship with `no-cache, must-revalidate`",
+            );
+        }
+        for path in long_cache {
+            let asset = lookup(path).unwrap();
+            assert_eq!(
+                asset.cache_control, ASSET_CACHE_LONG,
+                "{path:?} must ship with the long cache header",
+            );
+        }
+    }
+
+    #[test]
+    fn cache_control_policies_disjoint() {
+        // Belt-and-braces against a typo that picks the long
+        // cache for a churning asset.
+        assert_ne!(ASSET_CACHE_NO_CACHE, ASSET_CACHE_LONG);
+        assert!(ASSET_CACHE_NO_CACHE.contains("no-cache"));
+        assert!(ASSET_CACHE_LONG.contains("max-age"));
     }
 
     #[test]

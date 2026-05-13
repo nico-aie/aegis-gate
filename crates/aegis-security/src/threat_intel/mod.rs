@@ -3,6 +3,8 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use ipnet::IpNet;
+
 #[cfg(feature = "taxii")]
 pub mod taxii;
 
@@ -60,8 +62,21 @@ pub struct FeedConfig {
 
 /// Threat intel store.
 pub struct ThreatIntelStore {
-    /// IP indicators keyed by IP string.
+    /// Exact-match IP indicators keyed by IP string. Only used for
+    /// `IndicatorType::Ip` (single-host) feeds.
     ip_indicators: Mutex<HashMap<String, Indicator>>,
+    /// 2026-05-11 PR #8 (SEC-18) — CIDR indicators kept in a
+    /// separate parsed-network list. Previously these lived in
+    /// `ip_indicators` keyed by the original CIDR string (e.g.
+    /// `"10.0.0.0/8"`), and `check_ip(10.5.5.5)` looked up
+    /// `"10.5.5.5"` — so CIDR feeds never matched anything
+    /// outside the exact-string case. Now each CIDR entry is
+    /// parsed once at ingest time and `check_ip` does a linear
+    /// scan with `IpNet::contains`. Linear is fine for the
+    /// expected feed sizes (low-thousands of nets); a CIDR-tree
+    /// can replace this if we ever ingest BGP-table-scale
+    /// blocklists.
+    cidr_indicators: Mutex<Vec<(IpNet, Indicator)>>,
     /// Domain indicators.
     domain_indicators: Mutex<HashMap<String, Indicator>>,
     /// Local override list (always wins).
@@ -96,6 +111,7 @@ impl ThreatIntelStore {
     pub fn new(max_indicators: usize) -> Self {
         Self {
             ip_indicators: Mutex::new(HashMap::new()),
+            cidr_indicators: Mutex::new(Vec::new()),
             domain_indicators: Mutex::new(HashMap::new()),
             local_overrides: Mutex::new(HashMap::new()),
             max_indicators,
@@ -110,12 +126,35 @@ impl ThreatIntelStore {
     /// Ingest an indicator from a feed.
     pub fn ingest(&self, indicator: Indicator) {
         match indicator.indicator_type {
-            IndicatorType::Ip | IndicatorType::Cidr => {
+            IndicatorType::Ip => {
                 let mut map = self.ip_indicators.lock().unwrap();
                 if map.len() >= self.max_indicators {
                     evict_expired(&mut map);
                 }
                 map.insert(indicator.value.clone(), indicator);
+            }
+            IndicatorType::Cidr => {
+                // SEC-18 — parse the CIDR exactly once at ingest
+                // time. Malformed entries are dropped (with a
+                // warning) so we don't pay re-parse cost on the
+                // hot `check_ip` path.
+                match indicator.value.parse::<IpNet>() {
+                    Ok(net) => {
+                        let mut vec = self.cidr_indicators.lock().unwrap();
+                        if vec.len() >= self.max_indicators {
+                            vec.retain(|(_, ind)| ind.expires_at > Instant::now());
+                        }
+                        vec.push((net, indicator));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            value = %indicator.value,
+                            feed_id = %indicator.feed_id,
+                            error = %e,
+                            "threat_intel: dropping malformed CIDR indicator",
+                        );
+                    }
+                }
             }
             IndicatorType::Domain | IndicatorType::Url => {
                 let mut map = self.domain_indicators.lock().unwrap();
@@ -157,9 +196,30 @@ impl ThreatIntelStore {
             };
         }
 
-        let map = self.ip_indicators.lock().unwrap();
-        if let Some(ind) = map.get(&ip_str) {
-            if ind.expires_at > Instant::now() {
+        let now = Instant::now();
+        // Exact-host match first — cheaper than the CIDR scan.
+        {
+            let map = self.ip_indicators.lock().unwrap();
+            if let Some(ind) = map.get(&ip_str) {
+                if ind.expires_at > now {
+                    let action = severity_to_action(ind.severity, ind.confidence);
+                    return Some(ThreatMatch {
+                        indicator: ind.clone(),
+                        action,
+                    });
+                }
+            }
+        }
+        // SEC-18 — linear scan of CIDR indicators. `IpNet::contains`
+        // does the prefix-bit math for v4 + v6 in one call. Returns
+        // the *first* matching entry; the contract doesn't specify
+        // an ordering preference so feed order wins.
+        let vec = self.cidr_indicators.lock().unwrap();
+        for (net, ind) in vec.iter() {
+            if ind.expires_at <= now {
+                continue;
+            }
+            if net.contains(&ip) {
                 let action = severity_to_action(ind.severity, ind.confidence);
                 return Some(ThreatMatch {
                     indicator: ind.clone(),
@@ -208,12 +268,14 @@ impl ThreatIntelStore {
     /// Number of stored indicators.
     pub fn indicator_count(&self) -> usize {
         self.ip_indicators.lock().unwrap().len()
+            + self.cidr_indicators.lock().unwrap().len()
             + self.domain_indicators.lock().unwrap().len()
     }
 
     /// Clear all indicators.
     pub fn clear(&self) {
         self.ip_indicators.lock().unwrap().clear();
+        self.cidr_indicators.lock().unwrap().clear();
         self.domain_indicators.lock().unwrap().clear();
     }
 }
@@ -389,6 +451,60 @@ not-an-ip
         let store = ThreatIntelStore::default();
         store.ingest(make_indicator("1.1.1.1", "f", Severity::Low, 50));
         store.clear();
+        assert_eq!(store.indicator_count(), 0);
+    }
+
+    #[test]
+    fn cidr_indicator_matches_in_range() {
+        // SEC-18 — a /24 CIDR indicator should match any IP in the
+        // covered range, not just the exact `10.0.0.0` string.
+        let store = ThreatIntelStore::default();
+        store.ingest(Indicator {
+            value: "10.0.0.0/24".into(),
+            indicator_type: IndicatorType::Cidr,
+            confidence: 90,
+            severity: Severity::High,
+            feed_id: "cidr-feed".into(),
+            expires_at: Instant::now() + Duration::from_secs(3600),
+        });
+        // First-in-range hit.
+        let m = store.check_ip("10.0.0.1".parse().unwrap()).unwrap();
+        assert_eq!(m.action, ThreatAction::Block);
+        assert_eq!(m.indicator.feed_id, "cidr-feed");
+        // Mid-range hit.
+        let m = store.check_ip("10.0.0.128".parse().unwrap()).unwrap();
+        assert_eq!(m.indicator.feed_id, "cidr-feed");
+        // Outside the range — no match.
+        assert!(store.check_ip("10.0.1.1".parse().unwrap()).is_none());
+    }
+
+    #[test]
+    fn cidr_indicator_handles_ipv6() {
+        let store = ThreatIntelStore::default();
+        store.ingest(Indicator {
+            value: "2001:db8::/32".into(),
+            indicator_type: IndicatorType::Cidr,
+            confidence: 80,
+            severity: Severity::Medium,
+            feed_id: "v6-feed".into(),
+            expires_at: Instant::now() + Duration::from_secs(3600),
+        });
+        let m = store.check_ip("2001:db8:1::1".parse().unwrap()).unwrap();
+        assert_eq!(m.indicator.feed_id, "v6-feed");
+        assert!(store.check_ip("2001:db9::1".parse().unwrap()).is_none());
+    }
+
+    #[test]
+    fn malformed_cidr_dropped_without_panic() {
+        let store = ThreatIntelStore::default();
+        store.ingest(Indicator {
+            value: "not-a-cidr".into(),
+            indicator_type: IndicatorType::Cidr,
+            confidence: 90,
+            severity: Severity::High,
+            feed_id: "broken".into(),
+            expires_at: Instant::now() + Duration::from_secs(3600),
+        });
         assert_eq!(store.indicator_count(), 0);
     }
 

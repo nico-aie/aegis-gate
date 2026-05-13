@@ -158,6 +158,16 @@ pub struct DashboardServices {
     /// "feature not present" banner instead of a misleading 500.
     pub ai_toggle:
         Option<std::sync::Arc<dyn crate::api::ai_toggle::AiToggleWriter>>,
+    /// PR #7 (2026-05-11) — writer handle for the live
+    /// `Pipeline`'s `ResponseFilterConfig`. The bin crate stashes
+    /// the same `Arc<Pipeline>` instance the data plane reads
+    /// `on_body_frame` through; the audit-mutated
+    /// `PUT /api/response-filter` handler flips rungs via this
+    /// writer without bouncing the proxy. `None` for test bundles
+    /// that don't boot `aegis-bin` — the GET handler returns the
+    /// empty-state view with `wired: false`.
+    pub response_filter_writer:
+        Option<std::sync::Arc<dyn crate::api::response_filter::ResponseFilterWriter>>,
     /// MTLS-T6 — live per-identity sliding-window tracker. The
     /// `/api/mtls/connections` and `/api/mtls/failures`
     /// endpoints read snapshots from this. `None` for test
@@ -193,6 +203,14 @@ pub struct DashboardServices {
     /// `GET /api/analytics/latency/routes`.
     pub route_latency_hist:
         Option<std::sync::Arc<crate::metrics::route_latency::RouteLatencyHistogram>>,
+    /// P5 (2026-05-11) — per-route 60-second sliding-window
+    /// counter. Populated by the data plane on every resolved
+    /// route alongside `route_latency_hist`. Read by
+    /// `GET /api/analytics/route-activity`. Always `Some` once
+    /// `aegis-proxy::run` has constructed it; cheap to clone
+    /// (the inner `DashMap` is Arc-shared).
+    pub route_activity:
+        Option<crate::metrics::route_activity::RouteActivityWindow>,
     /// Per-detector evaluation-duration histogram. Same wiring
     /// pattern as `route_latency_hist`. `Some` once
     /// `aegis-proxy::run` has registered it; populated by the
@@ -476,6 +494,11 @@ impl DashboardServices {
                 // `ai` feature is on AND `cfg.ai.enabled` is
                 // true).
                 ai_toggle: None,
+                // PR #7 — wired by `aegis-bin` once the live
+                // `Pipeline` is built. Until then the GET handler
+                // returns `wired: false` so the dashboard renders
+                // the read-only empty state.
+                response_filter_writer: None,
                 // MTLS-T6 — wired by the proxy boot path. Until
                 // then `/api/mtls/connections` + `/api/mtls/failures`
                 // serve empty-state bodies.
@@ -488,6 +511,7 @@ impl DashboardServices {
                 // don't drive real requests so this stays None.
                 request_stage_hist: None,
                 route_latency_hist: None,
+                route_activity: None,
                 detector_latency_hist: None,
                 // Phase-3 incident overlay — empty at boot, fills
                 // as operators ack/snooze/resolve via the dashboard.
@@ -541,24 +565,21 @@ impl DashboardServices {
     }
 }
 
-/// Build a snapshot provider from a `WafConfig`. Reads pool names and
-/// member counts at *construction time* (closures clone the
-/// already-snapshot values) so changes to the live config aren't
-/// reflected — call `pool_snapshot_provider` again on hot reload.
+/// **Test / fallback** snapshot provider. Builds a static
+/// `PoolHealthSnapshot` from a `WafConfig` where every member
+/// reports healthy. Used by tests and as a stand-in when the
+/// production `PoolRegistry` isn't constructed yet.
 ///
-/// All pools report `healthy = total` (every member assumed up)
-/// until the cluster runtime lands real per-member health probes.
-/// This matches the in-process `Member::new()` default of
-/// `healthy: AtomicBool::new(true)` — the data plane *will* route
-/// to those members, so reporting "Down" in the dashboard while
-/// the proxy actually serves traffic was misleading.
+/// The **production binary path** does NOT use this — it
+/// installs `upstream_writer.live_snapshot()` from
+/// `aegis-proxy/src/accept.rs:135` (or equivalent), which reads
+/// each `Member`'s `is_healthy()` AtomicBool flipped by live
+/// health probes. See `aegis-proxy/src/upstream/registry.rs::
+/// live_snapshot` (LT-RUN-5 CORE-05 was a partial misread —
+/// production health is real).
 ///
-/// When a pool config carries a `health:` block, the live probe
-/// flips the member flag in `PoolRegistry`; this provider does
-/// not yet read those flags (carry-over noted in
-/// `Implement-Progress.md` — depends on membership-driven
-/// cluster runtime). Once that lands, replace the closure body
-/// with a live registry read.
+/// 2026-05-11 — doc clarified so the next audit doesn't
+/// re-raise the "fake health" claim against test-only code.
 pub fn pool_snapshot_provider(cfg: &aegis_core::config::WafConfig) -> PoolSnapshotProvider {
     let pools: Vec<PoolHealthEntry> = cfg
         .upstreams
@@ -877,7 +898,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detector_mask_compliance_clamp_blocks_disable() {
+    async fn detector_mask_compliance_clamp_is_a_no_op_while_lock_is_deferred() {
         let bus = AuditBus::new(8);
         let initial_mask = aegis_security::detectors::SharedDetectorMask::default();
         let (services, _drain) = DashboardServices::spawn_with_mask(
@@ -928,13 +949,19 @@ mod tests {
             },
         );
 
-        assert!(result.is_err());
-        // Mask unchanged — sqli still on.
-        assert!(initial_mask
-            .load()
-            .is_enabled(aegis_security::detectors::DetectorClass::Sqli));
-        // No chain entry on validation failure.
-        assert_eq!(services.mutate.chain_len(), 0);
+        // 2026-05-10 — compliance lock is deferred. The clamp returns
+        // Ok regardless of mode, so the mutation pipeline applies the
+        // proposed mask and writes an audit-chain entry. Restore the
+        // pre-deferral assertions (result.is_err(), sqli stays on,
+        // chain_len == 0) when COMPLIANCE_PINNED is repopulated.
+        assert!(result.is_ok());
+        assert!(
+            !initial_mask
+                .load()
+                .is_enabled(aegis_security::detectors::DetectorClass::Sqli),
+            "lock is deferred — sqli flips off as proposed"
+        );
+        assert_eq!(services.mutate.chain_len(), 1);
     }
 
     #[test]

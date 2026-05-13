@@ -29,6 +29,18 @@ impl Tier {
             _ => FailureMode::FailOpen,
         }
     }
+
+    /// Wire-compatible lowercase string used by YAML
+    /// `tier_override`, the dashboard's tier list, and the
+    /// `aegis-control::api::tiers::TierStore` keying. 2026-05-10.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Critical => "critical",
+            Tier::High => "high",
+            Tier::Medium => "medium",
+            Tier::Low => "low",
+        }
+    }
 }
 
 #[cfg(test)]

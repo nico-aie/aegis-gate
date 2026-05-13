@@ -62,6 +62,18 @@ pub struct RouteCtx {
     /// for this route. `0` means "use the boot default of 16"
     /// (resolved by `aegis_proxy::tcp_tunnel::effective_cap`).
     pub max_concurrent_tunnels_per_ip: u32,
+    /// 2026-05-12 — precomputed prefix to strip from the request
+    /// path before forwarding to the upstream. `None` = forward
+    /// the path unchanged (path-preserving mode, or
+    /// match-type doesn't support stripping). `Some("/news")` =
+    /// remove that exact literal prefix from the request URI's
+    /// path component; the query string is preserved verbatim.
+    ///
+    /// Set by `CompiledRoute::to_ctx` based on
+    /// `RouteConfig.strip_prefix` (default `true`) + match-type
+    /// gating, so the data-plane handler doesn't have to re-derive
+    /// the rule on every request.
+    pub path_strip_prefix: Option<String>,
 }
 
 #[cfg(test)]
@@ -115,6 +127,7 @@ mod tests {
             pool_scheme: crate::config::UpstreamScheme::Auto,
             tcp_destination_allowlist: Vec::new(),
             max_concurrent_tunnels_per_ip: 0,
+            path_strip_prefix: None,
         };
         assert_eq!(rctx.tier, Tier::Critical);
         assert_eq!(rctx.failure_mode, FailureMode::FailClose);

@@ -50,6 +50,14 @@ pub struct RouteConfigPatch {
     pub path: String,
     #[serde(default = "default_match_type_str")]
     pub match_type: String,
+    /// 2026-05-12 — opt-in path-stripping for the matched route
+    /// prefix. Defaults to `true` (mount-point semantics) so
+    /// route `/news` + request `/news/x` → upstream `/x`. Set to
+    /// `false` for path-preserving forwarding. See
+    /// `aegis_core::config::RouteConfig.strip_prefix` for the full
+    /// gating rules.
+    #[serde(default = "default_strip_prefix_patch")]
+    pub strip_prefix: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub methods: Option<Vec<String>>,
     pub upstream: String,
@@ -73,6 +81,10 @@ fn default_route_enabled_patch() -> bool {
     true
 }
 
+fn default_strip_prefix_patch() -> bool {
+    true
+}
+
 fn default_match_type_str() -> String {
     "prefix".to_string()
 }
@@ -87,6 +99,7 @@ impl RouteConfigPatch {
             host: r.host.clone(),
             path: r.path.clone(),
             match_type: match_type_str(&r.match_type).to_string(),
+            strip_prefix: r.strip_prefix,
             methods: r.methods.clone(),
             upstream: r.upstream.clone(),
             tier_override: r.tier_override.as_ref().map(tier_str).map(String::from),
@@ -113,6 +126,7 @@ impl RouteConfigPatch {
             host: self.host,
             path: self.path,
             match_type,
+            strip_prefix: self.strip_prefix,
             methods: self.methods,
             upstream: self.upstream,
             tier_override,
@@ -418,6 +432,7 @@ state:
             host: None,
             path: "/news/".into(),
             match_type: "prefix".into(),
+            strip_prefix: true,
             methods: None,
             upstream: "api-pool".into(),
             tier_override: None,

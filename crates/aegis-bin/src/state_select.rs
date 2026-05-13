@@ -195,8 +195,14 @@ upstreams:
 
     #[test]
     fn raft_returns_not_implemented() {
-        let cfg = aegis_core::load_config_str(&yaml_raft()).unwrap();
-        let err = run(&cfg).expect_err("raft should be rejected");
+        // 2026-05-11 CORE-09/CTL-08 fix — raft now rejected at
+        // load_config_str's validate() step. The state_select::run
+        // guard is preserved as defense-in-depth but never fires
+        // in normal operation; this test asserts the validate
+        // layer catches it first.
+        let err = aegis_core::load_config_str(&yaml_raft())
+            .expect_err("raft should be rejected at config load");
+        let err = format!("{err:?}");
         assert!(err.contains("raft"), "expected raft-related error, got: {err}");
     }
 

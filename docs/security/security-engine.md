@@ -303,11 +303,27 @@ the challenge ladder, both editable live:
 | **Block floor** | `risk.thresholds.block_at` | 80 | score ≥ this → reject **all** requests from this IP at the access gate, before any detector runs, until decay drops the score back below `block_at` |
 | **Score cap** | `risk.thresholds.max` | 100 | score saturates here so a single mega-burst can't permanently doom an IP |
 
-**Where to edit:** the dashboard **Settings page → "Cumulative IP
-risk thresholds"** card. The two sliders set `challenge_at` and
-`block_at`; saves go through the audit-mutated `PUT /api/risk/thresholds`
-endpoint with CSRF + capability check, hot-swap to the live tracker (no
-restart). YAML equivalent in `cfg.risk.thresholds`.
+**Where to edit:**
+
+- **Global defaults** — Dashboard → **Traffic Gates → #3 Cumulative
+  IP risk thresholds** card. The two sliders set `challenge_at` and
+  `block_at`; saves go through the audit-mutated
+  `PUT /api/risk/thresholds` endpoint, hot-swap to the live tracker.
+  YAML equivalent in `cfg.risk.thresholds`.
+
+- **Per-tier `challenges_enabled` toggle** — Dashboard →
+  **Detectors & Tiers → Edit tier** modal. Defaults to `false`:
+  challenges are opt-in per tier. With `false`, the cumulative
+  challenge rung escalates straight to block on this tier (no
+  PoW emitted). Useful for admin / payment / machine-API tiers.
+  Audit-mutated `PUT /api/tiers/<name>` with the
+  `challenges_enabled` field.
+
+- **Per-tier `cumulative_challenge_at` / `cumulative_block_at`
+  overrides** — API-only. The wire shape accepts per-tier values
+  (`PUT /api/tiers/<name>`), but the dashboard does not surface
+  inputs because per-tier cumulative tuning is a niche need. By
+  default, every tier inherits the global thresholds.
 
 **A separate `strikes.block_at`** counter (config: `risk.strikes.block_at`,
 default 50) tracks **lifetime malicious-event count per IP** and never

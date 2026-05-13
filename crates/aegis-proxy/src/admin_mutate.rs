@@ -231,6 +231,25 @@ pub(crate) async fn handle_upstreams_config_put(
         }
     };
 
+    // 2026-05-11 (PR-DNS-1) — resolve any hostname members before
+    // they reach the live `PoolRegistry`. The before/after audit
+    // view reflects the operator's authored shape (which may carry
+    // hostnames); the registry-bound config carries the resolved
+    // IP literals so the LB strategies have something to distribute
+    // across.
+    let resolved_pools = match crate::upstream::dns_resolve::expand_hostname_members(
+        parsed.pools.clone(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
+
     let before = upstreams_audit_view(cfg, &cfg.upstreams);
     let after = upstreams_audit_view(cfg, &parsed.pools);
     let count = parsed.pools.len();
@@ -251,7 +270,7 @@ pub(crate) async fn handle_upstreams_config_put(
         reason: "operator replaced upstream pool table",
     };
     let writer_for_apply = Arc::clone(&writer);
-    let pools_for_apply = parsed.pools;
+    let pools_for_apply = resolved_pools;
     let outcome = services.mutate.apply(
         &req_ctx,
         before,
@@ -317,6 +336,20 @@ pub(crate) async fn handle_pool_upsert(
 
     let before = upstreams_audit_view(cfg, &cfg.upstreams);
     let after = upstreams_audit_view(cfg, &next);
+
+    // 2026-05-11 (PR-DNS-1) — resolve hostnames in the candidate
+    // map so the registry only ever sees IP-literal members. The
+    // audit view (`after`) keeps the operator's authored shape so
+    // hostnames show up in the chain.
+    let next = match crate::upstream::dns_resolve::expand_hostname_members(next).await {
+        Ok(r) => r,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
+
     let resource = format!("/api/upstreams/pool/{pool_id}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -2681,6 +2714,19 @@ pub(crate) async fn handle_tier_put(
         pipeline: Vec<String>,
         risk_threshold: u32,
         block_threshold: u32,
+        // 2026-05-10 — Option B fields. All optional so older
+        // dashboards / scripts that PUT only the legacy shape
+        // still work; missing values are interpreted as
+        // "inherit global" / "challenges enabled".
+        #[serde(default)]
+        cumulative_challenge_at: Option<u32>,
+        #[serde(default)]
+        cumulative_block_at: Option<u32>,
+        // 2026-05-10 R2 — operator-confirmed default `false`:
+        // challenges are opt-in per tier. Older PUTs that omit the
+        // field land `false` instead of the prior `true`.
+        #[serde(default)]
+        challenges_enabled: bool,
     }
     let patch: TierPatch = match serde_json::from_str(body_str) {
         Ok(p) => p,
@@ -2700,6 +2746,9 @@ pub(crate) async fn handle_tier_put(
         "pipeline": patch.pipeline,
         "risk_threshold": patch.risk_threshold,
         "block_threshold": patch.block_threshold,
+        "cumulative_challenge_at": patch.cumulative_challenge_at,
+        "cumulative_block_at": patch.cumulative_block_at,
+        "challenges_enabled": patch.challenges_enabled,
     });
     let resource = format!("/api/tiers/{tier_name}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
@@ -2724,6 +2773,9 @@ pub(crate) async fn handle_tier_put(
             patch.pipeline,
             patch.risk_threshold,
             patch.block_threshold,
+            patch.cumulative_challenge_at,
+            patch.cumulative_block_at,
+            patch.challenges_enabled,
         ),
     );
     match outcome {
@@ -2817,6 +2869,121 @@ pub(crate) async fn handle_ai_enabled_put(
         ),
         Err(e) => mutation_error_response(e),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 2026-05-11 PR #7 — runtime toggle for the response-filter rungs
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn handle_response_filter_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::response_filter::ResponseFilterPatch;
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "response-filter-put");
+
+    let Some(writer) = services.response_filter_writer.as_ref().cloned() else {
+        // No writer wired — test bundles, no-pipeline builds. Return
+        // the same `feature_off` shape as `/api/ai/enabled` so the
+        // dashboard can render a clear "not wired" banner instead of
+        // a generic 500.
+        let body = serde_json::json!({
+            "ok": false,
+            "reason": "feature_off",
+            "message": "Response filter pipeline not wired in this build",
+        });
+        return json_body_response(409, body.to_string(), "private, no-store");
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let patch: ResponseFilterPatch = match serde_json::from_str(body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    let before_snap = writer.get();
+    let before = serde_json::json!({
+        "scrub_stack_traces": before_snap.scrub_stack_traces,
+        "mask_internal_ips":  before_snap.mask_internal_ips,
+        "redact_dlp":         before_snap.redact_dlp,
+    });
+    let after = serde_json::json!({
+        "scrub_stack_traces": patch.scrub_stack_traces,
+        "mask_internal_ips":  patch.mask_internal_ips,
+        "redact_dlp":         patch.redact_dlp,
+    });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/response-filter",
+        action: "response_filter_put",
+        reason: "operator updated response-filter rungs",
+    };
+
+    let writer_for_apply = Arc::clone(&writer);
+    let patch_for_apply = patch.clone();
+    let outcome = services.mutate.apply::<_, (), &'static str>(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            writer_for_apply.set(patch_for_apply);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "scrub_stack_traces": patch.scrub_stack_traces,
+                "mask_internal_ips":  patch.mask_internal_ips,
+                "redact_dlp":         patch.redact_dlp,
+                "request_id":         pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+pub(crate) async fn handle_response_filter_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let body = match services.response_filter_writer.as_ref() {
+        Some(w) => {
+            let snap = w.get();
+            serde_json::json!({
+                "scrub_stack_traces": snap.scrub_stack_traces,
+                "mask_internal_ips":  snap.mask_internal_ips,
+                "redact_dlp":         snap.redact_dlp,
+                "wired":              true,
+            })
+        }
+        None => serde_json::json!({
+            "scrub_stack_traces": true,
+            "mask_internal_ips":  true,
+            "redact_dlp":         true,
+            "wired":              false,
+        }),
+    };
+    json_response(200, &body)
 }
 
 pub(crate) async fn handle_ai_enabled_get(
@@ -3232,6 +3399,91 @@ pub(crate) async fn handle_rate_limit_put(
         after_json.clone(),
         move || {
             limiter.set_config(new_cfg);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "applied": after_json,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// `PUT /api/gates/strikes` — hot-swap the Strike-Block gate
+/// config (`enabled` + `block_at`). Audit-mutated through
+/// `AuditedMutate`. Per-IP strike state in the `RiskTracker`
+/// map is preserved across edits — operators flipping the gate
+/// on/off or tightening `block_at` mid-incident don't get a free
+/// reset for accumulating IPs.
+pub(crate) async fn handle_strikes_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "strikes-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let put_body: aegis_control::api::gates::StrikesPutBody =
+        match serde_json::from_str(body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+                )
+            }
+        };
+    let new_cfg = match put_body.validate() {
+        Ok(c) => c,
+        Err(errs) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(errs.join("; ")),
+            )
+        }
+    };
+    let before_cfg = services.risk.strike_config_snapshot();
+    let before_json = serde_json::json!({
+        "enabled": before_cfg.enabled,
+        "block_at": before_cfg.block_at,
+    });
+    let after_json = serde_json::json!({
+        "enabled": new_cfg.enabled,
+        "block_at": new_cfg.block_at,
+    });
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/gates/strikes",
+        action: "strikes_set",
+        reason: "operator updated Strike-Block gate config",
+    };
+    let risk = services.risk.clone();
+    let new_cfg_apply = new_cfg.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before_json,
+        after_json.clone(),
+        move || {
+            risk.set_strike_config(new_cfg_apply);
             Ok(())
         },
     );
