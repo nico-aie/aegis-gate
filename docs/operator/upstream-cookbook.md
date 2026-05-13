@@ -25,6 +25,8 @@ profile of choice), restart the WAF, and verify with curl.
 
 WebSocket and WSS are detected automatically on `http` / `https` / `auto` — no separate scheme. The bridge code reads `Upgrade: websocket` + `Connection: Upgrade`, opens a raw TCP forward to the resolved member, and `copy_bidirectional`s after the upstream returns 101.
 
+**Addressing the backend.** Every recipe below writes `addr: IP:port`, but as of 2026-05-11 (PR-DNS-1) `addr: hostname:port` also works — the WAF resolves hostnames at config-load + dashboard-PUT time and expands multi-A records into one member per resolved IP. See **Recipe 3.7** for the full pattern; the IP-pinned recipes still work unchanged.
+
 ---
 
 ## Recipe 1 — plain HTTP backend (the simplest case)
@@ -121,6 +123,99 @@ What this does:
 - A process-global pinned DNS resolver routes the `example.com` connection back to `23.215.0.136`, bypassing system DNS.
 
 This combination unlocks pointing the WAF at any public TLS service without a sidecar.
+
+---
+
+## Recipe 3.7 — hostname-addressed upstream (DNS-resolved)
+
+> **Since 2026-05-11 (PR-DNS-1, Phase 1).** Skip the manual
+> `dig`-and-pin dance from Recipe 3 when the backend's IP can
+> change — cloud load balancers (`*.elb.amazonaws.com`,
+> `*.cloudfront.net`), Kubernetes Services
+> (`svc.cluster.local`), Consul services. Just write the
+> hostname and the WAF resolves it at config-load time.
+
+```yaml
+upstreams:
+  api-elb:
+    members:
+      - addr: "api.example.com:443"
+    connection:
+      scheme: https
+```
+
+What this does:
+- At config load (boot or dashboard PUT) the WAF runs
+  `tokio::net::lookup_host("api.example.com:443")` and expands
+  the result into one member per resolved A/AAAA record. A
+  hostname returning three IPs becomes three members; the
+  pool's LB strategy (round-robin, p2c, consistent-hash)
+  distributes across them.
+- `host_header` defaults to the hostname — TLS SNI and outbound
+  `Host:` automatically line up, so HTTPS upstreams "just
+  work" without you having to repeat the hostname in
+  `host_header:`.
+- Mixed IP + hostname members are fine — IP members pass
+  through untouched; only `Hostname` entries get expanded.
+
+```yaml
+upstreams:
+  mixed:
+    members:
+      - addr: "api.example.com:443"   # → expands to N
+      - addr: "10.0.1.10:8080"        # → passes through as-is
+    connection:
+      scheme: auto
+```
+
+**Background refresh (PR-DNS-2, 2026-05-11).** Each pool that
+has at least one hostname member also spawns a background DNS
+refresh task at boot. The task uses `hickory-resolver` (pure-
+Rust, TTL-aware) and re-resolves on the smaller of:
+
+- the record's TTL,
+- the `refresh_seconds` you set per member (optional),
+- `60 s` (nginx-style default when neither is informative).
+
+Clamped to `[10 s, 1 h]` so a TTL=1 storm doesn't hammer the
+resolver and an authoritative-claiming-day-long-TTL doesn't
+hide a rotation for too long. When the resolved IP set changes,
+the pool's member ring atomic-swaps and an audit event
+(`pool_dns_resolved`, `class: system`) lands in the Live Feed
+with before/after IP sets. Resolver outages keep the last-known
+IPs in place and retry on the next tick — no member drop on
+transient failure.
+
+**Soft-failure at boot (PR-DNS-2).** If a hostname is
+unresolvable at boot, the proxy logs a warn and starts with the
+DNS members for that hostname missing (operator-pinned IPs in
+the same pool still work). The refresh task retries; when DNS
+recovers, the missing members get added back on the next tick.
+
+When this is the wrong choice:
+- **You need DNS-01 ACME against the hostname.** That's a
+  separate ACME-side decision; the upstream resolver here
+  doesn't interact with cert issuance.
+- **You add a hostname member to an existing pool via the
+  dashboard.** The dashboard PUT path runs Phase 1's one-shot
+  resolver immediately (so you can use the pool right away), but
+  Phase 2's background refresh task does **not** get spawned for
+  hostnames added at runtime. The hostname stays statically
+  resolved until you restart the WAF. Listing the hostname in
+  YAML and restarting picks up the background refresh.
+
+Override the SNI when the hostname you connect to differs from
+the SNI the backend expects (rare):
+
+```yaml
+upstreams:
+  api-elb-internal:
+    members:
+      - addr: "internal-elb.example.com:443"
+        host_header: "api.example.com"   # explicit override wins
+    connection:
+      scheme: https
+```
 
 ---
 

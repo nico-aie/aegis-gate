@@ -1,6 +1,8 @@
 pub mod lb;
 pub mod health;
 pub mod circuit;
+pub mod dns_refresh;
+pub mod dns_resolve;
 pub mod forward;
 pub mod pinned_resolver;
 pub mod registry;

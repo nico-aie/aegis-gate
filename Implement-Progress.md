@@ -23,25 +23,53 @@
 
 ## Status (snapshot)
 
-- **As of:** 2026-05-03 (PM)
-- **Workspace tests:** ~2 850 across 17 binaries (all green;
-  baseline 2 500 + ~350 from TCP-T + FDP-T + SWEEP-T + geoip +
-  dashboard fix + access-list runtime + AI-T1 stub + WS bridge
-  + login page fix + multi-vhost upstream + WS metrics shipped
-  2026-05-03).
-- **Dashboard bundle:** **294 086 bytes**
-  (`crates/aegis-control/assets/dashboard/app.js`).
+- **As of:** 2026-05-11
+- **Workspace tests:** **~3 300 across 18 binaries** (all green;
+  baseline 2 850 + ~450 from the 2026-05-04..11 sprint:
+  Detectors & Tiers UX, Strike-Block enable/disable, AI hot-enable,
+  policy-QA Phase 1 (8 findings), aegis-core gap fixes, PROXY-02
+  regex/glob guard, P2C + Rendezvous Hashing correctness, TierCache
+  removal, PR #7 response-filter wire-up + dashboard surface, PR #8
+  SEC-18 / SEC-21 / CTL-20 correctness pack).
+- **Dashboard bundle:** ~300 KB (size varies; the
+  `crates/aegis-control/assets/dashboard/app.js` baseline is the
+  authoritative number per build).
 - **Headline perf** (`tests/results/run-perf-5krps-prod-balanced-2026-05-02-v3/`):
   prod-balanced profile sustained **4 891 RPS k6 / 6 392 RPS WAF-internal**
   for 2 min with **legit p99 1.03 ms, legit median 0.13 ms, legit OK 100 %,
-  detection 80 %**. All three k6 thresholds passed.
-- **Earlier headline** (`tests/results/run-perf-15min-2026-05-02-v2/`):
-  15-min mixed-traffic harness, post-detector-coverage sprint —
-  **80 % detection** (was 33 % v1), legit p99 4.52 ms, 100 % of
-  detected attacks prevented.
-- **Active track:** none open — all four queued tracks (access-
-  list runtime, AI-T1 stub, FDP drain refactor, WS bridge) shipped
-  2026-05-03. AI-T2..T9 wait on the operator's `.onnx` file.
+  detection 80 %**. All three k6 thresholds passed. (Pre-PR #7;
+  the new response-filter rungs pay one `Cow::Borrowed` check per
+  rung on clean responses — the hot path overhead is structurally
+  zero on unmodified bodies.)
+- **Active track:** none open. The `plans/issue-fix/2026-05-11-policy-qa-and-audits/`
+  triage is the most recently closed track (9 sub-PRs, see Recent
+  History). DNS-resolved upstream members shipped end-to-end
+  (Phase 1 + Phase 2, commits `9a73a99` + `b77111b`).
+- **AI detector:** **shipped** — AI-T1..T9 all closed
+  (`80362e8` end-to-end against the operator-supplied ONNX,
+  `f2ae002` dashboard hot-enable). Live on the Detectors page;
+  the `aegis_ai_*` metrics back the prediction-breakdown bar in
+  `AiDetectorRow`. Deferred items live under §8 "Out of scope"
+  of `plans/archive/ai-detector.md`: model hot-reload, per-route
+  threshold overrides, drift detection, adversarial-input
+  detection, SHAP/LIME, ensembles, GPU inference — none required
+  for v1.
+- **DDoS posture:** **enforce by default** (`cfg.ddos.observe_only:
+  false` is the shipped default — 7c9e5dc landed 2026-05-09; CORE-01
+  documented this 2026-05-11). Operators wanting log-only mode opt
+  in explicitly via the dashboard's Traffic Gates page or
+  `observe_only: true` in YAML.
+- **Response filtering:** **shipped** (`Pipeline::on_body_frame`
+  runs three independently toggleable rungs — stack-trace scrub,
+  RFC 1918 IP mask, DLP redact — over every upstream response).
+  Audit-mutated PUT `/api/response-filter` + dashboard tile under
+  Settings → Response Filtering. See `docs/security/response-filtering.md`
+  for the operator surface and `Architecture.md` §5 item 12 for the
+  internal shape.
+- **TierCache:** **removed 2026-05-11** (PROXY-08/09 — the module
+  had zero call sites in the request pipeline). `moka` workspace
+  dep dropped. `POST /__waf_control/flush_cache` still returns
+  `{ok: true, supported: false}` per contract §9.
 - **Closed 2026-05-03 (AM):** TCP forwarder Phase 4 (TCP-T1..T6),
   Binary handover library (FDP-T1..T6), SWEEP-T sweep tooling,
   MTLS-T10 Phase 2, B5 benchmark gating, geoip XFF wiring + 3-state
@@ -97,6 +125,134 @@
 ---
 
 ## Last Completed
+
+**Task:** 2026-05-11 policy-qa + crate-audit triage + Phase-1..4
+fixes. 72 raw findings across 3 reports → 9-PR sub-plan in
+`plans/issue-fix/2026-05-11-policy-qa-and-audits/`; all 9 PRs
+landed across commits `2f50176` (Phase 1 dashboard) → `e445f31`
+(Phase 2 aegis-core) → `144c779` (regex/glob route guard) →
+`8c9b35c` (LB correctness) → `2ad3a61` (TierCache removal) →
+`cde14b7` + `30f7bf8` + `e705eff` (PR #7 response filtering full
+stack) → `3b01ade` (PR #8 SEC-18/SEC-21/CTL-20) → `<this PR>`
+(PR #9 docs + stub deprecation).
+
+### What shipped
+
+1. **Phase 1 — Policy QA dashboard fixes** (`2f50176`). 8 findings
+   from `tests/n-tester/reports/policy-qa-findings.md` closed:
+   Rules Simulator now renders API response (F-01), inline
+   validation + aria-invalid on Rules/Access Lists empty-submit
+   (F-02), Audit Log deep-link reads `?rule_id=…&ip=…&request_id=…`
+   (F-03), styled `RemoveAccessListEntryModal` replaces native
+   confirm (F-07), AI Disable confirms before flipping (F-06),
+   dropped `+` icon on Cancel state (F-08).
+
+2. **Phase 2 — aegis-core gap fixes** (`e445f31`). CORE-01: the
+   `WafConfig.ddos` field doc now matches the enforce-by-default
+   posture (`observe_only: false`). CORE-09 / CTL-08:
+   `WafConfig::validate()` rejects `state.backend = raft |
+   redis_cluster` and `state.reconcile.mode = latest | fail_safe`
+   at config-load time instead of crashing at boot. CORE-06:
+   `StateBackend::health()` default flipped to `connected: true`
+   so the dashboard pill doesn't red-flag new backends.
+
+3. **PR #4 — route resolver guard** (`144c779`). PROXY-02:
+   `route.match_type = regex | glob` now rejected by
+   `WafConfig::validate()` since `resolve_inner` only calls
+   `trie.find_all_prefixes`. Same pattern as PR #8's SEC-21 lint.
+
+4. **PR #5 — load-balancer correctness** (`8c9b35c`). PROXY-10:
+   P2C swapped from deterministic counter to `subsec_nanos`
+   entropy + n=2 short-circuit. PROXY-11: ConsistentHash replaced
+   modulo with Rendezvous Hashing (`hash(key, member_addr)`,
+   pick max). 3 new property tests verify (a) P2C spreads picks,
+   (b) member change remaps ~1/n keys, (c) session affinity is
+   deterministic across the same key.
+
+5. **PR #6 — TierCache removal** (`2ad3a61`). Module had zero
+   call sites in the request pipeline (PROXY-08/09 spot-check).
+   `crates/aegis-proxy/src/cache/` deleted, `moka` workspace dep
+   dropped, contract's `flush_cache` endpoint kept returning
+   `supported: false` per §9 wording.
+
+6. **PR #7 — Response filtering wire-up** (`cde14b7` + `30f7bf8`
+   + `e705eff`). `Pipeline::on_body_frame` runs three independently
+   toggleable rungs over every upstream response: stack-trace
+   scrub (Node/JVM/Python/Rust/PHP/.NET/Ruby/Go), RFC 1918 IP
+   mask, DLP redact (Luhn-validated credit cards + SSN + IBAN +
+   email + AWS/GitHub/Stripe/Slack tokens). `ResponseFilterConfig`
+   held in `ArcSwap` for hot-reload. Audit-mutated PUT
+   `/api/response-filter` + Security Engine tile. Bonus: caught
+   + fixed a boot-path bug where `run.rs` was passing a fresh
+   `NoopPipeline` to `ProxyContext`, silently dropping the
+   wire-up. Operator doc at `docs/security/response-filtering.md`.
+
+7. **PR #8 — Phase 3d/e/f correctness pack** (`3b01ade`). SEC-21:
+   `RuleAction::RateLimit` rejected at lint time (`eval.rs:107`
+   returned `Action::RateLimited` on every match without
+   consulting a counter). SEC-18: CIDR threat-intel indicators
+   now stored in a separate `Vec<(IpNet, Indicator)>` with
+   `check_ip` linear-scanning via `IpNet::contains` (previously
+   keyed by string, so `10.0.0.0/8` never matched `10.5.5.5`).
+   CTL-20: `handle_password_change` gains a mandatory
+   `invalidate_sessions: I` closure called after `apply_new`
+   succeeds. CTL-19 downgraded — `set_all(mode)` clearing
+   overrides is contract-conformant per v2.3 line 186.
+
+8. **PR #9 — Documentation + dead-stub deprecation** (this PR).
+   New `plans/future/unwired-stubs-catalog.md` catalogs every
+   "trait exists but zero callers in proxy/bin" stub: CAPTCHA
+   providers (3 vendors), JWT validator, OPA client, ICAP scanner,
+   Basic-Auth, Forward-Auth. Each stub gets a `//! deferred`
+   module-level doc + `#![allow(dead_code)]` so static audits
+   don't re-raise them. The catalogue spells out which sub-feature
+   is needed for each one to ship and which ones the contract
+   requires (none of them, today). `Implement-Progress.md`
+   updated to reflect the post-sprint state.
+
+### Verification
+
+- `cargo test --workspace` → all green (~3 300 tests; +13 from
+  PR #4-#9: 3 LB property tests, 1 SEC-21 lint test, 3 SEC-18
+  CIDR tests, 1 CTL-20 password test, 5 response-filter writer
+  tests).
+- `cargo build --workspace` clean, no clippy warnings on the
+  modified surfaces.
+- Manual: dashboard Settings → Response Filtering renders the
+  three live toggles + flips a rung via `PUT /api/response-filter`
+  → audit-chain entry appears in Live Feed.
+
+### Next-session hand-off
+
+The full 2026-05-11 sprint is closed (now including PR-DNS-1 +
+PR-DNS-2 — hostname-addressed upstreams shipped end-to-end with
+background DNS refresh on TTL).
+
+Two stale "open thread" notes were retired here on 2026-05-11:
+- **AI-T2..T9** — flagged as "waiting on the operator's .onnx
+  file" but actually shipped on 2026-05-03 PM in `80362e8`
+  (operator handed over the model that day; AI-T1..T5 landed
+  end-to-end). T6 metrics, T7 `make ai-link`, T8 integration
+  test, and T9 dashboard `AiDetectorRow` all in tree. The
+  hot-enable PUT (`f2ae002`, 2026-05-09) closed the only
+  follow-up. Genuinely-open AI work is the §8 "out of scope"
+  list (model hot-reload, drift detection, per-route threshold,
+  SHAP/LIME, ensembles, GPU) — none required for v1.
+- **FDP accept-loop drain refactor** — flagged as "the one
+  durable open thread" but actually shipped on 2026-05-03 PM
+  in `362c366` + `6fc56c1`. SIGUSR2 → `perform_handover` is
+  wired end-to-end via the polling task in `run.rs:1366`;
+  `InFlightCounter::admit` is wired on both planes
+  (`accept.rs:848` admin, `accept.rs:987` data).
+
+Nothing else is mid-flight. Future tracks beyond the two
+retired notes: DNS Phase 3 (dashboard "Resolved IPs"
+expandable, ~1 day) and AI model hot-reload (~½–1 day) are the
+two smallest visible follow-ups.
+
+---
+
+## Previous "Last Completed" (preserved for context)
 
 **Task:** 2026-05-03 multi-track sprint — TCP-T Phase 4 + FDP-T1..T6
 binary handover primitives + SWEEP-T multi-tester sweep tooling +
@@ -195,6 +351,8 @@ hot-restart works end-to-end via SIGUSR2".
 
 | Date | Task | Outcome |
 |---|---|---|
+| 2026-05-11 | Policy QA + crate audit triage (9 PRs) | 72 raw findings → 9 PRs landed: Phase 1 dashboard fixes, Phase 2 aegis-core gaps, PROXY-02 regex/glob guard, PR #5 LB correctness (P2C entropy + Rendezvous Hashing), PR #6 TierCache removal, PR #7 response-filter wire-up + dashboard surface, PR #8 SEC-18/SEC-21/CTL-20 correctness pack, PR #9 docs + stub deprecation. ~3 300 workspace tests, +13 new. |
+| 2026-05-09..10 | DDoS enforce-by-default + Strike-Block opt-in + AI hot-enable + Detectors & Tiers UX overhaul + per-tier cumulative threshold retirement | 7c9e5dc landed DDoS enforce. Strike-Block ships defaulted OFF (operator opt-in). AI enable/disable lives in the Detectors page without a restart. Detectors & Tiers got a per-tier override card + lifted Risk score reference. R3 retired the per-tier cumulative threshold inputs (cumulative gate is global / per-IP, not per-tier). |
 | 2026-05-03 PM (late) | Skill run + finding closeout + UI/docs | All 4 skill findings closed (geoip country fall-back, detector_name refactor, by-detector unknown filter, bot-mix honest empty), PageErrorBoundary closes white-page bug, Members table gains Host-header column, Protocol matrix card, upstream-cookbook.md with 8 per-protocol recipes, README features-first rewrite, body-abuse doc covers XXE + mass-assignment. ~700 LOC + 4 new tests; bundle 300 KB. 4 commits. |
 | 2026-05-03 PM | Open-tracks closeout + UX pass | Access-list runtime, AI-T1 stub, FDP drain refactor, WS bridge (T2/T3/T4/T5/T6), login page fix, multi-vhost upstream (`host_header` + SNI pinning), Investigation default-list + Attack-Analytics merge, Top Attackers page, aegis-waf-tester Skill. ~2 700 LOC + ~40 new tests; bundle 296 KB. 13 commits. |
 | 2026-05-03 AM | TCP-T + FDP-T + SWEEP-T + AI-T design + geoip XFF | ~3500 LOC + 320 new tests. CONNECT tunneling live; binary-handover library; multi-tester sweep tooling. |

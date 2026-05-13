@@ -183,11 +183,20 @@ pub(crate) fn admin_router(
             )
         }
         "/api/audit/since" => {
+            // PR-UX-A2 (2026-05-12) — parse the optional pivot
+            // filter so Investigation can ask the server for
+            // just the rows it needs instead of grabbing 200 and
+            // client-filtering.
             let cursor = parse_query_u64(query, "cursor", 0);
             let limit = parse_query_u32(query, "limit", 200);
+            let filter = aegis_control::api::audit::AuditFilter {
+                ip: parse_query_str(query, "ip").map(percent_decode),
+                request_id: parse_query_str(query, "request_id").map(percent_decode),
+                rule_id: parse_query_str(query, "rule_id").map(percent_decode),
+            };
             json_body_response(
                 200,
-                services.audit.render_since(cursor, limit),
+                services.audit.render_since_filtered(cursor, limit, &filter),
                 "private, no-store",
             )
         }
@@ -207,6 +216,22 @@ pub(crate) fn admin_router(
                     let seq = entry.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
                     let e = entry.get("event").unwrap_or(entry);
                     let getter = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                    // LOW-ADM-04 (2026-05-12) — detection rows carry
+                    // method/path under `event.fields.*`, not at the
+                    // top level (top-level is null for those rows).
+                    // Same fallback pattern the Investigation timeline
+                    // and Audit Trail RULE column adopted in
+                    // MED-SO-06 / LOW-OBS-04.
+                    let fields_get = |k: &str| {
+                        e.get("fields")
+                            .and_then(|f| f.get(k))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                    };
+                    let with_fields = |k: &str| {
+                        let top = getter(k);
+                        if top.is_empty() { fields_get(k) } else { top }
+                    };
                     csv.push_str(&format!(
                         "{},{},{},{},{},{},{},{},{},{}\n",
                         seq,
@@ -214,8 +239,8 @@ pub(crate) fn admin_router(
                         csv_escape(getter("class")),
                         csv_escape(getter("action")),
                         csv_escape(getter("client_ip")),
-                        csv_escape(getter("method")),
-                        csv_escape(getter("path")),
+                        csv_escape(with_fields("method")),
+                        csv_escape(with_fields("path")),
                         csv_escape(getter("rule_id")),
                         csv_escape(getter("reason")),
                         csv_escape(getter("request_id")),
@@ -240,16 +265,16 @@ pub(crate) fn admin_router(
         }
         // Phase-3: enriched alert view with operator overlay
         // (ack/snooze/resolve from `services.incidents`).
+        // MED-SO-04 (2026-05-12) — previously the overlay was
+        // composed against `Vec::new()`, so `incidents` was
+        // permanently `[]` and the lifecycle UI never reflected
+        // ack/snooze/resolve. Pull the live `SloAlert`s from the
+        // tracking handler's engine accessor so the overlay
+        // joins against today's firing list.
         "/api/incidents" => {
-            // Pull the raw firing alerts via the same path
-            // /api/alerts uses, then enrich with the overlay.
             let raw_json = services.tracking.render_alerts();
-            // The render returns {alerts: [...], placeholder?: bool}.
-            // We need the underlying SloAlerts; the renderer doesn't
-            // expose them directly, so re-derive via slo() if available.
-            // For Phase-3 we keep this simple: return the overlay
-            // store as-is (clients merge with /api/alerts).
-            let overlay = services.incidents.enrich(Vec::new());
+            let active = services.tracking.active_alerts();
+            let overlay = services.incidents.enrich(active);
             let body = serde_json::json!({
                 "raw_alerts": serde_json::from_str::<serde_json::Value>(&raw_json)
                     .unwrap_or(serde_json::Value::Null),
@@ -406,6 +431,31 @@ pub(crate) fn admin_router(
         // `{routes: [{route, p50_ms, p95_ms, p99_ms, samples}]}`
         // sorted by samples descending. Capped at ?limit=N
         // (default 20). Routes with no samples are omitted.
+        // P5 (2026-05-11) — sliding-window per-route activity. The
+        // dashboard reads this every ~10s and renders a pulse pill
+        // in the route table so dead routes are visible without
+        // synthetic traffic. Returns
+        // `{routes: [{route, last_60s_count, last_seen_age_s}]}`
+        // sorted by `last_60s_count` descending. Routes with zero
+        // recorded requests since boot are omitted.
+        "/api/analytics/route-activity" => {
+            let body = match services.route_activity.as_ref() {
+                None => serde_json::json!({"routes": []}).to_string(),
+                Some(w) => {
+                    let rows: Vec<serde_json::Value> = w
+                        .snapshot_all()
+                        .into_iter()
+                        .map(|(route, a)| serde_json::json!({
+                            "route": route,
+                            "last_60s_count": a.count_60s,
+                            "last_seen_age_s": a.last_seen_age_s,
+                        }))
+                        .collect();
+                    serde_json::json!({"routes": rows}).to_string()
+                }
+            };
+            json_body_response(200, body, "private, max-age=2")
+        }
         "/api/analytics/latency/routes" => {
             let limit = parse_query_u32(query, "limit", 20);
             let body = match services.route_latency_hist.as_ref() {
@@ -494,6 +544,27 @@ pub(crate) fn admin_router(
         "/api/whitelist" => {
             let body = serde_json::json!({"entries": services.whitelist.list()});
             json_body_response(200, body.to_string(), "private, max-age=2")
+        }
+        // P4 (2026-05-11) — per-entry hit counts. Window defaults
+        // to 3600 (1h); the dashboard's "consider removing"
+        // affordance for stale entries reads `?window=86400`. The
+        // ring is 1-hour-bucketed so any window smaller than 3600
+        // rounds up to one bucket.
+        "/api/blacklist/hits" => {
+            let window = parse_query_u64(query, "window", 3600);
+            let body = serde_json::json!({
+                "window_secs": window,
+                "hits": services.blacklist.hit_counts(window),
+            });
+            json_body_response(200, body.to_string(), "private, max-age=5")
+        }
+        "/api/whitelist/hits" => {
+            let window = parse_query_u64(query, "window", 3600);
+            let body = serde_json::json!({
+                "window_secs": window,
+                "hits": services.whitelist.hit_counts(window),
+            });
+            json_body_response(200, body.to_string(), "private, max-age=5")
         }
         "/api/admin/sessions" => {
             let body = serde_json::json!({"sessions": services.sessions.list()});
@@ -817,6 +888,39 @@ fn parse_query_u32(query: &str, key: &str, default: u32) -> u32 {
     default
 }
 
+/// PR-UX-A2 (2026-05-12) — minimal percent-decode for query
+/// params we want to compare byte-for-byte against stored
+/// values (audit ring filter). Handles `%XX` sequences; leaves
+/// everything else untouched. Not a full URL spec decoder —
+/// `+` is *not* mapped to space (that's a form-encoding rule,
+/// not a query-string rule).
+///
+/// MED-ADM-01 (2026-05-12) — also used by the admin dispatcher
+/// to decode path segments before handing them to mutation
+/// handlers. Without this, ids like `<sli>-<Nh>:<ts>` arrive
+/// at the overlay store with literal `%3A`, masking
+/// `enrich()`'s `:`-encoded lookup. Apply exactly once at the
+/// dispatch layer (`req.uri().path()` returns the encoded form).
+pub(crate) fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h = (bytes[i + 1] as char).to_digit(16);
+            let l = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (h, l) {
+                out.push(((h << 4) | l) as u8 as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
 /// Same shape as `parse_query_u32` but returns the raw string slice.
 /// Useful for keys whose values aren't numeric (e.g. `?expr=`).
 fn parse_query_str<'q>(query: &'q str, key: &str) -> Option<&'q str> {
@@ -854,5 +958,50 @@ fn csv_escape(s: &str) -> String {
         format!("\"{escaped}\"")
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod percent_decode_tests {
+    use super::percent_decode;
+
+    #[test]
+    fn passthrough_for_unencoded_input() {
+        assert_eq!(percent_decode("abc-123"), "abc-123");
+        assert_eq!(percent_decode("DataPlaneAvailability-1h:1778574385"), "DataPlaneAvailability-1h:1778574385");
+    }
+
+    #[test]
+    fn decodes_colon_in_incident_id() {
+        // MED-ADM-01 — the dashboard URL-encodes the `:` in the
+        // ack id; the dispatcher decodes before handing to the
+        // overlay-store key.
+        let encoded = "DataPlaneAvailability-1h%3A1778574385";
+        assert_eq!(
+            percent_decode(encoded),
+            "DataPlaneAvailability-1h:1778574385",
+            "%3A must decode to ':' so overlay key matches enrich() lookup",
+        );
+    }
+
+    #[test]
+    fn decodes_mixed_case_hex() {
+        // Browsers may emit upper or lowercase hex.
+        assert_eq!(percent_decode("a%3ab"), "a:b");
+        assert_eq!(percent_decode("a%3Ab"), "a:b");
+    }
+
+    #[test]
+    fn leaves_malformed_escapes_alone() {
+        // `%` not followed by two hex digits must NOT crash.
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("%2"), "%2");
+    }
+
+    #[test]
+    fn handles_empty_and_only_escapes() {
+        assert_eq!(percent_decode(""), "");
+        assert_eq!(percent_decode("%20%2F%3A"), " /:");
     }
 }

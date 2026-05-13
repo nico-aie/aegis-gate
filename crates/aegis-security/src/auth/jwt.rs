@@ -1,3 +1,20 @@
+//! JWT validation stub — **deferred**, not on the active path.
+//!
+//! **2026-05-11 PR #9** — `validate(token, config, now)` parses
+//! the base64 payload but does NOT verify the signature
+//! (`// In production, use jsonwebtoken crate with JWKS`). Zero
+//! callers in `aegis-proxy/src/` + `aegis-bin/src/` as of this
+//! commit. The admin plane uses argon2 + session cookie + CSRF
+//! (`aegis-control::api::login`) which the contract v2.3 §2.2
+//! accepts. JWT auth would be a stateless alternative — roadmap,
+//! not a gap.
+//!
+//! Kept around as a roadmap shape — see
+//! `plans/future/unwired-stubs-catalog.md` for the wiring
+//! sequence the next implementer should follow.
+
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// JWT validation configuration.

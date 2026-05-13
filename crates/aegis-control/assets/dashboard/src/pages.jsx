@@ -1,6 +1,33 @@
 /* global React */
 const { useState: useStateP, useEffect: useEffectP, useMemo: useMemoP, useRef: useRefP, Fragment } = React;
 
+// LOW-ADM-05 (2026-05-12) — 24-hour clock helpers.  Without
+// these, `Date.toLocaleString()` / `Date.toLocaleTimeString()`
+// rendered en-US 12-hour AM/PM in places (Config history,
+// HEARTBEAT column) while the rest of the dashboard read as
+// 24-hour, which the QA pass flagged as inconsistent.  Pin
+// `hour12: false` here so every wall-clock string the dashboard
+// emits reads the same way.
+//
+// Two helpers because the call sites need different precision:
+//   - `fmtClockTime(d)`         → "12:28:45"
+//   - `fmtAbsoluteTimestamp(d)` → "May 12, 12:28:45"
+// Both fall back to "—" for null / invalid Dates.
+function fmtClockTime(d) {
+  const date = d instanceof Date ? d : (d ? new Date(d) : null);
+  if (!date || isNaN(date.getTime())) return '—';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+function fmtAbsoluteTimestamp(d) {
+  const date = d instanceof Date ? d : (d ? new Date(d) : null);
+  if (!date || isNaN(date.getTime())) return '—';
+  return date.toLocaleString([], {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    month: 'short', day: 'numeric',
+    hour12: false,
+  });
+}
+
 // ============== OVERVIEW ==============
 // Color palette for OWASP categories — used to overlay a colour on
 // API-returned `name` strings (which are stable identifiers like
@@ -32,7 +59,18 @@ function PageOverview() {
   const upstreamsLive = window.useUpstreamsApi
     ? window.useUpstreamsApi()
     : { data: null };
-  const tsApi = window.useTimeseriesApi(60, 1);    // /api/stats/timeseries — 60s window, 1s buckets
+  // LOW-SO-01 (2026-05-12) — the 1m/5m/15m/1h pills below now
+  // drive the timeseries window + bucket size so the chart and
+  // its subtitle stay in sync. Buckets pick the round number
+  // that keeps the rendered series under ~120 points.
+  const TRAFFIC_WINDOWS = [
+    { label: '1m',  windowSecs: 60,    bucketSecs: 1   },
+    { label: '5m',  windowSecs: 300,   bucketSecs: 5   },
+    { label: '15m', windowSecs: 900,   bucketSecs: 10  },
+    { label: '1h',  windowSecs: 3600,  bucketSecs: 30  },
+  ];
+  const [trafficWindow, setTrafficWindow] = useStateP(TRAFFIC_WINDOWS[0]);
+  const tsApi = window.useTimeseriesApi(trafficWindow.windowSecs, trafficWindow.bucketSecs);
   const distApi = window.useAttacksDistributionApi(900); // /api/attacks/distribution — 15m
   const topApi = window.useAttacksTopApi(900, 5);  // /api/attacks/top — 5 attackers, 15m
   const tick = window.useTicking(2000);
@@ -174,13 +212,25 @@ function PageOverview() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Overview</h1>
+          <h1 className="page-title">
+            Overview
+            <window.PageTitleRefresh
+              onClick={() => {
+                stats.reload && stats.reload();
+                tsApi.reload && tsApi.reload();
+                distApi.reload && distApi.reload();
+                topApi.reload && topApi.reload();
+                upstreamsLive.reload && upstreamsLive.reload();
+              }}
+              label="Refresh all Overview tiles"
+            />
+          </h1>
           <p className="page-subtitle">Realtime WAF traffic monitoring · last update {tick}s</p>
         </div>
         <div className="page-actions">
-          <button className="btn"><window.I.Refresh /> Refresh</button>
           <button className="btn"><window.I.Download /> Export</button>
           <button className="btn primary"><window.I.External /> Open Grafana</button>
         </div>
@@ -329,11 +379,19 @@ function PageOverview() {
           <div className="card-head">
             <div>
               <div className="card-title">Traffic vs Blocked</div>
-              <div className="card-sub">Realtime · 60s window · 1s buckets</div>
+              <div className="card-sub">
+                Realtime · {trafficWindow.label} window · {trafficWindow.bucketSecs}s buckets
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
-              {['1m', '5m', '15m', '1h'].map((w, i) => (
-                <button key={w} className={`chip ${i === 0 ? 'active' : ''}`}>{w}</button>
+              {TRAFFIC_WINDOWS.map(w => (
+                <button
+                  key={w.label}
+                  className={`chip ${trafficWindow.label === w.label ? 'active' : ''}`}
+                  onClick={() => setTrafficWindow(w)}
+                >
+                  {w.label}
+                </button>
               ))}
             </div>
           </div>
@@ -608,6 +666,32 @@ function RequestDetail({ data }) {
 }
 
 // ============== LIVE FEED ==============
+// PR-UX-A3 (2026-05-12) — Suggested action heuristic. Same
+// signal the operator would reach for: bias toward block when
+// the event already blocked + carried meaningful risk, suggest
+// investigation when a request was challenged or the risk
+// trend is elevated, otherwise stay silent. Returns a small
+// `{label, tone, title}` so the cell renders consistently with
+// the rest of the dashboard's pill palette.
+function suggestedAction(ev) {
+  if (!ev) return null;
+  const action = (ev.action || '').toLowerCase();
+  const risk = typeof ev.risk === 'number' ? ev.risk : null;
+  if (action === 'block' && risk != null && risk >= 70) {
+    return { label: 'Block IP', tone: 'down', title: `Risk ${risk} · already blocked once — consider adding to blacklist` };
+  }
+  if (action === 'challenge') {
+    return { label: 'Investigate', tone: 'warn', title: 'Challenge fired — review request shape before allowing' };
+  }
+  if (action === 'allow' && risk != null && risk >= 60) {
+    return { label: 'Watch', tone: 'warn', title: `Risk ${risk} on an allowed request — IP trending` };
+  }
+  if (action === 'block') {
+    return { label: 'Review', tone: 'neutral', title: 'Blocked at low risk — verify rule scope' };
+  }
+  return null;
+}
+
 function PageLiveFeed() {
   const [paused, setPaused] = useStateP(false);
   const { events, connected } = window.useRealLiveFeed(80, paused);
@@ -615,6 +699,9 @@ function PageLiveFeed() {
   const [filterTier, setFilterTier] = useStateP('all');
   const [search, setSearch] = useStateP('');
   const [selected, setSelected] = useStateP(null);
+  // PR-UX-A3 keyboard nav cursor — index into `recent`.
+  const [cursorIdx, setCursorIdx] = useStateP(-1);
+  const searchInputRef = useRefP(null);
 
   // CQF-T4 — drawer footer actions. Block IP / Whitelist write
   // through the audit-mutated POST endpoints shipped in CQF-T2.
@@ -682,8 +769,52 @@ function PageLiveFeed() {
 
   const recent = filtered.slice().reverse();
 
+  // PR-UX-A3 (2026-05-12) — keyboard shortcuts. j/k advance the
+  // selection cursor, Enter opens the drawer for the cursor row,
+  // Esc closes the drawer, Space toggles pause, `/` focuses the
+  // search input. Mirrors Gmail/Vim conventions familiar to most
+  // SOC analysts. Disabled while the user is typing in an input
+  // so j/k don't eat keystrokes inside the search box.
+  useEffectP(() => {
+    const isTextInput = (el) => {
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+    };
+    const onKey = (ev) => {
+      if (isTextInput(document.activeElement) && ev.key !== 'Escape') return;
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (ev.key === 'j') {
+        ev.preventDefault();
+        setCursorIdx(i => Math.min(i + 1, recent.length - 1));
+      } else if (ev.key === 'k') {
+        ev.preventDefault();
+        setCursorIdx(i => Math.max(i - 1, 0));
+      } else if (ev.key === 'Enter') {
+        if (cursorIdx >= 0 && cursorIdx < recent.length) {
+          ev.preventDefault();
+          setSelected(recent[cursorIdx]);
+        }
+      } else if (ev.key === 'Escape') {
+        if (selected) {
+          ev.preventDefault();
+          setSelected(null);
+        }
+      } else if (ev.key === ' ') {
+        ev.preventDefault();
+        setPaused(p => !p);
+      } else if (ev.key === '/') {
+        ev.preventDefault();
+        if (searchInputRef.current) searchInputRef.current.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [recent, cursorIdx, selected]);
+
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Live Feed</h1>
@@ -701,12 +832,15 @@ function PageLiveFeed() {
           </button>
         </div>
       </div>
-      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <window.I.Activity />
         <span>
           <strong>Live Feed</strong> shows every <em>request</em> the WAF inspected
           (allow / block / challenge). For configuration mutations and a
           chained, durable trail, see <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Trail →</a>.
+        </span>
+        <span style={{ marginLeft: 'auto', fontFamily: 'var(--mono)', fontSize: 10 }}>
+          <kbd>j</kbd>/<kbd>k</kbd> nav · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close · <kbd>Space</kbd> pause · <kbd>/</kbd> search
         </span>
       </div>
 
@@ -727,7 +861,14 @@ function PageLiveFeed() {
           </select>
           <div style={{ position: 'relative', flex: 1, maxWidth: 320 }}>
             <span style={{ position: 'absolute', left: 8, top: 7, color: 'var(--ink-faint)' }}><window.I.Search /></span>
-            <input className="input" style={{ paddingLeft: 28 }} placeholder="Filter by IP, path…" value={search} onChange={e => setSearch(e.target.value)} />
+            <input
+              ref={searchInputRef}
+              className="input"
+              style={{ paddingLeft: 28 }}
+              placeholder="Filter by IP, path…   (press / to focus)"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
           </div>
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
             <span className={`pill ${connected ? 'ok' : 'warn'}`} style={{ marginRight: 6 }}>
@@ -753,12 +894,21 @@ function PageLiveFeed() {
                 <th style={{ width: 80 }}>Risk</th>
                 <th style={{ width: 80 }}>Action</th>
                 <th style={{ width: 160 }}>Rules</th>
+                <th
+                  style={{ width: 100 }}
+                  title="Suggested next step based on action + risk score"
+                >Suggested</th>
                 <th style={{ width: 60 }}></th>
               </tr>
             </thead>
             <tbody>
-              {recent.map(e => (
-                <tr key={e.id} className={e.id === recent[0]?.id ? 'flash' : ''} onClick={() => setSelected(e)}>
+              {recent.map((e, idx) => (
+                <tr
+                  key={e.id}
+                  className={`${e.id === recent[0]?.id ? 'flash' : ''} ${idx === cursorIdx ? 'kb-cursor' : ''}`}
+                  style={idx === cursorIdx ? { outline: '1px solid var(--accent)' } : undefined}
+                  onClick={() => { setCursorIdx(idx); setSelected(e); }}
+                >
                   <td className="num dim">{e.ts}</td>
                   <td className="mono">{e.ip}</td>
                   <td><span className="mono" style={{ color: e.method === 'POST' ? 'var(--info)' : e.method === 'DELETE' ? 'var(--down)' : 'var(--ink-mute)' }}>{e.method}</span></td>
@@ -783,6 +933,14 @@ function PageLiveFeed() {
                   <td><window.RiskMeter value={e.risk} /></td>
                   <td><window.ActionPill value={e.action} /></td>
                   <td className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{e.rules.join(', ') || '—'}</td>
+                  <td>
+                    {(() => {
+                      const s = suggestedAction(e);
+                      return s
+                        ? <span className={`pill ${s.tone}`} style={{ fontSize: 10 }} title={s.title}>{s.label}</span>
+                        : <span className="dim mono" style={{ fontSize: 10 }}>—</span>;
+                    })()}
+                  </td>
                   <td onClick={ev => ev.stopPropagation()}>
                     <button className="icon-btn" title="Inspect"><window.I.External /></button>
                   </td>
@@ -887,7 +1045,17 @@ function PageAttackEvents() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Attack Analytics</h1>
+          <h1 className="page-title">
+            Attack Analytics
+            <window.PageTitleRefresh
+              onClick={() => {
+                byDetector.reload && byDetector.reload();
+                botMix.reload && botMix.reload();
+                tiApi.reload && tiApi.reload();
+              }}
+              label="Refresh detector breakdown"
+            />
+          </h1>
           <p className="page-subtitle">
             Curated detector firings · OWASP + custom rules · last {win}
           </p>
@@ -896,11 +1064,6 @@ function PageAttackEvents() {
           <select className="input select" value={win} onChange={e => setWin(e.target.value)} style={{ width: 90 }}>
             {Object.keys(ATTACK_WINDOWS).map(v => <option key={v}>{v}</option>)}
           </select>
-          <button className="btn" onClick={() => {
-            byDetector.reload && byDetector.reload();
-            botMix.reload && botMix.reload();
-            tiApi.reload && tiApi.reload();
-          }}><window.I.Refresh /></button>
         </div>
       </div>
 
@@ -1040,8 +1203,12 @@ function PageAnalytics() {
     ? Math.max(...blockRatioPct)
     : 0;
   const peakIdx = blockRatioPct.indexOf(peakBlockPct);
+  // LOW-OBS-05 (2026-05-12) — pin to 24h HH:MM so the Block
+  // ratio peak-time reads coherently with the rest of the
+  // dashboard.  Forcing `hour12: false` avoids the en-US 12h/AM-PM
+  // rendering that the QA pass flagged as visually mixed.
   const peakTs = peakIdx >= 0 && points[peakIdx]
-    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    ? new Date(points[peakIdx].ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
     : '—';
 
   const hasSeries = points.length > 0;
@@ -1050,7 +1217,13 @@ function PageAnalytics() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Performance</h1>
+          <h1 className="page-title">
+            Performance
+            <window.PageTitleRefresh
+              onClick={() => ts.reload && ts.reload()}
+              label="Refresh performance series"
+            />
+          </h1>
           <p className="page-subtitle">
             Historical trends · {range} window
           </p>
@@ -1061,7 +1234,6 @@ function PageAnalytics() {
               <button key={r} className={`chip ${range === r ? 'active' : ''}`} onClick={() => setRange(r)}>{r}</button>
             ))}
           </div>
-          <button className="btn" onClick={() => ts.reload && ts.reload()}><window.I.Refresh /></button>
         </div>
       </div>
 
@@ -1188,11 +1360,25 @@ function PageAnalytics() {
                   title="Latency p50/p95/p99 by route"
                   sub={rows.length > 0
                     ? `${rows.length} active route${rows.length === 1 ? '' : 's'} · live histogram`
-                    : 'no per-route samples yet'}
+                    : 'no resolved-route samples in window'}
                 />
                 {rows.length === 0 ? (
+                  // LOW-OBS-01 (2026-05-12) — the previous copy
+                  // ("no per-route samples yet · drive traffic with
+                  // make mock-load") read as broken when the Error
+                  // rate by route card right above it was populated.
+                  // Both read from the audit ring but per-route
+                  // latency only buckets resolved requests; blocked
+                  // traffic never reaches a route resolver so it
+                  // doesn't surface here.  Explicit copy so the
+                  // operator reads the two cards coherently.
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 80, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    Drive traffic with <code>make mock-load</code>; per-route series populate as routes resolve.
+                    Per-route latency populates as resolved requests
+                    arrive. Blocked traffic doesn't reach a route
+                    resolver, so it lands in <em>Error rate by route</em>{' '}
+                    (above) instead of here. Try{' '}
+                    <code>make mock-load</code> to drive allow-class
+                    requests.
                   </div>
                 ) : (
                   <table className="tbl tbl-compact" style={{ marginTop: 4 }}>
@@ -1285,13 +1471,89 @@ function PageAnalytics() {
 }
 
 // ============== AUDIT LOG ==============
+
+// MED-01 (2026-05-11) — extract the resource ID for the RULE
+// column. Admin mutations (`rule_create`, `route_upsert`,
+// `pool_upsert`, etc.) carry `rule_id: null` at the event's top
+// level; the actual ID lives in `fields.resource` (e.g.
+// `/api/rules/<id>`) or, for whole-section replaces, in the
+// `fields.diff.after.<section>.<id>` map. The earlier renderer
+// only checked the top-level field, so the RULE column read
+// `—` even for the very events that mutated rules.
+//
+// Logic per QA report:
+//   1. Try the top-level `rule_id` (covers data-plane events).
+//   2. For action prefixes `rule_*` / `route_*` / `pool_*`, parse
+//      `fields.resource` as `/api/<section>/<id>`.
+//   3. Fall back to the first key of `fields.diff.after.<section>`.
+//   4. LOW-OBS-04 (2026-05-12) — fall back to the joined
+//      `fields.detectors[]` for detection rows whose top-level
+//      `rule_id` is null but whose detector list is populated.
+//      Brings PageAuditLog to parity with the Investigation
+//      timeline (MED-SO-06 fix).
+//   5. Otherwise return null so the cell renders as `—`.
+function extractResourceId(event) {
+  if (!event) return null;
+  if (event.rule_id) return event.rule_id;
+  const action = event.action || '';
+  const fields = event.fields || {};
+  const section = action.startsWith('rule_')
+    ? 'rules'
+    : action.startsWith('route_')
+      ? 'routes'
+      : action.startsWith('pool_')
+        ? 'pools'
+        : null;
+  if (section) {
+    // Step 2 — parse `/api/<plural>/<id>` style resource paths.
+    const resource = typeof fields.resource === 'string' ? fields.resource : '';
+    const apiBase = action.startsWith('pool_') ? '/api/upstreams/pool/' : `/api/${section}/`;
+    if (resource.startsWith(apiBase)) {
+      const tail = resource.slice(apiBase.length);
+      // Tail might be empty (whole-section PUT); keep walking.
+      if (tail && !tail.includes('/')) return tail;
+    }
+    // Step 3 — walk the diff for a single key under .after.<section>.
+    const after = fields.diff && fields.diff.after;
+    if (after && typeof after === 'object' && after[section]) {
+      const keys = Object.keys(after[section]);
+      if (keys.length === 1) return keys[0];
+    }
+  }
+  // Step 4 — LOW-OBS-04. Detection rows often carry the
+  // detector breakdown under `fields.detectors[]` while the
+  // top-level rule_id is null (e.g. WAF blocked by `recon_path`).
+  const detectors = Array.isArray(fields.detectors) ? fields.detectors : [];
+  if (detectors.length) return detectors.join(',');
+  return null;
+}
+
 function PageAuditLog() {
-  const [ipFilter, setIpFilter] = useStateP('');
-  const [ruleIdFilter, setRuleIdFilter] = useStateP('');
-  const [requestIdFilter, setRequestIdFilter] = useStateP('');
+  // F-03 (2026-05-11) — honor `#/audit?rule_id=...&ip=...&request_id=...`
+  // hash params on mount so deep-links from the Rules Stats tab,
+  // request inspector, and other surfaces land pre-filtered.
+  // Parses once at mount; subsequent in-page typing wins via the
+  // controlled-input state below.
+  const initialFromHash = (() => {
+    const m = typeof location !== 'undefined' && location.hash.match(/\?(.+)$/);
+    if (!m) return {};
+    const p = new URLSearchParams(m[1]);
+    return {
+      ruleId: p.get('rule_id') || '',
+      ip: p.get('ip') || '',
+      requestId: p.get('request_id') || '',
+    };
+  })();
+  const [ipFilter, setIpFilter] = useStateP(initialFromHash.ip || '');
+  const [ruleIdFilter, setRuleIdFilter] = useStateP(initialFromHash.ruleId || '');
+  const [requestIdFilter, setRequestIdFilter] = useStateP(initialFromHash.requestId || '');
   const [windowKey, setWindowKey] = useStateP('all');
   const [pageLimit, setPageLimit] = useStateP(200);
-  const [debouncedQ, setDebouncedQ] = useStateP({ ip: '', ruleId: '', requestId: '' });
+  const [debouncedQ, setDebouncedQ] = useStateP({
+    ip: initialFromHash.ip || '',
+    ruleId: initialFromHash.ruleId || '',
+    requestId: initialFromHash.requestId || '',
+  });
   // FIX 2026-05-04 — Audit Trail page now defaults to admin /
   // access / system events, hiding per-request `detection`
   // events. Operators reading this page want config history,
@@ -1363,7 +1625,13 @@ function PageAuditLog() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Audit Trail</h1>
+          <h1 className="page-title">
+            Audit Trail
+            <window.PageTitleRefresh
+              onClick={() => audit.reload && audit.reload()}
+              label="Refresh audit events"
+            />
+          </h1>
           <p className="page-subtitle">
             Hash-chained · {events.length.toLocaleString()} events shown
             <span style={{ marginLeft: 8 }}>
@@ -1377,11 +1645,6 @@ function PageAuditLog() {
               </span>
             )}
           </p>
-        </div>
-        <div className="page-actions">
-          <button className="btn" onClick={() => audit.reload && audit.reload()}>
-            <window.I.Refresh /> Refresh
-          </button>
         </div>
       </div>
       <div className="card" style={{ padding: '8px 12px', marginBottom: 8, fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1474,7 +1737,7 @@ function PageAuditLog() {
                   <td><span className={`pill ${classPill(e.class)}`}>{e.class}</span></td>
                   <td className="mono" style={{ color: 'var(--ink)' }}>{e.action}</td>
                   <td className="mono">{e.client_ip || '—'}</td>
-                  <td className="mono dim" style={{ fontSize: 11 }}>{e.rule_id || '—'}</td>
+                  <td className="mono dim" style={{ fontSize: 11 }}>{extractResourceId(e) || '—'}</td>
                   <td className="dim">{e.reason}</td>
                   <td className="mono" style={{ fontSize: 10, color: 'var(--brand-yellow)' }}>{e.request_id}</td>
                 </tr>
@@ -1504,6 +1767,254 @@ function PageAuditLog() {
         )}
       </div>
     </>
+  );
+}
+
+// ============== POLICY POSTURE CARD ==============
+//
+// P1 (2026-05-11) — single-line "current posture" cheat-card that
+// renders at the top of every Policy section page. Operators
+// landing on Rules / Access Lists / Detectors / Traffic Gates /
+// Routing & Upstreams previously had to read the whole page to
+// learn what the WAF was currently enforcing. The data was
+// already there across five APIs; this card cross-tabulates them
+// in one ~28px-tall row so page-entry orientation drops from
+// ~15s to ~2s.
+//
+// Chips are clickable — each one jumps to the relevant page.
+// Read-only summary; no mutation controls live here.
+function PolicyPostureCard() {
+  const modeApi = window.useModeApi ? window.useModeApi() : { data: null };
+  const tiersApi = window.useTiersApi ? window.useTiersApi() : { data: null };
+  const aiApi = window.useAiEnabledApi ? window.useAiEnabledApi() : { data: null };
+  const rulesApi = window.useApi
+    ? window.useApi('/api/rules', { intervalMs: 30000, fallback: { rules: [] } })
+    : { data: { rules: [] } };
+  const blApi = window.useApi
+    ? window.useApi('/api/blacklist', { intervalMs: 30000, fallback: { entries: [] } })
+    : { data: { entries: [] } };
+  const wlApi = window.useApi
+    ? window.useApi('/api/whitelist', { intervalMs: 30000, fallback: { entries: [] } })
+    : { data: { entries: [] } };
+  const ddosApi = window.useApi
+    ? window.useApi('/api/gates/ddos', { intervalMs: 30000, fallback: null })
+    : { data: null };
+
+  const mode = (modeApi.data?.mode || 'enforce').toUpperCase();
+  const tierCount = Array.isArray(tiersApi.data?.tiers) ? tiersApi.data.tiers.length : '—';
+  const aiOn = !!aiApi.data?.enabled && !!aiApi.data?.feature_present;
+  const aiFeaturePresent = !!aiApi.data?.feature_present;
+  const ruleCount = Array.isArray(rulesApi.data?.rules) ? rulesApi.data.rules.length : 0;
+  const blCount = Array.isArray(blApi.data?.entries) ? blApi.data.entries.length : 0;
+  const wlCount = Array.isArray(wlApi.data?.entries) ? wlApi.data.entries.length : 0;
+  const ddosObserve = ddosApi.data?.observe_only === true;
+  const ddosEnabled = ddosApi.data?.enabled === true;
+
+  const chips = [
+    {
+      label: mode === 'LOG_ONLY' ? 'SHADOW' : mode,
+      tone: mode === 'LOG_ONLY' ? 'warn' : 'ok',
+      title: mode === 'LOG_ONLY'
+        ? 'Mode: log_only — detections still recorded but no blocks. Flip from Settings.'
+        : 'Mode: enforce — blocks land. Flip from Settings.',
+      href: '#/settings',
+    },
+    {
+      label: `${tierCount} tier${tierCount === 1 ? '' : 's'}`,
+      tone: 'neutral',
+      title: 'Per-request risk tiers · Detectors & Tiers page',
+      href: '#/detectors',
+    },
+    {
+      label: aiFeaturePresent ? (aiOn ? 'AI on' : 'AI off') : 'AI absent',
+      tone: aiOn ? 'ok' : 'neutral',
+      title: aiFeaturePresent
+        ? (aiOn ? 'ML detector enabled · Detectors & Tiers' : 'ML detector disabled · Detectors & Tiers')
+        : 'Binary built without --features ai',
+      href: '#/detectors',
+    },
+    {
+      label: `${ruleCount} rule${ruleCount === 1 ? '' : 's'}`,
+      tone: 'neutral',
+      title: 'Custom rule corpus · Rules page',
+      href: '#/rules',
+    },
+    {
+      label: `${blCount} blacklist${blCount === 1 ? '' : ''}`,
+      tone: 'neutral',
+      title: 'Blacklist entries · Access Lists page',
+      href: '#/blacklist',
+    },
+    {
+      label: `${wlCount} whitelist${wlCount === 1 ? '' : ''}`,
+      tone: 'neutral',
+      title: 'Whitelist entries · Access Lists page',
+      href: '#/whitelist',
+    },
+    {
+      label: ddosEnabled
+        ? (ddosObserve ? 'DDoS observe' : 'DDoS enforce')
+        : 'DDoS off',
+      tone: ddosEnabled && !ddosObserve ? 'ok' : 'neutral',
+      title: ddosEnabled
+        ? (ddosObserve
+            ? 'DDoS gate in observe-only mode · Traffic Gates'
+            : 'DDoS gate enforcing · Traffic Gates')
+        : 'DDoS gate disabled · Traffic Gates',
+      href: '#/traffic-gates',
+    },
+  ];
+
+  return (
+    <div
+      className="card"
+      style={{
+        padding: '8px 12px',
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        fontSize: 11,
+      }}
+      role="status"
+      aria-label="Current WAF policy posture"
+    >
+      <span style={{ color: 'var(--ink-dim)', fontWeight: 600, letterSpacing: 0.4 }}>
+        POSTURE
+      </span>
+      {chips.map((c, i) => (
+        <a
+          key={i}
+          href={c.href}
+          className={`pill ${c.tone}`}
+          title={c.title}
+          style={{ textDecoration: 'none', fontSize: 11 }}
+        >
+          {c.label}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+// PR-UX-A1 (2026-05-12) — Security Ops cheat card.  Mirrors the
+// shape of `PolicyPostureCard` (compact horizontal pill strip,
+// click-through chips) but focused on the "what's happening
+// right now" view an analyst needs at a glance: blocks-in-window,
+// firing alerts, top attacker, audit ring lag, and a one-click
+// jump back to Investigation.
+//
+// Mounted on the five Sec Ops pages (Overview, Live Feed,
+// Incidents, Investigation, Top Attackers) so the analyst sees
+// the same heartbeat no matter where they navigate.
+function SecOpsPostureCard() {
+  const stats = window.useStatsApi ? window.useStatsApi() : { data: null };
+  const incidents = window.useApi
+    ? window.useApi('/api/incidents', { intervalMs: 5000, fallback: null })
+    : { data: null };
+  const topApi = window.useApi
+    ? window.useApi('/api/attacks/top?window=3600&limit=1', { intervalMs: 10000, fallback: null })
+    : { data: null };
+  const witness = window.useApi
+    ? window.useApi('/api/audit/witness', { intervalMs: 15000, fallback: null })
+    : { data: null };
+
+  const blocksTotal = stats.data?.blocks_total ?? 0;
+  const blockRate = stats.data?.block_rate_pct;
+  const requestRate = stats.data?.request_rate;
+  const firingCount = Array.isArray(incidents.data?.incidents)
+    ? incidents.data.incidents.filter(i => i.status === 'firing').length
+    : (Array.isArray(incidents.data?.raw_alerts?.firing) ? incidents.data.raw_alerts.firing.length : 0);
+  const ackedCount = Array.isArray(incidents.data?.incidents)
+    ? incidents.data.incidents.filter(i => i.status === 'acknowledged').length
+    : 0;
+  const topAttacker = (topApi.data?.attackers || [])[0];
+  const witnessLag = witness.data?.lag_seconds;
+  const witnessFresh = typeof witnessLag === 'number' && witnessLag < 60;
+
+  const chips = [
+    {
+      label: typeof requestRate === 'number'
+        ? `${requestRate.toFixed(1)} req/s`
+        : '— req/s',
+      tone: 'neutral',
+      title: 'Live request rate · /api/stats',
+      href: '#/overview',
+    },
+    {
+      label: typeof blockRate === 'number'
+        ? `${blockRate.toFixed(1)}% blocked`
+        : `${blocksTotal.toLocaleString()} blocked`,
+      tone: 'neutral',
+      title: 'Block rate · process-lifetime · /api/stats',
+      href: '#/live',
+    },
+    {
+      label: firingCount > 0 ? `${firingCount} firing` : 'no alerts',
+      tone: firingCount > 0 ? 'warn' : 'ok',
+      title: firingCount > 0
+        ? `${firingCount} alert${firingCount === 1 ? '' : 's'} firing · ${ackedCount} acked`
+        : 'No SLO alerts firing',
+      href: '#/incidents',
+    },
+    topAttacker
+      ? {
+          label: topAttacker.country
+            ? `top: ${topAttacker.identifier} · ${topAttacker.country}`
+            : `top: ${topAttacker.identifier}`,
+          tone: 'neutral',
+          title: `Top attacker last 1h · ${topAttacker.hits} hits`,
+          href: `#/investigation?pivot=${encodeURIComponent(topAttacker.identifier)}&kind=ip`,
+        }
+      : {
+          label: 'no attackers',
+          tone: 'ok',
+          title: 'No ranked attackers in the last hour',
+          href: '#/top-attackers',
+        },
+    {
+      label: witness.data?.last_signature_ts
+        ? (witnessFresh ? 'audit fresh' : `audit lag ${witnessLag}s`)
+        : 'no witness yet',
+      tone: witnessFresh ? 'ok' : 'neutral',
+      title: witness.data?.last_signature_ts
+        ? `Last chain witness · ${witnessLag}s ago`
+        : 'No audit chain witness recorded yet',
+      href: '#/audit',
+    },
+  ];
+
+  return (
+    <div
+      className="card"
+      style={{
+        padding: '8px 12px',
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        fontSize: 11,
+      }}
+      role="status"
+      aria-label="Current Security Ops posture"
+    >
+      <span style={{ color: 'var(--ink-dim)', fontWeight: 600, letterSpacing: 0.4 }}>
+        SEC OPS
+      </span>
+      {chips.map(c => (
+        <a
+          key={c.label}
+          className={`pill ${c.tone}`}
+          href={c.href}
+          title={c.title}
+          style={{ textDecoration: 'none', fontSize: 11 }}
+        >
+          {c.label}
+        </a>
+      ))}
+    </div>
   );
 }
 
@@ -1589,7 +2100,15 @@ function RuleSimulator() {
             Replay a hypothetical request against the live detector chain — no traffic, no audit emit.
           </div>
         </div>
-        <span className="pill neutral">Tier A</span>
+        {/* LOW-07 (2026-05-11) — tooltip + link so operators new
+            to the framework see what "Tier A" means here vs. the
+            Critical/High/Medium/Low tiers on Detectors & Tiers. */}
+        <a
+          href="#/detectors"
+          className="pill neutral"
+          style={{ textDecoration: 'none' }}
+          title="Tier A bonus surface — runs the live detector chain in a sandbox so operators can preview verdicts before persisting a rule. The Critical/High/Medium/Low tiers on the Detectors page are a different concept (request risk tier)."
+        >Tier A</a>
       </div>
       <div style={{ padding: 14, display: 'grid', gridTemplateColumns: '110px 1fr 1fr', gap: 8, alignItems: 'start' }}>
         <select className="input select" value={method} onChange={e => setMethod(e.target.value)}>
@@ -1803,25 +2322,65 @@ function PageRuleManager() {
     setSelectedId(id);
   }
 
+  // P3 (2026-05-11) — tab the Rules page so Simulator is its own
+  // full-viewport surface. Pre-fix the Simulator panel always
+  // pinned ~200px at the top of the page even when the operator
+  // was editing rule #47 they weren't simulating. Operators
+  // managing 50+ rules can now see more list rows; Simulator
+  // workflows get their own focused view. Default tab is Rules
+  // so existing muscle memory + deep-links land where operators
+  // expect.
+  const [activeTab, setActiveTab] = useStateP('rules');
+
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Rules</h1>
+          <h1 className="page-title">
+            Rules
+            <window.PageTitleRefresh
+              onClick={() => rulesApi.reload && rulesApi.reload()}
+              label="Reload rules"
+            />
+          </h1>
           <p className="page-subtitle">{merged.length} total · validate before apply · audit-chained</p>
         </div>
         <div className="page-actions">
-          <button className="btn" onClick={() => rulesApi.reload && rulesApi.reload()} disabled={busy}>
-            <window.I.Refresh /> Reload
-          </button>
           <button className="btn primary" onClick={() => setShowNew(true)} disabled={busy}>
             <window.I.Plus /> New rule
           </button>
         </div>
       </div>
 
-      <RuleSimulator />
+      {/* P3 tab bar — `chip active`/`chip` styling reuses the same
+          chip pattern the Performance + Top Attackers windows
+          use, so operators don't need to learn a new affordance. */}
+      <div className="card" style={{ padding: '6px 10px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button
+          className={`chip ${activeTab === 'rules' ? 'active' : ''}`}
+          onClick={() => setActiveTab('rules')}
+          style={{ fontSize: 12 }}
+        >
+          Rules <span style={{ opacity: 0.6, marginLeft: 4 }}>· {merged.length}</span>
+        </button>
+        <button
+          className={`chip ${activeTab === 'simulator' ? 'active' : ''}`}
+          onClick={() => setActiveTab('simulator')}
+          style={{ fontSize: 12 }}
+        >
+          Simulator
+        </button>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--ink-dim)' }}>
+          {activeTab === 'rules'
+            ? 'List + detail view'
+            : 'Replay a hypothetical request against the live detector chain — no traffic, no audit emit'}
+        </span>
+      </div>
 
+      {activeTab === 'simulator' && <RuleSimulator />}
+
+      {activeTab === 'rules' && (
       <div className="split-list">
         <div className="left">
           <div style={{ padding: 10, borderBottom: '1px solid var(--hairline)' }}>
@@ -1925,7 +2484,16 @@ function PageRuleManager() {
                 {tab === 'stats' && (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center', minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
                     <span>Per-rule statistics ship in a follow-up.</span>
-                    <span style={{ fontSize: 11 }}>For now: filter <a href="#/audit" style={{ color: 'var(--accent)' }}>Audit Log</a> by <code>rule_id={selected.id}</code> to see every match.</span>
+                    {/* F-03 (2026-05-11) — deep-link the rule_id so
+                        Audit Trail pre-fills the filter. Previously
+                        landed operators on an unfiltered audit view
+                        with thousands of rows. */}
+                    <span style={{ fontSize: 11 }}>
+                      For now: <a
+                        href={`#/audit?rule_id=${encodeURIComponent(selected.id)}`}
+                        style={{ color: 'var(--accent)' }}
+                      >Open Audit Log filtered by <code>rule_id={selected.id}</code> →</a>
+                    </span>
                   </div>
                 )}
               </div>
@@ -1941,6 +2509,7 @@ function PageRuleManager() {
           )}
         </div>
       </div>
+      )}
 
       {showNew && (
         <NewRuleModal
@@ -1997,6 +2566,22 @@ function DeleteRuleModal({ ruleId, busy, onCancel, onConfirm }) {
 }
 
 function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNewEnabled, onCancel, onSave, busy }) {
+  // F-02 (2026-05-11) — track whether the operator has attempted
+  // to submit so we can show inline validation errors on empty
+  // required fields instead of silently no-op'ing. Pre-fix the
+  // Save button was just `disabled` when Rule ID was empty,
+  // giving operators no signal that anything was wrong.
+  const [attempted, setAttempted] = useStateP(false);
+  const idRef = useRefP(null);
+  const idEmpty = !newId.trim();
+  const handleSave = () => {
+    if (idEmpty) {
+      setAttempted(true);
+      if (idRef.current) idRef.current.focus();
+      return;
+    }
+    onSave();
+  };
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
@@ -2010,8 +2595,23 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
         </div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <span className="field-label">Rule ID</span>
-            <input className="input" value={newId} onChange={e => setNewId(e.target.value)} placeholder="custom-xss-001" autoFocus />
+            <span className="field-label">
+              Rule ID <span style={{ color: 'var(--down)' }}>*</span>
+            </span>
+            <input
+              ref={idRef}
+              className="input"
+              value={newId}
+              onChange={e => setNewId(e.target.value)}
+              placeholder="custom-xss-001"
+              aria-required="true"
+              aria-invalid={attempted && idEmpty}
+              autoFocus
+              style={attempted && idEmpty ? { borderColor: 'var(--down)' } : undefined}
+            />
+            {attempted && idEmpty && (
+              <span style={{ fontSize: 11, color: 'var(--down)' }}>Rule ID is required.</span>
+            )}
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span className="field-label">DSL body</span>
@@ -2029,7 +2629,11 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
         </div>
         <div style={{ padding: 12, borderTop: '1px solid var(--hairline)', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn primary" onClick={onSave} disabled={busy || !newId.trim()}>Save</button>
+          {/* F-02 — Save is no longer disabled when the field is
+              empty; clicking with an empty value surfaces the
+              inline error + focuses the field, so operators see
+              what they missed instead of an inert button. */}
+          <button className="btn primary" onClick={handleSave} disabled={busy}>Save</button>
         </div>
       </div>
     </div>
@@ -2238,9 +2842,40 @@ function DetectorMaskCard() {
             );
           })}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {isEditing ? (
             <>
+              {/* P8 (2026-05-11) — diff summary right next to Save so
+                  operators see exactly what's about to land. Each
+                  chip click during Edit mode is a silent toggle;
+                  this is the only place the about-to-save delta
+                  becomes visible before commit. */}
+              {(() => {
+                const turningOff = MASK_CLASSES.filter(c => mask[c] && !draft[c]);
+                const turningOn  = MASK_CLASSES.filter(c => !mask[c] && draft[c]);
+                if (turningOff.length === 0 && turningOn.length === 0) {
+                  return (
+                    <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+                      no changes yet
+                    </span>
+                  );
+                }
+                return (
+                  <span style={{ fontSize: 10, color: 'var(--ink-mute)' }}>
+                    {turningOff.length > 0 && (
+                      <span style={{ color: 'var(--down)' }}>
+                        disable {turningOff.join(', ')}
+                      </span>
+                    )}
+                    {turningOff.length > 0 && turningOn.length > 0 && ' · '}
+                    {turningOn.length > 0 && (
+                      <span style={{ color: 'var(--up)' }}>
+                        enable {turningOn.join(', ')}
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
               <button className="btn primary" disabled={busy} onClick={saveEdit} style={{ fontSize: 11, padding: '4px 10px' }}>Save</button>
               <button className="btn" disabled={busy} onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '4px 10px' }}>Cancel</button>
             </>
@@ -2499,8 +3134,23 @@ function AiDetectorRow() {
   const attackPct = total > 0 ? ((metrics.attack / total) * 100).toFixed(1) : '0.0';
   const fbTotal = metrics?.fallback ? Object.values(metrics.fallback).reduce((a, b) => a + b, 0) : 0;
 
+  // F-06 (2026-05-11) — confirm before disabling. Enabling is
+  // safe to flip immediately; disabling has broader traffic
+  // impact (attack detection stops on the next request) so the
+  // operator gets a confirm() prompt. Mirrors the Rules Delete +
+  // Access Lists Remove styled-modal pattern — small enough that
+  // a one-line confirm here is fine.
   async function flip() {
     if (busy || !featurePresent) return;
+    if (runtimeOn) {
+      const ok = window.confirm(
+        'Disable the AI detector?\n\n' +
+        'Attack detection from the ML model stops on the next request. ' +
+        'The regex/heuristic detectors keep running. ' +
+        'You can re-enable from this same button.'
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     try {
       const r = await window.aiEnabledPut(!runtimeOn);
@@ -2617,7 +3267,19 @@ function PageTierConfig() {
     : { data: null };
   const tiers = tiersApi.data?.tiers || [];
   const routes = routesApi.data?.routes || [];
-  const [selectedName, setSelectedName] = useStateP(null);
+  // P7 (2026-05-11) — honor `#/detectors?tier=critical` on mount
+  // so deep-links from other surfaces (e.g. Live Feed → tier
+  // detail) land pre-selected. Parses once at first render; the
+  // tier-card click below still controls selection on the page.
+  const initialTier = (() => {
+    if (typeof window === 'undefined') return null;
+    const h = window.location.hash || '';
+    const q = h.indexOf('?');
+    if (q < 0) return null;
+    const p = new URLSearchParams(h.slice(q + 1));
+    return p.get('tier');
+  })();
+  const [selectedName, setSelectedName] = useStateP(initialTier);
   const [tierEditor, setTierEditor] = useStateP(null);  // null | tier object
   const [busy, setBusy] = useStateP(false);
 
@@ -2687,9 +3349,16 @@ function PageTierConfig() {
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Detectors &amp; Tiers</h1>
+          <h1 className="page-title">
+            Detectors &amp; Tiers
+            <window.PageTitleRefresh
+              onClick={() => { tiersApi.reload && tiersApi.reload(); routesApi.reload && routesApi.reload(); }}
+              label="Refresh tier + route data"
+            />
+          </h1>
           <p className="page-subtitle">
             Per-class detector mask (with per-tier overrides) + per-tier risk thresholds ·
             <span className="num"> {tiers.length}</span> active tiers ·
@@ -2700,11 +3369,6 @@ function PageTierConfig() {
               </span>
             </span>
           </p>
-        </div>
-        <div className="page-actions">
-          <button className="btn" onClick={() => { tiersApi.reload && tiersApi.reload(); routesApi.reload && routesApi.reload(); }}>
-            <window.I.Refresh /> Refresh
-          </button>
         </div>
       </div>
 
@@ -2882,7 +3546,7 @@ function PageTierConfig() {
                           <td className="mono">{r.upstream}</td>
                           <td>
                             {auth.length === 0 ? (
-                              <span className="pill" style={{ opacity: 0.5 }} title="Any identity admitted (default open)">open</span>
+                              <span className="pill" style={{ opacity: 0.65 }} title="Any identity admitted (default open)">open</span>
                             ) : (
                               auth.map(k => (
                                 <span
@@ -3181,6 +3845,23 @@ function ListPage({ kind }) {
   const raw = api.data?.entries ?? api.data ?? [];
   const data = Array.isArray(raw) ? raw : [];
 
+  // P4 (2026-05-11) — per-entry hit counts in the last 1h / 24h.
+  // Polled every 15s; the data plane increments the counter
+  // inside `AccessListStore::matches()` on each access-list
+  // match. Operators see which entries are still earning their
+  // keep and a "consider removing" link for entries that haven't
+  // matched anything in the last 24h.
+  const hitsPath = isBL ? '/api/blacklist/hits?window=3600' : '/api/whitelist/hits?window=3600';
+  const hits24Path = isBL ? '/api/blacklist/hits?window=86400' : '/api/whitelist/hits?window=86400';
+  const hits1hApi = window.useApi
+    ? window.useApi(hitsPath, { intervalMs: 15000, fallback: { hits: {} } })
+    : { data: { hits: {} } };
+  const hits24hApi = window.useApi
+    ? window.useApi(hits24Path, { intervalMs: 60000, fallback: { hits: {} } })
+    : { data: { hits: {} } };
+  const hits1h = hits1hApi.data?.hits || {};
+  const hits24h = hits24hApi.data?.hits || {};
+
   // CQF-T2 — Add entry form + per-row delete. Form is shown
   // inline in the page-head when "Add entry" is clicked; submit
   // lands via accessListAdd → audit-mutated POST.
@@ -3194,6 +3875,12 @@ function ListPage({ kind }) {
   const [draftExpiry, setDraftExpiry] = useStateP(''); // YYYY-MM-DDTHH:mm (datetime-local)
   const [search, setSearch] = useStateP('');
   const [showImport, setShowImport] = useStateP(false);
+  // F-02 (2026-05-11) — submit-attempt tracking so the Add form
+  // shows inline validation on empty Value instead of a silently
+  // disabled button. The value ref also lets us focus the field
+  // after a failed submit.
+  const [attempted, setAttempted] = useStateP(false);
+  const valueRef = useRefP(null);
 
   // Filter entries by search term against value + note + kind.
   const filtered = useMemoP(() => {
@@ -3209,7 +3896,14 @@ function ListPage({ kind }) {
 
   async function submitAdd() {
     const value = draftValue.trim();
-    if (!value || busy) return;
+    if (busy) return;
+    // F-02 — surface a visible "Value is required" error +
+    // focus the field instead of silently no-op'ing.
+    if (!value) {
+      setAttempted(true);
+      if (valueRef.current) valueRef.current.focus();
+      return;
+    }
     setBusy(true);
     try {
       const id = `${kind}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -3304,9 +3998,21 @@ function ListPage({ kind }) {
     }
   }
 
+  // F-07 (2026-05-11) — replaced native window.confirm() with
+  // a styled modal so the Remove flow looks consistent with the
+  // Rules Delete and Detector Disable patterns. Native confirm()
+  // bypasses the dark theme and is auto-dismissible by some
+  // browser settings.
+  const [pendingDelete, setPendingDelete] = useStateP(null); // null | entry object
+
   async function deleteRow(entry) {
     if (busy) return;
-    if (!confirm(`Remove ${kind} entry ${entry.kind}:${entry.value}?`)) return;
+    setPendingDelete(entry);
+  }
+
+  async function confirmDeleteRow() {
+    const entry = pendingDelete;
+    if (!entry || busy) return;
     setBusy(true);
     try {
       const r = await window.accessListDelete(kind, entry.id);
@@ -3321,14 +4027,22 @@ function ListPage({ kind }) {
       window.aegisToast(`Remove error: ${e.message || e}`, 'err');
     } finally {
       setBusy(false);
+      setPendingDelete(null);
     }
   }
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">{isBL ? 'Blacklist' : 'Whitelist'}</h1>
+          <h1 className="page-title">
+            {isBL ? 'Blacklist' : 'Whitelist'}
+            <window.PageTitleRefresh
+              onClick={() => api.reload && api.reload()}
+              label={isBL ? 'Refresh blacklist' : 'Refresh whitelist'}
+            />
+          </h1>
           <p className="page-subtitle">
             {data.length.toLocaleString()} entries
             <span style={{ marginLeft: 8 }}>
@@ -3339,9 +4053,6 @@ function ListPage({ kind }) {
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn" onClick={() => api.reload && api.reload()}>
-            <window.I.Refresh /> Refresh
-          </button>
           {/* M005 — bulk import opens a CSV-paste modal */}
           <button
             className="btn"
@@ -3356,7 +4067,11 @@ function ListPage({ kind }) {
             onClick={() => setShowForm(v => !v)}
             disabled={busy}
           >
-            <window.I.Plus /> {showForm ? 'Cancel' : 'Add entry'}
+            {/* F-08 — drop the `+` icon in the Cancel state.
+                `+` semantically means "add"; pairing it with
+                Cancel is contradictory. Drop the icon entirely
+                when collapsing the form. */}
+            {showForm ? 'Cancel' : <><window.I.Plus /> Add entry</>}
           </button>
         </div>
       </div>
@@ -3403,8 +4118,11 @@ function ListPage({ kind }) {
               </select>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 220 }}>
-              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Value</label>
+              <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                Value <span style={{ color: 'var(--down)' }}>*</span>
+              </label>
               <input
+                ref={valueRef}
                 type="text"
                 value={draftValue}
                 onChange={e => setDraftValue(
@@ -3421,8 +4139,17 @@ function ListPage({ kind }) {
                   /* country */             'CN'
                 }
                 disabled={busy}
-                style={{ padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace' }}
+                aria-required="true"
+                aria-invalid={attempted && !draftValue.trim()}
+                style={{
+                  padding: '6px 8px', background: 'var(--canvas-2)',
+                  border: `1px solid ${attempted && !draftValue.trim() ? 'var(--down)' : 'var(--hairline)'}`,
+                  borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace',
+                }}
               />
+              {attempted && !draftValue.trim() && (
+                <span style={{ fontSize: 11, color: 'var(--down)' }}>Value is required.</span>
+              )}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 2, minWidth: 200 }}>
               <label style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Note (optional)</label>
@@ -3466,7 +4193,7 @@ function ListPage({ kind }) {
             <button
               className="btn primary"
               onClick={submitAdd}
-              disabled={busy || !draftValue.trim()}
+              disabled={busy}
             >
               Submit
             </button>
@@ -3482,6 +4209,7 @@ function ListPage({ kind }) {
               <th>Value</th>
               <th>Note</th>
               <th style={{ width: 130 }}>{isBL ? 'Action' : 'Bypass'}</th>
+              <th style={{ width: 90 }} title="Per-entry hit count in the last hour · last day (hover for the 24h figure)">Hits · 1h</th>
               <th style={{ width: 130 }}>Expires</th>
               <th style={{ width: 130 }}>Created</th>
               <th style={{ width: 80 }}></th>
@@ -3489,7 +4217,7 @@ function ListPage({ kind }) {
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 16, color: 'var(--ink-dim)', fontSize: 12 }}>
                 {data.length === 0
                   ? 'No entries.'
                   : `No matches for "${search}". Clear the search to see all ${data.length} entries.`}
@@ -3510,6 +4238,24 @@ function ListPage({ kind }) {
                         : (e.bypass || []).map(b => <span key={b} className="pill neutral" style={{ fontSize: 9 }}>{b}</span>)}
                     </div>
                   )}
+                </td>
+                <td className="num">
+                  {(() => {
+                    const h1 = hits1h[e.id] || 0;
+                    const h24 = hits24h[e.id] || 0;
+                    const tone = h1 > 0 ? 'ok' : (h24 > 0 ? 'neutral' : 'warn');
+                    const tip = `last 1h: ${h1} · last 24h: ${h24}`;
+                    return (
+                      <span className={`pill ${tone}`} title={tip} style={{ fontSize: 10 }}>
+                        {h1}
+                        {h24 === 0 && h1 === 0 && (
+                          <span style={{ marginLeft: 4, fontSize: 9, fontStyle: 'italic' }}>
+                            · stale
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
                 </td>
                 <td className="num" style={{ color: e.expires_at ? 'var(--warn)' : 'var(--ink-dim)' }}>
                   {e.expires_at ? new Date(e.expires_at).toISOString().slice(0, 10) : 'never'}
@@ -3543,7 +4289,53 @@ function ListPage({ kind }) {
           onImport={bulkImport}
         />
       )}
+      {pendingDelete && (
+        <RemoveAccessListEntryModal
+          kind={kind}
+          entry={pendingDelete}
+          busy={busy}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={confirmDeleteRow}
+        />
+      )}
     </>
+  );
+}
+
+// F-07 (2026-05-11) — styled confirmation modal for the Access
+// Lists Remove flow, replacing native window.confirm(). Mirrors
+// DeleteRuleModal / DeleteRouteModal so all three "destructive
+// remove" surfaces share one visual language.
+function RemoveAccessListEntryModal({ kind, entry, busy, onCancel, onConfirm }) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <div className="modal-head">
+          <div className="modal-title">
+            Remove {kind} entry <code>{entry.kind}:{entry.value}</code>?
+          </div>
+          <button className="btn btn-sm" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          <p style={{ fontSize: 13, lineHeight: 1.5 }}>
+            Removing <code>{entry.kind}:{entry.value}</code> is audit-mutated and
+            cannot be undone. New requests stop matching this entry on the
+            next request; in-flight requests finish on the old list.
+          </p>
+          {entry.note && (
+            <p style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 8 }}>
+              Note on this entry: <em>{entry.note}</em>
+            </p>
+          )}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn danger" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Removing…' : 'Remove'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3689,7 +4481,9 @@ function ConfigVersionsCard() {
           <tbody>
             {versions.map(v => {
               const isOpen = expanded === v.seq;
-              const ts = v.ts ? new Date(v.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' }) : '—';
+              // LOW-ADM-05 (2026-05-12) — pin 24h so Config
+              // history TIME reads consistent with Audit Trail.
+              const ts = fmtAbsoluteTimestamp(v.ts);
               return (
                 <Fragment key={`${v.seq}-${v.request_id}`}>
                   <tr style={{ cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : v.seq)}>
@@ -4212,8 +5006,6 @@ function PageSettings() {
   const showRuntimeHint = !!runtime?.data;
 
   const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
-  const [stackTraces, setStackTraces] = useStateP(true);
-  const [redactJSON, setRedactJSON] = useStateP(true);
 
   async function toggleShadow() {
     if (busy) return;
@@ -4347,22 +5139,7 @@ function PageSettings() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Response Filtering</div>
-          <span className="pill warn" title="Toggles are local-only. Backend uses cfg.observability + cfg.dlp from waf.yaml.">not wired</span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div className={`toggle ${stackTraces ? 'on' : ''}`} onClick={() => setStackTraces(s => !s)} />
-            <div style={{ fontSize: 12 }}>Block stack traces in responses</div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div className={`toggle ${redactJSON ? 'on' : ''}`} onClick={() => setRedactJSON(s => !s)} />
-            <div style={{ fontSize: 12 }}>Redact JSON fields (password, secret, token, ssn)</div>
-          </div>
-        </div>
-      </div>
+      <ResponseFilterCard />
 
       {/* M004 (2026-05-07) — surface backend data already returned
           by /api/admin/sessions, /api/admin/break-glass,
@@ -4408,6 +5185,110 @@ function PageSettings() {
 // Visibility comes first; the mutation surfaces follow once the
 // audit-mutated handlers exist (DELETE /api/admin/sessions/{id},
 // POST /api/admin/break-glass, PUT /api/integrations).
+
+// 2026-05-11 PR #7 — three-rung response-filter live toggle.
+// Reads `/api/response-filter` for current state, flips rungs
+// through the audit-mutated PUT. Each rung is independently
+// togglable; defaults are all-on. The "wired: false" branch shows
+// when the binary boots without a `Pipeline` writer (test bundles)
+// — the toggles render in a read-only state with a warn pill.
+function ResponseFilterCard() {
+  const api = window.useResponseFilterApi
+    ? window.useResponseFilterApi()
+    : { data: null };
+  const data = api.data || {};
+  const wired = data.wired !== false; // default to wired so live state lights up before first poll
+  const [busy, setBusy] = useStateP(null); // which rung is currently in-flight, for the wait cursor
+
+  async function flip(rung) {
+    if (busy || !wired) return;
+    const patch = {
+      scrub_stack_traces: !!data.scrub_stack_traces,
+      mask_internal_ips:  !!data.mask_internal_ips,
+      redact_dlp:         !!data.redact_dlp,
+    };
+    patch[rung] = !patch[rung];
+    setBusy(rung);
+    try {
+      const r = await window.responseFilterPut(patch);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Response filter · ${rung} ${patch[rung] ? 'on' : 'off'}`, 'ok');
+        api.reload && api.reload();
+      } else if (r.status === 409 && r.reason === 'feature_off') {
+        window.aegisToast('Response filter pipeline not wired in this build', 'warn');
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Response filter toggle failed: ${msg}`, 'err');
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const rungs = [
+    {
+      key: 'scrub_stack_traces',
+      label: 'Scrub stack traces',
+      desc: 'Node.js / JVM / Python / Rust / PHP / .NET / Ruby / Go → [REDACTED]',
+    },
+    {
+      key: 'mask_internal_ips',
+      label: 'Mask internal IPs',
+      desc: 'RFC 1918 + loopback + link-local → [INTERNAL]',
+    },
+    {
+      key: 'redact_dlp',
+      label: 'Redact DLP payloads',
+      desc: 'Credit cards (Luhn), SSN, IBAN, email, AWS/GitHub/Stripe/Slack tokens',
+    },
+  ];
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div>
+          <div className="card-title">Response Filtering</div>
+          <div className="card-sub">
+            Hot-reloadable via audit-mutated PUT /api/response-filter ·
+            applied to every upstream response body via Pipeline::on_body_frame
+          </div>
+        </div>
+        {!wired && (
+          <span
+            className="pill warn"
+            title="Pipeline writer not wired in this build — toggles are read-only"
+          >
+            not wired
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {rungs.map(r => (
+          <div
+            key={r.key}
+            style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}
+          >
+            <div
+              className={`toggle ${data[r.key] ? 'on' : ''}`}
+              onClick={wired && busy !== r.key ? () => flip(r.key) : undefined}
+              style={{
+                cursor: !wired ? 'not-allowed' : busy === r.key ? 'wait' : 'pointer',
+                opacity: !wired ? 0.5 : 1,
+                marginTop: 2,
+              }}
+            />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{r.label}</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+                {r.desc}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function SettingsSessionsCard() {
   const sessions = window.useAdminSessionsApi
@@ -4823,7 +5704,19 @@ function AlertChannelsCard({ receiversApi }) {
         window.aegisToast(`Test → ${parts.join(' · ') || 'sent'}`, 'ok');
         receiversApi.reload && receiversApi.reload();
       } else {
-        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        // LOW-OBS-03 (2026-05-12) — surface the upstream reason
+        // instead of the generic "unknown error". The server
+        // response is `{ ok:false, failed: [{name, reason}, ...] }`
+        // when dispatch fails, so the meaningful text lives at
+        // `failed[0].reason` (e.g. "VipTalk returned 401
+        // Unauthorized"). Fall back to the legacy
+        // message/error/reason fields in case some other handler
+        // shape lands here.
+        const fail = Array.isArray(r?.failed) && r.failed.length > 0 ? r.failed[0] : null;
+        const failReason = fail?.reason;
+        const msg = failReason
+          || (r && (r.message || r.error || r.reason))
+          || 'unknown error';
         window.aegisToast(`Test failed: ${msg}`, 'err');
       }
     } finally {
@@ -5441,7 +6334,8 @@ function PageTracking() {
                   <td><span className={`pill ${c.id === cluster.data?.leader_node ? 'solid-yellow' : 'neutral'}`}>
                     {c.id === cluster.data?.leader_node ? 'leader' : 'follower'}
                   </span></td>
-                  <td className="num dim">{c.last_heartbeat ? new Date(c.last_heartbeat).toLocaleTimeString() : '—'}</td>
+                  {/* LOW-ADM-05 (2026-05-12) — 24h heartbeat. */}
+                  <td className="num dim">{fmtClockTime(c.last_heartbeat)}</td>
                   <td>{(c.leases || []).length === 0 ? <span className="dim">—</span> : c.leases.map(l => <span key={l} className="pill info" style={{ marginRight: 4 }}>{l}</span>)}</td>
                 </tr>
               ))}
@@ -5832,13 +6726,35 @@ function PageUpstreams() {
 
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Routing &amp; Upstreams</h1>
+          <h1 className="page-title">
+            Routing &amp; Upstreams
+            <window.PageTitleRefresh
+              onClick={() => {
+                cfgApi.reload && cfgApi.reload();
+                summaryApi.reload && summaryApi.reload();
+                routesApi.reload && routesApi.reload();
+              }}
+              label="Refresh route + pool data"
+            />
+          </h1>
           <p className="page-subtitle">
-            <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} →
-            <span className="num"> {names.length}</span> pool{names.length === 1 ? '' : 's'}
-            {' '}({totalMembers} member{totalMembers === 1 ? '' : 's'}{orphaned ? `, ${orphaned} unreferenced` : ''}){' · '}
+            {/* LOW-05 (2026-05-11) — the previous copy
+                `N routes → M pools (X members, Y unreferenced)`
+                implied "those N routes use M pools". When some of
+                those pools are orphans, the implication is wrong.
+                New copy splits routed vs unrouted explicitly. */}
+            <span className="num">{routes.length}</span> route{routes.length === 1 ? '' : 's'} ·
+            <span className="num"> {names.length - orphaned}</span> pool{(names.length - orphaned) === 1 ? '' : 's'} routed
+            {orphaned > 0 && (
+              <>
+                {' · '}
+                <span className="num">{orphaned}</span> pool{orphaned === 1 ? '' : 's'} unrouted
+              </>
+            )}
+            {' '}({totalMembers} member{totalMembers === 1 ? '' : 's'}){' · '}
             <span
               className={`pill ${cfgApi.error ? 'warn' : 'ok'}`}
               title="Routes + pools land via the audit-mutated pipeline; the proxy hot-swaps without restart."
@@ -5847,14 +6763,18 @@ function PageUpstreams() {
             </span>
           </p>
         </div>
+        {/* MED-RU-03 (2026-05-12) — surface "+ Add pool" at the
+            page level so operators can author a standalone pool
+            from a clean state.  Previously the button only
+            appeared inside the "Pools without routes" panel,
+            which is hidden until an orphan already exists. */}
         <div className="page-actions">
-          <button className="btn" onClick={() => {
-            cfgApi.reload && cfgApi.reload();
-            summaryApi.reload && summaryApi.reload();
-            routesApi.reload && routesApi.reload();
-          }}>
-            <window.I.Refresh /> Refresh
-          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={openPoolAdd}
+            title="Author a pool without a route (members, scheme, TLS, health, circuit breaker). Routes that want to use it later just pick it from the 'Forward to' dropdown."
+          >+ Add pool</button>
         </div>
       </div>
 
@@ -5913,6 +6833,18 @@ function PageUpstreams() {
           </button>
           {showOrphans && (
             <div style={{ borderTop: '1px solid var(--hairline)', padding: 8 }}>
+              {/* MED-RU-03 (2026-05-12) — explain how orphans arise.
+                  Pre-fix the operator had no clue whether an orphan
+                  was authored deliberately or leaked from a failed
+                  route create. */}
+              <div style={{ padding: '4px 8px 8px', fontSize: 11, color: 'var(--ink-dim)' }}>
+                Pools listed here have no route forwarding to them yet.
+                That's expected when you used <strong>+ Add pool</strong>{' '}
+                to author one ahead of its route, or when you deleted
+                a route without removing the underlying pool. Wire a
+                route to one of them via <strong>+ Add route</strong>,
+                or remove the pool below.
+              </div>
               <table className="tbl tbl-compact">
                 <thead><tr><th>Pool</th><th>Members</th><th>Scheme</th><th style={{ width: 160 }}></th></tr></thead>
                 <tbody>
@@ -5936,11 +6868,6 @@ function PageUpstreams() {
                   })}
                 </tbody>
               </table>
-              <div style={{ padding: '6px 8px 0', fontSize: 11, color: 'var(--ink-dim)' }}>
-                Or use <strong>+ Add pool</strong>{' '}
-                <button className="btn btn-sm" onClick={openPoolAdd} style={{ marginLeft: 4 }}>+ Add pool</button>
-                {' '}to create one without a route.
-              </div>
             </div>
           )}
         </div>
@@ -5988,6 +6915,12 @@ const LB_OPTIONS = [
 // endpoint expects (humantime-style strings: "10s" / "3s" /
 // "30s"). Symmetrical with `poolViewFromConfig` below.
 function poolConfigFromForm(d) {
+  // HIGH-RU-01 (2026-05-12) — include `scheme` on save and
+  // derive `tls` from it.  The previous shape omitted `scheme`,
+  // so a `tls` flip silently reset the saved scheme to `auto`
+  // server-side (via `#[serde(default)]`). Sending both keeps
+  // the legacy `tls` flag consistent with the canonical scheme.
+  const scheme = d.connection?.scheme || 'auto';
   const cfg = {
     members: (d.members || []).map(m => ({
       addr: (m.addr || '').trim(),
@@ -6006,7 +6939,8 @@ function poolConfigFromForm(d) {
       max_idle_per_host: Number(d.connection?.max_idle_per_host) || 32,
       idle_timeout: humanTimeFromMs(Number(d.connection?.idle_timeout_ms) || 30000),
       keep_alive: !!d.connection?.keep_alive,
-      tls: !!d.connection?.tls,
+      scheme,
+      tls: tlsFromScheme(scheme, d.connection?.tls),
     },
   };
   if (d.health_enabled) {
@@ -6072,10 +7006,43 @@ function poolFormFromView(view) {
       idle_timeout_ms:   view.connection?.idle_timeout_ms   ?? 30000,
       keep_alive:        view.connection?.keep_alive ?? true,
       tls:               view.connection?.tls       ?? false,
+      // 2026-05-13 — load the saved scheme into the form state so
+      // the Edit Pool dropdown reflects the live config.  Without
+      // this the dropdown defaulted to `auto` (its fallback when
+      // `d.connection.scheme` is undefined) and a Save without an
+      // explicit pick silently downgraded the saved scheme.
+      scheme:            view.connection?.scheme || 'auto',
     },
   };
 }
 
+// MED-RU-03 (2026-05-12) — orphan-leak audit.
+//
+// `PoolEditModal` is opened from two surfaces:
+//   1. "+ Add pool" at the top of Routing & Upstreams (standalone).
+//   2. "+ Create new pool" inside `RouteEditModal` (child modal).
+//
+// Both paths must guarantee that closing the modal without an
+// explicit save produces NO `POOL_UPSERT` event:
+//
+//   - Cancel button       → `onCancel()` → parent flips its state
+//                           flag, no API call. ✓ safe
+//   - Click on backdrop   → routes through onCancel via the
+//                           `.modal-backdrop onClick`. ✓ safe
+//   - Escape / unmount    → parent component unmounts the modal
+//                           the same way; no API call. ✓ safe
+//
+// On `Save`, `onSave({name, body})` runs `poolUpsert` and the
+// modal stays open until success — so a server-side failure
+// leaves the modal in its current state and a second click can
+// retry without committing the previous attempt.  ✓ safe
+//
+// The only `POOL_UPSERT` audit-chain entry this modal can
+// produce is an intentional, operator-confirmed save.  If an
+// orphan pool appears in "Pools without routes" today, it was
+// either (a) authored via "+ Add pool" deliberately, (b) left
+// over from a route that was later deleted, or (c) seeded by
+// the YAML at boot — never from a stray cancel here.
 function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel, onSave, busy }) {
   const [name, setName] = useStateP(initialName || '');
   const [d, setD] = useStateP(() => poolFormFromView(initialPool));
@@ -6104,11 +7071,55 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
   );
   const canSave = trimmedName !== '' && !nameTaken && memberOk && healthOk && cbOk;
 
+  // HIGH-RU-01 follow-up (2026-05-12) — auto-infer scheme from
+  // the member port so an operator who types `znews.vn:443` and
+  // hits Save without touching the scheme dropdown gets a
+  // working TLS pool instead of `scheme: auto + tls: false`
+  // (which produces `http://host:443/` and an upstream 400
+  // "plain HTTP to HTTPS port"). The inference only fires when
+  // the operator hasn't already picked a non-auto scheme — so
+  // explicit selections are never overridden.
+  function inferSchemeFromPort(port) {
+    if (port === 443) return 'https';
+    if (port === 80)  return 'http';
+    return null;
+  }
+  function portFromAddr(addr) {
+    const m = /:(\d+)\s*$/.exec((addr || '').trim());
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : null;
+  }
   function setMember(i, key, val) {
-    setD(prev => ({
-      ...prev,
-      members: prev.members.map((m, idx) => idx === i ? { ...m, [key]: val } : m),
-    }));
+    setD(prev => {
+      const nextMembers = prev.members.map((m, idx) =>
+        idx === i ? { ...m, [key]: val } : m,
+      );
+      // Only re-derive scheme when the operator edits an address
+      // AND the current scheme is still the unspecified `auto`.
+      // Picking https / http / h2c / grpc / tcp explicitly locks
+      // the choice.
+      if (key !== 'addr') {
+        return { ...prev, members: nextMembers };
+      }
+      const currentScheme = prev.connection?.scheme || 'auto';
+      if (currentScheme !== 'auto') {
+        return { ...prev, members: nextMembers };
+      }
+      const inferred = inferSchemeFromPort(portFromAddr(val));
+      if (!inferred) {
+        return { ...prev, members: nextMembers };
+      }
+      return {
+        ...prev,
+        members: nextMembers,
+        connection: {
+          ...prev.connection,
+          scheme: inferred,
+          tls: tlsFromScheme(inferred, prev.connection?.tls),
+        },
+      };
+    });
   }
   function addMember() {
     setD(prev => ({
@@ -6394,25 +7405,48 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                 />
                 <span className="field-label" style={{ marginBottom: 0 }}>HTTP keep-alive</span>
               </label>
+              {/* HIGH-RU-01 (2026-05-12) — `tls` is only operator-
+                  editable when scheme is `auto`. For every explicit
+                  scheme the derived value applies, so a contradicting
+                  toggle would mislead. Disabled checkbox shows the
+                  derived state for clarity. */}
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input
                   type="checkbox"
-                  checked={d.connection.tls}
+                  checked={tlsFromScheme(d.connection.scheme || 'auto', d.connection.tls)}
+                  disabled={(d.connection.scheme || 'auto') !== 'auto'}
                   onChange={e => setD(prev => ({
                     ...prev,
                     connection: { ...prev.connection, tls: e.target.checked },
                   }))}
                 />
-                <span className="field-label" style={{ marginBottom: 0 }}>Upstream TLS (legacy `tls` flag)</span>
+                <span className="field-label" style={{ marginBottom: 0 }}>
+                  Upstream TLS
+                  {(d.connection.scheme || 'auto') !== 'auto' && (
+                    <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>
+                      {' '}(derived from scheme)
+                    </span>
+                  )}
+                </span>
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span className="field-label" style={{ marginBottom: 0 }}>Scheme</span>
                 <select
                   value={d.connection.scheme || 'auto'}
-                  onChange={e => setD(prev => ({
-                    ...prev,
-                    connection: { ...prev.connection, scheme: e.target.value },
-                  }))}
+                  onChange={e => {
+                    // HIGH-RU-01 — keep `tls` in lock-step with the
+                    // new scheme so the form's checkbox reflects what
+                    // we'll actually save.
+                    const next = e.target.value;
+                    setD(prev => ({
+                      ...prev,
+                      connection: {
+                        ...prev.connection,
+                        scheme: next,
+                        tls: tlsFromScheme(next, prev.connection?.tls),
+                      },
+                    }));
+                  }}
                   style={{ padding: '4px 6px', borderRadius: 4, border: '1px solid var(--hairline)', fontSize: 12 }}
                 >
                   <option value="auto">auto — h1/h2 via TLS toggle (also bridges WS)</option>
@@ -6424,6 +7458,39 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                 </select>
               </label>
             </div>
+            {/* HIGH-RU-01 follow-up (2026-05-12) — explicit warning
+                when the form is about to save a pool that will talk
+                plain HTTP to a TLS port. Catches the case where the
+                operator opens an existing `scheme: auto + tls: false`
+                pool with a :443 member (which produces an upstream
+                400 "plain HTTP to HTTPS port"). The auto-infer on
+                member edit handles fresh forms; this banner closes
+                the gap for already-saved pools. */}
+            {(() => {
+              const scheme = d.connection.scheme || 'auto';
+              const usesTls = tlsFromScheme(scheme, d.connection.tls);
+              if (usesTls) return null;
+              const tlsPortMember = (d.members || []).find(m => {
+                const p = portFromAddr(m.addr);
+                return p === 443 || p === 8443;
+              });
+              if (!tlsPortMember) return null;
+              return (
+                <div
+                  className="callout warn"
+                  style={{ marginTop: 8, padding: '8px 10px', fontSize: 11 }}
+                  role="alert"
+                >
+                  <strong>TLS / port mismatch.</strong>{' '}
+                  Member <code>{tlsPortMember.addr}</code> is on a TLS
+                  port but this pool will forward plain HTTP
+                  ({scheme === 'auto' ? <>scheme <code>auto</code> + TLS off</> : <>scheme <code>{scheme}</code></>}).
+                  Most <code>:443</code> upstreams answer with{' '}
+                  <em>400 plain HTTP to HTTPS port</em>. Flip the
+                  scheme to <code>https</code> to fix.
+                </div>
+              );
+            })()}
             {/* 2026-05-03 — protocol matrix that explains exactly
                 what each scheme handles, including WS upgrades
                 (which are auto-detected on http/https/auto and
@@ -7131,20 +8198,40 @@ function PageIncidents() {
   const overlayById = new Map(overlay.map(i => [i.id, i]));
   const rawAlerts = alerts.data?.alerts || alerts.data?.firing || incidents.data?.raw_alerts?.alerts || [];
 
+  // MED-SO-03 (2026-05-12) — parse the alert.name as
+  // `<sli>-<window>` so the SLI column shows the meaningful
+  // half and the window chips next to it.
+  // Examples: `DataPlaneAvailability-1h`, `LatencyP99-72h`.
+  function sliFromAlertName(name) {
+    if (!name) return { sli: 'unknown', window: '' };
+    const m = /^(.+)-([0-9]+[smhd])$/.exec(name);
+    return m ? { sli: m[1], window: m[2] } : { sli: name, window: '' };
+  }
+
   // Derive a unified "incident list" from raw alerts + overlay.
+  // 2026-05-12 — the firing-alerts shape from `/api/incidents`
+  // surfaces `name` / `since` / `severity` / `runbook_url`
+  // (NOT `sli` / `fired_at` / `budget_consumed_pct`). The
+  // earlier reader pulled the wrong field names and rendered
+  // `unknown` / `—` for every row. MED-SO-03.
   const merged = (Array.isArray(rawAlerts) ? rawAlerts : []).map(a => {
-    const id = a.id || `${a.sli || a.kind}:${a.fired_at ? Date.parse(a.fired_at) / 1000 | 0 : 0}`;
-    const o = overlayById.get(id);
+    const name = a.name || a.sli || a.kind || 'unknown';
+    const fired_at = a.since || a.fired_at;
+    const { sli, window: sliWindow } = sliFromAlertName(name);
+    const id = a.id || `${name}:${fired_at ? Date.parse(fired_at) / 1000 | 0 : 0}`;
+    const o = overlayById.get(id) || overlayById.get(name);
     return {
       id,
-      sli: a.sli || a.kind || 'unknown',
+      name,
+      sli,
+      sli_window: sliWindow,
       severity: (a.severity || 'warn').toLowerCase(),
-      fired_at: a.fired_at,
+      fired_at,
       burn_rate: a.burn_rate,
       budget_consumed_pct: a.budget_consumed_pct,
       window_hours: a.window_hours,
       runbook_url: a.runbook_url,
-      status: o?.status || 'firing',
+      status: o?.status || o?.state || 'firing',
       acked_at: o?.acked_at,
       acked_by: o?.acked_by,
       snoozed_until: o?.snoozed_until,
@@ -7173,6 +8260,15 @@ function PageIncidents() {
       // the result either way: success → green toast + reload;
       // failure → red toast with the backend reason.
       if (r && r.status >= 200 && r.status < 300) {
+        // LOW-FINAL-01 (2026-05-13) — collapse the previous
+        // "lifecycle UI pending" warn fallback.  It was a
+        // stop-gap from when MED-SO-04 / MED-OBS-01 left the
+        // overlay-store write broken; commits `e6b307c` +
+        // `cadd01b` closed the round-trip end-to-end and the
+        // regression test
+        // `ack_then_enrich_returns_acknowledged_status` guards
+        // against re-opening that class of bug.  The 2xx path is
+        // now unambiguous.
         window.aegisToast(`Incident ${action} ok`, 'ok');
         if (incidents.reload) incidents.reload();
         if (alerts.reload) alerts.reload();
@@ -7199,6 +8295,7 @@ function PageIncidents() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Incidents</h1>
@@ -7262,9 +8359,16 @@ function PageIncidents() {
                     </span>
                   </td>
                   <td><span className={`pill ${m.severity === 'critical' ? 'down' : 'warn'}`}>{m.severity}</span></td>
-                  <td><code style={{ fontSize: 11 }}>{m.sli}</code></td>
+                  <td>
+                    <code style={{ fontSize: 11 }}>{m.sli}</code>
+                    {m.sli_window && (
+                      <span className="pill neutral" style={{ fontSize: 9, marginLeft: 4, padding: '0 6px' }}>{m.sli_window}</span>
+                    )}
+                  </td>
                   <td title={m.fired_at}>{fmtRel(m.fired_at)}</td>
-                  <td className="num">{m.budget_consumed_pct ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}</td>
+                  <td className="num" title={m.budget_consumed_pct != null ? `${m.budget_consumed_pct.toFixed(2)}% of error budget consumed` : 'Budget metric not available on this build'}>
+                    {m.budget_consumed_pct != null ? m.budget_consumed_pct.toFixed(1) + '%' : '—'}
+                  </td>
                   <td>{m.acked_by || '—'} {m.acked_at && <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>· {fmtRel(m.acked_at)}</span>}</td>
                   <td style={{ fontSize: 11, color: 'var(--ink-dim)' }}>{m.note || '—'}</td>
                   <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -7354,7 +8458,35 @@ function PageInvestigation() {
   const audit = window.useAuditLogApi
     ? window.useAuditLogApi({ ...auditQ, limit: 200 })
     : { data: null };
-  const events = audit.data?.events || [];
+  const rawEvents = audit.data?.events || [];
+
+  // MED-SO-02 (2026-05-12) — PR-UX-A2 now filters server-side
+  // (admin_get.rs parses ip / rule_id / request_id query params
+  // and `AuditFilter` short-circuits in the ring walk). This
+  // client-side pass remains as a defence-in-depth no-op so the
+  // dashboard still works correctly against older WAF binaries
+  // that don't yet honour the query params.
+  const events = useMemoP(() => {
+    if (!activePivot) return rawEvents;
+    const needle = activePivot.toLowerCase();
+    return rawEvents.filter(row => {
+      const e = row.event || row;
+      if (effectiveKind === 'ip') {
+        return (e.client_ip || '').toLowerCase() === needle;
+      }
+      if (effectiveKind === 'request_id') {
+        return (e.request_id || '').toLowerCase() === needle;
+      }
+      if (effectiveKind === 'rule_id') {
+        const ruleId = (e.rule_id || '').toLowerCase();
+        if (ruleId === needle) return true;
+        const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+        const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+        return detectors.some(d => String(d).toLowerCase() === needle);
+      }
+      return true;
+    });
+  }, [rawEvents, activePivot, effectiveKind]);
 
   // Top-attackers table: when pivoting on an IP, find the row.
   const topAttackers = window.useApi
@@ -7376,7 +8508,12 @@ function PageInvestigation() {
     ? window.useBotMixApi(3600)
     : { data: null };
 
-  // Stats roll-up over the audit window.
+  // Stats roll-up over the (now pivot-filtered) audit window.
+  // MED-SO-06 (2026-05-12) — detectors live under
+  // `event.fields.detectors[]`; the top-level `event.detector` /
+  // `event.detectors` keys are placeholders the audit ring
+  // doesn't emit.  Walk `fields.detectors` for the breakdown so
+  // the inline panel matches the by-detector aggregator.
   const summary = useMemoP(() => {
     if (!events.length) return null;
     const byAction = {};
@@ -7386,11 +8523,19 @@ function PageInvestigation() {
     let earliest = Infinity, latest = -Infinity;
     for (const row of events) {
       const e = row.event || row;
+      const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
       const a = e.action || 'unknown';
       byAction[a] = (byAction[a] || 0) + 1;
-      const d = e.detector || (e.detectors && e.detectors[0]) || e.rule_id || 'n/a';
-      byDetector[d] = (byDetector[d] || 0) + 1;
-      const p = e.path || '/';
+      const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+      if (detectors.length) {
+        for (const d of detectors) {
+          const key = String(d);
+          byDetector[key] = (byDetector[key] || 0) + 1;
+        }
+      } else if (e.rule_id) {
+        byDetector[e.rule_id] = (byDetector[e.rule_id] || 0) + 1;
+      }
+      const p = f.path || e.path || '/';
       byPath[p] = (byPath[p] || 0) + 1;
       if (e.client_ip) ips.add(e.client_ip);
       const ts = e.ts ? Date.parse(e.ts) : NaN;
@@ -7412,6 +8557,7 @@ function PageInvestigation() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Investigation</h1>
@@ -7453,10 +8599,45 @@ function PageInvestigation() {
         // Default mode: recent requests + Attack-Analytics top
         // strip.  All hooks live at the top of the function;
         // here we just consume them.
-        const detectorBars = (insightsByDetector.data?.detectors ?? [])
-          .map(d => ({ label: d.name, value: d.count, color: detectorColor(d.name) }))
-          .sort((a, b) => b.value - a.value);
-        const totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+        //
+        // MED-SO-05 (2026-05-12) — when /api/attacks/by-detector
+        // returns empty (fresh process, aggregator hasn't started
+        // bucketing yet, or any other hook-level failure) fall
+        // back to deriving the breakdown from the audit ring so
+        // the card matches what Live-Feed and Audit-Trail see.
+        // The audit ring carries `event.fields.detectors[]` per
+        // detection — exactly what the aggregator buckets server
+        // side. Same window (last 1h) by clipping to the live
+        // ring window.
+        const apiDetectors = insightsByDetector.data?.detectors ?? [];
+        let detectorBars;
+        let totalDetections;
+        let breakdownSource;
+        if (apiDetectors.length > 0) {
+          detectorBars = apiDetectors
+            .map(d => ({ label: d.name, value: d.count, color: detectorColor(d.name) }))
+            .sort((a, b) => b.value - a.value);
+          totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+          breakdownSource = 'by-detector aggregator';
+        } else {
+          const counts = {};
+          for (const row of rawEvents) {
+            const e = row.event || row;
+            const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+            const list = Array.isArray(f.detectors) && f.detectors.length
+              ? f.detectors
+              : (e.rule_id ? [e.rule_id] : []);
+            for (const name of list) {
+              const key = String(name);
+              counts[key] = (counts[key] || 0) + 1;
+            }
+          }
+          detectorBars = Object.entries(counts)
+            .map(([name, value]) => ({ label: name, value, color: detectorColor(name) }))
+            .sort((a, b) => b.value - a.value);
+          totalDetections = detectorBars.reduce((s, x) => s + x.value, 0);
+          breakdownSource = 'audit ring (fallback)';
+        }
         const botCategories = insightsBotMix.data?.categories ?? [];
         const botColorFor = name => ({
           verified:  'var(--up)',
@@ -7492,7 +8673,7 @@ function PageInvestigation() {
               <div className="col-6 card">
                 <window.SectionHeader
                   title="Detector breakdown"
-                  sub={`${totalDetections.toLocaleString()} detections · last 1h`}
+                  sub={`${totalDetections.toLocaleString()} detections · last 1h · ${breakdownSource}`}
                 />
                 {detectorBars.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
@@ -7512,13 +8693,27 @@ function PageInvestigation() {
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
                     {botCategories.length === 1 && botCategories[0].name === 'unknown' ? (
                       <>
+                        {/* LOW-SO-04 (2026-05-12) — empty state was
+                            "no bot signal yet" even on busy WAFs.
+                            The classifier only emits non-`unknown`
+                            categories when a JA4 baseline is loaded
+                            AND the request fingerprint matches one
+                            of the configured profiles.  Bare UA
+                            strings (curl, Googlebot, Firefox) by
+                            themselves don't suffice. */}
                         Bot classifier wired but every request landed in
                         <code style={{ margin: '0 4px' }}>unknown</code>.
-                        This profile has no JA4 baseline — see{' '}
+                        This profile has no JA4 baseline loaded — see{' '}
                         <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>.
                       </>
                     ) : (
-                      <>No bot classifications recorded.</>
+                      <>
+                        No bot classifications recorded yet. The
+                        classifier emits when JA4 fingerprints match
+                        a configured profile — UA-only traffic
+                        without a fingerprint baseline stays in the
+                        <code style={{ margin: '0 4px' }}>unknown</code> bucket.
+                      </>
                     )}
                   </div>
                 ) : (
@@ -7737,12 +8932,29 @@ function PageInvestigation() {
           </div>
 
           <div className="card">
-            <window.SectionHeader title={`Audit timeline (newest first, ${events.length} of last 200)`} />
+            <window.SectionHeader
+              title={`Audit timeline (newest first, ${events.length} of last 200)`}
+              sub={activePivot ? `filtered to ${effectiveKind || 'pivot'}: ${activePivot}` : undefined}
+            />
             <table className="tbl tbl-compact">
               <thead><tr><th>ts</th><th>action</th><th>ip</th><th>method</th><th>path</th><th>rule_id</th></tr></thead>
               <tbody>
                 {events.slice(0, 100).map((row, i) => {
+                  // MED-SO-06 (2026-05-12) — request fields live under
+                  // `event.fields.{method,path}`; the rule identifier
+                  // comes from `extractResourceId(e)` for admin rows
+                  // and `event.rule_id` / detectors list for detection
+                  // rows.  Live-Feed already reads from `fields.*`;
+                  // this brings Investigation to parity.
                   const e = row.event || row;
+                  const f = (e.fields && typeof e.fields === 'object') ? e.fields : {};
+                  const method = f.method || e.method || '—';
+                  const path = f.path || e.path || '/';
+                  const detectors = Array.isArray(f.detectors) ? f.detectors : [];
+                  const ruleCell = e.rule_id
+                    || (detectors.length ? detectors.join(',') : null)
+                    || extractResourceId(e)
+                    || '—';
                   return (
                     <tr key={i}>
                       <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
@@ -7750,9 +8962,9 @@ function PageInvestigation() {
                       </td>
                       <td><span className={`pill ${e.action === 'block' ? 'down' : e.action === 'allow' ? 'up' : 'warn'}`}>{e.action || '—'}</span></td>
                       <td className="num">{e.client_ip || '—'}</td>
-                      <td>{e.method || '—'}</td>
-                      <td><code style={{ fontSize: 11 }}>{(e.path || '/').slice(0, 60)}</code></td>
-                      <td><code style={{ fontSize: 11 }}>{e.rule_id || e.detector || '—'}</code></td>
+                      <td>{method}</td>
+                      <td><code style={{ fontSize: 11 }}>{path.slice(0, 60)}</code></td>
+                      <td><code style={{ fontSize: 11 }}>{ruleCell}</code></td>
                     </tr>
                   );
                 })}
@@ -7792,6 +9004,7 @@ function PageInvestigation() {
 function PageTrafficGates() {
   return (
     <>
+      <PolicyPostureCard />
       <div className="page-head">
         <div>
           <h1 className="page-title">Traffic Gates</h1>
@@ -7806,12 +9019,76 @@ function PageTrafficGates() {
         </div>
       </div>
 
+      <TrafficGatesFlowDiagram />
+
       <AccessListGateCard />
       <StrikeBlockGateCard />
       <CumulativeIpRiskCard />
       <RateLimitGateCard />
       <DdosGateCard />
     </>
+  );
+}
+
+// P6 (2026-05-11) — request-flow diagram at the top of Traffic
+// Gates. Operators reading the page before this couldn't tell
+// whether Strike-Block fires before or after Access List; the
+// page intro said "fire before the detector chain" but didn't
+// commit to the inter-gate order. Each chip is a click-scroll
+// target to its corresponding card below.
+function TrafficGatesFlowDiagram() {
+  const stages = [
+    { id: 'access-list',   label: '1. Access List',   target: 'access-list-card',  hint: 'IP / CIDR / country block + bypass' },
+    { id: 'strike-block',  label: '2. Strike-Block',  target: 'strike-block-card', hint: 'Lifetime malicious-event counter' },
+    { id: 'cumulative-ip', label: '3. Cumulative IP', target: 'cum-ip-risk-card',  hint: 'Per-IP risk score (decays over time)' },
+    { id: 'rate-limit',    label: '4. Rate Limit',    target: 'rate-limit-card',   hint: 'Global per-IP token bucket' },
+    { id: 'ddos',          label: '5. DDoS',          target: 'ddos-card',         hint: 'Sliding-window burst + EWMA spike' },
+  ];
+  const scrollToCard = (id) => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  return (
+    <div className="card" style={{ padding: '12px 14px', marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginBottom: 8 }}>
+        Request flow — gates fire in this order; first short-circuit wins. The detector chain runs after every gate passes.
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--ink-mute)', fontFamily: 'var(--mono)' }}>
+          inbound
+        </span>
+        <span style={{ color: 'var(--ink-dim)' }}>→</span>
+        {stages.map((s, idx) => (
+          <React.Fragment key={s.id}>
+            <button
+              type="button"
+              onClick={() => scrollToCard(s.target)}
+              title={s.hint}
+              className="pill neutral"
+              style={{
+                cursor: 'pointer',
+                border: '1px solid var(--hairline-strong)',
+                background: 'var(--surface-2)',
+                fontSize: 11,
+              }}
+            >
+              {s.label}
+            </button>
+            <span style={{ color: 'var(--ink-dim)' }}>→</span>
+          </React.Fragment>
+        ))}
+        <span
+          style={{
+            fontSize: 11,
+            color: 'var(--ink-mute)',
+            fontFamily: 'var(--mono)',
+            paddingLeft: 4,
+          }}
+        >
+          detector chain
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -7822,7 +9099,7 @@ function AccessListGateCard() {
   const blackCount = (black.data?.entries || []).length;
   const whiteCount = (white.data?.entries || []).length;
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="access-list-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="1. Access List"
         sub="IP / CIDR / country blacklist + whitelist — fires first, cheapest gate"
@@ -7926,7 +9203,7 @@ function StrikeBlockGateCard() {
   const enabled = !!cfg?.enabled;
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="strike-block-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="2. Strike-Block"
         sub="Per-IP lifetime strike counter — permanent block once threshold crossed (opt-in)"
@@ -8120,7 +9397,7 @@ function CumulativeIpRiskCard() {
   }
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="cum-ip-risk-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="3. Cumulative IP risk thresholds"
         sub="Per-IP decaying score — challenge then block, recovers when score decays"
@@ -8191,7 +9468,7 @@ function RateLimitGateCard() {
   const [editing, setEditing] = useStateP(false);
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="rate-limit-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="4. Rate Limit"
         sub="Per-IP token bucket — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window."
@@ -8323,7 +9600,7 @@ function DdosGateCard() {
 
   if (!data || !data.enabled) {
     return (
-      <div className="card" style={{ marginBottom: 12 }}>
+      <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
         <window.SectionHeader
           title="5. DDoS Gate"
           sub="Per-IP sliding-window burst gate + EWMA spike mode — currently DISABLED"
@@ -8348,7 +9625,7 @@ function DdosGateCard() {
     : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'NORMAL' };
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
+    <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="5. DDoS Gate"
         sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s)"
@@ -8665,19 +9942,16 @@ function PageReports() {
   }
 
   const cards = [
+    // LOW-ADM-02 (2026-05-12) — the audit ring is capped at 200
+    // events, so `?limit=1000` returns the same payload as
+    // `?limit=200`. Collapse to a single honest card; a wider
+    // export will land when cold-tier streaming ships.
     {
-      id: 'audit-200',
-      title: 'Audit trail (last 200 events)',
-      sub: 'CSV of every chained event — request decisions + config mutations',
+      id: 'audit-ring',
+      title: 'Audit trail (full ring · last 200 events)',
+      sub: 'CSV of every chained event — request decisions + config mutations. Ring is capped at 200 in this build; wider exports require cold-tier streaming (deferred).',
       kind: 'href',
       href: '/api/reports/audit.csv?limit=200',
-    },
-    {
-      id: 'audit-1000',
-      title: 'Audit trail (last 1000 events)',
-      sub: 'Larger window for weekly review',
-      kind: 'href',
-      href: '/api/reports/audit.csv?limit=1000',
     },
     {
       id: 'top-7d',
@@ -8759,9 +10033,17 @@ function PageTopAttackers() {
     setBusyId(identifier);
     try {
       const id = `top-attacker-${identifier.replace(/[^A-Za-z0-9]+/g, '-')}-${Date.now().toString(36)}`;
+      // HIGH-SO-01 (2026-05-12) — include `bypass: []` so the
+      // server's AccessListEntry deserializer accepts the body.
+      // Without this the POST 400s with `missing field bypass`
+      // and the entire SOC "block this attacker" workflow is
+      // broken end-to-end. The server-side belt
+      // (`#[serde(default)]` on the field) ships in the same PR
+      // so future callers can't trip the same wire.
+      const created_at = new Date().toISOString();
       const body = identifier.startsWith('fp:')
-        ? { id, kind: 'fingerprint', value: identifier, note: `blocked from Top Attackers · last 1h` }
-        : { id, kind: identifier.includes('/') ? 'cidr' : 'ip', value: identifier, note: `blocked from Top Attackers · last 1h` };
+        ? { id, kind: 'fingerprint', value: identifier, note: `blocked from Top Attackers · last 1h`, bypass: [], created_at }
+        : { id, kind: identifier.includes('/') ? 'cidr' : 'ip', value: identifier, note: `blocked from Top Attackers · last 1h`, bypass: [], created_at };
       const r = await window.accessListAdd('blacklist', body);
       if (r.ok) {
         window.aegisToast(`Blocked ${identifier}`, 'ok');
@@ -8779,9 +10061,16 @@ function PageTopAttackers() {
 
   return (
     <>
+      <SecOpsPostureCard />
       <div className="page-head">
         <div>
-          <h1 className="page-title">Top Attackers</h1>
+          <h1 className="page-title">
+            Top Attackers
+            <window.PageTitleRefresh
+              onClick={() => top.reload && top.reload()}
+              label="Refresh top attackers"
+            />
+          </h1>
           <p className="page-subtitle">
             Ranked by hits in the last {win} · pivot or block in one click
             {geoLoaded ? '' : ' · GeoIP DB not loaded — country / ASN columns will be empty until make geoip-link runs'}
@@ -8796,9 +10085,6 @@ function PageTopAttackers() {
           >
             {Object.keys(TOP_ATTACKERS_WINDOWS).map(v => <option key={v}>{v}</option>)}
           </select>
-          <button className="btn" onClick={() => top.reload && top.reload()}>
-            <window.I.Refresh />
-          </button>
         </div>
       </div>
 
@@ -8841,9 +10127,20 @@ function PageTopAttackers() {
                       {isFp ? (
                         <span className="dim mono" title="ja4 fingerprint identifier — no IP available">{a.identifier}</span>
                       ) : (
+                        // LOW-SO-03 (2026-05-12) — explicit onClick
+                        // anchors the navigation even when an ancestor
+                        // event handler tries to preventDefault on
+                        // bubbling clicks. Matches the row's Pivot
+                        // button so the underlined identifier is a
+                        // shortcut to the same place.
                         <a
                           href={`#/investigation?pivot=${encodeURIComponent(a.identifier)}&kind=ip`}
-                          style={{ color: 'var(--accent)' }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            location.hash = `/investigation?pivot=${encodeURIComponent(a.identifier)}&kind=ip`;
+                          }}
+                          style={{ color: 'var(--accent)', cursor: 'pointer' }}
+                          title={`Pivot Investigation on ${a.identifier}`}
                         >{a.identifier}</a>
                       )}
                     </td>
@@ -8914,6 +10211,20 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
   const [busy, setBusy] = useStateP(false);
   const [search, setSearch] = useStateP('');
   const [expandedRouteId, setExpandedRouteId] = useStateP(null);
+  // P5 (2026-05-11) — per-route activity in last 60s. Polled every
+  // 10s; the data plane increments the counter atomically on
+  // every resolved route. The pill tone is derived from the
+  // sample count rendered into the route table below.
+  const activityApi = window.useApi
+    ? window.useApi('/api/analytics/route-activity', { intervalMs: 10000, fallback: { routes: [] } })
+    : { data: { routes: [] } };
+  const activityMap = (() => {
+    const m = {};
+    for (const r of (activityApi.data?.routes || [])) {
+      m[r.route] = r;
+    }
+    return m;
+  })();
   // PR3 — Test route tool state.
   const [testOpen, setTestOpen] = useStateP(false);
   const [testHost, setTestHost] = useStateP('');
@@ -8947,35 +10258,42 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
     );
   })();
 
-  const openAdd = () => setEditor({ mode: 'add', draft: emptyRouteDraft() });
-  const openEdit = (route) => setEditor({ mode: 'edit', draft: routeToDraft(route) });
+  // MED-02 (2026-05-11) — modal-anchored save error. The earlier
+  // shape toasted save failures bottom-right while the modal
+  // body kept rendering a *separate* "pool name already exists"
+  // inline hint — the two surfaces could disagree (toast: catch-
+  // all collision; inline: pool name collision) and the operator
+  // had to read both to figure out the real cause. Now the modal
+  // owns its own error block; the local hint stays purely
+  // advisory.
+  const [saveError, setSaveError] = useStateP(null);
+  const openAdd = () => { setSaveError(null); setEditor({ mode: 'add', draft: emptyRouteDraft() }); };
+  const openEdit = (route) => { setSaveError(null); setEditor({ mode: 'edit', draft: routeToDraft(route) }); };
+  const closeEditor = () => { setSaveError(null); setEditor(null); };
 
   async function saveRoute(draft) {
     setBusy(true);
+    setSaveError(null);
     try {
-      // Inline pool create — modal sets draft.newPool when the
-      // operator typed a backend address instead of picking an
-      // existing pool. Pool name = route id in that flow.
-      if (draft.newPool && draft.newPool.addr) {
-        const poolName = draft.upstream;
-        const poolBody = poolBodyFromInlineForm(draft.newPool);
-        const pr = await window.poolUpsert(poolName, poolBody);
-        if (!(pr.status === 200 && pr.ok)) {
-          const msg = pr.message || pr.error || pr.reason || `HTTP ${pr.status}`;
-          window.aegisToast(`Pool create failed: ${msg}`, 'err');
-          return;
-        }
-        cfgReload && cfgReload();
-      }
+      // MED-RU-03 (2026-05-12) — Add Route no longer creates a
+      // pool as a side-effect. The "+ Create new pool" affordance
+      // in RouteEditModal opens a child PoolEditModal that writes
+      // the pool independently (audit-chained) before the route
+      // is submitted here, so by this point the pool already
+      // exists in the live config. The previous MED-04
+      // compensating-delete logic is retired along with the
+      // inline-backend path; if the operator wants to clean up an
+      // unused pool they use "Pools without routes" → Delete.
       const body = routeBodyFromDraft(draft);
       const r = await window.routeUpsert(draft.id, body);
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Route "${draft.id}" saved`, 'ok');
         routesApi.reload && routesApi.reload();
+        setSaveError(null);
         setEditor(null);
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
-        window.aegisToast(`Save failed: ${msg}`, 'err');
+        setSaveError(`Save failed: ${msg}`);
       }
     } finally {
       setBusy(false);
@@ -9158,6 +10476,38 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                       <div className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)', marginTop: 2 }}>
                         {r.priority || ''}
                       </div>
+                      {/* P5 (2026-05-11) — sliding-window activity
+                          pulse. Green > 1 req/min, amber 0-1
+                          req/min, red 0 req/min for ≥ 5 min,
+                          neutral when the route has never matched
+                          since boot. Tooltip carries the
+                          last-request age in seconds. */}
+                      {(() => {
+                        const a = activityMap[r.id];
+                        if (!a) {
+                          return (
+                            <div
+                              style={{ marginTop: 4 }}
+                              title="No requests have hit this route since process boot. Verify the host/path/method match the traffic you expect."
+                            >
+                              <span className="pill neutral" style={{ fontSize: 9, padding: '0 6px' }}>idle</span>
+                            </div>
+                          );
+                        }
+                        const cnt = a.last_60s_count || 0;
+                        const ageS = a.last_seen_age_s;
+                        let tone, label;
+                        if (cnt > 60) { tone = 'ok'; label = `${cnt}/min`; }
+                        else if (cnt > 0) { tone = 'ok'; label = `${cnt}/min`; }
+                        else if (ageS != null && ageS < 300) { tone = 'warn'; label = `${Math.floor(ageS)}s ago`; }
+                        else { tone = 'err'; label = ageS != null ? `${Math.floor(ageS / 60)}m ago` : 'silent'; }
+                        const tip = `last 60s: ${cnt} req` + (ageS != null ? ` · last seen ${ageS}s ago` : '');
+                        return (
+                          <div style={{ marginTop: 4 }} title={tip}>
+                            <span className={`pill ${tone}`} style={{ fontSize: 9, padding: '0 6px' }}>{label}</span>
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td style={r.enabled === false ? { opacity: 0.55 } : undefined}>
                       <div className="mono" style={{ fontSize: 12, fontWeight: 600 }}>
@@ -9296,8 +10646,11 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
           existingIds={routes.map(r => r.id)}
           poolNames={poolNames}
           onSave={saveRoute}
-          onCancel={() => setEditor(null)}
+          onCancel={closeEditor}
           busy={busy}
+          saveError={saveError}
+          clearSaveError={() => setSaveError(null)}
+          cfgReload={cfgReload}
         />
       )}
 
@@ -9320,26 +10673,38 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
 // + scheme + host_header + health, plus an "Other routes using
 // this pool" reminder so they know who else they'd affect by
 // editing the pool.
-// Build a `PoolConfig` body from the inline-add-pool form
-// fields the RouteEditModal collects when the operator chooses
-// "+ Create new pool". Mirrors `poolConfigFromForm` for the
-// fields that are exposed inline (rest take server defaults).
-function poolBodyFromInlineForm(np) {
-  return {
-    members: [{
-      addr: (np.addr || '').trim(),
-      weight: 1,
-      ...(np.host_header && np.host_header.trim() ? { host_header: np.host_header.trim() } : {}),
-    }],
-    lb: 'round_robin',
-    connection: {
-      scheme: np.scheme || 'auto',
-      keep_alive: true,
-      max_idle_per_host: 32,
-      idle_timeout: '30s',
-    },
-  };
+
+// HIGH-RU-01 (2026-05-12) — derive the legacy `tls` flag from
+// the canonical `scheme`. The server's `UpstreamScheme::uses_tls`
+// already treats `tls` as advisory when `scheme` is explicit,
+// but the saved wire shape `{scheme: "https", tls: false}` reads
+// as a contradiction to operators inspecting the API. Keep the
+// two fields in lock-step at the dashboard boundary.
+//
+// `auto` honours the user-controlled `tls` checkbox; every other
+// scheme derives from the protocol semantics.
+function tlsFromScheme(scheme, fallbackTls) {
+  switch (scheme) {
+    case 'https':
+    case 'grpc':
+      return true;
+    case 'http':
+    case 'h2c':
+    case 'tcp':
+      return false;
+    case 'auto':
+    default:
+      return !!fallbackTls;
+  }
 }
+
+// MED-RU-03 (2026-05-12) — `poolBodyFromInlineForm` retired.
+// The Add Route modal no longer collects backend-address +
+// scheme inline; pool creation goes through the same
+// `PoolEditModal` + `poolConfigFromForm` path as standalone
+// "+ Add pool". That keeps the wire shape canonical (one
+// builder instead of two that drift) and the audit chain
+// honest (each pool create is its own `POOL_UPSERT` event).
 
 // Form-shape helpers — `methods` and `auth_required` are
 // **arrays** in the form draft so the checkbox UI can read /
@@ -9365,6 +10730,10 @@ function emptyRouteDraft() {
     auth_required: [],
     default: false,
     enabled: true,
+    // 2026-05-12 — strip the route prefix on forward by default.
+    // Mirrors the server-side default and the operator-friendly
+    // mount-point semantics.
+    strip_prefix: true,
   };
 }
 function routeToDraft(r) {
@@ -9379,6 +10748,11 @@ function routeToDraft(r) {
     auth_required: r.auth_required || [],
     default: !!r.default,
     enabled: r.enabled !== false, // default to true if missing
+    // 2026-05-12 — `strip_prefix` defaults to `true` server-side
+    // for routes saved before this field existed, but the patch
+    // serializer emits it explicitly for fresh routes. Reads as
+    // `true` when the field is missing.
+    strip_prefix: r.strip_prefix !== false,
   };
 }
 function routeBodyFromDraft(d) {
@@ -9397,6 +10771,9 @@ function routeBodyFromDraft(d) {
     upstream: d.upstream,
     default: !!d.default,
     enabled: d.enabled !== false,
+    // 2026-05-12 — always send `strip_prefix` so a flip from true
+    // to false round-trips through the audit-mutated PUT.
+    strip_prefix: d.strip_prefix !== false,
   };
   if (d.host.trim()) body.host = d.host.trim();
   if (methods.length > 0) body.methods = methods;
@@ -9419,7 +10796,7 @@ const ROUTE_AUTH_CHOICES = [
   ['anonymous', 'Anonymous — admit unauthenticated clients (note: making the route public)'],
 ];
 
-function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy }) {
+function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, onCancel, busy, saveError, clearSaveError, cfgReload }) {
   const [d, setD] = useStateP(() => ({
     ...initial,
     methods: typeof initial.methods === 'string'
@@ -9432,13 +10809,26 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
   const isAdd = mode === 'add';
   const idClash = isAdd && existingIds.includes(d.id.trim());
 
-  // The "Forward to" target is decided by what the operator
-  // types: empty address field → use the dropdown (existing
-  // pool); typing an address → create a new pool. No toggle.
-  const [newPool, setNewPool] = useStateP({
-    addr: '', scheme: 'https', host_header: '',
-  });
-  const usingNewPool = newPool.addr.trim().length > 0;
+  // MED-RU-03 (2026-05-12) — Add Route used to also create a pool
+  // as a hidden side-effect of the "type a backend inline" path.
+  // That made the failure modes confusing ("did the pool fail or
+  // the route?") and left orphan pools on operator cancels or
+  // route validation errors. Decouple: pool creation now lives
+  // in a CHILD PoolEditModal opened via "+ Create new pool",
+  // and the Add Route modal authors only the route. Audit chain
+  // gets two distinct events (`POOL_UPSERT` + `ROUTE_CREATE`)
+  // when a fresh pool is involved, which is also better forensics.
+  const [createPoolOpen, setCreatePoolOpen] = useStateP(false);
+  const [createPoolBusy, setCreatePoolBusy] = useStateP(false);
+
+  // MED-02 (2026-05-11) — clear the save error whenever the
+  // operator edits anything. The previous shape kept the toast +
+  // inline hint visible until the next save; now the error
+  // disappears as soon as the operator starts addressing it.
+  const setWithErrorClear = (updater) => {
+    if (clearSaveError) clearSaveError();
+    setD(updater);
+  };
 
   const [showAdvanced, setShowAdvanced] = useStateP(
     !isAdd && (
@@ -9450,27 +10840,49 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
 
   const idValid = d.id.trim().length > 0 && !idClash;
   const pathValid = d.path.trim().startsWith('/');
-  const upstreamValid = usingNewPool
-    ? (d.id.trim().length > 0 && !poolNames.includes(d.id.trim()))
-    : poolNames.includes(d.upstream);
+  const upstreamValid = poolNames.includes(d.upstream);
   const canSave = idValid && pathValid && upstreamValid && !busy;
 
-  const set = (k, v) => setD({ ...d, [k]: v });
+  const set = (k, v) => setWithErrorClear({ ...d, [k]: v });
   const toggleSet = (k, v) => {
     const cur = new Set(d[k] || []);
     cur.has(v) ? cur.delete(v) : cur.add(v);
-    setD({ ...d, [k]: Array.from(cur) });
+    setWithErrorClear({ ...d, [k]: Array.from(cur) });
   };
+
+  // MED-RU-03 — handle a saved-from-child pool. The child modal
+  // already wrote it (audit-chained); we just select the new
+  // name in the dropdown and refresh the parent's pool list.
+  // Errors stay surfaced inside the child modal's own toast path;
+  // by the time onSave fires here the write is committed.
+  async function handleChildPoolSave({ name, body }) {
+    setCreatePoolBusy(true);
+    try {
+      const r = await window.poolUpsert(name, body);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Pool "${name}" saved`, 'ok');
+        if (cfgReload) cfgReload();
+        setD(prev => ({ ...prev, upstream: name }));
+        setCreatePoolOpen(false);
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Pool save failed: ${msg}`, 'err');
+      }
+    } finally {
+      setCreatePoolBusy(false);
+    }
+  }
 
   // One-line preview always visible at the bottom of the form.
   const matchPreview = (() => {
     const ms = (d.methods || []).length > 0 ? d.methods.join(',') : 'ANY';
     const host = d.host.trim() || '*';
     const path = d.path.trim() || '/';
-    return `${ms}  ${host}${path}  →  ${
-      usingNewPool ? `${d.id.trim() || '<route-id>'} (new · ${newPool.addr})`
-                   : (d.upstream || '<pick a pool>')
-    }`;
+    const pool = d.upstream || '<pick a pool>';
+    const stripNote = d.strip_prefix && (d.match_type === 'prefix' || d.match_type === 'exact') && path !== '/'
+      ? '  · strip prefix'
+      : '';
+    return `${ms}  ${host}${path}  →  ${pool}${stripNote}`;
   })();
 
   return (
@@ -9487,7 +10899,7 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             <label>Route ID <span className="req">*</span></label>
             <input className="ip" value={d.id} disabled={!isAdd}
               onChange={e => set('id', e.target.value)}
-              placeholder="vnexpress" />
+              placeholder="my-route" />
             {idClash && <div className="form-hint warn">A route with this ID already exists.</div>}
           </div>
 
@@ -9534,56 +10946,107 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             </div>
           </div>
 
-          {/* Forward to — combined: dropdown OR type a new address. */}
+          {/* MED-RU-03 (2026-05-12) — Forward to: pick an existing
+              pool, or click "+ Create new pool" to open a child
+              modal. The modal authors only the route now; pool
+              creation is an explicit audit-chained step.  Pools
+              that exist without routes show up in "Pools without
+              routes" on the page — same lifecycle as the standalone
+              "+ Add pool" entry. */}
           <div className="form-row" style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
             <label>Forward to <span className="req">*</span></label>
-            <select className="ip"
-              value={usingNewPool ? '' : d.upstream}
-              disabled={usingNewPool}
-              onChange={e => set('upstream', e.target.value)}>
-              <option value="">{poolNames.length === 0 ? '— no pools yet —' : '— pick an existing pool —'}</option>
-              {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-            <div style={{ fontSize: 11, color: 'var(--ink-dim)', textAlign: 'center', margin: '6px 0' }}>— or —</div>
-            <input
-              className="ip"
-              value={newPool.addr}
-              onChange={e => setNewPool({ ...newPool, addr: e.target.value })}
-              placeholder="Type a new backend: IP:port  (e.g. 10.0.1.10:8080)"
-            />
-            {usingNewPool && (
-              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 11 }}>Scheme</label>
-                  <select className="ip" value={newPool.scheme}
-                    onChange={e => setNewPool({ ...newPool, scheme: e.target.value })}>
-                    <option value="auto">auto</option>
-                    <option value="http">http</option>
-                    <option value="https">https</option>
-                    <option value="h2c">h2c</option>
-                    <option value="grpc">grpc</option>
-                    <option value="tcp">tcp</option>
-                  </select>
-                </div>
-                <div style={{ flex: 2 }}>
-                  <label style={{ fontSize: 11 }}>
-                    Host header <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(SNI override · optional)</span>
-                  </label>
-                  <input className="ip" value={newPool.host_header}
-                    onChange={e => setNewPool({ ...newPool, host_header: e.target.value })}
-                    placeholder="vnexpress.net (for multi-vhost / public TLS)" />
-                </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+              <select
+                className="ip"
+                style={{ flex: 1 }}
+                value={d.upstream}
+                onChange={e => set('upstream', e.target.value)}
+              >
+                <option value="">{poolNames.length === 0 ? '— no pools yet —' : '— pick a pool —'}</option>
+                {poolNames.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => { if (clearSaveError) clearSaveError(); setCreatePoolOpen(true); }}
+                title="Open the full pool editor to author a new upstream (members, scheme, TLS, health, circuit breaker). Saves immediately and audit-chains as a separate event from this route."
+                style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+              >+ Create new pool</button>
+            </div>
+            {poolNames.length === 0 && (
+              <div className="form-hint">
+                No pools yet — click <strong>+ Create new pool</strong> to author one.
               </div>
             )}
-            {usingNewPool && (
-              <div className="form-hint">
-                Will create pool <code>{d.id.trim() || '<route-id>'}</code> with this single member.
-                {poolNames.includes(d.id.trim()) && (
-                  <span className="warn"> — that pool name already exists; pick it from the dropdown above instead.</span>
-                )}
+            {d.upstream && (
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
+                Selected: <code>{d.upstream}</code>{' '}
+                {(() => {
+                  const p = (poolNames || []).includes(d.upstream);
+                  return p ? '· existing pool' : '· (pool no longer in the live config — refresh)';
+                })()}
               </div>
             )}
           </div>
+
+          {/* 2026-05-12 — strip-prefix toggle. The forwarder
+              precomputes whether to strip at compile time based on
+              this flag + match_type + path, so the only gating
+              choice the operator has to make is "mount-point style"
+              vs "path-preserving". Default `true` matches the
+              nginx/traefik/envoy mental model. */}
+          {(() => {
+            const matchType = d.match_type || 'prefix';
+            const path = (d.path || '').trim();
+            const supportsStrip = (matchType === 'prefix' || matchType === 'exact') && path !== '/';
+            const upstreamPathPreview = (() => {
+              const incoming = path && path.startsWith('/') ? `${path}/article.html` : '/example';
+              if (!supportsStrip || !d.strip_prefix) return incoming;
+              return incoming.startsWith(path) && incoming.length > path.length
+                ? incoming.slice(path.length) || '/'
+                : '/';
+            })();
+            return (
+              <div className="form-row" style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--hairline)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!d.strip_prefix}
+                    disabled={!supportsStrip}
+                    onChange={e => set('strip_prefix', e.target.checked)}
+                  />
+                  <span>
+                    Strip route prefix when forwarding
+                    {!supportsStrip && (
+                      <span style={{ color: 'var(--ink-dim)', fontSize: 11, marginLeft: 4 }}>
+                        — n/a for {matchType === 'regex' || matchType === 'glob'
+                          ? <>match-type <code>{matchType}</code></>
+                          : <>catch-all route <code>/</code></>}
+                      </span>
+                    )}
+                  </span>
+                </label>
+                <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 4 }}>
+                  {supportsStrip ? (
+                    <>
+                      With strip on, the upstream sees the request path with{' '}
+                      <code>{path}</code> removed. With it off, the upstream
+                      sees the full path verbatim.
+                      <br />
+                      <span style={{ fontFamily: 'var(--mono)' }}>
+                        Example: <code>{path}/article.html</code> →{' '}
+                        upstream gets <code>{upstreamPathPreview}</code>
+                      </span>
+                    </>
+                  ) : matchType === 'regex' || matchType === 'glob' ? (
+                    <>Regex / glob matches have no single literal prefix to strip — leave the field off.</>
+                  ) : (
+                    <>The catch-all route forwards every path verbatim — stripping <code>/</code> would leave the request without a path component.</>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Advanced — collapsed by default. */}
           <div style={{ marginTop: 12 }}>
@@ -9690,23 +11153,61 @@ function RouteEditModal({ mode, draft: initial, existingIds, poolNames, onSave, 
             {matchPreview}
           </div>
 
+          {/* MED-02 (2026-05-11) — server-error block, modal-
+              anchored. Replaces the older bottom-right toast so
+              the operator's eye doesn't need to ping two
+              corners of the page. Pre-wrap preserves the
+              compensating-delete addendum that MED-04 emits
+              when a rolled-back pool can't be removed. */}
+          {saveError && (
+            <div style={{
+              marginTop: 12,
+              padding: '10px 12px',
+              border: '1px solid var(--danger, #b9425a)',
+              background: 'rgba(185, 66, 90, 0.12)',
+              borderRadius: 4,
+              fontSize: 12,
+              color: 'var(--ink)',
+              whiteSpace: 'pre-wrap',
+            }} role="alert">
+              <strong style={{ display: 'block', marginBottom: 4 }}>Save failed</strong>
+              {saveError.replace(/^Save failed:\s*/, '')}
+            </div>
+          )}
+
         </div>
         <div className="modal-foot">
           <button className="btn" onClick={onCancel} disabled={busy}>Cancel</button>
           <button className="btn primary" disabled={!canSave} onClick={() => {
-            const out = { ...d };
-            if (usingNewPool) {
-              out.upstream = d.id.trim();
-              out.newPool = newPool;
-            } else {
-              out.newPool = null;
-            }
-            onSave(out);
+            // MED-RU-03 (2026-05-12) — the route modal no longer
+            // creates pools as a side-effect. The "newPool" sentinel
+            // stays `null` so the parent's saveRoute skips the
+            // inline-pool branch and only emits a ROUTE_CREATE.
+            onSave({ ...d, newPool: null });
           }}>
             {busy ? 'Saving…' : (isAdd ? 'Create route' : 'Save')}
           </button>
         </div>
       </div>
+      {/* MED-RU-03 (2026-05-12) — child PoolEditModal for the
+          "+ Create new pool" flow. Saves immediately (audit-chained);
+          on success the new pool is selected in the route's
+          dropdown. Operator cancel of the child modal is a no-op
+          (no API call). Operator cancel of the PARENT route modal
+          after creating a pool leaves the pool intact (matches
+          the standalone "+ Add pool" semantics — pools can exist
+          without routes by design). */}
+      {createPoolOpen && (
+        <PoolEditModal
+          mode="add"
+          existingNames={poolNames}
+          initialName=""
+          initialPool={null}
+          onCancel={() => setCreatePoolOpen(false)}
+          onSave={handleChildPoolSave}
+          busy={createPoolBusy}
+        />
+      )}
     </div>
   );
 }

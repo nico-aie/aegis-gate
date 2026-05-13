@@ -255,9 +255,19 @@ fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
     // `WantsProtocols3`), so we can't conditionally call
     // `.enable_http2()` on a single bound; build either
     // [h1] or [h1+h2] via separate branches.
+    // 2026-05-13 — only advertise HTTP/2 to upstreams that EXPLICITLY
+    // require it (`grpc`, `h2c`).  `auto` and `https` previously
+    // advertised both h1 + h2, but real-world edges (nginx with
+    // certain header configurations — verified against
+    // `znews.vn` returning a generic 400 with `server: TTTT` over
+    // h2 while accepting the identical request over h1) reject
+    // hyper's HTTP/2 framing on requests that direct curl-over-h2
+    // handles fine.  HTTP/1.1 is the universal lowest-common-
+    // denominator for reverse-proxy forwarding; operators who
+    // need h2 to a backend pick `grpc` or `h2c` explicitly.
     let advertise_h2 = matches!(
         cfg.scheme,
-        UpstreamScheme::Auto | UpstreamScheme::Https | UpstreamScheme::Grpc
+        UpstreamScheme::Grpc | UpstreamScheme::H2c,
     );
     let connector = if advertise_h2 {
         hyper_rustls::HttpsConnectorBuilder::new()
@@ -297,12 +307,22 @@ fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
 /// Stable signature of a [`ConnectionPoolConfig`] used to dedupe
 /// clients in the cache. Two pools with the same tuning share a
 /// single client (and therefore a single idle-conn cache).
+///
+/// HIGH-RU-02 (2026-05-12) — `scheme` is part of the key because
+/// `build_client` consumes it for ALPN advertisement
+/// (`advertise_h2` branch) and forced HTTP/2 framing
+/// (`forces_http2`).  Without it, a scheme flip on hot-reload
+/// hit a stale cached client whose internal shape didn't match
+/// the current config — operators had to restart the WAF to pick
+/// up the change.  Including the scheme makes
+/// `PoolRegistry::apply` close the round-trip end-to-end.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct PoolKey {
     max_idle_per_host: usize,
     idle_timeout_ms: u64,
     keep_alive: bool,
     tls: bool,
+    scheme: aegis_core::config::UpstreamScheme,
 }
 
 impl From<&ConnectionPoolConfig> for PoolKey {
@@ -312,6 +332,7 @@ impl From<&ConnectionPoolConfig> for PoolKey {
             idle_timeout_ms: c.idle_timeout.as_millis().min(u64::MAX as u128) as u64,
             keep_alive: c.keep_alive,
             tls: c.tls,
+            scheme: c.scheme,
         }
     }
 }
@@ -421,7 +442,20 @@ pub async fn forward(
     // layer.
     let url_authority = if cfg.scheme.uses_tls(cfg.tls) {
         match member.host_override.as_deref() {
-            Some(h) => format!("{}:{}", h, member.addr.port()),
+            // 2026-05-13 — omit the port when it's the default for
+            // the scheme (443/https, 80/http). Some upstream edges
+            // (e.g. znews.vn's nginx) return 400 when the HTTP/2
+            // `:authority` carries the redundant port while peer
+            // `Host` doesn't — being conservative here is what curl
+            // and browsers do anyway.
+            Some(h) => {
+                let port = member.addr.port();
+                if port == 443 {
+                    h.to_string()
+                } else {
+                    format!("{}:{}", h, port)
+                }
+            }
             None => member.addr.to_string(),
         }
     } else {
@@ -432,6 +466,14 @@ pub async fn forward(
         .map_err(|e: http::uri::InvalidUri| {
             ForwardError::BadRequest(e.to_string())
         })?;
+    tracing::debug!(
+        target_uri = %target_uri,
+        cfg_scheme = ?cfg.scheme,
+        cfg_tls = cfg.tls,
+        member_addr = %member.addr,
+        host_override = ?member.host_override,
+        "upstream forward target URI",
+    );
 
     let mut builder = Request::builder().method(method).uri(target_uri);
     if let Some(h) = builder.headers_mut() {
@@ -853,6 +895,78 @@ mod tests {
         };
         let https = ConnectionPoolConfig { tls: true, ..http.clone() };
         assert_ne!(super::PoolKey::from(&http), super::PoolKey::from(&https));
+    }
+
+    #[test]
+    fn scheme_makes_distinct_pool_keys() {
+        // HIGH-RU-02 (2026-05-12) — two configs differing only on
+        // `scheme` must hash to distinct keys so the client cache
+        // invalidates whenever the scheme axis moves on hot-reload.
+        // Without the `scheme` field on PoolKey, an operator who
+        // flipped a pool from `auto` to `https` (or `http` to `h2c`)
+        // kept hitting the previously-built client whose ALPN /
+        // http2_only flags didn't match the new config — and had to
+        // restart the WAF to pick up the change.
+        let auto = ConnectionPoolConfig {
+            max_idle_per_host: 32,
+            idle_timeout: Duration::from_secs(30),
+            keep_alive: true,
+            tls: false,
+            scheme: aegis_core::config::UpstreamScheme::Auto,
+        };
+        let https = ConnectionPoolConfig {
+            scheme: aegis_core::config::UpstreamScheme::Https,
+            ..auto.clone()
+        };
+        let h2c = ConnectionPoolConfig {
+            scheme: aegis_core::config::UpstreamScheme::H2c,
+            ..auto.clone()
+        };
+        let grpc = ConnectionPoolConfig {
+            scheme: aegis_core::config::UpstreamScheme::Grpc,
+            ..auto.clone()
+        };
+        // Every variant produces a distinct cache key.
+        assert_ne!(super::PoolKey::from(&auto),  super::PoolKey::from(&https));
+        assert_ne!(super::PoolKey::from(&auto),  super::PoolKey::from(&h2c));
+        assert_ne!(super::PoolKey::from(&auto),  super::PoolKey::from(&grpc));
+        assert_ne!(super::PoolKey::from(&https), super::PoolKey::from(&h2c));
+        assert_ne!(super::PoolKey::from(&https), super::PoolKey::from(&grpc));
+        assert_ne!(super::PoolKey::from(&h2c),   super::PoolKey::from(&grpc));
+    }
+
+    #[test]
+    fn pooled_client_distinguishes_schemes() {
+        // HIGH-RU-02 — the empirical guarantee: calling pooled_client
+        // back-to-back with different schemes must return different
+        // Arc<PooledClient> instances (no Arc::ptr_eq).  Combined
+        // with the cache-key test above, this confirms the cache
+        // builds a fresh client on a scheme change instead of
+        // returning the stale one.
+        super::_reset_client_cache();
+        let auto = ConnectionPoolConfig {
+            max_idle_per_host: 32,
+            idle_timeout: Duration::from_secs(30),
+            keep_alive: true,
+            tls: false,
+            scheme: aegis_core::config::UpstreamScheme::Auto,
+        };
+        let https = ConnectionPoolConfig {
+            scheme: aegis_core::config::UpstreamScheme::Https,
+            ..auto.clone()
+        };
+        let c_auto  = super::pooled_client(&auto);
+        let c_https = super::pooled_client(&https);
+        assert!(
+            !Arc::ptr_eq(&c_auto, &c_https),
+            "scheme change must produce a different cached client",
+        );
+        // Same config back-to-back still hits the cache.
+        let c_auto_again = super::pooled_client(&auto);
+        assert!(
+            Arc::ptr_eq(&c_auto, &c_auto_again),
+            "identical config must reuse the cached client",
+        );
     }
 
     #[tokio::test]

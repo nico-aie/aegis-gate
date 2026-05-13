@@ -73,6 +73,14 @@ const ROUTE_REDIRECTS = {
   // Documentation, bookmarks, and intuitive guesses (#/routing)
   // used to silently land on Overview pre-H002. Now they redirect.
   'routing':   'upstreams',
+  // LOW-SO-02 (2026-05-12) — sidebar label "Live Feed" suggests
+  // `#/live-feed` but the route is `#/live`. Alias the long form
+  // so guessed-by-label bookmarks resolve.
+  'live-feed': 'live',
+  // LOW-OBS-02 (2026-05-12) — same pattern: sidebar reads
+  // "Health & SLOs" but the route is `#/health`. Alias the
+  // longer guess.
+  'health-slos': 'health',
 };
 
 // 2026-05-07 — H002 fix. `location.hash.slice(2)` returns
@@ -131,19 +139,20 @@ function TopBar() {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        {/* L002 (2026-05-07) — surface what UNKNOWN means without
-            requiring tribal knowledge. The pill reflects
-            `cfg.admin.environment` from /api/about. UNKNOWN means
-            the operator never set it; it's the default of the
-            environment-tagging system, not an error. */}
-        <span
-          className={`env-pill ${env}`}
-          title={
-            env === 'unknown'
-              ? 'Environment not labelled. Set cfg.admin.environment in waf.yaml ("dev", "staging", "prod") to clear this pill.'
-              : `Environment: ${env}`
-          }
-        >● {env.toUpperCase()}</span>
+        {/* MED-03 (2026-05-11) — hide the env pill entirely when
+            the env is "unknown" rather than rendering a red
+            "UNKNOWN" alarm. Operators on a fresh dev boot were
+            getting a P1-shaped pill at the top of every page on
+            an otherwise healthy cluster; the pill should reflect
+            actual operational signal, not a missing config
+            label. Labeled envs (dev, staging, prod) still render
+            so operators see *which* env they're on. */}
+        {env !== 'unknown' && (
+          <span
+            className={`env-pill ${env}`}
+            title={`Environment: ${env}`}
+          >● {env.toUpperCase()}</span>
+        )}
         {status.data?.mtls_break_glass_active && (
           <span
             className="pill down"
@@ -407,8 +416,16 @@ function StatusBar({ tick }) {
 
   return (
     <div className="statusbar">
+      {/* P10 (2026-05-11) — footer pill tone. Pre-fix, every pill
+          rendered with a warn / down color even on healthy dev
+          boots (SSE was `led warn`, Audit chain was `pill warn`,
+          GitOps was `pill off-but-styled-as-alarm`). The footer
+          read as five things to worry about. Now: demo /
+          off-by-config pills render neutral; reserve warn/down
+          tones for real concerns (audit chain SUSPENDED, leader
+          lost, etc.). */}
       <span title="Demo indicator — SSE state isn't observed at the topbar level">
-        <span className="led warn"></span> SSE (demo)
+        <span className="led neutral"></span> SSE (demo)
       </span>
       <span className="dim">|</span>
       <span>Cluster <span className={`num ${total === 0 ? 'dim' : ''}`}>
@@ -416,7 +433,7 @@ function StatusBar({ tick }) {
       </span></span>
       <span className="dim">|</span>
       <span title="Demo indicator — chain verify isn't exposed in realtime; use `waf audit verify`">
-        Audit chain <span className="pill warn">demo</span>
+        Audit chain <span className="pill neutral">demo</span>
       </span>
       <span className="dim">|</span>
       <span>GitOps <span className={`pill ${gitopsTone}`}>{gitopsState}</span></span>

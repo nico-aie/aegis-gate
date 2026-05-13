@@ -30,9 +30,13 @@ SOC-first dashboard.
   (`round_robin`, `weighted_round_robin`, `least_conn`,
   `consistent_hash`, `p2c`), pooled HTTP/1.1 keep-alive,
   rustls connector for HTTPS, **per-member `host_header`
-  override + SNI pinning** for multi-vhost backends, active
-  health checks + per-member circuit breaker, audit-mutated
-  hot-swap (no restart).
+  override + SNI pinning** for multi-vhost backends,
+  **hostname-addressed members (`addr: api.example.com:443`)
+  resolved + multi-A expanded at config-load time, with
+  background TTL-aware DNS refresh via `hickory-resolver`** so
+  cloud LBs / K8s Services / Consul rotate without a restart,
+  active health checks + per-member circuit breaker,
+  audit-mutated hot-swap (no restart).
 - **TLS** — rustls 0.23 inbound, ACME issuance + renewal,
   OCSP stapling, hot-reloadable cert store, optional mTLS
   with SAN allow-list and audit-chained CA bundle hot-swap.
@@ -192,6 +196,24 @@ Open <https://127.0.0.1:9443/> · login `admin` / `aegis-test-1234`.
 > **Full happy-path walkthrough** (dashboard tour, traffic
 > generation, real-upstream wiring, troubleshooting): →
 > [`QUICKSTART.md`](QUICKSTART.md).
+
+### Dashboard JSX workflow
+
+The dashboard is a pre-compiled `app.js` embedded into the
+release binary via `include_bytes!`. **`make build` auto-rebundles
+the JSX whenever any source under
+`crates/aegis-control/assets/dashboard/src/` is newer than the
+compiled `app.js`** — no manual step required.
+
+If you bypass make (`cargo build` directly), run
+`make dashboard` first or you'll embed the previous bundle.
+`make dashboard-force` rebuilds even when mtimes say the bundle
+is fresh — useful after toolchain bumps (Node, esbuild) where
+the output might shift without any source change.
+
+CI gates on `app.js` drift: a PR that edits JSX without
+committing the matching bundle fails the
+`dashboard-bundle-fresh` job.
 
 ### Feature flags
 

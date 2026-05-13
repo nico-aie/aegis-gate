@@ -90,6 +90,62 @@ pub struct RouteStatsEntry {
     pub block_rate_pct: f64,
 }
 
+/// PR-UX-A2 (2026-05-12) — filter the audit ring server-side
+/// instead of shipping the whole ring to the dashboard.  Empty
+/// fields are wildcards; populated fields are AND-ed together.
+#[derive(Clone, Debug, Default)]
+pub struct AuditFilter {
+    pub ip: Option<String>,
+    pub request_id: Option<String>,
+    pub rule_id: Option<String>,
+}
+
+impl AuditFilter {
+    pub fn is_empty(&self) -> bool {
+        self.ip.is_none() && self.request_id.is_none() && self.rule_id.is_none()
+    }
+
+    /// Does this event pass every populated filter field?
+    pub fn matches(&self, ev: &AuditEvent) -> bool {
+        if let Some(ip) = &self.ip {
+            if !ip.eq_ignore_ascii_case(&ev.client_ip) {
+                return false;
+            }
+        }
+        if let Some(rid) = &self.request_id {
+            if !rid.eq_ignore_ascii_case(&ev.request_id) {
+                return false;
+            }
+        }
+        if let Some(rule) = &self.rule_id {
+            let rule_l = rule.to_ascii_lowercase();
+            let top_hit = ev
+                .rule_id
+                .as_ref()
+                .map(|r| r.eq_ignore_ascii_case(rule))
+                .unwrap_or(false);
+            if !top_hit {
+                let detectors_hit = ev
+                    .fields
+                    .get("detectors")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter().any(|d| {
+                            d.as_str()
+                                .map(|s| s.to_ascii_lowercase() == rule_l)
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                if !detectors_hit {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
 /// First non-empty path segment, prefixed with `/`. Used as a
 /// route bucket fallback when the audit event lacks `route_id`.
 /// Examples:
@@ -137,6 +193,27 @@ impl AuditRing {
     /// Reports `gap = true` when the ring evicted events in the
     /// (cursor, oldest_in_ring) range.
     pub fn since(&self, cursor: u64, limit: u32) -> AuditSinceResponse {
+        self.since_filtered(cursor, limit, &AuditFilter::default())
+    }
+
+    /// PR-UX-A2 (2026-05-12) — filtered variant.  Used by
+    /// `/api/audit/since?ip=&rule_id=&request_id=` so the
+    /// Investigation page doesn't have to client-filter 200
+    /// events for a one-IP pivot.  When all filter fields are
+    /// `None` this is equivalent to `since()` (and is the path
+    /// `since()` itself delegates to).
+    ///
+    /// Filter semantics — all populated fields must match.
+    /// - `ip`: exact match on `event.client_ip`
+    /// - `request_id`: exact match on `event.request_id`
+    /// - `rule_id`: matches `event.rule_id`, OR any element of
+    ///   `event.fields.detectors[]` when present
+    pub fn since_filtered(
+        &self,
+        cursor: u64,
+        limit: u32,
+        filter: &AuditFilter,
+    ) -> AuditSinceResponse {
         let state = self.inner.lock().expect("audit ring poisoned");
         let high_water = state.next_seq.saturating_sub(1);
         let oldest = state.entries.front().map(|(s, _)| *s).unwrap_or(high_water + 1);
@@ -162,6 +239,13 @@ impl AuditRing {
         let mut last_seq = cursor;
         for (seq, ev) in state.entries.iter() {
             if *seq <= cursor {
+                continue;
+            }
+            if !filter.matches(ev) {
+                // Still advance last_seq so the client's cursor
+                // moves past filtered-out rows; otherwise the
+                // next poll re-walks the same prefix.
+                last_seq = *seq;
                 continue;
             }
             if events.len() >= limit {
@@ -300,9 +384,23 @@ impl AuditHandler {
     /// clamped to `[1, MAX_LIMIT]`; missing/malformed values use
     /// `DEFAULT_LIMIT`.
     pub fn render_since(&self, cursor: u64, limit: u32) -> String {
+        self.render_since_filtered(cursor, limit, &AuditFilter::default())
+    }
+
+    /// PR-UX-A2 (2026-05-12) — filtered variant. Cache is bypassed
+    /// when any filter field is populated because the cache key
+    /// is `(cursor, limit)` and we'd otherwise serve stale slices
+    /// for the wrong pivot.  Unfiltered calls keep the cache hit
+    /// fan-out behaviour intact.
+    pub fn render_since_filtered(
+        &self,
+        cursor: u64,
+        limit: u32,
+        filter: &AuditFilter,
+    ) -> String {
         let now = Instant::now();
         let limit = clamp_limit(limit);
-        {
+        if filter.is_empty() {
             let cache = self.cache.lock().expect("audit cache poisoned");
             if let Some((stamped_at, c, l, resp)) = cache.as_ref() {
                 if *c == cursor
@@ -313,11 +411,14 @@ impl AuditHandler {
                         .unwrap_or_else(|_| String::from("{}"));
                 }
             }
+            drop(cache);
         }
-        let resp = self.ring.since(cursor, limit);
+        let resp = self.ring.since_filtered(cursor, limit, filter);
         let body = serde_json::to_string(&resp).unwrap_or_else(|_| String::from("{}"));
-        let mut cache = self.cache.lock().expect("audit cache poisoned");
-        *cache = Some((now, cursor, limit, resp));
+        if filter.is_empty() {
+            let mut cache = self.cache.lock().expect("audit cache poisoned");
+            *cache = Some((now, cursor, limit, resp));
+        }
         body
     }
 }
@@ -429,6 +530,85 @@ mod tests {
             risk_score: None,
             fields: serde_json::Value::Null,
         }
+    }
+
+    fn ev_filter(
+        id: &str,
+        client_ip: &str,
+        rule_id: Option<&str>,
+        detectors: &[&str],
+    ) -> AuditEvent {
+        let fields = if detectors.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({
+                "detectors": detectors.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            })
+        };
+        AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: id.into(),
+            class: AuditClass::Detection,
+            tenant_id: None,
+            tier: None,
+            action: "block".into(),
+            reason: id.into(),
+            client_ip: client_ip.into(),
+            route_id: None,
+            rule_id: rule_id.map(String::from),
+            risk_score: None,
+            fields,
+        }
+    }
+
+    #[test]
+    fn audit_filter_empty_passes_every_event() {
+        let f = AuditFilter::default();
+        assert!(f.is_empty());
+        assert!(f.matches(&ev_filter("a", "1.2.3.4", None, &[])));
+        assert!(f.matches(&ev_filter("b", "9.9.9.9", Some("sqli"), &["xss"])));
+    }
+
+    #[test]
+    fn audit_filter_ip_exact_match() {
+        let f = AuditFilter {
+            ip: Some("8.8.8.8".into()),
+            ..Default::default()
+        };
+        assert!(f.matches(&ev_filter("a", "8.8.8.8", None, &[])));
+        assert!(!f.matches(&ev_filter("b", "1.1.1.1", None, &[])));
+    }
+
+    #[test]
+    fn audit_filter_rule_id_matches_top_level_or_detectors_array() {
+        let f = AuditFilter {
+            rule_id: Some("recon_path".into()),
+            ..Default::default()
+        };
+        // Top-level rule_id match.
+        assert!(f.matches(&ev_filter("a", "1.1.1.1", Some("recon_path"), &[])));
+        // Detector list match.
+        assert!(f.matches(&ev_filter("b", "1.1.1.1", None, &["recon_path"])));
+        // Neither — rejected.
+        assert!(!f.matches(&ev_filter("c", "1.1.1.1", Some("sqli"), &["xss"])));
+    }
+
+    #[test]
+    fn since_filtered_returns_only_matching_rows_but_advances_cursor() {
+        let ring = AuditRing::new();
+        ring.record(ev_filter("a", "1.2.3.4", None, &[]));
+        ring.record(ev_filter("b", "8.8.8.8", None, &[]));
+        ring.record(ev_filter("c", "1.2.3.4", None, &[]));
+        let filter = AuditFilter {
+            ip: Some("1.2.3.4".into()),
+            ..Default::default()
+        };
+        let resp = ring.since_filtered(0, 100, &filter);
+        assert_eq!(resp.events.len(), 2);
+        // next_cursor advances to the high water mark so the
+        // dashboard's incremental poll doesn't re-walk the prefix.
+        assert_eq!(resp.next_cursor, 3);
     }
 
     #[test]

@@ -503,6 +503,9 @@ button { font-family: inherit; }
   color: var(--ink-strong);
   margin: 0 0 2px;
   letter-spacing: -0.2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .page-subtitle {
   font-size: 12px;
@@ -510,6 +513,32 @@ button { font-family: inherit; }
   margin: 0;
 }
 .page-actions { display: flex; align-items: center; gap: 8px; }
+
+/* P9 (2026-05-11) — title-anchored Refresh icon. Sits inside
+   .page-title's inline-flex so it lines up with the headline
+   baseline. Smaller than .btn (24px circle) so the title still
+   dominates visually. */
+.refresh-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--hairline);
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+.refresh-icon:hover {
+  background: var(--surface-2);
+  border-color: var(--hairline-strong);
+  color: var(--ink);
+}
+.refresh-icon:active { transform: translateY(1px); }
+.refresh-icon svg { width: 14px; height: 14px; }
 
 /* ===== Buttons ===== */
 .btn {
@@ -830,7 +859,20 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; }
 .split-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gutter); }
 .split-list { display: grid; grid-template-columns: 280px 1fr; gap: var(--gutter); height: calc(100vh - 130px); }
 .split-list .left { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg); overflow: hidden; display: flex; flex-direction: column; }
-.split-list .right { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg); overflow: auto; }
+/* P2 (2026-05-11) — pin the right panel via the column's own
+   independent scroll. The grid already makes left/right
+   side-by-side; without this rule the right panel scrolled in
+   lockstep with the page (so on a tall route list, scrolling
+   down to find a tier card pushed the live-policy summary out
+   of view). Now the right column is its own scroll context. */
+.split-list .right {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  overflow: auto;
+  align-self: start;
+  max-height: 100%;
+}
 
 /* ===== Banner ===== */
 .banner {

@@ -382,10 +382,25 @@ Stages run in this order. Earlier stages can short-circuit later ones.
     - CAPTCHA providers behind a `CaptchaProvider` trait: Turnstile,
       hCaptcha, reCAPTCHA v3.
 
-12. **Response filter** (runs after the upstream responds). Security header
-    injection, stack-trace scrub, internal IP mask, information-leak header
-    strip, DLP outbound, ICAP RESPMOD. Streaming chunk processor so large
-    responses never balloon memory.
+12. **Response filter** (runs after the upstream responds, shipped 2026-05-11).
+    `Pipeline::on_body_frame` is the single hot trait method on
+    `SecurityPipeline` today (`inbound` is bypassed — the data plane calls
+    `run_all_filtered_timed` on the detector chain directly). Each upstream
+    response body runs through three independently toggleable rungs via
+    `ResponseFilterConfig` (held in an `ArcSwap` for hot-reload):
+    - `response_filter::scrub_stack_traces` — Node.js / JVM / Python / Rust /
+      PHP / .NET / Ruby / Go traces → `[REDACTED]`.
+    - `response_filter::mask_internal_ips` — RFC 1918 + loopback + link-local
+      → `[INTERNAL]`.
+    - `dlp::redact` — Luhn-validated credit cards, SSN, IBAN, email, AWS keys,
+      GitHub / Stripe / Slack tokens.
+    Clean responses pay one `Cow::Borrowed` check per rung and zero allocations;
+    only modified payloads re-emit (with `Content-Length` rewritten so hyper
+    doesn't mis-frame). Today the forwarder buffers the entire body into a
+    single `Full<Bytes>` frame; the per-frame interface is in place for the
+    streaming-body work that follows. Information-leak header stripping +
+    ICAP RESPMOD + OpenAPI response validation remain forward-looking
+    (`docs/security/response-filtering.md` calls out the gap).
 
 ---
 
@@ -453,6 +468,37 @@ pub struct Member {
 }
 ```
 
+- **Hostname-addressed members (PR-DNS-1 + PR-DNS-2, 2026-05-11).**
+  `MemberConfig.addr` is a tagged enum `MemberAddrSpec::{Ip(SocketAddr),
+  Hostname { host, port, refresh_seconds }}` parsed via untagged
+  serde so the YAML stays a single string (`addr: api.example.com:443`).
+  - **Phase 1 (PR-DNS-1):** at boot + dashboard PUT the resolver
+    in `crates/aegis-proxy/src/upstream/dns_resolve.rs` walks each
+    pool, calls `tokio::net::lookup_host` for every hostname in
+    parallel, and expands multi-A records into one synthetic
+    `Member` per resolved IP — same shape as Envoy's STRICT_DNS.
+    `host_header` defaults to the hostname when unset so TLS SNI
+    + outbound `Host:` align. Unresolvable hostnames at dashboard
+    PUT fail loudly (`UnresolvedHostname`).
+  - **Phase 2 (PR-DNS-2):** per-pool background refresh task in
+    `crates/aegis-proxy/src/upstream/dns_refresh.rs`, backed by
+    `hickory-resolver` (pure-Rust, TTL-aware). One task per pool
+    with hostname members at boot. Cadence is
+    `min(record TTL, refresh_seconds override, 60 s default)`
+    clamped to `[10 s, 1 h]`. On IP-set change the task calls
+    `PoolRegistry::apply` (preserving operator-pinned static
+    members) and emits a `pool_dns_resolved` audit event with
+    `before` / `after` / `added` / `removed` IP lists. Resolver
+    outages soft-fail: last-known IPs stay in place, retry on
+    next tick. Boot path uses `SoftSkip` failure policy so a
+    transient outage doesn't abort startup; dashboard PUTs keep
+    `Strict` so typos surface at config-set time.
+  - **Phase 2 scope guard:** dashboard PUTs that add a new
+    hostname member to a pool get Phase 1's one-shot resolution
+    but don't spawn a new refresh task (the operator has to
+    persist + restart to get background refresh on that
+    hostname). Phase 2.5 / Phase 3 will reconcile refresh-task
+    membership on PUT.
 - **Active health check** per pool: periodic probe task.
 - **Passive ejection** on N consecutive 5xx / connect errors.
 - **Circuit breaker** per member with error-rate threshold + open duration.

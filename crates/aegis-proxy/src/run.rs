@@ -42,7 +42,6 @@ use hyper_util::rt::TokioIo;
 
 use aegis_core::audit::AuditBus;
 use aegis_core::config::WafConfig;
-use aegis_core::pipeline::SecurityPipeline;
 use aegis_core::state::StateBackend;
 use aegis_core::ReadinessSignal;
 
@@ -98,13 +97,52 @@ pub enum ConfigReloadSource {
 /// the shared compliance clamp on the detector mask.
 pub async fn run(
     cfg_swap: Arc<arc_swap::ArcSwap<WafConfig>>,
-    _pipeline: Arc<dyn SecurityPipeline>,
+    // 2026-05-11 PR #7 — concrete `Arc<Pipeline>` (no longer the
+    // trait object) so the boot path can hand the same instance
+    // to both `ProxyContext` (via `Arc<dyn SecurityPipeline>`
+    // coercion) and `DashboardServices::response_filter_writer`
+    // (via `Arc<dyn ResponseFilterWriter>` coercion). The data
+    // plane reads `on_body_frame` through the trait object on
+    // `ProxyContext.pipeline`; the dashboard flips
+    // `ResponseFilterConfig` rungs through the same `Pipeline`
+    // instance via the writer trait.
+    pipeline: Arc<aegis_security::Pipeline>,
     state: Arc<dyn StateBackend>,
     lease_store: Arc<dyn aegis_core::cluster::LeaseStore>,
     bus: AuditBus,
     readiness: ReadinessSignal,
     reload_source: ConfigReloadSource,
 ) -> aegis_core::Result<()> {
+    // 2026-05-11 (PR-DNS-1 boot, PR-DNS-2 soft-failure + refresh
+    // specs). Resolve hostname-shaped upstream members before the
+    // boot snapshot. The expansion is idempotent on IP-only
+    // configs (`MemberAddrSpec::Ip` passes through). With PR-DNS-2
+    // we ALSO grab the operator-authored refresh specs ahead of
+    // expansion so the per-pool refresh task can re-resolve from
+    // the original hostnames; once the registry is built later in
+    // this function the task gets spawned (search "PR-DNS-2 spawn"
+    // below).
+    //
+    // Failure policy is `SoftSkip` because the refresh task will
+    // retry any hostname that didn't resolve at boot — Phase 1's
+    // strict abort is still used by the dashboard PUT path so
+    // operators catch typos at config-set time.
+    let dns_refresh_specs = {
+        let raw = cfg_swap.load_full();
+        crate::upstream::dns_refresh::extract_specs(&raw.upstreams)
+    };
+    {
+        let raw = cfg_swap.load_full();
+        let mut next: WafConfig = (*raw).clone();
+        next.upstreams = crate::upstream::dns_resolve::expand_hostname_members_with_policy(
+            next.upstreams,
+            crate::upstream::dns_resolve::ResolveFailurePolicy::SoftSkip,
+        )
+        .await
+        .map_err(|e| aegis_core::WafError::Config(e.to_string()))?;
+        cfg_swap.store(Arc::new(next));
+    }
+
     // Boot snapshot — every existing read site keeps `cfg` as
     // `Arc<WafConfig>`. Future per-handler `cfg.load()` calls
     // can read the latest revision without churning the whole
@@ -462,6 +500,13 @@ pub async fn run(
         aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
             .expect("route latency histogram registration failed"),
     );
+    // P5 (2026-05-11) — sliding-window per-route activity counter.
+    // Built once at boot; the same handle reaches the data plane
+    // (for `record`) and the admin endpoint (`GET /api/analytics/
+    // route-activity`). Cheap to clone — the inner `DashMap` is
+    // `Arc`-shared.
+    let route_activity =
+        aegis_control::metrics::route_activity::RouteActivityWindow::new();
     // Per-detector evaluation-duration histogram. Same wiring
     // pattern as `route_latency_hist`; data plane records around
     // each `Detector::inspect` call.
@@ -567,17 +612,16 @@ pub async fn run(
     let verbosity = aegis_core::SharedVerbosity::from_config(&cfg.logging);
 
     // Carry-over A (post-2026-04-29 perf re-run) — the Allow
-    // branch in `handle_data_request` previously returned a
-    // synthetic `OK\n` body; we now resolve a real upstream
-    // member via `crate::proxy::ProxyContext` and call
-    // `crate::upstream::forward::forward()`. The `pipeline`
-    // field on ProxyContext is unused by the forward path,
-    // so passing the workspace `NoopPipeline` here is a
-    // placeholder until the parallel pipelines converge.
+    // 2026-05-11 PR #7 follow-up — hand the live `Pipeline` to
+    // `ProxyContext` so the data plane's `on_body_frame` call
+    // (response-filter rung) reaches the real filter chain. Prior
+    // to this commit the boot path constructed a fresh
+    // `NoopPipeline` here, silently dropping the response-filter
+    // wire-up that landed in `data_plane.rs` two commits ago.
     let upstream_ctx = Arc::new({
         let mut ctx = crate::proxy::ProxyContext::build(
             &cfg,
-            Arc::new(aegis_security::NoopPipeline),
+            pipeline.clone(),
         )?;
         // WS-T6 — share the registered metrics with the data-
         // plane bridge code.  Done before Arc-wrap so the field
@@ -585,6 +629,66 @@ pub async fn run(
         ctx.websocket_metrics = Some(websocket_metrics.clone());
         ctx
     });
+
+    // PR-DNS-2 spawn (2026-05-11) — one background DNS refresh
+    // task per pool that has hostname-addressed members. Each
+    // task re-resolves on TTL via `hickory-resolver`, diffs
+    // against the last-applied IP set, and atomic-swaps the
+    // pool's member list through `PoolRegistry::apply` when the
+    // rotation produces a change. Soft-failure: a resolver outage
+    // keeps the last-known IPs in place and retries on the next
+    // tick.
+    //
+    // The handles are dropped intentionally — these tasks live
+    // for the process lifetime and tokio keeps them alive on the
+    // runtime regardless of handle ownership. Mirrors the
+    // `config-watcher` pattern below.
+    if !dns_refresh_specs.is_empty() {
+        let resolver = hickory_resolver::TokioResolver::builder_tokio()
+            .and_then(|b| b.build());
+        match resolver {
+            Ok(resolver) => {
+                let resolver = Arc::new(resolver);
+                for (pool_name, spec) in dns_refresh_specs {
+                    // Seed the applied-IP set from the registry's
+                    // current view of this pool so the first
+                    // refresh tick skips a no-op audit event when
+                    // the resolution matches what Phase 1 already
+                    // applied at boot.
+                    let seed = derive_applied_dns_seed(
+                        &upstream_ctx.pools,
+                        &pool_name,
+                        &spec,
+                    );
+                    let handle = crate::upstream::dns_refresh::spawn_pool_refresh(
+                        pool_name.clone(),
+                        spec,
+                        // PoolRegistry is internally Arc-cloneable,
+                        // so handing the task a fresh `Arc` of the
+                        // same registry keeps the live store in
+                        // lock-step with everything else.
+                        Arc::new(upstream_ctx.pools.clone()),
+                        resolver.clone(),
+                        bus.clone(),
+                        seed,
+                    );
+                    std::mem::drop(handle);
+                }
+            }
+            Err(e) => {
+                // Builder failure means we couldn't parse
+                // /etc/resolv.conf (or registry on Windows). Phase 1
+                // boot resolution used the system stub anyway, so
+                // the pools still have live members — we just
+                // can't refresh in the background. Loud-warn so
+                // operators see this in the log.
+                tracing::warn!(
+                    error = %e,
+                    "dns_refresh: failed to build hickory resolver; hostname members will not refresh in the background",
+                );
+            }
+        }
+    }
 
     // 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS observe-only wire-up.
     // Build the runtime if `cfg.ddos.enabled = true` and install
@@ -901,6 +1005,7 @@ pub async fn run(
         let verbosity = verbosity.clone();
         let request_stage_hist = request_stage_hist.clone();
         let route_latency_hist_l = route_latency_hist.clone();
+        let route_activity_l = route_activity.clone();
         let detector_latency_hist_l = detector_latency_hist.clone();
         let bus = bus.clone();
         let upstream_ctx_l = upstream_ctx.clone();
@@ -928,6 +1033,7 @@ pub async fn run(
             verbosity,
             request_stage_hist,
             route_latency_hist_l,
+            route_activity_l,
             detector_latency_hist_l,
             bus,
             upstream_ctx_l,
@@ -1197,6 +1303,7 @@ pub async fn run(
     let admin_detectors = detectors.clone();
     let admin_request_stage_hist = request_stage_hist.clone();
     let admin_route_latency_hist = route_latency_hist.clone();
+    let admin_route_activity = route_activity.clone();
     let admin_detector_latency_hist = detector_latency_hist.clone();
     // MTLS-T10 Phase 2 — share the live trust store with the admin
     // listener so the audit-mutated PUT /api/mtls/ca-bundle?apply=true
@@ -1222,11 +1329,13 @@ pub async fn run(
         admin_upstream_writer,
         admin_route_writer,
         ai_runtime_toggle.clone(),
+        pipeline.clone(),
         admin_state_backend,
         admin_identity_tracker,
         admin_detectors,
         admin_request_stage_hist,
         admin_route_latency_hist,
+        admin_route_activity,
         admin_detector_latency_hist,
         admin_client_trust,
         admin_inflight,
@@ -1433,6 +1542,46 @@ pub(crate) async fn force_https_loop(
 fn derive_pow_key(control_secret: &str) -> [u8; 32] {
     let h = blake3::hash(format!("aegis-pow-key-v1:{control_secret}").as_bytes());
     *h.as_bytes()
+}
+
+/// PR-DNS-2 — extract the DNS-managed subset of a pool's currently
+/// applied IPs so the refresh task can compare against it on the
+/// first tick. We can't tell DNS-resolved members from
+/// operator-pinned IPs perfectly (both end up as
+/// `MemberAddrSpec::Ip` after Phase 1's expansion); the heuristic
+/// is "any IP member whose `host_header` matches a hostname in
+/// the spec was resolved from that hostname." That's accurate for
+/// the common case (Phase 1's expansion sets `host_header` to the
+/// hostname); the edge case where an operator pinned an IP with
+/// `host_header: api.example.com` and ALSO listed
+/// `addr: api.example.com:443` would cause those pinned IPs to
+/// look DNS-managed, which is the right answer anyway (operators
+/// who do this want the refresh task to maintain the IP set).
+fn derive_applied_dns_seed(
+    registry: &crate::upstream::registry::PoolRegistry,
+    pool_name: &str,
+    spec: &crate::upstream::dns_refresh::DnsRefreshSpec,
+) -> std::collections::HashSet<std::net::IpAddr> {
+    use std::collections::HashSet;
+    let pool = match registry.current_pools().get(pool_name) {
+        Some(p) => p.clone(),
+        None => return HashSet::new(),
+    };
+    let hostnames: HashSet<&str> =
+        spec.hostnames.iter().map(|h| h.host.as_str()).collect();
+    pool.members
+        .iter()
+        .filter_map(|m| {
+            let host = m.host_header.as_deref()?;
+            if !hostnames.contains(host) {
+                return None;
+            }
+            match m.addr {
+                aegis_core::config::MemberAddrSpec::Ip(sa) => Some(sa.ip()),
+                aegis_core::config::MemberAddrSpec::Hostname { .. } => None,
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn build_interop_runtime(
