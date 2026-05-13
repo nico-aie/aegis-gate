@@ -1,0 +1,55 @@
+{
+  "mode": "A",
+  "throughput_rps": 400.0,
+  "http_reqs": 24001,
+  "attacks_total": 14211,
+  "attacks_detected": 12841,
+  "detection_rate_pct": 90.4,
+  "clean_total": 9790,
+  "clean_blocked": 43,
+  "false_positive_rate_pct": 0.4,
+  "http_req_duration_ms": {
+    "avg": 2.0,
+    "p50": 1.82,
+    "p90": 2.2,
+    "p95": 2.41,
+    "p99": 3.16,
+    "max": 113.34
+  },
+  "attack_latency_ms": {
+    "avg": 1.94,
+    "p50": 1.75,
+    "p90": 2.13,
+    "p95": 2.33,
+    "p99": 3.12,
+    "max": 111.98
+  },
+  "clean_latency_ms": {
+    "avg": 2.07,
+    "p50": 1.91,
+    "p90": 2.29,
+    "p95": 2.48,
+    "p99": 3.22,
+    "max": 113.34
+  },
+  "rss_kb": 382248,
+  "detector_hits": {
+    "class=\"brute_force\"": 145,
+    "class=\"recon\"": 2499,
+    "class=\"command_injection\"": 2173,
+    "class=\"ssrf\"": 1191,
+    "class=\"body_abuse\"": 53,
+    "class=\"template_injection\"": 572,
+    "class=\"ai\"": 7361,
+    "class=\"sqli\"": 2384,
+    "class=\"xss\"": 2141,
+    "class=\"open_redirect\"": 863,
+    "class=\"nosql_injection\"": 33,
+    "class=\"path_traversal\"": 1855,
+    "class=\"header_injection\"": 50
+  },
+  "ai_hits": 7361,
+  "ai_inference_count": 23888,
+  "ai_inference_mean_us": 992.0,
+  "ai_inference_total_ms": 23696.6
+}
