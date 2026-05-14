@@ -136,6 +136,26 @@ impl Pipeline {
 
 #[async_trait::async_trait]
 impl SecurityPipeline for Pipeline {
+    /// LT-RUN-6 SEC-07 closure (2026-05-14) — this method is the
+    /// `SecurityPipeline` trait surface but is **not** the
+    /// production hot path.  The data plane in
+    /// `aegis_proxy::data_plane` reaches detectors directly via
+    /// [`crate::detectors::run_all_filtered_timed`] (see
+    /// `crates/aegis-proxy/src/data_plane.rs` around line 507),
+    /// using a `Vec<Box<dyn Detector>>` seeded in
+    /// `crates/aegis-proxy/src/lib.rs:143`.
+    ///
+    /// Several static audits (LT-RUN-5 / LT-RUN-6) flagged that
+    /// "detectors are never called from `inbound()`" — that's
+    /// expected.  This method delegates to the rules engine only
+    /// because the engine itself currently has zero production
+    /// callers; once the engine is wired (planned for the dashboard
+    /// simulator surface), this method becomes the canonical
+    /// composite entry point (rules + detectors).
+    ///
+    /// **Do not** call this from a new aegis-proxy code path
+    /// without coordinating with the data plane — you'd double-run
+    /// detectors on every request.
     async fn inbound(
         &self,
         view: RequestView<'_>,
@@ -146,6 +166,14 @@ impl SecurityPipeline for Pipeline {
         crate::rules::evaluate(&snapshot, &view, route)
     }
 
+    /// LT-RUN-6 SEC-20 (2026-05-14) — pass-through stub.  The data
+    /// plane today reads `on_body_frame` only (see
+    /// `data_plane.rs:1469`) and never invokes this trait method.
+    /// ICAP wiring is a deferred substantive feature — tracked in
+    /// `plans/future/unwired-stubs-catalog.md` (search "ICAP").
+    /// When the wiring lands, this method should call
+    /// `self.icap_client.scan(IcapMode::Respmod, ...)` and return
+    /// `OutboundAction::Block` on `ScanResult::Infected`.
     async fn on_response_start(
         &self,
         _head: &http::response::Parts,

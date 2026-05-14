@@ -25,6 +25,7 @@ pub mod rules;
 pub mod threat_intel;
 pub mod velocity;
 
+#[allow(deprecated)]  // re-export of NoopPipeline — see crate::noop docs
 pub use noop::NoopPipeline;
 pub use pipeline::{classify_tier, Pipeline};
 pub use rules::RuleSet;

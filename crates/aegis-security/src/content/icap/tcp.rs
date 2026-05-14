@@ -231,6 +231,7 @@ impl IcapClient for IcapTcpClient {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]  // test scaffolding uses NoopPipeline
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU16, Ordering};

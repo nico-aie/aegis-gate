@@ -105,6 +105,7 @@ impl Default for RuleSet {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]  // test scaffolding uses NoopPipeline
 mod tests {
     use super::*;
     use std::io::Write;

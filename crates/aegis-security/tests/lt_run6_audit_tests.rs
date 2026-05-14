@@ -6,6 +6,18 @@
 //!
 //!   cargo test -p aegis-security --test lt_run6_audit_tests
 //!
+//! NOTE on the SEC-07 group:  the live `aegis-proxy` data plane
+//! invokes detectors via `run_all_filtered_timed` directly (see
+//! `crates/aegis-proxy/src/data_plane.rs:507` and the production
+//! 96% attack-detection rate measured in
+//! `tests/n-tester/reports/2026-05-13-FINAL-release-readiness/`).
+//! The `Pipeline::inbound()` method this suite probes is a legacy
+//! trait surface that the proxy bypasses — that "detectors not
+//! called from inbound()" is by design, not a vulnerability.
+//! See `plans/issue-fix/2026-05-14-l-tester-run6-7/README.md` for
+//! the verification matrix.
+#![allow(deprecated)]  // test scaffolding uses NoopPipeline
+
 //! Tests that require unavailable infrastructure (cargo binary) are
 //! skipped in CI with `#[ignore]`; override with `--include-ignored`.
 

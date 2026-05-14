@@ -3,9 +3,31 @@ use aegis_core::decision::{Action, Decision};
 use aegis_core::pipeline::{OutboundAction, RequestView, SecurityPipeline};
 
 /// A no-op security pipeline that allows all requests.
-/// Used as a placeholder for week 1 before detectors are wired up.
+/// Used as a placeholder for week 1 before detectors were wired up.
+///
+/// **DO NOT USE IN PRODUCTION.** This pipeline allows every
+/// request and passes every response body through untouched —
+/// it is a security bypass by design.  Production binaries
+/// (`aegis-bin`) must wire [`crate::Pipeline`] (the real
+/// pipeline with rules + response filter), not this one.
+///
+/// LT-RUN-6 NOOP-01 (2026-05-14) — the previous CTL-26 finding
+/// (Run 5) was that a binary accidentally wired
+/// `NoopSecurityPipeline` instead of the real pipeline.  The
+/// `#[deprecated]` attribute now makes such a misuse a compile-
+/// time warning, surfacing the security implication during
+/// review instead of in production.
+#[deprecated(
+    note = "NoopPipeline bypasses all security checks. Use \
+            aegis_security::Pipeline (or another concrete \
+            SecurityPipeline implementation) for production. \
+            This type exists for tests only. Suppress this \
+            warning with #[allow(deprecated)] at the test \
+            call site, NOT at the import."
+)]
 pub struct NoopPipeline;
 
+#[allow(deprecated)]  // NoopPipeline is deprecated; the trait impl on it is intentional.
 #[async_trait::async_trait]
 impl SecurityPipeline for NoopPipeline {
     async fn inbound(
@@ -42,6 +64,7 @@ impl SecurityPipeline for NoopPipeline {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]  // tests of NoopPipeline itself
 mod tests {
     use super::*;
     use aegis_core::context::ClientInfo;

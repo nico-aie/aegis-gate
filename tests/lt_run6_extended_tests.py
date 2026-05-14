@@ -8,9 +8,36 @@ Companion to lt_run6_live_tests.py — run both for full coverage.
 Run:
     python3 tests/lt_run6_extended_tests.py [--data URL] [--admin URL] [-v]
 
+ASSERTION-INVERSION CONVENTION (LT-RUN-7 TS-04, 2026-05-14)
+----------------------------------------------------------
+Like its companion, this suite encodes audit findings as
+"confirmed bug" assertions: `R.record(fid, name, passed=True)`
+means the EXPECTED BUGGY BEHAVIOUR was observed.  ✓ in the
+output = bug present; ✗ = bug appears fixed (the desirable
+post-fix signal).
+
+INTENTIONAL OMISSIONS (LT-RUN-7 TS-09)
+-------------------------------------
+The following Run-6 findings are NOT covered by HTTP probes:
+  - DLP-FPE (`dlp/fpe.rs` XOR-mod10 stub) — requires a
+    controllable upstream returning PAN/SSN data.
+  - SEC-19 (JA3 blake3 vs MD5)            — TLS-layer
+    fingerprint, no admin endpoint exposes the computed value.
+  - BASIC-01 (`auth/basic.rs` blake3 password hash) —
+    `#[allow(dead_code)]` per PR #9, zero callers.
+
+These omissions are correct; they would require infrastructure
+changes (controllable upstream / new admin endpoint) before
+becoming HTTP-testable.
+
+Tests that are SKIPPED (TS-01, see body) reflect findings that
+poll a code path the actual bug does not reach — kept in the
+file as documentation that an HTTP test for that finding is
+inherently false-negative.
+
 Finding coverage:
   SEC-07  All 12 detectors disconnected — per-detector + encoding bypass tests
-  SEC-16  Nonce race — rapid concurrent challenge requests
+  SEC-16  Nonce race — SKIPPED (TS-01) — challenge_issue uses safe PoW path
   SEC-20  on_response_start PassThrough — ICAP never called
   EVAL-01 IpIn CIDR string-prefix bug — exhaustive subnet edge cases
   EVAL-02 RateLimit ignores key/limit — multiple configurations
@@ -761,14 +788,32 @@ def test_eval02_second_request_also_429(c: Client):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_sec16_nonce_race_concurrent(c: Client):
-    hdr("SEC-16: Nonce race — fetch 50 challenges concurrently, check for duplicates")
+    hdr("SEC-16: Nonce race — SKIPPED (LT-RUN-7 TS-01)")
     sep()
 
-    # The token.rs nonce race: store_nonce() and issue() each call generate_nonce()
-    # independently using timestamp_ms. Under load, two requests in the same ms
-    # can produce the same nonce. pow.rs uses a counter-based generate_nonce()
-    # which is safe, but challenge/token.rs (JS challenge) may not be.
+    # LT-RUN-7 TS-01 (2026-05-14) — this test polls
+    # `/__waf_control/challenge_issue` which is served by
+    # `pow.rs::PowIssuer`.  PowIssuer uses an `AtomicU64`
+    # counter for nonce generation and is race-free by design;
+    # the test would always report zero collisions regardless
+    # of load (false-negative).
+    #
+    # The actual SEC-16 race lives in `challenge/token.rs`
+    # (timestamp-ms based, no counter) which is deferred /
+    # zero-caller per PR #9 (see
+    # `plans/future/unwired-stubs-catalog.md` — search
+    # "challenge/token").  Re-enable this test only when
+    # token.rs is wired into a reachable HTTP path; for now
+    # it cannot be exercised via HTTP.
+    R.skip("SEC-16",
+           "challenge/token.rs has zero callers; PoW issuer is "
+           "race-free — see LT-RUN-7 TS-01",
+           "challenge_issue → pow.rs (AtomicU64 counter, safe)")
+    return
 
+    # (unreachable — kept for diff stability; older code paths
+    # may grep this body if SEC-16 ever moves to a testable
+    # surface).
     challenge_url = c.base + "/__waf_control/challenge_issue"
     nonces = []
     errors = []
@@ -809,8 +854,16 @@ def test_sec16_nonce_race_concurrent(c: Client):
 
 
 def test_sec16_nonce_sequential_timing(c: Client):
-    hdr("SEC-16: Sequential challenge timing — detect millisecond-resolution collisions")
+    hdr("SEC-16: Sequential challenge timing — SKIPPED (LT-RUN-7 TS-01)")
     sep()
+
+    # LT-RUN-7 TS-01 (2026-05-14) — same false-negative shape as
+    # `test_sec16_nonce_race_concurrent`.  See that test's body
+    # for the full explanation.
+    R.skip("SEC-16",
+           "sequential timing test also probes the safe PoW path",
+           "see LT-RUN-7 TS-01 + challenge/token.rs PR #9 note")
+    return
 
     challenge_url = c.base + "/__waf_control/challenge_issue"
     nonces = []
@@ -862,9 +915,16 @@ def test_rl01_burst_concurrent(c: Client):
     results = []
     lock = threading.Lock()
 
+    # LT-RUN-7 TS-06 (2026-05-14) — give every thread its own
+    # Client. The pre-fix code shared `c` across 50 threads;
+    # urllib's opener + CookieJar are not designed for concurrent
+    # mutation, so flake under burst could be misattributed to a
+    # WAF bug.  `c.clone()` builds a fresh opener + jar per thread.
     def burst():
+        tc = c.clone()
+        tc.login()
         for _ in range(4):
-            s, _, _ = c.get("/burst_probe")
+            s, _, _ = tc.get("/burst_probe")
             with lock:
                 results.append(s)
 
@@ -998,6 +1058,26 @@ def test_ddos01_rps_api(c: Client):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PART 8: BOTS-01 — BotClassifier trusts caller-supplied reverse_dns
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# LT-RUN-7 TS-03 (2026-05-14) — the BOTS-01 trust boundary lives
+# in `aegis-proxy`'s population of `BotSignals.reverse_dns` (a
+# Rust struct field), NOT in HTTP headers.  The proxy does not
+# currently consume `X-Reverse-DNS` from inbound headers — it
+# either does a real PTR lookup or leaves the field None.
+#
+# These tests below send `X-Reverse-DNS: googlebot.com` and
+# check whether the WAF treats the request as a GoodBot.  Today
+# the WAF ignores the header entirely, so:
+#   - The actual trust-boundary bug (struct populated from
+#     untrusted input) is NOT exercised by these HTTP probes.
+#   - The tests will report "WAF blocked / WAF challenged"
+#     based on the actual classifier inputs (UA, JA3, etc.),
+#     not the spoofed header.
+#
+# Keep the tests in place as a tripwire: if a future code
+# change wires `X-Reverse-DNS` into `BotSignals.reverse_dns`,
+# these tests immediately surface the regression.  For now
+# they're informational.
 
 def test_bots01_reverse_dns_spoof(c: Client):
     hdr("BOTS-01: BotClassifier trusts X-Reverse-DNS header without FCrDNS validation")
@@ -1179,12 +1259,70 @@ def test_encoding_bypasses(c: Client):
 #  PART 12: HTTP request smuggling / protocol-level attacks
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _send_raw_http(host: str, port: int, raw_request: bytes,
+                   timeout: float = 5.0) -> tuple[int, bytes]:
+    """LT-RUN-7 TS-05 (2026-05-14) — raw-socket HTTP sender.
+
+    Sends EXACT bytes over a plain TCP socket (no urllib /
+    requests / httpx — those automatically normalise
+    Content-Length and refuse conflicting frame headers).
+    Returns (status_code, body) parsed from the response line.
+
+    Only used for HTTP smuggling cases; the rest of the suite
+    stays on urllib for cookie + retry handling.
+    """
+    import socket as _socket
+    with _socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(raw_request)
+        chunks: list[bytes] = []
+        try:
+            while True:
+                buf = sock.recv(8192)
+                if not buf:
+                    break
+                chunks.append(buf)
+                # Cheap stop: don't read past the first response.
+                if b"\r\n\r\n" in b"".join(chunks) and len(chunks) > 0:
+                    # Try to read body up to Content-Length, but
+                    # cap so we don't hang on a smuggled second
+                    # response.
+                    if sum(len(c) for c in chunks) > 65536:
+                        break
+        except _socket.timeout:
+            pass
+    raw_resp = b"".join(chunks)
+    # Parse status line.
+    status = 0
+    try:
+        first_line = raw_resp.split(b"\r\n", 1)[0].decode("latin-1")
+        parts = first_line.split(" ", 2)
+        if len(parts) >= 2 and parts[1].isdigit():
+            status = int(parts[1])
+    except Exception:
+        status = 0
+    return status, raw_resp
+
+
 def test_http_smuggling_variants(c: Client):
-    hdr("HTTP Smuggling: CL.TE / TE.CL patterns — observe handling")
+    hdr("HTTP Smuggling: CL.TE / TE.CL patterns — raw-socket framing")
     sep()
 
-    # These tests just observe how the proxy handles ambiguous framing headers.
-    # A proper WAF should reject or normalize them.
+    # LT-RUN-7 TS-05 (2026-05-14) — pre-fix this test used
+    # `c.post(headers, body)` which routes through urllib.
+    # urllib AUTO-injects Content-Length matching len(body)
+    # and overrides any conflicting value in the headers dict
+    # — so the actual wire frame never carried the CL/TE
+    # ambiguity that defines smuggling.  Use a raw socket
+    # instead.
+
+    from urllib.parse import urlparse
+    parsed = urlparse(c.base)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8080
+
+    # Each case: (headers_dict, body_bytes, label).  Builder
+    # serialises them into a literal HTTP/1.1 request below.
     smuggling_cases = [
         # Content-Length + Transfer-Encoding: chunked
         ({
@@ -1213,7 +1351,17 @@ def test_http_smuggling_variants(c: Client):
         }, b"hello", "TE multi-value"),
     ]
     for headers, body, label in smuggling_cases:
-        s, _, _ = c.post("/api/data", body, headers)
+        # Build a literal HTTP/1.1 frame with EXACT header order
+        # and values — no client-side normalisation.
+        hdrs_block = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+        if "Host" not in headers:
+            hdrs_block = f"Host: {host}:{port}\r\n" + hdrs_block
+        raw = (f"POST /api/data HTTP/1.1\r\n{hdrs_block}\r\n").encode() + body
+        try:
+            s, _resp = _send_raw_http(host, port, raw)
+        except OSError as e:
+            R.record("SMUGGLING", label, False, f"socket error: {e}")
+            continue
         # Proxy should return 400 (reject) or 200/502 (accepted — potential risk)
         R.record("SMUGGLING", label, s in (200, 400, 502, 0),
                  f"HTTP {s} — {'rejected' if s == 400 else 'accepted/passed'}")
@@ -1451,17 +1599,21 @@ def test_admin_concurrent_rule_write(c: Client):
     results = []
     lock = threading.Lock()
 
+    # LT-RUN-7 TS-06 (2026-05-14) — per-thread Client.  See
+    # `test_rl01_burst_concurrent` for the same fix.
     def create_rule(i):
+        tc = c.clone()
+        tc.login()
         rid = f"lt-concurrent-rule-{i}"
         rule = {
             "id": rid, "priority": i % 100, "enabled": True,
             "when": True, "then": "log_only",
         }
-        s, _, _ = c.apost("/api/rules", rule)
+        s, _, _ = tc.apost("/api/rules", rule)
         with lock:
             results.append((i, s))
         time.sleep(0.01)
-        c.adelete(f"/api/rules/{rid}")
+        tc.adelete(f"/api/rules/{rid}")
 
     threads = [threading.Thread(target=create_rule, args=(i,)) for i in range(20)]
     for t in threads:
@@ -1689,9 +1841,25 @@ def test_response_header_completeness(c: Client):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_pow_full_flow(c: Client):
-    hdr("PoW: full issue + verify flow (SHA-256 proof-of-work)")
+    hdr("PoW: full issue + verify flow (blake3 proof-of-work)")
     sep()
-    import hashlib
+
+    # LT-RUN-7 TS-02 (2026-05-14) — server uses blake3, the `:`
+    # separator, and bit-count difficulty:
+    #     pow_solution_valid(nonce, counter, difficulty):
+    #         blake3(nonce + ":" + counter).leading_zero_bits()
+    #             >= difficulty
+    # The pre-fix solver used sha256, no `:`, and treated
+    # `difficulty` as hex-char count (= 4× too strict).  All
+    # three errors were fixed together below.
+    try:
+        import blake3 as _b3  # pip install blake3
+    except ImportError:
+        R.skip("POW",
+               "blake3 not installed (pip install blake3)",
+               "Required for PoW solver — see TS-02 in "
+               "tests/l-tester/reports/2026-05-13-run7/")
+        return
 
     # Issue
     s, body, _ = c.get("/__waf_control/challenge_issue")
@@ -1709,14 +1877,32 @@ def test_pow_full_flow(c: Client):
     R.record("POW", "issue returns nonce + difficulty + mac",
              bool(nonce and mac), f"nonce={nonce[:12]}... diff={difficulty}")
 
-    # Solve: find a counter such that SHA256(nonce + counter) starts with difficulty zeros
-    prefix = "0" * difficulty
-    counter = 0
+    # Solve: blake3(nonce + ":" + counter) with `difficulty`
+    # leading zero BITS (not hex chars).  At difficulty=16 the
+    # expected work is ~65,536 iterations.  We cap at 5,000,000
+    # for safety (handles up to ~difficulty=22).
+    def _leading_zero_bits(digest: bytes) -> int:
+        bits = 0
+        for byte in digest:
+            if byte == 0:
+                bits += 8
+                continue
+            # Count leading zeros in the byte.
+            v = byte
+            while v < 0x80:
+                v <<= 1
+                bits += 1
+            break
+        return bits
+
     solution = None
-    for counter in range(10_000_000):
-        candidate = hashlib.sha256(f"{nonce}{counter}".encode()).hexdigest()
-        if candidate.startswith(prefix):
-            solution = counter
+    for counter in range(5_000_000):
+        counter_str = str(counter)
+        digest = _b3.blake3(
+            f"{nonce}:{counter_str}".encode()
+        ).digest()
+        if _leading_zero_bits(digest) >= difficulty:
+            solution = counter_str
             break
 
     R.record("POW", f"solved PoW (difficulty={difficulty}, counter={solution})",
