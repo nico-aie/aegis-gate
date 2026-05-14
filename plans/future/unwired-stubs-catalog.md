@@ -243,6 +243,119 @@ restart. Today the choice is boot-time (env-driven).
 
 ---
 
+## Rules engine — `aegis_security::rules::evaluate`
+
+**Status:** Implemented at
+`crates/aegis-security/src/rules/eval.rs` with full unit-test
+coverage (35 tests including LT-RUN-6 EVAL-01 + EVAL-02
+regression coverage landed 2026-05-14). Zero production
+callers in `aegis-proxy/src/` today — only path is
+`aegis-security::pipeline::Pipeline::inbound`, which itself
+has zero callers from the proxy data plane (see "Legacy
+SecurityPipeline trait surface" below).
+
+**Contract status:** Not required.  The data plane reaches
+detector signals directly through `run_all_filtered_timed`
+at `crates/aegis-proxy/src/data_plane.rs:507`; rule-engine
+decisions are an additive layer for operator-authored YAML
+rules, planned for the dashboard simulator surface.
+
+**Action if wired:** thread `aegis_security::rules::RuleSet`
++ `EvalContext` through `ProxyContext`, call `rules::evaluate`
+between detector aggregation and the upstream-forward step.
+Operators get audit-mutated rule create/update/delete via the
+existing `/api/rules` admin surface (already shipped).
+
+---
+
+## Legacy `SecurityPipeline` trait surface
+
+**File:** `crates/aegis-security/src/pipeline.rs` —
+`Pipeline::inbound` and `Pipeline::on_response_start`.
+
+**Status:** Trait methods on `SecurityPipeline` that the
+`aegis-proxy` data plane bypasses.  Production:
+
+- `inbound()` → not called.  Detectors fire from
+  `data_plane.rs:507::run_all_filtered_timed`.
+- `on_body_frame()` → **IS called** from
+  `data_plane.rs:1469` (response filter / DLP).
+- `on_response_start()` → not called.  ICAP wiring is the
+  natural future feature; the body-frame call covers DLP +
+  stack-trace scrub today.
+
+LT-RUN-5 and LT-RUN-6 static audits both flagged
+`inbound()` as "detectors disconnected from the pipeline".
+That's accurate for the trait surface but wrong as a security
+claim — the FINAL release-readiness QC (96% detection rate)
+empirically confirms detectors run.  The 2026-05-14 fix added
+doc-comments on both methods pointing static auditors at the
+real call sites (`data_plane.rs:507`, `data_plane.rs:1469`).
+
+**Action if wired:** would have `inbound()` delegate to
+`run_all_filtered_timed` so trait consumers see the
+production behaviour.  Today the proxy doesn't consume the
+trait — only the body-frame hook is reached.
+
+---
+
+## BotClassifier — `reverse_dns` population in proxy
+
+**File:** `crates/aegis-security/src/bots.rs::BotClassifier::classify`
++ `BotSignals.reverse_dns` field.
+
+**Status:** Implementation present with FCrDNS-validation
+gap (LT-RUN-6 BOTS-01).  No production caller — `aegis-proxy`
+does not currently populate `BotSignals.reverse_dns` from any
+source (no PTR lookup, no header-trust read), so the
+classifier is effectively unreachable.
+
+**Contract status:** Not required.
+
+**Action if wired:** before populating `reverse_dns`, perform
+FCrDNS: PTR-lookup the client IP, then forward-A-lookup the
+returned name, and only set the field when the IP resolves
+back to itself.  Required to avoid the BOTS-01 trust-boundary
+bypass.
+
+---
+
+## Domain threat-intel — `check_domain` wildcard walk
+
+**File:** `crates/aegis-security/src/threat_intel/mod.rs::check_domain`.
+
+**Status:** Exact-match `HashMap::get(domain)` lookup only
+(LT-RUN-6 THREAT-01).  No subdomain walk — a feed entry for
+`evil.com` does not match `c2.evil.com`.  Zero production
+callers (aegis-proxy reads threat-intel hits from audit-event
+fields, not the in-memory checker).
+
+**Contract status:** Not required.
+
+**Action if wired:** after the exact lookup, walk the domain
+hierarchy: for `a.b.c.evil.com`, also check `b.c.evil.com`,
+`c.evil.com`, `evil.com`.  ~6-line loop.
+
+---
+
+## GraphQL query complexity — schema-aware visitor
+
+**File:** `crates/aegis-security/src/api_security/graphql.rs::analyze_query`.
+
+**Status:** Computes complexity as `depth * word_count`
+(LT-RUN-6 GQL-01).  Coarse; misses field aliases, fragment
+spread costs, `@defer`/`@stream` directives.  Zero production
+callers — the GraphQL guard isn't wired into the data plane.
+
+**Contract status:** Not required.
+
+**Action if wired:** schema-aware complexity visitor that
+counts field cost (multiplier × children).  Significantly more
+work than the current heuristic; defer until the GraphQL guard
+itself is wired.
+
+---
+
 ## How this list will change
 
 - **Trimmed** when a stub gets deleted (Phase 4 will remove

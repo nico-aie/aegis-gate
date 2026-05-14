@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use aegis_core::context::RouteCtx;
 use aegis_core::decision::{Action, ChallengeLevel, Decision};
@@ -8,9 +10,70 @@ use crate::geoip::GeoIpLookup;
 
 use super::ast::{Condition, MatchOp, Rule, RuleAction, Scope};
 
+/// LT-RUN-6 EVAL-02 (2026-05-14) — backend trait the
+/// `RuleAction::RateLimit` arm consults. Pre-fix the arm
+/// ignored `key` and `limit` and returned `RateLimited` on
+/// every matching request — so `limit: 1000` and `limit: 1`
+/// were functionally identical. With a backend wired the
+/// engine enforces a sliding-window count per `(rule_id, key,
+/// client_ip)` bucket.
+///
+/// Returns `true` when the request fits within the window
+/// (allow), `false` when the window is exhausted (rate-limit).
+pub trait RuleRateLimit: Send + Sync {
+    /// Bump the per-bucket counter and decide.  `bucket` is the
+    /// resolved discriminator (caller composes from `rule.id`,
+    /// `RuleAction::RateLimit.key`, and any request-derived
+    /// value such as client IP).
+    fn check(&self, bucket: &str, limit: u64, window: Duration) -> bool;
+}
+
+/// Default in-process [`RuleRateLimit`] impl using a per-bucket
+/// `Vec<Instant>` sliding window.  Suitable for single-node
+/// deployments and tests; multi-node deployments would wire a
+/// Redis-backed implementation behind the same trait.
+#[derive(Default)]
+pub struct InProcessRuleRateLimit {
+    buckets: Mutex<HashMap<String, Vec<Instant>>>,
+}
+
+impl InProcessRuleRateLimit {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn check_at(&self, bucket: &str, limit: u64, window: Duration, now: Instant) -> bool {
+        let mut state = self.buckets.lock().expect("rule rate-limit state poisoned");
+        let entry = state.entry(bucket.to_string()).or_default();
+        let cutoff = now.checked_sub(window).unwrap_or(now);
+        entry.retain(|&t| t >= cutoff);
+        if (entry.len() as u64) >= limit {
+            // Window full — deny (no insert so the count doesn't
+            // grow unbounded under sustained pressure).
+            return false;
+        }
+        entry.push(now);
+        // Cap the per-bucket vec so memory stays bounded under
+        // sustained allow traffic.  `limit * 2` is plenty —
+        // anything above limit is already a deny.
+        let cap = ((limit * 2).min(10_000)) as usize;
+        if entry.len() > cap {
+            let drop_n = entry.len() - cap;
+            entry.drain(0..drop_n);
+        }
+        true
+    }
+}
+
+impl RuleRateLimit for InProcessRuleRateLimit {
+    fn check(&self, bucket: &str, limit: u64, window: Duration) -> bool {
+        self.check_at(bucket, limit, window, Instant::now())
+    }
+}
+
 /// Side-channel context the evaluator uses for conditions that
 /// can't be answered from `RequestView` alone (currently:
-/// `Country`, `Asn`).
+/// `Country`, `Asn`), plus the rate-limit backend.
 ///
 /// All fields are optional — when a feature isn't wired the
 /// matching condition simply evaluates to `false`, mirroring
@@ -22,6 +85,12 @@ pub struct EvalContext {
     /// GeoIP lookup. When `None`, `Country` / `Asn` always
     /// match `false`.
     pub geoip: Option<Arc<dyn GeoIpLookup>>,
+    /// Rate-limit backend for `RuleAction::RateLimit`.  When
+    /// `None` the engine *allows* matching requests (preserves
+    /// pre-EVAL-02 backwards-compat for callers that haven't
+    /// wired a backend) rather than the pre-fix behaviour of
+    /// returning `RateLimited` immediately.
+    pub rate_limit: Option<Arc<dyn RuleRateLimit>>,
 }
 
 impl EvalContext {
@@ -31,6 +100,11 @@ impl EvalContext {
 
     pub fn with_geoip(mut self, geoip: Arc<dyn GeoIpLookup>) -> Self {
         self.geoip = Some(geoip);
+        self
+    }
+
+    pub fn with_rate_limit(mut self, rl: Arc<dyn RuleRateLimit>) -> Self {
+        self.rate_limit = Some(rl);
         self
     }
 }
@@ -105,10 +179,44 @@ pub fn evaluate_with_ctx(
                 };
             }
             RuleAction::RateLimit {
-                key: _,
-                limit: _,
+                key,
+                limit,
                 window_s,
             } => {
+                // LT-RUN-6 EVAL-02 (2026-05-14) — consult the
+                // rate-limit backend instead of unconditionally
+                // returning `RateLimited`. Bucket key is
+                // `{rule_id}:{key}:{client_ip}` so per-rule,
+                // per-key, per-IP windows stay distinct.
+                //
+                // Terminal in both branches:
+                //   within window → Allow with rule_id stamped
+                //                    (matched rule decided)
+                //   over window   → RateLimited + retry-after
+                //
+                // No backend wired: stay permissive (Allow) so
+                // the engine doesn't enforce — matches
+                // "rate-limit feature not yet wired" rather than
+                // the pre-fix "always block matching traffic".
+                let bucket = format!(
+                    "{}:{}:{}",
+                    rule.id,
+                    key,
+                    req.peer.ip(),
+                );
+                let window = Duration::from_secs(u64::from(*window_s));
+                let allowed = match ctx.rate_limit.as_ref() {
+                    Some(rl) => rl.check(&bucket, *limit, window),
+                    None => true,
+                };
+                if allowed {
+                    return Decision {
+                        action: Action::Allow,
+                        reason: format!("rule {} rate-limit window open", rule.id),
+                        rule_id: Some(rule.id.clone()),
+                        risk_score: accumulated_risk,
+                    };
+                }
                 return Decision {
                     action: Action::RateLimited {
                         retry_after_s: *window_s,
@@ -193,11 +301,26 @@ fn matches_condition(cond: &Condition, req: &RequestView<'_>, ctx: &EvalContext)
                 .unwrap_or(false)
         }
         Condition::IpIn(cidrs) => {
-            let ip_str = req.peer.ip().to_string();
+            // LT-RUN-6 EVAL-01 (2026-05-14) — pre-fix used a
+            // string-prefix check (`ip_str.starts_with(net_str)`)
+            // which only matched the network address itself; every
+            // host in the subnet failed.  Use `ipnet::IpNet` for
+            // real network-membership.  The `ipnet` crate is
+            // already a dependency (used in `threat_intel/mod.rs`
+            // and `ip_rep/`).  Bare-IP entries (no `/` mask) still
+            // work because `IpAddr::from_str` parses them and we
+            // compare directly.
+            let ip = req.peer.ip();
             cidrs.iter().any(|cidr| {
-                // Simple prefix match for CIDR — full impl would use ipnet.
-                ip_str.starts_with(cidr.split('/').next().unwrap_or(""))
-                    || cidr == &ip_str
+                if cidr.contains('/') {
+                    cidr.parse::<ipnet::IpNet>()
+                        .map(|net| net.contains(&ip))
+                        .unwrap_or(false)
+                } else {
+                    cidr.parse::<std::net::IpAddr>()
+                        .map(|peer| peer == ip)
+                        .unwrap_or(false)
+                }
             })
         }
         Condition::Country(codes) => match &ctx.geoip {
@@ -582,9 +705,30 @@ mod tests {
         }];
         let (m, u, h, b) = view("GET", "/");
         let req = make_view(&m, &u, &h, &b);
+        // LT-RUN-6 EVAL-02 — without a backend wired the engine
+        // stays permissive (Allow with rule_id stamped).  Pre-fix
+        // this test expected Action::RateLimited; that was the
+        // bug behaviour.  With a backend wired, see
+        // `eval02_in_process_backend_allows_first_n_then_429s`.
         let d = evaluate(&rules, &req, &route());
+        assert!(matches!(d.action, Action::Allow), "no backend → Allow");
+        assert_eq!(d.rule_id.as_deref(), Some("rl"));
+
+        // With a backend + tight limit, the same rule does
+        // rate-limit on req #2.
+        let rl = Arc::new(InProcessRuleRateLimit::new());
+        let ctx = EvalContext::default().with_rate_limit(rl);
         assert!(matches!(
-            d.action,
+            evaluate_with_ctx(&rules, &req, &route(), &ctx).action,
+            Action::Allow
+        ));
+        // Drive the limit (100 reqs) to exhaustion in one tight
+        // loop — 101st must rate-limit.
+        for _ in 0..99 {
+            evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        }
+        assert!(matches!(
+            evaluate_with_ctx(&rules, &req, &route(), &ctx).action,
             Action::RateLimited { retry_after_s: 60 }
         ));
     }
@@ -740,5 +884,230 @@ mod tests {
             evaluate_with_ctx(&rules, &req2, &route(), &ctx).action,
             Action::Allow
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // LT-RUN-6 EVAL-01 + EVAL-02 regression coverage (2026-05-14)
+    // ------------------------------------------------------------------
+
+    fn make_view_peer<'a>(
+        method: &'a http::Method,
+        uri: &'a http::Uri,
+        headers: &'a http::HeaderMap,
+        body: &'a BodyPeek,
+        peer: &str,
+    ) -> RequestView<'a> {
+        RequestView {
+            method,
+            uri,
+            version: http::Version::HTTP_11,
+            headers,
+            peer: peer.parse().unwrap(),
+            tls: None,
+            body,
+        }
+    }
+
+    fn block_on_cidr(cidr: &str) -> Vec<Rule> {
+        vec![Rule {
+            id: "block-subnet".into(),
+            priority: 100,
+            scope: Scope::Global,
+            condition: Condition::IpIn(vec![cidr.into()]),
+            action: RuleAction::Block { status: 403 },
+        }]
+    }
+
+    fn rate_limit_rule(limit: u64, window_s: u32) -> Vec<Rule> {
+        vec![Rule {
+            id: "limit-login".into(),
+            priority: 100,
+            scope: Scope::Global,
+            condition: Condition::PathMatches(MatchOp::Prefix("/login".into())),
+            action: RuleAction::RateLimit {
+                key: "ip".into(),
+                limit,
+                window_s,
+            },
+        }]
+    }
+
+    // ---- EVAL-01 — IpIn must use CIDR network match, not string prefix ----
+
+    #[test]
+    fn eval01_cidr_24_matches_host_inside_subnet() {
+        let rules = block_on_cidr("10.0.0.0/24");
+        let (m, u, h, b) = view("GET", "/");
+        // Pre-fix: "10.0.0.5".starts_with("10.0.0.0") was false →
+        // the rule would not fire and request would Allow.  With
+        // the ipnet fix, 10.0.0.5 IS in 10.0.0.0/24 so we Block.
+        let req = make_view_peer(&m, &u, &h, &b, "10.0.0.5:443");
+        assert!(matches!(
+            evaluate(&rules, &req, &route()).action,
+            Action::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn eval01_cidr_24_does_not_match_host_outside_subnet() {
+        let rules = block_on_cidr("10.0.0.0/24");
+        let (m, u, h, b) = view("GET", "/");
+        // 10.0.1.5 is NOT in 10.0.0.0/24 — must Allow.
+        let req = make_view_peer(&m, &u, &h, &b, "10.0.1.5:443");
+        assert!(matches!(
+            evaluate(&rules, &req, &route()).action,
+            Action::Allow
+        ));
+    }
+
+    #[test]
+    fn eval01_cidr_8_matches_broad_range() {
+        let rules = block_on_cidr("10.0.0.0/8");
+        let (m, u, h, b) = view("GET", "/");
+        for host in ["10.0.0.1", "10.250.99.255", "10.255.255.255"] {
+            let peer = format!("{host}:443");
+            let req = make_view_peer(&m, &u, &h, &b, &peer);
+            assert!(
+                matches!(
+                    evaluate(&rules, &req, &route()).action,
+                    Action::Block { .. }
+                ),
+                "expected block for {host} in /8",
+            );
+        }
+        // 11.0.0.1 is OUTSIDE /8 — must Allow.
+        let req2 = make_view_peer(&m, &u, &h, &b, "11.0.0.1:443");
+        assert!(matches!(
+            evaluate(&rules, &req2, &route()).action,
+            Action::Allow
+        ));
+    }
+
+    #[test]
+    fn eval01_bare_ip_no_mask_still_matches() {
+        // Back-compat: entries without `/` were previously treated
+        // as an exact match.  Confirm the fix didn't break that.
+        let rules = block_on_cidr("203.0.113.7");
+        let (m, u, h, b) = view("GET", "/");
+        let req = make_view_peer(&m, &u, &h, &b, "203.0.113.7:443");
+        assert!(matches!(
+            evaluate(&rules, &req, &route()).action,
+            Action::Block { .. }
+        ));
+        let req2 = make_view_peer(&m, &u, &h, &b, "203.0.113.8:443");
+        assert!(matches!(
+            evaluate(&rules, &req2, &route()).action,
+            Action::Allow
+        ));
+    }
+
+    // ---- EVAL-02 — RateLimit must honour `limit`, not block immediately ----
+
+    #[test]
+    fn eval02_in_process_backend_allows_first_n_then_429s() {
+        let rl = Arc::new(InProcessRuleRateLimit::new());
+        let ctx = EvalContext::default().with_rate_limit(rl.clone());
+        let rules = rate_limit_rule(3, 60);
+        let (m, u, h, b) = view("POST", "/login");
+        let req = make_view_peer(&m, &u, &h, &b, "192.0.2.10:443");
+
+        // First 3 requests within the window → Allow with rule stamped.
+        for i in 1..=3 {
+            let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+            assert!(
+                matches!(d.action, Action::Allow),
+                "req {i} expected Allow, got {:?}",
+                d.action,
+            );
+            assert_eq!(d.rule_id.as_deref(), Some("limit-login"));
+        }
+        // 4th tips over → RateLimited.
+        let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+        assert!(matches!(d.action, Action::RateLimited { .. }));
+    }
+
+    #[test]
+    fn eval02_different_ips_have_independent_buckets() {
+        // limit=1 makes the boundary obvious: the SECOND request from
+        // the SAME ip is rate-limited, but a different ip's first
+        // request still allowed.
+        let rl = Arc::new(InProcessRuleRateLimit::new());
+        let ctx = EvalContext::default().with_rate_limit(rl.clone());
+        let rules = rate_limit_rule(1, 60);
+        let (m, u, h, b) = view("POST", "/login");
+
+        let req_a = make_view_peer(&m, &u, &h, &b, "192.0.2.10:443");
+        let req_b = make_view_peer(&m, &u, &h, &b, "198.51.100.5:443");
+
+        assert!(matches!(
+            evaluate_with_ctx(&rules, &req_a, &route(), &ctx).action,
+            Action::Allow
+        ));
+        assert!(matches!(
+            evaluate_with_ctx(&rules, &req_a, &route(), &ctx).action,
+            Action::RateLimited { .. }
+        ));
+        // Different IP — fresh bucket.
+        assert!(matches!(
+            evaluate_with_ctx(&rules, &req_b, &route(), &ctx).action,
+            Action::Allow
+        ));
+    }
+
+    #[test]
+    fn eval02_high_limit_does_not_block_normal_traffic() {
+        // The exact "limit=1000 vs limit=1 behave identically"
+        // L-tester regression.  At limit=1000, 50 requests must
+        // all Allow.
+        let rl = Arc::new(InProcessRuleRateLimit::new());
+        let ctx = EvalContext::default().with_rate_limit(rl.clone());
+        let rules = rate_limit_rule(1000, 60);
+        let (m, u, h, b) = view("POST", "/login");
+        let req = make_view_peer(&m, &u, &h, &b, "203.0.113.20:443");
+        for i in 0..50 {
+            let d = evaluate_with_ctx(&rules, &req, &route(), &ctx);
+            assert!(
+                matches!(d.action, Action::Allow),
+                "req #{i} expected Allow, got {:?}",
+                d.action,
+            );
+        }
+    }
+
+    #[test]
+    fn eval02_no_backend_is_permissive_not_blocking() {
+        // Pre-fix behaviour: no backend wired → every matching
+        // request got RateLimited immediately.  Post-fix: no
+        // backend → Allow.
+        let ctx = EvalContext::default();  // no rate_limit
+        let rules = rate_limit_rule(1, 60);
+        let (m, u, h, b) = view("POST", "/login");
+        let req = make_view_peer(&m, &u, &h, &b, "192.0.2.10:443");
+        // 5 requests in quick succession — all must Allow.
+        for _ in 0..5 {
+            assert!(matches!(
+                evaluate_with_ctx(&rules, &req, &route(), &ctx).action,
+                Action::Allow
+            ));
+        }
+    }
+
+    #[test]
+    fn eval02_window_recovers_after_expiry() {
+        // Build the limiter directly so we can drive
+        // `check_at` with controlled timestamps.
+        let rl = InProcessRuleRateLimit::new();
+        let t0 = Instant::now();
+        // limit=2 per 10s window.
+        let bucket = "test-bucket";
+        let window = Duration::from_secs(10);
+        assert!(rl.check_at(bucket, 2, window, t0));
+        assert!(rl.check_at(bucket, 2, window, t0 + Duration::from_millis(1)));
+        // Third call within window → denied.
+        assert!(!rl.check_at(bucket, 2, window, t0 + Duration::from_millis(2)));
+        // After the window slides past, the bucket is empty
+        // again.
+        let later = t0 + window + Duration::from_secs(1);
+        assert!(rl.check_at(bucket, 2, window, later));
     }
 }

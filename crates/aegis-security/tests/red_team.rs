@@ -1,7 +1,9 @@
-/// Red-team integration test suite.
-///
-/// Verifies that all OWASP detectors fully block known attack vectors:
-/// SQLi, XSS, SSRF, path-traversal, header-injection, body-abuse, and recon.
+//! Red-team integration test suite.
+//!
+//! Verifies that all OWASP detectors fully block known attack vectors:
+//! SQLi, XSS, SSRF, path-traversal, header-injection, body-abuse, and recon.
+#![allow(deprecated)]  // test scaffolding uses NoopPipeline
+
 use aegis_core::pipeline::{BodyPeek, RequestView};
 use aegis_security::detectors::{
     body_abuse::BodyAbuseDetector,

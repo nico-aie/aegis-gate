@@ -15,6 +15,29 @@ Options:
     --no-tls-verify Skip TLS certificate verification (default: True for https)
     -v / --verbose  Print full response bodies
 
+ASSERTION-INVERSION CONVENTION (LT-RUN-7 TS-04, 2026-05-14)
+----------------------------------------------------------
+This suite was originally written to **confirm known bugs from
+the Run-6 audit** rather than to gate "passing" behaviour.  Each
+`R.record(fid, name, passed=BOOL, note)` call uses `passed=True`
+when the EXPECTED BUGGY BEHAVIOUR was observed.
+
+Concretely:
+  - ✓ in the terminal output means: "the audit was right, the bug
+    is still present in this build" (e.g. SEC-07 attack passes
+    through with HTTP 200).
+  - ✗ in the terminal output means: "the bug appears to be FIXED
+    in this build" (e.g. the attack returned HTTP 403).
+
+As fixes land, the suite's ✓ count goes DOWN.  Treat ✗ rows as
+the desirable outcome during fix validation.  Once a fix is
+permanent the related test should be REWRITTEN to assert the
+fixed behaviour as the new pass condition (i.e. flip the
+expected boolean).
+
+Tests that are SKIPPED (LT-RUN-7 TS-01, TS-09) reflect findings
+that cannot be exercised via HTTP — see the per-test docstrings.
+
 Each test is labelled with its Run-6 finding ID. A ✓ means the expected
 (possibly buggy) behaviour was observed; ✗ means it differed from the audit
 prediction (which may mean the bug was fixed — check notes).
@@ -816,11 +839,19 @@ def test_waf_control_endpoints(c: Client):
 def test_sec07_mass_flood(c: Client):
     hdr("SEC-07 mass: rapid-fire 30 attack payloads — verify 0 blocked")
     sep()
+    # LT-RUN-7 TS-07 (2026-05-14) — pre-fix the XSS payloads
+    # had literal `<` / `>` in the URL string.  urllib may
+    # auto-encode (silent normalisation) or raise InvalidURL
+    # depending on Python version (3.11+ stricter).  Pre-encode
+    # explicitly so the bytes on the wire match intent.
+    import urllib.parse as _up
+    def _qs(name: str, value: str) -> str:
+        return f"{name}={_up.quote(value, safe='')}"
     payloads = [
         ("/api?q=1'+UNION+SELECT+version()--", "SQLi mass 1"),
         ("/api?q=1'+AND+1=2+UNION+SELECT+NULL,NULL--", "SQLi mass 2"),
-        ("/search?x=<script>eval(atob('YWxlcnQoMSk='))</script>", "XSS mass 1"),
-        ("/search?x=<img%20src=1%20onerror=eval(name)>", "XSS mass 2"),
+        ("/search?" + _qs("x", "<script>eval(atob('YWxlcnQoMSk='))</script>"), "XSS mass 1"),
+        ("/search?" + _qs("x", "<img src=1 onerror=eval(name)>"), "XSS mass 2"),
         ("/file?path=../../../../etc/shadow", "PathTraversal mass 1"),
         ("/file?path=%252F%252F..%252F..%252Fetc%252Fpasswd", "PathTraversal double-enc"),
         ("/proxy?url=http://192.168.1.1/admin", "SSRF RFC1918"),

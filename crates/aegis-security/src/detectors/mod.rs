@@ -332,6 +332,7 @@ pub fn default_detectors_with(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]  // test scaffolding uses NoopPipeline
 mod tests {
     use super::*;
     use aegis_core::pipeline::BodyPeek;
