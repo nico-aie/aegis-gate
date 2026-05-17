@@ -235,7 +235,50 @@ boundary** so any client that tries to inject it gets it dropped
 before any handler sees it. Audit event for stripping is at `info`
 level (no warn — clients legitimately might set arbitrary headers).
 
-## Open questions for review
+## Decisions (2026-05-17 review)
+
+Locked in before implementation:
+
+1. **TOTP enrollment surface — YAML-only for v1.** Operators set
+   `cfg.admin.dashboard_auth.totp_secret_b32` in YAML and scan the
+   `otpauth://` URI into their authenticator app. No dashboard
+   enrollment view. Documented in `docs/operator/admin-auth-setup.md`.
+
+2. **Backward compat — Option B (service-account bearer tokens).**
+   - New YAML shape under `cfg.admin.dashboard_auth.service_accounts`:
+     ```yaml
+     service_accounts:
+       - name: "ci-pipeline"
+         token_hash: "$argon2id$v=19$m=19456,t=2,p=1$..."   # argon2id of the token
+         scopes: ["read"]            # or ["read", "write"]
+         # ttl: "90d"                # advisory/documentation; argon2 doesn't expire
+     ```
+   - Middleware accepts `Authorization: Bearer <token>` and argon2-
+     verifies against any matching `token_hash`. On match, synthesise
+     an in-memory `SessionRecord { user_id: sa.name, scopes }`
+     valid for that request only (no SessionStore.create — bearer
+     tokens are stateless from the WAF's perspective).
+   - Scope enforcement: `["read"]` accounts can hit `GET /api/*`
+     but mutations (PUT/POST/PATCH/DELETE except login) → 403
+     `service_account_scope_insufficient`. `["read", "write"]`
+     gets full admin.
+   - **Token minting CLI** (v1, smallest surface): new `aegis-bin`
+     subcommand `waf admin service-account mint --name X --scopes
+     read,write` that prints the plaintext token once + the argon2
+     hash for the operator to paste into YAML. CLI is a follow-up
+     after the middleware lands; for the first cut, operators can
+     `openssl rand -hex 32 | argon2 …` manually.
+   - Audit attribution: `actor: "<sa.name>"` on every mutation
+     made by a service account. Indistinguishable in audit shape
+     from a logged-in operator.
+
+3. **IP allowlist default — empty = allow-all.** Matches current
+   behaviour. Loud-warn at boot if the list is empty AND the admin
+   listener is not bound to a loopback address. Recommended posture
+   documented in `docs/operator/admin-auth-setup.md`; operators on
+   `127.0.0.1:9443` need no action.
+
+## Original open questions (now resolved)
 
 1. **TOTP enrollment surface.** Where do operators see/copy the
    `otpauth://` URI to scan into their authenticator? Today
