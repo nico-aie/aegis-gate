@@ -1476,7 +1476,10 @@ pub(crate) async fn forward_allow_to_upstream(
         None => parts.uri.clone(),
     };
 
-    member.inflight.fetch_add(1, Ordering::Relaxed);
+    // F-CRITICAL-008 (2026-05-17 s-tester audit): RAII guard
+    // (Member::inflight_guard) — Drop guarantees the counter is
+    // decremented even on cancellation / panic inside `forward()`.
+    let _inflight_guard = member.inflight_guard();
     let result = crate::upstream::forward::forward(
         member,
         &pool.connection,
@@ -1486,7 +1489,7 @@ pub(crate) async fn forward_allow_to_upstream(
         body_bytes,
     )
     .await;
-    member.inflight.fetch_sub(1, Ordering::Relaxed);
+    drop(_inflight_guard);
 
     match result {
         Ok(resp) => {
