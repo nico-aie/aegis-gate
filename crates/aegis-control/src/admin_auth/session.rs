@@ -154,15 +154,12 @@ pub fn format_cookie(name: &str, value: &str, max_age_s: i64) -> String {
 }
 
 fn generate_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static CTR: AtomicU64 = AtomicU64::new(0);
-    let cnt = CTR.fetch_add(1, Ordering::Relaxed);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let hash = blake3::hash(format!("{now}:{cnt}").as_bytes());
-    hash.to_hex()[..24].to_string()
+    // 2026-05-17 F-CRITICAL-005 — was `blake3(clock_nanos + atomic
+    // counter)`, which is deterministic on the (now, counter) pair
+    // and predictable to an attacker observing one issued id. UUID
+    // v4 gives 122 bits of CSPRNG entropy per call. Result length
+    // grew from 24 to 32 hex chars; no caller asserts on length.
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 fn base64url_encode(data: &[u8]) -> String {
@@ -249,6 +246,20 @@ mod tests {
         let (id1, _) = store.create("1.2.3.4", "ua");
         let (id2, _) = store.create("1.2.3.4", "ua");
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn session_ids_are_unpredictable_across_many_calls() {
+        // F-CRITICAL-005 regression. Pre-fix `generate_id` derived
+        // from `blake3(clock_nanos + atomic counter)` — an attacker
+        // who issued one session could brute-force the next within
+        // a microsecond window. UUID v4 (getrandom) closes that.
+        let store = SessionStore::new(TEST_KEY);
+        let mut set = std::collections::HashSet::new();
+        for _ in 0..2_000 {
+            let (id, _) = store.create("1.2.3.4", "ua");
+            assert!(set.insert(id), "session id collision");
+        }
     }
 
     #[test]

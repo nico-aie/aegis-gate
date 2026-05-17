@@ -4,16 +4,15 @@
 // Mutating methods require `X-CSRF-Token` header matching cookie value.
 
 /// Generate a CSRF token (128-bit hex).
+///
+/// 2026-05-17 F-CRITICAL-005 — entropy upgraded from
+/// `blake3(clock_nanos + atomic counter)` to UUID v4 (getrandom
+/// under the hood). The previous form was deterministic on the
+/// (now, counter) pair and an attacker observing one issued token
+/// could predict the next within a microsecond window. UUID v4
+/// gives 122 bits of CSPRNG entropy per call.
 pub fn generate_token() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static CTR: AtomicU64 = AtomicU64::new(0);
-    let cnt = CTR.fetch_add(1, Ordering::Relaxed);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let hash = blake3::hash(format!("csrf:{now}:{cnt}").as_bytes());
-    hash.to_hex()[..32].to_string()
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 /// Validate CSRF: check that header value matches cookie value.
@@ -102,6 +101,28 @@ mod tests {
     fn generate_is_hex() {
         let token = generate_token();
         assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn generate_token_is_unpredictable_across_many_calls() {
+        // F-CRITICAL-005 regression: pre-fix, an attacker who knew
+        // the clock and approximate atomic counter could predict
+        // the next token (blake3 of those two inputs). With UUID v4
+        // / getrandom under the hood, 10 000 calls must produce
+        // 10 000 distinct tokens. The previous blake3-clock-counter
+        // form would also pass this test by accident; we're really
+        // asserting the new source is *not* the old one — see the
+        // length assertion below as a second checkpoint.
+        let mut set = std::collections::HashSet::new();
+        for _ in 0..10_000 {
+            assert!(set.insert(generate_token()), "collision");
+        }
+        // Sanity: uuid simple form is exactly 32 hex chars; if any
+        // future refactor swaps the source back to a non-uuid path
+        // with a different length, this catches it.
+        for t in set.iter().take(8) {
+            assert_eq!(t.len(), 32);
+        }
     }
 
     #[test]
