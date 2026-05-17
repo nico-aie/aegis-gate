@@ -309,7 +309,13 @@ where
         }
     };
 
-    member.inflight.fetch_add(1, Ordering::Relaxed);
+    // F-CRITICAL-008 (2026-05-17 s-tester audit): RAII guard so a
+    // cancellation or panic inside `forward::forward` doesn't leak
+    // the in-flight counter. Pre-fix the manual fetch_add /
+    // fetch_sub pair around the `.await` skewed LeastConn / P2C
+    // load balancers against any pool member that ever saw a
+    // dropped future.
+    let _inflight_guard = member.inflight_guard();
     let upstream_start = ctx.benchmark.is_on().then(Instant::now);
     let result = forward::forward(
         member,
@@ -321,7 +327,7 @@ where
     )
     .await;
     let upstream_elapsed = upstream_start.map(|s| s.elapsed());
-    member.inflight.fetch_sub(1, Ordering::Relaxed);
+    drop(_inflight_guard);
 
     let mut response = match result {
         Ok(resp) => {
