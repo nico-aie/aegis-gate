@@ -539,6 +539,7 @@ mod tests {
             block_ttl_s: 9,
             spike_multiplier: 4.0,
             tightened_per_ip_rps: 11,
+            tier_overrides: std::collections::HashMap::new(),
         };
         let sec_cfg: DdosConfig = core_cfg.clone().into();
         assert_eq!(sec_cfg.enabled, false);
