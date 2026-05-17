@@ -65,18 +65,98 @@ pub fn generate(secret: &[u8], time: u64, config: &TotpConfig) -> String {
     format!("{:0>width$}", code % modulus, width = config.digits as usize)
 }
 
-/// Verify a TOTP code, allowing ±skew steps.
+/// Verify a TOTP code, allowing ±skew steps. Returns `true` if
+/// the code matches any time-step in `[time - skew*step, time +
+/// skew*step]`.
+///
+/// **No replay protection.** A code accepted at `time` will also
+/// be accepted at `time + 1s`, `time + 2s`, … until its window
+/// ends. Callers that need replay protection wrap this in a
+/// [`TotpReplayGuard`] (see below) or call [`verify_and_consume`].
 pub fn verify(secret: &[u8], code: &str, time: u64, config: &TotpConfig) -> bool {
+    verify_with_counter(secret, code, time, config).is_some()
+}
+
+/// Like [`verify`] but returns the matched counter on success so
+/// callers can drive replay protection. `None` = no match.
+pub fn verify_with_counter(
+    secret: &[u8],
+    code: &str,
+    time: u64,
+    config: &TotpConfig,
+) -> Option<u64> {
     let step = config.step;
+    let base_counter = time / step;
     for offset in 0..=config.skew {
         if generate(secret, time + offset * step, config) == code {
-            return true;
+            return Some(base_counter + offset);
         }
-        if offset > 0 && time >= offset * step && generate(secret, time - offset * step, config) == code {
-            return true;
+        if offset > 0
+            && time >= offset * step
+            && generate(secret, time - offset * step, config) == code
+        {
+            return Some(base_counter - offset);
         }
     }
-    false
+    None
+}
+
+/// 2026-05-17 F-HIGH-admin sub-finding: pre-fix, `verify` had no
+/// replay protection — a code captured in flight could be replayed
+/// within its ±skew step window (up to ~90 seconds with default
+/// `step=30, skew=1`). Wrapping the verifier in this guard ensures
+/// each counter accepts at most one code, by tracking the highest
+/// counter ever consumed and rejecting any later candidate ≤ that
+/// counter.
+///
+/// One guard per principal (single-admin model = one global
+/// guard); per-principal scoping arrives with the multi-user RBAC
+/// refactor.
+#[derive(Debug, Default)]
+pub struct TotpReplayGuard {
+    last_consumed_counter: std::sync::atomic::AtomicU64,
+}
+
+impl TotpReplayGuard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Verify + atomically record the counter on success. Returns
+    /// `true` only when the code matches AND the matched counter
+    /// is strictly higher than every previously-consumed counter
+    /// for this guard.
+    pub fn verify_and_consume(
+        &self,
+        secret: &[u8],
+        code: &str,
+        time: u64,
+        config: &TotpConfig,
+    ) -> bool {
+        use std::sync::atomic::Ordering;
+        let Some(matched_counter) = verify_with_counter(secret, code, time, config) else {
+            return false;
+        };
+        // CAS: only accept if the matched counter beats the
+        // previous high-water mark. Concurrent verifies are rare
+        // (single-admin model + login rate-limit), but the CAS
+        // costs nothing and prevents a TOCTOU window.
+        let mut last = self.last_consumed_counter.load(Ordering::Relaxed);
+        loop {
+            if matched_counter <= last {
+                return false; // replay
+            }
+            match self.last_consumed_counter.compare_exchange_weak(
+                last,
+                matched_counter,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => last = actual,
+            }
+        }
+    }
 }
 
 /// Generate a provisioning URI for authenticator apps.
@@ -152,6 +232,44 @@ mod tests {
         let time = 1000000u64;
         let code = generate(SECRET, time, &CONFIG);
         assert!(verify(SECRET, &code, time, &CONFIG));
+    }
+
+    #[test]
+    fn replay_guard_consumes_each_counter_once() {
+        // F-HIGH-admin regression: pre-fix `verify` had no replay
+        // protection — a captured code stayed valid for the entire
+        // ±skew step window. The guard records the matched counter
+        // and rejects every subsequent submission of the same or
+        // earlier counter.
+        let guard = TotpReplayGuard::new();
+        let time = 1_000_000u64;
+        let code = generate(SECRET, time, &CONFIG);
+        // First submission consumes the code.
+        assert!(guard.verify_and_consume(SECRET, &code, time, &CONFIG));
+        // Replay within the same window must be rejected.
+        assert!(!guard.verify_and_consume(SECRET, &code, time, &CONFIG));
+        // Slightly later time (same counter) is also rejected.
+        assert!(!guard.verify_and_consume(SECRET, &code, time + 1, &CONFIG));
+        // The NEXT counter's code accepts (no leakage between
+        // counters).
+        let next_code = generate(SECRET, time + 30, &CONFIG);
+        assert!(guard.verify_and_consume(SECRET, &next_code, time + 30, &CONFIG));
+        // And replaying THAT code is now rejected too.
+        assert!(!guard.verify_and_consume(SECRET, &next_code, time + 30, &CONFIG));
+    }
+
+    #[test]
+    fn replay_guard_rejects_codes_below_high_water_mark() {
+        // If a later counter was accepted, an earlier code can't
+        // be accepted afterwards — even if it would have matched.
+        let guard = TotpReplayGuard::new();
+        let later = generate(SECRET, 1_000_060, &CONFIG);
+        assert!(guard.verify_and_consume(SECRET, &later, 1_000_060, &CONFIG));
+        // Earlier code is genuinely valid for its own counter, but
+        // the guard rejects it because we already consumed a
+        // higher counter.
+        let earlier = generate(SECRET, 1_000_000, &CONFIG);
+        assert!(!guard.verify_and_consume(SECRET, &earlier, 1_000_000, &CONFIG));
     }
 
     #[test]
