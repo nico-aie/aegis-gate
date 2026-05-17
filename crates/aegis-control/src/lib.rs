@@ -17,7 +17,14 @@ pub mod metrics;
 // `tracing-subscriber` boot. The module was reinvention.
 
 pub mod admin_auth;
-pub mod compliance;
+// 2026-05-17 (user decision): `compliance` module deleted — the
+// v2.3 interop contract does NOT require regulatory compliance
+// modes (FIPS / PCI / HIPAA / SOC2 / GDPR). The framework files
+// were 5 sets of detector-clamp + TLS-pin descriptions wired
+// through `COMPLIANCE_PINNED = &[]` (always empty) and never
+// enforced. Removed in full rather than carrying dead
+// infrastructure.
+// pub mod compliance;
 // 2026-05-17 F-CRITICAL-005 (control audit): `gitops` module deleted
 // — `GitOpsLoader::sync` had zero production callers and
 // `set_gitops_loader` was never invoked from boot. The `/api/gitops/

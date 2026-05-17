@@ -384,26 +384,13 @@ fn cmd_validate(args: &[String]) -> i32 {
     let print_priority = args.iter().any(|a| a == "--print-route-priority");
 
     match aegis_core::load_config(&config_path) {
-        Ok(mut cfg) => {
+        Ok(cfg) => {
             println!("config OK: {}", config_path.display());
-            // If compliance profiles are set, apply and report.
-            if let Some(profile) = cfg.compliance.as_ref() {
-                if !profile.modes.is_empty() {
-                    let modes = profile.modes.clone();
-                    match aegis_control::compliance::apply(&modes, &mut cfg) {
-                        Ok(()) => {
-                            println!(
-                                "compliance profiles applied: {:?}",
-                                modes
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("compliance error: {e}");
-                            return 1;
-                        }
-                    }
-                }
-            }
+            // 2026-05-17 (user decision): `compliance.apply` removed.
+            // The v2.3 contract doesn't require regulatory
+            // compliance modes; the framework files (FIPS / PCI /
+            // HIPAA / SOC2 / GDPR) wired through
+            // `COMPLIANCE_PINNED = &[]` were dead infrastructure.
             if print_priority {
                 if let Err(e) = print_route_priority(&cfg) {
                     eprintln!("route table build failed: {e}");
