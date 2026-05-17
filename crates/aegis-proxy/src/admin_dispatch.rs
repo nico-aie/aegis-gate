@@ -1004,19 +1004,13 @@ pub(crate) fn stamp_interop_response(
         return resp;
     };
 
-    // Generate a request id. UUID v4 isn't on our crate list yet,
-    // so build a 36-char hyphenated hex from blake3 (still
-    // RFC-4122-shaped, deterministic per request, distinct enough
-    // to satisfy the OC's "MUST match audit log" constraint).
-    let raw = blake3::hash(
-        format!(
-            "{peer}:{}:{path}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-        )
-        .as_bytes(),
-    );
-    let h = raw.to_hex();
-    let request_id = format_request_id(h.as_str());
+    // v2.3 §5.1 — UUID v4. The pre-2026-05-17 implementation used
+    // `blake3(peer:nanos:path)` because `uuid` wasn't on the crate
+    // list; that's deterministic on `(peer, nanos, path)` and
+    // collides when two requests share a nanosecond timestamp.
+    // `getrandom` (via `uuid::Uuid::new_v4`) gives 122 bits of
+    // entropy per ID, collision-free under any realistic load.
+    let request_id = uuid::Uuid::new_v4().to_string();
 
     // v2.3 §2.7 — `X-WAF-Mode` MUST reflect the mode of the
     // policy that produced the final reported `X-WAF-Action`,
@@ -1131,95 +1125,26 @@ pub(crate) fn handle_force_https_request(
     crate::listener::tls_policy::force_https_redirect_response(host, &path_owned, status)
 }
 
-/// Build a 36-char RFC 4122-shaped request id from a 64-char blake3
-/// hex digest. The version nibble (group 3, first hex digit) is
-/// fixed at `4` so the string parses as UUIDv4. The variant nibble
-/// (group 4, first hex digit) is masked to the RFC 4122 range
-/// `[89ab]` per §4.1.1 — without this mask, OC tooling that
-/// validates request_ids as proper UUIDs rejects ~75% of audit log
-/// entries (M001, 2026-05-07).
-fn format_request_id(h: &str) -> String {
-    debug_assert!(h.len() >= 32, "blake3 hex too short: {}", h.len());
-    let variant_byte = u8::from_str_radix(&h[16..17], 16).unwrap_or(0);
-    let masked_variant = (variant_byte & 0x3) | 0x8;
-    format!(
-        "{}-{}-4{}-{:x}{}-{}",
-        &h[0..8],
-        &h[8..12],
-        &h[13..16],
-        masked_variant,
-        &h[17..20],
-        &h[20..32],
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::format_request_id;
-
-    fn variant_nibble(uuid: &str) -> char {
-        // group 4 starts after the third hyphen.
-        uuid.split('-').nth(3).and_then(|g| g.chars().next()).unwrap()
-    }
-
     #[test]
-    fn format_request_id_emits_uuid_v4_shape() {
-        // 64-char blake3 hex sample
-        let h = "1c4187368f4540970f0c9a06172e426412345678abcdef9012345678ffffffff";
-        let id = format_request_id(h);
-        // Standard 8-4-4-4-12 layout
-        let groups: Vec<&str> = id.split('-').collect();
-        assert_eq!(groups.len(), 5, "{id}");
+    fn request_id_is_uuid_v4_shape() {
+        // Sanity that the new uuid::Uuid::new_v4 form is the
+        // expected 8-4-4-4-12 with version=4, variant=10xxxxxx,
+        // and produces distinct IDs on consecutive calls (no
+        // determinism, no nanosecond collision).
+        let a = uuid::Uuid::new_v4().to_string();
+        let b = uuid::Uuid::new_v4().to_string();
+        let groups: Vec<&str> = a.split('-').collect();
+        assert_eq!(groups.len(), 5);
         assert_eq!(groups[0].len(), 8);
         assert_eq!(groups[1].len(), 4);
         assert_eq!(groups[2].len(), 4);
         assert_eq!(groups[3].len(), 4);
         assert_eq!(groups[4].len(), 12);
-    }
-
-    #[test]
-    fn format_request_id_version_nibble_is_4() {
-        let h = "0000000000000000ffffffffffffffff00000000000000000000000000000000";
-        let id = format_request_id(h);
-        // Group 3 first char must be '4'
-        let g3 = id.split('-').nth(2).unwrap();
-        assert_eq!(g3.chars().next(), Some('4'), "{id}");
-    }
-
-    #[test]
-    fn format_request_id_variant_nibble_is_rfc4122() {
-        // Sweep all 16 hex digits at position [16] — every output
-        // variant nibble must be one of [89ab].
-        for c in "0123456789abcdef".chars() {
-            let mut h = String::from("0000000000000000");
-            h.push(c);
-            // Pad to 64 chars total
-            while h.len() < 64 {
-                h.push('0');
-            }
-            let id = format_request_id(&h);
-            let v = variant_nibble(&id);
-            assert!(
-                matches!(v, '8' | '9' | 'a' | 'b'),
-                "variant nibble {v} not in [89ab] for input nibble {c}: {id}",
-            );
-        }
-    }
-
-    #[test]
-    fn format_request_id_regression_for_qa_sample() {
-        // QA finding F-MEDIUM-001 reported request_id
-        // "1c418736-8f45-4097-4f0c-9a06172e4264" with variant nibble
-        // '4' (invalid). Reconstruct the producing hash and confirm
-        // the new formatter masks variant correctly.
-        // Hash bytes laid out so groups 1/2/3/5 match; group 4
-        // first nibble is the masked one.
-        let h = "1c4187368f4540970f0c9a06172e4264aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let id = format_request_id(h);
-        let v = variant_nibble(&id);
-        assert!(
-            matches!(v, '8' | '9' | 'a' | 'b'),
-            "QA-reported invalid variant must be masked: {id}",
-        );
+        assert_eq!(groups[2].chars().next(), Some('4'));
+        let variant = groups[3].chars().next().unwrap();
+        assert!(matches!(variant, '8' | '9' | 'a' | 'b'));
+        assert_ne!(a, b);
     }
 }

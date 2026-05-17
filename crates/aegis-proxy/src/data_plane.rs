@@ -1283,7 +1283,10 @@ pub(crate) async fn forward_allow_to_upstream(
                 fields: serde_json::json!({
                     "upstream_addr": member.addr.to_string(),
                     "host": host,
-                    "path": path,
+                    // v2.3 §6 — audit `path` includes query string.
+                    // `parts.uri.to_string()` preserves it; the bare
+                    // `path` variable captured earlier strips it.
+                    "path": parts.uri.to_string(),
                 }),
             });
 

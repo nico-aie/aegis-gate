@@ -76,6 +76,7 @@ async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 dashmap.workspace = true
 http.workspace = true
 http-body.workspace = true

@@ -1086,7 +1086,18 @@ pub(crate) async fn accept_loop(
                     // time inside `stamp_interop_response`.
                     let request_start = std::time::Instant::now();
                     let method = req.method().clone();
-                    let path = req.uri().path().to_string();
+                    // v2.3 §6 — audit `path` MUST include the query
+                    // string. `.path()` strips it; `.path_and_query()`
+                    // preserves the full request-target as the client
+                    // sent it. The control-endpoint `starts_with`
+                    // check below is unaffected (the prefix is
+                    // identical with or without query).
+                    let path = req
+                        .uri()
+                        .path_and_query()
+                        .map(|p| p.as_str())
+                        .unwrap_or_else(|| req.uri().path())
+                        .to_string();
                     // v2.3 contract (deploy/STAGING-BENCHMARK.md §7.5):
                     // the OC benchmarker hits /__waf_control/* on the
                     // public TLS data plane, not the admin port. Short-
@@ -1232,15 +1243,13 @@ pub(crate) async fn accept_loop(
                         "allow" => aegis_core::audit::AuditClass::Access,
                         _      => aegis_core::audit::AuditClass::Detection,
                     };
-                    let request_id = blake3::hash(
-                        format!(
-                            "{peer}:{}:{path}",
-                            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-                        )
-                        .as_bytes(),
-                    )
-                    .to_hex()
-                    .to_string();
+                    // v2.3 §5.1 — UUID v4 (`getrandom` under the hood)
+                    // gives a cryptographically-random, collision-free
+                    // ID. The earlier blake3(peer:nanos:path) form was
+                    // deterministic on those three inputs and collided
+                    // when two requests shared a nanosecond timestamp
+                    // (common under burst load).
+                    let request_id = uuid::Uuid::new_v4().to_string();
                     // 2026-05-03 — classify the request's bot tier
                     // and stash it on `fields.bot_category` so the
                     // AttacksAggregator (`bot_category_from_fields`)
