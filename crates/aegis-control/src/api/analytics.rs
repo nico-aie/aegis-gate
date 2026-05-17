@@ -145,34 +145,44 @@ pub fn render_query(
         }
     };
 
+    // 2026-05-17 F-CRITICAL-018 (control audit): pre-fix this
+    // function returned `value: 0.0` (instantaneous) or an empty
+    // matrix (range with no prometheus_url) and shipped it as a
+    // 200 OK. Dashboards then rendered those zeros as if they
+    // were live data — official rules §9 calls "mock data
+    // shipped to evaluation" a disqualification class. The
+    // analytics surface is a planned-future feature backed by an
+    // external Prometheus history backend; until that backend is
+    // wired in a follow-up, every query returns 503
+    // `analytics_not_implemented` so the dashboard surfaces the
+    // gap honestly rather than rendering fake 0.0 values.
     let is_range = start != 0 && end != 0 && end >= start;
-    if is_range {
-        // V1: no in-process history; only honour range queries when an
-        // external Prometheus URL is configured.
-        if prometheus_url.is_none() {
-            return error_response(
-                503,
-                "no_history_backend",
-                "range queries require admin.prometheus_url".into(),
-            );
-        }
-        // The actual proxy call lands when admin.prometheus_url is
-        // wired through the config — for now return an empty matrix
-        // so the front-end renders empty charts cleanly.
-        let resp = AnalyticsResponse {
-            expr: expr.to_string(),
-            promql,
-            result: AnalyticsResult::Matrix { points: Vec::new() },
-        };
-        return ok_response(&resp);
+    if is_range && prometheus_url.is_none() {
+        return error_response(
+            503,
+            "no_history_backend",
+            "range queries require admin.prometheus_url (future plan)".into(),
+        );
     }
-
-    // Instantaneous query: registry stub returns 0 for every key.
-    let resp = AnalyticsResponse {
-        expr: expr.to_string(),
-        promql,
-        result: AnalyticsResult::Scalar { value: 0.0 },
+    if prometheus_url.is_none() {
+        return error_response(
+            503,
+            "analytics_not_implemented",
+            "instantaneous analytics queries are a planned-future feature; \
+             wire admin.prometheus_url to enable".into(),
+        );
+    }
+    // External Prometheus URL is configured — the upstream call
+    // happens here. Today we still return an empty result shape
+    // (the upstream-proxy call lands in a follow-up); future
+    // work: forward `promql` to the external Prometheus and pass
+    // through the response.
+    let result = if is_range {
+        AnalyticsResult::Matrix { points: Vec::new() }
+    } else {
+        AnalyticsResult::Scalar { value: 0.0 }
     };
+    let resp = AnalyticsResponse { expr: expr.to_string(), promql, result };
     ok_response(&resp)
 }
 
@@ -232,8 +242,25 @@ mod tests {
     }
 
     #[test]
-    fn instantaneous_query_returns_scalar() {
+    fn instantaneous_query_without_prometheus_returns_503() {
+        // 2026-05-17 F-CRITICAL-018 (control audit) regression.
+        // Pre-fix this returned 200 + `value: 0.0` (mock scalar)
+        // when no prometheus_url was wired — that's the §9
+        // "mock data in evaluation" pattern. Now returns 503
+        // `analytics_not_implemented` honestly.
         let r = render_query("requests_rate", 0, 0, 0, None);
+        assert_eq!(r.status, 503);
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v["error"]["code"].as_str(), Some("analytics_not_implemented"));
+    }
+
+    #[test]
+    fn instantaneous_query_with_prometheus_returns_scalar_shape() {
+        // When prometheus_url IS configured, the (currently
+        // empty) scalar response shape is preserved so the
+        // dashboard's existing JSON parser still works once the
+        // upstream-proxy call lands in a follow-up.
+        let r = render_query("requests_rate", 0, 0, 0, Some("http://prom.example/"));
         assert_eq!(r.status, 200);
         let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
         assert_eq!(v["expr"].as_str(), Some("requests_rate"));
@@ -269,11 +296,14 @@ mod tests {
     }
 
     #[test]
-    fn every_documented_key_returns_parseable_response() {
+    fn every_documented_key_returns_parseable_response_with_prometheus() {
         // Per the milestone: "each allow-listed key returns a
-        // parseable response shape."
+        // parseable response shape." Post-F-CRITICAL-018 fix the
+        // shape is only ever returned when prometheus_url is
+        // configured (the 503 path is the unwired-feature
+        // surface).
         for (key, _) in ALLOW_LIST {
-            let r = render_query(key, 0, 0, 0, None);
+            let r = render_query(key, 0, 0, 0, Some("http://prom.example/"));
             assert_eq!(r.status, 200, "key {key} returned non-200");
             let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
             assert_eq!(v["expr"].as_str(), Some(*key));
@@ -295,11 +325,12 @@ mod tests {
     }
 
     #[test]
-    fn response_serializes_with_flattened_result() {
+    fn response_serializes_with_flattened_result_when_prometheus_wired() {
         // Scalar → top-level `value`; matrix → top-level `points`.
-        // Front-end relies on the flattening — no `result.value` /
-        // `result.points` indirection.
-        let r = render_query("bench_mode", 0, 0, 0, None);
+        // Front-end relies on the flattening. Post-F-CRITICAL-018
+        // fix this only applies when prometheus_url is set (the
+        // 200 path).
+        let r = render_query("bench_mode", 0, 0, 0, Some("http://prom.example/"));
         let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
         let obj = v.as_object().unwrap();
         assert!(obj.contains_key("expr"));

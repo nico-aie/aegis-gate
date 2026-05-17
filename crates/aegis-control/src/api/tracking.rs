@@ -36,29 +36,16 @@ pub struct SloResponse {
 }
 
 impl SloResponse {
+    /// 2026-05-17 F-CRITICAL-018 (control audit): pre-fix this
+    /// returned two fake SLI rows (`availability=99.99/99.99` +
+    /// `overhead_p99=0.0/5.0`) when no SloEngine was wired. The
+    /// dashboard then displayed those mock numbers as if they
+    /// were live — official rules §9 calls "mock data shipped to
+    /// evaluation" a disqualification class. Now returns an
+    /// empty `slis` list (honest empty); the dashboard renders
+    /// "no data yet" rather than fake 99.99% availability.
     pub fn placeholder() -> Self {
-        Self {
-            slis: vec![
-                SliRow {
-                    name: "availability".into(),
-                    current: 99.99,
-                    target: 99.99,
-                    budget_remaining: 1.0,
-                    burn_1h: 0.0,
-                    burn_6h: 0.0,
-                    burn_3d: 0.0,
-                },
-                SliRow {
-                    name: "overhead_p99".into(),
-                    current: 0.0,
-                    target: 5.0,
-                    budget_remaining: 1.0,
-                    burn_1h: 0.0,
-                    burn_6h: 0.0,
-                    burn_3d: 0.0,
-                },
-            ],
-        }
+        Self { slis: Vec::new() }
     }
 
     /// CI-T4/T7 — build the response from the live SLO engine's
@@ -650,14 +637,18 @@ mod tests {
     }
 
     #[test]
-    fn slo_response_has_documented_shape() {
+    fn slo_response_with_no_engine_is_empty_not_mock() {
+        // 2026-05-17 F-CRITICAL-018 regression: pre-fix
+        // `SloResponse::placeholder()` returned two fake SLI
+        // rows (availability=99.99/99.99, overhead_p99=0/5)
+        // when no SloEngine was wired — that's the §9 mock-data
+        // disqualification class. Now returns an empty slis
+        // list (honest empty); the dashboard renders "no data
+        // yet" rather than fake numbers.
         let body = handler().render_slo();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let slis = v["slis"].as_array().unwrap();
-        assert!(!slis.is_empty());
-        for k in ["name", "current", "target", "budget_remaining"] {
-            assert!(slis[0][k].is_number() || slis[0][k].is_string());
-        }
+        assert!(slis.is_empty(), "no engine → empty slis (not mock data)");
     }
 
     #[test]
