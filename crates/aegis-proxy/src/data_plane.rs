@@ -1194,12 +1194,18 @@ pub(crate) async fn forward_allow_to_upstream(
             None => {
                 let resp = Response::builder()
                     .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
-                    .header("x-waf-rule-id", "websocket_no_healthy_member")
+                    .header("x-waf-rule-id", "upstream.no_healthy_member")
                     .body(Full::new(Bytes::from(
                         "WebSocket upgrade: no healthy upstream member\n",
                     )))
                     .unwrap();
-                return (resp, DecisionTag::block("websocket_no_healthy_member"));
+                // F-CONTRACT-001 (2026-05-17 s-tester audit): §3 maps
+                // "upstream degradation detected by WAF" to
+                // `circuit_breaker`. Pre-fix this returned `block`,
+                // which §7 normalization classifies as a false-
+                // positive on legitimate WS traffic during a backend
+                // outage.
+                return (resp, DecisionTag::circuit_breaker("upstream.no_healthy_member"));
             }
         };
 
@@ -1249,15 +1255,18 @@ pub(crate) async fn forward_allow_to_upstream(
                     .status(hyper::StatusCode::BAD_GATEWAY)
                     .header(
                         "x-waf-rule-id",
-                        "websocket_upstream_forward_failed",
+                        "upstream.forward_failed",
                     )
                     .body(Full::new(Bytes::from(
                         "WebSocket upgrade: upstream forward failed\n",
                     )))
                     .unwrap();
+                // F-CONTRACT-001 (2026-05-17 s-tester audit): same
+                // §3 mapping as no_healthy_member above —
+                // circuit_breaker, not block.
                 return (
                     resp,
-                    DecisionTag::block("websocket_upstream_forward_failed"),
+                    DecisionTag::circuit_breaker("upstream.forward_failed"),
                 );
             }
         };
@@ -2549,16 +2558,20 @@ state: { backend: in_memory }
     }
 
     #[tokio::test]
-    async fn websocket_upgrade_attempt_with_unreachable_upstream_emits_block_with_documented_rule_id(
+    async fn websocket_upgrade_attempt_with_unreachable_upstream_emits_documented_action(
     ) {
         // WS-T2/T3 — when the upgrade detector fires we now try
         // a real raw-TCP forward to the resolved member.  The
         // `http_route_cfg()` pool points at 127.0.0.1:65530
         // which won't accept; the bridge surfaces that as a
-        // 502 with `x-waf-rule-id: websocket_upstream_forward_failed`
-        // (no OnUpgrade extension on a synthetic Parts means we
-        // hit the no-extension path slightly earlier — both
-        // are valid block points the dashboard can surface).
+        // 502 with the documented rule_id (one of two valid paths
+        // — see below).
+        //
+        // F-CONTRACT-001 (2026-05-17): upstream-degradation paths
+        // (no_healthy_member, forward_failed) now emit
+        // `X-WAF-Action: circuit_breaker` per v2.3 §3, not `block`.
+        // The no_upgrade_extension path stays `block` — it's a
+        // client-capability mismatch, not upstream degradation.
         let cfg = http_route_cfg();
         let ctx = build_ctx(&cfg);
         let bus = AuditBus::new(16);
@@ -2591,15 +2604,17 @@ state: { backend: in_memory }
 
         assert_eq!(resp.status(), hyper::StatusCode::BAD_GATEWAY);
         let rid = rule_id_header(&resp);
+        let action = tag.action.as_str();
         assert!(
             matches!(
-                rid,
-                Some("websocket_no_upgrade_extension")
-                    | Some("websocket_upstream_forward_failed")
+                (rid, action),
+                // Client-capability mismatch — still `block`.
+                (Some("websocket_no_upgrade_extension"), "block")
+                // Upstream degradation — `circuit_breaker` per §3.
+                | (Some("upstream.forward_failed"), "circuit_breaker")
             ),
-            "unexpected rule_id: {rid:?}",
+            "unexpected (rule_id, action): ({rid:?}, {action:?})",
         );
-        assert_eq!(tag.action.as_str(), "block");
     }
 
     #[tokio::test]
