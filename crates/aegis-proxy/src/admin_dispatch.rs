@@ -1093,9 +1093,29 @@ pub(crate) fn stamp_interop_response(
                 aegis_core::tier::Tier::Low => "low",
             }.to_string()),
         };
-        if let Err(e) = sink.append(&entry) {
-            tracing::warn!(error = %e, "interop audit write failed");
-        }
+        // F-CRITICAL-012 (2026-05-17 control audit): pre-fix
+        // `sink.append` ran inline on the request-stamping path,
+        // doing sync `Mutex::lock` + `File::write_all` +
+        // `File::flush` on the tokio worker thread. Every request
+        // stalled a worker until the page cache + dirent traversal
+        // completed (microseconds typical, milliseconds under
+        // contention or slow disks). Hot-path latency budget
+        // blown.
+        //
+        // Now: offload to a `spawn_blocking` task. The hot path
+        // returns immediately; the audit-write completes on the
+        // blocking pool. Audit ordering is preserved per `Arc<
+        // MinimalJsonlSink>` because the sink's internal Mutex
+        // serialises writes. On error, the spawned task logs at
+        // warn level (the caller can no longer see the Result —
+        // acceptable trade-off for the latency win; the previous
+        // inline error path also only emitted a warn).
+        let sink = sink.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = sink.append(&entry) {
+                tracing::warn!(error = %e, "interop audit write failed");
+            }
+        });
     }
 
     resp
