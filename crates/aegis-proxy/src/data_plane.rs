@@ -185,6 +185,32 @@ pub(crate) async fn handle_data_request_inner(
     // the DoS surface.
     let max_body_bytes = upstream_ctx.max_body_bytes;
 
+    // F-HIGH-005 (2026-05-17 s-tester audit): v2.3 §2.4 — while
+    // /__waf_control/reset_state is iterating subsystem callbacks
+    // the OC must not observe a partially-reset state. The §2.4
+    // "MAY temporarily reject in-flight non-control requests"
+    // clause is honoured here: any request arriving during the
+    // reset window short-circuits with 503 + Retry-After: 0.
+    // Hot-path cost when no reset is in progress: one relaxed
+    // AtomicBool::load (~1 ns).
+    if let Some(flag) = upstream_ctx.reset_in_progress.get() {
+        if flag.load(std::sync::atomic::Ordering::Acquire) {
+            let resp = Response::builder()
+                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                .header("retry-after", "0")
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "error": "reset_in_progress",
+                        "retry_after_seconds": 0,
+                    })
+                    .to_string(),
+                )))
+                .unwrap();
+            return (resp, DecisionTag::block("reset-in-progress"));
+        }
+    }
+
     // 2026-05-17 F-CRITICAL-002 — interop log_only mode store, hoisted
     // here so blacklist / strike-block / rate-limit / risk-score
     // (the four block paths between this point and the detector
@@ -963,7 +989,6 @@ pub(crate) async fn forward_allow_to_upstream(
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
-    use std::sync::atomic::Ordering;
 
     let host = parts
         .headers

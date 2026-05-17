@@ -952,6 +952,11 @@ pub async fn run(
         // skip. `set` is one-shot: subsequent boots can't
         // accidentally swap modes mid-run.
         let _ = upstream_ctx.interop_modes.set(rt.modes.clone());
+        // F-HIGH-005 — install the reset-in-progress flag the data
+        // plane consults at request entry to short-circuit with 503
+        // during a reset_state window. Same one-shot semantics as
+        // interop_modes.
+        let _ = upstream_ctx.reset_in_progress.set(rt.reset_in_progress.clone());
 
         // v2.3 §3 + NEW-2 (2026-05-08) — install the PoW issuer
         // so the data-plane challenge body carries
@@ -1755,6 +1760,7 @@ pub(crate) fn build_interop_runtime(
         audit: audit_sink,
         modes,
         control,
+        reset_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }))
 }
 

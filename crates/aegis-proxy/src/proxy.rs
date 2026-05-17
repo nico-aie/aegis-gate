@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -124,6 +123,15 @@ pub struct ProxyContext {
     /// `data_plane.rs`; surfaced here so the data-plane hot path
     /// reads the live value via the context it already holds.
     pub max_body_bytes: usize,
+    /// 2026-05-17 F-HIGH-005 — clone of `InteropRuntime.reset_in_progress`,
+    /// installed once after the interop runtime is built. Data plane
+    /// reads via `.get()`; absent (test fixtures without interop) is
+    /// treated as "not in reset" — the data plane never short-
+    /// circuits. See `InteropRuntime.reset_in_progress` for the full
+    /// contract rationale.
+    pub reset_in_progress: std::sync::OnceLock<
+        Arc<std::sync::atomic::AtomicBool>,
+    >,
 }
 
 impl ProxyContext {
@@ -167,6 +175,7 @@ impl ProxyContext {
             // are unsupported anyway) to avoid silent truncation.
             max_body_bytes: usize::try_from(cfg.proxy.max_body_bytes)
                 .unwrap_or(usize::MAX),
+            reset_in_progress: std::sync::OnceLock::new(),
         })
     }
 

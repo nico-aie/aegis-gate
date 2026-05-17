@@ -763,6 +763,22 @@ pub(crate) async fn handle_interop_control_with_rt(
             )
         }
         (hyper::Method::POST, "/__waf_control/reset_state") => {
+            // F-HIGH-005 (2026-05-17 s-tester audit): v2.3 §2.4 —
+            // reset_state must look atomic to the benchmarker.
+            // Setting `reset_in_progress = true` causes the data
+            // plane to short-circuit incoming requests with
+            // 503 + Retry-After: 0 ("MAY temporarily reject in-
+            // flight non-control requests"). RAII guard clears the
+            // flag on every exit, including panic.
+            use std::sync::atomic::Ordering;
+            struct ResetGuard<'a>(&'a std::sync::atomic::AtomicBool);
+            impl<'a> Drop for ResetGuard<'a> {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            rt.reset_in_progress.store(true, Ordering::Release);
+            let _g = ResetGuard(&rt.reset_in_progress);
             let body = serde_json::to_string(&rt.control.reset_state())
                 .unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "no-store")
