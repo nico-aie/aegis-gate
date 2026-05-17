@@ -41,6 +41,13 @@ hmac = "0.12"
 argon2 = "0.5"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
+# Identifiers — UUID v4 for `X-WAF-Request-Id` (v2.3 §5.1). `v4`
+# pulls in `getrandom`, which gives cryptographically-random IDs
+# without collisions under burst load. Earlier code used a
+# `blake3(peer:nanos:path)` hash; that's deterministic on
+# `(peer, nanos, path)` and collides on nanosecond ties at high RPS.
+uuid = { version = "1", features = ["v4"] }
+
 # TLS
 rustls = "0.23"
 tokio-rustls = "0.26"

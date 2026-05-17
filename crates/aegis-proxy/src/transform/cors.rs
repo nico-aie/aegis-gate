@@ -133,10 +133,15 @@ pub fn apply_cors_headers(
     };
 
     let headers = resp.headers_mut();
-    headers.insert(
-        ACCESS_CONTROL_ALLOW_ORIGIN,
-        HeaderValue::from_str(&allow_origin).unwrap(),
-    );
+    // `from_str` rejects bytes that can't appear in an HTTP header
+    // value (control chars, non-ASCII, etc.). A crafted `Origin:`
+    // header with such bytes — even though `to_str()` accepted it
+    // upstream — would panic the worker if we `.unwrap()` here. Fall
+    // back to a deny-by-default sentinel so the response still ships.
+    let Ok(allow_origin_hv) = HeaderValue::from_str(&allow_origin) else {
+        return;
+    };
+    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin_hv);
 
     if cfg.allow_credentials {
         headers.insert(

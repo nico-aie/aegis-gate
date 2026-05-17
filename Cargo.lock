@@ -139,6 +139,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower-service",
  "tracing",
+ "uuid",
  "webpki-roots 0.26.11",
  "x509-parser 0.16.0",
 ]
