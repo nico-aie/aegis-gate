@@ -1698,15 +1698,42 @@ pub(crate) fn build_interop_runtime(
     // documented gap — log_only-style false-positive verification
     // doesn't depend on it, so the v2.3 contract stays satisfied.
 
+    // F-CRITICAL-003 (2026-05-17 s-tester audit): pre-fix this was a
+    // `warn!` + `None` swallow that left the gateway running with no
+    // contract audit log. v2.3 §6 makes the contract audit mandatory
+    // when interop is enabled; running without it silently fails
+    // every Phase-2 scoring clause that correlates a decision back
+    // to an audit row. Now: best-effort mkdir-p on the parent dir,
+    // retry once, then `panic!` with an operator-actionable message
+    // on a second failure. The doc-comment on `MinimalJsonlSink::open`
+    // already specified this behaviour ("caller should fail-fast at
+    // boot in that case"); the run.rs caller was the bug.
     let audit_sink = match MinimalJsonlSink::open(&cfg.interop.audit_path) {
         Ok(s) => Some(Arc::new(s)),
-        Err(e) => {
-            tracing::warn!(
-                path = %cfg.interop.audit_path.display(),
-                error = %e,
-                "interop audit sink failed to open; continuing without contract audit log",
-            );
-            None
+        Err(first_err) => {
+            if let Some(parent) = cfg.interop.audit_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            match MinimalJsonlSink::open(&cfg.interop.audit_path) {
+                Ok(s) => Some(Arc::new(s)),
+                Err(retry_err) => {
+                    tracing::error!(
+                        path = %cfg.interop.audit_path.display(),
+                        first_error = %first_err,
+                        retry_error = %retry_err,
+                        "interop audit sink failed to open; v2.3 §6 mandates an audit log when interop is enabled",
+                    );
+                    panic!(
+                        "interop audit sink open failed for {}: {retry_err}. \
+                         Fix the path's permissions, mount a writable volume, or \
+                         set `cfg.interop.enabled = false` to disable the contract \
+                         audit log altogether.",
+                        cfg.interop.audit_path.display(),
+                    );
+                }
+            }
         }
     };
 
