@@ -11,7 +11,7 @@
 
 mod login_flow {
     use aegis_control::admin_auth::{
-        csrf, mtls, password, rate_limit, session, totp,
+        csrf, password, rate_limit, session, totp,
     };
 
     #[test]
@@ -99,31 +99,13 @@ mod login_flow {
         ));
     }
 
-    #[test]
-    fn mtls_auth_and_ip_allowlist() {
-        let config = mtls::MtlsConfig {
-            enabled: true,
-            ca_ref: "test-ca".into(),
-            allowed_sans: vec!["admin@aegis.local".into()],
-        };
-
-        // Valid SAN.
-        assert!(matches!(
-            mtls::verify_client_cert(&config, Some("admin@aegis.local")),
-            mtls::MtlsResult::Authenticated { .. }
-        ));
-
-        // Wrong SAN.
-        assert!(matches!(
-            mtls::verify_client_cert(&config, Some("evil@attacker.com")),
-            mtls::MtlsResult::RejectedSan { .. }
-        ));
-
-        // IP allowlist.
-        let nets: Vec<ipnet::IpNet> = vec!["10.0.0.0/8".parse().unwrap()];
-        assert!(mtls::check_ip_allowlist("10.1.2.3", &nets));
-        assert!(!mtls::check_ip_allowlist("192.168.1.1", &nets));
-    }
+    // 2026-05-17 F-CRITICAL-009 (control audit): the
+    // `admin_auth::mtls` integration test was removed when the
+    // module was deleted (zero production callers — `MtlsConfig`/
+    // `verify_client_cert`/`check_ip_allowlist` were never invoked
+    // by the proxy). The live admin-port mTLS lives in
+    // `crates/aegis-proxy/src/listener/tls.rs` (TLS-handshake-layer)
+    // and is exercised by the proxy's own integration tests.
 }
 
 // ===== 2. Audit chain verify ==============================================
