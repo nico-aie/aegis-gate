@@ -1961,11 +1961,42 @@ pub struct RateLimitRule {
     pub burst: Option<u32>,
 }
 
+/// 2026-05-17 F-CRITICAL-009 (core audit): rule scope, per §5.4 of
+/// the official rules. Six base scopes; each binds a rate-limit
+/// bucket (or rule) to a different dimension. Schema only —
+/// evaluator wiring lands in Phase E/F. Externally-tagged so
+/// existing YAML configs with `scope: global` keep working
+/// unchanged.
+///
+/// YAML shape (rate-limit bucket example):
+/// ```yaml
+/// rate_limit:
+///   buckets:
+///     - id: per-tenant-login
+///       scope:
+///         tier: critical
+///       rps: 10
+///     - id: per-fp
+///       scope: device_fingerprint
+///       rps: 5
+/// ```
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RlScope {
+    /// Global — applies to every request.
     Global,
+    /// Bind to one specific named route (matches `route.id`).
     Route,
+    /// §5.4 — bind to one of the 4 tiers.
+    Tier(crate::tier::Tier),
+    /// §5.4 — glob/regex route pattern (e.g. `/api/users/*`).
+    RoutePattern(String),
+    /// §5.4 — single IP or CIDR.
+    Ip(String),
+    /// §5.4 — bind by authenticated user session ID.
+    UserSession,
+    /// §5.4 — bind by device fingerprint hash (JA4 + UA + H2).
+    DeviceFingerprint,
 }
 
 #[derive(Clone, Deserialize, Debug, PartialEq)]
@@ -1975,6 +2006,12 @@ pub enum RlKey {
     Session,
     Header(String),
     JwtSub,
+    /// 2026-05-17 F-CRITICAL-009 (core audit): device fingerprint
+    /// key — composite of JA4 + User-Agent + H2 settings.
+    DeviceFp,
+    /// 2026-05-17 F-CRITICAL-009 (core audit): authenticated user
+    /// ID (e.g. from JWT claim or session lookup).
+    UserId,
 }
 
 #[derive(Clone, Deserialize, Debug, PartialEq)]
@@ -2242,6 +2279,65 @@ pub struct DetectorsConfig {
     /// Absent → in-memory only (legacy behaviour).
     #[serde(default)]
     pub persistence: Option<DetectorMaskPersistenceConfig>,
+    /// 2026-05-17 F-CRITICAL-011 (core audit): §4 tier-policy
+    /// per-tier override mask. The global toggles above are the
+    /// baseline; any tier listed here overrides them for requests
+    /// classified to that tier. Empty (default) means "single
+    /// global policy applies to every tier".
+    ///
+    /// `TierDetectorMask` fields are `Option<bool>`: `Some(true)`
+    /// forces the class enabled on that tier, `Some(false)` forces
+    /// it disabled, and `None` inherits the global toggle.
+    ///
+    /// YAML shape:
+    /// ```yaml
+    /// detectors:
+    ///   sqli: { enabled: true }
+    ///   per_tier:
+    ///     critical:
+    ///       command_injection: true   # force on for CRITICAL
+    ///       brute_force: true
+    ///     low:
+    ///       recon: false              # disable recon on baseline
+    /// ```
+    ///
+    /// Schema only — consumer wiring lands when the detector mask
+    /// runtime gains a tier-aware resolver (Phase E).
+    #[serde(default)]
+    pub per_tier: HashMap<Tier, TierDetectorMask>,
+}
+
+/// 2026-05-17 F-CRITICAL-011 (core audit): per-tier detector
+/// override mask. Each field tri-states the corresponding detector
+/// class on the bound tier: `Some(true)` = force enabled,
+/// `Some(false)` = force disabled, `None` = inherit global.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TierDetectorMask {
+    #[serde(default)]
+    pub sqli: Option<bool>,
+    #[serde(default)]
+    pub xss: Option<bool>,
+    #[serde(default)]
+    pub path_traversal: Option<bool>,
+    #[serde(default)]
+    pub ssrf: Option<bool>,
+    #[serde(default)]
+    pub header_injection: Option<bool>,
+    #[serde(default)]
+    pub body_abuse: Option<bool>,
+    #[serde(default)]
+    pub recon: Option<bool>,
+    #[serde(default)]
+    pub brute_force: Option<bool>,
+    #[serde(default)]
+    pub command_injection: Option<bool>,
+    #[serde(default)]
+    pub template_injection: Option<bool>,
+    #[serde(default)]
+    pub nosql_injection: Option<bool>,
+    #[serde(default)]
+    pub open_redirect: Option<bool>,
 }
 
 /// File-backed persistence config for the live detector mask.
@@ -2275,6 +2371,7 @@ impl Default for DetectorsConfig {
             nosql_injection: default_detector_toggle(),
             open_redirect: OpenRedirectConfig::default(),
             persistence: None,
+            per_tier: HashMap::new(),
         }
     }
 }
@@ -4374,6 +4471,78 @@ fail_mode_by_tier:
             Some(&FailureModeConfig::FailClose),
         );
         assert!(cfg.fail_mode_by_tier.get(&Tier::Low).is_none());
+    }
+
+    /// 2026-05-17 F-CRITICAL-009 (core audit): the four new
+    /// `RlScope` variants parse from YAML, externally-tagged. Old
+    /// configs with `scope: global` and `scope: route` keep
+    /// parsing unchanged.
+    #[test]
+    fn rl_scope_new_variants_parse() {
+        // Existing: unit variants — no change.
+        let s: RlScope = serde_yaml::from_str("global").unwrap();
+        assert_eq!(s, RlScope::Global);
+        let s: RlScope = serde_yaml::from_str("route").unwrap();
+        assert_eq!(s, RlScope::Route);
+        let s: RlScope = serde_yaml::from_str("user_session").unwrap();
+        assert_eq!(s, RlScope::UserSession);
+        let s: RlScope = serde_yaml::from_str("device_fingerprint").unwrap();
+        assert_eq!(s, RlScope::DeviceFingerprint);
+
+        // Newly added: tuple variants — externally tagged YAML uses
+        // the `!variant value` form. JSON-style `{variant: value}`
+        // also works through serde_json round-trip.
+        let s: RlScope = serde_yaml::from_str("!tier critical").unwrap();
+        assert_eq!(s, RlScope::Tier(Tier::Critical));
+
+        let s: RlScope = serde_yaml::from_str("!route_pattern \"/api/users/*\"").unwrap();
+        assert_eq!(s, RlScope::RoutePattern("/api/users/*".into()));
+
+        let s: RlScope = serde_yaml::from_str("!ip \"10.0.0.0/8\"").unwrap();
+        assert_eq!(s, RlScope::Ip("10.0.0.0/8".into()));
+
+        // JSON-style also parses (used by REST API request bodies).
+        let s: RlScope = serde_json::from_str(r#"{"tier":"critical"}"#).unwrap();
+        assert_eq!(s, RlScope::Tier(Tier::Critical));
+    }
+
+    /// 2026-05-17 F-CRITICAL-009 (core audit): new RlKey variants.
+    #[test]
+    fn rl_key_new_variants_parse() {
+        let k: RlKey = serde_yaml::from_str("ip").unwrap();
+        assert_eq!(k, RlKey::Ip);
+        let k: RlKey = serde_yaml::from_str("device_fp").unwrap();
+        assert_eq!(k, RlKey::DeviceFp);
+        let k: RlKey = serde_yaml::from_str("user_id").unwrap();
+        assert_eq!(k, RlKey::UserId);
+    }
+
+    /// 2026-05-17 F-CRITICAL-011 (core audit): per-tier detector
+    /// override mask parses from YAML; existing configs without
+    /// `per_tier` default to empty (single global policy).
+    #[test]
+    fn detectors_per_tier_mask_parses_and_default_empty() {
+        let yaml = r#"
+sqli: { enabled: true }
+per_tier:
+  critical:
+    command_injection: true
+    brute_force: true
+  low:
+    recon: false
+"#;
+        let cfg: DetectorsConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.per_tier.len(), 2);
+        let crit = cfg.per_tier.get(&Tier::Critical).unwrap();
+        assert_eq!(crit.command_injection, Some(true));
+        assert_eq!(crit.brute_force, Some(true));
+        assert!(crit.sqli.is_none()); // not overridden → inherit global
+        let low = cfg.per_tier.get(&Tier::Low).unwrap();
+        assert_eq!(low.recon, Some(false));
+
+        // Default (no per_tier key) is an empty map, not an error.
+        let cfg: DetectorsConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(cfg.per_tier.is_empty());
     }
 
     /// 2026-05-17 F-CRITICAL-012 (core audit): `canary_paths`
