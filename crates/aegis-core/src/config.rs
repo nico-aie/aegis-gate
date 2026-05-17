@@ -134,6 +134,19 @@ pub struct WafConfig {
     /// Default 10 MiB — matches `QuotaConfig::default()`.
     #[serde(default)]
     pub proxy: ProxyConfig,
+    /// 2026-05-17 F-CRITICAL-006 — adaptive load shedder. When
+    /// enabled, the data plane consults `LoadShedder::should_admit`
+    /// after tier classification and returns 503 + `Retry-After: 1`
+    /// when the current in-flight count exceeds the adaptive limit.
+    /// Critical-tier requests are never shed; Low / Medium / High
+    /// shed in that order. The limit auto-tunes via Gradient2 from
+    /// observed RTTs (`L(t+1) = L(t) * RTT_min / RTT_now`). See
+    /// `crates/aegis-proxy/src/shed.rs` for the algorithm and
+    /// `docs/operator/load-shedding.md` (TBD) for the operator
+    /// guide. Default `enabled: true` so Round-3 resilience
+    /// scoring works out of the box.
+    #[serde(default)]
+    pub load_shedder: LoadShedderConfig,
     /// DDoS protection — per-IP burst detection + EWMA spike
     /// mode + cluster-wide auto-block via the state backend.
     ///
@@ -311,6 +324,43 @@ impl Default for ProxyConfig {
 
 fn default_proxy_max_body_bytes() -> u64 {
     10 * 1024 * 1024 // 10 MiB — matches QuotaConfig::default()
+}
+
+/// Adaptive load-shedder knobs. See
+/// `crates/aegis-proxy/src/shed.rs` for the algorithm.
+#[derive(Clone, Debug, Deserialize)]
+pub struct LoadShedderConfig {
+    /// Master toggle. Default `true` so Round-3 resilience scoring
+    /// engages without explicit opt-in.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Initial concurrency limit before Gradient2 adapts.
+    /// Operator-tunable based on host capacity — default 1000 is
+    /// fine for most workloads; lower it on memory-constrained
+    /// hosts.
+    #[serde(default = "default_shed_initial_limit")]
+    pub initial_limit: u64,
+    /// Floor the adaptive limit cannot go below. Protects against
+    /// pathological RTT spikes shedding all traffic.
+    #[serde(default = "default_shed_min_limit")]
+    pub min_limit: u64,
+}
+
+impl Default for LoadShedderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            initial_limit: default_shed_initial_limit(),
+            min_limit: default_shed_min_limit(),
+        }
+    }
+}
+
+fn default_shed_initial_limit() -> u64 {
+    1000
+}
+fn default_shed_min_limit() -> u64 {
+    100
 }
 
 /// In-process runtime sizing — Layer-1 of the three-layer scaling

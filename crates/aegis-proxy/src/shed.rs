@@ -5,7 +5,8 @@
 //! Shed response: 503 + `Retry-After` + request id, zero pipeline cost.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aegis_core::tier::Tier;
 
@@ -136,6 +137,37 @@ impl LoadShedder {
             Some(Duration::from_micros(v))
         }
     }
+
+    /// RAII admit: `acquire`s a slot, captures `Instant::now()`, and
+    /// returns a guard whose `Drop` calls `release` + `record_rtt`
+    /// with the elapsed time. Use in the data plane so a request
+    /// cancelled mid-flight still releases its slot and feeds RTT
+    /// signal to the Gradient2 adapter — `acquire` + `release`
+    /// without RAII would leak the counter on any future that
+    /// drops between the two calls (same class of bug as
+    /// F-CRITICAL-008's inflight counter).
+    pub fn admit_guard(self: &Arc<Self>) -> ShedGuard {
+        self.acquire();
+        ShedGuard {
+            shedder: Arc::clone(self),
+            start: Instant::now(),
+        }
+    }
+}
+
+/// RAII guard issued by [`LoadShedder::admit_guard`]. Drop releases
+/// the in-flight slot and records the request's RTT into the
+/// Gradient2 estimator.
+pub struct ShedGuard {
+    shedder: Arc<LoadShedder>,
+    start: Instant,
+}
+
+impl Drop for ShedGuard {
+    fn drop(&mut self) {
+        self.shedder.release();
+        self.shedder.record_rtt(self.start.elapsed());
+    }
 }
 
 /// Which tiers to shed and in what order.
@@ -231,6 +263,38 @@ mod tests {
         assert!(s.min_rtt().is_none());
         s.record_rtt(Duration::from_millis(5));
         assert_eq!(s.min_rtt().unwrap(), Duration::from_millis(5));
+    }
+
+    #[test]
+    fn admit_guard_releases_on_drop() {
+        // Pre-RAII the data plane manually paired acquire +
+        // release; a cancellation between the two leaked the
+        // counter. ShedGuard's Drop closes that gap.
+        let s = Arc::new(LoadShedder::new(100, 1));
+        assert_eq!(s.current_inflight(), 0);
+        {
+            let _g = s.admit_guard();
+            assert_eq!(s.current_inflight(), 1);
+        }
+        assert_eq!(s.current_inflight(), 0);
+    }
+
+    #[test]
+    fn admit_guard_releases_on_panic_unwind() {
+        // Sister regression: a panic inside the guarded scope must
+        // still release. Drop runs during unwind, so this works
+        // by construction — pin it with a catch_unwind so a
+        // future refactor that disables unwinding can't silently
+        // regress.
+        let s = Arc::new(LoadShedder::new(100, 1));
+        let s_clone = Arc::clone(&s);
+        let result = std::panic::catch_unwind(move || {
+            let _g = s_clone.admit_guard();
+            assert_eq!(s_clone.current_inflight(), 1);
+            panic!("simulated downstream panic");
+        });
+        assert!(result.is_err());
+        assert_eq!(s.current_inflight(), 0);
     }
 
     #[test]

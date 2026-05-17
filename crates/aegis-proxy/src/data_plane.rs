@@ -566,6 +566,37 @@ pub(crate) async fn handle_data_request_inner(
         aegis_security::detectors::tier_str(tier),
     );
 
+    // F-CRITICAL-006 (2026-05-17): adaptive load shedder. Runs after
+    // tier classification so Critical traffic is never shed and
+    // lower tiers shed in priority order. RAII guard tracks the
+    // in-flight count across the rest of the function and records
+    // the request's RTT into the Gradient2 estimator on every exit
+    // path (including detector blocks, upstream-forward errors,
+    // and panics). On admit-deny, return 503 + Retry-After: 1 with
+    // `X-WAF-Action: circuit_breaker` per v2.3 §3 (the WAF is the
+    // upstream-protection surface for this rejection).
+    let _shed_guard = if let Some(shedder) = upstream_ctx.load_shedder.get() {
+        if !shedder.should_admit(&tier) {
+            let resp = Response::builder()
+                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                .header("retry-after", "1")
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "error": "load_shed",
+                        "tier": aegis_security::detectors::tier_str(tier),
+                        "retry_after_seconds": 1,
+                    })
+                    .to_string(),
+                )))
+                .unwrap();
+            return (resp, DecisionTag::circuit_breaker("load_shed").with_tier(tier));
+        }
+        Some(shedder.admit_guard())
+    } else {
+        None
+    };
+
     // Run security detectors filtered by the effective mask for
     // this tier. A class turned off via PUT /api/detectors (base
     // or per-tier override) short-circuits before the detector body

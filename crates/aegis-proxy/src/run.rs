@@ -703,6 +703,30 @@ pub async fn run(
     // of request load. Without it, the spike-detection signal
     // would only update on requests, defeating the whole point
     // of "alert before traffic crashes the upstream".
+    // F-CRITICAL-006 (2026-05-17): wire the adaptive load shedder
+    // into ProxyContext. The data plane consults it after tier
+    // classification — Critical-tier requests pass unconditionally,
+    // lower tiers shed in priority order when the in-flight count
+    // exceeds the Gradient2-adapted limit. Boot log surfaces the
+    // initial knobs so operators see the gate is active.
+    if cfg.load_shedder.enabled {
+        let shedder = Arc::new(crate::shed::LoadShedder::new(
+            cfg.load_shedder.initial_limit,
+            cfg.load_shedder.min_limit,
+        ));
+        if upstream_ctx.load_shedder.set(shedder.clone()).is_err() {
+            tracing::warn!("load_shedder: already installed; skipping");
+        } else {
+            tracing::info!(
+                initial_limit = cfg.load_shedder.initial_limit,
+                min_limit = cfg.load_shedder.min_limit,
+                "load_shedder: runtime installed (Gradient2 adaptive concurrency)",
+            );
+        }
+    } else {
+        tracing::info!("load_shedder: cfg.load_shedder.enabled = false — gate not installed");
+    }
+
     if cfg.ddos.enabled {
         let runtime = Arc::new(aegis_security::ddos::DdosRuntime::new(
             cfg.ddos.clone().into(),
