@@ -1,5 +1,6 @@
 pub mod body_abuse;
 pub mod brute_force;
+pub mod canary;
 pub mod command_injection;
 pub mod header_injection;
 pub mod mask;
@@ -329,6 +330,28 @@ pub fn default_detectors_with(
             cfg.open_redirect.allowed_domains.clone(),
         )),
     ]
+}
+
+/// 2026-05-18 F-CRITICAL-012 (security audit, Phase F) — variant
+/// of [`default_detectors_with`] that also appends the
+/// [`canary::CanaryDetector`] when `risk.canary_paths` is non-empty.
+/// Canary is a peer of the OWASP detectors but data-driven from
+/// `RiskConfig` rather than `DetectorsConfig`; this entry point
+/// keeps the call site in `aegis-proxy::run` to a single line.
+///
+/// Empty `canary_paths` → no canary detector is appended, so the
+/// detector list is identical to the base path. Saves the per-
+/// request cost of one always-empty loop iteration on deployments
+/// that don't use honeypots.
+pub fn default_detectors_with_canary(
+    cfg: &aegis_core::config::DetectorsConfig,
+    canary_paths: &[String],
+) -> Vec<Box<dyn Detector>> {
+    let mut v = default_detectors_with(cfg);
+    if !canary_paths.is_empty() {
+        v.push(Box::new(canary::CanaryDetector::new(canary_paths)));
+    }
+    v
 }
 
 #[cfg(test)]

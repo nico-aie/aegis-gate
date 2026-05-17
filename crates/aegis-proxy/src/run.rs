@@ -256,8 +256,15 @@ pub async fn run(
     // The `not(feature = "ai")` branch fails boot loudly when
     // `cfg.ai.enabled = true` on a binary built without the
     // feature so the misconfiguration is visible.
+    // 2026-05-18 F-CRITICAL-012 (security audit, Phase F): include
+    // the canary detector when operator has configured honeypot
+    // paths via `risk.canary_paths`. Empty list → no canary
+    // appended → zero per-request cost.
     #[allow(unused_mut)]
-    let mut detector_vec = aegis_security::detectors::default_detectors_with(&cfg.detectors);
+    let mut detector_vec = aegis_security::detectors::default_detectors_with_canary(
+        &cfg.detectors,
+        &cfg.risk.canary_paths,
+    );
     #[cfg(not(feature = "ai"))]
     {
         if cfg.ai.enabled {
