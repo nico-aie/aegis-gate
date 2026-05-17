@@ -275,20 +275,36 @@ impl StateBackend for InMemoryBackend {
     }
 }
 
+/// Process-monotonic anchor used by `encode_bucket` / `decode_bucket`
+/// to serialise/deserialise an `Instant` as a `u64` nanos-since-epoch
+/// offset. Initialised on first access at boot; stable for the
+/// lifetime of the process.
+fn bucket_epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
+}
+
 fn encode_bucket(tokens: f64, ts: Instant) -> Vec<u8> {
     let mut buf = Vec::with_capacity(16);
     buf.extend_from_slice(&tokens.to_le_bytes());
-    let nanos = ts.elapsed().as_nanos() as u64; // relative offset; we store the Instant as nanos-ago=0
+    // Pre-2026-05-17 (BUG-F-CRITICAL-007): this stored
+    // `ts.elapsed().as_nanos()` which is always near-zero relative
+    // to `ts == now` at write time, and `decode_bucket` discarded
+    // the field entirely. Result: bucket never refilled — every IP
+    // got exactly `burst` requests then permanent 429. Now we store
+    // `ts` as nanos-since-process-epoch so decode can reconstruct
+    // the real Instant and compute genuine elapsed time between
+    // writes.
+    let nanos = ts.saturating_duration_since(bucket_epoch()).as_nanos() as u64;
     buf.extend_from_slice(&nanos.to_le_bytes());
     buf
 }
 
 fn decode_bucket(data: &[u8]) -> (f64, Instant) {
     let tokens = f64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8]));
-    // The timestamp is always "now" relative — we re-encode on every access
-    // so for simplicity we treat the stored timestamp as the last access time.
-    // In a real impl this would be a proper epoch-based timestamp.
-    (tokens, Instant::now())
+    let nanos = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+    let ts = bucket_epoch() + Duration::from_nanos(nanos);
+    (tokens, ts)
 }
 
 #[cfg(test)]
@@ -350,6 +366,40 @@ mod tests {
         assert!(b.token_bucket("api", 1, 3).await.unwrap());
         assert!(b.token_bucket("api", 1, 3).await.unwrap());
         assert!(b.token_bucket("api", 1, 3).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn token_bucket_denies_after_burst_exhausted() {
+        // Regression for F-CRITICAL-007: prior to 2026-05-17,
+        // `decode_bucket` discarded the stored timestamp and returned
+        // `Instant::now()` so `elapsed` was always 0, refill was
+        // always 0, and the 4th call here used to *succeed* (the
+        // tokens field stayed at exactly `burst` forever). After
+        // the fix the bucket is properly drained.
+        let b = backend();
+        // burst=3, rate=1/s — exhaust within a few ms (well under
+        // any refill).
+        assert!(b.token_bucket("ip1", 1, 3).await.unwrap());
+        assert!(b.token_bucket("ip1", 1, 3).await.unwrap());
+        assert!(b.token_bucket("ip1", 1, 3).await.unwrap());
+        // 4th call within the same window must be denied.
+        assert!(!b.token_bucket("ip1", 1, 3).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn token_bucket_refills_after_window() {
+        // Regression for F-CRITICAL-007 (companion): once the
+        // window elapses, the bucket must refill. Run at rate=100/s
+        // so a 50 ms sleep produces ~5 fresh tokens.
+        let b = backend();
+        assert!(b.token_bucket("ip2", 100, 3).await.unwrap());
+        assert!(b.token_bucket("ip2", 100, 3).await.unwrap());
+        assert!(b.token_bucket("ip2", 100, 3).await.unwrap());
+        assert!(!b.token_bucket("ip2", 100, 3).await.unwrap());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // After refill (50 ms × 100/s = 5 tokens, capped at burst=3)
+        // at least one call must succeed.
+        assert!(b.token_bucket("ip2", 100, 3).await.unwrap());
     }
 
     #[tokio::test]
