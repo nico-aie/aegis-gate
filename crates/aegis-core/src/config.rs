@@ -56,7 +56,16 @@ pub fn load_config_str(yaml: &str) -> crate::Result<WafConfig> {
 // Top-level WafConfig
 // ---------------------------------------------------------------------------
 
+// 2026-05-17 F-CRITICAL-013 (core audit): `#[serde(
+// deny_unknown_fields)]` on the top-level config catches typos
+// like `routs:` / `upstrems:` / `risk_threshols:` that serde would
+// otherwise silently drop. Pre-fix the entire 4024-LoC config
+// module had ZERO uses of this attribute — every "ghost feature"
+// report by operators traced back to a typo that vanished into
+// the void. Applied at the top level here; nested structs can opt
+// in over time as we verify they're closed-set.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WafConfig {
     pub listeners: Listeners,
     pub routes: Vec<RouteConfig>,
@@ -2118,9 +2127,15 @@ fn default_risk_max() -> u32 {
 
 impl Default for RiskThresholds {
     fn default() -> Self {
+        // 2026-05-17 (core F-CRITICAL-007 + security F-CRITICAL-006):
+        // bumped from 40/80 → 30/70 to match the spec. Pre-fix two
+        // sources disagreed out of the box: `RiskEngine::classify`
+        // hardcoded 30/70 (per spec) while this default was 40/80,
+        // so a `RiskTracker` built from default config silently
+        // disagreed with the spec'd thresholds. Now both agree.
         Self {
-            challenge_at: 40,
-            block_at: 80,
+            challenge_at: 30,
+            block_at: 70,
             max: 100,
         }
     }
@@ -3063,9 +3078,13 @@ redis:
 
     #[test]
     fn risk_config_defaults() {
+        // 2026-05-17 (F-CRITICAL-007): bumped 40/80 → 30/70 to
+        // match the v2.3 spec defaults that `RiskEngine::classify`
+        // already hardcoded. Pre-fix the two sources disagreed
+        // out of the box.
         let cfg = RiskConfig::default();
-        assert_eq!(cfg.thresholds.challenge_at, 40);
-        assert_eq!(cfg.thresholds.block_at, 80);
+        assert_eq!(cfg.thresholds.challenge_at, 30);
+        assert_eq!(cfg.thresholds.block_at, 70);
         assert_eq!(cfg.thresholds.max, 100);
         assert_eq!(cfg.decay_half_life, Duration::from_secs(300));
     }

@@ -1688,6 +1688,13 @@ pub(crate) fn build_interop_runtime(
                 "command_injection".into(),
                 "template_injection".into(),
                 "nosql_injection".into(),
+                // 2026-05-17 F-CRITICAL-010 (control audit): the
+                // `open_redirect` detector emits live signals
+                // (see `detectors/open_redirect.rs`) but was
+                // missing from this capability list — set_profile
+                // for `open_redirect` mode would return
+                // "unsupported" while the rule still fired.
+                "open_redirect".into(),
             ],
         },
     );

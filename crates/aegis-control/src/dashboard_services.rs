@@ -422,15 +422,38 @@ impl DashboardServices {
         let filter_clone = Arc::clone(&filter_catalogue);
         let rule_stats_clone = Arc::clone(&rule_stats);
         let drain = tokio::spawn(async move {
-            while let Ok(ev) = rx.recv().await {
-                Self::dispatch_event(
-                    &stats_clone,
-                    &attacks_clone,
-                    &audit_clone,
-                    &filter_clone,
-                    &rule_stats_clone,
-                    &ev,
-                );
+            // F-CRITICAL-011 (2026-05-17 control audit): pre-fix
+            // this loop used `while let Ok(ev) = rx.recv().await`
+            // which exits PERMANENTLY on `RecvError::Lagged` (any
+            // time the subscriber falls behind by the broadcast
+            // buffer's capacity). After exit the audit-ring +
+            // stats-aggregator + attacks-aggregator stop receiving
+            // events — Live Feed freezes, /api/audit/since
+            // returns stale data, the §5.6 "≤5s freshness" mandate
+            // breaks. Under the 60k RPS stress run the channel
+            // saturated within seconds and the drain task died
+            // silently. Now: handle Lagged by logging + counting
+            // drops + continuing (matches the proven pattern in
+            // `audit::sinks::jsonl::run_persist_task`).
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => Self::dispatch_event(
+                        &stats_clone,
+                        &attacks_clone,
+                        &audit_clone,
+                        &filter_clone,
+                        &rule_stats_clone,
+                        &ev,
+                    ),
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            dropped = n,
+                            "dashboard drain: audit bus lagged; events dropped from broadcast"
+                        );
+                    }
+                    Err(RecvError::Closed) => break,
+                }
             }
         });
 
