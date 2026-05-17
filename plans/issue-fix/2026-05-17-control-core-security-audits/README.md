@@ -237,7 +237,7 @@ For each module: decide to wire OR delete. The README claims feature support, so
 | E — security composite keys | NOT STARTED | Schema unblocked by Phase G (RlScope+RlKey new variants, fail_mode_by_tier). |
 | F — security depth features | NOT STARTED | Velocity engine, behavior signals, canary block, response filter §5.7. Schema unblocked by Phase G (canary_paths). |
 | G — core schema fields | DONE | 2 commits: `678baa2` (DDoS tier_overrides + fail_mode_by_tier + canary_paths), `4d91eeb` (RlScope/RlKey + DetectorsConfig per_tier). All `#[serde(default)]` — no breaking changes. |
-| H — correctness/ops | PARTIAL | F-CRITICAL-015 (SSRF) `3c47141`, F-CRITICAL-016 (VecDeque) `64cd728`, F-CRITICAL-012 (spawn_blocking) `0959c3e`. Remainder TBD. |
+| H — correctness/ops | DONE | F-CRITICAL-012 (spawn_blocking) `0959c3e`, F-CRITICAL-013 (chain-on-disk + fsync + cross-day) `ed7b21e`, F-CRITICAL-015 (SSRF) `3c47141`, F-CRITICAL-016 (VecDeque) `64cd728`. |
 | I — dead-code deletion | DONE | `0ef3eaf` (5 modules, 2419 LoC) + `cf1926d` (dod.rs cleanup) + `a647b60` (compliance removal). |
 
 **Next session priorities (in order):**
@@ -245,5 +245,7 @@ For each module: decide to wire OR delete. The README claims feature support, so
 2. Phase E — composite `{IP+device_fp+session}` keys for RiskTracker + IpRateLimiter (~300 LoC).
 3. Phase F — velocity engine, canary-path detector (consume Phase G schema), behavior signals.
 4. [`plans/future/rule-non-block-actions.md`](../../future/rule-non-block-actions.md) — wire the 5 non-Block rule actions (Allow, Challenge, RateLimited, LogOnly +1) for scoring depth.
+
+**Now closed at the issue-fix plan level:** all phases except C.2 (deferred construction-sweep) + E + F. Everything still open is Round-2 benchmark scoring depth, not Round-1 Pass/Fail.
 
 If you authorise with "go" + defaults, I'll start Phase A immediately.
