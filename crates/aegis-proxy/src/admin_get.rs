@@ -189,10 +189,29 @@ pub(crate) fn admin_router(
             // client-filtering.
             let cursor = parse_query_u64(query, "cursor", 0);
             let limit = parse_query_u32(query, "limit", 200);
+            // F-CRITICAL-004 (2026-05-17 control audit): parse the
+            // new `ts_from` / `ts_to` RFC 3339 timestamps so the
+            // dashboard's Round-1 mandated "audit search by time"
+            // dimension works. Malformed timestamps silently
+            // fall back to `None` (no filter applied) rather than
+            // 400 — operators see no events instead of an opaque
+            // error, which matches existing behaviour for the
+            // other filter fields.
+            let parse_ts = |q: &str, key: &str| -> Option<chrono::DateTime<chrono::Utc>> {
+                parse_query_str(q, key)
+                    .map(percent_decode)
+                    .and_then(|s| {
+                        chrono::DateTime::parse_from_rfc3339(&s)
+                            .ok()
+                            .map(|t| t.with_timezone(&chrono::Utc))
+                    })
+            };
             let filter = aegis_control::api::audit::AuditFilter {
                 ip: parse_query_str(query, "ip").map(percent_decode),
                 request_id: parse_query_str(query, "request_id").map(percent_decode),
                 rule_id: parse_query_str(query, "rule_id").map(percent_decode),
+                ts_from: parse_ts(query, "ts_from"),
+                ts_to: parse_ts(query, "ts_to"),
             };
             json_body_response(
                 200,
