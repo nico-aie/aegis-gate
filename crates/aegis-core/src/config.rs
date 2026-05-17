@@ -963,6 +963,16 @@ pub struct ConnectionPoolConfig {
     /// Operators force a specific protocol by setting this.
     #[serde(default)]
     pub scheme: UpstreamScheme,
+    /// 2026-05-17 F-HIGH-003 — cap on the response body the WAF
+    /// buffers from the upstream. Pre-fix the response was fully
+    /// collected with `into_body().collect()` and no `Limited<_>`
+    /// wrapper, exposing the WAF to OOM under a hostile or runaway
+    /// upstream (gzipped XML bomb, infinite-stream bug). Default
+    /// 10 MiB — matches `ProxyConfig.max_body_bytes` for the
+    /// request side. Operators with legitimate large downloads
+    /// raise this per-pool.
+    #[serde(default = "default_max_response_body_bytes")]
+    pub max_response_body_bytes: u64,
 }
 
 /// Upstream protocol selector for `ConnectionPoolConfig.scheme`.
@@ -1044,6 +1054,7 @@ impl Default for ConnectionPoolConfig {
             keep_alive: default_keep_alive(),
             tls: false,
             scheme: UpstreamScheme::Auto,
+            max_response_body_bytes: default_max_response_body_bytes(),
         }
     }
 }
@@ -1256,6 +1267,10 @@ fn default_pool_idle_timeout() -> Duration {
 
 fn default_keep_alive() -> bool {
     true
+}
+
+fn default_max_response_body_bytes() -> u64 {
+    10 * 1024 * 1024 // 10 MiB — matches `ProxyConfig::default()`.
 }
 
 fn default_lb() -> LbStrategy {
