@@ -356,6 +356,32 @@ itself is wired.
 
 ---
 
+## Admin per-handler body streaming cap
+
+**File:** `crates/aegis-proxy/src/admin_mutate.rs`,
+`crates/aegis-proxy/src/admin_dispatch.rs` (30+ `into_body().collect()` call sites)
+
+| Stub | Status |
+|---|---|
+| Each admin handler does `req.into_body().collect()` with no `Limited<_>` wrapper | **Partially mitigated.** A `Content-Length` pre-check in `admin_auth_middleware::admit` (2026-05-17 F-HIGH-admin commit) catches oversized declared bodies via 413 before they reach the handler. Chunked-encoding requests without a `Content-Length` header bypass that gate. |
+
+**Why deferred:** Migrating all 30+ call sites to wrap their
+`into_body()` in `http_body_util::Limited::new(body,
+cfg.admin.dashboard_auth.max_request_body_bytes as usize)` is
+mechanical but touches a lot of code; the Content-Length gate
+covers the common DoS shape. Real chunked-streaming attacks on
+the admin port are rare (every mainstream HTTP client sends
+Content-Length on admin payloads) but the gap is real.
+
+**Action if wired:** sed-style replace each
+`req.into_body().collect().await` with
+`http_body_util::Limited::new(req.into_body(),
+limit_usize).collect().await`. Add a single helper
+`collect_admin_body(body, cap) -> Result<Bytes,
+ResponseTooLarge>` to avoid duplicating the error mapping.
+
+---
+
 ## Quota module — per-route body / header / URI / timeout caps
 
 **File:** `crates/aegis-proxy/src/quota.rs`

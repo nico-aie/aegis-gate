@@ -2783,6 +2783,22 @@ pub struct DashboardAuthConfig {
     /// is the canonical source of truth for the bundle.
     #[serde(default)]
     pub allow_ca_upload: bool,
+    /// 2026-05-17 F-HIGH-admin sub-finding: pre-fix every admin
+    /// mutation handler did `req.into_body().collect()` without
+    /// any cap, so a single oversized `Content-Length: 1GB`
+    /// payload from a (typo-ed allowlist or stolen-credential)
+    /// client would buffer the whole gigabyte into RAM before
+    /// the JSON parser rejected it. Admin payloads are small
+    /// JSON (config blobs, rule definitions, allowlist entries);
+    /// 1 MiB is a generous cap. Enforced as a `Content-Length`
+    /// pre-check inside `admin_auth_middleware::admit` so the
+    /// 30+ existing `into_body().collect()` call sites don't
+    /// need surgery. Streaming / chunked-without-length bodies
+    /// bypass the Content-Length gate; that gap is documented
+    /// in `plans/future/unwired-stubs-catalog.md` (admin body
+    /// streaming cap) and tracked as a follow-up.
+    #[serde(default = "default_admin_max_body_bytes")]
+    pub max_request_body_bytes: u64,
 }
 
 fn default_session_idle() -> Duration {
@@ -2796,6 +2812,10 @@ fn default_ip_allowlist() -> Vec<ipnet::IpNet> {
         "127.0.0.1/32".parse().unwrap(),
         "::1/128".parse().unwrap(),
     ]
+}
+
+fn default_admin_max_body_bytes() -> u64 {
+    1024 * 1024 // 1 MiB — admin payloads are small JSON.
 }
 
 impl Default for DashboardAuthConfig {
@@ -2812,6 +2832,7 @@ impl Default for DashboardAuthConfig {
             login_rate_limit: LoginRateLimitConfig::default(),
             lockout: LockoutConfig::default(),
             allow_ca_upload: false,
+            max_request_body_bytes: default_admin_max_body_bytes(),
         }
     }
 }
