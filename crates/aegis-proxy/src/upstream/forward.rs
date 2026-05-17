@@ -512,16 +512,37 @@ pub async fn forward(
     // response body. Pre-fix the WAF buffered the entire response
     // with no cap, exposing it to OOM under a hostile or runaway
     // upstream (gzipped XML bomb, infinite-stream bug). Limit via
-    // `cfg.max_response_body_bytes` (default 10 MiB); requests that
-    // exceed the cap surface a `ReadBody("response body exceeds
-    // cap: ...")` error which the data plane maps to a 502 +
-    // `X-WAF-Action: block`.
+    // `cfg.max_response_body_bytes` (default 10 MiB).
+    //
+    // 2026-05-17 F-HIGH-stateful follow-up: wrap the body collect
+    // in a `tokio::time::timeout(cfg.response_body_read_timeout,
+    // ...)` because `Limited<_>` only enforces SIZE — a
+    // slowloris-style upstream that trickles bytes below the cap
+    // could pin the WAF's connection slot indefinitely. The size
+    // cap surfaces as `ReadBody`; the deadline as a distinct
+    // `Timeout` variant the data plane maps onto v2.3 §3 `timeout`
+    // (vs `block` for the size violation).
     let max_response = cfg.max_response_body_bytes as usize;
-    let body_bytes = http_body_util::Limited::new(resp.into_body(), max_response)
-        .collect()
-        .await
-        .map_err(|e| ForwardError::ReadBody(format!("response body exceeds cap or read error: {e}")))?
-        .to_bytes();
+    let read_deadline = cfg.response_body_read_timeout;
+    let body_bytes = match tokio::time::timeout(
+        read_deadline,
+        http_body_util::Limited::new(resp.into_body(), max_response).collect(),
+    )
+    .await
+    {
+        Ok(Ok(collected)) => collected.to_bytes(),
+        Ok(Err(e)) => {
+            return Err(ForwardError::ReadBody(format!(
+                "response body exceeds cap or read error: {e}",
+            )));
+        }
+        Err(_) => {
+            return Err(ForwardError::Timeout(format!(
+                "response body read exceeded {:?}",
+                read_deadline,
+            )));
+        }
+    };
 
     // Use replay to filter hop-by-hop on the response side.
     let mut filtered: Response<Full<Bytes>> = replay_response_status_and_headers(
@@ -564,6 +585,12 @@ pub enum ForwardError {
     BadRequest(String),
     Send(String),
     ReadBody(String),
+    /// 2026-05-17 F-HIGH-stateful sub-finding: the upstream body
+    /// read can stall indefinitely on a slowloris-style upstream
+    /// that trickles bytes below the per-byte budget. Surfaced
+    /// separately from `ReadBody` so the data plane can map it
+    /// onto v2.3 §3 `timeout` action (vs `block` for size cap).
+    Timeout(String),
 }
 
 impl std::fmt::Display for ForwardError {
@@ -574,6 +601,7 @@ impl std::fmt::Display for ForwardError {
             ForwardError::BadRequest(m) => write!(f, "upstream request build failed: {m}"),
             ForwardError::Send(m) => write!(f, "upstream send failed: {m}"),
             ForwardError::ReadBody(m) => write!(f, "upstream body read failed: {m}"),
+            ForwardError::Timeout(m) => write!(f, "upstream read timed out: {m}"),
         }
     }
 }
@@ -865,6 +893,7 @@ mod tests {
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
         };
 
         for _ in 0..5 {
@@ -902,6 +931,7 @@ mod tests {
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
         };
         let https = ConnectionPoolConfig { tls: true, ..http.clone() };
         assert_ne!(super::PoolKey::from(&http), super::PoolKey::from(&https));
@@ -924,20 +954,24 @@ mod tests {
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
         };
         let https = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::Https,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
             ..auto.clone()
         };
         let h2c = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::H2c,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
             ..auto.clone()
         };
         let grpc = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::Grpc,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
             ..auto.clone()
         };
         // Every variant produces a distinct cache key.
@@ -965,10 +999,12 @@ mod tests {
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
         };
         let https = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::Https,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
             ..auto.clone()
         };
         let c_auto  = super::pooled_client(&auto);
@@ -997,6 +1033,7 @@ mod tests {
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
         };
 
         for _ in 0..3 {
