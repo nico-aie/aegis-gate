@@ -103,6 +103,91 @@ pub fn is_expired(filename: &str, now_date: NaiveDate, retention_days: u32) -> b
     }
 }
 
+/// 2026-05-17 F-CRITICAL-013 (control audit): figure out the
+/// `prev_hash` seed for a new daily file. Three cases, in order:
+///
+/// 1. `new_path` already exists (we're rotating to a file we
+///    wrote earlier today — e.g. after a process restart). Tail
+///    its last line and return that `ChainEntry.hash`.
+/// 2. Some other `audit-YYYY-MM-DD.ndjson` sits in `dir`. Pick
+///    the most recent prior date by filename, tail it, and
+///    return its last line's hash. This is what closes the
+///    cross-day chain: deleting an entire daily file then breaks
+///    the verifier on the FIRST entry of the file that follows it.
+/// 3. Empty / missing directory → `genesis_hash()`.
+///
+/// All errors (unreadable file, malformed last line, etc.) fall
+/// through to `genesis_hash()`. The verifier will surface the
+/// drift if an attacker tampers with the seed source — we don't
+/// need to panic here.
+pub async fn resolve_seed_prev_hash(dir: &Path, new_path: &Path) -> String {
+    use crate::audit::chain::{genesis_hash, ChainEntry};
+
+    async fn tail_last_hash(path: &Path) -> Option<String> {
+        let body = tokio::fs::read_to_string(path).await.ok()?;
+        // Iterate non-empty lines from the end.
+        for line in body.lines().rev() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<ChainEntry>(line) {
+                return Some(entry.hash);
+            }
+        }
+        None
+    }
+
+    // Case 1: the new file already has content.
+    if let Ok(meta) = tokio::fs::metadata(new_path).await {
+        if meta.is_file() && meta.len() > 0 {
+            if let Some(h) = tail_last_hash(new_path).await {
+                return h;
+            }
+        }
+    }
+
+    // Case 2: pick the most-recent prior audit file in the dir.
+    let new_name = new_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let new_date = parse_audit_filename(new_name);
+
+    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+        let mut best: Option<(NaiveDate, PathBuf)> = None;
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            let name = ent.file_name();
+            let name_s = match name.to_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let Some(d) = parse_audit_filename(&name_s) else {
+                continue;
+            };
+            // Skip ourselves; only consider files dated strictly
+            // earlier than the new file's date.
+            if let Some(target) = new_date {
+                if d >= target {
+                    continue;
+                }
+            }
+            match &best {
+                Some((bd, _)) if *bd >= d => {}
+                _ => best = Some((d, ent.path())),
+            }
+        }
+        if let Some((_, prev_path)) = best {
+            if let Some(h) = tail_last_hash(&prev_path).await {
+                return h;
+            }
+        }
+    }
+
+    // Case 3: nothing to link to.
+    genesis_hash()
+}
+
 /// If `path` is a file (has a parent + a non-empty name), return the
 /// parent. Otherwise return `path` itself. Lets operators with the
 /// pre-DURABLE-T1 single-file `path: /var/log/aegis/audit.jsonl`
@@ -123,9 +208,21 @@ pub fn resolve_dir(path: &Path) -> PathBuf {
 
 /// One open file plus the date it was opened for. Rotated when an
 /// event arrives whose `ts.date_naive()` differs.
+///
+/// 2026-05-17 F-CRITICAL-013 (control audit): tracks the running
+/// chain `prev_hash` so each written line is a
+/// `crate::audit::chain::ChainEntry` linked to its predecessor.
+/// On rotation, the new file's `prev_hash` is seeded from the
+/// previous file's last entry hash (tailed from disk) — that
+/// closes the cross-day chain so deleting an entire daily file
+/// breaks verification on the next file's first entry.
 struct OpenFile {
     date: NaiveDate,
     writer: BufWriter<File>,
+    /// SHA-256 hex of the previous chain entry. Seeded from
+    /// `genesis_hash()` for a brand-new audit directory, or from
+    /// the tail of the previous file at rotation.
+    prev_hash: String,
 }
 
 /// File-backed NDJSON sink. Implements [`super::AuditSink`] for use
@@ -190,6 +287,16 @@ impl JsonlSink {
 
     /// Write a batch under one lock acquisition + one flush. The
     /// batch path is the steady-state hot path for the persist task.
+    ///
+    /// 2026-05-17 F-CRITICAL-013: `flush` drains the user-space
+    /// `BufWriter` into the kernel; `sync_data` then asks the
+    /// kernel to flush its page cache to disk. README's
+    /// "tamper-evident" claim required both — previously only
+    /// `flush` was called and a power-loss / OOM-kill could lose
+    /// up to `max_batch` events that the kernel hadn't pushed to
+    /// the platter yet. Per-batch `sync_data` adds ~5 ms on
+    /// rotational disks, sub-ms on SSDs; operators can tune
+    /// `max_batch` (default 100) to amortise.
     pub async fn write_batch(&self, events: &[AuditEvent]) -> std::io::Result<()> {
         if events.is_empty() {
             return Ok(());
@@ -197,7 +304,8 @@ impl JsonlSink {
         if let Some(buf) = &self.in_memory {
             let mut g = buf.lock().await;
             for ev in events {
-                g.push(Self::format(ev));
+                let line = Self::format_chained_in_memory(&mut g, ev);
+                g.push(line);
             }
             return Ok(());
         }
@@ -208,28 +316,60 @@ impl JsonlSink {
         }
         if let Some(s) = state.as_mut() {
             s.writer.flush().await?;
+            s.writer.get_ref().sync_data().await?;
         }
         Ok(())
     }
 
     /// Single-event write (tests + the trait impl). Always flushes —
     /// hot-path callers should prefer [`Self::write_batch`].
+    ///
+    /// 2026-05-17 F-CRITICAL-013: also `sync_data` after flush —
+    /// see `write_batch` for rationale.
     pub async fn write_one(&self, ev: &AuditEvent) -> std::io::Result<()> {
         if let Some(buf) = &self.in_memory {
             let mut g = buf.lock().await;
-            g.push(Self::format(ev));
+            let line = Self::format_chained_in_memory(&mut g, ev);
+            g.push(line);
             return Ok(());
         }
         let mut state = self.state.lock().await;
         self.write_one_locked(&mut state, ev).await?;
         if let Some(s) = state.as_mut() {
             s.writer.flush().await?;
+            s.writer.get_ref().sync_data().await?;
         }
         Ok(())
     }
 
+    /// 2026-05-17 F-CRITICAL-013: in-memory sink format helper —
+    /// produces the same `ChainEntry` wire shape the disk-backed
+    /// path emits so tests asserting on the in-memory lines see
+    /// real chain semantics. Reads the last line of `buf` to
+    /// determine `prev_hash`; falls back to `genesis_hash()` for
+    /// the first entry.
+    fn format_chained_in_memory(buf: &mut Vec<String>, ev: &AuditEvent) -> String {
+        let prev_hash = buf
+            .last()
+            .and_then(|s| serde_json::from_str::<crate::audit::chain::ChainEntry>(s).ok())
+            .map(|e| e.hash)
+            .unwrap_or_else(crate::audit::chain::genesis_hash);
+        let entry = crate::audit::chain::ChainEntry {
+            hash: crate::audit::chain::chain_hash(&prev_hash, ev),
+            event: ev.clone(),
+        };
+        serde_json::to_string(&entry).unwrap_or_else(|_| "{}".into())
+    }
+
     /// Inner write — caller holds the state lock. Rotates when the
     /// event date differs from the open file's date.
+    ///
+    /// 2026-05-17 F-CRITICAL-013 (control audit): each event is
+    /// wrapped in a `ChainEntry` and serialised as one atomic
+    /// `write_all` (line + newline in one buffer) so a torn write
+    /// can't leave half a line on disk. The running `prev_hash`
+    /// lives on the `OpenFile` state; on rotation the new file's
+    /// seed is read from the previous day's tail line.
     async fn write_one_locked(
         &self,
         state: &mut Option<OpenFile>,
@@ -241,12 +381,23 @@ impl JsonlSink {
             .map(|s| s.date != date)
             .unwrap_or(true);
         if need_open {
-            // Flush + drop the old handle before opening a new one
-            // so the previous day's file is durable on disk.
+            // Flush + sync + drop the old handle before opening a
+            // new one so the previous day's file is durable on disk
+            // and the tail we re-read carries the actual last line.
             if let Some(prev) = state.as_mut() {
                 let _ = prev.writer.flush().await;
+                let _ = prev.writer.get_ref().sync_data().await;
             }
             let path = daily_file_path(&self.dir, date);
+            // Seed `prev_hash` for the new file. Three cases:
+            //   1. File at `path` already exists (we rotated to it
+            //      earlier today, e.g. after a process restart) →
+            //      read its last line, take that ChainEntry.hash.
+            //   2. Some other audit-YYYY-MM-DD.ndjson sits in the
+            //      directory (most-recent prior day) → take its
+            //      last line's hash. Closes the cross-day chain.
+            //   3. Empty directory → start at genesis.
+            let prev_hash = resolve_seed_prev_hash(&self.dir, &path).await;
             let f = OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -255,17 +406,35 @@ impl JsonlSink {
             *state = Some(OpenFile {
                 date,
                 writer: BufWriter::with_capacity(64 * 1024, f),
+                prev_hash,
             });
         }
         let s = state.as_mut().expect("opened above");
-        let line = Self::format(ev);
-        s.writer.write_all(line.as_bytes()).await?;
-        s.writer.write_all(b"\n").await?;
+        let chain_entry = crate::audit::chain::ChainEntry {
+            hash: crate::audit::chain::chain_hash(&s.prev_hash, ev),
+            event: ev.clone(),
+        };
+        // One atomic write — line + `\n` in a single syscall'd
+        // `write_all`. A torn write (write returns short) is still
+        // possible on rotational filesystems but the buffer is
+        // single-shot from this layer's perspective so we don't
+        // leave a half-line crossing two operations.
+        let mut buf = serde_json::to_vec(&chain_entry)
+            .unwrap_or_else(|_| b"{}".to_vec());
+        buf.push(b'\n');
+        s.writer.write_all(&buf).await?;
+        s.prev_hash = chain_entry.hash;
         Ok(())
     }
 
     /// Force a flush of any buffered bytes. Called on graceful
     /// shutdown so the last batch isn't lost.
+    ///
+    /// 2026-05-17 F-CRITICAL-013: `sync_data` after flush — the
+    /// shutdown path is exactly the case where the README's
+    /// "tamper-evident" claim has to be true. Process exit
+    /// without sync would lose anything the kernel hadn't paged
+    /// out yet.
     pub async fn flush(&self) -> std::io::Result<()> {
         if self.in_memory.is_some() {
             return Ok(());
@@ -273,6 +442,7 @@ impl JsonlSink {
         let mut state = self.state.lock().await;
         if let Some(s) = state.as_mut() {
             s.writer.flush().await?;
+            s.writer.get_ref().sync_data().await?;
         }
         Ok(())
     }
@@ -638,6 +808,145 @@ mod tests {
         let body = tokio::fs::read_to_string(dir.path().join("audit-2026-04-30.ndjson"))
             .await.unwrap();
         assert_eq!(body.lines().count(), 2, "second open must append, not truncate");
+    }
+
+    /// 2026-05-17 F-CRITICAL-013 (control audit): every line the
+    /// sink writes is a `ChainEntry` (with `prev_hash` field via
+    /// the inner `event` + outer `hash` shape), not a bare
+    /// `AuditEvent`. Verifier expects `ChainEntry`; pre-fix the
+    /// sink wrote `AuditEvent` and `verify_ndjson` errored on
+    /// line 1 of every file the sink produced.
+    #[tokio::test]
+    async fn file_sink_emits_chain_entries_not_bare_events() {
+        use crate::audit::chain::ChainEntry;
+        use crate::audit::verify::{verify_ndjson, VerifyResult};
+
+        let dir = tempdir().unwrap();
+        let cfg = JsonlConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let sink = JsonlSink::open(cfg).await.unwrap();
+        for h in 0..3 {
+            let ev = ev_at(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 4, 30, h, 0, 0)
+                    .unwrap(),
+            );
+            sink.write_one(&ev).await.unwrap();
+        }
+        sink.flush().await.unwrap();
+
+        let body =
+            tokio::fs::read_to_string(dir.path().join("audit-2026-04-30.ndjson"))
+                .await
+                .unwrap();
+
+        // Every line parses as ChainEntry, NOT as bare AuditEvent.
+        for line in body.lines().filter(|l| !l.is_empty()) {
+            let entry: ChainEntry = serde_json::from_str(line)
+                .expect("sink must emit ChainEntry, not AuditEvent");
+            assert!(!entry.hash.is_empty(), "hash field must be populated");
+            assert_eq!(entry.event.action, "block");
+        }
+
+        // And the verifier accepts the whole file.
+        assert!(matches!(
+            verify_ndjson(&body),
+            VerifyResult::Clean { entries: 3 }
+        ));
+    }
+
+    /// 2026-05-17 F-CRITICAL-013: cross-day chain linkage. When
+    /// rotation opens a new daily file, the first entry's
+    /// `prev_hash` MUST equal the previous day's last entry hash.
+    /// Pre-fix every daily file restarted at `genesis_hash()`, so
+    /// deleting an entire day's file left remaining files
+    /// individually verify-clean — multi-day attack masking gap.
+    #[tokio::test]
+    async fn file_sink_chains_across_daily_rotation() {
+        use crate::audit::chain::ChainEntry;
+        use crate::audit::verify::{verify_ndjson, VerifyResult};
+
+        let dir = tempdir().unwrap();
+        let cfg = JsonlConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let sink = JsonlSink::open(cfg).await.unwrap();
+
+        let day_a = chrono::Utc.with_ymd_and_hms(2026, 4, 30, 23, 59, 0).unwrap();
+        let day_b = chrono::Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 1).unwrap();
+        sink.write_one(&ev_at(day_a)).await.unwrap();
+        sink.write_one(&ev_at(day_b)).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let body_a =
+            tokio::fs::read_to_string(dir.path().join("audit-2026-04-30.ndjson"))
+                .await
+                .unwrap();
+        let body_b =
+            tokio::fs::read_to_string(dir.path().join("audit-2026-05-01.ndjson"))
+                .await
+                .unwrap();
+
+        let last_a: ChainEntry =
+            serde_json::from_str(body_a.lines().last().unwrap()).unwrap();
+        let first_b: ChainEntry =
+            serde_json::from_str(body_b.lines().next().unwrap()).unwrap();
+
+        // The KEY chain semantic: day B's first entry was hashed
+        // with day A's last entry's hash as prev_hash. We can
+        // verify that by recomputing.
+        let expected = crate::audit::chain::chain_hash(&last_a.hash, &first_b.event);
+        assert_eq!(
+            expected, first_b.hash,
+            "cross-day rotation must seed prev_hash from previous file's tail",
+        );
+
+        // Concatenated verification (single stream) also passes.
+        let concatenated = format!("{body_a}{body_b}");
+        assert!(matches!(
+            verify_ndjson(&concatenated),
+            VerifyResult::Clean { entries: 2 }
+        ));
+    }
+
+    /// 2026-05-17 F-CRITICAL-013: re-opening the sink against an
+    /// existing same-day file picks up the running prev_hash from
+    /// the file's tail, so the next entry stays in chain. This is
+    /// the "process restart mid-day" path.
+    #[tokio::test]
+    async fn file_sink_resumes_chain_on_same_day_reopen() {
+        use crate::audit::verify::{verify_ndjson, VerifyResult};
+        let dir = tempdir().unwrap();
+        let cfg = JsonlConfig {
+            path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        {
+            let sink = JsonlSink::open(cfg.clone()).await.unwrap();
+            let ev = ev_at(chrono::Utc.with_ymd_and_hms(2026, 4, 30, 10, 0, 0).unwrap());
+            sink.write_one(&ev).await.unwrap();
+            sink.flush().await.unwrap();
+        }
+        {
+            let sink = JsonlSink::open(cfg).await.unwrap();
+            let ev = ev_at(chrono::Utc.with_ymd_and_hms(2026, 4, 30, 11, 0, 0).unwrap());
+            sink.write_one(&ev).await.unwrap();
+            sink.flush().await.unwrap();
+        }
+        let body =
+            tokio::fs::read_to_string(dir.path().join("audit-2026-04-30.ndjson"))
+                .await
+                .unwrap();
+        // After reopen the second line was hashed with the FIRST
+        // line's hash as prev_hash. verify_ndjson walks the full
+        // chain and must pass.
+        assert!(matches!(
+            verify_ndjson(&body),
+            VerifyResult::Clean { entries: 2 }
+        ));
     }
 
     #[tokio::test]
