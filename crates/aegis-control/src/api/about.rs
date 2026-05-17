@@ -36,7 +36,10 @@ pub fn mark_started() -> chrono::DateTime<chrono::Utc> {
 /// Read the process boot timestamp, lazily initialising on first
 /// call. Returns the same timestamp for the rest of the process
 /// lifetime.
-fn boot_ts() -> chrono::DateTime<chrono::Utc> {
+///
+/// Public so `health.rs`'s `/healthz/ready` handler can compute
+/// `uptime_seconds` (F-CRITICAL-003 Round-1 mandate).
+pub fn boot_ts() -> chrono::DateTime<chrono::Utc> {
     *BOOT_TS.get_or_init(chrono::Utc::now)
 }
 
