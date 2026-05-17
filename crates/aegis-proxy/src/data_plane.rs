@@ -185,6 +185,19 @@ pub(crate) async fn handle_data_request_inner(
     // the DoS surface.
     let max_body_bytes = upstream_ctx.max_body_bytes;
 
+    // 2026-05-17 F-CRITICAL-002 — interop log_only mode store, hoisted
+    // here so blacklist / strike-block / rate-limit / risk-score
+    // (the four block paths between this point and the detector
+    // chain) can consult it before returning early. Pre-fix only
+    // the detector branch consulted modes, leaving every other
+    // block path stuck in Enforce regardless of `set_profile
+    // mode=log_only`. `log_only_intent` carries the would-be block
+    // DecisionTag through the rest of the function so the response
+    // stamper emits `X-WAF-Action: <intent>` + `X-WAF-Mode:
+    // log_only` while the upstream still gets the request.
+    let interop_modes = upstream_ctx.interop_modes.get();
+    let mut log_only_intent: Option<DecisionTag> = None;
+
     // Resolve the effective client IP: walk X-Forwarded-For
     // backwards through the trusted-proxy CIDR list and return
     // the first untrusted hop. When the WAF is at the edge,
@@ -224,6 +237,14 @@ pub(crate) async fn handle_data_request_inner(
             entry = %entry_id,
             "access list: blacklist hit",
         );
+        // F-CRITICAL-002 — check `set_profile mode` before enforcing.
+        // `blocked_response` always runs (it emits the audit row);
+        // we then decide whether to return its 403 or stash the
+        // intent and fall through to the rest of the pipeline.
+        let block_tag = DecisionTag::block("blacklist");
+        let blk_mode = interop_modes
+            .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("blacklist")))
+            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
         let resp = blocked_response(
             peer,
             "blocked by blacklist",
@@ -233,7 +254,12 @@ pub(crate) async fn handle_data_request_inner(
             req.method(),
             bus,
         );
-        return (resp, DecisionTag::block("blacklist"));
+        if blk_mode == aegis_control::interop::headers::Mode::LogOnly {
+            log_only_intent = Some(block_tag);
+            // fall through — audit recorded, no 403 sent.
+        } else {
+            return (resp, block_tag);
+        }
     }
     let on_whitelist = upstream_ctx
         .whitelist
@@ -253,6 +279,16 @@ pub(crate) async fn handle_data_request_inner(
         // Stamp on the DecisionTag so the response stamper picks
         // it up directly instead of re-querying under peer.ip().
         let strike_score = risk.snapshot(peer_ip).map(|s| s.score);
+        // F-CRITICAL-002 — honor `set_profile mode=log_only` on
+        // `risk_engine.strikes`. Audit emits regardless (the call
+        // to `blocked_response` does it); only the 403 is gated.
+        let tag = match strike_score {
+            Some(s) => DecisionTag::block("risk-strikes").with_risk_score(s),
+            None    => DecisionTag::block("risk-strikes"),
+        };
+        let stk_mode = interop_modes
+            .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-strikes")))
+            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
         let resp = blocked_response(
             peer,
             "blocked by repeat-offender strikes",
@@ -262,11 +298,12 @@ pub(crate) async fn handle_data_request_inner(
             req.method(),
             bus,
         );
-        let tag = match strike_score {
-            Some(s) => DecisionTag::block("risk-strikes").with_risk_score(s),
-            None    => DecisionTag::block("risk-strikes"),
-        };
-        return (resp, tag);
+        if stk_mode == aegis_control::interop::headers::Mode::LogOnly {
+            log_only_intent = Some(tag);
+            // fall through
+        } else {
+            return (resp, tag);
+        }
     }
 
     // 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS observe-only check.
@@ -416,21 +453,33 @@ pub(crate) async fn handle_data_request_inner(
             };
             bus.emit(ev);
         }
-        let resp = Response::builder()
-            .status(429)
-            .header("content-type", "application/json")
-            .header("retry-after", rate_decision.retry_after_seconds.to_string())
-            .body(Full::new(Bytes::from(
-                serde_json::json!({
-                    "error": "rate_limited",
-                    "reason": reason,
-                    "retry_after_seconds": rate_decision.retry_after_seconds,
-                    "strikes": post_state.strikes,
-                })
-                .to_string(),
-            )))
-            .unwrap();
-        return (resp, DecisionTag::rate_limit("ip-rate-limit"));
+        // F-CRITICAL-002 — honor `set_profile mode=log_only` on
+        // `rate_limit.per_ip`. Audit already emitted above; only
+        // the 429 response is gated by the mode.
+        let rl_tag = DecisionTag::rate_limit("ip-rate-limit");
+        let rl_mode = interop_modes
+            .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("ip-rate-limit")))
+            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+        if rl_mode == aegis_control::interop::headers::Mode::LogOnly {
+            log_only_intent = Some(rl_tag);
+            // fall through — no 429 sent.
+        } else {
+            let resp = Response::builder()
+                .status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", rate_decision.retry_after_seconds.to_string())
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "error": "rate_limited",
+                        "reason": reason,
+                        "retry_after_seconds": rate_decision.retry_after_seconds,
+                        "strikes": post_state.strikes,
+                    })
+                    .to_string(),
+                )))
+                .unwrap();
+            return (resp, rl_tag);
+        }
     }
 
     // Body collect — after cheap shedders (strike + rate-limit)
@@ -535,8 +584,11 @@ pub(crate) async fn handle_data_request_inner(
     // emits `X-WAF-Action: <intent>` + `X-WAF-Mode: log_only` so
     // the OC sees the detector worked while the upstream still
     // got the request (per `log_only` contract semantics).
-    let mut log_only_intent: Option<DecisionTag> = None;
-    let interop_modes = upstream_ctx.interop_modes.get();
+    //
+    // 2026-05-17 F-CRITICAL-002: `log_only_intent` + `interop_modes`
+    // are now hoisted to the top of the function so blacklist /
+    // strike-block / rate-limit / risk-score paths can also stash
+    // an intent here. See those sites for the symmetric handling.
 
     if !signals.is_empty() {
         // SEC-M003 (2026-05-08) — cap per-request contribution to
@@ -748,6 +800,19 @@ pub(crate) async fn handle_data_request_inner(
                 // on the DecisionTag so the response stamper
                 // doesn't re-query under peer.ip() and miss.
                 let block_score = risk.snapshot(peer_ip).map(|s| s.score);
+                let tag = match block_score {
+                    Some(s) => DecisionTag::block("risk-score").with_tier(tier).with_risk_score(s),
+                    None    => DecisionTag::block("risk-score").with_tier(tier),
+                };
+                // F-CRITICAL-002 — honor `set_profile
+                // mode=log_only` on `risk_engine.score`. When
+                // LogOnly, emit the audit (via blocked_response
+                // side-effect on the discarded response), stash
+                // the intent, and forward to upstream as if the
+                // level was Allow.
+                let rs_mode = interop_modes
+                    .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-score")))
+                    .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
                 let resp = blocked_response(
                     peer,
                     "blocked by risk score",
@@ -757,11 +822,24 @@ pub(crate) async fn handle_data_request_inner(
                     &parts.method,
                     bus,
                 );
-                let tag = match block_score {
-                    Some(s) => DecisionTag::block("risk-score").with_tier(tier).with_risk_score(s),
-                    None    => DecisionTag::block("risk-score").with_tier(tier),
-                };
-                (resp, tag)
+                if rs_mode == aegis_control::interop::headers::Mode::LogOnly {
+                    log_only_intent = Some(tag);
+                    // Fall through to upstream forward as if Allow.
+                    forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        upstream_ctx,
+                        identity,
+                        route_latency_hist,
+                        route_activity,
+                        request_start,
+                        peer_ip,
+                        bus,
+                    )
+                    .await
+                } else {
+                    (resp, tag)
+                }
             }
             aegis_security::risk::RiskLevel::Challenge => {
                 // AF-T1 + NEW-2 (2026-05-08): contract-level
