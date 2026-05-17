@@ -284,10 +284,7 @@ impl DashboardServices {
         let auth_sessions = Arc::new(AuthSessionStore::new([0u8; 32]));
         let login_rate_limiter =
             Arc::new(LoginRateLimiter::new(Default::default()));
-        let admin_identity = Arc::new(AdminIdentity {
-            user: String::new(),
-            password_hash: String::new(),
-        });
+        let admin_identity = Arc::new(AdminIdentity::default());
         Self::spawn_with_mask(
             bus,
             pool_snapshot,
@@ -834,10 +831,7 @@ mod tests {
             SharedVerbosity::default(),
             Arc::new(AuthSessionStore::new([0u8; 32])),
             Arc::new(LoginRateLimiter::new(Default::default())),
-            Arc::new(AdminIdentity {
-                user: String::new(),
-                password_hash: String::new(),
-            }),
+            Arc::new(AdminIdentity::default()),
             1800,
         );
 
@@ -912,10 +906,7 @@ mod tests {
             SharedVerbosity::default(),
             Arc::new(AuthSessionStore::new([0u8; 32])),
             Arc::new(LoginRateLimiter::new(Default::default())),
-            Arc::new(AdminIdentity {
-                user: String::new(),
-                password_hash: String::new(),
-            }),
+            Arc::new(AdminIdentity::default()),
             1800,
         );
 

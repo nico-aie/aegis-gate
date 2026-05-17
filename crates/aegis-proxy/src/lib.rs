@@ -497,6 +497,7 @@ state:
         let identity = std::sync::Arc::new(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password(password).unwrap(),
+            ..AdminIdentity::default()
         });
         let key = derive_session_key("test-secret-32b");
         let auth_sessions = std::sync::Arc::new(AuthSessionStore::new(key));

@@ -36,6 +36,7 @@ serde_yaml = "0.9"
 
 # Crypto
 blake3 = "1"
+sha1 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 argon2 = "0.5"
@@ -47,6 +48,14 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 # `blake3(peer:nanos:path)` hash; that's deterministic on
 # `(peer, nanos, path)` and collides on nanosecond ties at high RPS.
 uuid = { version = "1", features = ["v4"] }
+
+# Base32 (RFC 4648) for TOTP shared-secret encoding/decoding.
+# Authenticator apps consume the `otpauth://` URI's `secret=...`
+# parameter as RFC 4648 base32; pre-2026-05-17 the WAF emitted a
+# lossy byte-modulo-32 character mapping that didn't round-trip,
+# so codes never matched. F-CRITICAL-003 fix uses this crate for
+# real encode/decode.
+base32 = "0.5"
 
 # TLS
 rustls = "0.23"
