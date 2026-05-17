@@ -238,7 +238,14 @@ async fn run_gateway_inner(
     let (lease_store, lease_summary) = lease_select::select(&cfg, node_id)?;
     tracing::info!("lease store = {lease_summary}");
 
-    let bus = AuditBus::new(4096);
+    // 2026-05-17 Phase 7a: capacity surfaced as
+    // `cfg.audit.bus_capacity` (default 100_000). Pre-fix the
+    // hard-coded 4096 produced `Lagged(n)` drops at burst loads
+    // above ~2-3k audit events/sec — the 60k-RPS 2026-05-14
+    // stress run lost hundreds of events per burst. See
+    // `crates/aegis-core/src/config.rs::default_audit_bus_capacity`
+    // for the rationale on the new default.
+    let bus = AuditBus::new(cfg.audit.bus_capacity);
     let readiness = ReadinessSignal::default();
 
     // Wrap cfg in an ArcSwap so the configured reload-source
