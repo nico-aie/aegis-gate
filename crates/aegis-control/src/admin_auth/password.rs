@@ -3,6 +3,7 @@
 /// Unknown-user path runs full argon2id to equalize timing.
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::SaltString;
+use std::sync::OnceLock;
 
 /// Hash a password with argon2id (default params).
 pub fn hash_password(password: &str) -> Result<String, String> {
@@ -15,16 +16,20 @@ pub fn hash_password(password: &str) -> Result<String, String> {
 }
 
 fn generate_salt() -> SaltString {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static CTR: AtomicU64 = AtomicU64::new(0);
-    let cnt = CTR.fetch_add(1, Ordering::Relaxed);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let hash = blake3::hash(format!("salt:{now}:{cnt}").as_bytes());
-    // encode_b64 takes raw bytes and encodes them as PHC B64.
-    SaltString::encode_b64(&hash.as_bytes()[..16]).unwrap()
+    // 2026-05-17 F-HIGH-admin sub-finding: pre-fix this derived
+    // the salt from `blake3(clock_nanos + atomic counter)` —
+    // deterministic on (now, counter), same entropy bug as the
+    // CSRF token + session ID before Phase 3 step 1. An attacker
+    // who knew the approximate hash time could brute-force the
+    // salt and then run an offline argon2 candidate pre-computation
+    // against a leaked hash. Argon2's memory cost makes that
+    // expensive but not impossible; CSPRNG salt closes the gap.
+    //
+    // UUID v4 is what we standardised on for token entropy (see
+    // `csrf.rs`, `session.rs`); reuse it here. 16 bytes = 128 bits
+    // is the argon2-recommended salt size.
+    let id = uuid::Uuid::new_v4().into_bytes();
+    SaltString::encode_b64(&id).expect("16-byte salt always fits PHC b64")
 }
 
 /// Verify a candidate password against a PHC hash string.
@@ -40,10 +45,26 @@ pub fn verify_password(hash: &str, candidate: &str) -> bool {
         .is_ok()
 }
 
-/// Dummy verify: runs a full argon2id hash to burn the same time as a real
-/// verify, preventing user-enumeration timing attacks.
+/// Dummy verify: runs an argon2id verify against a precomputed
+/// hash so the wall-clock cost matches a real verify exactly.
+///
+/// 2026-05-17 F-HIGH-admin sub-finding: pre-fix `dummy_verify`
+/// called `hash_password`, which generates a fresh salt and runs
+/// argon2id once. That's the right COST (one argon2 unit) but a
+/// different code path from `verify_password` (parses an existing
+/// PHC string, then verifies). A patient attacker stopwatching
+/// 10k+ logins could distinguish hash-time from verify-time by a
+/// few microseconds and recover the user-enumeration signal that
+/// `dummy_verify` exists to suppress. The fix is to take the exact
+/// same path: a one-time-computed dummy hash, cached in a
+/// `OnceLock`, then `verify_password` against it on every call.
 pub fn dummy_verify(candidate: &str) {
-    let _ = hash_password(candidate);
+    static DUMMY_HASH: OnceLock<String> = OnceLock::new();
+    let h = DUMMY_HASH.get_or_init(|| {
+        hash_password("dummy-password-for-timing-equalization")
+            .expect("argon2 default params always succeed")
+    });
+    let _ = verify_password(h, candidate);
 }
 
 #[cfg(test)]

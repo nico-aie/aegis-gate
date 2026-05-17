@@ -110,6 +110,15 @@ pub struct AdminIdentity {
     /// mirrored from `cfg.admin.dashboard_auth.totp_enabled` so
     /// `authenticate()` doesn't need to take the full config.
     pub totp_enabled: bool,
+    /// 2026-05-17 F-HIGH-admin — replay-protection guard for
+    /// TOTP. `Arc` so the admin identity stays Clone (the proxy
+    /// wraps it in an Arc<AdminIdentity> for the long-lived boot
+    /// context). Single guard per identity = single guard per
+    /// admin user, which matches the contract semantics (per-
+    /// principal counter monotonicity). Tests build fresh
+    /// guards via `AdminIdentity::default()` so consumption
+    /// doesn't leak across test functions.
+    pub totp_replay_guard: std::sync::Arc<crate::admin_auth::totp::TotpReplayGuard>,
 }
 
 /// Authenticate one POST /admin/login attempt.
@@ -237,7 +246,14 @@ pub fn authenticate(
             .unwrap_or_default()
             .as_secs();
         let cfg = totp::TotpConfig::default();
-        if !totp::verify(&secret_bytes, code, now_s, &cfg) {
+        // F-HIGH-admin (2026-05-17) — replay protection. Pre-fix
+        // a captured TOTP code stayed valid for the entire ±skew
+        // window (~90 s with default step=30, skew=1) — a
+        // shoulder-surfer or man-in-the-middle could replay it.
+        // `verify_and_consume` records the matched counter on the
+        // identity's per-principal guard and rejects any
+        // subsequent submission of the same or earlier counter.
+        if !admin.totp_replay_guard.verify_and_consume(&secret_bytes, code, now_s, &cfg) {
             rate_limiter.record_failure(ip, &req.user);
             return LoginOutcome::Unauthorized {
                 body: error_body("invalid_credentials", "user or password incorrect"),
@@ -588,6 +604,7 @@ mod tests {
             password_hash: hash_password("aegis-test-1234").unwrap(),
             totp_secret_b32: TEST_TOTP_SECRET_B32.into(),
             totp_enabled: true,
+            ..AdminIdentity::default()
         }
     }
 
@@ -679,6 +696,7 @@ mod tests {
             password_hash: hash_password("aegis-test-1234").unwrap(),
             totp_secret_b32: "this is not base32!!!".into(),
             totp_enabled: true,
+            ..AdminIdentity::default()
         };
         let body = serde_json::json!({
             "user":"admin",

@@ -179,6 +179,13 @@ pub(crate) async fn admin_accept_loop(
         // when `dashboard_auth.totp_enabled = true`.
         totp_secret_b32: auth.totp_secret_b32.clone(),
         totp_enabled: auth.totp_enabled,
+        // 2026-05-17 F-HIGH-admin — TOTP replay guard. One per
+        // identity (single-admin model = one global). Default
+        // resets the counter to 0 at boot, which is correct:
+        // every previously-consumed code from before this WAF
+        // started is implicitly accepted by zero-init and the
+        // guard begins tracking from the first verify.
+        ..Default::default()
     });
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
