@@ -32,8 +32,26 @@ use aegis_proxy::state::InMemoryBackend;
 pub fn select(cfg: &WafConfig) -> Result<(Arc<dyn StateBackend>, String)> {
     match cfg.state.backend {
         StateBackendKind::InMemory => {
-            let backend = Arc::new(InMemoryBackend::new());
-            let summary = "in-memory (single-node only — no shared state)".to_string();
+            // F-HIGH-stateful (2026-05-17): start the periodic
+            // reaper so risk-score entries get evicted after their
+            // TTL elapses. Pre-fix the InMemoryBackend's
+            // `spawn_reaper` was defined but never called, so even
+            // entries with `expires_at: Some(...)` only filtered
+            // on read — memory grew unbounded under sustained
+            // traffic from many unique IPs. 60-second sweep is
+            // generous (memory pressure on the DashMap is
+            // micro-seconds per call) and well under the 24h TTL
+            // the risk-tracker sets on its writes.
+            let backend = InMemoryBackend::new();
+            let _reaper = backend.spawn_reaper(std::time::Duration::from_secs(60));
+            // Reaper handle dropped on purpose — task owns its
+            // own kv Arc and runs for the process lifetime; no
+            // need to keep the JoinHandle alive for the data
+            // plane to function.
+            let backend: Arc<dyn StateBackend> = Arc::new(backend);
+            let summary =
+                "in-memory (single-node only — no shared state; 60s reaper sweeps expired entries)"
+                    .to_string();
             Ok((backend, summary))
         }
         StateBackendKind::Redis => select_redis(cfg),
