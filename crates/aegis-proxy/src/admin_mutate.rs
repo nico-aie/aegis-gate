@@ -1327,9 +1327,16 @@ pub(crate) async fn handle_logging_put(
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -1417,9 +1424,16 @@ pub(crate) async fn handle_loadmode_put(
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -1535,9 +1549,16 @@ fn mutation_preamble(req: &hyper::Request<hyper::body::Incoming>, prefix: &str) 
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -1954,9 +1975,16 @@ pub(crate) async fn handle_risk_reset(
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -2040,9 +2068,16 @@ pub(crate) async fn handle_detectors_put(
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
