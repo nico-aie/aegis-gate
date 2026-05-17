@@ -153,8 +153,21 @@ pub(crate) async fn admin_accept_loop(
     // blocks into the runtime config.
     let auth = &cfg.admin.dashboard_auth;
     let session_key = aegis_control::api::login::derive_session_key(&auth.csrf_secret_ref);
+    // F-HIGH-admin (2026-05-17): respect the operator-configured
+    // session TTLs. Pre-fix the hard-coded values inside
+    // `SessionStore::new` ignored these knobs entirely. Convert
+    // from `std::time::Duration` (cfg shape) to `chrono::Duration`
+    // (session module shape) — both lossless on practical values.
+    let idle = chrono::Duration::from_std(auth.session_ttl_idle)
+        .unwrap_or_else(|_| chrono::Duration::minutes(30));
+    let absolute = chrono::Duration::from_std(auth.session_ttl_absolute)
+        .unwrap_or_else(|_| chrono::Duration::hours(8));
     let auth_sessions = Arc::new(
-        aegis_control::admin_auth::session::SessionStore::new(session_key),
+        aegis_control::admin_auth::session::SessionStore::with_ttls(
+            session_key,
+            idle,
+            absolute,
+        ),
     );
     let login_rate_limiter = aegis_control::api::login::build_rate_limiter(auth);
     let admin_identity = Arc::new(aegis_control::api::login::AdminIdentity {

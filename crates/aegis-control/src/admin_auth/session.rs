@@ -31,11 +31,33 @@ pub struct SessionStore {
 
 impl SessionStore {
     pub fn new(key: [u8; 32]) -> Self {
+        Self::with_ttls(
+            key,
+            Duration::minutes(30),
+            Duration::hours(8),
+        )
+    }
+
+    /// 2026-05-17 F-HIGH-admin sub-finding: pre-fix `SessionStore`
+    /// hard-coded its idle / absolute TTL at construction so the
+    /// operator-facing `cfg.admin.dashboard_auth.session_ttl_idle`
+    /// / `session_ttl_absolute` knobs were ignored (operators could
+    /// change YAML, restart the WAF, and see the same 30-minute
+    /// idle / 8-hour absolute behaviour). The new boot path
+    /// (`accept.rs` for production, `lib.rs` for the integration
+    /// fixture) reads cfg and threads the durations in here. Tests
+    /// keep the convenience `new(key)` shape; production must use
+    /// `with_ttls`.
+    pub fn with_ttls(
+        key: [u8; 32],
+        idle_ttl: Duration,
+        absolute_ttl: Duration,
+    ) -> Self {
         Self {
             key,
             sessions: Mutex::new(HashMap::new()),
-            idle_ttl: Duration::minutes(30),
-            absolute_ttl: Duration::hours(8),
+            idle_ttl,
+            absolute_ttl,
         }
     }
 
@@ -246,6 +268,48 @@ mod tests {
         let (id1, _) = store.create("1.2.3.4", "ua");
         let (id2, _) = store.create("1.2.3.4", "ua");
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn with_ttls_honors_explicit_idle_ttl() {
+        // F-HIGH-admin regression: pre-fix the idle TTL was hard-
+        // coded to 30 minutes regardless of operator config. Build
+        // a store with a deliberately tiny idle TTL and confirm
+        // the validate path enforces it (we can't easily move
+        // chrono::Utc::now() in a unit test, so instead we
+        // reconstruct an expired record directly and assert
+        // validate rejects).
+        let store = SessionStore::with_ttls(
+            TEST_KEY,
+            Duration::seconds(1),
+            Duration::hours(1),
+        );
+        let (id, cookie) = store.create("1.2.3.4", "ua");
+        // Mutate the record's last_seen to simulate a > 1s gap.
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            let rec = sessions.get_mut(&id).unwrap();
+            rec.last_seen = Utc::now() - Duration::seconds(5);
+        }
+        // The configured 1s idle TTL must reject; without the fix
+        // (hard-coded 30 min) this would still succeed.
+        assert!(store.validate(&cookie).is_none(), "expired session not rejected");
+    }
+
+    #[test]
+    fn with_ttls_honors_explicit_absolute_ttl() {
+        let store = SessionStore::with_ttls(
+            TEST_KEY,
+            Duration::hours(1),
+            Duration::seconds(1),
+        );
+        let (id, cookie) = store.create("1.2.3.4", "ua");
+        {
+            let mut sessions = store.sessions.lock().unwrap();
+            let rec = sessions.get_mut(&id).unwrap();
+            rec.issued_at = Utc::now() - Duration::seconds(5);
+        }
+        assert!(store.validate(&cookie).is_none(), "absolute TTL not enforced");
     }
 
     #[test]
