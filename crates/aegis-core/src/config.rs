@@ -2439,10 +2439,26 @@ pub struct AuditConfig {
     pub retention: Duration,
     #[serde(default)]
     pub pseudonymize_ip: bool,
+    /// 2026-05-17 Phase 7a — broadcast-channel capacity for the
+    /// in-process `AuditBus`. Pre-fix this was a hard-coded `4096`
+    /// at the boot site, which produced `Lagged(n)` drops at burst
+    /// loads above ~2-3k audit events/sec (observed: 60k-RPS stress
+    /// run on 2026-05-14 dropped hundreds of events per burst).
+    /// Default 100_000 — ~30 seconds of headroom at 3k events/sec
+    /// before any subscriber lags out. Increase for sustained
+    /// high-RPS workloads with slow subscribers; decrease only on
+    /// memory-constrained hosts (each slot holds one `AuditEvent`
+    /// clone, ~512 bytes typical, so 100k ≈ 50 MiB).
+    #[serde(default = "default_audit_bus_capacity")]
+    pub bus_capacity: usize,
 }
 
 fn default_audit_retention() -> Duration {
     Duration::from_secs(90 * 24 * 3600) // 90 days
+}
+
+fn default_audit_bus_capacity() -> usize {
+    100_000
 }
 
 impl Default for AuditConfig {
@@ -2452,6 +2468,7 @@ impl Default for AuditConfig {
             chain: AuditChainConfig::default(),
             retention: default_audit_retention(),
             pseudonymize_ip: false,
+            bus_capacity: default_audit_bus_capacity(),
         }
     }
 }
