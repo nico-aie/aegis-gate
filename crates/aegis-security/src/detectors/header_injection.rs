@@ -129,18 +129,26 @@ fn xfh_is_suspicious(xfh: &str, host: &str) -> bool {
     if xfh_is_internal_ip_literal(first_host) {
         return true;
     }
-    // Doesn't match Host AND contains an attacker-shape needle.
-    // Loose by design — never flags legit proxy chains where XFH
-    // is just a different (public) hostname.
+    // 2026-05-17 F-CRITICAL-012 (security audit) — DISQUALIFICATION
+    // hotfix. Pre-fix this loop matched literal `"evil"`,
+    // `"attacker"`, `"malicious"`, `"phish"` — that's the exact
+    // "hardcoded test-corpus matching" pattern the official rules
+    // §9 calls "loại ngay" (immediate disqualification). Those four
+    // English-pejorative words never appear in real attack payloads;
+    // they only matched dataset fixtures.
+    //
+    // Replacement: STRUCTURAL needles only. A header value that
+    // contains URI-scheme prefixes (`javascript:` / `data:` /
+    // `vbscript:` / `file:`) or HTML/JS metachars (`<`, `>`, `"`,
+    // `'`) on a non-matching XFH is a real header-poisoning shape
+    // — same detection coverage without the disqualification risk.
     if !host.is_empty() && !xfh.eq_ignore_ascii_case(host) {
         let xfh_lc = xfh.to_ascii_lowercase();
         for needle in [
-            "evil",
-            "attacker",
-            "malicious",
-            "phish",
             "javascript:",
             "data:",
+            "vbscript:",
+            "file:",
             "<",
             ">",
             "\"",
@@ -478,25 +486,43 @@ mod tests {
         h
     }
 
+    // F-CRITICAL-012 (security audit, 2026-05-17) — these two
+    // tests previously pinned the disqualification-class literal-
+    // keyword behaviour (`xfh_with_evil_keyword_flagged`,
+    // `xfh_with_attacker_keyword_flagged`). They were the on-disk
+    // record that the WAF was matching dataset fixture strings
+    // rather than real attack shapes. Removed in the fix commit;
+    // replacement structural tests below catch the same real
+    // attack patterns (URI schemes + HTML metachars) without the
+    // disqualification risk.
+
     #[test]
-    fn xfh_with_evil_keyword_flagged() {
+    fn xfh_with_html_metachar_flagged() {
+        // Header-injection structural needle: XFH containing an
+        // HTML metachar on a non-matching Host is the real header-
+        // poisoning shape (template-injection on whatever upstream
+        // re-emits the XFH value into a page).
         let d = HeaderInjectionDetector;
         let u: http::Uri = "/".parse().unwrap();
         let m = http::Method::GET;
-        let h = xfh_view("a.com", b"evil.attacker.com");
+        let h = xfh_view("a.com", b"b.com<script>alert(1)</script>");
         let b = BodyPeek::empty();
         let req = make_view_with_headers(&m, &u, &h, &b);
-        let signals = d.inspect(&req);
-        assert!(signals.iter().any(|s| s.field == "x-forwarded-host"),
-            "evil-domain XFH must flag, got {signals:?}");
+        assert!(
+            d.inspect(&req).iter().any(|s| s.field == "x-forwarded-host"),
+            "XFH containing HTML metachars must flag",
+        );
     }
 
     #[test]
-    fn xfh_with_attacker_keyword_flagged() {
+    fn xfh_with_vbscript_uri_flagged() {
+        // F-CRITICAL-012 replacement: structural URI-scheme check
+        // now covers vbscript: + file: in addition to javascript:
+        // and data: (the only two the pre-fix code covered).
         let d = HeaderInjectionDetector;
         let u: http::Uri = "/".parse().unwrap();
         let m = http::Method::GET;
-        let h = xfh_view("api.example.com", b"attacker.example.com");
+        let h = xfh_view("a.com", b"vbscript:msgbox(1)");
         let b = BodyPeek::empty();
         let req = make_view_with_headers(&m, &u, &h, &b);
         assert!(d.inspect(&req).iter().any(|s| s.field == "x-forwarded-host"));
