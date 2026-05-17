@@ -384,6 +384,64 @@ itself is wired.
 
 ---
 
+## HTTP/3 pipeline wire-up
+
+**File:** `crates/aegis-proxy/src/listener/http3.rs` (function
+`handle_h3_request` at ~line 261)
+
+| Stub | Lines | Contract status |
+|---|---|---|
+| H3 dispatch via `proxy::handle_request` (legacy route+forward path) | 261 | **Required when H3 is enabled.** v2.3 §5 mandates the 6 `X-WAF-*` headers on every response; §3 mandates detectors run on every request; §6 mandates an audit row for every decision. H3 today emits none of these. |
+
+**Why deferred:** Wiring requires bundling the 13 long-lived
+data-plane args (`detectors`, `mask`, `risk`, `ip_rate_limiter`,
+`load_gauge`, `verbosity`, `request_stage_hist`,
+`route_latency_hist`, `route_activity`, `detector_latency_hist`,
+`bus`, `detector_hit_metrics`, plus the existing `upstream_ctx`)
+into a `DataPlaneServices` struct, installing it on
+`ProxyContext` at boot via `OnceLock`, and giving the H3 handler
+a new entry point `data_plane::handle_request_with_ctx(req, peer,
+ctx, identity)`. ~250 LoC, touches every test that calls
+`handle_data_request` directly. Deferred until after the Phase
+3+6 admin-auth + load-shedder work stabilises so the refactor
+doesn't compound with concurrent in-flight changes.
+
+**Mitigation today:** `serve_http3()` emits a loud
+`tracing::warn!` at boot when the H3 listener is started,
+explicitly naming the security gap. H3 is `--features
+http3`-gated and absent from every in-tree config, so operators
+must explicitly opt in to expose the bypass — typo-bombs can't
+silently switch the gateway into the broken mode.
+
+**Action if wired:** the right shape is
+```rust
+pub struct DataPlaneServices {
+    pub detectors: Arc<[Box<dyn Detector>]>,
+    pub mask: SharedDetectorMask,
+    pub risk: Arc<RiskTracker>,
+    pub ip_rate_limiter: Arc<IpRateLimiter>,
+    pub load_gauge: LoadGauge,
+    pub verbosity: SharedVerbosity,
+    pub bus: AuditBus,
+    pub request_stage_hist: Arc<RequestStageHistogram>,
+    pub route_latency_hist: Arc<RouteLatencyHistogram>,
+    pub route_activity: Arc<RouteActivityWindow>,
+    pub detector_latency_hist: Arc<DetectorLatencyHistogram>,
+    pub detector_hit_metrics: Arc<DetectorHitMetrics>,
+}
+```
+Install at boot in `run.rs` (currently scattered across local
+`let`s) and store as
+`ProxyContext.data_plane_services: OnceLock<Arc<DataPlaneServices>>`.
+New entry `data_plane::handle_request_with_ctx` unpacks the
+bundle and dispatches; existing `handle_data_request` stays
+untouched so H1/H2 callers don't break. H3 handler at
+`listener/http3.rs:261` replaces `proxy::handle_request(...)` with
+the new entry. Stamp the 6 §5 headers on the response using the
+existing `stamp_interop_response` once the data plane returns.
+
+---
+
 ## Traffic module — shadow mirroring
 
 **File:** `crates/aegis-proxy/src/traffic.rs`

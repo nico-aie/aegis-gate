@@ -158,6 +158,28 @@ mod runtime {
     /// through `proxy::handle_request`. Returns the bound
     /// endpoint (so callers can `close` for graceful drain)
     /// and a join handle of the accept task.
+    ///
+    /// **Security gap (2026-05-17 F-CRITICAL-001 proxy-full
+    /// audit):** the dispatch at `handle_h3_request` ~261 calls
+    /// `proxy::handle_request` directly — the legacy route+forward
+    /// path — instead of `data_plane::handle_data_request`. H3
+    /// traffic therefore bypasses the detector chain, rate-limit,
+    /// risk scoring, audit emit, and the 6 mandatory v2.3 §5
+    /// response headers. The whole-pipeline wire-up requires
+    /// bundling the 13 long-lived data-plane args into a
+    /// `DataPlaneServices` struct so the H3 handler can call
+    /// `handle_data_request` without growing a 16-arg method;
+    /// that refactor is tracked in
+    /// `plans/future/unwired-stubs-catalog.md` § "HTTP/3 pipeline
+    /// wire-up" and deferred until after the Phase 3+6 work
+    /// stabilises.
+    ///
+    /// For now `serve_http3` emits a loud boot-time `warn!` so
+    /// any operator who builds with `--features http3` AND
+    /// configures an H3 listener sees the gap immediately. H3 is
+    /// not enabled in any in-tree config (`config/*.yaml`,
+    /// `waf.yaml`) so the security gap is dormant — operators
+    /// must opt in explicitly to expose it.
     pub fn serve_http3(
         cfg: Http3Config,
         rustls_cfg: rustls::ServerConfig,
@@ -169,6 +191,13 @@ mod runtime {
         ),
         Http3ConfigError,
     > {
+        tracing::warn!(
+            bind = %cfg.bind,
+            "http3: SECURITY GAP — HTTP/3 traffic bypasses the WAF security pipeline \
+             (no detectors, no rate-limit, no risk scoring, no audit, no §5 headers). \
+             Do not enable in production until the data_plane wire-up lands. See \
+             plans/future/unwired-stubs-catalog.md § HTTP/3 pipeline wire-up.",
+        );
         let server_config = build_quic_server_config(rustls_cfg, &cfg)?;
         let endpoint = quinn::Endpoint::server(server_config, cfg.bind)
             .map_err(|e| Http3ConfigError::Bind(e.to_string()))?;
