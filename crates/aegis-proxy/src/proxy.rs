@@ -138,6 +138,18 @@ pub struct ProxyContext {
     /// configs short-circuit to "always admit". See
     /// `crates/aegis-proxy/src/shed.rs` for the algorithm.
     pub load_shedder: std::sync::OnceLock<Arc<crate::shed::LoadShedder>>,
+    /// 2026-05-17 F-CRITICAL-001 (control audit) — live operator rule
+    /// set. Same `Arc<RuleSet>` that `DashboardServices.active_ruleset`
+    /// points at (and that the Pipeline's `rules_arc()` returns), so
+    /// when the dashboard CRUD path swaps rules in via
+    /// `RuleSet::replace_rules`, the data plane reads the new set on
+    /// the next request. `OnceLock` because the boot path constructs
+    /// `ProxyContext` before the Pipeline; `accept.rs` installs the
+    /// handle once both are available. Empty (test fixtures without
+    /// a wired engine) means "no rules" — data plane treats absent
+    /// as `Decision::Allow` and falls straight through to the
+    /// detector chain.
+    pub active_ruleset: std::sync::OnceLock<Arc<aegis_security::RuleSet>>,
 }
 
 impl ProxyContext {
@@ -183,6 +195,7 @@ impl ProxyContext {
                 .unwrap_or(usize::MAX),
             reset_in_progress: std::sync::OnceLock::new(),
             load_shedder: std::sync::OnceLock::new(),
+            active_ruleset: std::sync::OnceLock::new(),
         })
     }
 

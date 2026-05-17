@@ -83,6 +83,23 @@ impl RuleSet {
         Ok(())
     }
 
+    /// 2026-05-17 F-CRITICAL-001 (control audit): hot-swap the live
+    /// rule set from an already-parsed `Vec<Rule>`. Used by the
+    /// dashboard CRUD path: after `RuleStore` mutates, the operator
+    /// rule bodies are concatenated, parsed via [`parser::parse`],
+    /// linted, and pushed here. Atomic ArcSwap — readers see either
+    /// the old set or the new set; no half-applied state.
+    ///
+    /// Pre-fix the data plane held an `Arc<RuleSet>` constructed
+    /// once at boot with `RuleSet::new()` (empty) — every "Save
+    /// rule" click on the dashboard updated only `RuleStore` and
+    /// the engine never saw it. With this method + `replace_rules`
+    /// called from `admin_mutate`, dashboard saves take effect on
+    /// the next request.
+    pub fn replace_rules(&self, rules: Vec<Rule>) {
+        self.rules.store(Arc::new(rules));
+    }
+
     /// Get a snapshot of the current rules.
     pub fn snapshot(&self) -> Arc<Vec<Rule>> {
         self.rules.load_full()
@@ -215,6 +232,42 @@ mod tests {
         let rs = RuleSet::new();
         assert!(rs.is_empty());
         assert_eq!(rs.len(), 0);
+    }
+
+    /// 2026-05-17 F-CRITICAL-001 (control audit): the dashboard
+    /// CRUD bridge calls `replace_rules` to hot-swap the live set
+    /// after a successful save. Readers that already grabbed the
+    /// old snapshot keep seeing it; new `snapshot()` calls observe
+    /// the new set. No file I/O, no parse — pre-parsed rules in.
+    #[test]
+    fn replace_rules_hot_swaps_atomically() {
+        let rs = RuleSet::new();
+        assert_eq!(rs.len(), 0);
+
+        // First push: one rule.
+        let one = parser::parse(
+            "- id: a\n  priority: 100\n  when: true\n  then: allow\n",
+        )
+        .unwrap();
+        rs.replace_rules(one);
+        assert_eq!(rs.len(), 1);
+        let snap_v1 = rs.snapshot();
+        assert_eq!(snap_v1.len(), 1);
+
+        // Second push: two rules. Reader holding `snap_v1` still
+        // sees the 1-rule view (ArcSwap semantics).
+        let two = parser::parse(
+            "- id: a\n  priority: 100\n  when: true\n  then: allow\n\
+             - id: b\n  priority:  90\n  when: true\n  then: log_only\n",
+        )
+        .unwrap();
+        rs.replace_rules(two);
+        assert_eq!(rs.len(), 2);
+        assert_eq!(snap_v1.len(), 1, "old snapshot must be stable");
+
+        // Empty push: dashboard deletes all rules.
+        rs.replace_rules(Vec::new());
+        assert!(rs.is_empty());
     }
 
     #[test]

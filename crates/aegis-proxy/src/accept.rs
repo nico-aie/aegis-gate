@@ -522,6 +522,22 @@ pub(crate) async fn admin_accept_loop(
     }
     // 2026-05-11 PR #7 — surface the live `Pipeline` as the
     // response-filter writer so `PUT /api/response-filter` can
+    // 2026-05-17 F-CRITICAL-001 (control audit): share the Pipeline's
+    // live `Arc<RuleSet>` with both `DashboardServices` (so admin
+    // CRUD can hot-swap rules) AND `ProxyContext.active_ruleset` (so
+    // the data plane reads the live set on every request). All three
+    // surfaces — Pipeline, DashboardServices, ProxyContext — now
+    // point at the same `Arc<RuleSet>`, whose internal `ArcSwap`
+    // gives lock-free hot-swap semantics. Pre-fix the dashboard
+    // wrote to a separate `RuleStore` while the engine read an empty
+    // `RuleSet::new()` from boot — "Save rule" was a no-op. Done
+    // BEFORE the `response_filter_writer` move below because that
+    // coerces `response_filter_pipeline` into `Arc<dyn ...>` and
+    // loses the concrete `Pipeline` type.
+    let live_ruleset = response_filter_pipeline.rules_arc();
+    services.active_ruleset = Some(Arc::clone(&live_ruleset));
+    let _ = upstream_ctx.active_ruleset.set(live_ruleset);
+
     // hot-swap `ResponseFilterConfig` rungs. Same Arc instance the
     // data plane reads `on_body_frame` through.
     services.response_filter_writer = Some(

@@ -1522,6 +1522,43 @@ struct RulePutBody {
     enabled: bool,
 }
 
+/// 2026-05-17 F-CRITICAL-001 (control audit): rebuild the live
+/// `Arc<RuleSet>` after a successful CRUD mutation so the data
+/// plane sees the operator's change on the next request. Logs at
+/// `info` on success and `warn` on parse failure (the operator's
+/// dashboard already shows the lint warnings; this is the
+/// server-side accounting trace). No-op when
+/// `services.active_ruleset` is `None` (single-node test fixture
+/// without a security pipeline wired).
+fn rebuild_ruleset_after_mutation(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    label: &str,
+) {
+    let Some(active) = services.active_ruleset.as_ref() else {
+        // No engine wired (test fixture / partial harness) — nothing
+        // to refresh. The RuleStore mutation already landed.
+        return;
+    };
+    match aegis_control::api::rules::rebuild_active_ruleset(&services.rules, active) {
+        Ok(n) => {
+            tracing::info!(
+                target: "aegis.rules.live",
+                trigger = label,
+                active_rule_count = n,
+                "rule set refreshed",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "aegis.rules.live",
+                trigger = label,
+                error = %e,
+                "rule set refresh skipped — operator must fix body and re-save",
+            );
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -1641,6 +1678,9 @@ pub(crate) async fn handle_rules_post(
         },
     );
 
+    if outcome.is_ok() {
+        rebuild_ruleset_after_mutation(services, "rule_create");
+    }
     match outcome {
         Ok(_) => json_response(
             201,
@@ -1721,6 +1761,9 @@ pub(crate) async fn handle_rules_put(
         },
     );
 
+    if outcome.is_ok() {
+        rebuild_ruleset_after_mutation(services, "rule_update");
+    }
     match outcome {
         Ok(_) => json_response(
             200,
@@ -1781,6 +1824,9 @@ pub(crate) async fn handle_rules_delete(
         },
     );
 
+    if outcome.is_ok() {
+        rebuild_ruleset_after_mutation(services, "rule_delete");
+    }
     match outcome {
         Ok(_) => json_response(
             200,
@@ -1840,6 +1886,9 @@ pub(crate) async fn handle_rules_toggle(
         },
     );
 
+    if outcome.is_ok() {
+        rebuild_ruleset_after_mutation(services, "rule_toggle");
+    }
     match outcome {
         Ok(_) => json_response(
             200,
