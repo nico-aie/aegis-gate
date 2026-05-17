@@ -28,6 +28,7 @@ verbatim.
 | [template-injection.md](./template-injection.md) | `template_injection` | URL, body — Jinja2 `{{config}}` / Twig / Mako / Freemarker `<#assign>` / Velocity `#set()` / SpEL `${T(...)}` / Handlebars `{{#with}}` |
 | [nosql-injection.md](./nosql-injection.md) | `nosql_injection` | URL, body — MongoDB operator injection (`?param[$ne]=foo`, `{"$where":"..."}`) |
 | [open-redirect.md](./open-redirect.md) | `open_redirect` | Query string — suspicious external URLs (`http(s)://`, `//`, `javascript:`, `data:`) in redirect-style params (`?next=`, `?redirect_uri=`, …); allowlist via `cfg.detectors.open_redirect.allowed_domains`. Score 30 (phishing tier). Added 2026-05-09 (GAP-009). |
+| [canary.md](./canary.md) | `canary` | URL path — operator-configured honeypot paths via `risk.canary_paths` (exact or `/prefix/*` glob). Score 90 (single-hit-to-block). Added 2026-05-18 (Phase F F-CRITICAL-012). |
 | [ai-detector.md](./ai-detector.md) | `ai` | URL, body, headers (binary attack/normal verdict over a 26-feature vector via ONNX) |
 
 The detector mask (P2/P3 in [`Implement-Progress.md`](../../../Implement-Progress.md))
