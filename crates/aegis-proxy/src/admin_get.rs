@@ -93,6 +93,19 @@ pub(crate) fn admin_router(
             } else {
                 aegis_control::health::check_ready(readiness)
             };
+            // F-CRITICAL-003 (2026-05-17 control audit): populate
+            // the three Round-1 mandated fields — uptime / mode /
+            // active rule count. Mode is "enforce" today (the
+            // global default; per-feature log_only is handled
+            // separately via /__waf_control/set_profile and
+            // surfaces on the dashboard's mode-toggle UI).
+            let uptime_seconds = {
+                let started = aegis_control::api::about::boot_ts();
+                let now = chrono::Utc::now();
+                (now - started).num_seconds().max(0) as u64
+            };
+            let rule_count = services.rules.list().len() as u64;
+            let resp = resp.with_runtime_info(uptime_seconds, "enforce", rule_count);
             json_response(code, &serde_json::json!(resp))
         }
         "/healthz/startup" => {
