@@ -109,6 +109,33 @@ pub async fn admit(
         }
     }
 
+    // F-HIGH-admin (2026-05-17): pre-check `Content-Length` against
+    // `cfg.admin.dashboard_auth.max_request_body_bytes` (default
+    // 1 MiB). Pre-fix every admin mutation handler did
+    // `into_body().collect()` with no cap, so a single oversized
+    // payload could OOM the WAF before the JSON parser rejected
+    // it. This gate covers the common case (clients that send a
+    // Content-Length header); chunked-without-length bodies still
+    // need per-handler `Limited<_>` wrapping — tracked as a
+    // separate item in the unwired-stubs catalogue.
+    if let Some(len_hdr) = req.headers().get(hyper::header::CONTENT_LENGTH) {
+        if let Some(len) = len_hdr.to_str().ok().and_then(|s| s.parse::<u64>().ok()) {
+            if len > cfg.admin.dashboard_auth.max_request_body_bytes {
+                tracing::warn!(
+                    peer = %peer.ip(),
+                    declared_bytes = len,
+                    cap = cfg.admin.dashboard_auth.max_request_body_bytes,
+                    "admin: rejected oversized request body",
+                );
+                return Admit::Denied(deny_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "admin_body_too_large",
+                    "request body exceeds cfg.admin.dashboard_auth.max_request_body_bytes",
+                ));
+            }
+        }
+    }
+
     // Step 2 — mTLS happens at TLS handshake; nothing to do here.
 
     // Open endpoints — no session required.
