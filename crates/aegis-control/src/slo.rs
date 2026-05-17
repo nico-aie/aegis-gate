@@ -157,43 +157,50 @@ pub enum ReceiverKind {
     },
 }
 
-/// Default bot token + room used by [`default_receivers`] when
-/// the operator hasn't supplied an override. Replace via env
-/// var in production deployments. The values match the project's
-/// dev/UAT VipTalk bot.
-pub const DEFAULT_VIPTALK_BOT_TOKEN: &str =
-    "xxx-dev-uat-bot-token-xxx";
-pub const DEFAULT_VIPTALK_ROOM_ID: &str =
-    "!QNxJHzVzJBrLWIOLPo:matrix-uat.viptalk.org";
-
-/// Default routing receivers for a fresh deployment.
+/// Build the VipTalk default receiver list ONLY when both
+/// `AEGIS_VIPTALK_BOT_TOKEN` and `AEGIS_VIPTALK_ROOM_IDS` are set
+/// in the environment.
 ///
-/// Returns a single VipTalk receiver pointed at the project's
-/// dev/UAT bot + room. Operators replace via:
+/// 2026-05-17 F-CRITICAL-017 (control audit): pre-fix this function
+/// returned a hard-coded `bot_token = "xxx-dev-uat-bot-token-xxx"`
+/// + `room_ids = ["!Qn...:matrix-uat.viptalk.org"]` when the env
+/// vars were missing. Production deployments that forgot to set
+/// the env var silently POSTed every SLO alert (with SLI + severity
+/// payload) to the project's dev/UAT Matrix room — a third-party
+/// disclosure surface for any operator that took the framework's
+/// defaults at face value.
 ///
-/// - `AEGIS_VIPTALK_BOT_TOKEN` env — overrides the bot token.
-/// - `AEGIS_VIPTALK_ROOM_IDS` env — comma-separated room IDs.
-///
-/// If both env vars are set, this function returns the override.
-/// If only one is set, the other falls through to the default.
-/// To **disable** VipTalk routing entirely, return your own
-/// `Vec<AlertReceiver>` from your config builder instead of
-/// calling this function.
+/// Now: if either env var is unset or empty, return `vec![]` and
+/// emit a one-time `tracing::warn!` so the operator notices.
+/// Operators who want VipTalk routing set BOTH env vars; operators
+/// who want a different sink build their own
+/// `Vec<AlertReceiver>` directly.
 pub fn default_receivers() -> Vec<AlertReceiver> {
     let bot_token = std::env::var("AEGIS_VIPTALK_BOT_TOKEN")
         .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_VIPTALK_BOT_TOKEN.to_string());
-    let room_ids = std::env::var("AEGIS_VIPTALK_ROOM_IDS")
+        .filter(|s| !s.is_empty());
+    let room_ids_raw = std::env::var("AEGIS_VIPTALK_ROOM_IDS")
         .ok()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.split(',').map(|r| r.trim().to_string()).collect())
-        .unwrap_or_else(|| vec![DEFAULT_VIPTALK_ROOM_ID.to_string()]);
+        .filter(|s| !s.is_empty());
 
-    vec![AlertReceiver {
-        name: "default-viptalk".to_string(),
-        kind: ReceiverKind::VipTalk { bot_token, room_ids },
-    }]
+    match (bot_token, room_ids_raw) {
+        (Some(bot_token), Some(rooms)) => {
+            let room_ids: Vec<String> =
+                rooms.split(',').map(|r| r.trim().to_string()).collect();
+            vec![AlertReceiver {
+                name: "default-viptalk".to_string(),
+                kind: ReceiverKind::VipTalk { bot_token, room_ids },
+            }]
+        }
+        _ => {
+            tracing::warn!(
+                "alert receivers: AEGIS_VIPTALK_BOT_TOKEN + AEGIS_VIPTALK_ROOM_IDS \
+                 not both set — SLO alerts will not route to VipTalk. Set both env \
+                 vars OR populate `cfg.slo.receivers` explicitly to suppress this warning.",
+            );
+            Vec::new()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -707,8 +714,17 @@ mod tests {
         result
     }
 
+    // F-CRITICAL-017 (2026-05-17 control audit): pre-fix this
+    // module pinned a hardcoded "xxx-dev-uat-bot-token-xxx" default
+    // bot token + a dev/UAT Matrix room ID. Tests that asserted
+    // those defaults applied when env was missing or empty have
+    // been removed — they were the on-disk record of the bug.
+    // Replacement tests below pin the new behaviour: when either
+    // env var is missing OR empty, `default_receivers()` returns
+    // an empty Vec (no third-party disclosure).
+
     #[test]
-    fn default_receivers_uses_built_in_viptalk_when_no_env() {
+    fn default_receivers_empty_when_env_missing() {
         let receivers = with_viptalk_env(
             &[
                 ("AEGIS_VIPTALK_BOT_TOKEN", None),
@@ -716,48 +732,11 @@ mod tests {
             ],
             default_receivers,
         );
-        assert_eq!(receivers.len(), 1);
-        assert_eq!(receivers[0].name, "default-viptalk");
-        match &receivers[0].kind {
-            ReceiverKind::VipTalk { bot_token, room_ids } => {
-                assert_eq!(bot_token, DEFAULT_VIPTALK_BOT_TOKEN);
-                assert_eq!(room_ids, &[DEFAULT_VIPTALK_ROOM_ID.to_string()]);
-            }
-            other => panic!("expected VipTalk, got {other:?}"),
-        }
+        assert!(receivers.is_empty(), "no env → no receivers");
     }
 
     #[test]
-    fn default_receivers_overrides_via_env() {
-        let receivers = with_viptalk_env(
-            &[
-                ("AEGIS_VIPTALK_BOT_TOKEN", Some("override-token")),
-                (
-                    "AEGIS_VIPTALK_ROOM_IDS",
-                    Some("!room1:m.example.com,!room2:m.example.com"),
-                ),
-            ],
-            default_receivers,
-        );
-        match &receivers[0].kind {
-            ReceiverKind::VipTalk { bot_token, room_ids } => {
-                assert_eq!(bot_token, "override-token");
-                assert_eq!(
-                    room_ids,
-                    &[
-                        "!room1:m.example.com".to_string(),
-                        "!room2:m.example.com".to_string(),
-                    ]
-                );
-            }
-            other => panic!("expected VipTalk, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn default_receivers_filters_empty_env_strings() {
-        // Empty string env var → fall through to default,
-        // matching the convention used elsewhere in the codebase.
+    fn default_receivers_empty_when_env_empty_strings() {
         let receivers = with_viptalk_env(
             &[
                 ("AEGIS_VIPTALK_BOT_TOKEN", Some("")),
@@ -765,10 +744,44 @@ mod tests {
             ],
             default_receivers,
         );
+        assert!(receivers.is_empty(), "empty strings → no receivers");
+    }
+
+    #[test]
+    fn default_receivers_empty_when_only_token_set() {
+        let receivers = with_viptalk_env(
+            &[
+                ("AEGIS_VIPTALK_BOT_TOKEN", Some("real-token")),
+                ("AEGIS_VIPTALK_ROOM_IDS", None),
+            ],
+            default_receivers,
+        );
+        assert!(receivers.is_empty(), "token-only → no receivers (need room IDs too)");
+    }
+
+    #[test]
+    fn default_receivers_built_when_both_env_set() {
+        let receivers = with_viptalk_env(
+            &[
+                ("AEGIS_VIPTALK_BOT_TOKEN", Some("real-token")),
+                (
+                    "AEGIS_VIPTALK_ROOM_IDS",
+                    Some("!room1:m.example.com,!room2:m.example.com"),
+                ),
+            ],
+            default_receivers,
+        );
+        assert_eq!(receivers.len(), 1);
         match &receivers[0].kind {
             ReceiverKind::VipTalk { bot_token, room_ids } => {
-                assert_eq!(bot_token, DEFAULT_VIPTALK_BOT_TOKEN);
-                assert_eq!(room_ids, &[DEFAULT_VIPTALK_ROOM_ID.to_string()]);
+                assert_eq!(bot_token, "real-token");
+                assert_eq!(
+                    room_ids,
+                    &[
+                        "!room1:m.example.com".to_string(),
+                        "!room2:m.example.com".to_string(),
+                    ]
+                );
             }
             other => panic!("expected VipTalk, got {other:?}"),
         }
