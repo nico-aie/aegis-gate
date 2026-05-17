@@ -2690,6 +2690,20 @@ pub struct DashboardAuthConfig {
     /// for the enrollment flow (YAML-only in v1).
     #[serde(default)]
     pub totp_secret_b32: String,
+    /// 2026-05-17 F-CRITICAL-002 (Phase 3 step 4) — service-account
+    /// bearer tokens. Used by CI / cron / Nagios-shaped automation
+    /// that can't login interactively. Each account has:
+    /// - `name`: human-readable identifier, becomes `actor` on
+    ///   audit-mutated changes.
+    /// - `token_hash`: argon2id hash of the bearer token (mint via
+    ///   `waf admin service-account mint` — follow-up CLI).
+    /// - `scopes`: `["read"]` allows GET only; `["read", "write"]`
+    ///   allows mutations.
+    /// Bearer requests send `Authorization: Bearer <plaintext>`;
+    /// middleware argon2-verifies and synthesises a per-request
+    /// session. See `docs/operator/admin-auth-setup.md`.
+    #[serde(default)]
+    pub service_accounts: Vec<ServiceAccountConfig>,
     #[serde(default)]
     pub login_rate_limit: LoginRateLimitConfig,
     #[serde(default)]
@@ -2728,11 +2742,22 @@ impl Default for DashboardAuthConfig {
             ip_allowlist: default_ip_allowlist(),
             totp_enabled: false,
             totp_secret_b32: String::new(),
+            service_accounts: Vec::new(),
             login_rate_limit: LoginRateLimitConfig::default(),
             lockout: LockoutConfig::default(),
             allow_ca_upload: false,
         }
     }
+}
+
+/// 2026-05-17 F-CRITICAL-002 (Phase 3 step 4) — see
+/// `DashboardAuthConfig.service_accounts` for the full doc.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ServiceAccountConfig {
+    pub name: String,
+    pub token_hash: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

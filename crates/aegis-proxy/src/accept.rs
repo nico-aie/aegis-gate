@@ -897,10 +897,41 @@ pub(crate) async fn admin_accept_loop(
                             &query,
                         ));
                     }
-                    let resp = handle_admin_request(
-                        req, peer, &cfg, &readiness, &startup, &metrics, &services,
-                    )
-                    .await;
+                    // F-CRITICAL-002 / 004 / 005 (2026-05-17 Phase 3
+                    // step 4+5): run the auth gate before dispatch.
+                    // Open endpoints (login, health, dashboard assets,
+                    // /__waf_control/*) pass through without an
+                    // identity; everything else requires a valid
+                    // session cookie OR a service-account bearer
+                    // token. On Authenticated we strip the client-
+                    // supplied `X-Actor` header and inject the
+                    // validated actor name as `X-Aegis-Actor` so
+                    // mutation handlers stamp the audit chain with
+                    // the real identity (closes F-CRITICAL-004).
+                    use crate::admin_auth_middleware::{admit, Admit};
+                    let auth_sessions = services.auth_sessions.clone();
+                    let resp = match admit(&req, peer, &cfg, &auth_sessions).await {
+                        Admit::Denied(r) => r,
+                        Admit::OpenEndpoint => {
+                            let mut req = req;
+                            crate::admin_auth_middleware::strip_client_actor(&mut req);
+                            handle_admin_request(
+                                req, peer, &cfg, &readiness, &startup, &metrics, &services,
+                            )
+                            .await
+                        }
+                        Admit::Authenticated(identity) => {
+                            let mut req = req;
+                            crate::admin_auth_middleware::strip_client_actor(&mut req);
+                            if let Ok(v) = hyper::header::HeaderValue::from_str(&identity.actor) {
+                                req.headers_mut().insert("x-aegis-actor", v);
+                            }
+                            handle_admin_request(
+                                req, peer, &cfg, &readiness, &startup, &metrics, &services,
+                            )
+                            .await
+                        }
+                    };
                     Ok::<_, Infallible>(admin_sse::into_boxed(resp))
                 }
             });
