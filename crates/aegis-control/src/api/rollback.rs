@@ -1044,6 +1044,7 @@ mod tests {
             },
             trust_recovery: None,
             strikes: None,
+            canary_paths: Vec::new(),
         };
         let risk = aegis_security::risk::RiskTracker::new(&risk_cfg);
 

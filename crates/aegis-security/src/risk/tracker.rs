@@ -476,17 +476,19 @@ mod tests {
     #[test]
     fn level_classifies_against_thresholds() {
         let t = RiskTracker::new(&cfg());
-        // RiskThresholds default: challenge_at=40, block_at=80.
+        // 2026-05-17 F-CRITICAL-007: RiskThresholds defaults are now
+        // challenge_at=30, block_at=70 (v2.3 spec). Test updated to
+        // match — see crates/aegis-core/src/config.rs.
         let target = ip("10.0.0.1");
         assert_eq!(t.level(target), RiskLevel::Allow);
 
-        t.record_malicious(target, 30);
+        t.record_malicious(target, 20);
         assert_eq!(t.level(target), RiskLevel::Allow);
 
         t.record_malicious(target, 15);
         assert_eq!(t.level(target), RiskLevel::Challenge);
 
-        t.record_malicious(target, 50);
+        t.record_malicious(target, 40);
         assert_eq!(t.level(target), RiskLevel::Block);
     }
 
