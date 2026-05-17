@@ -1023,6 +1023,17 @@ pub struct ConnectionPoolConfig {
     /// raise this per-pool.
     #[serde(default = "default_max_response_body_bytes")]
     pub max_response_body_bytes: u64,
+    /// 2026-05-17 F-HIGH-stateful — wall-clock deadline on the
+    /// upstream response-body read. Without it, a slowloris-style
+    /// upstream that trickles bytes below the per-byte cap can
+    /// pin the WAF's connection slot indefinitely (`Limited<_>`
+    /// only enforces the SIZE budget, not the TIME budget).
+    /// Default 30 s — generous enough for legitimate slow APIs;
+    /// drop to 5-10 s for typical request/response workloads.
+    /// Exceeded deadline surfaces as `ForwardError::Timeout`
+    /// which the data plane maps onto v2.3 §3 `timeout` action.
+    #[serde(default = "default_response_body_read_timeout", with = "humantime_serde")]
+    pub response_body_read_timeout: Duration,
 }
 
 /// Upstream protocol selector for `ConnectionPoolConfig.scheme`.
@@ -1105,6 +1116,7 @@ impl Default for ConnectionPoolConfig {
             tls: false,
             scheme: UpstreamScheme::Auto,
             max_response_body_bytes: default_max_response_body_bytes(),
+            response_body_read_timeout: default_response_body_read_timeout(),
         }
     }
 }
@@ -1321,6 +1333,10 @@ fn default_keep_alive() -> bool {
 
 fn default_max_response_body_bytes() -> u64 {
     10 * 1024 * 1024 // 10 MiB — matches `ProxyConfig::default()`.
+}
+
+fn default_response_body_read_timeout() -> Duration {
+    Duration::from_secs(30)
 }
 
 fn default_lb() -> LbStrategy {
