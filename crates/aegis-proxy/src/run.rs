@@ -1204,6 +1204,26 @@ pub async fn run(
 
     // Admin (control-plane) listener.
     let admin_addr = cfg.listeners.admin.bind;
+    // F-HIGH-002 follow-up (2026-05-17 Phase 3 step 6): warn loudly
+    // when the admin listener is exposed AND no IP allowlist is
+    // configured. The Phase-3 decision was that empty allowlist
+    // means allow-all (matches current behaviour); this warn turns
+    // the gotcha into a visible setup-time signal. Loopback binds
+    // are exempt — `127.0.0.0/8` + `::1/128` are inherently
+    // already restricted by the OS.
+    {
+        let is_loopback = admin_addr.ip().is_loopback();
+        let allowlist_empty = cfg.admin.dashboard_auth.ip_allowlist.is_empty();
+        if !is_loopback && allowlist_empty {
+            tracing::warn!(
+                admin_bind = %admin_addr,
+                "admin: listener not bound to loopback AND ip_allowlist is empty — \
+                 every network-reachable client can attempt the auth chain. \
+                 Set `admin.dashboard_auth.ip_allowlist: [10.0.0.0/8, ...]` to \
+                 restrict, or bind admin to 127.0.0.1 / ::1.",
+            );
+        }
+    }
     let admin_tcp = crate::hotbin::adopt_or_bind(
         &mut inherited_listeners,
         "admin",
