@@ -176,6 +176,25 @@ pub struct WafConfig {
     /// the original wire-up plan.
     #[serde(default)]
     pub ddos: DdosConfig,
+    /// 2026-05-17 F-CRITICAL-010 (core audit): tier-keyed failure
+    /// mode override. By default each tier derives its failure
+    /// mode from `Tier::default_failure_mode` (Critical →
+    /// FailClose, all others → FailOpen). Operators who need to
+    /// override that policy globally (without setting
+    /// `failure_mode` on every individual route) can wire it here.
+    ///
+    /// YAML shape:
+    /// ```yaml
+    /// fail_mode_by_tier:
+    ///   high: fail_close      # treat High like Critical
+    ///   medium: fail_close
+    /// ```
+    ///
+    /// Per-route `routes[].failure_mode` still wins when set;
+    /// this is the tier-level default for routes that don't pin
+    /// their own. Schema only — consumer wiring lands in Phase E.
+    #[serde(default)]
+    pub fail_mode_by_tier: HashMap<Tier, FailureModeConfig>,
 }
 
 /// External interop surface configuration. Always-on by default.
@@ -1987,6 +2006,24 @@ pub struct RiskConfig {
     /// is permanently blocked even if their score has decayed.
     #[serde(default)]
     pub strikes: Option<StrikeConfig>,
+    /// 2026-05-17 F-CRITICAL-012 (core audit): canary path list.
+    /// Any request that touches one of these paths is treated as
+    /// high-signal malicious (no legitimate caller should hit a
+    /// honeypot URL). Each entry matches as an exact path or a
+    /// `*` suffix glob (`/admin/*` matches `/admin/foo` and
+    /// `/admin/foo/bar`). Schema only — consumer wiring lands in
+    /// Phase F (`aegis-security/src/canary/`).
+    ///
+    /// YAML shape:
+    /// ```yaml
+    /// risk:
+    ///   canary_paths:
+    ///     - "/wp-admin"
+    ///     - "/.env"
+    ///     - "/phpmyadmin/*"
+    /// ```
+    #[serde(default)]
+    pub canary_paths: Vec<String>,
 }
 
 fn default_risk_decay() -> Duration {
@@ -2001,6 +2038,7 @@ impl Default for RiskConfig {
             thresholds: RiskThresholds::default(),
             trust_recovery: None,
             strikes: None,
+            canary_paths: Vec::new(),
         }
     }
 }
@@ -2116,10 +2154,15 @@ pub struct RiskThresholds {
 }
 
 fn default_challenge_at() -> u32 {
-    40
+    // 2026-05-17 F-CRITICAL-007: 40 → 30 to match the v2.3 spec.
+    // Companion to `RiskThresholds::default()` so a YAML config
+    // that sets only `block_at` (not `challenge_at`) still picks
+    // up the spec value via this serde default.
+    30
 }
 fn default_block_at() -> u32 {
-    80
+    // 2026-05-17 F-CRITICAL-007: 80 → 70 to match the v2.3 spec.
+    70
 }
 fn default_risk_max() -> u32 {
     100
@@ -2313,6 +2356,44 @@ pub struct DdosConfig {
     pub spike_multiplier: f64,
     #[serde(default = "default_ddos_tightened_rps")]
     pub tightened_per_ip_rps: u64,
+    /// 2026-05-17 F-CRITICAL-008 (core audit): per-tier overrides
+    /// for the global DDoS knobs. Any field not specified in the
+    /// override falls back to the top-level value. Empty (default)
+    /// means "single global policy applies to every tier".
+    ///
+    /// YAML shape:
+    /// ```yaml
+    /// ddos:
+    ///   per_ip_limit: 1000
+    ///   tier_overrides:
+    ///     critical:
+    ///       per_ip_limit: 200      # tighter for critical paths
+    ///       block_ttl_s: 1800
+    ///     low:
+    ///       per_ip_limit: 5000     # looser for static asset paths
+    /// ```
+    ///
+    /// Schema only — consumer wiring lands in Phase E/F.
+    #[serde(default)]
+    pub tier_overrides: HashMap<Tier, DdosTierConfig>,
+}
+
+/// 2026-05-17 F-CRITICAL-008 (core audit): per-tier DDoS override.
+/// All fields optional — only the knobs the operator wants to
+/// override against the global `DdosConfig` baseline.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DdosTierConfig {
+    #[serde(default)]
+    pub per_ip_limit: Option<u64>,
+    #[serde(default)]
+    pub per_ip_window_s: Option<u32>,
+    #[serde(default)]
+    pub block_ttl_s: Option<u64>,
+    #[serde(default)]
+    pub spike_multiplier: Option<f64>,
+    #[serde(default)]
+    pub tightened_per_ip_rps: Option<u64>,
 }
 
 fn default_ddos_per_ip_limit() -> u64 { 1000 }
@@ -2331,6 +2412,7 @@ impl Default for DdosConfig {
             block_ttl_s: default_ddos_block_ttl_s(),
             spike_multiplier: default_ddos_spike_multiplier(),
             tightened_per_ip_rps: default_ddos_tightened_rps(),
+            tier_overrides: HashMap::new(),
         }
     }
 }
@@ -4231,5 +4313,86 @@ state: { backend: in_memory }
 "#;
         let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
         cfg.validate().expect("non-tcp route should validate without allowlist");
+    }
+
+    /// 2026-05-17 F-CRITICAL-008 (core audit): per-tier DDoS
+    /// overrides parse from YAML. Existing configs without
+    /// `tier_overrides` keep working (`#[serde(default)]` →
+    /// empty map).
+    #[test]
+    fn ddos_tier_overrides_parse_and_default_empty() {
+        let yaml = r#"
+enabled: true
+per_ip_limit: 1000
+tier_overrides:
+  critical:
+    per_ip_limit: 200
+    block_ttl_s: 1800
+  low:
+    per_ip_limit: 5000
+"#;
+        let cfg: DdosConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.tier_overrides.len(), 2);
+        let crit = cfg.tier_overrides.get(&Tier::Critical).unwrap();
+        assert_eq!(crit.per_ip_limit, Some(200));
+        assert_eq!(crit.block_ttl_s, Some(1800));
+        assert!(crit.per_ip_window_s.is_none()); // not overridden → None
+        let low = cfg.tier_overrides.get(&Tier::Low).unwrap();
+        assert_eq!(low.per_ip_limit, Some(5000));
+
+        // Default (no tier_overrides key) is an empty map, not an error.
+        let default_yaml = "enabled: true\n";
+        let cfg: DdosConfig = serde_yaml::from_str(default_yaml).unwrap();
+        assert!(cfg.tier_overrides.is_empty());
+    }
+
+    /// 2026-05-17 F-CRITICAL-010 (core audit): `fail_mode_by_tier`
+    /// parses from YAML; existing configs default to empty.
+    #[test]
+    fn fail_mode_by_tier_parses_and_default_empty() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:8080" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: default }
+upstreams:
+  default: { members: [{ addr: "127.0.0.1:8081" }] }
+state: { backend: in_memory }
+fail_mode_by_tier:
+  high: fail_close
+  medium: fail_close
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.fail_mode_by_tier.len(), 2);
+        assert_eq!(
+            cfg.fail_mode_by_tier.get(&Tier::High),
+            Some(&FailureModeConfig::FailClose),
+        );
+        assert_eq!(
+            cfg.fail_mode_by_tier.get(&Tier::Medium),
+            Some(&FailureModeConfig::FailClose),
+        );
+        assert!(cfg.fail_mode_by_tier.get(&Tier::Low).is_none());
+    }
+
+    /// 2026-05-17 F-CRITICAL-012 (core audit): `canary_paths`
+    /// parses from YAML; existing configs default to empty.
+    #[test]
+    fn risk_canary_paths_parse_and_default_empty() {
+        let yaml = r#"
+canary_paths:
+  - "/wp-admin"
+  - "/.env"
+  - "/phpmyadmin/*"
+"#;
+        let cfg: RiskConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.canary_paths.len(), 3);
+        assert_eq!(cfg.canary_paths[0], "/wp-admin");
+        assert_eq!(cfg.canary_paths[2], "/phpmyadmin/*");
+
+        // Default (no canary_paths key) is an empty vec, not an error.
+        let cfg: RiskConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(cfg.canary_paths.is_empty());
     }
 }
