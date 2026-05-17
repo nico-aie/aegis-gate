@@ -63,6 +63,19 @@ pub struct DashboardServices {
     pub filter_catalogue: Arc<FilterCatalogue>,
     pub filters: Arc<FiltersHandler>,
     pub rules: Arc<RuleStore>,
+    /// 2026-05-17 F-CRITICAL-001 (control audit): live engine
+    /// rule set the data plane reads from. `None` for single-node
+    /// test fixtures that don't wire a security pipeline; `Some`
+    /// in the real boot path (see `aegis-proxy/src/accept.rs`
+    /// where it's set to `pipeline.rules_arc()`). After every
+    /// successful CRUD mutation in `admin_mutate`, the operator
+    /// rule bodies are parsed and pushed here via
+    /// `RuleSet::replace_rules` so a saved rule takes effect on
+    /// the next request. Pre-fix the engine read an empty
+    /// `RuleSet::new()` constructed once at boot — the dashboard's
+    /// "Save rule" was a no-op against real traffic. Round-1
+    /// "Tính hiệu lực" hard requirement (≤10 s save→effect).
+    pub active_ruleset: Option<Arc<aegis_security::RuleSet>>,
     pub rule_stats: Arc<RuleStats>,
     pub tiers: Arc<TierStore>,
     pub routes: Arc<RoutesHandler>,
@@ -471,6 +484,11 @@ impl DashboardServices {
                 filter_catalogue,
                 filters: filters_handler,
                 rules,
+                // 2026-05-17 F-CRITICAL-001: defaults to `None` here;
+                // the proxy boot path (`aegis-proxy::accept`) sets
+                // this to `pipeline.rules_arc()` so dashboard CRUD
+                // can hot-swap the live engine rule set.
+                active_ruleset: None,
                 rule_stats,
                 tiers,
                 routes,

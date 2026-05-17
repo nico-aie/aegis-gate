@@ -132,6 +132,17 @@ impl Pipeline {
     pub fn filter_snapshot(&self) -> ResponseFilterConfig {
         (**self.filter.load()).clone()
     }
+
+    /// 2026-05-17 F-CRITICAL-001 (control audit): expose the live
+    /// `Arc<RuleSet>` so the dashboard CRUD bridge in
+    /// `aegis-control` can hot-swap the rule set after every
+    /// audit-mutated CRUD operation. Caller clones the Arc; both
+    /// the Pipeline and the dashboard end up pointing at the same
+    /// inner `ArcSwap`, so a `replace_rules()` call from either
+    /// surface is observed by the other.
+    pub fn rules_arc(&self) -> Arc<RuleSet> {
+        Arc::clone(&self.rules)
+    }
 }
 
 #[async_trait::async_trait]

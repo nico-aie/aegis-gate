@@ -295,6 +295,54 @@ impl RuleStore {
     }
 }
 
+/// 2026-05-17 F-CRITICAL-001 (control audit): bridge from the
+/// dashboard's `RuleStore` (operator-authored bodies, keyed by
+/// `id`) into the security engine's live `Arc<RuleSet>` (parsed
+/// AST consumed by the request path). Called after every
+/// audit-mutated CRUD operation: POST/PUT/DELETE/toggle.
+///
+/// Strategy: pick up every `enabled` rule's body, concatenate
+/// them into one DSL document, parse via
+/// [`aegis_security::rules::parser::parse`] (no lint — operators
+/// already saw lint warnings at PUT-time via `validate_rule_body`),
+/// then `replace_rules` atomically into the engine's ArcSwap.
+///
+/// `Ok(rule_count)` reports how many rules are now live.
+/// `Err(msg)` returned when the concatenated body fails to parse
+/// — caller logs but does NOT roll back the `RuleStore` change
+/// (operators expect the dashboard state to reflect their save;
+/// parse failure is observable via the next `/api/rules/validate`
+/// or simulator run, and the live engine keeps the previous
+/// rule set until the operator fixes the body).
+pub fn rebuild_active_ruleset(
+    store: &RuleStore,
+    ruleset: &aegis_security::RuleSet,
+) -> Result<usize, String> {
+    let rules = store.list();
+    let mut combined = String::new();
+    for r in &rules {
+        if !r.enabled {
+            continue;
+        }
+        combined.push_str(&r.body);
+        if !r.body.ends_with('\n') {
+            combined.push('\n');
+        }
+    }
+    if combined.trim().is_empty() {
+        ruleset.replace_rules(Vec::new());
+        return Ok(0);
+    }
+    match aegis_security::rules::parse(&combined) {
+        Ok(parsed) => {
+            let n = parsed.len();
+            ruleset.replace_rules(parsed);
+            Ok(n)
+        }
+        Err(e) => Err(format!("rule body parse failed: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +529,41 @@ mod tests {
         assert_eq!(top.rules.len(), 2);
         assert_eq!(top.rules[0].rule_id, "b");
         assert_eq!(top.rules[0].hits, 7);
+    }
+
+    /// 2026-05-17 F-CRITICAL-001 (control audit): `rebuild_active_ruleset`
+    /// parses + applies every enabled rule body, ignoring disabled ones.
+    /// After this call the engine's `RuleSet::len` reflects the count
+    /// of `enabled: true` rule bodies that parsed.
+    #[test]
+    fn rebuild_active_ruleset_applies_only_enabled() {
+        let store = RuleStore::new();
+        let body_a = "- id: a\n  priority: 100\n  when: true\n  then: allow\n";
+        let body_b = "- id: b\n  priority:  90\n  when: true\n  then: log_only\n";
+        store.upsert("a", body_a, true);
+        store.upsert("b", body_b, false); // disabled
+
+        let engine = aegis_security::RuleSet::new();
+        let n = rebuild_active_ruleset(&store, &engine).unwrap();
+        assert_eq!(n, 1, "only enabled rules should be applied");
+        assert_eq!(engine.len(), 1);
+
+        // Flip b on — now both apply.
+        store.upsert("b", body_b, true);
+        let n = rebuild_active_ruleset(&store, &engine).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(engine.len(), 2);
+
+        // Delete a — only b remains.
+        assert!(store.delete("a"));
+        let n = rebuild_active_ruleset(&store, &engine).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(engine.len(), 1);
+
+        // Empty store — engine drains to empty.
+        assert!(store.delete("b"));
+        let n = rebuild_active_ruleset(&store, &engine).unwrap();
+        assert_eq!(n, 0);
+        assert!(engine.is_empty());
     }
 }

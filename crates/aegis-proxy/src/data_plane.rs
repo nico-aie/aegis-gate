@@ -1116,6 +1116,79 @@ pub(crate) async fn forward_allow_to_upstream(
         return (resp, DecisionTag::block("mtls_required"));
     }
 
+    // 2026-05-17 F-CRITICAL-001 (control audit) — operator rule
+    // evaluator. Round-1 "Tính hiệu lực" mandate: a rule saved via
+    // the dashboard MUST take effect on the next request. The live
+    // `Arc<RuleSet>` is shared between the Pipeline, DashboardServices
+    // (the CRUD bridge), and `ctx.active_ruleset`; the dashboard
+    // `admin_mutate` handlers call `RuleSet::replace_rules` after
+    // every successful CRUD via `rebuild_active_ruleset`.
+    //
+    // Fires AFTER detectors and AFTER route resolution so:
+    //   - rules can scope by `route_id` (Scope::Route),
+    //   - detector signals are already known (a rule may decide to
+    //     allow a request the detectors flagged, e.g. operator
+    //     allowlist for a known-noisy endpoint),
+    //   - the block path is symmetric with the mTLS-required path
+    //     above (returns DecisionTag::block + rule_id so the
+    //     listener-side stamper emits `X-WAF-Action: block`).
+    //
+    // v1 honors only the `Block { status }` action terminally — the
+    // other 5 §3 actions (Allow / Challenge / RateLimited / Timeout
+    // / CircuitBreaker) fall through to the existing downstream
+    // paths so we don't double-fire challenges or rate-limit
+    // buckets. Empty rule set (the common boot state when no
+    // operator has saved a rule yet) short-circuits via the
+    // `is_empty()` check below.
+    if let Some(rules) = ctx.active_ruleset.get() {
+        let snapshot = rules.snapshot();
+        if !snapshot.is_empty() {
+            // Rebuild a `RequestView` for the rule evaluator —
+            // `forward_allow_to_upstream` receives parts + body_bytes,
+            // not the original view from `handle_data_request_inner`.
+            // BodyPeek wraps the already-buffered body so body-shape
+            // rules see the same bytes the detectors saw.
+            let body_peek = aegis_core::pipeline::BodyPeek::new(
+                body_bytes.to_vec(),
+                Some(body_bytes.len() as u64),
+                false,
+            );
+            let view = aegis_core::pipeline::RequestView {
+                method: &parts.method,
+                uri: &parts.uri,
+                version: parts.version,
+                headers: &parts.headers,
+                peer: std::net::SocketAddr::new(peer_ip, 0),
+                tls: None,
+                body: &body_peek,
+            };
+            let decision =
+                aegis_security::rules::evaluate(&snapshot, &view, &route_ctx);
+            if let aegis_core::decision::Action::Block { status } = decision.action {
+                let rule_id = decision.rule_id.clone().unwrap_or_else(|| "rule".into());
+                tracing::Span::current().record("outcome", "rule_block");
+                tracing::info!(
+                    target: "aegis.rules.live",
+                    route_id = %route_ctx.route_id,
+                    rule_id = %rule_id,
+                    reason = %decision.reason,
+                    "request blocked by operator rule",
+                );
+                let resp = Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .header("x-waf-rule-id", rule_id.as_str())
+                    .body(Full::new(Bytes::from(format!(
+                        r#"{{"error":"blocked","rule_id":"{}","reason":"{}"}}"#,
+                        rule_id.replace('"', "\\\""),
+                        decision.reason.replace('"', "\\\""),
+                    ))))
+                    .unwrap();
+                return (resp, DecisionTag::block(rule_id));
+            }
+        }
+    }
+
     // TCP-T3c — CONNECT-method dispatch for `scheme: tcp` routes.
     // Branches BEFORE the circuit breaker / pool member pick
     // because tunnels don't go through the HTTP forwarder
