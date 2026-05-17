@@ -11,6 +11,7 @@ dependencies = [
  "aegis-proxy",
  "aegis-security",
  "arc-swap",
+ "base32",
  "blake3",
  "core_affinity",
  "opentelemetry",
@@ -23,6 +24,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
