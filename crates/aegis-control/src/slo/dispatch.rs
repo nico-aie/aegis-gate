@@ -133,6 +133,39 @@ async fn send_viptalk(
 ) -> Result<(), String> {
     use std::time::Duration;
 
+    // F-CRITICAL-015 (2026-05-17 control audit): pre-fix
+    // `bot_token` was interpolated directly into the URL path with
+    // NO validation. Combined with the (now-removed) hardcoded
+    // dev/UAT default token and the (separately-fixed) admin
+    // no-auth gate, an attacker who set the operator-controlled
+    // `bot_token` to a path-traversal or scheme-override payload
+    // could pivot the WAF's outbound HTTP client to arbitrary
+    // hosts (AWS metadata `169.254.169.254`, internal services,
+    // etc.) by abusing the URL composition.
+    //
+    // Now: reject any bot_token containing characters that have
+    // structural meaning in a URL (`:`, `/`, `\`, `@`, `?`, `#`,
+    // control chars, or whitespace). Legitimate VipTalk tokens
+    // are bot ID strings — alphanumerics + dashes + dots. The
+    // structural-character ban also prevents header smuggling
+    // through the path component.
+    if bot_token.is_empty()
+        || bot_token.bytes().any(|b| {
+            // Structural URL chars + percent (catches
+            // percent-encoded path-traversal like `..%2F`) +
+            // anything outside printable ASCII.
+            matches!(b, b':' | b'/' | b'\\' | b'@' | b'?' | b'#' | b' ' | b'%')
+                || b < 0x21
+                || b > 0x7e
+        })
+        || bot_token.contains("..")
+    {
+        return Err(
+            "viptalk bot_token contains unsafe characters; reject to prevent SSRF"
+                .to_string(),
+        );
+    }
+
     let api_base = std::env::var("AEGIS_VIPTALK_API_BASE")
         .unwrap_or_else(|_| DEFAULT_VIPTALK_API_BASE.to_string());
     let url = format!(
@@ -273,6 +306,33 @@ mod tests {
         );
         assert!(summary.external.contains(&"pd".to_string()));
         assert!(summary.external.contains(&"alertmanager".to_string()));
+    }
+
+    #[cfg(feature = "alerts")]
+    #[tokio::test]
+    async fn send_viptalk_rejects_path_traversal_bot_token() {
+        // F-CRITICAL-015 regression. Token containing `/` or `:`
+        // or `?` would let an attacker compose a different
+        // upstream URL via path-traversal. Reject pre-dispatch
+        // so the reqwest client never sees the dirty value.
+        let alert = fake_alert();
+        for bad in [
+            "..%2F169.254.169.254%2F",
+            "evil@attacker.com",
+            "real/../169.254.169.254",
+            "real:9999/admin",
+            "real?query=1",
+            "with space",
+            "",
+        ] {
+            let err = send_viptalk(bad, &["!room:example.com".into()], &alert)
+                .await
+                .unwrap_err();
+            assert!(
+                err.contains("unsafe characters") || err.contains("SSRF"),
+                "expected SSRF-reject error for token `{bad}`, got: {err}",
+            );
+        }
     }
 
     #[tokio::test]
