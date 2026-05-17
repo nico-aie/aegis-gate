@@ -177,7 +177,13 @@ pub(crate) async fn handle_data_request_inner(
     // reject anyway), then threaded into both the detector view
     // AND the upstream forwarder so each request reads its body
     // exactly once.
-    const MAX_BODY_BYTES: usize = 1 * 1024 * 1024; // 1 MiB
+    //
+    // 2026-05-17 F-CRITICAL-004 — was `const = 1 MiB`; now reads
+    // `cfg.proxy.max_body_bytes` via the long-lived ProxyContext.
+    // Default 10 MiB matches `QuotaConfig::default()`; operators
+    // can raise it for upload-heavy routes or drop it to tighten
+    // the DoS surface.
+    let max_body_bytes = upstream_ctx.max_body_bytes;
 
     // Resolve the effective client IP: walk X-Forwarded-For
     // backwards through the trusted-proxy CIDR list and return
@@ -447,14 +453,14 @@ pub(crate) async fn handle_data_request_inner(
             return (resp, DecisionTag::block("body-read-error"));
         }
     };
-    if body_bytes.len() > MAX_BODY_BYTES {
+    if body_bytes.len() > max_body_bytes {
         let resp = Response::builder()
             .status(hyper::StatusCode::PAYLOAD_TOO_LARGE)
             .header("content-type", "application/json")
             .body(Full::new(Bytes::from(
                 serde_json::json!({
                     "error": "body_too_large",
-                    "max_bytes": MAX_BODY_BYTES,
+                    "max_bytes": max_body_bytes,
                 })
                 .to_string(),
             )))

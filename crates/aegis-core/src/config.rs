@@ -126,6 +126,14 @@ pub struct WafConfig {
     /// is loud, not silent.
     #[serde(default)]
     pub ai: AiConfig,
+    /// Data-plane request-handling knobs. Today this only carries
+    /// `max_body_bytes` (the global request-body cap, previously a
+    /// hard-coded 1 MiB in `data_plane.rs`). Per-route quotas
+    /// (`routes[].quota.client_max_body_size`) take precedence when
+    /// set; this is the global ceiling that applies to every route.
+    /// Default 10 MiB — matches `QuotaConfig::default()`.
+    #[serde(default)]
+    pub proxy: ProxyConfig,
     /// DDoS protection — per-IP burst detection + EWMA spike
     /// mode + cluster-wide auto-block via the state backend.
     ///
@@ -273,6 +281,36 @@ impl Default for AiConfig {
 
 fn default_ai_confidence_threshold() -> f32 {
     0.85
+}
+
+/// Data-plane request-handling knobs.
+///
+/// 2026-05-17 F-CRITICAL-004: surfaces `max_body_bytes` (previously a
+/// hard-coded 1 MiB const in `data_plane.rs`) so operators can admit
+/// legitimate large payloads (file upload routes, multipart batches,
+/// PDF/CSV ingest) without an inline rebuild. The per-route knob
+/// `routes[].quota.client_max_body_size` (in `QuotaConfig`) takes
+/// precedence when populated; this field is the global ceiling.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProxyConfig {
+    /// Maximum request body size buffered for detector inspection.
+    /// Requests above this cap return 413. Default 10 MiB — matches
+    /// `QuotaConfig::default().client_max_body_size`. Increase for
+    /// upload-heavy workloads; decrease to tighten the DoS surface.
+    /// **Beware**: detectors buffer up to this size before running,
+    /// so a high cap costs more memory per concurrent request.
+    #[serde(default = "default_proxy_max_body_bytes")]
+    pub max_body_bytes: u64,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self { max_body_bytes: default_proxy_max_body_bytes() }
+    }
+}
+
+fn default_proxy_max_body_bytes() -> u64 {
+    10 * 1024 * 1024 // 10 MiB — matches QuotaConfig::default()
 }
 
 /// In-process runtime sizing — Layer-1 of the three-layer scaling
