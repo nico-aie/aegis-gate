@@ -153,6 +153,29 @@ rate_limit:
       window: "1m"
 
 # ---------------------------------------------------------------------------
+# DDoS protection — per-IP burst gate (peer of rate_limit / strike-block /
+# access-list, NOT a detector). Sliding-window auto-block: an IP that
+# sustains > per_ip_limit requests in per_ip_window_s seconds is auto-
+# blocked for block_ttl_s. EWMA spike-mode flips when current_rps exceeds
+# `spike_multiplier × baseline_rps` (per-process; cluster-broadcast is
+# deferred behind the ha-clustering work).
+#
+# Defaults made explicit here for discoverability — the gate ships ON by
+# default even if this block is absent. For tighter/looser postures, see:
+#   config/profiles/prod-strict.yaml          (per_ip_limit: 200, spike: 2.0)
+#   config/profiles/prod-high-throughput.yaml (per_ip_limit: 5000, spike: 4.0)
+# Full operator guide: docs/security/ddos-protection.md.
+# ---------------------------------------------------------------------------
+ddos:
+  enabled: true              # gate on (secure-by-default)
+  observe_only: false        # enforce; flip to true for shadow-mode validation
+  per_ip_limit: 1000         # max requests per source IP within the window
+  per_ip_window_s: 10        # sliding-window length (seconds)
+  block_ttl_s: 300           # auto-block duration on burst-exceed (5 min)
+  spike_multiplier: 3.0      # current_rps > 3 × baseline → spike_active
+  tightened_per_ip_rps: 20   # per-IP cap during spike (cluster-wire deferred)
+
+# ---------------------------------------------------------------------------
 # Risk scoring
 # ---------------------------------------------------------------------------
 risk:

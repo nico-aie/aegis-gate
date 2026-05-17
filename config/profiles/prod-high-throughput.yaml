@@ -111,6 +111,27 @@ rate_limit:
       limit: 30000
       window: "1m"
 
+# ---------------------------------------------------------------------------
+# DDoS — per-IP burst gate. Looser than prod-balanced because CDN edges
+# fan many real users behind a single source IP to the WAF, so tight
+# per-IP caps would bounce legitimate traffic:
+#   - per_ip_limit:        5000 (vs 1000 balanced)  → ~500 req/s/IP allowed
+#   - block_ttl_s:         180  (vs 300  balanced)  → shorter quarantine
+#   - spike_multiplier:    4.0  (vs 3.0  balanced)  → tolerates burstier baseline
+#   - tightened_per_ip_rps: 100 (vs 20   balanced)  → softer spike clamp
+# If your CDN doesn't restore the original client IP via XFF, even these
+# caps will misfire — verify XFF resolution before relying on this gate.
+# Full operator guide: docs/security/ddos-protection.md.
+# ---------------------------------------------------------------------------
+ddos:
+  enabled: true
+  observe_only: false
+  per_ip_limit: 5000
+  per_ip_window_s: 10
+  block_ttl_s: 180
+  spike_multiplier: 4.0
+  tightened_per_ip_rps: 100
+
 rules:
   paths: []
   max_rule_count: 10000
