@@ -132,6 +132,12 @@ pub struct ProxyContext {
     pub reset_in_progress: std::sync::OnceLock<
         Arc<std::sync::atomic::AtomicBool>,
     >,
+    /// 2026-05-17 F-CRITICAL-006 — adaptive load shedder. Set when
+    /// `cfg.load_shedder.enabled = true` and unset otherwise. Data
+    /// plane reads via `.get()` so test fixtures and disabled
+    /// configs short-circuit to "always admit". See
+    /// `crates/aegis-proxy/src/shed.rs` for the algorithm.
+    pub load_shedder: std::sync::OnceLock<Arc<crate::shed::LoadShedder>>,
 }
 
 impl ProxyContext {
@@ -176,6 +182,7 @@ impl ProxyContext {
             max_body_bytes: usize::try_from(cfg.proxy.max_body_bytes)
                 .unwrap_or(usize::MAX),
             reset_in_progress: std::sync::OnceLock::new(),
+            load_shedder: std::sync::OnceLock::new(),
         })
     }
 

@@ -356,6 +356,48 @@ itself is wired.
 
 ---
 
+## Quota module — per-route body / header / URI / timeout caps
+
+**File:** `crates/aegis-proxy/src/quota.rs`
+
+| Stub | Lines | Contract status |
+|---|---|---|
+| `enforce_quota` + per-quota result types | 1-90 | **Not required.** Round-1 contract doesn't mandate per-route body caps — the global `cfg.proxy.max_body_bytes` already satisfies "WAF MUST reject oversized requests" (`data_plane.rs:450`, F-CRITICAL-004 fix). Per-route caps are a Phase-C operational ergonomics feature. |
+
+**Why deferred:** The 2026-05-17 F-CRITICAL-006 (Phase 6 wire-up) bundle prioritised the load shedder (Round-3 resilience scoring) over the per-route quota wire. Today the global body cap covers the security need; per-route caps are an operator-ergonomics improvement that requires plumbing `route_ctx.quota` through every code path that touches body / headers / URI.
+
+**Action if wired:** call sites are `data_plane::handle_data_request_inner` (right after route resolution, before body collection) — feed `route_ctx.quota` to a new `enforce_quota(&parts, body_len, &quota)` helper that returns `Result<(), QuotaError>` for each cap; map errors to the documented HTTP status (413 / 431 / 414 / 408 / 504). Existing `quota.rs` unit tests pin the per-cap behaviour; adding integration tests at the request-handler level is the main verification surface.
+
+---
+
+## DR module — runtime snapshot / restore
+
+**File:** `crates/aegis-proxy/src/dr.rs`
+
+| Stub | Lines | Contract status |
+|---|---|---|
+| `dr::snapshot()` + `dr::restore()` | full file | **Not required.** Contract has no snapshot/restore primitive. README mentions it as an operator-quality bonus. |
+
+**Why deferred:** Snapshot/restore is genuinely useful for blue/green operator workflows, but it requires consensus on the serialised shape (which subsystem state belongs in a snapshot — risk-tracker, rate-limit buckets, blacklist, etc.) and how to merge a restored snapshot against in-flight state without dropping audit events. Both are design questions that go beyond a wire-up.
+
+**Action if wired:** start with a narrower scope — snapshot the access-list + risk-tracker state only (the two state-bearing surfaces with audit-mutated CRUD already), serialise to JSON, store via `StateBackend`. `dr.rs` today accepts `{}` as restore-input and would happily wipe runtime config; treat the wire-up as a brand-new design pass, not a "find the call site" refactor.
+
+---
+
+## Traffic module — shadow mirroring
+
+**File:** `crates/aegis-proxy/src/traffic.rs`
+
+| Stub | Lines | Contract status |
+|---|---|---|
+| `traffic::mirror_request` + tee plumbing | full file | **Not required.** Contract is silent on shadow traffic. README documents it as a Round-3 nice-to-have. |
+
+**Why deferred:** Traffic mirroring (send a copy of every request to a secondary upstream for analysis without blocking the primary response) is a strong operator-tooling story, but it doubles the upstream connection count and risks amplifying any attack. Needs an opt-in flag plus sampling + circuit-breaker on the mirror side before it's safe to ship.
+
+**Action if wired:** call site is `forward_allow_to_upstream` in `data_plane.rs`. After picking the primary member, also pick a "mirror" member from a separately-configured pool, spawn the mirror request in a `tokio::spawn` so it doesn't block the primary response. Discard the mirror response. Cap mirror concurrency separately so a slow mirror upstream can't backpressure the primary path.
+
+---
+
 ## How this list will change
 
 - **Trimmed** when a stub gets deleted (Phase 4 will remove
