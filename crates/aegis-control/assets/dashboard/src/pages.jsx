@@ -2020,29 +2020,146 @@ function SecOpsPostureCard() {
 
 // ============== RULE MANAGER ==============
 // DSL body templates used when the API doesn't supply one.
+// 2026-05-17 F-CRITICAL-001 — rule DSL is YAML, not the brace-form
+// the prior placeholder generated. The brace-form would store fine
+// (validate_rule_body in aegis-control only checks size + empty +
+// TODO markers) but the engine's `aegis_security::rules::parser`
+// is `serde_yaml::from_str`, so the prior bodies never produced a
+// live rule. With the CRUD bridge now wired (admin_mutate →
+// rebuild_active_ruleset), the body MUST be valid YAML matching
+// the AST in `crates/aegis-security/src/rules/ast.rs`.
 function defaultRuleBody(id) {
-  return `rule "${id}" {\n  priority   = 100\n  field      = "any"\n  operator   = "regex"\n  pattern    = r"example"\n  action     = "block"\n  risk_delta = 50\n  scope      = ["global"]\n  tags       = ["custom"]\n}\n`;
+  return `- id: ${id}\n  priority: 100\n  when:\n    path_matches:\n      contains: "/admin"\n  then:\n    block:\n      status: 403\n`;
 }
 
 // Synthesise a rule body from a mock-style row so we have something
 // to PUT when an operator clicks Save & deploy on a builtin entry.
+// 2026-05-17 — emit canonical YAML matching the engine parser.
 function ruleRowToBody(r) {
   if (r.body) return r.body;
-  return [
-    `rule "${r.id}" {`,
-    `  // ${r.name || r.id}`,
-    `  priority   = ${r.pri ?? 100}`,
-    `  field      = "${r.field || 'any'}"`,
-    `  operator   = "${r.op || 'regex'}"`,
-    `  pattern    = r"${r.pattern || ''}"`,
-    `  action     = "${r.action || 'block'}"`,
-    `  risk_delta = ${r.risk ?? 50}`,
-    `  scope      = ["global"]`,
-    `  tags       = ["${r.cat || 'custom'}"]`,
-    `}`,
-    '',
-  ].join('\n');
+  const action = (r.action || 'block').toLowerCase();
+  const lines = [
+    `- id: ${r.id}`,
+    `  priority: ${r.pri ?? 100}`,
+    `  when:`,
+    `    path_matches:`,
+    `      contains: "${(r.pattern || '/').replace(/"/g, '\\"')}"`,
+    `  then:`,
+  ];
+  if (action === 'block') {
+    lines.push('    block:', `      status: 403`);
+  } else if (action === 'allow') {
+    lines.push('    allow');
+  } else if (action === 'challenge') {
+    lines.push('    challenge:', '      level: js');
+  } else {
+    lines.push('    log_only');
+  }
+  lines.push('');
+  return lines.join('\n');
 }
+
+// 2026-05-17 F-CRITICAL-001 (UI friendliness pass) — quick-start
+// rule templates. Each template ships a canonical YAML body that
+// parses against `aegis_security::rules::parser`; operators tweak
+// the highlighted value and hit Save. The dashboard's New rule
+// modal renders these as one-click chips. Empty-state pre-rules
+// view also shows them prominently.
+//
+// Keep the list short (5-6 max) and skewed toward the most common
+// hackathon demo: "block requests to /admin" + "block specific IP"
+// + "allow my office IP". The advanced ones (regex on body,
+// header CRLF detection, threat-feed lookup) belong in
+// `docs/operator/rule-cookbook.md` rather than the modal — fewer
+// choices in the UI = less friction for the operator's first save.
+const RULE_TEMPLATES = [
+  {
+    label: 'Block by path',
+    description: 'Returns 403 for any request whose path contains the given substring.',
+    sampleId: 'block-admin-path',
+    body:
+`- id: block-admin-path
+  priority: 100
+  when:
+    path_matches:
+      contains: "/admin"
+  then:
+    block:
+      status: 403
+`,
+  },
+  {
+    label: 'Block by IP',
+    description: 'Blocks every request from one of the listed peer IPs (CIDR not supported here — use Access Lists for ranges).',
+    sampleId: 'block-bad-ips',
+    body:
+`- id: block-bad-ips
+  priority: 100
+  when:
+    ip_in:
+      - "203.0.113.10"
+      - "198.51.100.42"
+  then:
+    block:
+      status: 403
+`,
+  },
+  {
+    label: 'Allow trusted IP',
+    description: 'Short-circuits to allow for a trusted source — useful for office IPs, monitors, or partner APIs. Highest priority so it wins over any block rule.',
+    sampleId: 'allow-office',
+    body:
+`- id: allow-office
+  priority: 200
+  when:
+    ip_in:
+      - "192.0.2.0"
+  then: allow
+`,
+  },
+  {
+    label: 'Block suspicious header',
+    description: 'Fires when a specific request header contains a substring (good for CRLF / injection signatures the detector chain missed).',
+    sampleId: 'block-bad-user-agent',
+    body:
+`- id: block-bad-user-agent
+  priority: 90
+  when:
+    header_matches:
+      name: "User-Agent"
+      op:
+        contains: "sqlmap"
+  then:
+    block:
+      status: 403
+`,
+  },
+  {
+    label: 'Observe only (log)',
+    description: 'Records a match in the audit log but does NOT block. Useful for tuning a new pattern before flipping it to enforce.',
+    sampleId: 'log-suspicious-path',
+    body:
+`- id: log-suspicious-path
+  priority: 50
+  when:
+    path_matches:
+      contains: ".php"
+  then: log_only
+`,
+  },
+];
+
+// Short 6-line DSL cheatsheet shown in the "Syntax help" disclosure.
+// Kept terse — full reference lives in
+// docs/operator/rules-dsl.md (to be added in the rule-cookbook PR).
+const RULE_DSL_CHEATSHEET = [
+  'Each rule is a YAML list item.',
+  '  id: <string>         · unique identifier (1-64 alphanumerics + hyphens/underscores)',
+  '  priority: <int>      · higher wins; default 0',
+  '  when: <condition>    · path_matches | ip_in | header_matches | method | host_matches | body_matches | all/any/not | true',
+  '  then: <action>       · allow | log_only | block: { status: 403 } | challenge: { level: js } | rate_limit: { key, limit, window_s }',
+  '  scope: global        · or { route: "<route-id>" } to scope to one route',
+];
 
 // Read the current /api/config/version. Returns the numeric version
 // or 0 on failure so the caller can still wait for `ver + 1`.
@@ -2380,6 +2497,50 @@ function PageRuleManager() {
 
       {activeTab === 'simulator' && <RuleSimulator />}
 
+      {/* 2026-05-17 F-CRITICAL-001 UI: zero-rules onboarding card.
+          Shown only when the live RuleStore is empty (no search,
+          no filter — the operator just hasn't created any rules
+          yet). Replaces the prior subtle "No rules match." that
+          left operators staring at a blank list. */}
+      {activeTab === 'rules' && merged.length === 0 && (
+        <div className="card" style={{ padding: 20, marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                No operator rules yet
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--ink-dim)', margin: '0 0 12px 0', lineHeight: 1.5 }}>
+                The WAF's built-in detector chain (SQLi, XSS, path traversal, SSRF, …) runs without
+                any rules. Use rules to add policy on top — block specific paths or IPs, allow trusted
+                sources, or log suspicious patterns. Pick a starter below or click <strong>New rule</strong>.
+              </p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {RULE_TEMPLATES.map(tpl => (
+                  <button
+                    key={tpl.label}
+                    type="button"
+                    className="btn"
+                    style={{ fontSize: 12 }}
+                    onClick={() => {
+                      setNewBody(tpl.body);
+                      setNewId(tpl.sampleId);
+                      setNewEnabled(true);
+                      setShowNew(true);
+                    }}
+                    title={tpl.description}
+                  >
+                    {tpl.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button className="btn primary" onClick={() => setShowNew(true)} disabled={busy}>
+              <window.I.Plus /> New rule
+            </button>
+          </div>
+        </div>
+      )}
+
       {activeTab === 'rules' && (
       <div className="split-list">
         <div className="left">
@@ -2390,9 +2551,14 @@ function PageRuleManager() {
             </div>
           </div>
           <div style={{ overflow: 'auto', flex: 1 }}>
-            {filtered.length === 0 && (
+            {filtered.length === 0 && merged.length > 0 && (
               <div style={{ padding: 20, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                No rules match.
+                No rules match the search.
+              </div>
+            )}
+            {filtered.length === 0 && merged.length === 0 && (
+              <div style={{ padding: 20, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                Use a template above to get started.
               </div>
             )}
             {filtered.map((r, i) => (
@@ -2572,8 +2738,21 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
   // Save button was just `disabled` when Rule ID was empty,
   // giving operators no signal that anything was wrong.
   const [attempted, setAttempted] = useStateP(false);
+  // 2026-05-17 — collapsible DSL cheatsheet right inside the modal so
+  // first-time operators don't have to leave the page to find
+  // syntax. Defaults to collapsed; the textarea is the primary
+  // affordance for users who already know the format.
+  const [showHelp, setShowHelp] = useStateP(false);
   const idRef = useRefP(null);
   const idEmpty = !newId.trim();
+  // 2026-05-17 — apply a quick-template: prefill the body AND, if
+  // the operator hasn't typed an ID yet, seed it with the template's
+  // sample id. Avoid clobbering anything the operator has already
+  // typed — both fields are still editable after the prefill.
+  const applyTemplate = (tpl) => {
+    setNewBody(tpl.body);
+    if (idEmpty) setNewId(tpl.sampleId);
+  };
   const handleSave = () => {
     if (idEmpty) {
       setAttempted(true);
@@ -2613,13 +2792,59 @@ function NewRuleModal({ newId, setNewId, newBody, setNewBody, newEnabled, setNew
               <span style={{ fontSize: 11, color: 'var(--down)' }}>Rule ID is required.</span>
             )}
           </label>
+          {/* 2026-05-17 F-CRITICAL-001 UI: quick-template chips so
+              first-time operators can ship a working rule without
+              learning the DSL up front. One click loads a canonical
+              YAML body the engine parser accepts. */}
+          <div>
+            <div className="field-label" style={{ marginBottom: 6 }}>Quick templates</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {RULE_TEMPLATES.map(tpl => (
+                <button
+                  key={tpl.label}
+                  type="button"
+                  className="chip"
+                  onClick={() => applyTemplate(tpl)}
+                  title={tpl.description}
+                  style={{ fontSize: 11 }}
+                >
+                  {tpl.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--ink-dim)', marginTop: 6 }}>
+              Click a template to prefill the body — then edit values like paths, IPs, or status codes.
+            </div>
+          </div>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <span className="field-label">DSL body</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span className="field-label">Rule body (YAML)</span>
+              <button
+                type="button"
+                onClick={() => setShowHelp(s => !s)}
+                style={{
+                  background: 'none', border: 'none', padding: 0,
+                  color: 'var(--accent)', cursor: 'pointer', fontSize: 11,
+                }}
+              >
+                {showHelp ? 'Hide syntax help' : 'Syntax help'}
+              </button>
+            </div>
+            {showHelp && (
+              <pre style={{
+                background: 'var(--canvas)', border: '1px solid var(--hairline)',
+                borderRadius: 6, padding: 10, fontSize: 11, lineHeight: 1.5,
+                fontFamily: 'var(--font-mono)', color: 'var(--ink-dim)', margin: 0,
+              }}>
+                {RULE_DSL_CHEATSHEET.join('\n')}
+              </pre>
+            )}
             <textarea
               className="input"
               style={{ minHeight: 220, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, padding: 12 }}
               value={newBody}
               onChange={e => setNewBody(e.target.value)}
+              spellCheck={false}
             />
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
