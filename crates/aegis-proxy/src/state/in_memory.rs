@@ -193,10 +193,20 @@ impl StateBackend for InMemoryBackend {
     }
 
     async fn add_risk(&self, key: &RiskKey, delta: i32, max: u32) -> Result<u32> {
+        // F-HIGH-stateful (2026-05-17 s-tester audit): pre-fix the
+        // entry had `expires_at: None` so every IP that ever made
+        // a request kept a risk-score row in memory forever. Under
+        // sustained traffic from many unique IPs (bot scan, large
+        // fleet) the DashMap grew unbounded. Now each write sets a
+        // 24-hour TTL; the `spawn_reaper` task evicts expired
+        // entries periodically. The TTL is several multiples of
+        // `cfg.risk.decay_half_life` (default 5 min) so an entry
+        // past the cutoff is statistically zero anyway.
         let k = Self::risk_key_str(key);
+        let new_expiry = Some(Instant::now() + Duration::from_secs(24 * 3600));
         let mut entry = self.kv.entry(k).or_insert_with(|| Entry {
             value: 0u32.to_le_bytes().to_vec(),
-            expires_at: None,
+            expires_at: new_expiry,
         });
 
         let current = u32::from_le_bytes(
@@ -208,6 +218,10 @@ impl StateBackend for InMemoryBackend {
             current.saturating_sub(delta.unsigned_abs())
         };
         entry.value = new_val.to_le_bytes().to_vec();
+        // Slide the TTL on every write — an IP that keeps tripping
+        // the gate keeps its row alive. Once it goes quiet the row
+        // ages out within 24 h.
+        entry.expires_at = new_expiry;
         Ok(new_val)
     }
 
@@ -431,6 +445,31 @@ mod tests {
 
         let v = b.add_risk(&key, -30, 100).await.unwrap();
         assert_eq!(v, 70);
+    }
+
+    #[tokio::test]
+    async fn risk_score_entries_get_a_ttl_so_reaper_can_evict() {
+        // F-HIGH-stateful regression. Pre-fix `add_risk` created
+        // entries with `expires_at: None` so they lived forever —
+        // the kv DashMap grew unbounded under sustained traffic
+        // from many unique IPs. After the fix every write sets a
+        // TTL, and the reaper task evicts entries past it.
+        let b = backend();
+        let key = RiskKey {
+            ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99)),
+            device_fp: None,
+            session: None,
+            tenant_id: None,
+        };
+        b.add_risk(&key, 10, 100).await.unwrap();
+        // Reach into the DashMap to verify the TTL is non-None.
+        // The risk row key matches `risk_key_str`.
+        let k = InMemoryBackend::risk_key_str(&key);
+        let entry = b.kv.get(&k).expect("entry must exist");
+        assert!(
+            entry.expires_at.is_some(),
+            "risk entry must have an expires_at so spawn_reaper can evict it",
+        );
     }
 
     #[tokio::test]
