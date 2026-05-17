@@ -225,4 +225,25 @@ For each module: decide to wire OR delete. The README claims feature support, so
 2. **Phase D.3 (compliance modes)** — which detector classes go in `COMPLIANCE_PINNED`? Default: `[SQLi, XSS, PathTraversal, SSRF]` per common compliance baselines.
 3. **Phase I (dead code)** — wire all 5 or delete some? Default per-module recommendation above.
 
+## Status snapshot — 2026-05-17 batch (16 commits)
+
+| Phase | Status | Notes |
+|---|---|---|
+| A — disqualification hotfixes | DONE | 3 commits: `3a1adde` (keyword corpus), `ece0728` (VipTalk token), `6484756` (mock data → 503) |
+| B — smallest CRITICALs | DONE | 1 bundle commit `7b48800` (6 fixes), plus targeted `6ec69ec`/`3c47141`/`64cd728`/`0959c3e` |
+| C.1 — audit wire shape | DONE | `63bada1` — serde rename/serialize_with for `ts_ms`/`ip`/`risk_score` clamp. No construction sweep needed. |
+| C.2 — audit new fields | DEFERRED | `method`/`path`/`mode` addition requires 45-site struct construction sweep + `action: String → enum` cross-crate refactor. Future session. |
+| D — Round-1 dashboard | PARTIAL | F-CRITICAL-003 (`/healthz`) DONE in `6ec69ec`. F-CRITICAL-001 (rule CRUD live rebuild) NOT STARTED — ~150 LoC, needs ArcSwap wire-up + data-plane evaluator. F-CRITICAL-002 (compliance) MOOT (compliance removed in `a647b60` per Hackathon contract). |
+| E — security composite keys | NOT STARTED | Schema unblocked by Phase G (RlScope+RlKey new variants, fail_mode_by_tier). |
+| F — security depth features | NOT STARTED | Velocity engine, behavior signals, canary block, response filter §5.7. Schema unblocked by Phase G (canary_paths). |
+| G — core schema fields | DONE | 2 commits: `678baa2` (DDoS tier_overrides + fail_mode_by_tier + canary_paths), `4d91eeb` (RlScope/RlKey + DetectorsConfig per_tier). All `#[serde(default)]` — no breaking changes. |
+| H — correctness/ops | PARTIAL | F-CRITICAL-015 (SSRF) `3c47141`, F-CRITICAL-016 (VecDeque) `64cd728`, F-CRITICAL-012 (spawn_blocking) `0959c3e`. Remainder TBD. |
+| I — dead-code deletion | DONE | `0ef3eaf` (5 modules, 2419 LoC) + `cf1926d` (dod.rs cleanup) + `a647b60` (compliance removal). |
+
+**Next session priorities (in order):**
+1. Phase D F-CRITICAL-001 — rule CRUD ArcSwap rebuild + data-plane evaluator wiring (~150 LoC, Round-1 Pass/Fail).
+2. Phase C.2 — `AuditEvent` add `method`/`path`/`mode` fields + 45-site sweep + introduce `AuditAction` enum.
+3. Phase E — composite `{IP+device_fp+session}` keys for RiskTracker + IpRateLimiter (~300 LoC).
+4. Phase F — velocity engine, canary-path detector (consume Phase G schema), behavior signals.
+
 If you authorise with "go" + defaults, I'll start Phase A immediately.
