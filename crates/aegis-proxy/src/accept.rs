@@ -1118,6 +1118,30 @@ pub(crate) async fn accept_loop(
                                 upstream_ctx.pow_issuer.get(),
                                 Some(&state_backend_for_interop),
                             ).await;
+                            // F-CRITICAL-001 (2026-05-17 s-tester
+                            // audit): control-endpoint responses
+                            // previously short-circuited before
+                            // `stamp_interop_response`, so the 6
+                            // mandatory v2.3 §5 headers
+                            // (`X-WAF-Request-Id`, `-Action`,
+                            // `-Mode`, `-Cache`, `-Risk-Score`,
+                            // `-Overhead-Latency`) were missing on
+                            // every /__waf_control/* call. Stamp
+                            // them now with a DecisionTag::allow
+                            // — control endpoints are not security
+                            // decisions, but the OC harness asserts
+                            // header presence uniformly across the
+                            // listener.
+                            let resp = crate::admin_dispatch::stamp_interop_response(
+                                resp,
+                                aegis_control::interop::headers::DecisionTag::allow(),
+                                interop.as_ref(),
+                                peer,
+                                &method,
+                                &path,
+                                0,
+                                request_start,
+                            );
                             return Ok::<_, Infallible>(resp);
                         }
                     }
