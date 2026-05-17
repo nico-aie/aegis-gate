@@ -508,11 +508,19 @@ pub async fn forward(
 
     let status = resp.status();
     let resp_headers = resp.headers().clone();
-    let body_bytes = resp
-        .into_body()
+    // F-HIGH-003 (2026-05-17 s-tester audit): cap the upstream
+    // response body. Pre-fix the WAF buffered the entire response
+    // with no cap, exposing it to OOM under a hostile or runaway
+    // upstream (gzipped XML bomb, infinite-stream bug). Limit via
+    // `cfg.max_response_body_bytes` (default 10 MiB); requests that
+    // exceed the cap surface a `ReadBody("response body exceeds
+    // cap: ...")` error which the data plane maps to a 502 +
+    // `X-WAF-Action: block`.
+    let max_response = cfg.max_response_body_bytes as usize;
+    let body_bytes = http_body_util::Limited::new(resp.into_body(), max_response)
         .collect()
         .await
-        .map_err(|e| ForwardError::ReadBody(e.to_string()))?
+        .map_err(|e| ForwardError::ReadBody(format!("response body exceeds cap or read error: {e}")))?
         .to_bytes();
 
     // Use replay to filter hop-by-hop on the response side.
@@ -856,6 +864,7 @@ mod tests {
             keep_alive: true,
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
+            max_response_body_bytes: 10 * 1024 * 1024,
         };
 
         for _ in 0..5 {
@@ -892,6 +901,7 @@ mod tests {
             keep_alive: true,
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
+            max_response_body_bytes: 10 * 1024 * 1024,
         };
         let https = ConnectionPoolConfig { tls: true, ..http.clone() };
         assert_ne!(super::PoolKey::from(&http), super::PoolKey::from(&https));
@@ -913,17 +923,21 @@ mod tests {
             keep_alive: true,
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
+            max_response_body_bytes: 10 * 1024 * 1024,
         };
         let https = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::Https,
+            max_response_body_bytes: 10 * 1024 * 1024,
             ..auto.clone()
         };
         let h2c = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::H2c,
+            max_response_body_bytes: 10 * 1024 * 1024,
             ..auto.clone()
         };
         let grpc = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::Grpc,
+            max_response_body_bytes: 10 * 1024 * 1024,
             ..auto.clone()
         };
         // Every variant produces a distinct cache key.
@@ -950,9 +964,11 @@ mod tests {
             keep_alive: true,
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
+            max_response_body_bytes: 10 * 1024 * 1024,
         };
         let https = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::Https,
+            max_response_body_bytes: 10 * 1024 * 1024,
             ..auto.clone()
         };
         let c_auto  = super::pooled_client(&auto);
@@ -980,6 +996,7 @@ mod tests {
             keep_alive: false, // request-side `Connection: close`
             tls: false,
             scheme: aegis_core::config::UpstreamScheme::Auto,
+            max_response_body_bytes: 10 * 1024 * 1024,
         };
 
         for _ in 0..3 {

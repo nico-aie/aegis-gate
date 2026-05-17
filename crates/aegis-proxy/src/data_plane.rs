@@ -2033,14 +2033,27 @@ fn emit_tunnel_close_audit(
 /// `cfg.ip_lists.trusted_proxies` is a follow-up that plumbs
 /// the cfg into the handler.
 fn default_trusted_proxies() -> Vec<ipnet::IpNet> {
-    vec![
-        "127.0.0.0/8".parse().unwrap(),
-        "10.0.0.0/8".parse().unwrap(),
-        "172.16.0.0/12".parse().unwrap(),
-        "192.168.0.0/16".parse().unwrap(),
-        "::1/128".parse().unwrap(),
-        "fc00::/7".parse().unwrap(),
-    ]
+    // F-HIGH-002 (2026-05-17 s-tester audit): default is now empty.
+    // Pre-fix this returned `[127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
+    // 192.168.0.0/16, ::1/128, fc00::/7]`, which silently trusted XFF
+    // from any loopback or RFC1918 peer. Two contract problems with
+    // that:
+    //
+    //  1. v2.3 §10 mandates distinct `127.0.0.x` addresses are
+    //     distinct clients. With loopback trusted, an OC client
+    //     sending `X-Forwarded-For: 1.2.3.4` from `127.0.0.5`
+    //     resolves to `1.2.3.4` — collapsing every sandbox client
+    //     onto one synthetic key.
+    //  2. v2.3 §6 contract test (`tests/contract/v2.3_compliance.sh`
+    //     line 299-302) asserts audit `ip` is the TCP peer when
+    //     XFF is present from `127.0.0.1`. The previous default
+    //     resolved to the XFF value and failed that assertion.
+    //
+    // Operators with a real edge proxy (CDN, k8s ingress) opt-in
+    // via `cfg.ip_lists.trusted_proxies` once that plumbing lands.
+    // Default = empty = peer.ip() wins, which is the safe and
+    // contract-compliant posture.
+    Vec::new()
 }
 
 #[allow(clippy::too_many_arguments)]
