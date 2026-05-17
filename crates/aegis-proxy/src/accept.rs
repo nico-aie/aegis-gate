@@ -161,6 +161,11 @@ pub(crate) async fn admin_accept_loop(
         // Single-admin model: hard-code "admin" until RBAC lands.
         user: "admin".into(),
         password_hash: auth.password_hash_ref.clone(),
+        // 2026-05-17 F-CRITICAL-003 — TOTP fields plumbed from cfg
+        // so `api::login::authenticate` runs the second-factor step
+        // when `dashboard_auth.totp_enabled = true`.
+        totp_secret_b32: auth.totp_secret_b32.clone(),
+        totp_enabled: auth.totp_enabled,
     });
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 

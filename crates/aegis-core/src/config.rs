@@ -2681,6 +2681,15 @@ pub struct DashboardAuthConfig {
     pub ip_allowlist: Vec<ipnet::IpNet>,
     #[serde(default)]
     pub totp_enabled: bool,
+    /// 2026-05-17 F-CRITICAL-003 — base32-encoded TOTP shared secret
+    /// for the configured admin user. Required when `totp_enabled =
+    /// true`; ignored otherwise. The b32 encoding matches what
+    /// authenticator apps consume from the `otpauth://` provisioning
+    /// URI returned by `crate::admin_auth::totp::provisioning_uri`.
+    /// Empty string when unset. See `docs/operator/admin-auth-setup.md`
+    /// for the enrollment flow (YAML-only in v1).
+    #[serde(default)]
+    pub totp_secret_b32: String,
     #[serde(default)]
     pub login_rate_limit: LoginRateLimitConfig,
     #[serde(default)]
@@ -2718,6 +2727,7 @@ impl Default for DashboardAuthConfig {
             session_ttl_absolute: default_session_absolute(),
             ip_allowlist: default_ip_allowlist(),
             totp_enabled: false,
+            totp_secret_b32: String::new(),
             login_rate_limit: LoginRateLimitConfig::default(),
             lockout: LockoutConfig::default(),
             allow_ca_upload: false,
