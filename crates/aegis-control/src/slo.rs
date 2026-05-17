@@ -207,38 +207,48 @@ pub fn default_receivers() -> Vec<AlertReceiver> {
 // SLI ring buffer (in-memory time series)
 // ---------------------------------------------------------------------------
 
+// 2026-05-17 F-CRITICAL-016 (control audit): pre-fix this buffer
+// stored samples in a `Vec` and used `Vec::remove(0)` on overflow —
+// O(n) memcpy of up to 10 000 entries per push under a global
+// `Mutex<HashMap<SliKind, SliRingBuffer>>`. At 5k req/s on the
+// data plane that's a multi-millisecond stall per record call, on
+// the hot path that emits SLI observations. The 20/120 Performance
+// rubric breaks before any other gate fires.
+//
+// `VecDeque::pop_front` is O(1). Same cap (10 000), same access
+// pattern (push back, iterate forward), but the overflow path now
+// costs a pointer swap instead of 10 000 byte copies.
 struct SliRingBuffer {
-    samples: Vec<SliSample>,
+    samples: std::collections::VecDeque<SliSample>,
     max_len: usize,
 }
 
 impl SliRingBuffer {
     fn new(max_len: usize) -> Self {
         Self {
-            samples: Vec::with_capacity(max_len),
+            samples: std::collections::VecDeque::with_capacity(max_len),
             max_len,
         }
     }
 
     fn push(&mut self, sample: SliSample) {
         if self.samples.len() >= self.max_len {
-            self.samples.remove(0);
+            self.samples.pop_front();
         }
-        self.samples.push(sample);
+        self.samples.push_back(sample);
     }
 
     fn average_in_window(&self, window: Duration) -> Option<f64> {
         let cutoff = Utc::now() - window;
-        let in_window: Vec<f64> = self
+        let (sum, count) = self
             .samples
             .iter()
             .filter(|s| s.ts >= cutoff)
-            .map(|s| s.value)
-            .collect();
-        if in_window.is_empty() {
+            .fold((0.0_f64, 0_u64), |(s, n), x| (s + x.value, n + 1));
+        if count == 0 {
             return None;
         }
-        Some(in_window.iter().sum::<f64>() / in_window.len() as f64)
+        Some(sum / count as f64)
     }
 }
 
