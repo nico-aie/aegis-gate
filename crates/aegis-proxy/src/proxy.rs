@@ -117,6 +117,13 @@ pub struct ProxyContext {
     /// global `cfg.risk.thresholds` and treats every tier as
     /// `challenges_enabled = true`.
     pub tiers: std::sync::OnceLock<Arc<aegis_control::api::tiers::TierStore>>,
+    /// 2026-05-17 F-CRITICAL-004 — global request-body cap, populated
+    /// from `cfg.proxy.max_body_bytes`. The detector chain buffers up
+    /// to this many bytes before inspecting body; requests above it
+    /// return 413. Previously a hard-coded 1 MiB const in
+    /// `data_plane.rs`; surfaced here so the data-plane hot path
+    /// reads the live value via the context it already holds.
+    pub max_body_bytes: usize,
 }
 
 impl ProxyContext {
@@ -155,6 +162,11 @@ impl ProxyContext {
             pow_issuer: std::sync::OnceLock::new(),
             ddos: std::sync::OnceLock::new(),
             tiers: std::sync::OnceLock::new(),
+            // Cast u64 → usize: on 64-bit targets these are
+            // identical width. We saturate on 32-bit hosts (which
+            // are unsupported anyway) to avoid silent truncation.
+            max_body_bytes: usize::try_from(cfg.proxy.max_body_bytes)
+                .unwrap_or(usize::MAX),
         })
     }
 
