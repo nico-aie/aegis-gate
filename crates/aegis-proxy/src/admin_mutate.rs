@@ -3346,10 +3346,15 @@ pub(crate) async fn handle_ddos_put(
     use http_body_util::BodyExt;
 
     let pre = mutation_preamble(&req, "ddos-put");
+    // 2026-05-19 — the runtime is now installed unconditionally at
+    // proxy boot (see aegis-proxy::run); `enabled` is decided
+    // inside the detector, so `None` here only happens when this
+    // handler is invoked against a test-bundle `DashboardServices`
+    // built without the proxy wired in.
     let Some(runtime) = services.ddos.as_ref().cloned() else {
         return mutation_error_response(
             aegis_control::api::mutation::MutationError::Internal(
-                "ddos runtime not wired (cfg.ddos.enabled = false?)".into(),
+                "ddos runtime not wired by proxy boot (test bundle?)".into(),
             ),
         );
     };
