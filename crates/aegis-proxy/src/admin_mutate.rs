@@ -3372,7 +3372,7 @@ pub(crate) async fn handle_ddos_put(
             )
         }
     };
-    let new_cfg = match put_body.validate() {
+    let mut new_cfg = match put_body.validate() {
         Ok(c) => c,
         Err(errs) => {
             return mutation_error_response(
@@ -3381,6 +3381,16 @@ pub(crate) async fn handle_ddos_put(
         }
     };
     let before_cfg = runtime.config_snapshot();
+    // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, DD-06): the PUT
+    // body doesn't carry `tier_overrides` / `failure_mode` today —
+    // those are YAML-only knobs. Preserve the existing in-memory
+    // values across the hot-swap so operators tightening the
+    // global `per_ip_limit` via the dashboard don't accidentally
+    // clear their YAML-configured per-tier policy. A dashboard
+    // knob for the per-tier sliders is tracked in
+    // plans/issue-fix/2026-05-18-qc-followup/ § DD-06.
+    new_cfg.tier_overrides = before_cfg.tier_overrides.clone();
+    new_cfg.failure_mode = before_cfg.failure_mode.clone();
     let before_view = aegis_control::api::gates::DdosConfigView::from(before_cfg);
     let after_view = aegis_control::api::gates::DdosConfigView::from(new_cfg.clone());
 

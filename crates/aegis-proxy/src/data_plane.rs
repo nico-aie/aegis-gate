@@ -346,7 +346,14 @@ pub(crate) async fn handle_data_request_inner(
     // gates. Fail-open on backend errors so a transient redis
     // hiccup doesn't drop legit traffic.
     if let Some(ddos) = upstream_ctx.ddos.get() {
-        match ddos.check(peer_ip).await {
+        // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.2 #03):
+        // path-heuristic tier classification before the DDoS check.
+        // Route resolution hasn't happened yet, but the path-only
+        // shortcut gives DDoS the per-tier limit lookup. Cheap —
+        // pure-function on `req.uri().path()`.
+        let (early_tier, _) =
+            aegis_security::pipeline::classify_tier_from_path(req.uri().path());
+        match ddos.check_with_tier(peer_ip, Some(early_tier)).await {
             Ok(outcome) if outcome.blocked => {
                 // Always emit the audit event so operators can
                 // observe-mode bake the signal before Phase 2.
@@ -418,9 +425,50 @@ pub(crate) async fn handle_data_request_inner(
             }
             Ok(_) => {} // not blocked, no signal
             Err(e) => {
-                // Fail open — observe-only never blocks anyway,
-                // and a state-backend hiccup must not drop traffic.
-                tracing::debug!(peer = %peer_ip, error = %e, "ddos: backend error, fail-open");
+                // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.8):
+                // per-tier fail-mode. Spec mandates fail-close on
+                // Critical (login / OTP / deposit / withdrawal),
+                // fail-open on lower tiers. `Tier::default_failure_mode()`
+                // already encodes that; the YAML config can override
+                // via `fail_mode_by_tier`.
+                let fm = ddos.fail_mode_for(Some(early_tier));
+                match fm {
+                    aegis_core::tier::FailureMode::FailClose => {
+                        tracing::warn!(
+                            peer = %peer_ip,
+                            tier = %early_tier.as_str(),
+                            error = %e,
+                            "ddos: backend error on critical-class tier — \
+                             fail-close per §5.8",
+                        );
+                        let resp = Response::builder()
+                            .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                            .header("retry-after", "1")
+                            .header("content-type", "application/json")
+                            .body(Full::new(Bytes::from(
+                                serde_json::json!({
+                                    "error": "service_unavailable",
+                                    "reason": "ddos_check_failed_fail_close",
+                                    "tier": early_tier.as_str(),
+                                })
+                                .to_string(),
+                            )))
+                            .unwrap();
+                        return (
+                            resp,
+                            DecisionTag::circuit_breaker("ddos_fail_close")
+                                .with_tier(early_tier),
+                        );
+                    }
+                    aegis_core::tier::FailureMode::FailOpen => {
+                        tracing::debug!(
+                            peer = %peer_ip,
+                            tier = %early_tier.as_str(),
+                            error = %e,
+                            "ddos: backend error — fail-open per §5.8",
+                        );
+                    }
+                }
             }
         }
     }

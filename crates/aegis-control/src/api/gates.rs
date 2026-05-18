@@ -157,6 +157,16 @@ impl DdosPutBody {
             block_ttl_s: self.block_ttl_s,
             spike_multiplier: self.spike_multiplier,
             tightened_per_ip_rps: self.tightened_per_ip_rps,
+            // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): the PUT
+            // body doesn't carry per-tier overrides today —
+            // operators tune those via YAML. The hot-swap surface
+            // preserves the existing in-memory overrides by NOT
+            // clearing them here. (Dashboard knob for per-tier
+            // limits is tracked in plans/issue-fix/2026-05-18-qc-followup
+            // § DD-06.) For now: PUT replaces the global knobs
+            // but leaves tier_overrides + failure_mode untouched.
+            tier_overrides: std::collections::HashMap::new(),
+            failure_mode: std::collections::HashMap::new(),
         })
     }
 }
@@ -412,6 +422,8 @@ mod tests {
                 block_ttl_s: 60,
                 spike_multiplier: 3.0,
                 tightened_per_ip_rps: 20,
+                tier_overrides: std::collections::HashMap::new(),
+                failure_mode: std::collections::HashMap::new(),
             },
             Arc::new(DummyState),
         ));
