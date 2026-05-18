@@ -251,7 +251,11 @@ tracked outside this plan:
    ready; the data plane still calls IP-only methods. Wiring
    `RequestView → RiskKey { ip, device_fp: <ja4+ua hash>, session:
    <cookie>, tenant_id: <route> }` and switching the call sites
-   to `*_with_key` is a separate commit.
+   to `*_with_key` is a separate commit. Tracked in
+   [`plans/future/risk-composite-key-data-plane.md`](../../future/risk-composite-key-data-plane.md)
+   — covers the data-plane key-builder, the additive
+   `RiskSnapshot` fields, and the dashboard Top Attackers table
+   extension that surfaces the new axes.
 3. [`plans/future/rule-non-block-actions.md`](../../future/rule-non-block-actions.md)
    — wire the 5 non-Block rule actions (Allow, Challenge,
    RateLimited, LogOnly, +1) for scoring depth.
