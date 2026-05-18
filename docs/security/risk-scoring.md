@@ -9,6 +9,16 @@
 > (Allow / Challenge / Block) is unchanged. Bot classification and JWT
 > identity can now contribute to the composite key.
 
+> **2026-05-18 Phase E (F-CRITICAL-001):** the `RiskTracker` map key
+> upgraded from bare `IpAddr` to `RiskKey` (composite). The legacy IP-
+> only methods (`record_malicious(ip, …)`, `level(ip)`, `snapshot(ip)`,
+> `reset(ip)`, `is_strike_blocked(ip)`) keep working and internally
+> construct `RiskKey::from_ip(ip)`. New `*_with_key` / `*_for_key`
+> variants take the full composite — two sessions on the same NAT'd
+> IP get independent buckets. IP-only and composite calls populate
+> different buckets even at the same IP, which is exactly the
+> auditor's intent: don't conflate sessions.
+
 ## Purpose
 
 Every request contributes to a numeric risk score tied to a composite

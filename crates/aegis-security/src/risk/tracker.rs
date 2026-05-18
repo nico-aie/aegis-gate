@@ -71,7 +71,17 @@ pub struct RiskTracker {
 }
 
 struct TrackerInner {
-    map: DashMap<IpAddr, Slot>,
+    /// 2026-05-18 F-CRITICAL-001 (security audit, Phase E): the
+    /// store key is now `RiskKey` (composite of IP + device_fp +
+    /// session + tenant) instead of bare `IpAddr`. Storage shape
+    /// upgrade only — the IP-only methods (`record_malicious(ip)`,
+    /// `level(ip)`, …) keep working by constructing
+    /// `RiskKey::from_ip(ip)` internally. The new `*_with_key`
+    /// methods take the full composite key. IP-only and composite
+    /// callers populate DIFFERENT buckets (different keys), which
+    /// is exactly the audit's intent: "don't conflate sessions on
+    /// the same NAT'd IP".
+    map: DashMap<aegis_core::risk::RiskKey, Slot>,
     /// CI-T12 — thresholds are atomically swappable so
     /// `PUT /api/risk/thresholds` can hot-apply new values
     /// without a restart. Reads through `Arc::clone` (free)
@@ -155,7 +165,34 @@ impl RiskTracker {
         delta: u32,
         now: Instant,
     ) -> RiskState {
-        let mut entry = self.inner.map.entry(ip).or_insert(Slot {
+        self.record_malicious_at_with_key(
+            aegis_core::risk::RiskKey::from_ip(ip),
+            delta,
+            now,
+        )
+    }
+
+    /// 2026-05-18 F-CRITICAL-001 (security audit, Phase E):
+    /// composite-key variant of [`record_malicious`]. Caller
+    /// builds the full `RiskKey` (IP + device_fp + session +
+    /// tenant) and gets a bucket scoped to that exact tuple. Two
+    /// sessions on the same NAT'd IP accumulate independent risk.
+    pub fn record_malicious_with_key(
+        &self,
+        key: aegis_core::risk::RiskKey,
+        delta: u32,
+    ) -> RiskState {
+        self.record_malicious_at_with_key(key, delta, Instant::now())
+    }
+
+    /// Composite-key + explicit-clock variant (deterministic tests).
+    pub fn record_malicious_at_with_key(
+        &self,
+        key: aegis_core::risk::RiskKey,
+        delta: u32,
+        now: Instant,
+    ) -> RiskState {
+        let mut entry = self.inner.map.entry(key).or_insert(Slot {
             score: 0,
             strikes: 0,
             last_seen: now,
@@ -174,7 +211,27 @@ impl RiskTracker {
     }
 
     pub fn record_clean_at(&self, ip: IpAddr, now: Instant) -> RiskState {
-        let mut entry = self.inner.map.entry(ip).or_insert(Slot {
+        self.record_clean_at_with_key(
+            aegis_core::risk::RiskKey::from_ip(ip),
+            now,
+        )
+    }
+
+    /// Composite-key variant of [`record_clean`]. See
+    /// `record_malicious_with_key` for the migration rationale.
+    pub fn record_clean_with_key(
+        &self,
+        key: aegis_core::risk::RiskKey,
+    ) -> RiskState {
+        self.record_clean_at_with_key(key, Instant::now())
+    }
+
+    pub fn record_clean_at_with_key(
+        &self,
+        key: aegis_core::risk::RiskKey,
+        now: Instant,
+    ) -> RiskState {
+        let mut entry = self.inner.map.entry(key).or_insert(Slot {
             score: 0,
             strikes: 0,
             last_seen: now,
@@ -188,7 +245,15 @@ impl RiskTracker {
 
     /// Read the current state without mutating.
     pub fn snapshot(&self, ip: IpAddr) -> Option<RiskState> {
-        self.inner.map.get(&ip).map(|e| slot_to_state(*e))
+        self.snapshot_with_key(&aegis_core::risk::RiskKey::from_ip(ip))
+    }
+
+    /// Composite-key variant of [`snapshot`].
+    pub fn snapshot_with_key(
+        &self,
+        key: &aegis_core::risk::RiskKey,
+    ) -> Option<RiskState> {
+        self.inner.map.get(key).map(|e| slot_to_state(*e))
     }
 
     /// Adaptive mitigation decision for a given IP. Strike-block
@@ -196,10 +261,15 @@ impl RiskTracker {
     /// "permanent block on repeated offence" guarantee from the
     /// requirements.
     pub fn level(&self, ip: IpAddr) -> RiskLevel {
-        let Some(state) = self.snapshot(ip) else {
+        self.level_for_key(&aegis_core::risk::RiskKey::from_ip(ip))
+    }
+
+    /// Composite-key variant of [`level`].
+    pub fn level_for_key(&self, key: &aegis_core::risk::RiskKey) -> RiskLevel {
+        let Some(state) = self.snapshot_with_key(key) else {
             return RiskLevel::Allow;
         };
-        if self.is_strike_blocked(ip) {
+        if self.is_strike_blocked_for_key(key) {
             return RiskLevel::Block;
         }
         let t = self.inner.thresholds.load();
@@ -220,10 +290,24 @@ impl RiskTracker {
     /// Strike-block check is unchanged (it doesn't have a per-tier
     /// concept — it's a gate-level shedder).
     pub fn level_with(&self, ip: IpAddr, challenge_at: u32, block_at: u32) -> RiskLevel {
-        if self.is_strike_blocked(ip) {
+        self.level_with_for_key(
+            &aegis_core::risk::RiskKey::from_ip(ip),
+            challenge_at,
+            block_at,
+        )
+    }
+
+    /// Composite-key variant of [`level_with`].
+    pub fn level_with_for_key(
+        &self,
+        key: &aegis_core::risk::RiskKey,
+        challenge_at: u32,
+        block_at: u32,
+    ) -> RiskLevel {
+        if self.is_strike_blocked_for_key(key) {
             return RiskLevel::Block;
         }
-        let Some(state) = self.snapshot(ip) else {
+        let Some(state) = self.snapshot_with_key(key) else {
             return RiskLevel::Allow;
         };
         if state.score >= block_at {
@@ -242,11 +326,19 @@ impl RiskTracker {
     /// — the counter still climbs in `/api/risk` for forensics
     /// but the data plane does not 403.
     pub fn is_strike_blocked(&self, ip: IpAddr) -> bool {
+        self.is_strike_blocked_for_key(&aegis_core::risk::RiskKey::from_ip(ip))
+    }
+
+    /// Composite-key variant of [`is_strike_blocked`].
+    pub fn is_strike_blocked_for_key(
+        &self,
+        key: &aegis_core::risk::RiskKey,
+    ) -> bool {
         let cfg = self.inner.strikes.load();
         if !cfg.enabled {
             return false;
         }
-        self.snapshot(ip)
+        self.snapshot_with_key(key)
             .map(|s| s.strikes >= cfg.block_at)
             .unwrap_or(false)
     }
@@ -255,7 +347,12 @@ impl RiskTracker {
     /// score. Returns `true` if a row was removed. Gated by the
     /// `AuditedMutate` pipeline at the API layer.
     pub fn reset(&self, ip: IpAddr) -> bool {
-        self.inner.map.remove(&ip).is_some()
+        self.reset_with_key(&aegis_core::risk::RiskKey::from_ip(ip))
+    }
+
+    /// Composite-key variant of [`reset`].
+    pub fn reset_with_key(&self, key: &aegis_core::risk::RiskKey) -> bool {
+        self.inner.map.remove(key).is_some()
     }
 
     /// Drop every tracked IP — score, strikes, last-seen.
@@ -270,11 +367,19 @@ impl RiskTracker {
     /// snapshot without a follow-up `level()` call per row.
     pub fn top(&self, n: usize) -> Vec<RiskSnapshot> {
         let now = Instant::now();
-        let mut all: Vec<(IpAddr, Slot)> = self
+        // 2026-05-18 F-CRITICAL-001: iterate composite-key map.
+        // The wire-shape snapshot renders only the IP for backward
+        // compatibility (the dashboard's Top Attackers list reads
+        // `ip` to build deep-links). Composite-key dimensions
+        // (device_fp / session / tenant_id) are dropped from the
+        // wire shape today; if the dashboard wants per-session
+        // resolution later, extend `RiskSnapshot` and the
+        // `/api/risk/top` JSON shape additively (Phase E follow-up).
+        let mut all: Vec<(aegis_core::risk::RiskKey, Slot)> = self
             .inner
             .map
             .iter()
-            .map(|kv| (*kv.key(), *kv.value()))
+            .map(|kv| (kv.key().clone(), *kv.value()))
             .collect();
         all.sort_by(|a, b| {
             b.1.strikes
@@ -291,7 +396,7 @@ impl RiskTracker {
         drop(strikes_cfg);
         all.into_iter()
             .take(n)
-            .map(|(ip, slot)| {
+            .map(|(key, slot)| {
                 let strike_blocked =
                     strikes_enabled && slot.strikes >= strikes_block_at;
                 let level = if strike_blocked || slot.score >= block_at {
@@ -302,7 +407,7 @@ impl RiskTracker {
                     "allow"
                 };
                 RiskSnapshot {
-                    ip: ip.to_string(),
+                    ip: key.ip.to_string(),
                     score: slot.score,
                     strikes: slot.strikes,
                     idle_seconds: now
@@ -742,5 +847,119 @@ mod tests {
         assert!(!snap.strike_blocked);
         // score is 6 (well below challenge_at=40), so level=allow.
         assert_eq!(snap.level, "allow");
+    }
+
+    // ---- 2026-05-18 F-CRITICAL-001 Phase E composite-key tests ----
+
+    fn key_with(ip_str: &str, device_fp: Option<&str>, session: Option<&str>) -> aegis_core::risk::RiskKey {
+        aegis_core::risk::RiskKey {
+            ip: ip(ip_str),
+            device_fp: device_fp.map(String::from),
+            session: session.map(String::from),
+            tenant_id: None,
+        }
+    }
+
+    /// Composite-key isolation: two sessions on the same NAT'd IP
+    /// accumulate INDEPENDENT risk. Pre-fix both hit the same
+    /// IP-only bucket — one user's malicious activity tarred the
+    /// whole NAT.
+    #[test]
+    fn composite_key_isolates_sessions_on_same_ip() {
+        let t = RiskTracker::new(&cfg());
+        let alice = key_with("10.0.0.1", Some("fp-alice"), Some("sess-alice"));
+        let bob = key_with("10.0.0.1", Some("fp-bob"), Some("sess-bob"));
+
+        // Alice goes malicious; Bob does not.
+        t.record_malicious_with_key(alice.clone(), 60);
+        t.record_malicious_with_key(alice.clone(), 20);
+        // Bob is fine.
+        let bob_state = t.snapshot_with_key(&bob);
+        assert!(bob_state.is_none(), "bob should have no tracked risk");
+        assert_eq!(t.level_for_key(&bob), RiskLevel::Allow);
+
+        // Alice is over the block threshold.
+        let alice_state = t.snapshot_with_key(&alice).unwrap();
+        assert_eq!(alice_state.score, 80);
+        // With default thresholds challenge_at=30, block_at=70 →
+        // Alice's 80 is Block.
+        assert_eq!(t.level_for_key(&alice), RiskLevel::Block);
+    }
+
+    /// Different IPs with the SAME session still get independent
+    /// buckets — IP rotation by the same attacker doesn't merge,
+    /// because the IP axis IS still part of the key. This is the
+    /// "Distributed credential stuffing with IP rotation" lifetime-
+    /// strikes invariant in §5.5.
+    ///
+    /// (When operators want the inverse semantic — "same device,
+    /// different IPs should accumulate" — they construct a
+    /// RiskKey with the IP normalized to a placeholder. That's a
+    /// future composite-by-device variant.)
+    #[test]
+    fn composite_key_with_different_ips_dont_merge() {
+        let t = RiskTracker::new(&cfg());
+        let same_device = "fp-attacker";
+        let ip_a = key_with("203.0.113.1", Some(same_device), None);
+        let ip_b = key_with("203.0.113.2", Some(same_device), None);
+        t.record_malicious_with_key(ip_a.clone(), 60);
+        // ip_b has nothing.
+        assert!(t.snapshot_with_key(&ip_b).is_none());
+        // ip_a has 60.
+        assert_eq!(t.snapshot_with_key(&ip_a).unwrap().score, 60);
+    }
+
+    /// IP-only and composite-key calls populate DIFFERENT buckets
+    /// even when the IP matches. Auditor's intent: don't conflate.
+    #[test]
+    fn ip_only_call_and_composite_call_populate_different_buckets() {
+        let t = RiskTracker::new(&cfg());
+        let p = ip("10.0.0.1");
+        let composite = key_with("10.0.0.1", Some("fp-x"), Some("sess-x"));
+
+        // IP-only bucket: 60 → Challenge (60 ≥ challenge_at=30).
+        t.record_malicious(p, 60);
+        // Composite bucket: 10 → Allow (10 < challenge_at=30).
+        t.record_malicious_with_key(composite.clone(), 10);
+
+        assert_eq!(t.snapshot(p).unwrap().score, 60);
+        assert_eq!(t.snapshot_with_key(&composite).unwrap().score, 10);
+        assert_eq!(t.level(p), RiskLevel::Challenge);
+        assert_eq!(t.level_for_key(&composite), RiskLevel::Allow);
+    }
+
+    /// Composite-key + threshold-based level gating uses the
+    /// composite bucket's score, not the IP-only bucket's.
+    #[test]
+    fn level_for_key_reads_composite_bucket() {
+        let t = RiskTracker::new(&cfg());
+        let p = ip("10.0.0.42");
+        let k = key_with("10.0.0.42", Some("fp"), None);
+
+        // IP-only bucket: high risk.
+        t.record_malicious(p, 80);
+        // Composite bucket: clean.
+        // level(ip) → Block; level_for_key(composite) → Allow.
+        assert_eq!(t.level(p), RiskLevel::Block);
+        assert_eq!(t.level_for_key(&k), RiskLevel::Allow);
+    }
+
+    /// `reset_with_key` clears one composite bucket without
+    /// touching the IP-only bucket or other composites.
+    #[test]
+    fn reset_with_key_drops_only_target_bucket() {
+        let t = RiskTracker::new(&cfg());
+        let p = ip("10.0.0.5");
+        let k1 = key_with("10.0.0.5", Some("fp1"), None);
+        let k2 = key_with("10.0.0.5", Some("fp2"), None);
+        t.record_malicious(p, 10);
+        t.record_malicious_with_key(k1.clone(), 20);
+        t.record_malicious_with_key(k2.clone(), 30);
+
+        assert!(t.reset_with_key(&k1));
+        // k1 gone; k2 + ip-only untouched.
+        assert!(t.snapshot_with_key(&k1).is_none());
+        assert!(t.snapshot_with_key(&k2).is_some());
+        assert!(t.snapshot(p).is_some());
     }
 }
