@@ -482,7 +482,42 @@ existing `stamp_interop_response` once the data plane returns.
 
 ---
 
-## JA4 capture — `RequestView.tls` always None today
+## JA4 capture — partial wire-up landed 2026-05-18
+
+**Status:** Activated as "JA4-light" — post-handshake fingerprint
+captures negotiated cipher + ALPN + TLS version + SNI type from
+the rustls `ServerConnection`. Threads into `RequestView.tls` so
+the three downstream features now fire:
+
+- `BotSignals.ja4_fingerprint` is populated (accept.rs line ~1421).
+- `DeviceIpTracker.observe(ja4, peer_ip)` is called in the data
+  plane after the detector chain runs.
+- The brute_force `device` axis reads `view.tls.ja4` and tracks
+  same-fingerprint-different-IP attempts.
+
+**Remaining gap (lower priority — canonical JA4 capture):** the
+canonical JA4 spec hashes the FULL ClientHello extension list
+(supported_versions, key_share, …). rustls 0.23's post-handshake
+API only exposes what the negotiator selected (single cipher,
+single ALPN). The JA4-light shipped today distinguishes broad
+client classes (Chrome / curl / sqlmap / Firefox) but won't
+differentiate fine-grained library version differences inside
+the same class.
+
+If the canonical capture is needed, the wire-up is:
+
+1. Hook the `ResolvesServerCert::resolve` callback (the only spot
+   rustls exposes the full `ClientHello` to user code).
+2. Bridge from the synchronous resolver callback to the async
+   request handler via a `tokio::task_local!` scope wrapping the
+   handshake (the scope is held across `accept().await` so the
+   resolver write + handler read happen in the same task).
+
+Documented here as the original below.
+
+---
+
+## JA4 capture (original — historical) — `RequestView.tls` always None today
 
 Added 2026-05-18 (QC TLS-wiring batch).
 

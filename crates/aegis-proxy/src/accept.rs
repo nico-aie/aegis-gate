@@ -1102,6 +1102,13 @@ pub(crate) async fn accept_loop(
                 Tls(tokio_rustls::server::TlsStream<tokio::net::TcpStream>),
                 Plain(tokio::net::TcpStream),
             }
+            // 2026-05-18 (QC TLS wire-up): per-connection TLS
+            // fingerprint, captured from rustls's post-handshake
+            // ServerConnection. `Some` on the TLS branch, `None`
+            // on the plain branch. Cloned into the service_fn
+            // closure so each request gets `view.tls` pointing at
+            // a stable per-connection Arc.
+            let conn_tls_fp: Option<std::sync::Arc<aegis_core::TlsFingerprint>>;
             let served = match acceptor {
                 Some(acc) => match acc.accept(stream).await {
                     Ok(tls_stream) => {
@@ -1110,13 +1117,19 @@ pub(crate) async fn accept_loop(
                         // verifier ran (MTLS-T2) — Optional mode
                         // can produce `None` if no cert was
                         // offered, which T3 maps to Anonymous.
-                        let id = {
+                        let (id, fp) = {
                             let (_io, conn) = tls_stream.get_ref();
-                            crate::listener::identity::extract_identity_from_peer_certs(
+                            let id = crate::listener::identity::extract_identity_from_peer_certs(
                                 conn.peer_certificates(),
                                 true,
-                            )
+                            );
+                            // 2026-05-18: compute the post-
+                            // handshake fingerprint (see
+                            // `listener/tls.rs` for the format).
+                            let fp = crate::listener::tls::compute_post_handshake_fingerprint(conn);
+                            (id, fp)
                         };
+                        conn_tls_fp = Some(std::sync::Arc::new(fp));
                         if !matches!(
                             id,
                             aegis_core::ClientIdentity::Anonymous
@@ -1142,13 +1155,20 @@ pub(crate) async fn accept_loop(
                 None => {
                     conn_identity =
                         std::sync::Arc::new(aegis_core::ClientIdentity::Anonymous);
+                    // No TLS → no fingerprint. Downstream features
+                    // (DeviceIpTracker observe, brute_force device
+                    // axis, bots known-bad-JA4 lookup) silently
+                    // skip when view.tls is None.
+                    conn_tls_fp = None;
                     Some(ServedIo::Plain(stream))
                 }
             };
             let conn_identity_for_svc = conn_identity.clone();
+            let conn_tls_fp_for_svc = conn_tls_fp.clone();
             let identity_tracker_for_svc = identity_tracker.clone();
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let conn_identity = conn_identity_for_svc.clone();
+                let conn_tls_fp = conn_tls_fp_for_svc.clone();
                 let identity_tracker = identity_tracker_for_svc.clone();
                 let detectors = detectors.clone();
                 let mask = mask.clone();
@@ -1268,6 +1288,10 @@ pub(crate) async fn accept_loop(
                         // MTLS-T4 — per-connection identity threads
                         // through to the route-scoped policy gate.
                         &conn_identity,
+                        // 2026-05-18 (QC TLS wire-up): per-conn
+                        // post-handshake fingerprint. None on the
+                        // plain branch.
+                        conn_tls_fp.as_ref().map(|arc| arc.as_ref()),
                     ).await;
                     // PROM-T1 — record one increment of
                     // `waf_requests_total{action}` per request.
@@ -1398,7 +1422,13 @@ pub(crate) async fn accept_loop(
                         }
                     };
                     let bot_signals = aegis_security::bots::BotSignals {
-                        ja4_fingerprint: None,
+                        // 2026-05-18 (QC TLS wire-up): populate the
+                        // JA4-light fingerprint when the connection
+                        // is TLS-terminated. Plain HTTP connections
+                        // stay None — they have no handshake.
+                        ja4_fingerprint: conn_tls_fp
+                            .as_ref()
+                            .map(|fp| fp.ja4.clone()),
                         h2_fingerprint: None,
                         user_agent: user_agent.clone(),
                         has_cookies,

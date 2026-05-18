@@ -73,6 +73,11 @@ pub(crate) async fn handle_data_request(
     // the policy gate below blocks the request if the resolved
     // route's `auth_required` excludes that identity kind.
     identity: &aegis_core::ClientIdentity,
+    // 2026-05-18 (QC TLS wire-up — F-CRITICAL-010 / 014 / 015
+    // activation): post-handshake TLS fingerprint from the accept
+    // loop. `None` for plain-HTTP connections (no handshake) or
+    // when TLS termination didn't happen at this layer.
+    tls_fingerprint: Option<&aegis_core::TlsFingerprint>,
 ) -> (
     Response<Full<Bytes>>,
     aegis_control::interop::headers::DecisionTag,
@@ -94,6 +99,7 @@ pub(crate) async fn handle_data_request(
         upstream_ctx,
         detector_hit_metrics,
         identity,
+        tls_fingerprint,
     ).await;
     tracing::Span::current().record("action", result.1.action.as_str());
     result
@@ -117,6 +123,7 @@ pub(crate) async fn handle_data_request_inner(
     upstream_ctx: &Arc<crate::proxy::ProxyContext>,
     detector_hit_metrics: &aegis_control::metrics::detector_hits::DetectorHitMetrics,
     identity: &aegis_core::ClientIdentity,
+    tls_fingerprint: Option<&aegis_core::TlsFingerprint>,
 ) -> (
     Response<Full<Bytes>>,
     aegis_control::interop::headers::DecisionTag,
@@ -626,7 +633,18 @@ pub(crate) async fn handle_data_request_inner(
         version: parts.version,
         headers: &parts.headers,
         peer,
-        tls: None,
+        // 2026-05-18 (QC TLS wire-up — F-CRITICAL-010 / 014 / 015
+        // activation): post-handshake TLS fingerprint, captured
+        // in the accept loop after `tls_acceptor.accept().await`
+        // succeeds. Threads through to:
+        // - the brute_force detector's device axis
+        //   (`detectors/brute_force.rs` reads `view.tls.ja4`),
+        // - the DeviceIpTracker.observe call further down,
+        // - the bot classifier (via BotSignals.ja4_fingerprint
+        //   constructed in `accept.rs`).
+        // `None` for plain HTTP — those features all silently
+        // skip when fingerprint is absent.
+        tls: tls_fingerprint,
         body: &body_peek,
     };
 
@@ -703,6 +721,29 @@ pub(crate) async fn handle_data_request_inner(
     // collapses to a single empty-vec branch.
     for class in &fired_classes {
         detector_hit_metrics.record(class);
+    }
+
+    // 2026-05-18 (QC TLS wire-up — F-CRITICAL-010 activation):
+    // observe (device_fp, peer_ip) for cross-IP rotation
+    // detection. When the same fingerprint comes from >5 distinct
+    // IPs in the 60 s window, the tracker emits a
+    // `device_ip_rotation` signal at score 60 — over the
+    // challenge_at threshold but under block_at, so it stacks
+    // with detector signals before forcing a block.
+    //
+    // Skipped when TLS fingerprint is absent (plain HTTP) or
+    // when the request was whitelisted (a trusted source isn't
+    // rotation-suspicious by definition).
+    let mut signals = signals;
+    if !on_whitelist {
+        if let Some(fp) = tls_fingerprint {
+            if let Some(rotation_signal) = upstream_ctx
+                .device_ip_tracker
+                .observe(&fp.ja4, peer_ip)
+            {
+                signals.push(rotation_signal);
+            }
+        }
     }
 
     // v2.3 §5.3 — `log_only_intent` carries the WOULD-BE
