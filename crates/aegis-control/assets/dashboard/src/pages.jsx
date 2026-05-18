@@ -9867,17 +9867,22 @@ function DdosGateCard() {
   const data = ddos.data;
 
   if (!data || !data.enabled) {
+    // `data.enabled = false` now only happens when the dashboard
+    // is consuming a test-bundle `DashboardServices` that booted
+    // without the proxy wiring the runtime. Production always
+    // installs it (2026-05-19) and exposes a hot-flippable
+    // `cfg.enabled` instead — see the `hotDisabled` branch below.
     return (
       <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
         <window.SectionHeader
           title="5. DDoS Gate"
-          sub="Per-IP sliding-window burst gate + EWMA spike mode — currently DISABLED"
+          sub="Per-IP sliding-window burst gate + EWMA spike mode — runtime not wired"
         />
         <div style={{ padding: 16 }}>
           <div style={{ fontSize: 12, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
-            <span className="pill neutral" style={{ fontSize: 11, marginRight: 8 }}>cfg.ddos.enabled = false</span>
-            Set <code>cfg.ddos.enabled: true</code> in your YAML and restart to enable.
-            See <a href="/docs/security/ddos-protection" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>docs/security/ddos-protection.md</a>.
+            <span className="pill neutral" style={{ fontSize: 11, marginRight: 8 }}>runtime not wired</span>
+            The DDoS runtime wasn't installed at proxy boot — this is a test bundle.
+            Production deployments install it unconditionally and expose a hot-flippable Enabled toggle on this card.
           </div>
         </div>
       </div>
@@ -9885,12 +9890,23 @@ function DdosGateCard() {
   }
 
   const cfg = data.config;
-  const modeStyle = cfg.observe_only
-    ? { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)', label: 'OBSERVE-ONLY' }
-    : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'ENFORCING' };
-  const spikeStyle = data.spike_active
-    ? { bg: 'rgba(246,70,93,0.14)', fg: 'var(--down)', label: '⚠ SPIKE ACTIVE' }
-    : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'NORMAL' };
+  // 2026-05-19 — `cfg.enabled` is now hot-flippable from the dashboard
+  // (PUT /api/gates/ddos). When disabled, every check_with_tier
+  // short-circuits to unblocked + the EWMA freezes, so showing
+  // ENFORCING / NORMAL would be a lie. Surface a distinct DISABLED
+  // state that visually neutralises both pills and dims the live
+  // telemetry tiles.
+  const hotDisabled = cfg.enabled === false;
+  const modeStyle = hotDisabled
+    ? { bg: 'rgba(160,160,160,0.18)', fg: 'var(--ink-dim)', label: 'DISABLED' }
+    : cfg.observe_only
+      ? { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)', label: 'OBSERVE-ONLY' }
+      : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'ENFORCING' };
+  const spikeStyle = hotDisabled
+    ? { bg: 'rgba(160,160,160,0.18)', fg: 'var(--ink-dim)', label: '—' }
+    : data.spike_active
+      ? { bg: 'rgba(246,70,93,0.14)', fg: 'var(--down)', label: '⚠ SPIKE ACTIVE' }
+      : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'NORMAL' };
 
   return (
     <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
@@ -9914,22 +9930,29 @@ function DdosGateCard() {
         </div>
 
         {/* Live telemetry — current/baseline RPS + spike threshold */}
-        <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Live Telemetry</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+        <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+          Live Telemetry
+          {hotDisabled && (
+            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--ink-faint)', textTransform: 'none', letterSpacing: 0 }}>
+              (frozen — gate disabled)
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16, opacity: hotDisabled ? 0.55 : 1 }}>
           <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Current RPS</div>
-            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{data.current_rps}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{hotDisabled ? '—' : data.current_rps}</div>
             <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>this 1-second window</div>
           </div>
           <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Baseline RPS</div>
-            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{data.baseline_rps}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{hotDisabled ? '—' : data.baseline_rps}</div>
             <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>EWMA, 0.9 / 0.1 weights</div>
           </div>
           <div style={{ padding: 12, background: 'var(--surface-2)', borderRadius: 4 }}>
             <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Spike Threshold</div>
             <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>
-              {Math.round(data.baseline_rps * cfg.spike_multiplier)}
+              {hotDisabled ? '—' : Math.round(data.baseline_rps * cfg.spike_multiplier)}
             </div>
             <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>{cfg.spike_multiplier} × baseline</div>
           </div>
