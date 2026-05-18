@@ -208,20 +208,86 @@ DETECTORS = {
         re.compile(r'(?i)["\']__proto__["\']\s*:'),
     ],
 
+    # S2 — 27-key set, three surface shapes
+    # Keys: roles/admin, auth scope, financial, credentials/tokens, verification
     "mass_assignment": [
+        # JSON surface: "key"\s*:
         re.compile(
-            r'(?i)["\']?\s*(role|is_admin|isadmin|admin|superuser|password_hash|'
-            r'api_key|secret_key|private_key|privilege|permissions|groups|scopes)\s*["\']?\s*:'
+            r'(?i)"\s*(?:role|is_admin|isAdmin|is_superuser|isSuperuser|superuser|admin'
+            r'|permissions|privileges|grants|scope|access_level|accessLevel|user_level|userLevel'
+            r'|balance|account_balance|accountBalance|credit'
+            r'|password_hash|passwordHash|api_key|apiKey|api_token|apiToken'
+            r'|access_token|accessToken|refresh_token|refreshToken'
+            r'|email_verified|emailVerified|verified)\s*"\s*:'
+        ),
+        # Form / query surface: (?:^|[?&])key= (boundary-anchored, no substrings)
+        re.compile(
+            r'(?i)(?:^|[?&])(?:role|is_admin|isAdmin|is_superuser|isSuperuser|superuser|admin'
+            r'|permissions|privileges|grants|scope|access_level|accessLevel|user_level|userLevel'
+            r'|balance|account_balance|accountBalance|credit'
+            r'|password_hash|passwordHash|api_key|apiKey|api_token|apiToken'
+            r'|access_token|accessToken|refresh_token|refreshToken'
+            r'|email_verified|emailVerified|verified)='
+        ),
+        # Multipart surface: Content-Disposition: ... name="key"
+        re.compile(
+            r'(?i)content-disposition\s*:.*name\s*=\s*["\']?\s*(?:role|is_admin|isAdmin'
+            r'|is_superuser|isSuperuser|superuser|admin|permissions|privileges|grants|scope'
+            r'|access_level|accessLevel|password_hash|passwordHash|api_key|apiKey'
+            r'|access_token|accessToken|refresh_token|refreshToken|email_verified|emailVerified)'
         ),
     ],
 }
 
 # ---------------------------------------------------------------------------
-# Decode helper
+# Decode helpers — S1: entity decode + unicode escape + multi-pass URL decode
 # ---------------------------------------------------------------------------
 
+# HTML named entities added in S1 (path-traversal + shell-metachar evasion)
+_HTML_ENTITIES = {
+    "&lt;": "<", "&gt;": ">", "&amp;": "&", "&quot;": '"', "&apos;": "'",
+    "&sol;": "/", "&colon;": ":",
+    # S1 additions
+    "&period;": ".", "&dot;": ".",
+    "&bsol;": "\\",
+    "&num;": "#",
+    "&comma;": ",",
+    "&semi;": ";",
+    "&dollar;": "$",
+    "&lpar;": "(", "&rpar;": ")",
+    "&verbar;": "|", "&vert;": "|",
+    "&grave;": "`",
+}
+_ENTITY_RE = re.compile(
+    "|".join(re.escape(k) for k in _HTML_ENTITIES),
+    re.IGNORECASE,
+)
+
+def html_entity_decode(text: str) -> str:
+    """Decode HTML named entities (case-insensitive)."""
+    return _ENTITY_RE.sub(lambda m: _HTML_ENTITIES.get(m.group(0).lower(), m.group(0)), text)
+
+
+_UNICODE_ESC_RE = re.compile(r'\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})')
+
+def unicode_escape_decode(text: str) -> str:
+    """Decode \\uHHHH and \\xHH JS/JSON escape sequences (S1)."""
+    if '\\' not in text:
+        return text
+    def _replace(m):
+        hex_val = m.group(1) or m.group(2)
+        cp = int(hex_val, 16)
+        try:
+            return chr(cp)
+        except (ValueError, OverflowError):
+            return m.group(0)
+    return _UNICODE_ESC_RE.sub(_replace, text)
+
+
 def decode(text: str) -> str:
-    """URL-decode up to 3 passes, strip null bytes."""
+    """URL-decode up to 3 passes, strip null bytes (existing).
+    S1: also returns the entity-decoded and unicode-escape-decoded variants
+    via normalize(). Use this for single-variant decode only."""
     prev = text
     for _ in range(3):
         d = unquote(prev)
@@ -231,17 +297,35 @@ def decode(text: str) -> str:
     return prev.replace('\x00', '')
 
 
+def normalize(text: str) -> list[str]:
+    """S1: normalize_for_detection — returns deduplicated variants:
+    [raw, url_decoded×3, html_entity_decoded, unicode_escape_decoded].
+    Detectors iterate all variants and fire on any match.
+    """
+    url3   = decode(text)
+    entity = html_entity_decode(url3)
+    uni    = unicode_escape_decode(url3)
+    seen   = set()
+    result = []
+    for v in (text, url3, entity, uni):
+        if v not in seen:
+            seen.add(v)
+            result.append(v)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Binary classify: ANY pattern match = Attack
 # ---------------------------------------------------------------------------
 
 def any_match(text: str) -> tuple[bool, list[str]]:
-    """Returns (matched, list_of_fired_detector_names)."""
-    dec  = decode(text)
+    """Returns (matched, list_of_fired_detector_names).
+    S1: checks all normalize() variants so entity/unicode-escaped payloads are caught."""
+    variants = normalize(text)
     fired = []
     for name, patterns in DETECTORS.items():
         for p in patterns:
-            if p.search(dec) or p.search(text):
+            if any(p.search(v) for v in variants):
                 fired.append(name)
                 break  # fire each detector at most once
     return bool(fired), fired
@@ -503,6 +587,7 @@ def write_report(results, per_class, tp, fp, tn, fn, recall, fpr, prec, f1):
     A(f"| **Date** | {today} |")
     A("| **Engine** | Pure regex pattern match — no score thresholds, no AI/ML |")
     A("| **Rule** | ANY detector fires → Attack; no match → Normal |")
+    A("| **Code version** | S1 (entity+unicode decode) + S2 (mass-assign 27 keys, query/form/multipart) |")
     A(f"| **Detectors** | {', '.join(DETECTORS.keys())} |")
     A(f"| **Total evaluated** | **{total:,} samples** |")
     A("")
@@ -626,7 +711,7 @@ def write_report(results, per_class, tp, fp, tn, fn, recall, fpr, prec, f1):
     A("")
     A(f"*Generated by `tests/ml-model/eval_rules_binary.py` — {today}*")
 
-    out = REPORT_DIR / "RULES_BINARY_EVAL_REPORT.md"
+    out = REPORT_DIR / "RULES_BINARY_EVAL_REPORT_S1S2.md"
     out.write_text("\n".join(L), encoding="utf-8")
     print(f"\nReport saved → {out}")
 

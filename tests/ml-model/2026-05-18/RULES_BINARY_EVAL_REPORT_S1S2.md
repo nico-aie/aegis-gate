@@ -5,6 +5,7 @@
 | **Date** | 2026-05-18 |
 | **Engine** | Pure regex pattern match — no score thresholds, no AI/ML |
 | **Rule** | ANY detector fires → Attack; no match → Normal |
+| **Code version** | S1 (entity+unicode decode) + S2 (mass-assign 27 keys, query/form/multipart) |
 | **Detectors** | sqli, xss, path_traversal, log4shell, shellshock, command_injection, ssrf, template_injection, header_injection, nosql_injection, open_redirect, recon, xxe, proto_pollution, mass_assignment |
 | **Total evaluated** | **227,055 samples** |
 
@@ -22,17 +23,17 @@ This evaluation removes the score threshold and asks: *does the regex rule set c
 
 | Metric | Value | Target |
 |---|---:|---:|
-| **Attack recall** | **63.92%** | ≥ 95% ❌ |
+| **Attack recall** | **63.94%** | ≥ 95% ❌ |
 | **FPR (false positive rate)** | **5.95%** | ≤ 0.5% ❌ |
 | Precision | 93.70% | — |
-| F1 | 0.7600 | — |
-| Accuracy | 76.56% | — |
+| F1 | 0.7601 | — |
+| Accuracy | 76.57% | — |
 
 **Confusion matrix (227,055 samples):**
 
 | | Predicted Attack | Predicted Normal |
 |---|---:|---:|
-| **Actual Attack** (131,805) | TP = 84,250 | FN = 47,555 |
+| **Actual Attack** (131,805) | TP = 84,279 | FN = 47,526 |
 | **Actual Normal** (95,250) | FP = 5,665 | TN = 89,585 |
 
 ---
@@ -41,11 +42,11 @@ This evaluation removes the score threshold and asks: *does the regex rule set c
 
 | Source | Samples | Attack | Normal | Recall | FPR | Precision | F1 | req/s |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| CSIC 2010 ❌ | 97,065 | 25,065 | 72,000 | 10.5% | 0.0% | 100.0% | 0.1901 | 8720 |
-| openappsec Malicious 🟡 | 73,924 | 73,924 | 0 | 83.7% | 0.0% | 100.0% | 0.9111 | 9408 |
-| Modern Payloads ❌ | 6,061 | 6,061 | 0 | 60.7% | 0.0% | 100.0% | 0.7552 | 9513 |
-| SRBH2020 ❌ | 50,000 | 26,755 | 23,245 | 60.1% | 24.4% | 74.0% | 0.6635 | 8651 |
-| Legitimate Browser 🔵 | 5 | 0 | 5 | 0.0% | 0.0% | 0.0% | 0.0000 | 2369 |
+| CSIC 2010 ❌ | 97,065 | 25,065 | 72,000 | 10.5% | 0.0% | 100.0% | 0.1901 | 9905 |
+| openappsec Malicious 🟡 | 73,924 | 73,924 | 0 | 83.7% | 0.0% | 100.0% | 0.9111 | 9384 |
+| Modern Payloads ❌ | 6,061 | 6,061 | 0 | 61.1% | 0.0% | 100.0% | 0.7584 | 13870 |
+| SRBH2020 ❌ | 50,000 | 26,755 | 23,245 | 60.1% | 24.4% | 74.0% | 0.6635 | 8931 |
+| Legitimate Browser 🔵 | 5 | 0 | 5 | 0.0% | 0.0% | 0.0% | 0.0000 | 5334 |
 
 > 🔵 normal-only; ✅ recall ≥ 95%; 🟡 70–94%; ❌ < 70%
 
@@ -68,8 +69,8 @@ Sorted worst → best.
 | `shellshock` | JSON | 48 | 46 | 2 | **95.8%** `███████████████████░` |
 | `XXE` | Mal | 70 | 68 | 2 | **97.1%** `███████████████████░` |
 | `xxe` | JSON | 70 | 68 | 2 | **97.1%** `███████████████████░` |
-| `XSS` | Mal | 41,888 | 41,646 | 242 | **99.4%** `████████████████████` |
-| `xss` | JSON | 41,888 | 41,646 | 242 | **99.4%** `████████████████████` |
+| `XSS` | Mal | 41,888 | 41,650 | 238 | **99.4%** `████████████████████` |
+| `xss` | JSON | 41,888 | 41,650 | 238 | **99.4%** `████████████████████` |
 | `XXE` | CSIC | 194 | 194 | 0 | **100.0%** `████████████████████` |
 | `Log4Shell` | Mal | 220 | 220 | 0 | **100.0%** `████████████████████` |
 | `log4shell` | JSON | 220 | 220 | 0 | **100.0%** `████████████████████` |
@@ -82,14 +83,14 @@ Which detector fired most across all attack samples:
 
 | Detector | Total fires |
 |---|---:|
-| `xss` | 43,715 |
+| `xss` | 43,748 |
 | `path_traversal` | 39,189 |
-| `command_injection` | 2,855 |
+| `command_injection` | 2,863 |
 | `sqli` | 2,181 |
 | `template_injection` | 2,156 |
 | `recon` | 982 |
 | `open_redirect` | 774 |
-| `log4shell` | 132 |
+| `log4shell` | 136 |
 | `shellshock` | 102 |
 | `ssrf` | 96 |
 | `nosql_injection` | 84 |
