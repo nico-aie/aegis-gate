@@ -1395,6 +1395,9 @@ pub(crate) async fn accept_loop(
                         route_id: None,
                         rule_id: decision.rule_id.clone(),
                         risk_score: Some(risk_score),
+                        method: None,
+                        path: None,
+                        mode: None,
                         fields: serde_json::json!({
                             "method": method.as_str(),
                             "path": path,

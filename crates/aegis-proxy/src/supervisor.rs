@@ -263,6 +263,9 @@ async fn watch_loop(
                         route_id: None,
                         rule_id: None,
                         risk_score: None,
+                        method: None,
+                        path: None,
+                        mode: None,
                         fields: serde_json::json!({
                             "path": path.display().to_string(),
                             "forced": forced,
@@ -303,6 +306,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -349,6 +355,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -397,6 +406,9 @@ async fn watch_loop(
                         route_id: None,
                         rule_id: None,
                         risk_score: None,
+                        method: None,
+                        path: None,
+                        mode: None,
                         fields: serde_json::json!({
                             "path": path.display().to_string(),
                             "source": "file",
@@ -439,6 +451,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -464,6 +479,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -510,6 +528,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -535,6 +556,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -560,6 +584,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -608,6 +635,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -630,6 +660,9 @@ async fn watch_loop(
                     route_id: None,
                     rule_id: None,
                     risk_score: None,
+                    method: None,
+                    path: None,
+                    mode: None,
                     fields: serde_json::json!({"path": path.display().to_string()}),
                 });
             }
@@ -648,6 +681,9 @@ async fn watch_loop(
                     route_id: None,
                     rule_id: None,
                     risk_score: None,
+                    method: None,
+                    path: None,
+                    mode: None,
                     fields: serde_json::json!({"path": path.display().to_string()}),
                 });
             }

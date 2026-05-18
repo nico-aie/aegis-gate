@@ -655,6 +655,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: Some(80),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({"detector": detector}),
         }
     }

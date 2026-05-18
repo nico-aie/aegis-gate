@@ -414,6 +414,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: risk,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         }
     }

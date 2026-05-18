@@ -368,6 +368,9 @@ fn emit_dns_resolved(
         route_id: None,
         rule_id: None,
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "pool": pool_name,
             "before": before_sorted,

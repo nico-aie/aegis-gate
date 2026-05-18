@@ -549,6 +549,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         }
     }
@@ -579,6 +582,9 @@ mod tests {
             route_id: None,
             rule_id: rule_id.map(String::from),
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields,
         }
     }
@@ -982,6 +988,9 @@ mod tests {
             route_id: route.map(String::from),
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Object(fields),
         }
     }

@@ -303,6 +303,9 @@ async fn watch_loop(
                                 route_id: None,
                                 rule_id: None,
                                 risk_score: None,
+                                method: None,
+                                path: None,
+                                mode: None,
                                 fields: serde_json::json!({
                                     "source": "etcd",
                                     "key": src.key,
@@ -339,6 +342,9 @@ async fn watch_loop(
                                 route_id: None,
                                 rule_id: None,
                                 risk_score: None,
+                                method: None,
+                                path: None,
+                                mode: None,
                                 fields: serde_json::json!({
                                     "source": "etcd",
                                     "key": src.key,
@@ -377,6 +383,9 @@ async fn watch_loop(
                                 route_id: None,
                                 rule_id: None,
                                 risk_score: None,
+                                method: None,
+                                path: None,
+                                mode: None,
                                 fields: serde_json::json!({
                                     "source": "etcd",
                                     "key": src.key,
@@ -417,6 +426,9 @@ async fn watch_loop(
                                     route_id: None,
                                     rule_id: None,
                                     risk_score: None,
+                                    method: None,
+                                    path: None,
+                                    mode: None,
                                     fields: serde_json::json!({
                                         "source": "etcd",
                                         "key": src.key,
@@ -443,6 +455,9 @@ async fn watch_loop(
                                     route_id: None,
                                     rule_id: None,
                                     risk_score: None,
+                                    method: None,
+                                    path: None,
+                                    mode: None,
                                     fields: serde_json::json!({
                                         "source": "etcd",
                                         "key": src.key,
@@ -467,6 +482,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({"source": "etcd", "key": src.key}),
                         });
                         tracing::info!(key = %src.key, "config reloaded from etcd");
@@ -490,6 +508,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({"source": "etcd", "key": src.key}),
                         });
                     }

@@ -33,6 +33,9 @@ fn det_event(detector: &str, action: &str, ip: &str, risk: u32) -> AuditEvent {
         route_id: None,
         rule_id: None,
         risk_score: Some(risk),
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({"detector": detector}),
     }
 }
