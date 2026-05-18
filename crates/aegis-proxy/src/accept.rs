@@ -1363,6 +1363,15 @@ pub(crate) async fn accept_loop(
                         has_js_challenge_pass: false,
                         failed_challenges: 0,
                         reverse_dns: None,
+                        // 2026-05-18 (QC Sprint 2.2): ASN-class
+                        // signal — populated by a future MaxMind ASN
+                        // wire-up. Today defaults to Unknown so the
+                        // classifier's ASN-score branch never fires
+                        // here; the field is plumbed so the wire-up
+                        // doesn't need another sweep.
+                        asn: None,
+                        asn_classification:
+                            aegis_security::bots::AsnClassification::Unknown,
                     };
                     let bot_category = match aegis_security::bots::BotClassifier::default()
                         .classify(&bot_signals)
