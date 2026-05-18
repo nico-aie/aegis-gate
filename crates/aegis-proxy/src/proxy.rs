@@ -150,6 +150,28 @@ pub struct ProxyContext {
     /// as `Decision::Allow` and falls straight through to the
     /// detector chain.
     pub active_ruleset: std::sync::OnceLock<Arc<aegis_security::RuleSet>>,
+    /// 2026-05-18 (QC follow-up TLS-wiring batch — F-CRITICAL-015
+    /// activation): live GeoIP / ASN reader, the same Arc the
+    /// access-list country adapter + `AttacksHandler::set_geo_lookup`
+    /// hold. The data plane reads peer ASN here when building
+    /// `BotSignals` so the bot classifier's ASN-class ladder
+    /// (added in `f8b4dd5`) actually fires. `OnceLock` because the
+    /// boot path constructs `ProxyContext` before the MaxMind
+    /// reader is opened; `accept.rs` installs the handle when both
+    /// are ready. Absent when no .mmdb is configured —
+    /// `BotSignals.asn` / `asn_classification` stay at `Unknown`
+    /// defaults and the ladder branch is a no-op.
+    pub geoip: std::sync::OnceLock<Arc<dyn aegis_security::geoip::GeoIpLookup>>,
+    /// 2026-05-18 (QC TLS wire-up — F-CRITICAL-010 activation):
+    /// device→IP rotation tracker. Built in `aegis-proxy::run`
+    /// alongside the other security primitives; the data plane
+    /// calls `observe(ja4, peer_ip)` after the detector chain
+    /// so distinct IPs sharing the same fingerprint within a
+    /// 60 s window fire a `device_ip_rotation` signal. Defaults
+    /// to threshold 5 / window 60s / score 60 — see
+    /// `aegis_security::fingerprint::DeviceIpTracker::with_tuning`.
+    pub device_ip_tracker:
+        Arc<aegis_security::fingerprint::DeviceIpTracker>,
 }
 
 impl ProxyContext {
@@ -196,6 +218,15 @@ impl ProxyContext {
             reset_in_progress: std::sync::OnceLock::new(),
             load_shedder: std::sync::OnceLock::new(),
             active_ruleset: std::sync::OnceLock::new(),
+            geoip: std::sync::OnceLock::new(),
+            // 2026-05-18 (QC TLS wire-up — F-CRITICAL-010
+            // activation): always-on. The tracker no-ops when
+            // observe() is called with an empty device fp, so a
+            // proxy build without TLS termination at this layer
+            // still works (the data plane simply doesn't observe).
+            device_ip_tracker: Arc::new(
+                aegis_security::fingerprint::DeviceIpTracker::new(),
+            ),
         })
     }
 

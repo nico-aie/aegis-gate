@@ -48,7 +48,7 @@ pub fn format_ecs(ev: &AuditEvent) -> String {
         event: EcsEventMeta {
             kind: "alert".into(),
             category: vec!["web".into()],
-            action: ev.action.clone(),
+            action: ev.action.as_str().to_string(),
             outcome: if ev.action == "allow" {
                 "success".into()
             } else {

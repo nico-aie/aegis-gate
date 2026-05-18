@@ -3,10 +3,68 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
+use aegis_core::TlsFingerprint;
 use arc_swap::ArcSwap;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+
+/// 2026-05-18 (QC TLS wire-up — F-CRITICAL-010 / 014 / 015
+/// activation): compute a post-handshake TLS fingerprint from a
+/// completed rustls [`ServerConnection`].
+///
+/// **JA4-light.** Canonical JA4 reads the full ClientHello
+/// extension list, which rustls 0.23 doesn't expose to public
+/// post-handshake callers — only what the negotiator selected.
+/// This helper produces a stable string from what IS exposed:
+/// negotiated_cipher_suite + ALPN + protocol_version + SNI type.
+///
+/// Format: `t{ver}{sni}_{cipher_hex}_{alpn_hash}`
+/// - `t` — TCP (canonical JA4 prefix).
+/// - `ver` — `12` / `13` for TLS 1.2 / 1.3.
+/// - `sni` — `d` (domain) / `i` (IP literal) / `x` (none).
+/// - `cipher_hex` — 4-hex-digit IANA cipher ID.
+/// - `alpn_hash` — first 4 hex chars of blake3 of the ALPN
+///   string, or `"none"` when no ALPN was negotiated.
+///
+/// Stable enough to distinguish client classes (Chrome vs curl
+/// vs sqlmap have different negotiated ciphers + ALPN choices);
+/// coarser than canonical JA4 for fine-grained library versioning.
+/// Tracked in `plans/future/unwired-stubs-catalog.md § "JA4 capture"`.
+pub fn compute_post_handshake_fingerprint(
+    conn: &rustls::ServerConnection,
+) -> TlsFingerprint {
+    let ver_str = match conn.protocol_version() {
+        Some(rustls::ProtocolVersion::TLSv1_3) => "13",
+        Some(rustls::ProtocolVersion::TLSv1_2) => "12",
+        _ => "00",
+    };
+    let sni_char = match conn.server_name() {
+        Some(name) if name.parse::<std::net::IpAddr>().is_ok() => 'i',
+        Some(_) => 'd',
+        None => 'x',
+    };
+    let cipher_hex = conn
+        .negotiated_cipher_suite()
+        .map(|cs| format!("{:04x}", u16::from(cs.suite())))
+        .unwrap_or_else(|| "0000".into());
+    let alpn_hash = conn
+        .alpn_protocol()
+        .map(|a| {
+            let h = blake3::hash(a);
+            h.to_hex()[..4].to_string()
+        })
+        .unwrap_or_else(|| "none".into());
+    let combined = format!("t{ver_str}{sni_char}_{cipher_hex}_{alpn_hash}");
+    TlsFingerprint {
+        // No canonical JA3 today either — populate both fields
+        // with the post-handshake string so consumers that key
+        // on either get stable output. When canonical JA3/JA4
+        // capture lands (ClientHello-callback wire-up), split.
+        ja3: combined.clone(),
+        ja4: combined,
+    }
+}
 
 /// Holds all SNI-to-certificate mappings.  Swapped atomically on cert reload
 /// without dropping in-flight TLS handshakes.
@@ -352,6 +410,124 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = tls.read(&mut buf).await.unwrap();
         assert_eq!(&buf[..n], b"hello");
+
+        srv.abort();
+    }
+
+    // ---- 2026-05-18 QC TLS wire-up — compute_post_handshake_fingerprint ----
+
+    /// End-to-end: complete a real TLS handshake, then read the
+    /// post-handshake fingerprint off the server-side connection.
+    /// Format invariants: starts with `t13` (or `t12`), contains
+    /// two underscores, ja3 == ja4 (until canonical capture lands).
+    #[tokio::test]
+    async fn compute_post_handshake_fingerprint_format_invariants() {
+        use rustls_pki_types::ServerName;
+        use std::convert::TryFrom;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = TempDir::new().unwrap();
+        let (cert_pem, key_pem) = generate_cert(&["example.test"]);
+        let cert_path = write_pem(&dir, "cert.pem", &cert_pem);
+        let key_path = write_pem(&dir, "key.pem", &key_pem);
+        let store = CertStore::load(&[(
+            cert_path.clone(),
+            key_path.clone(),
+            &["example.test".to_string()][..],
+        )])
+        .unwrap();
+        let resolver = Arc::new(DynamicResolver::new(Arc::new(ArcSwap::from(
+            Arc::new(store),
+        ))));
+        let server_config = build_server_config(resolver);
+        let server_config = Arc::new(server_config);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_cfg = server_config.clone();
+
+        let srv = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(server_cfg);
+            let tls = acceptor.accept(stream).await.unwrap();
+            // Read peer's post-handshake fingerprint.
+            let (_io, conn) = tls.get_ref();
+            let fp = compute_post_handshake_fingerprint(conn);
+            // Send the fingerprint back so the test can assert on
+            // it.
+            let mut tls = tls;
+            tls.write_all(fp.ja4.as_bytes()).await.unwrap();
+        });
+
+        // Client setup — accept self-signed.
+        #[derive(Debug)]
+        struct AcceptAll;
+        impl rustls::client::danger::ServerCertVerifier for AcceptAll {
+            fn verify_server_cert(
+                &self,
+                _: &rustls_pki_types::CertificateDer<'_>,
+                _: &[rustls_pki_types::CertificateDer<'_>],
+                _: &rustls_pki_types::ServerName<'_>,
+                _: &[u8],
+                _: rustls_pki_types::UnixTime,
+            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
+            fn verify_tls12_signature(
+                &self,
+                _: &[u8],
+                _: &rustls_pki_types::CertificateDer<'_>,
+                _: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+            }
+            fn verify_tls13_signature(
+                &self,
+                _: &[u8],
+                _: &rustls_pki_types::CertificateDer<'_>,
+                _: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+            }
+            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+                vec![
+                    rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                    rustls::SignatureScheme::RSA_PSS_SHA256,
+                ]
+            }
+        }
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut client_config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAll))
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"h2".to_vec()];
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+        let server_name = ServerName::try_from("example.test").unwrap();
+        let tcp_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut tls = connector.connect(server_name, tcp_stream).await.unwrap();
+
+        // Read back the fingerprint the server computed.
+        let mut buf = [0u8; 128];
+        let n = tls.read(&mut buf).await.unwrap();
+        let server_fp = std::str::from_utf8(&buf[..n]).unwrap();
+
+        // Format: t{ver}{sni}_{cipher_hex}_{alpn_hash}
+        assert!(
+            server_fp.starts_with("t13") || server_fp.starts_with("t12"),
+            "fingerprint should start with t13 or t12, got: {server_fp}",
+        );
+        // SNI char: client connected with "example.test" → domain.
+        assert!(
+            server_fp.contains('d'),
+            "fingerprint should contain SNI 'd' marker: {server_fp}",
+        );
+        // Two underscores.
+        assert_eq!(server_fp.matches('_').count(), 2, "got: {server_fp}");
 
         srv.abort();
     }

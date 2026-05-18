@@ -67,7 +67,7 @@ pub fn format_ocsf(ev: &AuditEvent) -> String {
         },
         finding: OcsfFindingInfo {
             uid: ev.request_id.clone(),
-            title: ev.action.clone(),
+            title: ev.action.as_str().to_string(),
             desc: ev.reason.clone(),
         },
     };

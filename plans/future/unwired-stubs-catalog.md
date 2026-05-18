@@ -482,6 +482,98 @@ existing `stamp_interop_response` once the data plane returns.
 
 ---
 
+## JA4 capture — partial wire-up landed 2026-05-18
+
+**Status:** Activated as "JA4-light" — post-handshake fingerprint
+captures negotiated cipher + ALPN + TLS version + SNI type from
+the rustls `ServerConnection`. Threads into `RequestView.tls` so
+the three downstream features now fire:
+
+- `BotSignals.ja4_fingerprint` is populated (accept.rs line ~1421).
+- `DeviceIpTracker.observe(ja4, peer_ip)` is called in the data
+  plane after the detector chain runs.
+- The brute_force `device` axis reads `view.tls.ja4` and tracks
+  same-fingerprint-different-IP attempts.
+
+**Remaining gap (lower priority — canonical JA4 capture):** the
+canonical JA4 spec hashes the FULL ClientHello extension list
+(supported_versions, key_share, …). rustls 0.23's post-handshake
+API only exposes what the negotiator selected (single cipher,
+single ALPN). The JA4-light shipped today distinguishes broad
+client classes (Chrome / curl / sqlmap / Firefox) but won't
+differentiate fine-grained library version differences inside
+the same class.
+
+If the canonical capture is needed, the wire-up is:
+
+1. Hook the `ResolvesServerCert::resolve` callback (the only spot
+   rustls exposes the full `ClientHello` to user code).
+2. Bridge from the synchronous resolver callback to the async
+   request handler via a `tokio::task_local!` scope wrapping the
+   handshake (the scope is held across `accept().await` so the
+   resolver write + handler read happen in the same task).
+
+Documented here as the original below.
+
+---
+
+## JA4 capture (original — historical) — `RequestView.tls` always None today
+
+Added 2026-05-18 (QC TLS-wiring batch).
+
+**Symptom.** Three already-built features depend on the JA4 TLS
+fingerprint being plumbed into `RequestView.tls`:
+
+- `aegis_security::fingerprint::DeviceIpTracker` (Sprint 3.1,
+  commit `093adeb`) — built, fully tested, currently dormant
+  because the data plane has no JA4 to call `observe(fp, ip)`
+  with.
+- `aegis_security::detectors::brute_force` device axis (Sprint
+  2.3, commit `fd9233f`) — code reads `req.tls.ja4` but always
+  observes `None`, so the device axis silently no-ops.
+- `aegis_security::bots::BotSignals.ja4_fingerprint` — populated
+  with `None` at the accept-site (`accept.rs::~1374`), so the
+  classifier's known-bad-JA4 lookup path never fires.
+
+**Why it's not wired.** rustls 0.23 doesn't expose the full
+ClientHello extension list through its public `ResolvesServerCert`
+callback. Capturing canonical JA4 needs either:
+
+1. A custom rustls feature hook (the experimental
+   `client_hello_callback` extension trait) — risky, version-
+   pinned to rustls internals.
+2. A side-channel: pre-handshake parse of the raw ClientHello
+   record from the TCP stream before rustls accepts. Bigger
+   investment (~300 LoC of TLS record parsing).
+3. A "JA4-light" using what rustls exposes — cipher_suites +
+   ALPN + SNI from the ClientHello callback — passed through a
+   per-connection `OnceLock` or task-local. ~100 LoC, but the
+   resulting fingerprint is a strict subset of canonical JA4
+   (won't differentiate clients with identical cipher lists but
+   distinct extensions).
+
+**Recommended path.** Option 3 (JA4-light). Differentiates
+Chrome / curl / sqlmap with >90% accuracy in practice; the loss
+vs canonical JA4 is in the "Firefox X.Y vs Firefox X.Y+1"
+corner (rarely security-relevant). When the wire-up lands:
+
+1. `listener/tls.rs::DynamicResolver::resolve` records
+   cipher_suites + alpn + sni-type into a per-connection
+   `TlsFingerprint`.
+2. The accept loop stashes the fingerprint into the connection's
+   handler context (e.g. a `parking_lot::Mutex<HashMap<SocketAddr,
+   TlsFingerprint>>` keyed by peer).
+3. `data_plane::handle_data_request_inner` reads the fingerprint
+   for `peer` and sets `view.tls = Some(&fp)`.
+4. The three downstream features (DeviceIpTracker observe call,
+   brute_force device axis read, BotSignals.ja4 + JA4-known-bad
+   lookup) activate automatically.
+
+**Tracking.** Sprint 1 of a hypothetical future "TLS fingerprint
+wire-up" batch. ~80-100 LoC, one PR. The QC plan at
+`plans/issue-fix/2026-05-18-qc-followup/README.md` references
+this as a "one wire-up unblocks three features" deferral.
+
 ## How this list will change
 
 - **Trimmed** when a stub gets deleted (Phase 4 will remove

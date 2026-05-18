@@ -291,11 +291,11 @@ pub fn format_cef(ev: &AuditEvent, cfg: &SyslogConfig) -> String {
         AuditClass::System => 5,
     };
     let class_id = format!("{:?}", ev.class).to_lowercase();
-    let name = ev.action.clone();
+    let name = ev.action.as_str().to_string();
     // Common extensions.
     let mut extension = format!(
         "act={action} src={ip} request_id={rid} mode={mode}",
-        action = cef_escape(&ev.action),
+        action = cef_escape(ev.action.as_str()),
         ip = cef_escape(&ev.client_ip),
         rid = cef_escape(&ev.request_id),
         mode = cef_extract_mode(&ev.fields),

@@ -28,7 +28,7 @@ impl AdminChangeEntry {
             class: AuditClass::Admin,
             tenant_id: None,
             tier: None,
-            action: self.action.clone(),
+            action: self.action.as_str().into(),
             reason: self.reason.clone(),
             client_ip: String::new(),
             route_id: None,

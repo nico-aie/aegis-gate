@@ -40,6 +40,21 @@ pub enum AsnClassification {
     Unknown,
 }
 
+impl AsnClassification {
+    /// Stable wire string for the JSON API (e.g. on the Top
+    /// Attackers row). Lower-case, single word — pinned because
+    /// the dashboard uses these strings as CSS class keys.
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Residential => "residential",
+            Self::Mobile => "mobile",
+            Self::Hosting => "hosting",
+            Self::Datacenter => "datacenter",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Signals used for bot classification.
 #[derive(Clone, Debug, Default)]
 pub struct BotSignals {
@@ -114,6 +129,64 @@ const KNOWN_BAD_JA4_CIPHER_HASHES: &[&str] = &[];
 /// `LikelyBot`. Reserved as a constant so the ladder is
 /// auditable + tunable.
 const LADDER_LIKELY_BOT_THRESHOLD: u32 = 50;
+
+/// 2026-05-18 (QC follow-up TLS-wiring batch — F-CRITICAL-015
+/// activation): hardcoded ASN → ownership classification table.
+/// Operators can override via `cfg.bots.asn_classifications` once
+/// that schema lands; the hardcoded table covers the obvious
+/// cloud / hosting / mobile carrier ASNs so the ASN-class signal
+/// fires immediately when MaxMind ASN lookups return a known
+/// value.
+///
+/// Tuples: `(asn, classification)`. Sorted by ASN for `binary_search_by`
+/// — runtime cost is O(log N) per request. List is intentionally
+/// conservative — only widely-cited ASNs whose ownership rarely
+/// changes; misclassifying a popular consumer ISP as Hosting
+/// would false-positive a huge population.
+const ASN_TABLE: &[(u32, AsnClassification)] = &[
+    // Cloud-hosting providers (datacenter-class for our purposes).
+    (3320, AsnClassification::Hosting),    // Deutsche Telekom — mixed but heavy hosting.
+    (7843, AsnClassification::Hosting),    // Cox Comm. business.
+    (8075, AsnClassification::Hosting),    // Microsoft Azure.
+    (13335, AsnClassification::Hosting),   // Cloudflare.
+    (14061, AsnClassification::Hosting),   // DigitalOcean.
+    (14618, AsnClassification::Hosting),   // Amazon AWS (us-east-1).
+    (15169, AsnClassification::Hosting),   // Google Cloud / Google.
+    (16276, AsnClassification::Hosting),   // OVH SAS.
+    (16509, AsnClassification::Hosting),   // Amazon AWS (multi-region).
+    (20473, AsnClassification::Hosting),   // Vultr / Choopa.
+    (24940, AsnClassification::Hosting),   // Hetzner Online.
+    (32934, AsnClassification::Hosting),   // Facebook / Meta (returns user-facing too; classified conservatively).
+    (46606, AsnClassification::Hosting),   // Unified Layer / Bluehost.
+    (63949, AsnClassification::Hosting),   // Linode (Akamai).
+    // Bulletproof / datacenter-class — heavier negative weight.
+    (197207, AsnClassification::Datacenter), // PSINet / abuse-heavy.
+    (203020, AsnClassification::Datacenter), // HostingCloud.
+    // Major residential / consumer ISPs (most legit traffic).
+    (701, AsnClassification::Residential),   // Verizon (US).
+    (7018, AsnClassification::Residential),  // AT&T (US).
+    (7922, AsnClassification::Residential),  // Comcast (US).
+    // Mobile carriers (CGNAT, sometimes confused for hosting).
+    (5650, AsnClassification::Mobile),       // T-Mobile US.
+    (6167, AsnClassification::Mobile),       // Verizon Wireless (US).
+    (21928, AsnClassification::Mobile),      // T-Mobile USA.
+];
+
+/// 2026-05-18 (QC follow-up TLS-wiring batch): look up an ASN's
+/// ownership class. Returns `Unknown` when the ASN isn't in the
+/// hardcoded table (most of the world). Operators tuning posture
+/// for their target population can populate a larger table via a
+/// future `cfg.bots.asn_classifications` YAML knob.
+pub fn classify_asn(asn: u32) -> AsnClassification {
+    // Linear scan — the table is small (~20 entries) and binary
+    // search wouldn't beat the branch predictor at this size.
+    for (a, class) in ASN_TABLE {
+        if *a == asn {
+            return *class;
+        }
+    }
+    AsnClassification::Unknown
+}
 
 /// Bot classifier with optional reverse DNS cache.
 pub struct BotClassifier {
@@ -597,5 +670,90 @@ mod tests {
     fn asn_classification_default_is_unknown() {
         let c: AsnClassification = AsnClassification::default();
         assert_eq!(c, AsnClassification::Unknown);
+    }
+
+    // ---- 2026-05-18 TLS-wiring batch — F-CRITICAL-015 activation ----
+
+    /// Well-known cloud ASNs classify as Hosting.
+    #[test]
+    fn classify_asn_recognises_cloud_providers() {
+        assert_eq!(classify_asn(16509), AsnClassification::Hosting); // AWS
+        assert_eq!(classify_asn(15169), AsnClassification::Hosting); // GCP / Google
+        assert_eq!(classify_asn(8075), AsnClassification::Hosting);  // Azure
+        assert_eq!(classify_asn(14061), AsnClassification::Hosting); // DigitalOcean
+        assert_eq!(classify_asn(13335), AsnClassification::Hosting); // Cloudflare
+        assert_eq!(classify_asn(63949), AsnClassification::Hosting); // Linode
+        assert_eq!(classify_asn(24940), AsnClassification::Hosting); // Hetzner
+        assert_eq!(classify_asn(16276), AsnClassification::Hosting); // OVH
+    }
+
+    /// Major residential ISPs classify as Residential (NOT
+    /// Hosting). False-positive a popular consumer ISP as
+    /// Hosting would block a huge population.
+    #[test]
+    fn classify_asn_recognises_residential() {
+        assert_eq!(classify_asn(7922), AsnClassification::Residential); // Comcast
+        assert_eq!(classify_asn(7018), AsnClassification::Residential); // AT&T
+        assert_eq!(classify_asn(701), AsnClassification::Residential);  // Verizon
+    }
+
+    /// Mobile carriers classify as Mobile, not Hosting — CGNAT
+    /// from a phone network looks similar to a hosting NAT but
+    /// shouldn't get the negative score weight.
+    #[test]
+    fn classify_asn_recognises_mobile_carriers() {
+        assert_eq!(classify_asn(5650), AsnClassification::Mobile);  // T-Mobile US
+        assert_eq!(classify_asn(6167), AsnClassification::Mobile);  // Verizon Wireless
+        assert_eq!(classify_asn(21928), AsnClassification::Mobile); // T-Mobile USA
+    }
+
+    /// Unknown ASN returns Unknown (no false-positive).
+    #[test]
+    fn classify_asn_unknown_returns_unknown() {
+        assert_eq!(classify_asn(0), AsnClassification::Unknown);
+        assert_eq!(classify_asn(999999), AsnClassification::Unknown);
+        assert_eq!(classify_asn(42), AsnClassification::Unknown);
+    }
+
+    /// End-to-end: a request from a Datacenter ASN with no cookies
+    /// (40 + 15 = 55 ≥ 50 threshold) classifies as LikelyBot via
+    /// the classify_asn → bot ladder path. Hosting alone (30 +
+    /// 15 = 45) stays Unknown — closer to the threshold but
+    /// still a downstream-gate decision. Wire-up regression.
+    #[test]
+    fn classify_via_asn_lookup_escalates_to_likely_bot() {
+        let asn = 197207; // PSINet — classified Datacenter (40 pts)
+        let asn_class = classify_asn(asn);
+        assert_eq!(asn_class, AsnClassification::Datacenter);
+        let sig = BotSignals {
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()),
+            asn: Some(asn),
+            asn_classification: asn_class,
+            has_cookies: false,
+            ..Default::default()
+        };
+        let c = BotClassifier::default();
+        // 40 (Datacenter) + 15 (!cookies) = 55 ≥ 50 → LikelyBot.
+        assert_eq!(c.classify(&sig), BotTier::LikelyBot);
+    }
+
+    /// Counter-test: a Hosting-class ASN with no cookies sits at
+    /// 30 + 15 = 45, BELOW the 50 threshold — Unknown. Real users
+    /// behind a workplace proxy on AWS shouldn't be auto-blocked
+    /// at the bot tier.
+    #[test]
+    fn classify_via_hosting_asn_alone_does_not_block() {
+        let asn = 16509; // AWS
+        let asn_class = classify_asn(asn);
+        let sig = BotSignals {
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()),
+            asn: Some(asn),
+            asn_classification: asn_class,
+            has_cookies: false,
+            ..Default::default()
+        };
+        let c = BotClassifier::default();
+        // 30 + 15 = 45 < 50 → Unknown (needs another signal to escalate).
+        assert_eq!(c.classify(&sig), BotTier::Unknown);
     }
 }

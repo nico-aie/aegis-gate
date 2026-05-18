@@ -167,6 +167,12 @@ function PageOverview() {
     risk: a.risk,
     country: a.country || null,
     asn: a.asn || null,
+    // 2026-05-18 (QC TLS-wiring batch — F-CRITICAL-015): ASN
+    // ownership classification surfaced from the bot classifier's
+    // `classify_asn` table. One of "hosting", "datacenter",
+    // "residential", "mobile", "unknown", or null when no ASN
+    // lookup happened (fingerprint identifier, or no MaxMind DB).
+    asnClass: a.asn_class || null,
     // The WorldMap renderer wants `{cc, city, lat, lon}`. The
     // backend gives us a country code; we look up a country
     // centroid for the lat/lon. City-level pins arrive when the
@@ -447,7 +453,29 @@ function PageOverview() {
               <tr key={`${a.id}-${i}`} onClick={() => setDrawerEvent(a)}>
                 <td className="num dim">{i + 1}</td>
                 <td className="mono" style={{ fontSize: 12 }}>{a.id}</td>
-                <td><span style={{ color: 'var(--ink-mute)' }}>{a.geo ? `${a.geo.cc} · ${a.geo.city}` : '—'}</span></td>
+                <td>
+                  <span style={{ color: 'var(--ink-mute)' }}>{a.geo ? `${a.geo.cc} · ${a.geo.city}` : '—'}</span>
+                  {/* 2026-05-18 (QC TLS-wiring batch — F-CRITICAL-015):
+                      surface ASN ownership classification as a small
+                      pill next to country. Tinted by tier so operators
+                      can spot hosting/datacenter traffic at a glance
+                      without reading the AS number. */}
+                  {a.asnClass && a.asnClass !== 'unknown' && (
+                    <span
+                      className={`pill ${
+                        a.asnClass === 'datacenter' ? 'down' :
+                        a.asnClass === 'hosting'    ? 'warn' :
+                        a.asnClass === 'mobile'     ? 'neutral' :
+                        a.asnClass === 'residential' ? 'ok' :
+                        'neutral'
+                      }`}
+                      style={{ fontSize: 9, marginLeft: 6 }}
+                      title={a.asn ? `AS${a.asn} — ${a.asnClass}` : a.asnClass}
+                    >
+                      {a.asnClass}
+                    </span>
+                  )}
+                </td>
                 <td className="num">{a.hits.toLocaleString()}</td>
                 <td>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -1002,6 +1030,21 @@ const DETECTOR_COLORS = {
   crlf:        '#60A5FA',
   bot:         '#34D399',
   scanner:     '#9CA3AF',
+  // 2026-05-18 (QC TLS wire-up + Phase F detectors): colours for
+  // the new signal tags so the Detector Breakdown chart renders
+  // them at stable hues. Picked to be distinct from the OWASP
+  // class hues above (greens/teals for state-based signals;
+  // reds/oranges shared with severity-class detectors).
+  canary:                       '#EF4444', // red — single-hit-block tier
+  behavior_burst:               '#14B8A6', // teal — automated-shape signal
+  behavior_no_ua:               '#06B6D4', // cyan — UA-absence signal
+  behavior_missing_referer:     '#0EA5E9', // sky — CSRF-shape signal
+  behavior_zero_depth:          '#3B82F6', // blue — first-touch signal
+  velocity_login_to_deposit:    '#FB923C', // orange — ATO shape
+  velocity_login_to_withdrawal: '#F97316', // darker orange — cashout shape
+  velocity_otp_to_deposit:      '#FDBA74', // peach — post-2FA monetisation
+  velocity_otp_to_withdrawal:   '#FB923C', // share with login_to_deposit
+  device_ip_rotation:           '#8B5CF6', // violet — cross-IP rotation
 };
 function detectorColor(name) {
   return DETECTOR_COLORS[name] || 'var(--ink-mute)';
