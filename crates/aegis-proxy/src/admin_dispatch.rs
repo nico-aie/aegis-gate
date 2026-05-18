@@ -487,6 +487,9 @@ async fn handle_rollback(
                 route_id: None,
                 rule_id: None,
                 risk_score: None,
+                method: None,
+                path: None,
+                mode: None,
                 fields: serde_json::json!({
                     "actor": "admin",
                     "rollback_to_seq": outcome.rolled_back_to_seq,

@@ -213,6 +213,9 @@ pub async fn run(
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({"effective_mode_override": "required→optional"}),
         });
         // Heartbeat task — re-warns every 60s + re-emits the
@@ -240,6 +243,9 @@ pub async fn run(
                     route_id: None,
                     rule_id: None,
                     risk_score: None,
+                    method: None,
+                    path: None,
+                    mode: None,
                     fields: serde_json::Value::Null,
                 });
             }
@@ -1894,6 +1900,9 @@ async fn run_handover(
         route_id: None,
         rule_id: Some("handover_initiated".to_string()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "handover_id": handover_id,
             "old_pid": our_pid,
@@ -1936,6 +1945,9 @@ async fn run_handover(
         route_id: None,
         rule_id: Some(outcome.rule_id().to_string()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "handover_id": handover_id,
             "outcome": outcome_label,

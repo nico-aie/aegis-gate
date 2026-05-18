@@ -900,6 +900,9 @@ mod tests {
             route_id: None,
             rule_id: rule_id.map(|s| s.into()),
             risk_score: Some(80),
+            method: None,
+            path: None,
+            mode: None,
             fields: match detector {
                 Some(name) => serde_json::json!({"detector": name}),
                 None => serde_json::Value::Null,
@@ -1146,6 +1149,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: Some(risk),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Object(fields),
         }
     }
@@ -1399,6 +1405,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: Some(80),
+            method: None,
+            path: None,
+            mode: None,
             fields: {
                 let mut o = serde_json::Map::new();
                 o.insert("detector".into(), serde_json::Value::String(detector.into()));

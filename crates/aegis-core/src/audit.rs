@@ -1,20 +1,29 @@
 use crate::tier::Tier;
 
-/// 2026-05-17 F-CRITICAL-001/002/005 (core audit): wire-shape fixes
-/// applied via serde attributes so the canonical JSON written to
-/// the §6 audit log AND hashed by `chain::chain_hash` matches the
-/// v2.3 §6 mandate. Rust field names kept stable to avoid a
-/// 125-site construction sweep — the wire shape is what the
-/// benchmarker validates.
+/// 2026-05-17 / 2026-05-18 (core audit): wire-shape + field-set
+/// alignment with the v2.3 §6 mandate. Rust field names kept
+/// stable for `client_ip` to avoid a 125-site construction sweep
+/// on the field name (the wire shape is what the benchmarker
+/// validates).
 ///
-/// Per-field mapping (Rust field → JSON key):
+/// Per-field mapping (Rust field → JSON key, with mandate ref):
 /// - `ts: DateTime<Utc>`     → `ts_ms` (i64 epoch millis)        F-CRITICAL-001
 /// - `client_ip: String`     → `ip`                              F-CRITICAL-002
+/// - `method: Option<String>` → `method`  (skip-if-none)         F-CRITICAL-003
+/// - `path:   Option<String>` → `path`    (skip-if-none)         F-CRITICAL-003
+/// - `mode:   Option<String>` → `mode`    (skip-if-none)         F-CRITICAL-003
 /// - `risk_score: Option<u32>` → `risk_score` (u32, clamped 0..=100, 0 if None)  F-CRITICAL-005
 ///
-/// Still outstanding (filed for follow-up commit):
-/// - F-CRITICAL-003: add `method`, `path`, `mode` fields
-/// - F-CRITICAL-004: convert `action: String` → enum
+/// Phase C.2 (2026-05-18) added the three §6 top-level fields
+/// (`method`, `path`, `mode`) via an Option-typed sweep across
+/// 73 construction sites. Detection-class events from the data
+/// plane SHOULD populate them; admin / system events leave them
+/// `None` and `skip_serializing_if` keeps the wire shape clean.
+///
+/// Still outstanding (deferred):
+/// - F-CRITICAL-004: convert `action: String` → enum (cross-crate
+///   refactor — requires `AuditAction` enum + integration with
+///   the existing `aegis_core::decision::Action`).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AuditEvent {
     pub schema_version: u32,
@@ -39,6 +48,26 @@ pub struct AuditEvent {
         deserialize_with = "deserialize_risk_score"
     )]
     pub risk_score: Option<u32>,
+    /// 2026-05-18 F-CRITICAL-003 (core audit, Phase C.2): §6
+    /// mandates a top-level `method` field. Optional in the
+    /// in-memory struct so admin/system events (no HTTP method)
+    /// don't need to fabricate one; `skip_serializing_if =
+    /// "Option::is_none"` keeps the wire shape clean for legacy
+    /// callers that don't populate it. Detection-class events
+    /// from the data plane SHOULD populate this (uppercase, e.g.
+    /// `"GET"`, `"POST"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// 2026-05-18 F-CRITICAL-003 (core audit, Phase C.2): §6
+    /// mandates a top-level `path` field INCLUDING query string.
+    /// Same optional/skip-none convention as `method`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// 2026-05-18 F-CRITICAL-003 (core audit, Phase C.2): §6
+    /// mandates a top-level `mode` field — `enforce` | `log_only`.
+    /// Same optional/skip-none convention as `method`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     pub fields: serde_json::Value,
 }
 
@@ -86,6 +115,25 @@ impl AuditEvent {
     /// that need a `DateTime<Utc>`. The wire shape is `ts_ms`.
     pub fn timestamp(&self) -> chrono::DateTime<chrono::Utc> {
         self.ts
+    }
+
+    /// 2026-05-18 F-CRITICAL-003 (Phase C.2): populate the three
+    /// §6 request-shape fields (method, path, mode) in one call.
+    /// Detection-class events from the data plane chain this onto
+    /// the constructor; admin / system events leave them `None`.
+    /// Returns self so it composes cleanly with struct literal
+    /// construction: `AuditEvent { … }.with_request_info("GET",
+    /// "/api/x", "enforce")`.
+    pub fn with_request_info(
+        mut self,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        mode: impl Into<String>,
+    ) -> Self {
+        self.method = Some(method.into());
+        self.path = Some(path.into());
+        self.mode = Some(mode.into());
+        self
     }
 }
 
@@ -135,11 +183,59 @@ mod tests {
             route_id: Some("api-users".into()),
             rule_id: Some("sqli-1".into()),
             risk_score: Some(85),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({"detector": "sqli"}),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"schema_version\":1"));
         assert!(json.contains("\"class\":\"detection\""));
+    }
+
+    /// 2026-05-18 F-CRITICAL-003 (Phase C.2): the three new §6
+    /// fields (method, path, mode) skip-serialise when `None` so
+    /// admin / system events keep their wire shape unchanged, but
+    /// when populated they appear at the top level.
+    #[test]
+    fn audit_event_request_info_fields_round_trip() {
+        let ev = AuditEvent {
+            schema_version: 1,
+            ts: chrono::Utc::now(),
+            request_id: "req-info".into(),
+            class: AuditClass::Detection,
+            tenant_id: None,
+            tier: None,
+            action: "block".into(),
+            reason: "test".into(),
+            client_ip: "1.2.3.4".into(),
+            route_id: None,
+            rule_id: None,
+            risk_score: Some(50),
+            method: None,
+            path: None,
+            mode: None,
+            fields: serde_json::Value::Null,
+        };
+        // None → fields absent from the wire shape.
+        let v: serde_json::Value = serde_json::to_value(&ev).unwrap();
+        assert!(v.get("method").is_none());
+        assert!(v.get("path").is_none());
+        assert!(v.get("mode").is_none());
+
+        // Builder populates all three.
+        let ev2 = ev.with_request_info("POST", "/login?next=/dash", "enforce");
+        let v2: serde_json::Value = serde_json::to_value(&ev2).unwrap();
+        assert_eq!(v2["method"].as_str().unwrap(), "POST");
+        assert_eq!(v2["path"].as_str().unwrap(), "/login?next=/dash");
+        assert_eq!(v2["mode"].as_str().unwrap(), "enforce");
+
+        // Round-trip: deserialising back recovers them.
+        let s = serde_json::to_string(&ev2).unwrap();
+        let back: AuditEvent = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.method.as_deref(), Some("POST"));
+        assert_eq!(back.path.as_deref(), Some("/login?next=/dash"));
+        assert_eq!(back.mode.as_deref(), Some("enforce"));
     }
 
     /// 2026-05-17 F-CRITICAL-001: §6 wire-shape regression. `ts`
@@ -160,6 +256,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: Some(0),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         };
         let v: serde_json::Value = serde_json::to_value(&ev).unwrap();
@@ -186,6 +285,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: Some(50),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         };
         let v: serde_json::Value = serde_json::to_value(&ev).unwrap();
@@ -211,6 +313,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         };
         // None → 0 on the wire, never `null`, never missing.
@@ -246,6 +351,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: Some(0),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         };
         let s = serde_json::to_string(&ev).unwrap();
@@ -282,6 +390,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         };
         assert_eq!(ev.schema_version, 1);
@@ -305,6 +416,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         };
         bus.emit(ev);
@@ -329,6 +443,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         };
         bus.emit(ev); // should not panic

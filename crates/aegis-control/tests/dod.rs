@@ -131,6 +131,9 @@ mod audit_chain_verify {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         }
     }
@@ -196,6 +199,9 @@ mod siem_multi_sink {
             route_id: Some("api".into()),
             rule_id: Some("sqli-1".into()),
             risk_score: Some(90),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({"detector": "sqli"}),
         }
     }

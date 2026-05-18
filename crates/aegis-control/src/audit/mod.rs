@@ -34,6 +34,9 @@ impl AdminChangeEntry {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({
                 "actor": self.actor,
                 "resource": self.resource,

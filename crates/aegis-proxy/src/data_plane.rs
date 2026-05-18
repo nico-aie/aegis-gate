@@ -382,6 +382,9 @@ pub(crate) async fn handle_data_request_inner(
                         route_id: None,
                         rule_id: Some("ddos".into()),
                         risk_score: None,
+                        method: None,
+                        path: None,
+                        mode: None,
                         fields: serde_json::json!({
                             "path": req.uri().to_string(),
                             "method": req.method().to_string(),
@@ -465,6 +468,9 @@ pub(crate) async fn handle_data_request_inner(
                 route_id: None,
                 rule_id: Some("ip-rate-limit".into()),
                 risk_score: Some(post_state.score),
+                method: None,
+                path: None,
+                mode: None,
                 fields: if load_mode.is_critical() {
                     serde_json::Value::Null
                 } else {
@@ -734,6 +740,9 @@ pub(crate) async fn handle_data_request_inner(
                 route_id: None,
                 rule_id: None,
                 risk_score: Some(post_state.score),
+                method: None,
+                path: None,
+                mode: None,
                 fields,
             };
             bus.emit(ev);
@@ -1451,6 +1460,9 @@ pub(crate) async fn forward_allow_to_upstream(
                             route_id: Some(route_id_for_task.clone()),
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "upstream_addr": upstream_addr.to_string(),
                                 "duration_ms": elapsed.as_millis() as u64,
@@ -1502,6 +1514,9 @@ pub(crate) async fn forward_allow_to_upstream(
                 route_id: Some(route_ctx.route_id.clone()),
                 rule_id: None,
                 risk_score: None,
+                method: None,
+                path: None,
+                mode: None,
                 fields: serde_json::json!({
                     "upstream_addr": member.addr.to_string(),
                     "host": host,
@@ -2099,6 +2114,9 @@ fn connect_deny_response(
         route_id: Some(route_id.to_string()),
         rule_id: Some(rule_id.to_string()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({"connect_denied": true}),
     });
 
@@ -2131,6 +2149,9 @@ fn emit_tunnel_open_audit(
         route_id: Some(route_id.to_string()),
         rule_id: Some("tunnel_admitted".into()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "destination": dest.to_string(),
         }),
@@ -2157,6 +2178,9 @@ fn emit_tunnel_close_audit(
         route_id: Some(route_id.to_string()),
         rule_id: Some(closed.reason.rule_id().to_string()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "duration_ms": closed.duration.as_millis() as u64,
             "bytes_to_upstream": closed.bytes_to_upstream,
@@ -2229,6 +2253,9 @@ fn blocked_response(
         route_id: None,
         rule_id,
         risk_score,
+        method: Some(method.to_string()),
+        path: Some(uri.to_string()),
+        mode: None,
         fields: serde_json::json!({
             "path": uri.to_string(),
             "method": method.to_string(),

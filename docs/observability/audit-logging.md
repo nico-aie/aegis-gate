@@ -29,21 +29,41 @@ events. Fuels dashboards, SIEM pipelines, incident response, and audits.
 
 ## Event schema (v2, stable)
 
+> **2026-05-18 — F-CRITICAL-001..005, F-CRITICAL-013 (Phase C.1 + C.2):**
+> the canonical struct now matches the v2.3 §6 wire shape exactly.
+> Per-field summary:
+>
+> | JSON key | Rust field | Notes |
+> |---|---|---|
+> | `ts_ms` | `ts: DateTime<Utc>` | i64 epoch ms via custom serializer (was RFC3339 string) |
+> | `ip` | `client_ip: String` | renamed via `#[serde(rename)]`; Rust name kept for compat |
+> | `risk_score` | `risk_score: Option<u32>` | always present on the wire (None → 0), clamped 0..=100 |
+> | `method` | `method: Option<String>` | top-level § 6 field, populated by detection events |
+> | `path` | `path: Option<String>` | top-level § 6 field, includes query string |
+> | `mode` | `mode: Option<String>` | top-level § 6 field — `enforce` \| `log_only` |
+>
+> Chain entries on disk (and the JSONL sink) wrap each event in a
+> `ChainEntry { hash, event }` so the file format matches what the
+> verifier (`waf audit verify`) expects — fixed in F-CRITICAL-013.
+> Cross-day chain linkage is preserved: a new daily file seeds its
+> `prev_hash` from the previous file's tail.
+
 ```json
 {
   "schema_version": 2,
-  "ts": "2026-04-12T10:15:30.123Z",
+  "ts_ms": 1715904000123,
   "class": "detection",
   "request_id": "c0ffee…",
   "trace_id": "00-4bf92f…-e2...-01",
-  "client_ip": "203.0.113.4",
+  "ip": "203.0.113.4",
   "asn": 15169,
   "method": "POST",
   "host": "api.example.com",
   "path": "/v1/login",
   "route_id": "api_v1_login",
   "tier": "critical",
-  "decision": "block",
+  "action": "block",
+  "mode": "enforce",
   "risk_score": 85,
   "detectors": ["sqli"],
   "rule_ids": ["block_sqlmap_ua"],

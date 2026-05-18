@@ -172,6 +172,9 @@ mod tests {
             route_id: route.map(|s| s.into()),
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         }
     }
