@@ -17,6 +17,7 @@ historical comparison but not needed for everyday work.
 | [`run-ai-compare-2026-05-03/`](./run-ai-compare-2026-05-03/) | 2026-05-03 | **AI Detector A/B/C/D baseline** — side-by-side regex+AI / AI-only / regex-only / none, 4 × 8 000 reqs at 400 rps. Headline: AI lifts detection 93.5 % → 93.8 % at +1.1 ms p95 / +2.3 ms p99 / +500 MB RSS. **p99 vs 5 ms target**: regex-only ✅ (2.92 ms), regex+AI ⚠ (clean 5.71 ms over by 0.71 ms on laptop hardware), AI-only ❌ (5.58 ms). Reproduces with `bash tests/perf/ai-compare.sh`. |
 | [`run-cqa-round3-20260502/`](./run-cqa-round3-20260502/) | 2026-05-02 | **Dashboard CQA baseline** — Round-3 control-panel acceptance after the SOC-UX pass. 12 fresh screenshots, every page renders, OpenAPI shape green. |
 | [`run-soc-sweep-202605030612/`](./run-soc-sweep-202605030612/) | 2026-05-03 | **SOC sweep baseline** — most recent multi-tester SOC walkthrough. Use as the comparison row for the next AI-assistant sweep. |
+| [`run-juice-shop-eval-2026-05-18-152455/`](./run-juice-shop-eval-2026-05-18-152455/) | 2026-05-18 | **Real-backend security eval baseline** — first run through the `make juice-up` opt-in workflow against OWASP Juice Shop v20. 45-request corpus across SQLi / XSS / path traversal / cmd injection / SSRF / bots / IDOR / rate-limit. Headline: 100 % detection on injection categories (18 / 18), 0 % FP on legit baseline (0 / 5), 45 / 45 audit-log correlation. Carry-overs: rate limiter didn't trip at 15 same-IP RPS, header-size detector permissive at 2 KB. Compare future eval runs against this. |
 
 ## Reading a run
 
