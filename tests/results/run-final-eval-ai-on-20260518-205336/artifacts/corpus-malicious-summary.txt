@@ -1,0 +1,24 @@
+class                    n  block403  block400  transp_x  FN_allow  ai_hit  p95_ms
+command_injection       19        12         0         7         0       6     6.8
+evasion_chain           18         9         0         8         1       5    15.8
+graphql_abuse           21        21         0         0         0      15    11.7
+header_injection        22        14         0         2         6       3     7.2
+http_smuggling          16        16         0         0         0      16     8.1
+jwt_abuse               20         6         0         0        14       2     8.0
+ldap_injection          17         8         0         1         8       3     7.7
+log4shell               16        16         0         0         0       9     6.9
+nosql_injection         19        17         1         0         1       8     7.3
+open_redirect           17         5         0         0        12       1     8.8
+path_traversal          15        12         0         0         3       6     6.6
+polyglot                17         6         6         5         0       5     8.7
+prototype_pollution     18         8         4         0         6       4    10.1
+rce_deserialization     21        21         0         0         0       6     8.0
+recon                   18        15         0         0         3       5     9.7
+sqli                    18        11         0         6         1       6     7.3
+ssrf                    20        18         0         0         2      11    10.5
+ssti                    18        12         1         4         1       9     7.7
+websocket               19         0         0        19         0       0     2.5
+xss                     15         8         1         4         2       4     8.1
+xxe                     11        11         0         0         0       8     9.2
+--------------------------------------------------------------------------------
+TOTAL n=375  blocked=259 (69.1%)  FN_allow=60 (16.0%)  ai_hits=132 (35.2% of all)

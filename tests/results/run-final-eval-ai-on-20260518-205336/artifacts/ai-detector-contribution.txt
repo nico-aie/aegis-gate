@@ -1,0 +1,10 @@
+total_blocked  = 246
+ai_only_block  = 8   (cases blocked SOLELY by AI verdict)
+ai_co_signal   = 124  (AI fired alongside rule detectors — defense in depth)
+no_ai_block    = 114  (rule chain blocked without AI)
+
+--- clean corpus (FP analysis) ---
+clean_total       = 100
+FP total (block)  = 43  (43.0% FP)
+AI involved in FP = 22    (22.0% of clean)
+AI ONLY caused FP = 15     (15.0% of clean)
