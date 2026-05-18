@@ -8,6 +8,34 @@ pub struct RiskKey {
     pub tenant_id: Option<String>,
 }
 
+impl RiskKey {
+    /// 2026-05-18 F-CRITICAL-001 (security audit, Phase E) — the
+    /// "legacy" / IP-only constructor. Used when the data plane
+    /// doesn't have device-fingerprint or session info available
+    /// (e.g. anonymous public endpoints, pre-session-warmup). All
+    /// `Option` axes stay `None`.
+    ///
+    /// Composite-key construction (with `device_fp` from JA4 + UA
+    /// hash, `session` from cookie / JWT-sub, `tenant_id` from
+    /// route metadata) is a separate site-specific constructor —
+    /// callers build a `RiskKey { … }` literal there. This helper
+    /// is the bridge for the migration from IP-only to composite.
+    pub fn from_ip(ip: IpAddr) -> Self {
+        Self {
+            ip,
+            device_fp: None,
+            session: None,
+            tenant_id: None,
+        }
+    }
+}
+
+impl From<IpAddr> for RiskKey {
+    fn from(ip: IpAddr) -> Self {
+        Self::from_ip(ip)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
