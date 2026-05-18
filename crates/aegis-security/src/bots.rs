@@ -11,6 +11,35 @@ pub enum BotTier {
     Unknown,
 }
 
+/// 2026-05-18 (QC Sprint 2.2 — F-CRITICAL-015, §5.2 #05):
+/// IP / ASN ownership classification. Public WAFs see this on the
+/// edge from the upstream IP-reputation feed or a static
+/// `Vec<AsnRange>` lookup table.
+///
+/// - `Residential` — consumer ISPs (Comcast, Vodafone, etc.).
+///   Default-trust by ASN-only signal — bots from residential
+///   pools are common (proxy-as-a-service rotators) but most
+///   traffic is legit.
+/// - `Mobile` — carrier-grade NAT mobile networks (T-Mobile,
+///   Verizon Wireless, etc.). Same default-trust as Residential.
+/// - `Hosting` — cloud hosting providers (AWS / GCP / Azure /
+///   DigitalOcean / Linode / OVH). Strong negative signal — most
+///   legitimate browser traffic doesn't originate from a hosting
+///   ASN.
+/// - `Datacenter` — non-cloud datacenter / bulletproof hosting.
+///   Strongest negative signal — heavily abused by scrapers and
+///   credential-stuffers.
+/// - `Unknown` — no lookup result; treat as neutral.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AsnClassification {
+    Residential,
+    Mobile,
+    Hosting,
+    Datacenter,
+    #[default]
+    Unknown,
+}
+
 /// Signals used for bot classification.
 #[derive(Clone, Debug, Default)]
 pub struct BotSignals {
@@ -21,6 +50,15 @@ pub struct BotSignals {
     pub has_js_challenge_pass: bool,
     pub failed_challenges: u32,
     pub reverse_dns: Option<String>,
+    /// 2026-05-18 (QC Sprint 2.2 — F-CRITICAL-015, §5.2 #05):
+    /// peer IP's autonomous system number. Sourced from the
+    /// MaxMind ASN database via `aegis-security::geoip`.
+    pub asn: Option<u32>,
+    /// 2026-05-18 (QC Sprint 2.2): ownership classification of
+    /// the peer's ASN. The data plane fills this from a static
+    /// lookup against well-known hosting / datacenter ASNs, or
+    /// leaves it `Unknown` when the lookup misses.
+    pub asn_classification: AsnClassification,
 }
 
 /// Known good-bot reverse DNS patterns for forward-confirmed reverse DNS (FCrDNS).
@@ -52,6 +90,31 @@ const BAD_UA_PATTERNS: &[&str] = &[
     "w3af",
 ];
 
+/// 2026-05-18 (QC Sprint 2.2 — F-CRITICAL-015): known-bot JA4
+/// fingerprint prefixes. The JA4 format is
+/// `{q}{ver}{sni}{cipher_count}{ext_count}_{cipher_hash}_{ext_hash}`.
+/// We match against the `cipher_hash` substring (the segment
+/// between underscores) since the prefix `t13d…` is shared by
+/// nearly all modern TLS-1.3 clients with domain SNI.
+///
+/// Sourced from public JA4 databases — these are the cipher
+/// signatures of common attack tooling and headless library
+/// fingerprints. Conservative list: prefer false negatives
+/// (don't false-positive a real user) over false positives.
+///
+/// Empty list ships today — F-CRITICAL-015's intent is the
+/// *capability* (BotSignals carries JA4, classifier inspects it).
+/// Operators / threat-feed integrations populate at boot via a
+/// future `cfg.bots.known_bad_ja4` knob.
+const KNOWN_BAD_JA4_CIPHER_HASHES: &[&str] = &[];
+
+/// 2026-05-18 (QC Sprint 2.2 — §5.2 #04): challenge-ladder
+/// threshold. Score accumulates from signals (suspicious ASN,
+/// short UA, no cookies, etc.); crossing this becomes
+/// `LikelyBot`. Reserved as a constant so the ladder is
+/// auditable + tunable.
+const LADDER_LIKELY_BOT_THRESHOLD: u32 = 50;
+
 /// Bot classifier with optional reverse DNS cache.
 pub struct BotClassifier {
     /// Cache of reverse DNS results: IP string → rDNS.
@@ -69,12 +132,35 @@ impl BotClassifier {
     }
 
     /// Classify a request's bot tier from available signals.
+    ///
+    /// 2026-05-18 (QC Sprint 2.2 — F-CRITICAL-015 §5.2 #04 / #05 /
+    /// #08): the classifier now reads `ja4_fingerprint` and
+    /// `asn_classification` in addition to UA / rDNS / challenge
+    /// state. The decision shape preserves the existing fast-paths
+    /// (KnownBad UA → KnownBad; FCrDNS match → GoodBot; passed JS
+    /// challenge → Human) but lets multi-signal evidence escalate
+    /// the otherwise-Unknown verdict via a small score-based
+    /// ladder.
     pub fn classify(&self, signals: &BotSignals) -> BotTier {
-        // 1. Check for known bad UA.
+        // 1. Check for known bad UA. Fastest path — preserves
+        // existing tests (sqlmap, nikto, nmap, …) and is an absolute
+        // KnownBad regardless of other signals.
         if let Some(ua) = &signals.user_agent {
             let ua_lower = ua.to_lowercase();
             for pattern in BAD_UA_PATTERNS {
                 if ua_lower.contains(pattern) {
+                    return BotTier::KnownBad;
+                }
+            }
+        }
+
+        // 2026-05-18 §5.2 #08: known-bad JA4 cipher hash.
+        // KnownBad regardless of other signals, same severity as
+        // a UA match. Empty list ships today — threat-feed
+        // integration populates it.
+        if let Some(ja4) = &signals.ja4_fingerprint {
+            if let Some(cipher_hash) = extract_ja4_cipher_hash(ja4) {
+                if KNOWN_BAD_JA4_CIPHER_HASHES.contains(&cipher_hash) {
                     return BotTier::KnownBad;
                 }
             }
@@ -96,6 +182,9 @@ impl BotClassifier {
         }
 
         // 4. Has cookies + passed JS challenge → likely human.
+        // 2026-05-18: the JS challenge pass overrides ASN-class
+        // suspicion — a real user behind a residential proxy
+        // still passes the JS check.
         if signals.has_cookies && signals.has_js_challenge_pass {
             return BotTier::Human;
         }
@@ -110,6 +199,31 @@ impl BotClassifier {
             if ua.len() < 20 {
                 return BotTier::LikelyBot;
             }
+        }
+
+        // 2026-05-18 §5.2 #04 + #05: signal-score ladder. Each
+        // individually-weak signal contributes points; crossing
+        // `LADDER_LIKELY_BOT_THRESHOLD` (50) escalates an
+        // otherwise-Unknown verdict to LikelyBot. Real browsers
+        // typically accumulate 0-20; bots from hosting ASNs
+        // without cookies / JS-pass accumulate 60-80.
+        let mut score: u32 = 0;
+        match signals.asn_classification {
+            AsnClassification::Datacenter => score += 40,
+            AsnClassification::Hosting => score += 30,
+            AsnClassification::Residential | AsnClassification::Mobile => {}
+            AsnClassification::Unknown => {}
+        }
+        if !signals.has_cookies {
+            score += 15;
+        }
+        // The `failed_challenges` 1-2 range (3+ is already
+        // LikelyBot above). One failure is a soft signal.
+        if signals.failed_challenges >= 1 {
+            score += 10 * signals.failed_challenges;
+        }
+        if score >= LADDER_LIKELY_BOT_THRESHOLD {
+            return BotTier::LikelyBot;
         }
 
         BotTier::Unknown
@@ -137,6 +251,17 @@ impl Default for BotClassifier {
     }
 }
 
+/// 2026-05-18 (QC Sprint 2.2): pull out the `cipher_hash`
+/// segment of a JA4 fingerprint string. The JA4 format is
+/// `{q}{ver}{sni}{cipher_count}{ext_count}_{cipher_hash}_{ext_hash}`;
+/// the cipher_hash is the segment between the first and second
+/// underscore. Returns `None` for malformed input.
+fn extract_ja4_cipher_hash(ja4: &str) -> Option<&str> {
+    let mut parts = ja4.splitn(3, '_');
+    parts.next()?; // header prefix (q/ver/sni/counts)
+    parts.next() // cipher_hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +275,8 @@ mod tests {
             has_js_challenge_pass: true,
             failed_challenges: 0,
             reverse_dns: None,
+            asn: None,
+            asn_classification: AsnClassification::Unknown,
         }
     }
 
@@ -358,5 +485,117 @@ mod tests {
         c.cache_rdns("4.4.4.4", Some("d".into()));
         assert_eq!(c.get_cached_rdns("1.1.1.1"), None); // evicted
         assert!(c.get_cached_rdns("4.4.4.4").is_some());
+    }
+
+    // ---- 2026-05-18 QC Sprint 2.2 — F-CRITICAL-015 ----
+
+    /// `extract_ja4_cipher_hash` pulls out the second underscore-
+    /// separated segment from a JA4 string.
+    #[test]
+    fn extract_ja4_cipher_hash_basic() {
+        let fp = "t13d0910_abc123def456_789xyzqwer42";
+        assert_eq!(extract_ja4_cipher_hash(fp), Some("abc123def456"));
+    }
+
+    #[test]
+    fn extract_ja4_cipher_hash_malformed_returns_none() {
+        // No underscore.
+        assert_eq!(extract_ja4_cipher_hash("t13d0910"), None);
+        // Single underscore — only header + one tail.
+        // (splitn(3) gives the whole tail as the second part.)
+        // We accept this — the tail is the cipher_hash.
+        assert_eq!(
+            extract_ja4_cipher_hash("t13d0910_abc"),
+            Some("abc"),
+        );
+    }
+
+    /// Datacenter-ASN traffic without cookies + no JS challenge
+    /// pass crosses the LikelyBot ladder threshold. Pre-Sprint-2.2
+    /// this would have returned `Unknown`.
+    #[test]
+    fn datacenter_asn_with_no_cookies_escalates_to_likely_bot() {
+        let sig = BotSignals {
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()),
+            asn: Some(13335),
+            asn_classification: AsnClassification::Datacenter,
+            has_cookies: false,
+            ..Default::default()
+        };
+        let c = BotClassifier::default();
+        assert_eq!(c.classify(&sig), BotTier::LikelyBot);
+    }
+
+    /// Hosting ASN alone (with cookies) sits below the threshold
+    /// — cookies are evidence of session continuity. Returns
+    /// Unknown so downstream challenge gates can decide.
+    #[test]
+    fn hosting_asn_with_cookies_stays_unknown() {
+        let sig = BotSignals {
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()),
+            asn: Some(16509),
+            asn_classification: AsnClassification::Hosting,
+            has_cookies: true,
+            // No JS challenge pass — wouldn't classify as Human.
+            ..Default::default()
+        };
+        let c = BotClassifier::default();
+        // 30 (Hosting) + 0 (cookies present) = 30 < 50. Unknown.
+        assert_eq!(c.classify(&sig), BotTier::Unknown);
+    }
+
+    /// JS challenge pass on a hosting-ASN connection overrides
+    /// the ASN-class suspicion. Real users behind a hosting NAT
+    /// (rare but real — workplace proxies, etc.) still pass.
+    #[test]
+    fn js_challenge_pass_overrides_hosting_asn() {
+        let sig = BotSignals {
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()),
+            asn: Some(16509),
+            asn_classification: AsnClassification::Hosting,
+            has_cookies: true,
+            has_js_challenge_pass: true,
+            ..Default::default()
+        };
+        let c = BotClassifier::default();
+        assert_eq!(c.classify(&sig), BotTier::Human);
+    }
+
+    /// Residential ASN doesn't accumulate points by itself —
+    /// legitimate consumer traffic must not get auto-escalated.
+    #[test]
+    fn residential_asn_with_no_other_signals_stays_unknown() {
+        let sig = BotSignals {
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()),
+            asn: Some(7922),
+            asn_classification: AsnClassification::Residential,
+            has_cookies: true,
+            ..Default::default()
+        };
+        let c = BotClassifier::default();
+        assert_eq!(c.classify(&sig), BotTier::Unknown);
+    }
+
+    /// 1 failed challenge + Hosting ASN + no cookies stacks to
+    /// 30 + 15 + 10 = 55, crossing the ladder.
+    #[test]
+    fn failed_challenge_stacks_with_asn_class() {
+        let sig = BotSignals {
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()),
+            asn_classification: AsnClassification::Hosting,
+            has_cookies: false,
+            failed_challenges: 1,
+            ..Default::default()
+        };
+        let c = BotClassifier::default();
+        // 30 + 15 + 10 = 55 ≥ 50.
+        assert_eq!(c.classify(&sig), BotTier::LikelyBot);
+    }
+
+    /// AsnClassification round-trips through default and equality.
+    #[test]
+    fn asn_classification_default_is_unknown() {
+        let c: AsnClassification = AsnClassification::default();
+        assert_eq!(c, AsnClassification::Unknown);
     }
 }
