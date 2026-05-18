@@ -1,6 +1,9 @@
+pub mod device_ip_tracker;
 pub mod h2;
 pub mod ja3;
 pub mod ja4;
+
+pub use device_ip_tracker::DeviceIpTracker;
 
 use aegis_core::TlsFingerprint;
 
