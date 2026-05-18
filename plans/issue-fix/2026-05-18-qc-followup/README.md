@@ -209,6 +209,17 @@ Impact: §5.3 OWASP brute force; Attack Battle scenario 02
 
 ### Sprint 3 — Intelligence rubric depth (~220 LoC)
 
+**Status:** DONE (S3.1) + DONE-as-docs (S3.2).
+- S3.1 landed in `093adeb` (DeviceIpTracker reverse map + 9 tests).
+- S3.2 landed in the same batch as documentation-only — the
+  `Pipeline::inbound` "bypass" was reclassified after Phase D+E+F
+  closed the relevant pieces in the data plane directly. Trait
+  surface is now documented as deliberate, with a multi-paragraph
+  rationale on `pipeline.rs::inbound` explaining why consolidation
+  would be architecturally worse (would lose per-step tracing /
+  audit / load-shed integration points, OR force the data plane
+  to double-run the detector chain). No code change needed.
+
 #### S3.1 · device→IP reverse map — `DeviceIpTracker` (~120 LoC)
 
 New module `aegis-security/src/fingerprint/device_ip_tracker.rs`:
