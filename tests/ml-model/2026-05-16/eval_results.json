@@ -1,0 +1,242 @@
+{
+  "meta": {
+    "date": "2026-05-16",
+    "model_path": "data/ai_model/waf_model.onnx",
+    "attacks_path": "tests/security/dataset/attacks_v4.ndjson",
+    "clean_path": "tests/security/dataset/clean_baselines_v4.ndjson",
+    "total_attacks": 200000,
+    "total_clean": 10000,
+    "total_samples": 210000,
+    "inference_elapsed_s": 22.69,
+    "throughput_rps": 9256.0,
+    "batch_size": 4096
+  },
+  "binary_overall": {
+    "total": 210000,
+    "tp": 139664,
+    "fp": 3807,
+    "fn": 60336,
+    "tn": 6193,
+    "accuracy": 0.6945571428571429,
+    "precision": 0.9734650208055984,
+    "recall": 0.69832,
+    "f1": 0.8132506092217393,
+    "fpr": 0.3807
+  },
+  "attack_recall": 0.69832,
+  "fp_rate_clean": 0.3807,
+  "fp_count_clean": 3807,
+  "per_dataset_class": {
+    "sqli": {
+      "total": 18000,
+      "detected": 15237,
+      "missed": 2763
+    },
+    "xss": {
+      "total": 18000,
+      "detected": 10876,
+      "missed": 7124
+    },
+    "path_traversal": {
+      "total": 14000,
+      "detected": 8475,
+      "missed": 5525
+    },
+    "ssrf": {
+      "total": 14000,
+      "detected": 12251,
+      "missed": 1749
+    },
+    "command_injection": {
+      "total": 14000,
+      "detected": 10588,
+      "missed": 3412
+    },
+    "header_injection": {
+      "total": 6000,
+      "detected": 1459,
+      "missed": 4541
+    },
+    "xxe": {
+      "total": 8000,
+      "detected": 6888,
+      "missed": 1112
+    },
+    "ssti": {
+      "total": 10000,
+      "detected": 6789,
+      "missed": 3211
+    },
+    "ldap_injection": {
+      "total": 6000,
+      "detected": 4148,
+      "missed": 1852
+    },
+    "nosql_injection": {
+      "total": 6000,
+      "detected": 4436,
+      "missed": 1564
+    },
+    "log4shell": {
+      "total": 4000,
+      "detected": 3222,
+      "missed": 778
+    },
+    "open_redirect": {
+      "total": 6000,
+      "detected": 3041,
+      "missed": 2959
+    },
+    "http_smuggling": {
+      "total": 3000,
+      "detected": 3000,
+      "missed": 0
+    },
+    "recon": {
+      "total": 22000,
+      "detected": 7519,
+      "missed": 14481
+    },
+    "graphql_abuse": {
+      "total": 4000,
+      "detected": 3890,
+      "missed": 110
+    },
+    "rce_deserialization": {
+      "total": 4000,
+      "detected": 2990,
+      "missed": 1010
+    },
+    "prototype_pollution": {
+      "total": 4000,
+      "detected": 2651,
+      "missed": 1349
+    },
+    "jwt_abuse": {
+      "total": 3000,
+      "detected": 1199,
+      "missed": 1801
+    },
+    "websocket": {
+      "total": 2000,
+      "detected": 455,
+      "missed": 1545
+    },
+    "polyglot": {
+      "total": 16000,
+      "detected": 15704,
+      "missed": 296
+    },
+    "evasion_chain": {
+      "total": 18000,
+      "detected": 14846,
+      "missed": 3154
+    },
+    "clean": {
+      "total": 10000,
+      "detected": 0,
+      "missed": 0,
+      "fp": 3807
+    }
+  },
+  "obfuscation_breakdown": {
+    "urlenc": {
+      "total": 36967,
+      "detected": 29328,
+      "recall": 0.7933562366434929
+    },
+    "ws": {
+      "total": 2273,
+      "detected": 1855,
+      "recall": 0.8161020677518698
+    },
+    "hex": {
+      "total": 4450,
+      "detected": 3977,
+      "recall": 0.8937078651685393
+    },
+    "case": {
+      "total": 20788,
+      "detected": 11396,
+      "recall": 0.5482008851260343
+    },
+    "sqlcomment": {
+      "total": 2258,
+      "detected": 1842,
+      "recall": 0.8157661647475642
+    },
+    "newline": {
+      "total": 5096,
+      "detected": 4827,
+      "recall": 0.9472135007849294
+    },
+    "none": {
+      "total": 94100,
+      "detected": 69909,
+      "recall": 0.7429224229543039
+    },
+    "urlenc2x": {
+      "total": 15562,
+      "detected": 11178,
+      "recall": 0.7182881377714947
+    },
+    "html_dec": {
+      "total": 5825,
+      "detected": 580,
+      "recall": 0.09957081545064378
+    },
+    "html_hex": {
+      "total": 2655,
+      "detected": 345,
+      "recall": 0.12994350282485875
+    },
+    "uniesc": {
+      "total": 4890,
+      "detected": 1482,
+      "recall": 0.3030674846625767
+    },
+    "urlenc3x": {
+      "total": 2310,
+      "detected": 1080,
+      "recall": 0.4675324675324675
+    },
+    "tab": {
+      "total": 2826,
+      "detected": 1865,
+      "recall": 0.6599433828733192
+    }
+  },
+  "model_prediction_distribution": {
+    "Attack": 143471,
+    "Normal": 66529
+  },
+  "missed_attacks_by_class": {
+    "sqli": 2763,
+    "xss": 7124,
+    "path_traversal": 5525,
+    "ssrf": 1749,
+    "command_injection": 3412,
+    "header_injection": 4541,
+    "xxe": 1112,
+    "ssti": 3211,
+    "ldap_injection": 1852,
+    "nosql_injection": 1564,
+    "log4shell": 778,
+    "open_redirect": 2959,
+    "recon": 14481,
+    "graphql_abuse": 110,
+    "rce_deserialization": 1010,
+    "prototype_pollution": 1349,
+    "jwt_abuse": 1801,
+    "websocket": 1545,
+    "polyglot": 296,
+    "evasion_chain": 3154
+  },
+  "latency_per_request_ms": {
+    "mean_ms": 0.04502058029174805,
+    "p50_ms": 0.04315376281738281,
+    "p95_ms": 0.06365776062011719,
+    "p99_ms": 0.10228157043457031,
+    "max_ms": 0.34499168395996094
+  }
+}
