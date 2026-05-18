@@ -57,16 +57,29 @@ impl Detector for PathTraversalDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
+        // S1 (2026-05-18) — replace single-pass `url_decode` with
+        // the shared normaliser. Adds repeated URL-decode (catches
+        // `%252e%252e`), HTML-entity decode (`&period;&period;/`),
+        // and unicode-escape decode (`..`). The QC rules-binary
+        // eval ranked traversal recall at 59 % under the old
+        // pipeline; closing the decoder gap is the single biggest
+        // win on that score.
         let raw_uri = req.uri.to_string();
-        let decoded_uri = super::url_decode(&raw_uri);
-        check(&raw_uri, "uri", &mut signals);
-        check(&decoded_uri, "uri", &mut signals);
+        for variant in super::normalize_for_detection(&raw_uri) {
+            check(&variant, "uri", &mut signals);
+            if !signals.is_empty() {
+                break;
+            }
+        }
 
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() {
-            let decoded_body = super::url_decode(body);
-            check(body, "body", &mut signals);
-            check(&decoded_body, "body", &mut signals);
+        if !body.is_empty() && signals.is_empty() {
+            for variant in super::normalize_for_detection(body) {
+                check(&variant, "body", &mut signals);
+                if !signals.is_empty() {
+                    break;
+                }
+            }
         }
 
         signals
@@ -174,6 +187,24 @@ mod tests {
     positive!(docker_socket,          "/file?p=/var/run/docker.sock");
     positive!(docker_socket_query,    "/api?fetch=/var/run/docker.sock&x=1");
     positive!(long_traversal, "/a/b/c/d/../../../../../etc/passwd");
+    // S1 (2026-05-18) — decoder-evasion positives, closes the 59 %
+    // traversal-recall gap surfaced by the ML rules-binary eval.
+    // Each row is a payload that survived the single-pass
+    // `url_decode` pre-fix and now trips after `normalize_for_detection`.
+    positive!(double_url_encoded,        "/?p=%252e%252e%252fetc%252fpasswd");
+    positive!(double_url_encoded_uri,    "/%252e%252e%252fetc%252fpasswd");
+    positive!(triple_url_encoded,        "/?p=%25252e%25252e%25252fetc%25252fpasswd");
+    positive!(html_entity_dot,           "/?p=&period;&period;/etc/passwd");
+    positive!(html_entity_dot_synonym,   "/?p=&dot;&dot;&sol;etc&sol;passwd");
+    // Numeric / hex entities — the literal `#` is the URL fragment
+    // marker, so realistic attacker traffic URL-encodes it as `%23`.
+    // After the first URL-decode pass we recover `&#46;&#46;/...`
+    // and the entity decoder turns each `&#46;` into `.`.
+    positive!(html_entity_numeric_dot,   "/?p=&%2346;&%2346;/etc/passwd");
+    positive!(html_entity_hex_dot,       "/?p=&%23x2e;&%23x2e;/etc/passwd");
+    positive!(unicode_escape_dotdot,     "/?p=\\u002e\\u002e/etc/passwd");
+    positive!(hex_escape_dotdot,         "/?p=\\x2e\\x2e/etc/passwd");
+    positive!(mixed_url_and_entity,      "/?p=%2e%2e&sol;etc&sol;passwd");
 
     negative!(clean_root, "/");
     negative!(clean_api, "/api/users/123");
