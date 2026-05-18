@@ -1,0 +1,6 @@
+admin /metrics (no detectors):
+  RPS=48387  p50=0.52ms  p95=1.06ms  p99=0.00ms  fail=0.00%
+mixed 30%-attack, 200 IPs:
+  RPS=18138  p50=2.92ms  p95=5.16ms  p99=0.00ms  fail=0.00%
+mixed 5%-attack, 2000 IPs:
+  RPS=19514  p50=2.83ms  p95=4.43ms  p99=0.00ms  fail=0.00%
