@@ -1,3 +1,4 @@
+pub mod behavior_signals;
 pub mod body_abuse;
 pub mod brute_force;
 pub mod canary;
@@ -351,6 +352,16 @@ pub fn default_detectors_with_canary(
     if !canary_paths.is_empty() {
         v.push(Box::new(canary::CanaryDetector::new(canary_paths)));
     }
+    // 2026-05-18 F-CRITICAL-004 (security audit, Phase F) — the
+    // four §5.2 behaviour signals (burst / no-UA / missing-Referer
+    // on mutations / zero-depth first-touch). Always-on peer of
+    // the OWASP detectors; per-request cost is one Mutex-guarded
+    // HashMap lookup. Scores are sub-block-threshold individually
+    // so they accumulate with the OWASP signals rather than
+    // single-shot blocking.
+    v.push(Box::new(
+        behavior_signals::BehaviorSignalsDetector::new(),
+    ));
     v
 }
 
