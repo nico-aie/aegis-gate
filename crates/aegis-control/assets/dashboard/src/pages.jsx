@@ -1030,6 +1030,21 @@ const DETECTOR_COLORS = {
   crlf:        '#60A5FA',
   bot:         '#34D399',
   scanner:     '#9CA3AF',
+  // 2026-05-18 (QC TLS wire-up + Phase F detectors): colours for
+  // the new signal tags so the Detector Breakdown chart renders
+  // them at stable hues. Picked to be distinct from the OWASP
+  // class hues above (greens/teals for state-based signals;
+  // reds/oranges shared with severity-class detectors).
+  canary:                       '#EF4444', // red — single-hit-block tier
+  behavior_burst:               '#14B8A6', // teal — automated-shape signal
+  behavior_no_ua:               '#06B6D4', // cyan — UA-absence signal
+  behavior_missing_referer:     '#0EA5E9', // sky — CSRF-shape signal
+  behavior_zero_depth:          '#3B82F6', // blue — first-touch signal
+  velocity_login_to_deposit:    '#FB923C', // orange — ATO shape
+  velocity_login_to_withdrawal: '#F97316', // darker orange — cashout shape
+  velocity_otp_to_deposit:      '#FDBA74', // peach — post-2FA monetisation
+  velocity_otp_to_withdrawal:   '#FB923C', // share with login_to_deposit
+  device_ip_rotation:           '#8B5CF6', // violet — cross-IP rotation
 };
 function detectorColor(name) {
   return DETECTOR_COLORS[name] || 'var(--ink-mute)';
