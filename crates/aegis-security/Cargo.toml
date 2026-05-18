@@ -30,6 +30,9 @@ ai = ["dep:ort", "dep:ndarray"]
 aegis-core = { path = "../aegis-core" }
 arc-swap.workspace = true
 async-trait.workspace = true
+# 2026-05-18 (QC Sprint 2.3 — F-CRITICAL-014): RFC 7617 Basic-auth
+# username extraction in `brute_force::extract_username`.
+base64.workspace = true
 blake3.workspace = true
 bytes = { workspace = true }
 chrono.workspace = true
