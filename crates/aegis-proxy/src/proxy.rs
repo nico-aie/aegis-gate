@@ -150,6 +150,18 @@ pub struct ProxyContext {
     /// as `Decision::Allow` and falls straight through to the
     /// detector chain.
     pub active_ruleset: std::sync::OnceLock<Arc<aegis_security::RuleSet>>,
+    /// 2026-05-18 (QC follow-up TLS-wiring batch — F-CRITICAL-015
+    /// activation): live GeoIP / ASN reader, the same Arc the
+    /// access-list country adapter + `AttacksHandler::set_geo_lookup`
+    /// hold. The data plane reads peer ASN here when building
+    /// `BotSignals` so the bot classifier's ASN-class ladder
+    /// (added in `f8b4dd5`) actually fires. `OnceLock` because the
+    /// boot path constructs `ProxyContext` before the MaxMind
+    /// reader is opened; `accept.rs` installs the handle when both
+    /// are ready. Absent when no .mmdb is configured —
+    /// `BotSignals.asn` / `asn_classification` stay at `Unknown`
+    /// defaults and the ladder branch is a no-op.
+    pub geoip: std::sync::OnceLock<Arc<dyn aegis_security::geoip::GeoIpLookup>>,
 }
 
 impl ProxyContext {
@@ -196,6 +208,7 @@ impl ProxyContext {
             reset_in_progress: std::sync::OnceLock::new(),
             load_shedder: std::sync::OnceLock::new(),
             active_ruleset: std::sync::OnceLock::new(),
+            geoip: std::sync::OnceLock::new(),
         })
     }
 

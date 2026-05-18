@@ -167,6 +167,12 @@ function PageOverview() {
     risk: a.risk,
     country: a.country || null,
     asn: a.asn || null,
+    // 2026-05-18 (QC TLS-wiring batch — F-CRITICAL-015): ASN
+    // ownership classification surfaced from the bot classifier's
+    // `classify_asn` table. One of "hosting", "datacenter",
+    // "residential", "mobile", "unknown", or null when no ASN
+    // lookup happened (fingerprint identifier, or no MaxMind DB).
+    asnClass: a.asn_class || null,
     // The WorldMap renderer wants `{cc, city, lat, lon}`. The
     // backend gives us a country code; we look up a country
     // centroid for the lat/lon. City-level pins arrive when the
@@ -447,7 +453,29 @@ function PageOverview() {
               <tr key={`${a.id}-${i}`} onClick={() => setDrawerEvent(a)}>
                 <td className="num dim">{i + 1}</td>
                 <td className="mono" style={{ fontSize: 12 }}>{a.id}</td>
-                <td><span style={{ color: 'var(--ink-mute)' }}>{a.geo ? `${a.geo.cc} · ${a.geo.city}` : '—'}</span></td>
+                <td>
+                  <span style={{ color: 'var(--ink-mute)' }}>{a.geo ? `${a.geo.cc} · ${a.geo.city}` : '—'}</span>
+                  {/* 2026-05-18 (QC TLS-wiring batch — F-CRITICAL-015):
+                      surface ASN ownership classification as a small
+                      pill next to country. Tinted by tier so operators
+                      can spot hosting/datacenter traffic at a glance
+                      without reading the AS number. */}
+                  {a.asnClass && a.asnClass !== 'unknown' && (
+                    <span
+                      className={`pill ${
+                        a.asnClass === 'datacenter' ? 'down' :
+                        a.asnClass === 'hosting'    ? 'warn' :
+                        a.asnClass === 'mobile'     ? 'neutral' :
+                        a.asnClass === 'residential' ? 'ok' :
+                        'neutral'
+                      }`}
+                      style={{ fontSize: 9, marginLeft: 6 }}
+                      title={a.asn ? `AS${a.asn} — ${a.asnClass}` : a.asnClass}
+                    >
+                      {a.asnClass}
+                    </span>
+                  )}
+                </td>
                 <td className="num">{a.hits.toLocaleString()}</td>
                 <td>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
