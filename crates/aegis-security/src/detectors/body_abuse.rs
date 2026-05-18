@@ -22,24 +22,71 @@ impl Default for BodyAbuseDetector {
     }
 }
 
-/// Privileged JSON fields that are never expected from end-user
-/// bodies on non-admin endpoints. The presence of any of these
-/// is a strong mass-assignment / privilege-escalation signal —
-/// legit clients shouldn't ever set their own role, admin flag,
-/// account balance, password hash, or auth token via a profile
-/// PATCH or registration POST.
+/// Privileged field names that are never expected from end-user
+/// bodies on non-admin endpoints. Presence of any of these is a
+/// strong mass-assignment / privilege-escalation signal — legit
+/// clients shouldn't ever set their own role, admin flag, account
+/// balance, password hash, or auth token via a profile PATCH or
+/// registration POST.
 ///
-/// The match is keyed on the JSON property name to keep false
-/// positives low; nested wrappers are fine ("settings.role"
-/// still matches because the regex looks for `"role"\s*:`).
-static MASS_ASSIGN_KEYS: LazyLock<Regex> = LazyLock::new(|| {
-    // NB: deliberately excludes generic flags like `active` /
-    // `enabled` because they're too common in benign bodies
-    // ("is this product active?", "feature enabled?"). The
-    // included keys are auth/identity/financial — i.e. they're
-    // never expected from an end-user's PATCH body.
-    Regex::new(r#"(?i)"\s*(role|is_admin|is_superuser|isAdmin|superuser|permissions|privileges|grants|balance|account_balance|password_hash|api_key|api_token|access_token|refresh_token|email_verified)\s*"\s*:"#)
-        .expect("mass-assign regex compiles")
+/// 2026-05-18 S2 — widened from the original 16-key JSON-only list
+/// to a 27-key set covering both snake_case and camelCase synonyms,
+/// and to three surface scanners (JSON / form-encoded body / query
+/// string / multipart name=) so privilege escalation that arrives
+/// outside a JSON body now trips the detector. Plan reference:
+/// `plans/issue-fix/2026-05-18-detector-recall-from-ml-eval/README.md`
+/// §Sprint 2.
+///
+/// NB: deliberately excludes generic flags like `active` / `enabled`
+/// — too common in benign bodies. The included keys are
+/// auth/identity/financial — never expected from an end-user PATCH.
+const MASS_ASSIGN_KEY_NAMES: &str = concat!(
+    // Roles / admin flags
+    "role|is_admin|isAdmin|is_superuser|isSuperuser|superuser|admin",
+    "|",
+    // Authorisation scope
+    "permissions|privileges|grants|scope|access_level|accessLevel|user_level|userLevel",
+    "|",
+    // Financial fields
+    "balance|account_balance|accountBalance|credit",
+    "|",
+    // Credentials / tokens
+    "password_hash|passwordHash|api_key|apiKey|api_token|apiToken",
+    "|",
+    "access_token|accessToken|refresh_token|refreshToken",
+    "|",
+    // Verification flags
+    "email_verified|emailVerified|verified",
+);
+
+/// JSON shape: `"key"\s*:` — keyed on property name so nested
+/// wrappers still match (e.g. `{"settings":{"role":"admin"}}`).
+static MASS_ASSIGN_KEYS_JSON: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?i)"\s*(?:{MASS_ASSIGN_KEY_NAMES})\s*"\s*:"#
+    ))
+    .expect("mass-assign JSON regex compiles")
+});
+
+/// Form-encoded shape: `key=` anchored at start or after `&` so
+/// substring keys (e.g. `dropdown_role` containing `role`) don't
+/// false-positive. The leading `?` is **not** in the boundary set
+/// because `req.uri.query()` returns the query portion without it.
+static MASS_ASSIGN_KEYS_FORM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?i)(?:^|&)(?:{MASS_ASSIGN_KEY_NAMES})="#
+    ))
+    .expect("mass-assign form regex compiles")
+});
+
+/// Multipart shape: `Content-Disposition: form-data; name="role"`.
+/// One regex over the peek window — cheaper than parsing multipart
+/// parts at 8 KiB.
+static MASS_ASSIGN_KEYS_MULTIPART: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?i)Content-Disposition:[^\r\n]*\bname\s*=\s*"(?:{MASS_ASSIGN_KEY_NAMES})""#
+    ))
+    .expect("mass-assign multipart regex compiles")
 });
 
 /// XXE external-entity declarations. Two ingredients are needed
@@ -72,13 +119,36 @@ impl Detector for BodyAbuseDetector {
             }
         }
 
-        // 2. Check JSON nesting depth (peek first 8KiB).
+        // 2. S2 (2026-05-18) — mass-assignment via query string.
+        // Independent of method/body: `GET /profile?role=admin` and
+        // `POST /signup?isAdmin=true` both hit. Decoded once so
+        // `%72ole=` and entity-encoded variants don't slip past.
+        if let Some(query) = req.uri.query() {
+            let decoded = super::url_decode(query);
+            if MASS_ASSIGN_KEYS_FORM.is_match(&decoded)
+                || MASS_ASSIGN_KEYS_FORM.is_match(query)
+            {
+                signals.push(Signal {
+                    score: super::scores::body_abuse::MASS_ASSIGNMENT,
+                    tag: "mass_assignment".into(),
+                    field: "query".into(),
+                });
+            }
+        }
+
+        // 3. Check JSON nesting depth + mass-assignment + XXE +
+        // form-encoded mass-assignment + multipart name= scan.
         let peek = req.body.peek(8192);
         if !peek.is_empty() {
             if let Ok(text) = std::str::from_utf8(peek) {
                 let trimmed = text.trim_start();
+                let content_type = req
+                    .headers
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
 
-                // 2a. JSON-only checks.
+                // 3a. JSON-only checks.
                 if trimmed.starts_with('{') || trimmed.starts_with('[') {
                     let depth = json_nesting_depth(trimmed);
                     if depth > self.max_nesting_depth {
@@ -89,7 +159,7 @@ impl Detector for BodyAbuseDetector {
                         });
                     }
                     // Mass assignment: privileged-field key in body.
-                    if MASS_ASSIGN_KEYS.is_match(text) {
+                    if MASS_ASSIGN_KEYS_JSON.is_match(text) {
                         signals.push(Signal {
                             score: super::scores::body_abuse::MASS_ASSIGNMENT,
                             tag: "mass_assignment".into(),
@@ -104,7 +174,38 @@ impl Detector for BodyAbuseDetector {
                     check_proto_pollution(text, &mut signals);
                 }
 
-                // 2b. XML-only check — XXE external-entity decl.
+                // 3b. Form-encoded body mass-assignment. The
+                // content-type sniff is conservative — only fires
+                // when the framework would actually treat the body
+                // as form fields. Match on both raw and url-decoded
+                // forms so `%72ole=admin` is caught.
+                if content_type.starts_with("application/x-www-form-urlencoded") {
+                    let decoded = super::url_decode(text);
+                    if MASS_ASSIGN_KEYS_FORM.is_match(&decoded)
+                        || MASS_ASSIGN_KEYS_FORM.is_match(text)
+                    {
+                        signals.push(Signal {
+                            score: super::scores::body_abuse::MASS_ASSIGNMENT,
+                            tag: "mass_assignment".into(),
+                            field: "body".into(),
+                        });
+                    }
+                }
+
+                // 3c. Multipart mass-assignment — scan the peek
+                // window for `Content-Disposition: form-data;
+                // name="role"`. Cheaper than parsing parts.
+                if content_type.starts_with("multipart/form-data")
+                    && MASS_ASSIGN_KEYS_MULTIPART.is_match(text)
+                {
+                    signals.push(Signal {
+                        score: super::scores::body_abuse::MASS_ASSIGNMENT,
+                        tag: "mass_assignment".into(),
+                        field: "body".into(),
+                    });
+                }
+
+                // 3d. XML-only check — XXE external-entity decl.
                 // Recognises <?xml … ?> prologue OR a leading
                 // root tag, then looks for <!ENTITY … SYSTEM/
                 // PUBLIC anywhere in the peeked window.
@@ -591,4 +692,318 @@ mod tests {
     pp_clean!(pp_clean_prototype_only,    r#"{"prototype":"someValue"}"#);
     pp_clean!(pp_clean_proto_word,        r#"{"description":"this is a prototype design"}"#);
     pp_clean!(pp_clean_normal_obj,        r#"{"name":"alice","email":"a@b.com"}"#);
+
+    // ---------- S2 (2026-05-18) mass-assignment scope widen ----------
+    //
+    // Covers the four surfaces beyond the JSON-only path that the
+    // ML rules-binary eval surfaced (`Manipulation` 59 % recall):
+    //   - Query string (`?role=admin`)
+    //   - Form-encoded body (`role=admin`)
+    //   - Multipart name= (`Content-Disposition: form-data; name="role"`)
+    //   - Widened JSON key set (camelCase + snake_case synonyms)
+
+    fn build_view(
+        method: http::Method,
+        uri: &str,
+        content_type: Option<&str>,
+        body: &[u8],
+    ) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
+        let mut headers = http::HeaderMap::new();
+        if let Some(ct) = content_type {
+            headers.insert(http::header::CONTENT_TYPE, ct.parse().unwrap());
+        }
+        (
+            method,
+            uri.parse().unwrap(),
+            headers,
+            BodyPeek::new(body.to_vec(), Some(body.len() as u64), false),
+        )
+    }
+
+    fn assert_mass_assign(signals: &[Signal], field: &str) {
+        assert!(
+            signals
+                .iter()
+                .any(|s| s.tag == "mass_assignment" && s.field == field),
+            "expected mass_assignment signal with field={field}, got {:?}",
+            signals
+                .iter()
+                .map(|s| format!("{}/{}", s.tag, s.field))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    // ---- Query-string surface ----
+
+    #[test]
+    fn s2_query_role_admin_flagged() {
+        let d = BodyAbuseDetector::default();
+        let (m, u, h, b) = build_view(http::Method::GET, "/profile?role=admin", None, b"");
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "query");
+    }
+
+    #[test]
+    fn s2_query_is_admin_flagged() {
+        let d = BodyAbuseDetector::default();
+        let (m, u, h, b) =
+            build_view(http::Method::GET, "/signup?isAdmin=true", None, b"");
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "query");
+    }
+
+    #[test]
+    fn s2_query_camelcase_synonym_flagged() {
+        let d = BodyAbuseDetector::default();
+        let (m, u, h, b) = build_view(
+            http::Method::GET,
+            "/profile?accountBalance=99999",
+            None,
+            b"",
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "query");
+    }
+
+    #[test]
+    fn s2_query_after_legit_param_flagged() {
+        // Boundary anchor matches `&role=` after a legit param.
+        let d = BodyAbuseDetector::default();
+        let (m, u, h, b) = build_view(
+            http::Method::GET,
+            "/profile?name=alice&role=admin",
+            None,
+            b"",
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "query");
+    }
+
+    #[test]
+    fn s2_query_url_encoded_key_flagged() {
+        // `%72ole` decodes to `role` — the form regex matches the
+        // url_decode pass.
+        let d = BodyAbuseDetector::default();
+        let (m, u, h, b) =
+            build_view(http::Method::GET, "/?%72ole=admin", None, b"");
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "query");
+    }
+
+    #[test]
+    fn s2_query_substring_key_not_flagged() {
+        // `dropdown_role=options` contains the literal `role=` but
+        // not at a `^` / `&` boundary — must NOT fire.
+        let d = BodyAbuseDetector::default();
+        let (m, u, h, b) = build_view(
+            http::Method::GET,
+            "/items?dropdown_role=options",
+            None,
+            b"",
+        );
+        let req = view(&m, &u, &h, &b);
+        assert!(
+            !d.inspect(&req)
+                .iter()
+                .any(|s| s.tag == "mass_assignment"),
+            "false-positive on substring of `role` boundary"
+        );
+    }
+
+    #[test]
+    fn s2_query_clean_legit_filter_not_flagged() {
+        let d = BodyAbuseDetector::default();
+        let (m, u, h, b) = build_view(
+            http::Method::GET,
+            "/items?category=books&sort=name&page=2",
+            None,
+            b"",
+        );
+        let req = view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty());
+    }
+
+    // ---- Form-encoded body surface ----
+
+    #[test]
+    fn s2_form_body_role_admin_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = b"name=alice&role=admin&email=a%40b.com";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/signup",
+            Some("application/x-www-form-urlencoded"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s2_form_body_password_hash_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = b"username=bob&passwordHash=deadbeef";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/api/users",
+            Some("application/x-www-form-urlencoded"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s2_form_body_url_encoded_key_flagged() {
+        let d = BodyAbuseDetector::default();
+        // `%72ole=admin` — decoded form trips the regex.
+        let body = b"name=alice&%72ole=admin";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/signup",
+            Some("application/x-www-form-urlencoded"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s2_form_body_wrong_content_type_not_flagged() {
+        // Body looks form-encoded but Content-Type says JSON — the
+        // detector must respect the content-type sniff.
+        let d = BodyAbuseDetector::default();
+        let body = b"role=admin&user=bob";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/signup",
+            Some("application/json"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        // No JSON `{` prefix → JSON path skipped too. No signal.
+        assert!(d.inspect(&req).is_empty());
+    }
+
+    #[test]
+    fn s2_form_body_clean_not_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = b"firstname=Alice&lastname=Doe&newsletter=true";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/profile",
+            Some("application/x-www-form-urlencoded"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty());
+    }
+
+    // ---- Multipart name= surface ----
+
+    #[test]
+    fn s2_multipart_name_role_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = b"--boundary\r\nContent-Disposition: form-data; name=\"role\"\r\n\r\nadmin\r\n--boundary--\r\n";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/upload",
+            Some("multipart/form-data; boundary=boundary"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s2_multipart_name_is_admin_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = b"--bdry\r\nContent-Disposition: form-data; name=\"isAdmin\"\r\n\r\ntrue\r\n--bdry--\r\n";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/api/users",
+            Some("multipart/form-data; boundary=bdry"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s2_multipart_clean_file_upload_not_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = b"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\n...binary...\r\n--b--\r\n";
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/upload",
+            Some("multipart/form-data; boundary=b"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty());
+    }
+
+    // ---- Widened JSON key set ----
+
+    #[test]
+    fn s2_json_camelcase_is_superuser_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = br#"{"name":"alice","isSuperuser":true}"#;
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/api/users",
+            Some("application/json"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s2_json_access_level_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = br#"{"id":42,"accessLevel":"root"}"#;
+        let (m, u, h, b) = build_view(
+            http::Method::PATCH,
+            "/api/users/42",
+            Some("application/json"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s2_json_apikey_camelcase_flagged() {
+        let d = BodyAbuseDetector::default();
+        let body = br#"{"name":"alice","apiKey":"sk_live_abcd"}"#;
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/api/users",
+            Some("application/json"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
+
+    #[test]
+    fn s2_json_legit_role_string_value_not_flagged() {
+        // A legit job-title field, where `role` IS a privileged key
+        // and `"engineer"` happens to be the value — this WILL still
+        // fire because we match on the key name. Documented trade-off
+        // in the plan: matching on key avoids parsing the value.
+        // This test pins that behaviour so it doesn't regress
+        // silently — if we ever soften, this test must be updated.
+        let d = BodyAbuseDetector::default();
+        let body = br#"{"role":"engineer"}"#;
+        let (m, u, h, b) = build_view(
+            http::Method::POST,
+            "/jobs",
+            Some("application/json"),
+            body,
+        );
+        let req = view(&m, &u, &h, &b);
+        assert_mass_assign(&d.inspect(&req), "body");
+    }
 }
