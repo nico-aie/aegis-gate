@@ -13,6 +13,7 @@ pub mod scores;
 pub mod sqli;
 pub mod ssrf;
 pub mod template_injection;
+pub mod velocity_sequence;
 pub mod xss;
 
 // AI-T4 — ML-based detector.  Compiled in only when the `ai`
@@ -361,6 +362,14 @@ pub fn default_detectors_with_canary(
     // single-shot blocking.
     v.push(Box::new(
         behavior_signals::BehaviorSignalsDetector::new(),
+    ));
+    // 2026-05-18 F-CRITICAL-003 (security audit, Phase F) — the
+    // velocity sequence engine. Detects cross-endpoint flow
+    // attacks (login→deposit < 5s, login→withdrawal < 5s, etc.)
+    // that don't trip individual rate caps. Hardcoded ruleset
+    // for v1; operator-tunable config is a future enhancement.
+    v.push(Box::new(
+        velocity_sequence::VelocitySequenceDetector::new(),
     ));
     v
 }

@@ -30,6 +30,7 @@ verbatim.
 | [open-redirect.md](./open-redirect.md) | `open_redirect` | Query string — suspicious external URLs (`http(s)://`, `//`, `javascript:`, `data:`) in redirect-style params (`?next=`, `?redirect_uri=`, …); allowlist via `cfg.detectors.open_redirect.allowed_domains`. Score 30 (phishing tier). Added 2026-05-09 (GAP-009). |
 | [canary.md](./canary.md) | `canary` | URL path — operator-configured honeypot paths via `risk.canary_paths` (exact or `/prefix/*` glob). Score 90 (single-hit-to-block). Added 2026-05-18 (Phase F F-CRITICAL-012). |
 | [behavior-signals.md](./behavior-signals.md) | `behavior_burst`, `behavior_no_ua`, `behavior_missing_referer`, `behavior_zero_depth` | Per-request behaviour signals (§5.2 audit-mandated): rapid-repeat from same IP <50 ms apart, missing/empty User-Agent, missing Referer on POST/PUT/PATCH/DELETE, fresh first-touch with no Cookie + no Referer. Scores 15/15/20/25 — accumulate with OWASP detectors. Added 2026-05-18 (Phase F F-CRITICAL-004). |
+| [velocity-sequence.md](./velocity-sequence.md) | `velocity_login_to_deposit`, `velocity_login_to_withdrawal`, `velocity_otp_to_deposit`, `velocity_otp_to_withdrawal` | Cross-endpoint sequence engine — fires when login/otp is followed by deposit/withdrawal within 5 s from the same peer IP. Scores 60/70/50/60. Added 2026-05-18 (Phase F F-CRITICAL-003). |
 | [ai-detector.md](./ai-detector.md) | `ai` | URL, body, headers (binary attack/normal verdict over a 26-feature vector via ONNX) |
 
 The detector mask (P2/P3 in [`Implement-Progress.md`](../../../Implement-Progress.md))
