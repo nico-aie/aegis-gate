@@ -5,7 +5,8 @@
 //! Shed response: 503 + `Retry-After` + request id, zero pipeline cost.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aegis_core::tier::Tier;
 
@@ -21,6 +22,11 @@ pub struct LoadShedder {
     inflight: AtomicU64,
     /// Minimum limit floor.
     min_limit: u64,
+    /// Maximum limit ceiling. Caps the grow path so a long
+    /// healthy run can't push the limit to unbounded values.
+    /// Set to the constructor's `initial_limit` so the operator-
+    /// configured value is the steady-state target.
+    max_limit: u64,
 }
 
 impl LoadShedder {
@@ -31,6 +37,7 @@ impl LoadShedder {
             limit: AtomicU64::new(initial_limit),
             inflight: AtomicU64::new(0),
             min_limit,
+            max_limit: initial_limit,
         }
     }
 
@@ -65,12 +72,35 @@ impl LoadShedder {
         };
         self.rtt_now_us.store(smoothed, Ordering::Relaxed);
 
-        // Gradient: new_limit = limit * (rtt_min / rtt_now).
+        // Gradient: gradient = rtt_min / rtt_now ∈ (0, 1].
+        //
+        // F-HIGH-lifecycle (2026-05-17 s-tester audit): pre-fix the
+        // update was unconditionally `new = old * gradient` —
+        // multiplicative decrease only. Since gradient ≤ 1.0 by
+        // construction (rtt_min is the minimum), the limit could
+        // ONLY shrink. After any transient RTT spike that lowered
+        // the limit, no recovery path existed even when the system
+        // returned to healthy operation. The shedder slowly bled
+        // down to `min_limit` and stayed there.
+        //
+        // Now AIMD-shaped:
+        //   gradient >= 0.9   → system healthy → +1 (additive grow)
+        //   gradient <  0.9   → system stressed → *= gradient
+        //                       (multiplicative shrink, clamped to
+        //                       `min_limit`)
+        // Grow path is clamped to `max_limit` (the configured
+        // `initial_limit`) so a long healthy run doesn't push the
+        // concurrency past the operator's bias.
         let rtt_min = self.rtt_min_us.load(Ordering::Relaxed);
         if smoothed > 0 && rtt_min < u64::MAX {
             let gradient = rtt_min as f64 / smoothed as f64;
-            let current_limit = self.limit.load(Ordering::Relaxed) as f64;
-            let new_limit = (current_limit * gradient).max(self.min_limit as f64) as u64;
+            let current_limit = self.limit.load(Ordering::Relaxed);
+            let new_limit = if gradient >= 0.9 {
+                (current_limit + 1).min(self.max_limit)
+            } else {
+                let shrunk = (current_limit as f64 * gradient) as u64;
+                shrunk.max(self.min_limit)
+            };
             self.limit.store(new_limit, Ordering::Relaxed);
         }
     }
@@ -135,6 +165,37 @@ impl LoadShedder {
         } else {
             Some(Duration::from_micros(v))
         }
+    }
+
+    /// RAII admit: `acquire`s a slot, captures `Instant::now()`, and
+    /// returns a guard whose `Drop` calls `release` + `record_rtt`
+    /// with the elapsed time. Use in the data plane so a request
+    /// cancelled mid-flight still releases its slot and feeds RTT
+    /// signal to the Gradient2 adapter — `acquire` + `release`
+    /// without RAII would leak the counter on any future that
+    /// drops between the two calls (same class of bug as
+    /// F-CRITICAL-008's inflight counter).
+    pub fn admit_guard(self: &Arc<Self>) -> ShedGuard {
+        self.acquire();
+        ShedGuard {
+            shedder: Arc::clone(self),
+            start: Instant::now(),
+        }
+    }
+}
+
+/// RAII guard issued by [`LoadShedder::admit_guard`]. Drop releases
+/// the in-flight slot and records the request's RTT into the
+/// Gradient2 estimator.
+pub struct ShedGuard {
+    shedder: Arc<LoadShedder>,
+    start: Instant,
+}
+
+impl Drop for ShedGuard {
+    fn drop(&mut self) {
+        self.shedder.release();
+        self.shedder.record_rtt(self.start.elapsed());
     }
 }
 
@@ -208,6 +269,59 @@ mod tests {
     }
 
     #[test]
+    fn gradient_recovers_after_transient_rtt_spike() {
+        // F-HIGH-lifecycle regression. Pre-fix the gradient update
+        // was multiplicative-only (`limit *= gradient`), and
+        // `gradient ≤ 1.0` by construction. After any transient
+        // spike the limit shrank to `min_limit` and stayed there
+        // forever, defeating the whole point of an adaptive
+        // shedder. Now AIMD: grow +1 when gradient >= 0.9, shrink
+        // multiplicatively otherwise.
+        let s = LoadShedder::new(1000, 100);
+        // Establish a fast baseline (sets rtt_min low).
+        for _ in 0..10 {
+            s.record_rtt(Duration::from_millis(1));
+        }
+        // Transient stress — push the limit down toward min_limit.
+        for _ in 0..50 {
+            s.record_rtt(Duration::from_secs(1));
+        }
+        let limit_after_spike = s.current_limit();
+        assert!(
+            limit_after_spike <= 200,
+            "spike must have shrunk limit: {limit_after_spike}",
+        );
+        // System recovers — RTT comes back close to rtt_min. Many
+        // healthy samples must grow the limit back up (it should
+        // recover noticeably; we don't require full restoration to
+        // initial because the EMA decays gradually).
+        for _ in 0..500 {
+            s.record_rtt(Duration::from_millis(1));
+        }
+        let limit_after_recovery = s.current_limit();
+        assert!(
+            limit_after_recovery > limit_after_spike,
+            "limit must recover: {limit_after_recovery} > {limit_after_spike}",
+        );
+    }
+
+    #[test]
+    fn gradient_grow_clamped_to_max_limit() {
+        // Companion to the recovery test — sustained healthy
+        // operation must not push limit past `max_limit` (the
+        // constructor's `initial_limit`).
+        let s = LoadShedder::new(50, 10);
+        for _ in 0..10_000 {
+            s.record_rtt(Duration::from_millis(1));
+        }
+        assert!(
+            s.current_limit() <= 50,
+            "grow must clamp to max_limit (initial_limit): got {}",
+            s.current_limit(),
+        );
+    }
+
+    #[test]
     fn acquire_release_tracking() {
         let s = LoadShedder::new(100, 1);
         s.acquire();
@@ -231,6 +345,38 @@ mod tests {
         assert!(s.min_rtt().is_none());
         s.record_rtt(Duration::from_millis(5));
         assert_eq!(s.min_rtt().unwrap(), Duration::from_millis(5));
+    }
+
+    #[test]
+    fn admit_guard_releases_on_drop() {
+        // Pre-RAII the data plane manually paired acquire +
+        // release; a cancellation between the two leaked the
+        // counter. ShedGuard's Drop closes that gap.
+        let s = Arc::new(LoadShedder::new(100, 1));
+        assert_eq!(s.current_inflight(), 0);
+        {
+            let _g = s.admit_guard();
+            assert_eq!(s.current_inflight(), 1);
+        }
+        assert_eq!(s.current_inflight(), 0);
+    }
+
+    #[test]
+    fn admit_guard_releases_on_panic_unwind() {
+        // Sister regression: a panic inside the guarded scope must
+        // still release. Drop runs during unwind, so this works
+        // by construction — pin it with a catch_unwind so a
+        // future refactor that disables unwinding can't silently
+        // regress.
+        let s = Arc::new(LoadShedder::new(100, 1));
+        let s_clone = Arc::clone(&s);
+        let result = std::panic::catch_unwind(move || {
+            let _g = s_clone.admit_guard();
+            assert_eq!(s_clone.current_inflight(), 1);
+            panic!("simulated downstream panic");
+        });
+        assert!(result.is_err());
+        assert_eq!(s.current_inflight(), 0);
     }
 
     #[test]

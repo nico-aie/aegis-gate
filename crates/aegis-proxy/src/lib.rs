@@ -28,6 +28,7 @@ pub mod cluster;
 pub mod cluster_lease;
 pub mod config_source;
 mod accept;
+mod admin_auth_middleware;
 mod admin_dispatch;
 mod admin_get;
 mod admin_login;
@@ -497,6 +498,7 @@ state:
         let identity = std::sync::Arc::new(AdminIdentity {
             user: "admin".into(),
             password_hash: hash_password(password).unwrap(),
+            ..AdminIdentity::default()
         });
         let key = derive_session_key("test-secret-32b");
         let auth_sessions = std::sync::Arc::new(AuthSessionStore::new(key));

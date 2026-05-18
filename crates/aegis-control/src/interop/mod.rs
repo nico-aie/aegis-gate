@@ -49,4 +49,16 @@ pub struct InteropRuntime {
     pub audit: Option<Arc<audit::MinimalJsonlSink>>,
     pub modes: Arc<mode::ModeStore>,
     pub control: control::ControlContext,
+    /// F-HIGH-005 (2026-05-17 s-tester audit): flag set true while
+    /// `reset_state` is iterating callbacks. v2.3 §2.4 mandates
+    /// `reset_state` be atomic "from the benchmarker's POV" — a
+    /// concurrent request must not see a half-cleared state. The
+    /// data-plane consults this at the entry of `handle_data_request`
+    /// (via a clone of this `Arc` installed in `ProxyContext`) and
+    /// short-circuits with 503 + `Retry-After: 0` when set; per
+    /// §2.4 "implementations MAY temporarily reject in-flight non-
+    /// control requests" during the reset window. Cheaper than an
+    /// RwLock around the entire data-plane pipeline — hot-path cost
+    /// is one relaxed `AtomicBool::load`.
+    pub reset_in_progress: Arc<std::sync::atomic::AtomicBool>,
 }

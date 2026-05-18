@@ -57,9 +57,17 @@ export AEGIS_VIPTALK_API_BASE="https://api.viptalk.org"
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `AEGIS_VIPTALK_BOT_TOKEN` | Bot identity for `https://<api>/v1/bot/<token>/sendMessage` | UAT-only fallback (`slo::DEFAULT_VIPTALK_BOT_TOKEN`) |
-| `AEGIS_VIPTALK_ROOM_IDS` | Comma-separated room IDs; one HTTP POST per room | UAT-only fallback room |
+| `AEGIS_VIPTALK_BOT_TOKEN` | Bot identity for `https://<api>/v1/bot/<token>/sendMessage` | **REQUIRED.** Both this and `AEGIS_VIPTALK_ROOM_IDS` must be set for `default_receivers()` to return a receiver. If either is missing/empty, the alert sink is empty (no third-party POSTs). |
+| `AEGIS_VIPTALK_ROOM_IDS` | Comma-separated room IDs; one HTTP POST per room | **REQUIRED** (see above). |
 | `AEGIS_VIPTALK_API_BASE` | API hostname (no trailing slash) | `https://api.viptalk.org` |
+
+**2026-05-17 security note.** Pre-fix the framework shipped a
+hardcoded `DEFAULT_VIPTALK_BOT_TOKEN` + dev/UAT room ID that the
+slo dispatcher fell back to whenever the env vars were missing.
+Operators who left the env vars unset POSTed every SLO alert (with
+SLI metric + severity) to a third-party Matrix room they likely
+didn't own. The defaults are gone; the env vars are now required
+for VipTalk routing to engage at all.
 
 For systemd, drop these into the unit file's `Environment=`
 lines or `EnvironmentFile=/etc/aegis/viptalk.env`. For Docker,

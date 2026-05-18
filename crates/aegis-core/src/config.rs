@@ -56,7 +56,16 @@ pub fn load_config_str(yaml: &str) -> crate::Result<WafConfig> {
 // Top-level WafConfig
 // ---------------------------------------------------------------------------
 
+// 2026-05-17 F-CRITICAL-013 (core audit): `#[serde(
+// deny_unknown_fields)]` on the top-level config catches typos
+// like `routs:` / `upstrems:` / `risk_threshols:` that serde would
+// otherwise silently drop. Pre-fix the entire 4024-LoC config
+// module had ZERO uses of this attribute — every "ghost feature"
+// report by operators traced back to a typo that vanished into
+// the void. Applied at the top level here; nested structs can opt
+// in over time as we verify they're closed-set.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WafConfig {
     pub listeners: Listeners,
     pub routes: Vec<RouteConfig>,
@@ -126,6 +135,27 @@ pub struct WafConfig {
     /// is loud, not silent.
     #[serde(default)]
     pub ai: AiConfig,
+    /// Data-plane request-handling knobs. Today this only carries
+    /// `max_body_bytes` (the global request-body cap, previously a
+    /// hard-coded 1 MiB in `data_plane.rs`). Per-route quotas
+    /// (`routes[].quota.client_max_body_size`) take precedence when
+    /// set; this is the global ceiling that applies to every route.
+    /// Default 10 MiB — matches `QuotaConfig::default()`.
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+    /// 2026-05-17 F-CRITICAL-006 — adaptive load shedder. When
+    /// enabled, the data plane consults `LoadShedder::should_admit`
+    /// after tier classification and returns 503 + `Retry-After: 1`
+    /// when the current in-flight count exceeds the adaptive limit.
+    /// Critical-tier requests are never shed; Low / Medium / High
+    /// shed in that order. The limit auto-tunes via Gradient2 from
+    /// observed RTTs (`L(t+1) = L(t) * RTT_min / RTT_now`). See
+    /// `crates/aegis-proxy/src/shed.rs` for the algorithm and
+    /// `docs/operator/load-shedding.md` (TBD) for the operator
+    /// guide. Default `enabled: true` so Round-3 resilience
+    /// scoring works out of the box.
+    #[serde(default)]
+    pub load_shedder: LoadShedderConfig,
     /// DDoS protection — per-IP burst detection + EWMA spike
     /// mode + cluster-wide auto-block via the state backend.
     ///
@@ -146,6 +176,25 @@ pub struct WafConfig {
     /// the original wire-up plan.
     #[serde(default)]
     pub ddos: DdosConfig,
+    /// 2026-05-17 F-CRITICAL-010 (core audit): tier-keyed failure
+    /// mode override. By default each tier derives its failure
+    /// mode from `Tier::default_failure_mode` (Critical →
+    /// FailClose, all others → FailOpen). Operators who need to
+    /// override that policy globally (without setting
+    /// `failure_mode` on every individual route) can wire it here.
+    ///
+    /// YAML shape:
+    /// ```yaml
+    /// fail_mode_by_tier:
+    ///   high: fail_close      # treat High like Critical
+    ///   medium: fail_close
+    /// ```
+    ///
+    /// Per-route `routes[].failure_mode` still wins when set;
+    /// this is the tier-level default for routes that don't pin
+    /// their own. Schema only — consumer wiring lands in Phase E.
+    #[serde(default)]
+    pub fail_mode_by_tier: HashMap<Tier, FailureModeConfig>,
 }
 
 /// External interop surface configuration. Always-on by default.
@@ -273,6 +322,73 @@ impl Default for AiConfig {
 
 fn default_ai_confidence_threshold() -> f32 {
     0.85
+}
+
+/// Data-plane request-handling knobs.
+///
+/// 2026-05-17 F-CRITICAL-004: surfaces `max_body_bytes` (previously a
+/// hard-coded 1 MiB const in `data_plane.rs`) so operators can admit
+/// legitimate large payloads (file upload routes, multipart batches,
+/// PDF/CSV ingest) without an inline rebuild. The per-route knob
+/// `routes[].quota.client_max_body_size` (in `QuotaConfig`) takes
+/// precedence when populated; this field is the global ceiling.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProxyConfig {
+    /// Maximum request body size buffered for detector inspection.
+    /// Requests above this cap return 413. Default 10 MiB — matches
+    /// `QuotaConfig::default().client_max_body_size`. Increase for
+    /// upload-heavy workloads; decrease to tighten the DoS surface.
+    /// **Beware**: detectors buffer up to this size before running,
+    /// so a high cap costs more memory per concurrent request.
+    #[serde(default = "default_proxy_max_body_bytes")]
+    pub max_body_bytes: u64,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self { max_body_bytes: default_proxy_max_body_bytes() }
+    }
+}
+
+fn default_proxy_max_body_bytes() -> u64 {
+    10 * 1024 * 1024 // 10 MiB — matches QuotaConfig::default()
+}
+
+/// Adaptive load-shedder knobs. See
+/// `crates/aegis-proxy/src/shed.rs` for the algorithm.
+#[derive(Clone, Debug, Deserialize)]
+pub struct LoadShedderConfig {
+    /// Master toggle. Default `true` so Round-3 resilience scoring
+    /// engages without explicit opt-in.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Initial concurrency limit before Gradient2 adapts.
+    /// Operator-tunable based on host capacity — default 1000 is
+    /// fine for most workloads; lower it on memory-constrained
+    /// hosts.
+    #[serde(default = "default_shed_initial_limit")]
+    pub initial_limit: u64,
+    /// Floor the adaptive limit cannot go below. Protects against
+    /// pathological RTT spikes shedding all traffic.
+    #[serde(default = "default_shed_min_limit")]
+    pub min_limit: u64,
+}
+
+impl Default for LoadShedderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            initial_limit: default_shed_initial_limit(),
+            min_limit: default_shed_min_limit(),
+        }
+    }
+}
+
+fn default_shed_initial_limit() -> u64 {
+    1000
+}
+fn default_shed_min_limit() -> u64 {
+    100
 }
 
 /// In-process runtime sizing — Layer-1 of the three-layer scaling
@@ -925,6 +1041,27 @@ pub struct ConnectionPoolConfig {
     /// Operators force a specific protocol by setting this.
     #[serde(default)]
     pub scheme: UpstreamScheme,
+    /// 2026-05-17 F-HIGH-003 — cap on the response body the WAF
+    /// buffers from the upstream. Pre-fix the response was fully
+    /// collected with `into_body().collect()` and no `Limited<_>`
+    /// wrapper, exposing the WAF to OOM under a hostile or runaway
+    /// upstream (gzipped XML bomb, infinite-stream bug). Default
+    /// 10 MiB — matches `ProxyConfig.max_body_bytes` for the
+    /// request side. Operators with legitimate large downloads
+    /// raise this per-pool.
+    #[serde(default = "default_max_response_body_bytes")]
+    pub max_response_body_bytes: u64,
+    /// 2026-05-17 F-HIGH-stateful — wall-clock deadline on the
+    /// upstream response-body read. Without it, a slowloris-style
+    /// upstream that trickles bytes below the per-byte cap can
+    /// pin the WAF's connection slot indefinitely (`Limited<_>`
+    /// only enforces the SIZE budget, not the TIME budget).
+    /// Default 30 s — generous enough for legitimate slow APIs;
+    /// drop to 5-10 s for typical request/response workloads.
+    /// Exceeded deadline surfaces as `ForwardError::Timeout`
+    /// which the data plane maps onto v2.3 §3 `timeout` action.
+    #[serde(default = "default_response_body_read_timeout", with = "humantime_serde")]
+    pub response_body_read_timeout: Duration,
 }
 
 /// Upstream protocol selector for `ConnectionPoolConfig.scheme`.
@@ -1006,6 +1143,8 @@ impl Default for ConnectionPoolConfig {
             keep_alive: default_keep_alive(),
             tls: false,
             scheme: UpstreamScheme::Auto,
+            max_response_body_bytes: default_max_response_body_bytes(),
+            response_body_read_timeout: default_response_body_read_timeout(),
         }
     }
 }
@@ -1218,6 +1357,14 @@ fn default_pool_idle_timeout() -> Duration {
 
 fn default_keep_alive() -> bool {
     true
+}
+
+fn default_max_response_body_bytes() -> u64 {
+    10 * 1024 * 1024 // 10 MiB — matches `ProxyConfig::default()`.
+}
+
+fn default_response_body_read_timeout() -> Duration {
+    Duration::from_secs(30)
 }
 
 fn default_lb() -> LbStrategy {
@@ -1814,11 +1961,42 @@ pub struct RateLimitRule {
     pub burst: Option<u32>,
 }
 
+/// 2026-05-17 F-CRITICAL-009 (core audit): rule scope, per §5.4 of
+/// the official rules. Six base scopes; each binds a rate-limit
+/// bucket (or rule) to a different dimension. Schema only —
+/// evaluator wiring lands in Phase E/F. Externally-tagged so
+/// existing YAML configs with `scope: global` keep working
+/// unchanged.
+///
+/// YAML shape (rate-limit bucket example):
+/// ```yaml
+/// rate_limit:
+///   buckets:
+///     - id: per-tenant-login
+///       scope:
+///         tier: critical
+///       rps: 10
+///     - id: per-fp
+///       scope: device_fingerprint
+///       rps: 5
+/// ```
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RlScope {
+    /// Global — applies to every request.
     Global,
+    /// Bind to one specific named route (matches `route.id`).
     Route,
+    /// §5.4 — bind to one of the 4 tiers.
+    Tier(crate::tier::Tier),
+    /// §5.4 — glob/regex route pattern (e.g. `/api/users/*`).
+    RoutePattern(String),
+    /// §5.4 — single IP or CIDR.
+    Ip(String),
+    /// §5.4 — bind by authenticated user session ID.
+    UserSession,
+    /// §5.4 — bind by device fingerprint hash (JA4 + UA + H2).
+    DeviceFingerprint,
 }
 
 #[derive(Clone, Deserialize, Debug, PartialEq)]
@@ -1828,6 +2006,12 @@ pub enum RlKey {
     Session,
     Header(String),
     JwtSub,
+    /// 2026-05-17 F-CRITICAL-009 (core audit): device fingerprint
+    /// key — composite of JA4 + User-Agent + H2 settings.
+    DeviceFp,
+    /// 2026-05-17 F-CRITICAL-009 (core audit): authenticated user
+    /// ID (e.g. from JWT claim or session lookup).
+    UserId,
 }
 
 #[derive(Clone, Deserialize, Debug, PartialEq)]
@@ -1859,6 +2043,24 @@ pub struct RiskConfig {
     /// is permanently blocked even if their score has decayed.
     #[serde(default)]
     pub strikes: Option<StrikeConfig>,
+    /// 2026-05-17 F-CRITICAL-012 (core audit): canary path list.
+    /// Any request that touches one of these paths is treated as
+    /// high-signal malicious (no legitimate caller should hit a
+    /// honeypot URL). Each entry matches as an exact path or a
+    /// `*` suffix glob (`/admin/*` matches `/admin/foo` and
+    /// `/admin/foo/bar`). Schema only — consumer wiring lands in
+    /// Phase F (`aegis-security/src/canary/`).
+    ///
+    /// YAML shape:
+    /// ```yaml
+    /// risk:
+    ///   canary_paths:
+    ///     - "/wp-admin"
+    ///     - "/.env"
+    ///     - "/phpmyadmin/*"
+    /// ```
+    #[serde(default)]
+    pub canary_paths: Vec<String>,
 }
 
 fn default_risk_decay() -> Duration {
@@ -1873,6 +2075,7 @@ impl Default for RiskConfig {
             thresholds: RiskThresholds::default(),
             trust_recovery: None,
             strikes: None,
+            canary_paths: Vec::new(),
         }
     }
 }
@@ -1988,10 +2191,15 @@ pub struct RiskThresholds {
 }
 
 fn default_challenge_at() -> u32 {
-    40
+    // 2026-05-17 F-CRITICAL-007: 40 → 30 to match the v2.3 spec.
+    // Companion to `RiskThresholds::default()` so a YAML config
+    // that sets only `block_at` (not `challenge_at`) still picks
+    // up the spec value via this serde default.
+    30
 }
 fn default_block_at() -> u32 {
-    80
+    // 2026-05-17 F-CRITICAL-007: 80 → 70 to match the v2.3 spec.
+    70
 }
 fn default_risk_max() -> u32 {
     100
@@ -1999,9 +2207,15 @@ fn default_risk_max() -> u32 {
 
 impl Default for RiskThresholds {
     fn default() -> Self {
+        // 2026-05-17 (core F-CRITICAL-007 + security F-CRITICAL-006):
+        // bumped from 40/80 → 30/70 to match the spec. Pre-fix two
+        // sources disagreed out of the box: `RiskEngine::classify`
+        // hardcoded 30/70 (per spec) while this default was 40/80,
+        // so a `RiskTracker` built from default config silently
+        // disagreed with the spec'd thresholds. Now both agree.
         Self {
-            challenge_at: 40,
-            block_at: 80,
+            challenge_at: 30,
+            block_at: 70,
             max: 100,
         }
     }
@@ -2065,6 +2279,65 @@ pub struct DetectorsConfig {
     /// Absent → in-memory only (legacy behaviour).
     #[serde(default)]
     pub persistence: Option<DetectorMaskPersistenceConfig>,
+    /// 2026-05-17 F-CRITICAL-011 (core audit): §4 tier-policy
+    /// per-tier override mask. The global toggles above are the
+    /// baseline; any tier listed here overrides them for requests
+    /// classified to that tier. Empty (default) means "single
+    /// global policy applies to every tier".
+    ///
+    /// `TierDetectorMask` fields are `Option<bool>`: `Some(true)`
+    /// forces the class enabled on that tier, `Some(false)` forces
+    /// it disabled, and `None` inherits the global toggle.
+    ///
+    /// YAML shape:
+    /// ```yaml
+    /// detectors:
+    ///   sqli: { enabled: true }
+    ///   per_tier:
+    ///     critical:
+    ///       command_injection: true   # force on for CRITICAL
+    ///       brute_force: true
+    ///     low:
+    ///       recon: false              # disable recon on baseline
+    /// ```
+    ///
+    /// Schema only — consumer wiring lands when the detector mask
+    /// runtime gains a tier-aware resolver (Phase E).
+    #[serde(default)]
+    pub per_tier: HashMap<Tier, TierDetectorMask>,
+}
+
+/// 2026-05-17 F-CRITICAL-011 (core audit): per-tier detector
+/// override mask. Each field tri-states the corresponding detector
+/// class on the bound tier: `Some(true)` = force enabled,
+/// `Some(false)` = force disabled, `None` = inherit global.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TierDetectorMask {
+    #[serde(default)]
+    pub sqli: Option<bool>,
+    #[serde(default)]
+    pub xss: Option<bool>,
+    #[serde(default)]
+    pub path_traversal: Option<bool>,
+    #[serde(default)]
+    pub ssrf: Option<bool>,
+    #[serde(default)]
+    pub header_injection: Option<bool>,
+    #[serde(default)]
+    pub body_abuse: Option<bool>,
+    #[serde(default)]
+    pub recon: Option<bool>,
+    #[serde(default)]
+    pub brute_force: Option<bool>,
+    #[serde(default)]
+    pub command_injection: Option<bool>,
+    #[serde(default)]
+    pub template_injection: Option<bool>,
+    #[serde(default)]
+    pub nosql_injection: Option<bool>,
+    #[serde(default)]
+    pub open_redirect: Option<bool>,
 }
 
 /// File-backed persistence config for the live detector mask.
@@ -2098,6 +2371,7 @@ impl Default for DetectorsConfig {
             nosql_injection: default_detector_toggle(),
             open_redirect: OpenRedirectConfig::default(),
             persistence: None,
+            per_tier: HashMap::new(),
         }
     }
 }
@@ -2179,6 +2453,44 @@ pub struct DdosConfig {
     pub spike_multiplier: f64,
     #[serde(default = "default_ddos_tightened_rps")]
     pub tightened_per_ip_rps: u64,
+    /// 2026-05-17 F-CRITICAL-008 (core audit): per-tier overrides
+    /// for the global DDoS knobs. Any field not specified in the
+    /// override falls back to the top-level value. Empty (default)
+    /// means "single global policy applies to every tier".
+    ///
+    /// YAML shape:
+    /// ```yaml
+    /// ddos:
+    ///   per_ip_limit: 1000
+    ///   tier_overrides:
+    ///     critical:
+    ///       per_ip_limit: 200      # tighter for critical paths
+    ///       block_ttl_s: 1800
+    ///     low:
+    ///       per_ip_limit: 5000     # looser for static asset paths
+    /// ```
+    ///
+    /// Schema only — consumer wiring lands in Phase E/F.
+    #[serde(default)]
+    pub tier_overrides: HashMap<Tier, DdosTierConfig>,
+}
+
+/// 2026-05-17 F-CRITICAL-008 (core audit): per-tier DDoS override.
+/// All fields optional — only the knobs the operator wants to
+/// override against the global `DdosConfig` baseline.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DdosTierConfig {
+    #[serde(default)]
+    pub per_ip_limit: Option<u64>,
+    #[serde(default)]
+    pub per_ip_window_s: Option<u32>,
+    #[serde(default)]
+    pub block_ttl_s: Option<u64>,
+    #[serde(default)]
+    pub spike_multiplier: Option<f64>,
+    #[serde(default)]
+    pub tightened_per_ip_rps: Option<u64>,
 }
 
 fn default_ddos_per_ip_limit() -> u64 { 1000 }
@@ -2197,6 +2509,7 @@ impl Default for DdosConfig {
             block_ttl_s: default_ddos_block_ttl_s(),
             spike_multiplier: default_ddos_spike_multiplier(),
             tightened_per_ip_rps: default_ddos_tightened_rps(),
+            tier_overrides: HashMap::new(),
         }
     }
 }
@@ -2386,10 +2699,26 @@ pub struct AuditConfig {
     pub retention: Duration,
     #[serde(default)]
     pub pseudonymize_ip: bool,
+    /// 2026-05-17 Phase 7a — broadcast-channel capacity for the
+    /// in-process `AuditBus`. Pre-fix this was a hard-coded `4096`
+    /// at the boot site, which produced `Lagged(n)` drops at burst
+    /// loads above ~2-3k audit events/sec (observed: 60k-RPS stress
+    /// run on 2026-05-14 dropped hundreds of events per burst).
+    /// Default 100_000 — ~30 seconds of headroom at 3k events/sec
+    /// before any subscriber lags out. Increase for sustained
+    /// high-RPS workloads with slow subscribers; decrease only on
+    /// memory-constrained hosts (each slot holds one `AuditEvent`
+    /// clone, ~512 bytes typical, so 100k ≈ 50 MiB).
+    #[serde(default = "default_audit_bus_capacity")]
+    pub bus_capacity: usize,
 }
 
 fn default_audit_retention() -> Duration {
     Duration::from_secs(90 * 24 * 3600) // 90 days
+}
+
+fn default_audit_bus_capacity() -> usize {
+    100_000
 }
 
 impl Default for AuditConfig {
@@ -2399,6 +2728,7 @@ impl Default for AuditConfig {
             chain: AuditChainConfig::default(),
             retention: default_audit_retention(),
             pseudonymize_ip: false,
+            bus_capacity: default_audit_bus_capacity(),
         }
     }
 }
@@ -2611,6 +2941,29 @@ pub struct DashboardAuthConfig {
     pub ip_allowlist: Vec<ipnet::IpNet>,
     #[serde(default)]
     pub totp_enabled: bool,
+    /// 2026-05-17 F-CRITICAL-003 — base32-encoded TOTP shared secret
+    /// for the configured admin user. Required when `totp_enabled =
+    /// true`; ignored otherwise. The b32 encoding matches what
+    /// authenticator apps consume from the `otpauth://` provisioning
+    /// URI returned by `crate::admin_auth::totp::provisioning_uri`.
+    /// Empty string when unset. See `docs/operator/admin-auth-setup.md`
+    /// for the enrollment flow (YAML-only in v1).
+    #[serde(default)]
+    pub totp_secret_b32: String,
+    /// 2026-05-17 F-CRITICAL-002 (Phase 3 step 4) — service-account
+    /// bearer tokens. Used by CI / cron / Nagios-shaped automation
+    /// that can't login interactively. Each account has:
+    /// - `name`: human-readable identifier, becomes `actor` on
+    ///   audit-mutated changes.
+    /// - `token_hash`: argon2id hash of the bearer token (mint via
+    ///   `waf admin service-account mint` — follow-up CLI).
+    /// - `scopes`: `["read"]` allows GET only; `["read", "write"]`
+    ///   allows mutations.
+    /// Bearer requests send `Authorization: Bearer <plaintext>`;
+    /// middleware argon2-verifies and synthesises a per-request
+    /// session. See `docs/operator/admin-auth-setup.md`.
+    #[serde(default)]
+    pub service_accounts: Vec<ServiceAccountConfig>,
     #[serde(default)]
     pub login_rate_limit: LoginRateLimitConfig,
     #[serde(default)]
@@ -2624,6 +2977,22 @@ pub struct DashboardAuthConfig {
     /// is the canonical source of truth for the bundle.
     #[serde(default)]
     pub allow_ca_upload: bool,
+    /// 2026-05-17 F-HIGH-admin sub-finding: pre-fix every admin
+    /// mutation handler did `req.into_body().collect()` without
+    /// any cap, so a single oversized `Content-Length: 1GB`
+    /// payload from a (typo-ed allowlist or stolen-credential)
+    /// client would buffer the whole gigabyte into RAM before
+    /// the JSON parser rejected it. Admin payloads are small
+    /// JSON (config blobs, rule definitions, allowlist entries);
+    /// 1 MiB is a generous cap. Enforced as a `Content-Length`
+    /// pre-check inside `admin_auth_middleware::admit` so the
+    /// 30+ existing `into_body().collect()` call sites don't
+    /// need surgery. Streaming / chunked-without-length bodies
+    /// bypass the Content-Length gate; that gap is documented
+    /// in `plans/future/unwired-stubs-catalog.md` (admin body
+    /// streaming cap) and tracked as a follow-up.
+    #[serde(default = "default_admin_max_body_bytes")]
+    pub max_request_body_bytes: u64,
 }
 
 fn default_session_idle() -> Duration {
@@ -2639,6 +3008,10 @@ fn default_ip_allowlist() -> Vec<ipnet::IpNet> {
     ]
 }
 
+fn default_admin_max_body_bytes() -> u64 {
+    1024 * 1024 // 1 MiB — admin payloads are small JSON.
+}
+
 impl Default for DashboardAuthConfig {
     fn default() -> Self {
         Self {
@@ -2648,11 +3021,24 @@ impl Default for DashboardAuthConfig {
             session_ttl_absolute: default_session_absolute(),
             ip_allowlist: default_ip_allowlist(),
             totp_enabled: false,
+            totp_secret_b32: String::new(),
+            service_accounts: Vec::new(),
             login_rate_limit: LoginRateLimitConfig::default(),
             lockout: LockoutConfig::default(),
             allow_ca_upload: false,
+            max_request_body_bytes: default_admin_max_body_bytes(),
         }
     }
+}
+
+/// 2026-05-17 F-CRITICAL-002 (Phase 3 step 4) — see
+/// `DashboardAuthConfig.service_accounts` for the full doc.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ServiceAccountConfig {
+    pub name: String,
+    pub token_hash: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2871,9 +3257,13 @@ redis:
 
     #[test]
     fn risk_config_defaults() {
+        // 2026-05-17 (F-CRITICAL-007): bumped 40/80 → 30/70 to
+        // match the v2.3 spec defaults that `RiskEngine::classify`
+        // already hardcoded. Pre-fix the two sources disagreed
+        // out of the box.
         let cfg = RiskConfig::default();
-        assert_eq!(cfg.thresholds.challenge_at, 40);
-        assert_eq!(cfg.thresholds.block_at, 80);
+        assert_eq!(cfg.thresholds.challenge_at, 30);
+        assert_eq!(cfg.thresholds.block_at, 70);
         assert_eq!(cfg.thresholds.max, 100);
         assert_eq!(cfg.decay_half_life, Duration::from_secs(300));
     }
@@ -4020,5 +4410,158 @@ state: { backend: in_memory }
 "#;
         let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
         cfg.validate().expect("non-tcp route should validate without allowlist");
+    }
+
+    /// 2026-05-17 F-CRITICAL-008 (core audit): per-tier DDoS
+    /// overrides parse from YAML. Existing configs without
+    /// `tier_overrides` keep working (`#[serde(default)]` →
+    /// empty map).
+    #[test]
+    fn ddos_tier_overrides_parse_and_default_empty() {
+        let yaml = r#"
+enabled: true
+per_ip_limit: 1000
+tier_overrides:
+  critical:
+    per_ip_limit: 200
+    block_ttl_s: 1800
+  low:
+    per_ip_limit: 5000
+"#;
+        let cfg: DdosConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.tier_overrides.len(), 2);
+        let crit = cfg.tier_overrides.get(&Tier::Critical).unwrap();
+        assert_eq!(crit.per_ip_limit, Some(200));
+        assert_eq!(crit.block_ttl_s, Some(1800));
+        assert!(crit.per_ip_window_s.is_none()); // not overridden → None
+        let low = cfg.tier_overrides.get(&Tier::Low).unwrap();
+        assert_eq!(low.per_ip_limit, Some(5000));
+
+        // Default (no tier_overrides key) is an empty map, not an error.
+        let default_yaml = "enabled: true\n";
+        let cfg: DdosConfig = serde_yaml::from_str(default_yaml).unwrap();
+        assert!(cfg.tier_overrides.is_empty());
+    }
+
+    /// 2026-05-17 F-CRITICAL-010 (core audit): `fail_mode_by_tier`
+    /// parses from YAML; existing configs default to empty.
+    #[test]
+    fn fail_mode_by_tier_parses_and_default_empty() {
+        let yaml = r#"
+listeners:
+  data: [{ bind: "0.0.0.0:8080" }]
+  admin: { bind: "127.0.0.1:9443" }
+routes:
+  - { id: catch-all, path: "/", upstream: default }
+upstreams:
+  default: { members: [{ addr: "127.0.0.1:8081" }] }
+state: { backend: in_memory }
+fail_mode_by_tier:
+  high: fail_close
+  medium: fail_close
+"#;
+        let cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.fail_mode_by_tier.len(), 2);
+        assert_eq!(
+            cfg.fail_mode_by_tier.get(&Tier::High),
+            Some(&FailureModeConfig::FailClose),
+        );
+        assert_eq!(
+            cfg.fail_mode_by_tier.get(&Tier::Medium),
+            Some(&FailureModeConfig::FailClose),
+        );
+        assert!(cfg.fail_mode_by_tier.get(&Tier::Low).is_none());
+    }
+
+    /// 2026-05-17 F-CRITICAL-009 (core audit): the four new
+    /// `RlScope` variants parse from YAML, externally-tagged. Old
+    /// configs with `scope: global` and `scope: route` keep
+    /// parsing unchanged.
+    #[test]
+    fn rl_scope_new_variants_parse() {
+        // Existing: unit variants — no change.
+        let s: RlScope = serde_yaml::from_str("global").unwrap();
+        assert_eq!(s, RlScope::Global);
+        let s: RlScope = serde_yaml::from_str("route").unwrap();
+        assert_eq!(s, RlScope::Route);
+        let s: RlScope = serde_yaml::from_str("user_session").unwrap();
+        assert_eq!(s, RlScope::UserSession);
+        let s: RlScope = serde_yaml::from_str("device_fingerprint").unwrap();
+        assert_eq!(s, RlScope::DeviceFingerprint);
+
+        // Newly added: tuple variants — externally tagged YAML uses
+        // the `!variant value` form. JSON-style `{variant: value}`
+        // also works through serde_json round-trip.
+        let s: RlScope = serde_yaml::from_str("!tier critical").unwrap();
+        assert_eq!(s, RlScope::Tier(Tier::Critical));
+
+        let s: RlScope = serde_yaml::from_str("!route_pattern \"/api/users/*\"").unwrap();
+        assert_eq!(s, RlScope::RoutePattern("/api/users/*".into()));
+
+        let s: RlScope = serde_yaml::from_str("!ip \"10.0.0.0/8\"").unwrap();
+        assert_eq!(s, RlScope::Ip("10.0.0.0/8".into()));
+
+        // JSON-style also parses (used by REST API request bodies).
+        let s: RlScope = serde_json::from_str(r#"{"tier":"critical"}"#).unwrap();
+        assert_eq!(s, RlScope::Tier(Tier::Critical));
+    }
+
+    /// 2026-05-17 F-CRITICAL-009 (core audit): new RlKey variants.
+    #[test]
+    fn rl_key_new_variants_parse() {
+        let k: RlKey = serde_yaml::from_str("ip").unwrap();
+        assert_eq!(k, RlKey::Ip);
+        let k: RlKey = serde_yaml::from_str("device_fp").unwrap();
+        assert_eq!(k, RlKey::DeviceFp);
+        let k: RlKey = serde_yaml::from_str("user_id").unwrap();
+        assert_eq!(k, RlKey::UserId);
+    }
+
+    /// 2026-05-17 F-CRITICAL-011 (core audit): per-tier detector
+    /// override mask parses from YAML; existing configs without
+    /// `per_tier` default to empty (single global policy).
+    #[test]
+    fn detectors_per_tier_mask_parses_and_default_empty() {
+        let yaml = r#"
+sqli: { enabled: true }
+per_tier:
+  critical:
+    command_injection: true
+    brute_force: true
+  low:
+    recon: false
+"#;
+        let cfg: DetectorsConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.per_tier.len(), 2);
+        let crit = cfg.per_tier.get(&Tier::Critical).unwrap();
+        assert_eq!(crit.command_injection, Some(true));
+        assert_eq!(crit.brute_force, Some(true));
+        assert!(crit.sqli.is_none()); // not overridden → inherit global
+        let low = cfg.per_tier.get(&Tier::Low).unwrap();
+        assert_eq!(low.recon, Some(false));
+
+        // Default (no per_tier key) is an empty map, not an error.
+        let cfg: DetectorsConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(cfg.per_tier.is_empty());
+    }
+
+    /// 2026-05-17 F-CRITICAL-012 (core audit): `canary_paths`
+    /// parses from YAML; existing configs default to empty.
+    #[test]
+    fn risk_canary_paths_parse_and_default_empty() {
+        let yaml = r#"
+canary_paths:
+  - "/wp-admin"
+  - "/.env"
+  - "/phpmyadmin/*"
+"#;
+        let cfg: RiskConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.canary_paths.len(), 3);
+        assert_eq!(cfg.canary_paths[0], "/wp-admin");
+        assert_eq!(cfg.canary_paths[2], "/phpmyadmin/*");
+
+        // Default (no canary_paths key) is an empty vec, not an error.
+        let cfg: RiskConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(cfg.canary_paths.is_empty());
     }
 }

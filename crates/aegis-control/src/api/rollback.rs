@@ -830,6 +830,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({
                 "actor": "admin",
                 "diff": {
@@ -855,6 +858,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({}),
         }
     }
@@ -873,6 +879,9 @@ mod tests {
             route_id: None,
             rule_id: Some("sqli".into()),
             risk_score: Some(40),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({}),
         }
     }
@@ -1015,6 +1024,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({
                 "actor": "admin",
                 "diff": {
@@ -1044,6 +1056,7 @@ mod tests {
             },
             trust_recovery: None,
             strikes: None,
+            canary_paths: Vec::new(),
         };
         let risk = aegis_security::risk::RiskTracker::new(&risk_cfg);
 
@@ -1123,6 +1136,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({
                 "actor": "admin",
                 "diff": {
@@ -1253,6 +1269,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({
                 "actor": "admin",
                 "diff": { "before": before, "after": after },
@@ -1447,6 +1466,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({
                 "actor": "admin",
                 "diff": { "before": before, "after": after },
@@ -1595,6 +1617,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({
                 "actor": "admin",
                 "diff": {
@@ -1679,6 +1704,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({
                 "actor": "admin",
                 "diff": {
@@ -1788,6 +1816,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({"diff": {"before": before, "after": after}}),
         }
     }

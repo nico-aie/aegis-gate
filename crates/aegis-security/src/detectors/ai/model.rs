@@ -4,15 +4,20 @@
 //! detector.  Sessions are thread-safe; `Arc<Model>` is fine to
 //! share between request handlers.
 //!
-//! The trained model emits a `label` output of shape `[batch]`
-//! containing the argmax class index, AND (depending on the
-//! exporter) a `probabilities` output of shape `[batch, K]`.
-//! For our binary use-case we only need the argmax — anything
-//! that isn't the configured `normal_class_idx` is "attack".
-//! Confidence (top-1 softmax probability) is read from the
-//! probability output when present; missing → 1.0 fall-back so
-//! the threshold check passes (the model was confident enough
-//! to commit to a class).
+//! The trained model emits two outputs:
+//!
+//! - `label` of shape `[batch]` — `i64` class index per row
+//!   (`0` = Normal, `1` = Attack for the bundled binary model).
+//! - `probabilities` of shape `[batch, K]` — `f32` softmax row,
+//!   one column per class (`[P(Normal), P(Attack)]` for the
+//!   binary model).
+//!
+//! Verdict is binary: `class_idx != normal_class_idx` ⇒ attack.
+//! `confidence` is the top-1 softmax probability when the
+//! `probabilities` output is exposed as a dense tensor; falls
+//! back to `1.0` (i.e. always passes the threshold gate) when
+//! the model exporter emitted the legacy
+//! `Sequence<Map<i64, f32>>` shape.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -32,12 +37,11 @@ pub struct Prediction {
     /// Predicted class index (0..K-1).
     pub class_idx: i64,
     /// True when `class_idx != normal_class_idx`.  For the
-    /// 11-class WAF model `normal_class_idx == 6`.  When the
-    /// underlying model goes binary (2 classes) we just flip
-    /// the configured normal index — no other plumbing
-    /// changes.
+    /// bundled binary model `normal_class_idx == 0`.  When the
+    /// underlying model swaps to a different layout we just flip
+    /// the configured normal index — no other plumbing changes.
     pub is_attack: bool,
-    /// Top-1 softmax probability when the model exposes a
+    /// Top-1 softmax probability when the model exposes a dense
     /// `probabilities` output, otherwise `1.0`.  Used by the
     /// detector to gate on the `confidence_threshold` knob.
     pub confidence: f32,
@@ -71,7 +75,7 @@ pub enum ModelError {
 pub struct Model {
     session: Mutex<Session>,
     /// Index of the `Normal` class.  Anything else is "attack".
-    /// Default 6 for the shipped 11-class model.
+    /// Default 0 for the shipped binary model.
     normal_class_idx: i64,
 }
 
@@ -100,7 +104,7 @@ impl Model {
     pub fn predict(&self, features: &[f32; NUM_FEATURES]) -> Result<Prediction, ModelError> {
         let started = std::time::Instant::now();
 
-        // Build a 1×26 input matrix.
+        // Build a 1×NUM_FEATURES input matrix.
         let mut mat = Array2::<f32>::zeros((1, NUM_FEATURES));
         for (j, &v) in features.iter().enumerate() {
             mat[[0, j]] = v;
@@ -147,19 +151,26 @@ fn extract_class_idx(outputs: &SessionOutputs) -> Result<i64, ModelError> {
 }
 
 /// Read top-1 softmax probability from the `probabilities`
-/// output when present.  ONNX classifiers emit this as a
-/// `Sequence<Map<i64, f32>>` (the standard sklearn export
-/// shape) which `ort` doesn't yet have a direct extractor for
-/// in the public API, so we fall back to "no confidence
-/// signal" in that case.  Future: parse via a generic Value
-/// inspection.  For v1 we accept missing confidence and let the
-/// detector's threshold default to 0 (always-allow-confident)
-/// when we can't read it.
-fn extract_confidence(_outputs: &SessionOutputs, _class_idx: i64) -> Option<f32> {
-    // TODO: support the Sequence<Map<i64, f32>> shape produced
-    // by sklearn's ONNX exporter so callers can gate on
-    // softmax probability.  For now we report None and let the
-    // detector treat it as a confident hit (the model already
-    // committed to a class via argmax).
-    None
+/// output.
+///
+/// The bundled binary model exports `probabilities` as a dense
+/// `[batch, K]` `f32` tensor — we extract row 0 and index by
+/// `class_idx`.  Older sklearn exporters emit it as
+/// `Sequence<Map<i64, f32>>`, which the public `ort` API can't
+/// decode today; in that case we return `None` and the detector
+/// treats the threshold gate as a no-op (the model committed to
+/// a class via argmax, so we trust it).
+fn extract_confidence(outputs: &SessionOutputs, class_idx: i64) -> Option<f32> {
+    if class_idx < 0 {
+        return None;
+    }
+    let entry = outputs.get("probabilities")?;
+    // Batch is always 1 (the WAF runs inference per request), so
+    // `data` is the K-element row for the single sample, in
+    // class-index order.  We don't need to read the shape — just
+    // index by `class_idx` and let `get` bound-check.
+    let (_shape, data) = entry.try_extract_tensor::<f32>().ok()?;
+    data.get(class_idx as usize)
+        .filter(|p| p.is_finite())
+        .copied()
 }

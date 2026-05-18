@@ -63,6 +63,19 @@ pub struct DashboardServices {
     pub filter_catalogue: Arc<FilterCatalogue>,
     pub filters: Arc<FiltersHandler>,
     pub rules: Arc<RuleStore>,
+    /// 2026-05-17 F-CRITICAL-001 (control audit): live engine
+    /// rule set the data plane reads from. `None` for single-node
+    /// test fixtures that don't wire a security pipeline; `Some`
+    /// in the real boot path (see `aegis-proxy/src/accept.rs`
+    /// where it's set to `pipeline.rules_arc()`). After every
+    /// successful CRUD mutation in `admin_mutate`, the operator
+    /// rule bodies are parsed and pushed here via
+    /// `RuleSet::replace_rules` so a saved rule takes effect on
+    /// the next request. Pre-fix the engine read an empty
+    /// `RuleSet::new()` constructed once at boot — the dashboard's
+    /// "Save rule" was a no-op against real traffic. Round-1
+    /// "Tính hiệu lực" hard requirement (≤10 s save→effect).
+    pub active_ruleset: Option<Arc<aegis_security::RuleSet>>,
     pub rule_stats: Arc<RuleStats>,
     pub tiers: Arc<TierStore>,
     pub routes: Arc<RoutesHandler>,
@@ -284,10 +297,7 @@ impl DashboardServices {
         let auth_sessions = Arc::new(AuthSessionStore::new([0u8; 32]));
         let login_rate_limiter =
             Arc::new(LoginRateLimiter::new(Default::default()));
-        let admin_identity = Arc::new(AdminIdentity {
-            user: String::new(),
-            password_hash: String::new(),
-        });
+        let admin_identity = Arc::new(AdminIdentity::default());
         Self::spawn_with_mask(
             bus,
             pool_snapshot,
@@ -425,15 +435,38 @@ impl DashboardServices {
         let filter_clone = Arc::clone(&filter_catalogue);
         let rule_stats_clone = Arc::clone(&rule_stats);
         let drain = tokio::spawn(async move {
-            while let Ok(ev) = rx.recv().await {
-                Self::dispatch_event(
-                    &stats_clone,
-                    &attacks_clone,
-                    &audit_clone,
-                    &filter_clone,
-                    &rule_stats_clone,
-                    &ev,
-                );
+            // F-CRITICAL-011 (2026-05-17 control audit): pre-fix
+            // this loop used `while let Ok(ev) = rx.recv().await`
+            // which exits PERMANENTLY on `RecvError::Lagged` (any
+            // time the subscriber falls behind by the broadcast
+            // buffer's capacity). After exit the audit-ring +
+            // stats-aggregator + attacks-aggregator stop receiving
+            // events — Live Feed freezes, /api/audit/since
+            // returns stale data, the §5.6 "≤5s freshness" mandate
+            // breaks. Under the 60k RPS stress run the channel
+            // saturated within seconds and the drain task died
+            // silently. Now: handle Lagged by logging + counting
+            // drops + continuing (matches the proven pattern in
+            // `audit::sinks::jsonl::run_persist_task`).
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => Self::dispatch_event(
+                        &stats_clone,
+                        &attacks_clone,
+                        &audit_clone,
+                        &filter_clone,
+                        &rule_stats_clone,
+                        &ev,
+                    ),
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            dropped = n,
+                            "dashboard drain: audit bus lagged; events dropped from broadcast"
+                        );
+                    }
+                    Err(RecvError::Closed) => break,
+                }
             }
         });
 
@@ -451,6 +484,11 @@ impl DashboardServices {
                 filter_catalogue,
                 filters: filters_handler,
                 rules,
+                // 2026-05-17 F-CRITICAL-001: defaults to `None` here;
+                // the proxy boot path (`aegis-proxy::accept`) sets
+                // this to `pipeline.rules_arc()` so dashboard CRUD
+                // can hot-swap the live engine rule set.
+                active_ruleset: None,
                 rule_stats,
                 tiers,
                 routes,
@@ -617,6 +655,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: Some(80),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({"detector": detector}),
         }
     }
@@ -834,10 +875,7 @@ mod tests {
             SharedVerbosity::default(),
             Arc::new(AuthSessionStore::new([0u8; 32])),
             Arc::new(LoginRateLimiter::new(Default::default())),
-            Arc::new(AdminIdentity {
-                user: String::new(),
-                password_hash: String::new(),
-            }),
+            Arc::new(AdminIdentity::default()),
             1800,
         );
 
@@ -912,10 +950,7 @@ mod tests {
             SharedVerbosity::default(),
             Arc::new(AuthSessionStore::new([0u8; 32])),
             Arc::new(LoginRateLimiter::new(Default::default())),
-            Arc::new(AdminIdentity {
-                user: String::new(),
-                password_hash: String::new(),
-            }),
+            Arc::new(AdminIdentity::default()),
             1800,
         );
 

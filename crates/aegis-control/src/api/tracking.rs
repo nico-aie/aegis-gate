@@ -36,29 +36,16 @@ pub struct SloResponse {
 }
 
 impl SloResponse {
+    /// 2026-05-17 F-CRITICAL-018 (control audit): pre-fix this
+    /// returned two fake SLI rows (`availability=99.99/99.99` +
+    /// `overhead_p99=0.0/5.0`) when no SloEngine was wired. The
+    /// dashboard then displayed those mock numbers as if they
+    /// were live — official rules §9 calls "mock data shipped to
+    /// evaluation" a disqualification class. Now returns an
+    /// empty `slis` list (honest empty); the dashboard renders
+    /// "no data yet" rather than fake 99.99% availability.
     pub fn placeholder() -> Self {
-        Self {
-            slis: vec![
-                SliRow {
-                    name: "availability".into(),
-                    current: 99.99,
-                    target: 99.99,
-                    budget_remaining: 1.0,
-                    burn_1h: 0.0,
-                    burn_6h: 0.0,
-                    burn_3d: 0.0,
-                },
-                SliRow {
-                    name: "overhead_p99".into(),
-                    current: 0.0,
-                    target: 5.0,
-                    budget_remaining: 1.0,
-                    burn_1h: 0.0,
-                    burn_6h: 0.0,
-                    burn_3d: 0.0,
-                },
-            ],
-        }
+        Self { slis: Vec::new() }
     }
 
     /// CI-T4/T7 — build the response from the live SLO engine's
@@ -267,6 +254,15 @@ pub struct CertInventoryEntry {
 }
 
 // ---------- GitOps -----------------------------------------------------
+//
+// 2026-05-17 F-CRITICAL-005 (control audit): the `gitops` module was
+// deleted because `GitOpsLoader::sync` had zero production callers
+// and `set_gitops_loader` was never invoked at boot. The shell
+// response type stays so the `/api/gitops/status` endpoint can
+// surface a stable empty shape — operators get a predictable null
+// payload rather than a 404, which keeps the dashboard's JSON
+// parser happy. The `from_loader` constructor is gone (no loader
+// to build from); `placeholder()` is now the only constructor.
 
 #[derive(Clone, Debug, Serialize)]
 pub struct GitopsStatusResponse {
@@ -287,34 +283,6 @@ impl GitopsStatusResponse {
             last_sync: None,
             head_commit: None,
             signature_ok: true,
-            drift: false,
-            break_glass_active: false,
-        }
-    }
-
-    /// CI-T4 — build the response from the live `GitOpsLoader`.
-    /// `last_sync` and `signature_ok` come from the most-recent
-    /// `ApplyRecord`; if no apply has happened yet, falls back to
-    /// the placeholder's "no data" shape but with `repo` + `branch`
-    /// populated from the loader config so the UI can still show
-    /// what's configured.
-    pub fn from_loader(loader: &crate::gitops::GitOpsLoader) -> Self {
-        let cfg = loader.config();
-        let last = loader.apply_log().into_iter().last();
-        let (last_sync, head_commit, signature_ok) = match last {
-            Some(rec) => (
-                Some(rec.ts),
-                Some(rec.commit_sha),
-                matches!(rec.outcome, crate::gitops::ApplyOutcome::Applied),
-            ),
-            None => (None, loader.last_applied_sha(), true),
-        };
-        Self {
-            repo: Some(cfg.repo_url.clone()),
-            branch: Some(cfg.branch.clone()),
-            last_sync,
-            head_commit,
-            signature_ok,
             drift: false,
             break_glass_active: false,
         }
@@ -417,8 +385,11 @@ pub struct TrackingHandler {
     /// through the existing `Arc<TrackingHandler>` shared with the
     /// admin listener.
     slo_engine: Arc<Mutex<Option<Arc<crate::slo::SloEngine>>>>,
-    /// CI-T4 — live GitOps loader.
-    gitops_loader: Arc<Mutex<Option<Arc<crate::gitops::GitOpsLoader>>>>,
+    // 2026-05-17 F-CRITICAL-005 (control audit): `gitops_loader`
+    // field removed — the `gitops` module is deleted. The
+    // `/api/gitops/status` endpoint now always returns
+    // `GitopsStatusResponse::placeholder()` (a stable empty
+    // shape) and the dashboard renders "GitOps not configured".
     /// CI-T4 — cert inventory provider.
     cert_provider: Arc<Mutex<Option<CertInventoryProvider>>>,
     /// CI-T4 — acknowledged alert IDs. Survives the process but
@@ -433,7 +404,6 @@ impl TrackingHandler {
             cache: Arc::new(Mutex::new(None)),
             leader_view: None,
             slo_engine: Arc::new(Mutex::new(None)),
-            gitops_loader: Arc::new(Mutex::new(None)),
             cert_provider: Arc::new(Mutex::new(None)),
             ack_store: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -459,10 +429,9 @@ impl TrackingHandler {
         *self.slo_engine.lock().expect("slo engine slot poisoned") = Some(engine);
     }
 
-    /// Wire the GitOps loader that backs `/api/gitops/status`.
-    pub fn set_gitops_loader(&self, loader: Arc<crate::gitops::GitOpsLoader>) {
-        *self.gitops_loader.lock().expect("gitops slot poisoned") = Some(loader);
-    }
+    // 2026-05-17 F-CRITICAL-005: `set_gitops_loader` removed —
+    // the gitops module is deleted, and this setter had zero
+    // production callers anyway.
 
     /// Wire a cert inventory provider that backs `/api/certs`.
     pub fn set_cert_provider(&self, provider: CertInventoryProvider) {
@@ -490,9 +459,6 @@ impl TrackingHandler {
 
     fn slo(&self) -> Option<Arc<crate::slo::SloEngine>> {
         self.slo_engine.lock().ok()?.clone()
-    }
-    fn gitops(&self) -> Option<Arc<crate::gitops::GitOpsLoader>> {
-        self.gitops_loader.lock().ok()?.clone()
     }
     fn certs(&self) -> Option<CertInventoryProvider> {
         self.cert_provider.lock().ok()?.clone()
@@ -535,10 +501,10 @@ impl TrackingHandler {
     }
 
     pub fn render_gitops(&self) -> String {
-        let body = match self.gitops() {
-            None => GitopsStatusResponse::placeholder(),
-            Some(loader) => GitopsStatusResponse::from_loader(loader.as_ref()),
-        };
+        // 2026-05-17 F-CRITICAL-005: gitops module deleted; this
+        // endpoint always returns the empty placeholder so the
+        // dashboard's JSON parser stays happy.
+        let body = GitopsStatusResponse::placeholder();
         serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
 
@@ -591,10 +557,8 @@ impl TrackingHandler {
             None => CertsResponse::placeholder(),
             Some(p) => CertsResponse::from_inventory(p(), chrono::Utc::now()),
         };
-        let gitops = match self.gitops() {
-            None => GitopsStatusResponse::placeholder(),
-            Some(l) => GitopsStatusResponse::from_loader(l.as_ref()),
-        };
+        // 2026-05-17 F-CRITICAL-005: gitops module deleted.
+        let gitops = GitopsStatusResponse::placeholder();
         let alerts = match self.slo() {
             None => AlertsResponse::placeholder(),
             Some(e) => {
@@ -650,14 +614,18 @@ mod tests {
     }
 
     #[test]
-    fn slo_response_has_documented_shape() {
+    fn slo_response_with_no_engine_is_empty_not_mock() {
+        // 2026-05-17 F-CRITICAL-018 regression: pre-fix
+        // `SloResponse::placeholder()` returned two fake SLI
+        // rows (availability=99.99/99.99, overhead_p99=0/5)
+        // when no SloEngine was wired — that's the §9 mock-data
+        // disqualification class. Now returns an empty slis
+        // list (honest empty); the dashboard renders "no data
+        // yet" rather than fake numbers.
         let body = handler().render_slo();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let slis = v["slis"].as_array().unwrap();
-        assert!(!slis.is_empty());
-        for k in ["name", "current", "target", "budget_remaining"] {
-            assert!(slis[0][k].is_number() || slis[0][k].is_string());
-        }
+        assert!(slis.is_empty(), "no engine → empty slis (not mock data)");
     }
 
     #[test]

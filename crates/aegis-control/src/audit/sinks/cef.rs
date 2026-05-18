@@ -49,6 +49,9 @@ mod tests {
             route_id: Some("api-users".into()),
             rule_id: Some("sqli-1".into()),
             risk_score: Some(85),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         }
     }

@@ -238,7 +238,14 @@ async fn run_gateway_inner(
     let (lease_store, lease_summary) = lease_select::select(&cfg, node_id)?;
     tracing::info!("lease store = {lease_summary}");
 
-    let bus = AuditBus::new(4096);
+    // 2026-05-17 Phase 7a: capacity surfaced as
+    // `cfg.audit.bus_capacity` (default 100_000). Pre-fix the
+    // hard-coded 4096 produced `Lagged(n)` drops at burst loads
+    // above ~2-3k audit events/sec — the 60k-RPS 2026-05-14
+    // stress run lost hundreds of events per burst. See
+    // `crates/aegis-core/src/config.rs::default_audit_bus_capacity`
+    // for the rationale on the new default.
+    let bus = AuditBus::new(cfg.audit.bus_capacity);
     let readiness = ReadinessSignal::default();
 
     // Wrap cfg in an ArcSwap so the configured reload-source
@@ -377,26 +384,13 @@ fn cmd_validate(args: &[String]) -> i32 {
     let print_priority = args.iter().any(|a| a == "--print-route-priority");
 
     match aegis_core::load_config(&config_path) {
-        Ok(mut cfg) => {
+        Ok(cfg) => {
             println!("config OK: {}", config_path.display());
-            // If compliance profiles are set, apply and report.
-            if let Some(profile) = cfg.compliance.as_ref() {
-                if !profile.modes.is_empty() {
-                    let modes = profile.modes.clone();
-                    match aegis_control::compliance::apply(&modes, &mut cfg) {
-                        Ok(()) => {
-                            println!(
-                                "compliance profiles applied: {:?}",
-                                modes
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("compliance error: {e}");
-                            return 1;
-                        }
-                    }
-                }
-            }
+            // 2026-05-17 (user decision): `compliance.apply` removed.
+            // The v2.3 contract doesn't require regulatory
+            // compliance modes; the framework files (FIPS / PCI /
+            // HIPAA / SOC2 / GDPR) wired through
+            // `COMPLIANCE_PINNED = &[]` were dead infrastructure.
             if print_priority {
                 if let Err(e) = print_route_priority(&cfg) {
                     eprintln!("route table build failed: {e}");
@@ -533,6 +527,7 @@ fn cmd_admin(args: &[String]) -> i32 {
     match sub {
         "set-password" => cmd_admin_set_password(),
         "enroll-totp" => cmd_admin_enroll_totp(args),
+        "service-account" => cmd_admin_service_account(args),
         "help" | "--help" => {
             println!("waf admin <subcommand>");
             println!();
@@ -540,6 +535,8 @@ fn cmd_admin(args: &[String]) -> i32 {
             println!("    set-password           Hash a password (interactive prompt)");
             println!("    enroll-totp --issuer <ISSUER> --account <ACCOUNT>");
             println!("                           Generate TOTP secret + provisioning URI");
+            println!("    service-account mint --name <NAME> [--scopes read,write]");
+            println!("                           Mint a service-account bearer token");
             println!("    help                   Show this help");
             0
         }
@@ -578,41 +575,133 @@ fn cmd_admin_enroll_totp(args: &[String]) -> i32 {
     let issuer = parse_flag(args, "--issuer").unwrap_or("Aegis-Gate");
     let account = parse_flag(args, "--account").unwrap_or("admin");
 
-    // Generate a random secret (32 bytes).
-    let secret_bytes = blake3::hash(
-        format!(
-            "totp:{}:{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-            std::process::id()
-        )
-        .as_bytes(),
-    );
-    let secret = secret_bytes.as_bytes();
+    // 2026-05-17 F-CRITICAL-003 follow-up: this CLI is the operator-
+    // facing half of the TOTP wire-up. Pre-fix `secret_bytes` was
+    // derived from `blake3(nanos:pid)` — predictable enough to
+    // brute-force the secret given approximate clock skew, even
+    // though the per-call output looks random. UUID v4 is what we
+    // standardised on for tokens (see `csrf.rs`, `session.rs`);
+    // reuse it here as the CSPRNG source.
+    let mut secret = [0u8; 32];
+    let id_bytes_a = uuid::Uuid::new_v4().into_bytes();
+    let id_bytes_b = uuid::Uuid::new_v4().into_bytes();
+    secret[..16].copy_from_slice(&id_bytes_a);
+    secret[16..].copy_from_slice(&id_bytes_b);
 
-    // Base32-encode the secret for the provisioning URI.
-    let b32: String = secret
-        .iter()
-        .map(|b| {
-            const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-            ALPHABET[(*b as usize) % ALPHABET.len()] as char
-        })
-        .collect();
+    // Pre-fix `b32` came from a byte-modulo-32 character mapping —
+    // not real RFC 4648 base32. Authenticator apps decoded the
+    // string back to bytes expecting a round-trip, got garbage,
+    // and generated TOTP codes that never matched the WAF's
+    // expected codes. The whole feature was end-to-end broken even
+    // after the SHA-256 → SHA-1 fix in Phase 3 step 3. Now use the
+    // `base32` crate (RFC 4648, no padding — matches what
+    // `api::login::authenticate` decodes with).
+    let b32 = base32::encode(
+        base32::Alphabet::Rfc4648 { padding: false },
+        &secret,
+    );
 
     let uri = aegis_control::admin_auth::totp::provisioning_uri(&b32, issuer, account);
 
     // Generate recovery codes.
-    let recovery = aegis_control::admin_auth::totp::generate_recovery_codes(secret);
+    let recovery = aegis_control::admin_auth::totp::generate_recovery_codes(&secret);
 
     println!("TOTP Secret (base32): {b32}");
-    println!("Provisioning URI: {uri}");
+    println!("Provisioning URI:     {uri}");
+    println!();
+    println!("Paste this into cfg.admin.dashboard_auth:");
+    println!("  totp_enabled: true");
+    println!("  totp_secret_b32: \"{b32}\"");
     println!();
     println!("Recovery codes (store securely, each usable once):");
     for (i, code) in recovery.iter().enumerate() {
         println!("  {}: {code}", i + 1);
     }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// waf admin service-account
+// ---------------------------------------------------------------------------
+
+fn cmd_admin_service_account(args: &[String]) -> i32 {
+    let sub = args.get(3).map(String::as_str).unwrap_or("help");
+    match sub {
+        "mint" => cmd_admin_service_account_mint(args),
+        "help" | "--help" => {
+            println!("waf admin service-account <subcommand>");
+            println!();
+            println!("SUBCOMMANDS:");
+            println!("    mint --name <NAME> [--scopes read,write]");
+            println!("                 Mint a bearer token + print the YAML fragment");
+            println!("                 to paste into cfg.admin.dashboard_auth.");
+            println!("                 The plaintext token is printed ONCE; the");
+            println!("                 stored hash is argon2id so the token cannot");
+            println!("                 be recovered from the config.");
+            0
+        }
+        other => {
+            eprintln!("unknown admin service-account subcommand: {other}");
+            1
+        }
+    }
+}
+
+fn cmd_admin_service_account_mint(args: &[String]) -> i32 {
+    let Some(name) = parse_flag(args, "--name") else {
+        eprintln!("missing --name <NAME> (e.g. --name ci-pipeline)");
+        return 1;
+    };
+    let scopes_raw = parse_flag(args, "--scopes").unwrap_or("read");
+    let scopes: Vec<&str> = scopes_raw.split(',').map(str::trim).collect();
+    for s in &scopes {
+        if !matches!(*s, "read" | "write") {
+            eprintln!("invalid scope `{s}` — supported: read, write");
+            return 1;
+        }
+    }
+
+    // 2026-05-17 F-CRITICAL-002 Option B — service-account bearer
+    // tokens (Phase 3 step 4+5). The token is 32 random bytes
+    // (~256 bits of entropy) encoded as hex. Argon2id'd before
+    // landing in YAML so a config leak doesn't disclose the
+    // bearer secret.
+    let raw_a = uuid::Uuid::new_v4().into_bytes();
+    let raw_b = uuid::Uuid::new_v4().into_bytes();
+    let mut bytes = [0u8; 32];
+    bytes[..16].copy_from_slice(&raw_a);
+    bytes[16..].copy_from_slice(&raw_b);
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+
+    let hash = match aegis_control::admin_auth::password::hash_password(&token) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("argon2 hash failed: {e}");
+            return 1;
+        }
+    };
+
+    println!("Service-account token minted for `{name}` (scopes: {})", scopes.join(","));
+    println!();
+    println!("--- COPY THIS TOKEN (won't be shown again) ---");
+    println!("Token: {token}");
+    println!("---");
+    println!();
+    println!("Paste this fragment into cfg.admin.dashboard_auth.service_accounts:");
+    println!();
+    println!("  - name: \"{name}\"");
+    println!("    token_hash: \"{hash}\"");
+    print!("    scopes: [");
+    for (i, s) in scopes.iter().enumerate() {
+        if i > 0 {
+            print!(", ");
+        }
+        print!("\"{s}\"");
+    }
+    println!("]");
+    println!();
+    println!("Use the token via:  Authorization: Bearer {token}");
+    println!("Reload the config (file edit + watch, or restart) for it to take effect.");
     0
 }
 

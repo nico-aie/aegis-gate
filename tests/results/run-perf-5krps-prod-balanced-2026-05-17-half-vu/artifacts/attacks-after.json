@@ -1,0 +1,1 @@
+{"window_seconds":900,"categories":[{"name":"path_traversal","count":3538,"pct":41.7},{"name":"sqli","count":2112,"pct":24.9},{"name":"xss","count":1413,"pct":16.7},{"name":"mass_assignment","count":708,"pct":8.4},{"name":"ssrf","count":704,"pct":8.3}]}

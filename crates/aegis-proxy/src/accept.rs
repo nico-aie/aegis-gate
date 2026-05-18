@@ -153,14 +153,39 @@ pub(crate) async fn admin_accept_loop(
     // blocks into the runtime config.
     let auth = &cfg.admin.dashboard_auth;
     let session_key = aegis_control::api::login::derive_session_key(&auth.csrf_secret_ref);
+    // F-HIGH-admin (2026-05-17): respect the operator-configured
+    // session TTLs. Pre-fix the hard-coded values inside
+    // `SessionStore::new` ignored these knobs entirely. Convert
+    // from `std::time::Duration` (cfg shape) to `chrono::Duration`
+    // (session module shape) — both lossless on practical values.
+    let idle = chrono::Duration::from_std(auth.session_ttl_idle)
+        .unwrap_or_else(|_| chrono::Duration::minutes(30));
+    let absolute = chrono::Duration::from_std(auth.session_ttl_absolute)
+        .unwrap_or_else(|_| chrono::Duration::hours(8));
     let auth_sessions = Arc::new(
-        aegis_control::admin_auth::session::SessionStore::new(session_key),
+        aegis_control::admin_auth::session::SessionStore::with_ttls(
+            session_key,
+            idle,
+            absolute,
+        ),
     );
     let login_rate_limiter = aegis_control::api::login::build_rate_limiter(auth);
     let admin_identity = Arc::new(aegis_control::api::login::AdminIdentity {
         // Single-admin model: hard-code "admin" until RBAC lands.
         user: "admin".into(),
         password_hash: auth.password_hash_ref.clone(),
+        // 2026-05-17 F-CRITICAL-003 — TOTP fields plumbed from cfg
+        // so `api::login::authenticate` runs the second-factor step
+        // when `dashboard_auth.totp_enabled = true`.
+        totp_secret_b32: auth.totp_secret_b32.clone(),
+        totp_enabled: auth.totp_enabled,
+        // 2026-05-17 F-HIGH-admin — TOTP replay guard. One per
+        // identity (single-admin model = one global). Default
+        // resets the counter to 0 at boot, which is correct:
+        // every previously-consumed code from before this WAF
+        // started is implicitly accepted by zero-init and the
+        // guard begins tracking from the first verify.
+        ..Default::default()
     });
     let session_idle_seconds = auth.session_ttl_idle.as_secs();
 
@@ -497,6 +522,22 @@ pub(crate) async fn admin_accept_loop(
     }
     // 2026-05-11 PR #7 — surface the live `Pipeline` as the
     // response-filter writer so `PUT /api/response-filter` can
+    // 2026-05-17 F-CRITICAL-001 (control audit): share the Pipeline's
+    // live `Arc<RuleSet>` with both `DashboardServices` (so admin
+    // CRUD can hot-swap rules) AND `ProxyContext.active_ruleset` (so
+    // the data plane reads the live set on every request). All three
+    // surfaces — Pipeline, DashboardServices, ProxyContext — now
+    // point at the same `Arc<RuleSet>`, whose internal `ArcSwap`
+    // gives lock-free hot-swap semantics. Pre-fix the dashboard
+    // wrote to a separate `RuleStore` while the engine read an empty
+    // `RuleSet::new()` from boot — "Save rule" was a no-op. Done
+    // BEFORE the `response_filter_writer` move below because that
+    // coerces `response_filter_pipeline` into `Arc<dyn ...>` and
+    // loses the concrete `Pipeline` type.
+    let live_ruleset = response_filter_pipeline.rules_arc();
+    services.active_ruleset = Some(Arc::clone(&live_ruleset));
+    let _ = upstream_ctx.active_ruleset.set(live_ruleset);
+
     // hot-swap `ResponseFilterConfig` rungs. Same Arc instance the
     // data plane reads `on_body_frame` through.
     services.response_filter_writer = Some(
@@ -892,10 +933,41 @@ pub(crate) async fn admin_accept_loop(
                             &query,
                         ));
                     }
-                    let resp = handle_admin_request(
-                        req, peer, &cfg, &readiness, &startup, &metrics, &services,
-                    )
-                    .await;
+                    // F-CRITICAL-002 / 004 / 005 (2026-05-17 Phase 3
+                    // step 4+5): run the auth gate before dispatch.
+                    // Open endpoints (login, health, dashboard assets,
+                    // /__waf_control/*) pass through without an
+                    // identity; everything else requires a valid
+                    // session cookie OR a service-account bearer
+                    // token. On Authenticated we strip the client-
+                    // supplied `X-Actor` header and inject the
+                    // validated actor name as `X-Aegis-Actor` so
+                    // mutation handlers stamp the audit chain with
+                    // the real identity (closes F-CRITICAL-004).
+                    use crate::admin_auth_middleware::{admit, Admit};
+                    let auth_sessions = services.auth_sessions.clone();
+                    let resp = match admit(&req, peer, &cfg, &auth_sessions).await {
+                        Admit::Denied(r) => r,
+                        Admit::OpenEndpoint => {
+                            let mut req = req;
+                            crate::admin_auth_middleware::strip_client_actor(&mut req);
+                            handle_admin_request(
+                                req, peer, &cfg, &readiness, &startup, &metrics, &services,
+                            )
+                            .await
+                        }
+                        Admit::Authenticated(identity) => {
+                            let mut req = req;
+                            crate::admin_auth_middleware::strip_client_actor(&mut req);
+                            if let Ok(v) = hyper::header::HeaderValue::from_str(&identity.actor) {
+                                req.headers_mut().insert("x-aegis-actor", v);
+                            }
+                            handle_admin_request(
+                                req, peer, &cfg, &readiness, &startup, &metrics, &services,
+                            )
+                            .await
+                        }
+                    };
                     Ok::<_, Infallible>(admin_sse::into_boxed(resp))
                 }
             });
@@ -1086,7 +1158,18 @@ pub(crate) async fn accept_loop(
                     // time inside `stamp_interop_response`.
                     let request_start = std::time::Instant::now();
                     let method = req.method().clone();
-                    let path = req.uri().path().to_string();
+                    // v2.3 §6 — audit `path` MUST include the query
+                    // string. `.path()` strips it; `.path_and_query()`
+                    // preserves the full request-target as the client
+                    // sent it. The control-endpoint `starts_with`
+                    // check below is unaffected (the prefix is
+                    // identical with or without query).
+                    let path = req
+                        .uri()
+                        .path_and_query()
+                        .map(|p| p.as_str())
+                        .unwrap_or_else(|| req.uri().path())
+                        .to_string();
                     // v2.3 contract (deploy/STAGING-BENCHMARK.md §7.5):
                     // the OC benchmarker hits /__waf_control/* on the
                     // public TLS data plane, not the admin port. Short-
@@ -1107,6 +1190,30 @@ pub(crate) async fn accept_loop(
                                 upstream_ctx.pow_issuer.get(),
                                 Some(&state_backend_for_interop),
                             ).await;
+                            // F-CRITICAL-001 (2026-05-17 s-tester
+                            // audit): control-endpoint responses
+                            // previously short-circuited before
+                            // `stamp_interop_response`, so the 6
+                            // mandatory v2.3 §5 headers
+                            // (`X-WAF-Request-Id`, `-Action`,
+                            // `-Mode`, `-Cache`, `-Risk-Score`,
+                            // `-Overhead-Latency`) were missing on
+                            // every /__waf_control/* call. Stamp
+                            // them now with a DecisionTag::allow
+                            // — control endpoints are not security
+                            // decisions, but the OC harness asserts
+                            // header presence uniformly across the
+                            // listener.
+                            let resp = crate::admin_dispatch::stamp_interop_response(
+                                resp,
+                                aegis_control::interop::headers::DecisionTag::allow(),
+                                interop.as_ref(),
+                                peer,
+                                &method,
+                                &path,
+                                0,
+                                request_start,
+                            );
                             return Ok::<_, Infallible>(resp);
                         }
                     }
@@ -1232,15 +1339,13 @@ pub(crate) async fn accept_loop(
                         "allow" => aegis_core::audit::AuditClass::Access,
                         _      => aegis_core::audit::AuditClass::Detection,
                     };
-                    let request_id = blake3::hash(
-                        format!(
-                            "{peer}:{}:{path}",
-                            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-                        )
-                        .as_bytes(),
-                    )
-                    .to_hex()
-                    .to_string();
+                    // v2.3 §5.1 — UUID v4 (`getrandom` under the hood)
+                    // gives a cryptographically-random, collision-free
+                    // ID. The earlier blake3(peer:nanos:path) form was
+                    // deterministic on those three inputs and collided
+                    // when two requests shared a nanosecond timestamp
+                    // (common under burst load).
+                    let request_id = uuid::Uuid::new_v4().to_string();
                     // 2026-05-03 — classify the request's bot tier
                     // and stash it on `fields.bot_category` so the
                     // AttacksAggregator (`bot_category_from_fields`)
@@ -1258,6 +1363,15 @@ pub(crate) async fn accept_loop(
                         has_js_challenge_pass: false,
                         failed_challenges: 0,
                         reverse_dns: None,
+                        // 2026-05-18 (QC Sprint 2.2): ASN-class
+                        // signal — populated by a future MaxMind ASN
+                        // wire-up. Today defaults to Unknown so the
+                        // classifier's ASN-score branch never fires
+                        // here; the field is plumbed so the wire-up
+                        // doesn't need another sweep.
+                        asn: None,
+                        asn_classification:
+                            aegis_security::bots::AsnClassification::Unknown,
                     };
                     let bot_category = match aegis_security::bots::BotClassifier::default()
                         .classify(&bot_signals)
@@ -1290,6 +1404,9 @@ pub(crate) async fn accept_loop(
                         route_id: None,
                         rule_id: decision.rule_id.clone(),
                         risk_score: Some(risk_score),
+                        method: None,
+                        path: None,
+                        mode: None,
                         fields: serde_json::json!({
                             "method": method.as_str(),
                             "path": path,

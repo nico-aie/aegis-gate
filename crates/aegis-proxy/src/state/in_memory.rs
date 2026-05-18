@@ -193,10 +193,20 @@ impl StateBackend for InMemoryBackend {
     }
 
     async fn add_risk(&self, key: &RiskKey, delta: i32, max: u32) -> Result<u32> {
+        // F-HIGH-stateful (2026-05-17 s-tester audit): pre-fix the
+        // entry had `expires_at: None` so every IP that ever made
+        // a request kept a risk-score row in memory forever. Under
+        // sustained traffic from many unique IPs (bot scan, large
+        // fleet) the DashMap grew unbounded. Now each write sets a
+        // 24-hour TTL; the `spawn_reaper` task evicts expired
+        // entries periodically. The TTL is several multiples of
+        // `cfg.risk.decay_half_life` (default 5 min) so an entry
+        // past the cutoff is statistically zero anyway.
         let k = Self::risk_key_str(key);
+        let new_expiry = Some(Instant::now() + Duration::from_secs(24 * 3600));
         let mut entry = self.kv.entry(k).or_insert_with(|| Entry {
             value: 0u32.to_le_bytes().to_vec(),
-            expires_at: None,
+            expires_at: new_expiry,
         });
 
         let current = u32::from_le_bytes(
@@ -208,6 +218,10 @@ impl StateBackend for InMemoryBackend {
             current.saturating_sub(delta.unsigned_abs())
         };
         entry.value = new_val.to_le_bytes().to_vec();
+        // Slide the TTL on every write — an IP that keeps tripping
+        // the gate keeps its row alive. Once it goes quiet the row
+        // ages out within 24 h.
+        entry.expires_at = new_expiry;
         Ok(new_val)
     }
 
@@ -275,20 +289,36 @@ impl StateBackend for InMemoryBackend {
     }
 }
 
+/// Process-monotonic anchor used by `encode_bucket` / `decode_bucket`
+/// to serialise/deserialise an `Instant` as a `u64` nanos-since-epoch
+/// offset. Initialised on first access at boot; stable for the
+/// lifetime of the process.
+fn bucket_epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
+}
+
 fn encode_bucket(tokens: f64, ts: Instant) -> Vec<u8> {
     let mut buf = Vec::with_capacity(16);
     buf.extend_from_slice(&tokens.to_le_bytes());
-    let nanos = ts.elapsed().as_nanos() as u64; // relative offset; we store the Instant as nanos-ago=0
+    // Pre-2026-05-17 (BUG-F-CRITICAL-007): this stored
+    // `ts.elapsed().as_nanos()` which is always near-zero relative
+    // to `ts == now` at write time, and `decode_bucket` discarded
+    // the field entirely. Result: bucket never refilled — every IP
+    // got exactly `burst` requests then permanent 429. Now we store
+    // `ts` as nanos-since-process-epoch so decode can reconstruct
+    // the real Instant and compute genuine elapsed time between
+    // writes.
+    let nanos = ts.saturating_duration_since(bucket_epoch()).as_nanos() as u64;
     buf.extend_from_slice(&nanos.to_le_bytes());
     buf
 }
 
 fn decode_bucket(data: &[u8]) -> (f64, Instant) {
     let tokens = f64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8]));
-    // The timestamp is always "now" relative — we re-encode on every access
-    // so for simplicity we treat the stored timestamp as the last access time.
-    // In a real impl this would be a proper epoch-based timestamp.
-    (tokens, Instant::now())
+    let nanos = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+    let ts = bucket_epoch() + Duration::from_nanos(nanos);
+    (tokens, ts)
 }
 
 #[cfg(test)]
@@ -353,6 +383,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_bucket_denies_after_burst_exhausted() {
+        // Regression for F-CRITICAL-007: prior to 2026-05-17,
+        // `decode_bucket` discarded the stored timestamp and returned
+        // `Instant::now()` so `elapsed` was always 0, refill was
+        // always 0, and the 4th call here used to *succeed* (the
+        // tokens field stayed at exactly `burst` forever). After
+        // the fix the bucket is properly drained.
+        let b = backend();
+        // burst=3, rate=1/s — exhaust within a few ms (well under
+        // any refill).
+        assert!(b.token_bucket("ip1", 1, 3).await.unwrap());
+        assert!(b.token_bucket("ip1", 1, 3).await.unwrap());
+        assert!(b.token_bucket("ip1", 1, 3).await.unwrap());
+        // 4th call within the same window must be denied.
+        assert!(!b.token_bucket("ip1", 1, 3).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn token_bucket_refills_after_window() {
+        // Regression for F-CRITICAL-007 (companion): once the
+        // window elapses, the bucket must refill. Run at rate=100/s
+        // so a 50 ms sleep produces ~5 fresh tokens.
+        let b = backend();
+        assert!(b.token_bucket("ip2", 100, 3).await.unwrap());
+        assert!(b.token_bucket("ip2", 100, 3).await.unwrap());
+        assert!(b.token_bucket("ip2", 100, 3).await.unwrap());
+        assert!(!b.token_bucket("ip2", 100, 3).await.unwrap());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // After refill (50 ms × 100/s = 5 tokens, capped at burst=3)
+        // at least one call must succeed.
+        assert!(b.token_bucket("ip2", 100, 3).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn risk_score_starts_at_zero() {
         let b = backend();
         let key = RiskKey {
@@ -381,6 +445,31 @@ mod tests {
 
         let v = b.add_risk(&key, -30, 100).await.unwrap();
         assert_eq!(v, 70);
+    }
+
+    #[tokio::test]
+    async fn risk_score_entries_get_a_ttl_so_reaper_can_evict() {
+        // F-HIGH-stateful regression. Pre-fix `add_risk` created
+        // entries with `expires_at: None` so they lived forever —
+        // the kv DashMap grew unbounded under sustained traffic
+        // from many unique IPs. After the fix every write sets a
+        // TTL, and the reaper task evicts entries past it.
+        let b = backend();
+        let key = RiskKey {
+            ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99)),
+            device_fp: None,
+            session: None,
+            tenant_id: None,
+        };
+        b.add_risk(&key, 10, 100).await.unwrap();
+        // Reach into the DashMap to verify the TTL is non-None.
+        // The risk row key matches `risk_key_str`.
+        let k = InMemoryBackend::risk_key_str(&key);
+        let entry = b.kv.get(&k).expect("entry must exist");
+        assert!(
+            entry.expires_at.is_some(),
+            "risk entry must have an expires_at so spawn_reaper can evict it",
+        );
     }
 
     #[tokio::test]

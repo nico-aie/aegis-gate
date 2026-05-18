@@ -88,6 +88,9 @@ mod tests {
             route_id: None,
             rule_id: Some("pt-001".into()),
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         }
     }

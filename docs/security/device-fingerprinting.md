@@ -30,6 +30,20 @@ Computed fields:
 - Supported elliptic curves + point formats
 - ALPN + SNI presence flags (JA4 only)
 
+> **2026-05-18 (QC Sprint 2.1 — F-CRITICAL-011):** GREASE values
+> (per RFC 8701, the reserved `0x?A?A` pattern) are stripped from
+> the cipher + extension lists before hashing. Chrome rotates a
+> GREASE marker into one slot of the ClientHello on every
+> handshake; without stripping, two consecutive handshakes from
+> the same Chrome install produced different `cipher_hash` /
+> `ext_hash` values and the fingerprint was useless for
+> stability-based gating.
+>
+> The lists are also **no longer sorted before hashing**.
+> Original-order is the JA4 spec — sorting collapsed legitimate
+> client-distinguishing reorderings into a single hash, which
+> reduced fingerprint entropy across distinct client libraries.
+
 ### HTTP/2 fingerprint (Akamai / HTTP2 Fingerprint)
 
 For HTTP/2 connections, the SETTINGS frame values, pseudo-header order,

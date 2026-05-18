@@ -93,16 +93,27 @@ pub struct RouteStatsEntry {
 /// PR-UX-A2 (2026-05-12) — filter the audit ring server-side
 /// instead of shipping the whole ring to the dashboard.  Empty
 /// fields are wildcards; populated fields are AND-ed together.
+///
+/// 2026-05-17 F-CRITICAL-004 (control audit): `ts_from` + `ts_to`
+/// added so Round-1's "audit search by time" mandate is met. Both
+/// are RFC 3339 timestamps; either may be omitted to make the
+/// range half-open (e.g. just `ts_from` = "last events since X").
 #[derive(Clone, Debug, Default)]
 pub struct AuditFilter {
     pub ip: Option<String>,
     pub request_id: Option<String>,
     pub rule_id: Option<String>,
+    pub ts_from: Option<chrono::DateTime<chrono::Utc>>,
+    pub ts_to: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl AuditFilter {
     pub fn is_empty(&self) -> bool {
-        self.ip.is_none() && self.request_id.is_none() && self.rule_id.is_none()
+        self.ip.is_none()
+            && self.request_id.is_none()
+            && self.rule_id.is_none()
+            && self.ts_from.is_none()
+            && self.ts_to.is_none()
     }
 
     /// Does this event pass every populated filter field?
@@ -114,6 +125,16 @@ impl AuditFilter {
         }
         if let Some(rid) = &self.request_id {
             if !rid.eq_ignore_ascii_case(&ev.request_id) {
+                return false;
+            }
+        }
+        if let Some(ts_from) = &self.ts_from {
+            if ev.ts < *ts_from {
+                return false;
+            }
+        }
+        if let Some(ts_to) = &self.ts_to {
+            if ev.ts > *ts_to {
                 return false;
             }
         }
@@ -528,6 +549,9 @@ mod tests {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         }
     }
@@ -558,6 +582,9 @@ mod tests {
             route_id: None,
             rule_id: rule_id.map(String::from),
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields,
         }
     }
@@ -592,6 +619,57 @@ mod tests {
         assert!(f.matches(&ev_filter("b", "1.1.1.1", None, &["recon_path"])));
         // Neither — rejected.
         assert!(!f.matches(&ev_filter("c", "1.1.1.1", Some("sqli"), &["xss"])));
+    }
+
+    #[test]
+    fn audit_filter_ts_from_excludes_older_events() {
+        // F-CRITICAL-004 (2026-05-17 control audit) regression.
+        // ts_from = T → events with ts < T are filtered out.
+        use chrono::{TimeZone, Utc};
+        let mut ev = ev_filter("a", "1.1.1.1", None, &[]);
+        ev.ts = Utc.with_ymd_and_hms(2026, 5, 17, 10, 0, 0).unwrap();
+        let f = AuditFilter {
+            ts_from: Some(Utc.with_ymd_and_hms(2026, 5, 17, 11, 0, 0).unwrap()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&ev), "event before ts_from must be filtered");
+        // Event at ts_from is INCLUDED (>= semantics).
+        ev.ts = Utc.with_ymd_and_hms(2026, 5, 17, 11, 0, 0).unwrap();
+        assert!(f.matches(&ev));
+    }
+
+    #[test]
+    fn audit_filter_ts_to_excludes_newer_events() {
+        use chrono::{TimeZone, Utc};
+        let mut ev = ev_filter("a", "1.1.1.1", None, &[]);
+        ev.ts = Utc.with_ymd_and_hms(2026, 5, 17, 12, 0, 0).unwrap();
+        let f = AuditFilter {
+            ts_to: Some(Utc.with_ymd_and_hms(2026, 5, 17, 11, 0, 0).unwrap()),
+            ..Default::default()
+        };
+        assert!(!f.matches(&ev), "event after ts_to must be filtered");
+        ev.ts = Utc.with_ymd_and_hms(2026, 5, 17, 11, 0, 0).unwrap();
+        assert!(f.matches(&ev));
+    }
+
+    #[test]
+    fn audit_filter_ts_from_and_ts_to_compose() {
+        use chrono::{TimeZone, Utc};
+        let f = AuditFilter {
+            ts_from: Some(Utc.with_ymd_and_hms(2026, 5, 17, 10, 0, 0).unwrap()),
+            ts_to: Some(Utc.with_ymd_and_hms(2026, 5, 17, 12, 0, 0).unwrap()),
+            ..Default::default()
+        };
+        let mut ev = ev_filter("a", "1.1.1.1", None, &[]);
+        // Inside the window — accepted.
+        ev.ts = Utc.with_ymd_and_hms(2026, 5, 17, 11, 0, 0).unwrap();
+        assert!(f.matches(&ev));
+        // Below window — rejected.
+        ev.ts = Utc.with_ymd_and_hms(2026, 5, 17, 9, 0, 0).unwrap();
+        assert!(!f.matches(&ev));
+        // Above window — rejected.
+        ev.ts = Utc.with_ymd_and_hms(2026, 5, 17, 13, 0, 0).unwrap();
+        assert!(!f.matches(&ev));
     }
 
     #[test]
@@ -910,6 +988,9 @@ mod tests {
             route_id: route.map(String::from),
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Object(fields),
         }
     }

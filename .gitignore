@@ -89,3 +89,15 @@ release/
 # /data/geoip/*.mmdb
 # /data/geoip/*.tar.gz
 # /data/geoip/GeoLite2-*/
+
+# =========================
+# Generated security corpora
+# =========================
+# The v4 adversarial dataset (~90 MB) is generator-derived, not
+# hand-authored. The generator at
+# tests/security/dataset/generator/generate_v4.py is the
+# canonical source; run it locally with the default seed to
+# regenerate byte-identical output in ~1.6s. Clean baselines
+# (3 MB) DO go in — they're small enough.
+# /tests/security/dataset/attacks_v4.ndjson
+# /tests/security/dataset/attacks_v4.ndjson.gz

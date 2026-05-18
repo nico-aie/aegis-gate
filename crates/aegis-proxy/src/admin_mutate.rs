@@ -1327,9 +1327,16 @@ pub(crate) async fn handle_logging_put(
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -1417,9 +1424,16 @@ pub(crate) async fn handle_loadmode_put(
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -1508,6 +1522,43 @@ struct RulePutBody {
     enabled: bool,
 }
 
+/// 2026-05-17 F-CRITICAL-001 (control audit): rebuild the live
+/// `Arc<RuleSet>` after a successful CRUD mutation so the data
+/// plane sees the operator's change on the next request. Logs at
+/// `info` on success and `warn` on parse failure (the operator's
+/// dashboard already shows the lint warnings; this is the
+/// server-side accounting trace). No-op when
+/// `services.active_ruleset` is `None` (single-node test fixture
+/// without a security pipeline wired).
+fn rebuild_ruleset_after_mutation(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    label: &str,
+) {
+    let Some(active) = services.active_ruleset.as_ref() else {
+        // No engine wired (test fixture / partial harness) — nothing
+        // to refresh. The RuleStore mutation already landed.
+        return;
+    };
+    match aegis_control::api::rules::rebuild_active_ruleset(&services.rules, active) {
+        Ok(n) => {
+            tracing::info!(
+                target: "aegis.rules.live",
+                trigger = label,
+                active_rule_count = n,
+                "rule set refreshed",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "aegis.rules.live",
+                trigger = label,
+                error = %e,
+                "rule set refresh skipped — operator must fix body and re-save",
+            );
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -1535,9 +1586,16 @@ fn mutation_preamble(req: &hyper::Request<hyper::body::Incoming>, prefix: &str) 
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -1620,6 +1678,9 @@ pub(crate) async fn handle_rules_post(
         },
     );
 
+    if outcome.is_ok() {
+        rebuild_ruleset_after_mutation(services, "rule_create");
+    }
     match outcome {
         Ok(_) => json_response(
             201,
@@ -1700,6 +1761,9 @@ pub(crate) async fn handle_rules_put(
         },
     );
 
+    if outcome.is_ok() {
+        rebuild_ruleset_after_mutation(services, "rule_update");
+    }
     match outcome {
         Ok(_) => json_response(
             200,
@@ -1760,6 +1824,9 @@ pub(crate) async fn handle_rules_delete(
         },
     );
 
+    if outcome.is_ok() {
+        rebuild_ruleset_after_mutation(services, "rule_delete");
+    }
     match outcome {
         Ok(_) => json_response(
             200,
@@ -1819,6 +1886,9 @@ pub(crate) async fn handle_rules_toggle(
         },
     );
 
+    if outcome.is_ok() {
+        rebuild_ruleset_after_mutation(services, "rule_toggle");
+    }
     match outcome {
         Ok(_) => json_response(
             200,
@@ -1954,9 +2024,16 @@ pub(crate) async fn handle_risk_reset(
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -2040,9 +2117,16 @@ pub(crate) async fn handle_detectors_put(
         .get("x-csrf-token")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
+    // validated actor identity set by `admin_auth_middleware` —
+    // the client-supplied `X-Actor` header is silently stripped
+    // at the gate so this code never sees a spoofed value.
+    // `unwrap_or("admin")` is a defensive fallback for paths
+    // that bypass the gate (open endpoints don't normally land
+    // on mutation handlers, but be paranoid).
     let actor = req
         .headers()
-        .get("x-actor")
+        .get("x-aegis-actor")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("admin")
         .to_string();
@@ -3288,7 +3372,7 @@ pub(crate) async fn handle_ddos_put(
             )
         }
     };
-    let new_cfg = match put_body.validate() {
+    let mut new_cfg = match put_body.validate() {
         Ok(c) => c,
         Err(errs) => {
             return mutation_error_response(
@@ -3297,6 +3381,16 @@ pub(crate) async fn handle_ddos_put(
         }
     };
     let before_cfg = runtime.config_snapshot();
+    // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, DD-06): the PUT
+    // body doesn't carry `tier_overrides` / `failure_mode` today —
+    // those are YAML-only knobs. Preserve the existing in-memory
+    // values across the hot-swap so operators tightening the
+    // global `per_ip_limit` via the dashboard don't accidentally
+    // clear their YAML-configured per-tier policy. A dashboard
+    // knob for the per-tier sliders is tracked in
+    // plans/issue-fix/2026-05-18-qc-followup/ § DD-06.
+    new_cfg.tier_overrides = before_cfg.tier_overrides.clone();
+    new_cfg.failure_mode = before_cfg.failure_mode.clone();
     let before_view = aegis_control::api::gates::DdosConfigView::from(before_cfg);
     let after_view = aegis_control::api::gates::DdosConfigView::from(new_cfg.clone());
 

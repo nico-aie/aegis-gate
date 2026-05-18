@@ -263,6 +263,9 @@ async fn watch_loop(
                         route_id: None,
                         rule_id: None,
                         risk_score: None,
+                        method: None,
+                        path: None,
+                        mode: None,
                         fields: serde_json::json!({
                             "path": path.display().to_string(),
                             "forced": forced,
@@ -303,6 +306,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -349,6 +355,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -397,6 +406,9 @@ async fn watch_loop(
                         route_id: None,
                         rule_id: None,
                         risk_score: None,
+                        method: None,
+                        path: None,
+                        mode: None,
                         fields: serde_json::json!({
                             "path": path.display().to_string(),
                             "source": "file",
@@ -439,6 +451,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -464,6 +479,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -510,6 +528,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -535,6 +556,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -560,6 +584,9 @@ async fn watch_loop(
                             route_id: None,
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "path": path.display().to_string(),
                                 "source": "file",
@@ -569,6 +596,55 @@ async fn watch_loop(
                     }
                 }
 
+                // F-CONTRACT-003 (2026-05-17 s-tester audit): if the
+                // YAML edit changed `cfg.upstreams`, warn the operator
+                // that the file-watcher reload does NOT rebuild
+                // `ctx.pools` (the live pool registry is operated via
+                // the audit-mutated PUT path at `/api/upstreams`). Pre-
+                // fix the file reload silently swapped the cfg snapshot
+                // but left the pools stale, so an operator who edited
+                // YAML saw new config in `/api/config` but old pool
+                // members in `/api/upstreams`. Now they get a clear
+                // warning + an audit event pointing at the right
+                // remediation.
+                {
+                    // PoolConfig implements neither PartialEq nor
+                    // Serialize (adding either would cascade through
+                    // a dozen nested types). Compare via Debug
+                    // formatting — cheap enough for a reload-rate
+                    // event and good enough to detect any field
+                    // change in the upstreams map.
+                    let old_dbg = format!("{:?}", cfg.load().upstreams);
+                    let new_dbg = format!("{:?}", new_cfg.upstreams);
+                    if old_dbg != new_dbg {
+                        tracing::warn!(
+                            path = %path.display(),
+                            "config hot-reload: cfg.upstreams diff detected but pools are NOT rebuilt from file/etcd reload. \
+                             Use `PUT /api/upstreams` (audit-mutated dashboard path) for live pool changes, or restart the WAF.",
+                        );
+                        bus.emit(AuditEvent {
+                            schema_version: 1,
+                            ts: chrono::Utc::now(),
+                            request_id: String::new(),
+                            class: AuditClass::Admin,
+                            tenant_id: None,
+                            tier: None,
+                            action: "upstreams_reload_skipped".into(),
+                            reason: "cfg.upstreams diff detected on file reload; pools NOT auto-rebuilt (operator must use audit-mutated PUT or restart)".into(),
+                            client_ip: String::new(),
+                            route_id: None,
+                            rule_id: None,
+                            risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
+                            fields: serde_json::json!({
+                                "path": path.display().to_string(),
+                                "source": "file",
+                            }),
+                        });
+                    }
+                }
                 cfg.store(Arc::new(new_cfg));
                 tracing::info!("config reloaded successfully");
                 bus.emit(AuditEvent {
@@ -584,6 +660,9 @@ async fn watch_loop(
                     route_id: None,
                     rule_id: None,
                     risk_score: None,
+                    method: None,
+                    path: None,
+                    mode: None,
                     fields: serde_json::json!({"path": path.display().to_string()}),
                 });
             }
@@ -602,6 +681,9 @@ async fn watch_loop(
                     route_id: None,
                     rule_id: None,
                     risk_score: None,
+                    method: None,
+                    path: None,
+                    mode: None,
                     fields: serde_json::json!({"path": path.display().to_string()}),
                 });
             }

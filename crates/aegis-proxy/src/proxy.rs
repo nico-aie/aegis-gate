@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -117,6 +116,40 @@ pub struct ProxyContext {
     /// global `cfg.risk.thresholds` and treats every tier as
     /// `challenges_enabled = true`.
     pub tiers: std::sync::OnceLock<Arc<aegis_control::api::tiers::TierStore>>,
+    /// 2026-05-17 F-CRITICAL-004 — global request-body cap, populated
+    /// from `cfg.proxy.max_body_bytes`. The detector chain buffers up
+    /// to this many bytes before inspecting body; requests above it
+    /// return 413. Previously a hard-coded 1 MiB const in
+    /// `data_plane.rs`; surfaced here so the data-plane hot path
+    /// reads the live value via the context it already holds.
+    pub max_body_bytes: usize,
+    /// 2026-05-17 F-HIGH-005 — clone of `InteropRuntime.reset_in_progress`,
+    /// installed once after the interop runtime is built. Data plane
+    /// reads via `.get()`; absent (test fixtures without interop) is
+    /// treated as "not in reset" — the data plane never short-
+    /// circuits. See `InteropRuntime.reset_in_progress` for the full
+    /// contract rationale.
+    pub reset_in_progress: std::sync::OnceLock<
+        Arc<std::sync::atomic::AtomicBool>,
+    >,
+    /// 2026-05-17 F-CRITICAL-006 — adaptive load shedder. Set when
+    /// `cfg.load_shedder.enabled = true` and unset otherwise. Data
+    /// plane reads via `.get()` so test fixtures and disabled
+    /// configs short-circuit to "always admit". See
+    /// `crates/aegis-proxy/src/shed.rs` for the algorithm.
+    pub load_shedder: std::sync::OnceLock<Arc<crate::shed::LoadShedder>>,
+    /// 2026-05-17 F-CRITICAL-001 (control audit) — live operator rule
+    /// set. Same `Arc<RuleSet>` that `DashboardServices.active_ruleset`
+    /// points at (and that the Pipeline's `rules_arc()` returns), so
+    /// when the dashboard CRUD path swaps rules in via
+    /// `RuleSet::replace_rules`, the data plane reads the new set on
+    /// the next request. `OnceLock` because the boot path constructs
+    /// `ProxyContext` before the Pipeline; `accept.rs` installs the
+    /// handle once both are available. Empty (test fixtures without
+    /// a wired engine) means "no rules" — data plane treats absent
+    /// as `Decision::Allow` and falls straight through to the
+    /// detector chain.
+    pub active_ruleset: std::sync::OnceLock<Arc<aegis_security::RuleSet>>,
 }
 
 impl ProxyContext {
@@ -155,6 +188,14 @@ impl ProxyContext {
             pow_issuer: std::sync::OnceLock::new(),
             ddos: std::sync::OnceLock::new(),
             tiers: std::sync::OnceLock::new(),
+            // Cast u64 → usize: on 64-bit targets these are
+            // identical width. We saturate on 32-bit hosts (which
+            // are unsupported anyway) to avoid silent truncation.
+            max_body_bytes: usize::try_from(cfg.proxy.max_body_bytes)
+                .unwrap_or(usize::MAX),
+            reset_in_progress: std::sync::OnceLock::new(),
+            load_shedder: std::sync::OnceLock::new(),
+            active_ruleset: std::sync::OnceLock::new(),
         })
     }
 
@@ -297,7 +338,13 @@ where
         }
     };
 
-    member.inflight.fetch_add(1, Ordering::Relaxed);
+    // F-CRITICAL-008 (2026-05-17 s-tester audit): RAII guard so a
+    // cancellation or panic inside `forward::forward` doesn't leak
+    // the in-flight counter. Pre-fix the manual fetch_add /
+    // fetch_sub pair around the `.await` skewed LeastConn / P2C
+    // load balancers against any pool member that ever saw a
+    // dropped future.
+    let _inflight_guard = member.inflight_guard();
     let upstream_start = ctx.benchmark.is_on().then(Instant::now);
     let result = forward::forward(
         member,
@@ -309,7 +356,7 @@ where
     )
     .await;
     let upstream_elapsed = upstream_start.map(|s| s.elapsed());
-    member.inflight.fetch_sub(1, Ordering::Relaxed);
+    drop(_inflight_guard);
 
     let mut response = match result {
         Ok(resp) => {

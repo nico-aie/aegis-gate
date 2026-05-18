@@ -87,7 +87,14 @@ struct Inner {
     /// (~5 ns) — strictly cheaper than the surrounding
     /// `DashMap::entry` lookup.
     cfg: ArcSwap<IpRateLimitConfig>,
-    map: DashMap<IpAddr, VecDeque<Instant>>,
+    /// 2026-05-18 F-CRITICAL-002 (security audit, Phase E): the
+    /// limiter map keys on `RiskKey` (composite) so two sessions
+    /// on the same NAT'd IP get independent rate-limit buckets —
+    /// same migration as `RiskTracker` did in commit 01c053c.
+    /// IP-only methods (`consume(ip)`, `reset(ip)`) keep working
+    /// by internally constructing `RiskKey::from_ip(ip)`. New
+    /// `*_with_key` methods take the full composite.
+    map: DashMap<aegis_core::risk::RiskKey, VecDeque<Instant>>,
     last_sweep: parking_lot::Mutex<Instant>,
 }
 
@@ -127,8 +134,31 @@ impl IpRateLimiter {
     /// Test seam — drives the clock from the caller so unit
     /// tests can verify window-edge behaviour deterministically.
     pub fn consume_at(&self, ip: IpAddr, now: Instant) -> RateDecision {
+        self.consume_at_with_key(
+            aegis_core::risk::RiskKey::from_ip(ip),
+            now,
+        )
+    }
+
+    /// 2026-05-18 F-CRITICAL-002 (security audit, Phase E):
+    /// composite-key variant of [`consume`]. Caller builds the
+    /// full `RiskKey`; two sessions on the same NAT'd IP get
+    /// independent buckets.
+    pub fn consume_with_key(
+        &self,
+        key: aegis_core::risk::RiskKey,
+    ) -> RateDecision {
+        self.consume_at_with_key(key, Instant::now())
+    }
+
+    /// Composite-key + explicit-clock variant.
+    pub fn consume_at_with_key(
+        &self,
+        key: aegis_core::risk::RiskKey,
+        now: Instant,
+    ) -> RateDecision {
         let cfg = **self.inner.cfg.load();
-        let mut entry = self.inner.map.entry(ip).or_default();
+        let mut entry = self.inner.map.entry(key).or_default();
         let cutoff = now.checked_sub(cfg.window).unwrap_or(now);
 
         // Drop timestamps older than the window. The deque is
@@ -212,7 +242,13 @@ impl IpRateLimiter {
     /// rate-limit counters at the same time means the IP isn't
     /// stuck with old timestamps right after the reset.
     pub fn reset(&self, ip: IpAddr) {
-        self.inner.map.remove(&ip);
+        self.reset_with_key(&aegis_core::risk::RiskKey::from_ip(ip));
+    }
+
+    /// Composite-key variant of [`reset`]. Drops exactly one
+    /// bucket without touching peers on the same IP.
+    pub fn reset_with_key(&self, key: &aegis_core::risk::RiskKey) {
+        self.inner.map.remove(key);
     }
 
     /// Drop every tracked IP. Used by the external control
@@ -452,5 +488,71 @@ mod tests {
         }
         assert_eq!(allowed, 100);
         assert_eq!(denied, 100);
+    }
+
+    // ---- 2026-05-18 F-CRITICAL-002 Phase E composite-key tests ----
+
+    fn key(ip_str: &str, device_fp: Option<&str>, session: Option<&str>) -> aegis_core::risk::RiskKey {
+        aegis_core::risk::RiskKey {
+            ip: ip(ip_str),
+            device_fp: device_fp.map(String::from),
+            session: session.map(String::from),
+            tenant_id: None,
+        }
+    }
+
+    /// Composite-key isolation: two sessions on the same NAT'd IP
+    /// get independent rate-limit buckets.
+    #[test]
+    fn composite_key_isolates_buckets_on_same_ip() {
+        let l = limiter(2, 60); // limit 2 per window
+        let alice = key("10.0.0.1", Some("fp-alice"), Some("sess-alice"));
+        let bob = key("10.0.0.1", Some("fp-bob"), Some("sess-bob"));
+
+        // Alice consumes 2 (the limit) — third request denied.
+        assert!(l.consume_with_key(alice.clone()).allowed);
+        assert!(l.consume_with_key(alice.clone()).allowed);
+        assert!(!l.consume_with_key(alice.clone()).allowed);
+
+        // Bob (same IP, different session) still has full quota.
+        assert!(l.consume_with_key(bob.clone()).allowed);
+        assert!(l.consume_with_key(bob.clone()).allowed);
+        // Bob exhausts his quota independently.
+        assert!(!l.consume_with_key(bob.clone()).allowed);
+    }
+
+    /// IP-only and composite calls populate DIFFERENT buckets.
+    #[test]
+    fn ip_only_and_composite_dont_share_buckets() {
+        let l = limiter(2, 60);
+        let p = ip("10.0.0.1");
+        let composite = key("10.0.0.1", Some("fp-x"), Some("sess-x"));
+
+        // Burn IP-only bucket.
+        l.consume(p);
+        l.consume(p);
+        assert!(!l.consume(p).allowed);
+
+        // Composite bucket is fresh — still allowed.
+        assert!(l.consume_with_key(composite.clone()).allowed);
+    }
+
+    /// `reset_with_key` drops one composite bucket without
+    /// touching peers on the same IP or the IP-only bucket.
+    #[test]
+    fn reset_with_key_drops_only_target_bucket() {
+        let l = limiter(2, 60);
+        let p = ip("10.0.0.5");
+        let k1 = key("10.0.0.5", Some("fp1"), None);
+        let k2 = key("10.0.0.5", Some("fp2"), None);
+        l.consume(p);
+        l.consume_with_key(k1.clone());
+        l.consume_with_key(k2.clone());
+        let before = l.tracked();
+        assert!(before >= 3);
+
+        l.reset_with_key(&k1);
+        // tracked count drops by exactly 1.
+        assert_eq!(l.tracked(), before - 1);
     }
 }

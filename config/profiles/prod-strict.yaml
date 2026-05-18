@@ -116,6 +116,24 @@ rate_limit:
       limit: 3000          # tighter than balanced (6k)
       window: "1m"
 
+# ---------------------------------------------------------------------------
+# DDoS — per-IP burst gate. Tighter than prod-balanced across every knob
+# to match the rest of this profile's "hold the line first" posture:
+#   - per_ip_limit:        200 (vs 1000 balanced)  → ~20 req/s sustained
+#   - block_ttl_s:         600 (vs 300 balanced)   → 10-min quarantine
+#   - spike_multiplier:    2.0 (vs 3.0 balanced)   → earlier spike trigger
+#   - tightened_per_ip_rps: 10 (vs 20  balanced)   → harder spike clamp
+# Full operator guide: docs/security/ddos-protection.md.
+# ---------------------------------------------------------------------------
+ddos:
+  enabled: true
+  observe_only: false
+  per_ip_limit: 200
+  per_ip_window_s: 10
+  block_ttl_s: 600
+  spike_multiplier: 2.0
+  tightened_per_ip_rps: 10
+
 rules:
   paths: []
   max_rule_count: 10000

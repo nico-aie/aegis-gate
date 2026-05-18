@@ -1,5 +1,3 @@
-[workspace]
-
 [package]
 name = "waf-infer"
 version = "0.1.0"

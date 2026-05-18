@@ -1,0 +1,310 @@
+# HELP aegis_runtime_active_workers Number of active tokio worker threads in the runtime. Read from tokio::runtime::Handle::current().metrics().num_workers(). Constant for the process lifetime under the multi-threaded scheduler.
+# TYPE aegis_runtime_active_workers gauge
+aegis_runtime_active_workers 0
+# HELP aegis_runtime_blocking_queue_depth Number of queued blocking-pool tasks waiting for a worker. Steadily-rising depth = blocking pool saturated; size up `runtime.blocking_threads` or move work off `tokio::task::spawn_blocking`.
+# TYPE aegis_runtime_blocking_queue_depth gauge
+aegis_runtime_blocking_queue_depth 0
+# HELP aegis_runtime_blocking_threads Number of currently-spawned blocking threads in the runtime's blocking pool. Bounded by `runtime.blocking_threads` config. Watch for sustained values at the cap — indicates work shedding into the blocking pool faster than it drains.
+# TYPE aegis_runtime_blocking_threads gauge
+aegis_runtime_blocking_threads 0
+# HELP aegis_runtime_io_driver_fd_count Number of file descriptors registered with the tokio I/O driver. Includes every TCP socket, every TLS stream, every Redis pool conn. Useful for catching FD leaks (sustained climb without a corresponding RPS climb).
+# TYPE aegis_runtime_io_driver_fd_count gauge
+aegis_runtime_io_driver_fd_count 0
+# HELP aegis_websocket_active Currently-active WebSocket tunnels bridged by the WAF. Incremented on upgrade, decremented when the bridge task exits.
+# TYPE aegis_websocket_active gauge
+aegis_websocket_active 0
+# HELP aegis_websocket_close_total Total WebSocket bridge close events (clean + error + EOF). Pair with aegis_websocket_open_total to derive in-flight; per-tunnel reasons live on the audit-bus websocket_close event.
+# TYPE aegis_websocket_close_total counter
+aegis_websocket_close_total 0
+# HELP aegis_websocket_open_total Total successful WebSocket upgrades the data plane bridged.
+# TYPE aegis_websocket_open_total counter
+aegis_websocket_open_total 0
+# HELP waf_audit_events_total Total events emitted to the AuditBus, labelled by class (detection / admin / access / system).
+# TYPE waf_audit_events_total counter
+waf_audit_events_total{class="access"} 6437335
+waf_audit_events_total{class="admin"} 0
+waf_audit_events_total{class="detection"} 576041
+waf_audit_events_total{class="system"} 0
+# HELP waf_detector_evaluation_duration_ms Per-detector evaluation time (milliseconds). Labelled by `class` (sqli, xss, path_traversal, ssrf, header_injection, body_abuse, recon, brute_force).
+# TYPE waf_detector_evaluation_duration_ms histogram
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="0.05"} 7010858
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="0.1"} 7012662
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="0.25"} 7013636
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="0.5"} 7013936
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="1"} 7014074
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="2.5"} 7014167
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="5"} 7014230
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="10"} 7014260
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="25"} 7014284
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="50"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="100"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="body_abuse",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="body_abuse"} 3407.5801009850406
+waf_detector_evaluation_duration_ms_count{class="body_abuse"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="0.05"} 6937667
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="0.1"} 6981112
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="0.25"} 7002085
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="0.5"} 7007712
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="1"} 7010483
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="2.5"} 7012432
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="5"} 7013263
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="10"} 7013742
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="25"} 7014153
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="50"} 7014271
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="100"} 7014286
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="command_injection",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="command_injection"} 67170.22287831949
+waf_detector_evaluation_duration_ms_count{class="command_injection"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="0.05"} 7003811
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="0.1"} 7009456
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="0.25"} 7012406
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="0.5"} 7013268
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="1"} 7013708
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="2.5"} 7013984
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="5"} 7014120
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="10"} 7014208
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="25"} 7014274
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="50"} 7014287
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="100"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="header_injection",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="header_injection"} 10784.21368395241
+waf_detector_evaluation_duration_ms_count{class="header_injection"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="0.05"} 7007367
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="0.1"} 7011078
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="0.25"} 7013044
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="0.5"} 7013618
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="1"} 7013892
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="2.5"} 7014094
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="5"} 7014185
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="10"} 7014238
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="25"} 7014277
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="50"} 7014286
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="100"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="nosql_injection",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="nosql_injection"} 6752.795601088446
+waf_detector_evaluation_duration_ms_count{class="nosql_injection"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="0.05"} 7013973
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="0.1"} 7014142
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="0.25"} 7014230
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="0.5"} 7014257
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="1"} 7014270
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="2.5"} 7014279
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="5"} 7014283
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="10"} 7014287
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="25"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="50"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="100"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="open_redirect",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="open_redirect"} 316.3092800143225
+waf_detector_evaluation_duration_ms_count{class="open_redirect"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="0.05"} 6983242
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="0.1"} 7000229
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="0.25"} 7008836
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="0.5"} 7011275
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="1"} 7012455
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="2.5"} 7013398
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="5"} 7013793
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="10"} 7014044
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="25"} 7014219
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="50"} 7014279
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="100"} 7014287
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="path_traversal",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="path_traversal"} 30668.02278199605
+waf_detector_evaluation_duration_ms_count{class="path_traversal"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="0.05"} 6924332
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="0.1"} 6975033
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="0.25"} 6999315
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="0.5"} 7005908
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="1"} 7009318
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="2.5"} 7011758
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="5"} 7012802
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="10"} 7013547
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="25"} 7014083
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="50"} 7014255
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="100"} 7014285
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="recon",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="recon"} 81618.44426406389
+waf_detector_evaluation_duration_ms_count{class="recon"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="0.05"} 6904358
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="0.1"} 6969439
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="0.25"} 6997593
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="0.5"} 7005017
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="1"} 7008696
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="2.5"} 7011341
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="5"} 7012550
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="10"} 7013340
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="25"} 7014026
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="50"} 7014252
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="100"} 7014287
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="sqli",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="sqli"} 95690.56500804504
+waf_detector_evaluation_duration_ms_count{class="sqli"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="0.05"} 6992737
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="0.1"} 7004160
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="0.25"} 7010131
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="0.5"} 7011951
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="1"} 7012927
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="2.5"} 7013608
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="5"} 7013915
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="10"} 7014086
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="25"} 7014239
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="50"} 7014281
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="100"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="ssrf",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="ssrf"} 22201.023348894447
+waf_detector_evaluation_duration_ms_count{class="ssrf"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="0.05"} 6987369
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="0.1"} 7001854
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="0.25"} 7009408
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="0.5"} 7011569
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="1"} 7012650
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="2.5"} 7013487
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="5"} 7013859
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="10"} 7014066
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="25"} 7014236
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="50"} 7014280
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="100"} 7014287
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="template_injection",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="template_injection"} 26641.41645879311
+waf_detector_evaluation_duration_ms_count{class="template_injection"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="0.05"} 6923308
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="0.1"} 6975442
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="0.25"} 6999494
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="0.5"} 7006088
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="1"} 7009446
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="2.5"} 7011890
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="5"} 7012953
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="10"} 7013611
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="25"} 7014108
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="50"} 7014258
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="100"} 7014285
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="250"} 7014288
+waf_detector_evaluation_duration_ms_bucket{class="xss",le="+Inf"} 7014288
+waf_detector_evaluation_duration_ms_sum{class="xss"} 80048.4616302286
+waf_detector_evaluation_duration_ms_count{class="xss"} 7014288
+# HELP waf_detector_hits_total Total detector firings per detector class. Incremented once per detector that emits at least one Signal on a given request, regardless of how many sub-tags the detector reported. Mirrors aegis_security::detectors::DetectorClass values.
+# TYPE waf_detector_hits_total counter
+waf_detector_hits_total{class="body_abuse"} 64462
+waf_detector_hits_total{class="brute_force"} 0
+waf_detector_hits_total{class="command_injection"} 32231
+waf_detector_hits_total{class="header_injection"} 0
+waf_detector_hits_total{class="nosql_injection"} 0
+waf_detector_hits_total{class="open_redirect"} 0
+waf_detector_hits_total{class="path_traversal"} 161150
+waf_detector_hits_total{class="recon"} 0
+waf_detector_hits_total{class="sqli"} 96699
+waf_detector_hits_total{class="ssrf"} 96690
+waf_detector_hits_total{class="template_injection"} 0
+waf_detector_hits_total{class="xss"} 64468
+# HELP waf_request_duration_ms Time spent in each WAF pipeline stage (milliseconds).
+# TYPE waf_request_duration_ms histogram
+waf_request_duration_ms_bucket{stage="detect",le="0.05"} 5680764
+waf_request_duration_ms_bucket{stage="detect",le="0.1"} 6614832
+waf_request_duration_ms_bucket{stage="detect",le="0.25"} 6924972
+waf_request_duration_ms_bucket{stage="detect",le="0.5"} 6970405
+waf_request_duration_ms_bucket{stage="detect",le="1"} 6989152
+waf_request_duration_ms_bucket{stage="detect",le="2.5"} 7001159
+waf_request_duration_ms_bucket{stage="detect",le="5"} 7006402
+waf_request_duration_ms_bucket{stage="detect",le="10"} 7009907
+waf_request_duration_ms_bucket{stage="detect",le="25"} 7012900
+waf_request_duration_ms_bucket{stage="detect",le="50"} 7014036
+waf_request_duration_ms_bucket{stage="detect",le="100"} 7014269
+waf_request_duration_ms_bucket{stage="detect",le="250"} 7014288
+waf_request_duration_ms_bucket{stage="detect",le="+Inf"} 7014288
+waf_request_duration_ms_sum{stage="detect"} 447513.13977798197
+waf_request_duration_ms_count{stage="detect"} 7014288
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.05"} 7011109
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.1"} 7013121
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.25"} 7013777
+waf_request_duration_ms_bucket{stage="rate_limit",le="0.5"} 7013987
+waf_request_duration_ms_bucket{stage="rate_limit",le="1"} 7014100
+waf_request_duration_ms_bucket{stage="rate_limit",le="2.5"} 7014195
+waf_request_duration_ms_bucket{stage="rate_limit",le="5"} 7014230
+waf_request_duration_ms_bucket{stage="rate_limit",le="10"} 7014263
+waf_request_duration_ms_bucket{stage="rate_limit",le="25"} 7014283
+waf_request_duration_ms_bucket{stage="rate_limit",le="50"} 7014287
+waf_request_duration_ms_bucket{stage="rate_limit",le="100"} 7014288
+waf_request_duration_ms_bucket{stage="rate_limit",le="250"} 7014288
+waf_request_duration_ms_bucket{stage="rate_limit",le="+Inf"} 7014288
+waf_request_duration_ms_sum{stage="rate_limit"} 2850.2763419572802
+waf_request_duration_ms_count{stage="rate_limit"} 7014288
+waf_request_duration_ms_bucket{stage="total",le="0.05"} 212292
+waf_request_duration_ms_bucket{stage="total",le="0.1"} 1158582
+waf_request_duration_ms_bucket{stage="total",le="0.25"} 2917956
+waf_request_duration_ms_bucket{stage="total",le="0.5"} 4583768
+waf_request_duration_ms_bucket{stage="total",le="1"} 5980610
+waf_request_duration_ms_bucket{stage="total",le="2.5"} 6806743
+waf_request_duration_ms_bucket{stage="total",le="5"} 6959692
+waf_request_duration_ms_bucket{stage="total",le="10"} 6992347
+waf_request_duration_ms_bucket{stage="total",le="25"} 7007494
+waf_request_duration_ms_bucket{stage="total",le="50"} 7011290
+waf_request_duration_ms_bucket{stage="total",le="100"} 7012154
+waf_request_duration_ms_bucket{stage="total",le="250"} 7013282
+waf_request_duration_ms_bucket{stage="total",le="+Inf"} 7014288
+waf_request_duration_ms_sum{stage="total"} 4866057.45832288
+waf_request_duration_ms_count{stage="total"} 7014288
+# HELP waf_requests_total Total data-plane requests handled by the WAF, labelled by the decision action emitted (allow / block / challenge / rate_limit / timeout / circuit_breaker).
+# TYPE waf_requests_total counter
+waf_requests_total{action="allow"} 6438201
+waf_requests_total{action="block"} 386779
+waf_requests_total{action="challenge"} 0
+waf_requests_total{action="circuit_breaker"} 189308
+waf_requests_total{action="rate_limit"} 0
+waf_requests_total{action="timeout"} 0
+# HELP waf_route_request_duration_ms Per-route end-to-end request duration (milliseconds). Labelled by `route` (the route_id from the matched route table entry). Bucket layout matches `waf_request_duration_ms` so dashboards can compose both sources.
+# TYPE waf_route_request_duration_ms histogram
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.05"} 381
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.1"} 845908
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.25"} 2551387
+waf_route_request_duration_ms_bucket{route="catch-all",le="0.5"} 4207532
+waf_route_request_duration_ms_bucket{route="catch-all",le="1"} 5598929
+waf_route_request_duration_ms_bucket{route="catch-all",le="2.5"} 6421905
+waf_route_request_duration_ms_bucket{route="catch-all",le="5"} 6573923
+waf_route_request_duration_ms_bucket{route="catch-all",le="10"} 6606099
+waf_route_request_duration_ms_bucket{route="catch-all",le="25"} 6620865
+waf_route_request_duration_ms_bucket{route="catch-all",le="50"} 6624543
+waf_route_request_duration_ms_bucket{route="catch-all",le="100"} 6625376
+waf_route_request_duration_ms_bucket{route="catch-all",le="250"} 6626503
+waf_route_request_duration_ms_bucket{route="catch-all",le="+Inf"} 6627509
+waf_route_request_duration_ms_sum{route="catch-all"} 4812292.025097531
+waf_route_request_duration_ms_count{route="catch-all"} 6627509
+# HELP waf_state_backend_ops_total Total state-backend operations performed by the WAF, labelled by op (get / set / del / incr_window / token_bucket / get_risk / add_risk / auto_block / is_auto_blocked / put_nonce / consume_nonce) and outcome (ok / error).
+# TYPE waf_state_backend_ops_total counter
+waf_state_backend_ops_total{op="add_risk",outcome="error"} 0
+waf_state_backend_ops_total{op="add_risk",outcome="ok"} 0
+waf_state_backend_ops_total{op="auto_block",outcome="error"} 0
+waf_state_backend_ops_total{op="auto_block",outcome="ok"} 0
+waf_state_backend_ops_total{op="consume_nonce",outcome="error"} 0
+waf_state_backend_ops_total{op="consume_nonce",outcome="ok"} 0
+waf_state_backend_ops_total{op="del",outcome="error"} 0
+waf_state_backend_ops_total{op="del",outcome="ok"} 1
+waf_state_backend_ops_total{op="get",outcome="error"} 0
+waf_state_backend_ops_total{op="get",outcome="ok"} 1
+waf_state_backend_ops_total{op="get_risk",outcome="error"} 0
+waf_state_backend_ops_total{op="get_risk",outcome="ok"} 0
+waf_state_backend_ops_total{op="incr_window",outcome="error"} 0
+waf_state_backend_ops_total{op="incr_window",outcome="ok"} 0
+waf_state_backend_ops_total{op="is_auto_blocked",outcome="error"} 0
+waf_state_backend_ops_total{op="is_auto_blocked",outcome="ok"} 0
+waf_state_backend_ops_total{op="put_nonce",outcome="error"} 0
+waf_state_backend_ops_total{op="put_nonce",outcome="ok"} 0
+waf_state_backend_ops_total{op="set",outcome="error"} 0
+waf_state_backend_ops_total{op="set",outcome="ok"} 1
+waf_state_backend_ops_total{op="token_bucket",outcome="error"} 0
+waf_state_backend_ops_total{op="token_bucket",outcome="ok"} 0
+# HELP waf_upstream_members_healthy Count of upstream pool members currently passing health probes per pool. Equals total when no probe is configured (assumed healthy).
+# TYPE waf_upstream_members_healthy gauge
+waf_upstream_members_healthy{pool="stub-pool"} 1
+# HELP waf_upstream_members_total Configured count of upstream pool members per pool.
+# TYPE waf_upstream_members_total gauge
+waf_upstream_members_total{pool="stub-pool"} 1

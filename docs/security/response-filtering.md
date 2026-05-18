@@ -47,7 +47,12 @@ and link-local ranges → `[INTERNAL]`:
 
 - IPv4: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
   `127.0.0.0/8`, `169.254.0.0/16`.
-- IPv6: `::1`, `fc00::/7` (ULA), `fe80::/10` (link-local).
+- IPv6: `::1` (loopback), `fc00::/7` (ULA), `fe80::/10`
+  (link-local), `::ffff:<ipv4>` (IPv4-mapped IPv6). Added
+  2026-05-18 (F-CRITICAL-013 §5.7). Public IPv6 addresses
+  pass through untouched — the leading-anchor regex
+  `(?:^|[^0-9a-fA-F:])` distinguishes a bare `::1` from the
+  `::1` tail of e.g. `2001:db8::1`.
 
 ### Rung 3 — DLP redaction
 
@@ -116,12 +121,12 @@ The richer v2 design (kept for reference and roadmapping):
 |---|---|---|
 | Per-content-type gate (`text/*`, `application/json` only) | Not wired — binary bodies short-circuit via UTF-8 decode fail today | Phase 2 |
 | Streaming chunk processor (gigabyte responses) | Not wired — forwarder buffers whole body | Streaming phase |
-| Field-name DLP match (case-insensitive JSON allow-list) | Not wired — value-pattern match only | Phase 2 |
+| Field-name DLP match (case-insensitive JSON allow-list) | **Helper shipped** 2026-05-18 (`response_filter::mask_json_fields` — recurses into nested objects + arrays, case-insensitive on field names). Pipeline integration to call it from `on_response_complete` is the next slice of work — see F-CRITICAL-013 §5.7 sub-fix 3. | Phase 2 |
 | Format-preserving encryption (FPE) tokenization | Not wired | Future |
 | Masked redaction (`****-****-****-1234`) | Not wired — full-replace only | Phase 2 |
 | OpenAPI / GraphQL schema validation | Not wired | API security phase |
 | ICAP RESPMOD content scan | Not wired | Phase C |
-| Information-leak header strip (`Server`, `X-Powered-By`, ...) | Not wired | Phase 2 |
+| Information-leak header strip (`Server`, `X-Powered-By`, …) | **Shipped** via `response_filter::should_strip_header` + the expanded `STRIP_HEADERS_EXACT` (server, x-powered-by, x-aspnet-version, x-aspnetmvc-version, x-runtime, x-version, x-generator, x-php-version, x-rails-env) + `STRIP_HEADERS_PREFIX` (x-debug, x-internal, x-trace). Wired into `inject_security_headers`. Added 2026-05-18 (F-CRITICAL-013 §5.7). |
 | Security header injection (HSTS, CSP, X-Frame-Options) | Not wired | Phase 2 |
 | Templated block pages (per-tier / per-status) | Not wired | Phase 2 |
 

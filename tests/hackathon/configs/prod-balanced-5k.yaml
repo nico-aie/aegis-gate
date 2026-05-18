@@ -20,6 +20,10 @@
 #   - detectors.brute_force: false      (legit VUs share /login; would
 #                                        always trip; prod keeps it ON
 #                                        because real IPs fan out)
+#   - ddos.enabled: false               (per-IP burst gate would auto-block
+#                                        127.0.0.1 within the first 17 ms
+#                                        at 60k RPS; prod keeps it ON, same
+#                                        shared-IP rationale as brute_force)
 #   - admin.identity inline             (prod resolves from secret manager)
 #   - audit sink: /tmp/...              (prod writes /var/log/aegis/...)
 #
@@ -102,6 +106,16 @@ rate_limit:
       algo: sliding_window
       limit: 100000000
       window: "1s"
+
+# DDoS gate disabled for the same shared-IP reason as brute_force /
+# rate_limit above. With per_ip_limit defaulted to 1000 / 10 s, all 400
+# VUs hammering 127.0.0.1 at ~60k RPS would auto-block the source IP
+# inside the first 17 ms and the rest of the run would see 100% legit
+# failure (this is what the 2026-05-14 run hit). Production keeps the
+# gate ON — real client IPs fan out and the 1000/10 s cap is generous
+# (~100 req/s sustained per real user). See docs/security/ddos-protection.md.
+ddos:
+  enabled: false
 
 rules:
   paths: []

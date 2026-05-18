@@ -177,7 +177,52 @@ pub(crate) async fn handle_data_request_inner(
     // reject anyway), then threaded into both the detector view
     // AND the upstream forwarder so each request reads its body
     // exactly once.
-    const MAX_BODY_BYTES: usize = 1 * 1024 * 1024; // 1 MiB
+    //
+    // 2026-05-17 F-CRITICAL-004 — was `const = 1 MiB`; now reads
+    // `cfg.proxy.max_body_bytes` via the long-lived ProxyContext.
+    // Default 10 MiB matches `QuotaConfig::default()`; operators
+    // can raise it for upload-heavy routes or drop it to tighten
+    // the DoS surface.
+    let max_body_bytes = upstream_ctx.max_body_bytes;
+
+    // F-HIGH-005 (2026-05-17 s-tester audit): v2.3 §2.4 — while
+    // /__waf_control/reset_state is iterating subsystem callbacks
+    // the OC must not observe a partially-reset state. The §2.4
+    // "MAY temporarily reject in-flight non-control requests"
+    // clause is honoured here: any request arriving during the
+    // reset window short-circuits with 503 + Retry-After: 0.
+    // Hot-path cost when no reset is in progress: one relaxed
+    // AtomicBool::load (~1 ns).
+    if let Some(flag) = upstream_ctx.reset_in_progress.get() {
+        if flag.load(std::sync::atomic::Ordering::Acquire) {
+            let resp = Response::builder()
+                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                .header("retry-after", "0")
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "error": "reset_in_progress",
+                        "retry_after_seconds": 0,
+                    })
+                    .to_string(),
+                )))
+                .unwrap();
+            return (resp, DecisionTag::block("reset-in-progress"));
+        }
+    }
+
+    // 2026-05-17 F-CRITICAL-002 — interop log_only mode store, hoisted
+    // here so blacklist / strike-block / rate-limit / risk-score
+    // (the four block paths between this point and the detector
+    // chain) can consult it before returning early. Pre-fix only
+    // the detector branch consulted modes, leaving every other
+    // block path stuck in Enforce regardless of `set_profile
+    // mode=log_only`. `log_only_intent` carries the would-be block
+    // DecisionTag through the rest of the function so the response
+    // stamper emits `X-WAF-Action: <intent>` + `X-WAF-Mode:
+    // log_only` while the upstream still gets the request.
+    let interop_modes = upstream_ctx.interop_modes.get();
+    let mut log_only_intent: Option<DecisionTag> = None;
 
     // Resolve the effective client IP: walk X-Forwarded-For
     // backwards through the trusted-proxy CIDR list and return
@@ -218,6 +263,14 @@ pub(crate) async fn handle_data_request_inner(
             entry = %entry_id,
             "access list: blacklist hit",
         );
+        // F-CRITICAL-002 — check `set_profile mode` before enforcing.
+        // `blocked_response` always runs (it emits the audit row);
+        // we then decide whether to return its 403 or stash the
+        // intent and fall through to the rest of the pipeline.
+        let block_tag = DecisionTag::block("blacklist");
+        let blk_mode = interop_modes
+            .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("blacklist")))
+            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
         let resp = blocked_response(
             peer,
             "blocked by blacklist",
@@ -227,7 +280,12 @@ pub(crate) async fn handle_data_request_inner(
             req.method(),
             bus,
         );
-        return (resp, DecisionTag::block("blacklist"));
+        if blk_mode == aegis_control::interop::headers::Mode::LogOnly {
+            log_only_intent = Some(block_tag);
+            // fall through — audit recorded, no 403 sent.
+        } else {
+            return (resp, block_tag);
+        }
     }
     let on_whitelist = upstream_ctx
         .whitelist
@@ -247,6 +305,16 @@ pub(crate) async fn handle_data_request_inner(
         // Stamp on the DecisionTag so the response stamper picks
         // it up directly instead of re-querying under peer.ip().
         let strike_score = risk.snapshot(peer_ip).map(|s| s.score);
+        // F-CRITICAL-002 — honor `set_profile mode=log_only` on
+        // `risk_engine.strikes`. Audit emits regardless (the call
+        // to `blocked_response` does it); only the 403 is gated.
+        let tag = match strike_score {
+            Some(s) => DecisionTag::block("risk-strikes").with_risk_score(s),
+            None    => DecisionTag::block("risk-strikes"),
+        };
+        let stk_mode = interop_modes
+            .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-strikes")))
+            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
         let resp = blocked_response(
             peer,
             "blocked by repeat-offender strikes",
@@ -256,11 +324,12 @@ pub(crate) async fn handle_data_request_inner(
             req.method(),
             bus,
         );
-        let tag = match strike_score {
-            Some(s) => DecisionTag::block("risk-strikes").with_risk_score(s),
-            None    => DecisionTag::block("risk-strikes"),
-        };
-        return (resp, tag);
+        if stk_mode == aegis_control::interop::headers::Mode::LogOnly {
+            log_only_intent = Some(tag);
+            // fall through
+        } else {
+            return (resp, tag);
+        }
     }
 
     // 2026-05-09 BUG-DDOS-STUB Phase 1 — DDoS observe-only check.
@@ -277,7 +346,14 @@ pub(crate) async fn handle_data_request_inner(
     // gates. Fail-open on backend errors so a transient redis
     // hiccup doesn't drop legit traffic.
     if let Some(ddos) = upstream_ctx.ddos.get() {
-        match ddos.check(peer_ip).await {
+        // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.2 #03):
+        // path-heuristic tier classification before the DDoS check.
+        // Route resolution hasn't happened yet, but the path-only
+        // shortcut gives DDoS the per-tier limit lookup. Cheap —
+        // pure-function on `req.uri().path()`.
+        let (early_tier, _) =
+            aegis_security::pipeline::classify_tier_from_path(req.uri().path());
+        match ddos.check_with_tier(peer_ip, Some(early_tier)).await {
             Ok(outcome) if outcome.blocked => {
                 // Always emit the audit event so operators can
                 // observe-mode bake the signal before Phase 2.
@@ -313,6 +389,9 @@ pub(crate) async fn handle_data_request_inner(
                         route_id: None,
                         rule_id: Some("ddos".into()),
                         risk_score: None,
+                        method: None,
+                        path: None,
+                        mode: None,
                         fields: serde_json::json!({
                             "path": req.uri().to_string(),
                             "method": req.method().to_string(),
@@ -346,9 +425,50 @@ pub(crate) async fn handle_data_request_inner(
             }
             Ok(_) => {} // not blocked, no signal
             Err(e) => {
-                // Fail open — observe-only never blocks anyway,
-                // and a state-backend hiccup must not drop traffic.
-                tracing::debug!(peer = %peer_ip, error = %e, "ddos: backend error, fail-open");
+                // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.8):
+                // per-tier fail-mode. Spec mandates fail-close on
+                // Critical (login / OTP / deposit / withdrawal),
+                // fail-open on lower tiers. `Tier::default_failure_mode()`
+                // already encodes that; the YAML config can override
+                // via `fail_mode_by_tier`.
+                let fm = ddos.fail_mode_for(Some(early_tier));
+                match fm {
+                    aegis_core::tier::FailureMode::FailClose => {
+                        tracing::warn!(
+                            peer = %peer_ip,
+                            tier = %early_tier.as_str(),
+                            error = %e,
+                            "ddos: backend error on critical-class tier — \
+                             fail-close per §5.8",
+                        );
+                        let resp = Response::builder()
+                            .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                            .header("retry-after", "1")
+                            .header("content-type", "application/json")
+                            .body(Full::new(Bytes::from(
+                                serde_json::json!({
+                                    "error": "service_unavailable",
+                                    "reason": "ddos_check_failed_fail_close",
+                                    "tier": early_tier.as_str(),
+                                })
+                                .to_string(),
+                            )))
+                            .unwrap();
+                        return (
+                            resp,
+                            DecisionTag::circuit_breaker("ddos_fail_close")
+                                .with_tier(early_tier),
+                        );
+                    }
+                    aegis_core::tier::FailureMode::FailOpen => {
+                        tracing::debug!(
+                            peer = %peer_ip,
+                            tier = %early_tier.as_str(),
+                            error = %e,
+                            "ddos: backend error — fail-open per §5.8",
+                        );
+                    }
+                }
             }
         }
     }
@@ -396,6 +516,9 @@ pub(crate) async fn handle_data_request_inner(
                 route_id: None,
                 rule_id: Some("ip-rate-limit".into()),
                 risk_score: Some(post_state.score),
+                method: None,
+                path: None,
+                mode: None,
                 fields: if load_mode.is_critical() {
                     serde_json::Value::Null
                 } else {
@@ -410,21 +533,33 @@ pub(crate) async fn handle_data_request_inner(
             };
             bus.emit(ev);
         }
-        let resp = Response::builder()
-            .status(429)
-            .header("content-type", "application/json")
-            .header("retry-after", rate_decision.retry_after_seconds.to_string())
-            .body(Full::new(Bytes::from(
-                serde_json::json!({
-                    "error": "rate_limited",
-                    "reason": reason,
-                    "retry_after_seconds": rate_decision.retry_after_seconds,
-                    "strikes": post_state.strikes,
-                })
-                .to_string(),
-            )))
-            .unwrap();
-        return (resp, DecisionTag::rate_limit("ip-rate-limit"));
+        // F-CRITICAL-002 — honor `set_profile mode=log_only` on
+        // `rate_limit.per_ip`. Audit already emitted above; only
+        // the 429 response is gated by the mode.
+        let rl_tag = DecisionTag::rate_limit("ip-rate-limit");
+        let rl_mode = interop_modes
+            .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("ip-rate-limit")))
+            .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+        if rl_mode == aegis_control::interop::headers::Mode::LogOnly {
+            log_only_intent = Some(rl_tag);
+            // fall through — no 429 sent.
+        } else {
+            let resp = Response::builder()
+                .status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", rate_decision.retry_after_seconds.to_string())
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "error": "rate_limited",
+                        "reason": reason,
+                        "retry_after_seconds": rate_decision.retry_after_seconds,
+                        "strikes": post_state.strikes,
+                    })
+                    .to_string(),
+                )))
+                .unwrap();
+            return (resp, rl_tag);
+        }
     }
 
     // Body collect — after cheap shedders (strike + rate-limit)
@@ -447,14 +582,14 @@ pub(crate) async fn handle_data_request_inner(
             return (resp, DecisionTag::block("body-read-error"));
         }
     };
-    if body_bytes.len() > MAX_BODY_BYTES {
+    if body_bytes.len() > max_body_bytes {
         let resp = Response::builder()
             .status(hyper::StatusCode::PAYLOAD_TOO_LARGE)
             .header("content-type", "application/json")
             .body(Full::new(Bytes::from(
                 serde_json::json!({
                     "error": "body_too_large",
-                    "max_bytes": MAX_BODY_BYTES,
+                    "max_bytes": max_body_bytes,
                 })
                 .to_string(),
             )))
@@ -484,6 +619,37 @@ pub(crate) async fn handle_data_request_inner(
         "tier",
         aegis_security::detectors::tier_str(tier),
     );
+
+    // F-CRITICAL-006 (2026-05-17): adaptive load shedder. Runs after
+    // tier classification so Critical traffic is never shed and
+    // lower tiers shed in priority order. RAII guard tracks the
+    // in-flight count across the rest of the function and records
+    // the request's RTT into the Gradient2 estimator on every exit
+    // path (including detector blocks, upstream-forward errors,
+    // and panics). On admit-deny, return 503 + Retry-After: 1 with
+    // `X-WAF-Action: circuit_breaker` per v2.3 §3 (the WAF is the
+    // upstream-protection surface for this rejection).
+    let _shed_guard = if let Some(shedder) = upstream_ctx.load_shedder.get() {
+        if !shedder.should_admit(&tier) {
+            let resp = Response::builder()
+                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                .header("retry-after", "1")
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::json!({
+                        "error": "load_shed",
+                        "tier": aegis_security::detectors::tier_str(tier),
+                        "retry_after_seconds": 1,
+                    })
+                    .to_string(),
+                )))
+                .unwrap();
+            return (resp, DecisionTag::circuit_breaker("load_shed").with_tier(tier));
+        }
+        Some(shedder.admit_guard())
+    } else {
+        None
+    };
 
     // Run security detectors filtered by the effective mask for
     // this tier. A class turned off via PUT /api/detectors (base
@@ -529,8 +695,11 @@ pub(crate) async fn handle_data_request_inner(
     // emits `X-WAF-Action: <intent>` + `X-WAF-Mode: log_only` so
     // the OC sees the detector worked while the upstream still
     // got the request (per `log_only` contract semantics).
-    let mut log_only_intent: Option<DecisionTag> = None;
-    let interop_modes = upstream_ctx.interop_modes.get();
+    //
+    // 2026-05-17 F-CRITICAL-002: `log_only_intent` + `interop_modes`
+    // are now hoisted to the top of the function so blacklist /
+    // strike-block / rate-limit / risk-score paths can also stash
+    // an intent here. See those sites for the symmetric handling.
 
     if !signals.is_empty() {
         // SEC-M003 (2026-05-08) — cap per-request contribution to
@@ -619,6 +788,9 @@ pub(crate) async fn handle_data_request_inner(
                 route_id: None,
                 rule_id: None,
                 risk_score: Some(post_state.score),
+                method: None,
+                path: None,
+                mode: None,
                 fields,
             };
             bus.emit(ev);
@@ -742,6 +914,19 @@ pub(crate) async fn handle_data_request_inner(
                 // on the DecisionTag so the response stamper
                 // doesn't re-query under peer.ip() and miss.
                 let block_score = risk.snapshot(peer_ip).map(|s| s.score);
+                let tag = match block_score {
+                    Some(s) => DecisionTag::block("risk-score").with_tier(tier).with_risk_score(s),
+                    None    => DecisionTag::block("risk-score").with_tier(tier),
+                };
+                // F-CRITICAL-002 — honor `set_profile
+                // mode=log_only` on `risk_engine.score`. When
+                // LogOnly, emit the audit (via blocked_response
+                // side-effect on the discarded response), stash
+                // the intent, and forward to upstream as if the
+                // level was Allow.
+                let rs_mode = interop_modes
+                    .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-score")))
+                    .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
                 let resp = blocked_response(
                     peer,
                     "blocked by risk score",
@@ -751,11 +936,24 @@ pub(crate) async fn handle_data_request_inner(
                     &parts.method,
                     bus,
                 );
-                let tag = match block_score {
-                    Some(s) => DecisionTag::block("risk-score").with_tier(tier).with_risk_score(s),
-                    None    => DecisionTag::block("risk-score").with_tier(tier),
-                };
-                (resp, tag)
+                if rs_mode == aegis_control::interop::headers::Mode::LogOnly {
+                    log_only_intent = Some(tag);
+                    // Fall through to upstream forward as if Allow.
+                    forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        upstream_ctx,
+                        identity,
+                        route_latency_hist,
+                        route_activity,
+                        request_start,
+                        peer_ip,
+                        bus,
+                    )
+                    .await
+                } else {
+                    (resp, tag)
+                }
             }
             aegis_security::risk::RiskLevel::Challenge => {
                 // AF-T1 + NEW-2 (2026-05-08): contract-level
@@ -879,7 +1077,6 @@ pub(crate) async fn forward_allow_to_upstream(
     aegis_control::interop::headers::DecisionTag,
 ) {
     use aegis_control::interop::headers::DecisionTag;
-    use std::sync::atomic::Ordering;
 
     let host = parts
         .headers
@@ -974,6 +1171,79 @@ pub(crate) async fn forward_allow_to_upstream(
             )))
             .unwrap();
         return (resp, DecisionTag::block("mtls_required"));
+    }
+
+    // 2026-05-17 F-CRITICAL-001 (control audit) — operator rule
+    // evaluator. Round-1 "Tính hiệu lực" mandate: a rule saved via
+    // the dashboard MUST take effect on the next request. The live
+    // `Arc<RuleSet>` is shared between the Pipeline, DashboardServices
+    // (the CRUD bridge), and `ctx.active_ruleset`; the dashboard
+    // `admin_mutate` handlers call `RuleSet::replace_rules` after
+    // every successful CRUD via `rebuild_active_ruleset`.
+    //
+    // Fires AFTER detectors and AFTER route resolution so:
+    //   - rules can scope by `route_id` (Scope::Route),
+    //   - detector signals are already known (a rule may decide to
+    //     allow a request the detectors flagged, e.g. operator
+    //     allowlist for a known-noisy endpoint),
+    //   - the block path is symmetric with the mTLS-required path
+    //     above (returns DecisionTag::block + rule_id so the
+    //     listener-side stamper emits `X-WAF-Action: block`).
+    //
+    // v1 honors only the `Block { status }` action terminally — the
+    // other 5 §3 actions (Allow / Challenge / RateLimited / Timeout
+    // / CircuitBreaker) fall through to the existing downstream
+    // paths so we don't double-fire challenges or rate-limit
+    // buckets. Empty rule set (the common boot state when no
+    // operator has saved a rule yet) short-circuits via the
+    // `is_empty()` check below.
+    if let Some(rules) = ctx.active_ruleset.get() {
+        let snapshot = rules.snapshot();
+        if !snapshot.is_empty() {
+            // Rebuild a `RequestView` for the rule evaluator —
+            // `forward_allow_to_upstream` receives parts + body_bytes,
+            // not the original view from `handle_data_request_inner`.
+            // BodyPeek wraps the already-buffered body so body-shape
+            // rules see the same bytes the detectors saw.
+            let body_peek = aegis_core::pipeline::BodyPeek::new(
+                body_bytes.to_vec(),
+                Some(body_bytes.len() as u64),
+                false,
+            );
+            let view = aegis_core::pipeline::RequestView {
+                method: &parts.method,
+                uri: &parts.uri,
+                version: parts.version,
+                headers: &parts.headers,
+                peer: std::net::SocketAddr::new(peer_ip, 0),
+                tls: None,
+                body: &body_peek,
+            };
+            let decision =
+                aegis_security::rules::evaluate(&snapshot, &view, &route_ctx);
+            if let aegis_core::decision::Action::Block { status } = decision.action {
+                let rule_id = decision.rule_id.clone().unwrap_or_else(|| "rule".into());
+                tracing::Span::current().record("outcome", "rule_block");
+                tracing::info!(
+                    target: "aegis.rules.live",
+                    route_id = %route_ctx.route_id,
+                    rule_id = %rule_id,
+                    reason = %decision.reason,
+                    "request blocked by operator rule",
+                );
+                let resp = Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .header("x-waf-rule-id", rule_id.as_str())
+                    .body(Full::new(Bytes::from(format!(
+                        r#"{{"error":"blocked","rule_id":"{}","reason":"{}"}}"#,
+                        rule_id.replace('"', "\\\""),
+                        decision.reason.replace('"', "\\\""),
+                    ))))
+                    .unwrap();
+                return (resp, DecisionTag::block(rule_id));
+            }
+        }
     }
 
     // TCP-T3c — CONNECT-method dispatch for `scheme: tcp` routes.
@@ -1085,12 +1355,18 @@ pub(crate) async fn forward_allow_to_upstream(
             None => {
                 let resp = Response::builder()
                     .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
-                    .header("x-waf-rule-id", "websocket_no_healthy_member")
+                    .header("x-waf-rule-id", "upstream.no_healthy_member")
                     .body(Full::new(Bytes::from(
                         "WebSocket upgrade: no healthy upstream member\n",
                     )))
                     .unwrap();
-                return (resp, DecisionTag::block("websocket_no_healthy_member"));
+                // F-CONTRACT-001 (2026-05-17 s-tester audit): §3 maps
+                // "upstream degradation detected by WAF" to
+                // `circuit_breaker`. Pre-fix this returned `block`,
+                // which §7 normalization classifies as a false-
+                // positive on legitimate WS traffic during a backend
+                // outage.
+                return (resp, DecisionTag::circuit_breaker("upstream.no_healthy_member"));
             }
         };
 
@@ -1140,15 +1416,18 @@ pub(crate) async fn forward_allow_to_upstream(
                     .status(hyper::StatusCode::BAD_GATEWAY)
                     .header(
                         "x-waf-rule-id",
-                        "websocket_upstream_forward_failed",
+                        "upstream.forward_failed",
                     )
                     .body(Full::new(Bytes::from(
                         "WebSocket upgrade: upstream forward failed\n",
                     )))
                     .unwrap();
+                // F-CONTRACT-001 (2026-05-17 s-tester audit): same
+                // §3 mapping as no_healthy_member above —
+                // circuit_breaker, not block.
                 return (
                     resp,
-                    DecisionTag::block("websocket_upstream_forward_failed"),
+                    DecisionTag::circuit_breaker("upstream.forward_failed"),
                 );
             }
         };
@@ -1229,6 +1508,9 @@ pub(crate) async fn forward_allow_to_upstream(
                             route_id: Some(route_id_for_task.clone()),
                             rule_id: None,
                             risk_score: None,
+                            method: None,
+                            path: None,
+                            mode: None,
                             fields: serde_json::json!({
                                 "upstream_addr": upstream_addr.to_string(),
                                 "duration_ms": elapsed.as_millis() as u64,
@@ -1280,10 +1562,16 @@ pub(crate) async fn forward_allow_to_upstream(
                 route_id: Some(route_ctx.route_id.clone()),
                 rule_id: None,
                 risk_score: None,
+                method: None,
+                path: None,
+                mode: None,
                 fields: serde_json::json!({
                     "upstream_addr": member.addr.to_string(),
                     "host": host,
-                    "path": path,
+                    // v2.3 §6 — audit `path` includes query string.
+                    // `parts.uri.to_string()` preserves it; the bare
+                    // `path` variable captured earlier strips it.
+                    "path": parts.uri.to_string(),
                 }),
             });
 
@@ -1389,7 +1677,10 @@ pub(crate) async fn forward_allow_to_upstream(
         None => parts.uri.clone(),
     };
 
-    member.inflight.fetch_add(1, Ordering::Relaxed);
+    // F-CRITICAL-008 (2026-05-17 s-tester audit): RAII guard
+    // (Member::inflight_guard) — Drop guarantees the counter is
+    // decremented even on cancellation / panic inside `forward()`.
+    let _inflight_guard = member.inflight_guard();
     let result = crate::upstream::forward::forward(
         member,
         &pool.connection,
@@ -1399,7 +1690,7 @@ pub(crate) async fn forward_allow_to_upstream(
         body_bytes,
     )
     .await;
-    member.inflight.fetch_sub(1, Ordering::Relaxed);
+    drop(_inflight_guard);
 
     match result {
         Ok(resp) => {
@@ -1871,6 +2162,9 @@ fn connect_deny_response(
         route_id: Some(route_id.to_string()),
         rule_id: Some(rule_id.to_string()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({"connect_denied": true}),
     });
 
@@ -1903,6 +2197,9 @@ fn emit_tunnel_open_audit(
         route_id: Some(route_id.to_string()),
         rule_id: Some("tunnel_admitted".into()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "destination": dest.to_string(),
         }),
@@ -1929,6 +2226,9 @@ fn emit_tunnel_close_audit(
         route_id: Some(route_id.to_string()),
         rule_id: Some(closed.reason.rule_id().to_string()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "duration_ms": closed.duration.as_millis() as u64,
             "bytes_to_upstream": closed.bytes_to_upstream,
@@ -1946,14 +2246,27 @@ fn emit_tunnel_close_audit(
 /// `cfg.ip_lists.trusted_proxies` is a follow-up that plumbs
 /// the cfg into the handler.
 fn default_trusted_proxies() -> Vec<ipnet::IpNet> {
-    vec![
-        "127.0.0.0/8".parse().unwrap(),
-        "10.0.0.0/8".parse().unwrap(),
-        "172.16.0.0/12".parse().unwrap(),
-        "192.168.0.0/16".parse().unwrap(),
-        "::1/128".parse().unwrap(),
-        "fc00::/7".parse().unwrap(),
-    ]
+    // F-HIGH-002 (2026-05-17 s-tester audit): default is now empty.
+    // Pre-fix this returned `[127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12,
+    // 192.168.0.0/16, ::1/128, fc00::/7]`, which silently trusted XFF
+    // from any loopback or RFC1918 peer. Two contract problems with
+    // that:
+    //
+    //  1. v2.3 §10 mandates distinct `127.0.0.x` addresses are
+    //     distinct clients. With loopback trusted, an OC client
+    //     sending `X-Forwarded-For: 1.2.3.4` from `127.0.0.5`
+    //     resolves to `1.2.3.4` — collapsing every sandbox client
+    //     onto one synthetic key.
+    //  2. v2.3 §6 contract test (`tests/contract/v2.3_compliance.sh`
+    //     line 299-302) asserts audit `ip` is the TCP peer when
+    //     XFF is present from `127.0.0.1`. The previous default
+    //     resolved to the XFF value and failed that assertion.
+    //
+    // Operators with a real edge proxy (CDN, k8s ingress) opt-in
+    // via `cfg.ip_lists.trusted_proxies` once that plumbing lands.
+    // Default = empty = peer.ip() wins, which is the safe and
+    // contract-compliant posture.
+    Vec::new()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1988,6 +2301,9 @@ fn blocked_response(
         route_id: None,
         rule_id,
         risk_score,
+        method: Some(method.to_string()),
+        path: Some(uri.to_string()),
+        mode: None,
         fields: serde_json::json!({
             "path": uri.to_string(),
             "method": method.to_string(),
@@ -2421,16 +2737,20 @@ state: { backend: in_memory }
     }
 
     #[tokio::test]
-    async fn websocket_upgrade_attempt_with_unreachable_upstream_emits_block_with_documented_rule_id(
+    async fn websocket_upgrade_attempt_with_unreachable_upstream_emits_documented_action(
     ) {
         // WS-T2/T3 — when the upgrade detector fires we now try
         // a real raw-TCP forward to the resolved member.  The
         // `http_route_cfg()` pool points at 127.0.0.1:65530
         // which won't accept; the bridge surfaces that as a
-        // 502 with `x-waf-rule-id: websocket_upstream_forward_failed`
-        // (no OnUpgrade extension on a synthetic Parts means we
-        // hit the no-extension path slightly earlier — both
-        // are valid block points the dashboard can surface).
+        // 502 with the documented rule_id (one of two valid paths
+        // — see below).
+        //
+        // F-CONTRACT-001 (2026-05-17): upstream-degradation paths
+        // (no_healthy_member, forward_failed) now emit
+        // `X-WAF-Action: circuit_breaker` per v2.3 §3, not `block`.
+        // The no_upgrade_extension path stays `block` — it's a
+        // client-capability mismatch, not upstream degradation.
         let cfg = http_route_cfg();
         let ctx = build_ctx(&cfg);
         let bus = AuditBus::new(16);
@@ -2463,15 +2783,17 @@ state: { backend: in_memory }
 
         assert_eq!(resp.status(), hyper::StatusCode::BAD_GATEWAY);
         let rid = rule_id_header(&resp);
+        let action = tag.action.as_str();
         assert!(
             matches!(
-                rid,
-                Some("websocket_no_upgrade_extension")
-                    | Some("websocket_upstream_forward_failed")
+                (rid, action),
+                // Client-capability mismatch — still `block`.
+                (Some("websocket_no_upgrade_extension"), "block")
+                // Upstream degradation — `circuit_breaker` per §3.
+                | (Some("upstream.forward_failed"), "circuit_breaker")
             ),
-            "unexpected rule_id: {rid:?}",
+            "unexpected (rule_id, action): ({rid:?}, {action:?})",
         );
-        assert_eq!(tag.action.as_str(), "block");
     }
 
     #[tokio::test]

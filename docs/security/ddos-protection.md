@@ -155,6 +155,28 @@ ddos:
 | `spike_multiplier` | 3.0 | Lower (2.0) for earlier spike trigger; raise (5.0) for noisier baselines. |
 | `tightened_per_ip_rps` | 20 | Cap each IP receives during spike mode (cluster-broadcast wiring deferred — see "Future work" below). |
 
+### Per-profile posture
+
+The shipped profiles diverge on DDoS posture the same way they
+diverge on `rate_limit`, `risk.thresholds`, and the `detectors`
+mask. Reading the profile's YAML is the source of truth; this table
+exists so you can pick the right profile without diffing them by
+hand.
+
+| Profile | `enabled` | `per_ip_limit` | `per_ip_window_s` | `block_ttl_s` | `spike_multiplier` | `tightened_per_ip_rps` |
+|---|---|---:|---:|---:|---:|---:|
+| `config/dev.yaml` | `true` | 1000 | 10 | 300 | 3.0 | 20 |
+| `config/prod.yaml` | `true` | 1000 | 10 | 300 | 3.0 | 20 |
+| `config/profiles/prod-balanced.yaml` | `true` | 1000 | 10 | 300 | 3.0 | 20 |
+| `config/profiles/prod-strict.yaml` | `true` | **200** | 10 | **600** | **2.0** | **10** |
+| `config/profiles/prod-high-throughput.yaml` | `true` | **5000** | 10 | **180** | **4.0** | **100** |
+| `tests/hackathon/configs/prod-balanced-5k.yaml` | **`false`** | — | — | — | — | — |
+
+The 5k benchmark profile disables the gate for the same reason it
+disables `brute_force` and relaxes `rate_limit`: a single source IP
+(127.0.0.1) driving the k6 harness cannot honour any per-IP gate.
+Production profiles never want `enabled: false`.
+
 ## Operator action map (when something fires)
 
 | Symptom | First check | Then |

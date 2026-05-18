@@ -1,8 +1,23 @@
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use aegis_core::state::StateBackend;
+use aegis_core::tier::{FailureMode, Tier};
+
+/// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): per-tier override
+/// of the global limit + window. Operator writes one of these
+/// into `ddos.tier_overrides.<tier>` in YAML to tighten
+/// (`critical: { per_ip_limit: 50, per_ip_window_s: 10 }`) or
+/// loosen (`low: { per_ip_limit: 10000, per_ip_window_s: 10 }`)
+/// the per-tier cap. Missing override falls back to the global
+/// `per_ip_limit` / `per_ip_window_s` on `DdosConfig`.
+#[derive(Clone, Debug)]
+pub struct DdosTierLimit {
+    pub per_ip_limit: u64,
+    pub per_ip_window_s: u32,
+}
 
 /// Per-IP DDoS configuration.
 #[derive(Clone, Debug)]
@@ -30,6 +45,59 @@ pub struct DdosConfig {
     /// Per-IP RPS cap during cluster spike mode. Tighter than
     /// `per_ip_limit` so a spike clamps every offender. Default 20.
     pub tightened_per_ip_rps: u64,
+    /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): per-tier limit
+    /// overrides. Schema landed in Phase G (`678baa2`); this is
+    /// the runtime side that actually consumes it. Empty map (the
+    /// default) means "use the global limit for every tier".
+    pub tier_overrides: HashMap<Tier, DdosTierLimit>,
+    /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.8): per-tier
+    /// failure mode. When the state-backend `incr_window` returns
+    /// `Err(_)` (e.g. Redis unavailable, cluster split), each tier
+    /// independently picks fail-close or fail-open:
+    ///
+    /// - `FailClose` → 503 immediately. Used for tiers that
+    ///   would rather drop legitimate traffic than allow a flood
+    ///   through unmetered. `Tier::Critical` is the natural
+    ///   default here (login / OTP / deposit / withdrawal).
+    /// - `FailOpen` → pass through with a warn log. Used for
+    ///   tiers where dropping legit traffic is worse than the
+    ///   flood risk (static asset paths, public health checks).
+    ///
+    /// Missing entry falls back to `Tier::default_failure_mode()`
+    /// which is `FailClose` for `Critical` and `FailOpen` for
+    /// everything else — matching the spec's "fail-close for
+    /// CRITICAL, fail-open for MEDIUM / CATCH-ALL" guidance in
+    /// §5.8.
+    pub failure_mode: HashMap<Tier, FailureMode>,
+}
+
+impl DdosConfig {
+    /// 2026-05-18 (QC Sprint 1.2): resolve the effective per-IP
+    /// limit + window for `tier`. Falls back to the global values
+    /// when no override is configured. `tier == None` (admin /
+    /// untagged paths) also uses the global values.
+    pub fn limit_for(&self, tier: Option<Tier>) -> (u64, u32) {
+        match tier.and_then(|t| self.tier_overrides.get(&t)) {
+            Some(l) => (l.per_ip_limit, l.per_ip_window_s),
+            None => (self.per_ip_limit, self.per_ip_window_s),
+        }
+    }
+
+    /// 2026-05-18 (QC Sprint 1.2): resolve the effective failure
+    /// mode for `tier`. Falls back to `Tier::default_failure_mode()`
+    /// when no operator override is configured.
+    pub fn fail_mode_for(&self, tier: Option<Tier>) -> FailureMode {
+        match tier {
+            Some(t) => self
+                .failure_mode
+                .get(&t)
+                .copied()
+                .unwrap_or_else(|| t.default_failure_mode()),
+            // Untagged path (admin / unknown). Treat as fail-open
+            // — admin port is on a separate listener anyway.
+            None => FailureMode::FailOpen,
+        }
+    }
 }
 
 impl Default for DdosConfig {
@@ -42,12 +110,34 @@ impl Default for DdosConfig {
             block_ttl_s: 300,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+            tier_overrides: HashMap::new(),
+            failure_mode: HashMap::new(),
         }
     }
 }
 
 impl From<aegis_core::config::DdosConfig> for DdosConfig {
     fn from(c: aegis_core::config::DdosConfig) -> Self {
+        // 2026-05-18 (QC Sprint 1.2): pull the per-tier overrides
+        // from the YAML config into the runtime struct. Schema for
+        // `tier_overrides` already exists at aegis-core (Phase G
+        // commit 678baa2) but the runtime didn't read it before
+        // this commit.
+        let tier_overrides: HashMap<Tier, DdosTierLimit> = c
+            .tier_overrides
+            .iter()
+            .map(|(tier, override_cfg)| {
+                let limit = DdosTierLimit {
+                    per_ip_limit: override_cfg
+                        .per_ip_limit
+                        .unwrap_or(c.per_ip_limit),
+                    per_ip_window_s: override_cfg
+                        .per_ip_window_s
+                        .unwrap_or(c.per_ip_window_s),
+                };
+                (*tier, limit)
+            })
+            .collect();
         Self {
             enabled: c.enabled,
             observe_only: c.observe_only,
@@ -56,6 +146,14 @@ impl From<aegis_core::config::DdosConfig> for DdosConfig {
             block_ttl_s: c.block_ttl_s,
             spike_multiplier: c.spike_multiplier,
             tightened_per_ip_rps: c.tightened_per_ip_rps,
+            tier_overrides,
+            // The fail-mode map at the WafConfig level is keyed
+            // by Tier via the v2.3 `fail_mode_by_tier` schema
+            // field. That lives on `WafConfig`, not `DdosConfig`,
+            // so the runtime constructor in `aegis-proxy::run`
+            // populates this field separately after building the
+            // From. Empty map here = "use Tier::default_failure_mode()".
+            failure_mode: HashMap::new(),
         }
     }
 }
@@ -133,8 +231,30 @@ impl DdosRuntime {
     /// caller can decide fail-open vs fail-close. Phase 1 wiring
     /// in `aegis-proxy/src/data_plane.rs` fail-opens on errors
     /// (observe-only never blocks anyway).
+    ///
+    /// **2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005):** this
+    /// tier-agnostic shim is retained for callers that don't have
+    /// a resolved tier yet. New call sites should use
+    /// [`Self::check_with_tier`] so per-tier limits apply.
     pub async fn check(&self, peer_ip: IpAddr) -> aegis_core::Result<DdosCheckOutcome> {
-        let result = self.detector.check(self.state.as_ref(), peer_ip).await?;
+        self.check_with_tier(peer_ip, None).await
+    }
+
+    /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.2 #03):
+    /// per-tier-aware check. `tier` is the route's resolved tier
+    /// (Critical / High / Medium / Low) or `None` when called
+    /// before route resolution. The detector reads the per-tier
+    /// limit + window via `DdosConfig::limit_for(tier)` instead
+    /// of the global values.
+    pub async fn check_with_tier(
+        &self,
+        peer_ip: IpAddr,
+        tier: Option<Tier>,
+    ) -> aegis_core::Result<DdosCheckOutcome> {
+        let result = self
+            .detector
+            .check_with_tier(self.state.as_ref(), peer_ip, tier)
+            .await?;
         let observe_only = self.detector.config_snapshot().observe_only;
         Ok(DdosCheckOutcome {
             blocked: result.blocked,
@@ -142,6 +262,15 @@ impl DdosRuntime {
             spike_active: result.spike_active,
             observe_only,
         })
+    }
+
+    /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.8): resolve
+    /// the failure mode for `tier`. Used by the data-plane caller
+    /// to decide what to do when `check_with_tier` returns
+    /// `Err(_)` — Critical-tier requests fail-close (503),
+    /// everything else fails-open with a warn log.
+    pub fn fail_mode_for(&self, tier: Option<Tier>) -> FailureMode {
+        self.detector.config_snapshot().fail_mode_for(tier)
     }
 
     pub fn tick_rps(&self) {
@@ -206,13 +335,39 @@ impl DdosDetector {
     }
 
     /// Check if an IP should be blocked.
+    ///
+    /// **2026-05-18 (QC Sprint 1.2):** retained for callers without
+    /// a resolved tier — forwards to [`Self::check_with_tier`] with
+    /// `None`, which falls back to the global limit.
     pub async fn check(
         &self,
         state: &dyn StateBackend,
         ip: IpAddr,
     ) -> aegis_core::Result<DdosResult> {
+        self.check_with_tier(state, ip, None).await
+    }
+
+    /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.2 #03):
+    /// per-tier-aware check. The sliding-window key includes the
+    /// tier so the per-tier override applies cleanly without
+    /// retroactively re-keying existing buckets when the operator
+    /// flips a tier override on/off.
+    ///
+    /// Behaviour:
+    /// 1. Auto-block lookup is unchanged (per-IP, not per-tier).
+    /// 2. Sliding-window key = `ddos:ip:<tier?>:<ip>`. Per-tier
+    ///    overrides are read via `DdosConfig::limit_for(tier)`.
+    /// 3. Auto-block on breach is unchanged (per-IP, with the
+    ///    global block_ttl_s).
+    pub async fn check_with_tier(
+        &self,
+        state: &dyn StateBackend,
+        ip: IpAddr,
+        tier: Option<Tier>,
+    ) -> aegis_core::Result<DdosResult> {
         let cfg = self.config.load();
-        // 1. Check if already auto-blocked.
+        // 1. Check if already auto-blocked. Per-IP — tier doesn't
+        // change who's blocked, only how fast they got blocked.
         if state.is_auto_blocked(ip).await? {
             return Ok(DdosResult {
                 blocked: true,
@@ -221,22 +376,27 @@ impl DdosDetector {
             });
         }
 
-        // 2. Sliding window per-IP.
-        let key = format!("ddos:ip:{ip}");
-        let window = Duration::from_secs(u64::from(cfg.per_ip_window_s));
-        let result = state
-            .incr_window(&key, window, cfg.per_ip_limit)
-            .await?;
+        // 2. Sliding window per-IP-per-tier. Tier suffix in the
+        // key segregates buckets so an IP burning through the
+        // `Critical` tier's tight quota doesn't auto-block its
+        // `Low` tier static-asset requests.
+        let (per_ip_limit, per_ip_window_s) = cfg.limit_for(tier);
+        let tier_str = tier.map(|t| t.as_str()).unwrap_or("none");
+        let key = format!("ddos:ip:{tier_str}:{ip}");
+        let window = Duration::from_secs(u64::from(per_ip_window_s));
+        let result = state.incr_window(&key, window, per_ip_limit).await?;
 
         if !result.allowed {
-            // Auto-block.
+            // Auto-block. The TTL is global — once an IP is bad
+            // enough to flood ANY tier, ban it across the board.
             let ttl = Duration::from_secs(cfg.block_ttl_s);
             state.auto_block(ip, ttl).await?;
             return Ok(DdosResult {
                 blocked: true,
                 reason: Some(format!(
-                    "IP {ip} exceeded {}/{} s; blocked for {} s",
-                    cfg.per_ip_limit, cfg.per_ip_window_s, cfg.block_ttl_s
+                    "IP {ip} exceeded {per_ip_limit}/{per_ip_window_s} s \
+                     on tier {tier_str}; blocked for {} s",
+                    cfg.block_ttl_s
                 )),
                 spike_active: self.is_spike_active(),
             });
@@ -463,6 +623,8 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+        tier_overrides: HashMap::new(),
+        failure_mode: HashMap::new(),
         };
         let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(MockState::new());
         let runtime = DdosRuntime::new(cfg, state);
@@ -496,6 +658,8 @@ mod tests {
             block_ttl_s: 60,
             spike_multiplier: 3.0,
             tightened_per_ip_rps: 20,
+        tier_overrides: HashMap::new(),
+        failure_mode: HashMap::new(),
         };
         let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(MockState::new());
         let runtime = DdosRuntime::new(cfg, state);
@@ -539,6 +703,7 @@ mod tests {
             block_ttl_s: 9,
             spike_multiplier: 4.0,
             tightened_per_ip_rps: 11,
+            tier_overrides: std::collections::HashMap::new(),
         };
         let sec_cfg: DdosConfig = core_cfg.clone().into();
         assert_eq!(sec_cfg.enabled, false);
@@ -548,5 +713,168 @@ mod tests {
         assert_eq!(sec_cfg.block_ttl_s, 9);
         assert!((sec_cfg.spike_multiplier - 4.0).abs() < 1e-9);
         assert_eq!(sec_cfg.tightened_per_ip_rps, 11);
+    }
+
+    // ---- 2026-05-18 QC Sprint 1.2 (F-CRITICAL-005) — per-tier ----
+
+    /// `limit_for(Some(Critical))` reads the per-tier override
+    /// when configured, falls back to the global limit otherwise.
+    #[test]
+    fn limit_for_returns_per_tier_override() {
+        let mut cfg = DdosConfig::default();
+        cfg.per_ip_limit = 1000;
+        cfg.per_ip_window_s = 10;
+        cfg.tier_overrides.insert(
+            Tier::Critical,
+            DdosTierLimit {
+                per_ip_limit: 50,
+                per_ip_window_s: 10,
+            },
+        );
+
+        // Critical uses the override.
+        assert_eq!(cfg.limit_for(Some(Tier::Critical)), (50, 10));
+        // Low falls back to the global.
+        assert_eq!(cfg.limit_for(Some(Tier::Low)), (1000, 10));
+        // None also falls back.
+        assert_eq!(cfg.limit_for(None), (1000, 10));
+    }
+
+    /// `fail_mode_for(Some(Critical))` defaults to FailClose
+    /// (`Tier::default_failure_mode`) when no override; returns
+    /// the override when configured.
+    #[test]
+    fn fail_mode_for_defaults_per_tier() {
+        let cfg = DdosConfig::default();
+        // No override → Tier defaults.
+        assert_eq!(cfg.fail_mode_for(Some(Tier::Critical)), FailureMode::FailClose);
+        assert_eq!(cfg.fail_mode_for(Some(Tier::High)), FailureMode::FailOpen);
+        assert_eq!(cfg.fail_mode_for(Some(Tier::Medium)), FailureMode::FailOpen);
+        assert_eq!(cfg.fail_mode_for(Some(Tier::Low)), FailureMode::FailOpen);
+        // None → FailOpen (admin / untagged).
+        assert_eq!(cfg.fail_mode_for(None), FailureMode::FailOpen);
+    }
+
+    #[test]
+    fn fail_mode_for_honors_operator_override() {
+        let mut cfg = DdosConfig::default();
+        cfg.failure_mode.insert(Tier::High, FailureMode::FailClose);
+        // High is now FailClose by operator.
+        assert_eq!(cfg.fail_mode_for(Some(Tier::High)), FailureMode::FailClose);
+        // Critical untouched, still FailClose (was default).
+        assert_eq!(cfg.fail_mode_for(Some(Tier::Critical)), FailureMode::FailClose);
+        // Low untouched, still FailOpen.
+        assert_eq!(cfg.fail_mode_for(Some(Tier::Low)), FailureMode::FailOpen);
+    }
+
+    /// `check_with_tier` keys the sliding window by tier, so the
+    /// Critical bucket exhausting doesn't take the Low bucket
+    /// with it. Operator's "tight per-Critical, loose per-Low"
+    /// posture works without retroactive bucket merging.
+    #[tokio::test]
+    async fn check_with_tier_uses_separate_buckets_per_tier() {
+        let mut cfg = DdosConfig::default();
+        cfg.per_ip_limit = 5;
+        cfg.per_ip_window_s = 10;
+        cfg.tier_overrides.insert(
+            Tier::Critical,
+            DdosTierLimit {
+                per_ip_limit: 2,
+                per_ip_window_s: 10,
+            },
+        );
+        let state = Arc::new(MockState::new());
+        let detector = DdosDetector::new(cfg);
+        let ip: IpAddr = "10.0.0.42".parse().unwrap();
+
+        // Burn the Critical bucket (limit 2).
+        for _ in 0..2 {
+            let r = detector
+                .check_with_tier(state.as_ref(), ip, Some(Tier::Critical))
+                .await
+                .unwrap();
+            assert!(!r.blocked, "first 2 critical reqs allowed");
+        }
+        let r = detector
+            .check_with_tier(state.as_ref(), ip, Some(Tier::Critical))
+            .await
+            .unwrap();
+        // 3rd Critical request — over the per-tier limit. Blocked.
+        assert!(r.blocked, "3rd critical req must block");
+
+        // The Critical breach autoblocks the IP globally, so Low is
+        // also blocked now (autoblock is per-IP, not per-tier).
+        // That's intentional — once an IP is bad, it's bad everywhere.
+        let r = detector
+            .check_with_tier(state.as_ref(), ip, Some(Tier::Low))
+            .await
+            .unwrap();
+        assert!(r.blocked, "auto-block applies cross-tier");
+    }
+
+    /// A fresh IP at Low tier can consume the global limit without
+    /// being affected by a different IP's Critical-tier breach.
+    #[tokio::test]
+    async fn check_with_tier_isolates_distinct_ips() {
+        let mut cfg = DdosConfig::default();
+        cfg.per_ip_limit = 3;
+        cfg.per_ip_window_s = 10;
+        let state = Arc::new(MockState::new());
+        let detector = DdosDetector::new(cfg);
+
+        let bad: IpAddr = "10.0.0.5".parse().unwrap();
+        let good: IpAddr = "10.0.0.6".parse().unwrap();
+        // Burn bad's quota.
+        for _ in 0..3 {
+            let _ = detector
+                .check_with_tier(state.as_ref(), bad, Some(Tier::Critical))
+                .await
+                .unwrap();
+        }
+        let r = detector
+            .check_with_tier(state.as_ref(), bad, Some(Tier::Critical))
+            .await
+            .unwrap();
+        assert!(r.blocked);
+
+        // Good IP is unaffected.
+        let r = detector
+            .check_with_tier(state.as_ref(), good, Some(Tier::Critical))
+            .await
+            .unwrap();
+        assert!(!r.blocked);
+    }
+
+    /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): the `From`
+    /// impl carries `tier_overrides` from `aegis_core::config::DdosConfig`
+    /// (where the schema lives) into the runtime struct.
+    #[test]
+    fn from_core_config_carries_tier_overrides() {
+        let mut core_cfg = aegis_core::config::DdosConfig {
+            enabled: true,
+            observe_only: false,
+            per_ip_limit: 1000,
+            per_ip_window_s: 10,
+            block_ttl_s: 300,
+            spike_multiplier: 3.0,
+            tightened_per_ip_rps: 20,
+            tier_overrides: std::collections::HashMap::new(),
+        };
+        core_cfg.tier_overrides.insert(
+            Tier::Critical,
+            aegis_core::config::DdosTierConfig {
+                per_ip_limit: Some(50),
+                per_ip_window_s: Some(10),
+                ..Default::default()
+            },
+        );
+
+        let runtime_cfg: DdosConfig = core_cfg.into();
+        let limit = runtime_cfg
+            .tier_overrides
+            .get(&Tier::Critical)
+            .expect("critical override carried through");
+        assert_eq!(limit.per_ip_limit, 50);
+        assert_eq!(limit.per_ip_window_s, 10);
     }
 }

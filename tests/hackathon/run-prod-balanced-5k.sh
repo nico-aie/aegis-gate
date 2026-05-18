@@ -109,11 +109,16 @@ echo "$audit_before_lines" > "$RUN_DIR/artifacts/audit-before-lines.txt"
 
 echo "==> running k6 ($DURATION)"
 set +e
-WAF_TARGET="$DATA" DURATION="$DURATION" \
-  ${LEGIT_VUS:+LEGIT_VUS=$LEGIT_VUS} \
-  ${CRAWLER_VUS:+CRAWLER_VUS=$CRAWLER_VUS} \
-  ${ATTACKER_VUS:+ATTACKER_VUS=$ATTACKER_VUS} \
-  k6 run \
+# 2026-05-17: prior `${VAR:+VAR=$VAR}` indirection didn't survive bash
+# tokenisation (expanded `VAR=val` becomes a positional arg, not an
+# inline env-var assignment), so the orchestrator failed with
+# `LEGIT_VUS=120: command not found`. Plain exports work — the k6
+# script reads from the env regardless of how it got there.
+export WAF_TARGET="$DATA" DURATION="$DURATION"
+[[ -n "${LEGIT_VUS:-}"    ]] && export LEGIT_VUS
+[[ -n "${CRAWLER_VUS:-}"  ]] && export CRAWLER_VUS
+[[ -n "${ATTACKER_VUS:-}" ]] && export ATTACKER_VUS
+k6 run \
     --summary-export "$RUN_DIR/artifacts/k6-summary.json" \
     "$K6_SCRIPT" \
     2>&1 | tee "$RUN_DIR/logs/k6.log" | tail -60

@@ -1,5 +1,7 @@
+pub mod behavior_signals;
 pub mod body_abuse;
 pub mod brute_force;
+pub mod canary;
 pub mod command_injection;
 pub mod header_injection;
 pub mod mask;
@@ -11,6 +13,7 @@ pub mod scores;
 pub mod sqli;
 pub mod ssrf;
 pub mod template_injection;
+pub mod velocity_sequence;
 pub mod xss;
 
 // AI-T4 — ML-based detector.  Compiled in only when the `ai`
@@ -331,7 +334,48 @@ pub fn default_detectors_with(
     ]
 }
 
+/// 2026-05-18 F-CRITICAL-012 (security audit, Phase F) — variant
+/// of [`default_detectors_with`] that also appends the
+/// [`canary::CanaryDetector`] when `risk.canary_paths` is non-empty.
+/// Canary is a peer of the OWASP detectors but data-driven from
+/// `RiskConfig` rather than `DetectorsConfig`; this entry point
+/// keeps the call site in `aegis-proxy::run` to a single line.
+///
+/// Empty `canary_paths` → no canary detector is appended, so the
+/// detector list is identical to the base path. Saves the per-
+/// request cost of one always-empty loop iteration on deployments
+/// that don't use honeypots.
+pub fn default_detectors_with_canary(
+    cfg: &aegis_core::config::DetectorsConfig,
+    canary_paths: &[String],
+) -> Vec<Box<dyn Detector>> {
+    let mut v = default_detectors_with(cfg);
+    if !canary_paths.is_empty() {
+        v.push(Box::new(canary::CanaryDetector::new(canary_paths)));
+    }
+    // 2026-05-18 F-CRITICAL-004 (security audit, Phase F) — the
+    // four §5.2 behaviour signals (burst / no-UA / missing-Referer
+    // on mutations / zero-depth first-touch). Always-on peer of
+    // the OWASP detectors; per-request cost is one Mutex-guarded
+    // HashMap lookup. Scores are sub-block-threshold individually
+    // so they accumulate with the OWASP signals rather than
+    // single-shot blocking.
+    v.push(Box::new(
+        behavior_signals::BehaviorSignalsDetector::new(),
+    ));
+    // 2026-05-18 F-CRITICAL-003 (security audit, Phase F) — the
+    // velocity sequence engine. Detects cross-endpoint flow
+    // attacks (login→deposit < 5s, login→withdrawal < 5s, etc.)
+    // that don't trip individual rate caps. Hardcoded ruleset
+    // for v1; operator-tunable config is a future enhancement.
+    v.push(Box::new(
+        velocity_sequence::VelocitySequenceDetector::new(),
+    ));
+    v
+}
+
 #[cfg(test)]
+#[allow(deprecated)]  // test scaffolding uses NoopPipeline
 mod tests {
     use super::*;
     use aegis_core::pipeline::BodyPeek;

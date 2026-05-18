@@ -136,6 +136,23 @@ rate_limit:
       window: "1m"
 
 # ---------------------------------------------------------------------------
+# DDoS — per-IP burst gate (peer of rate_limit / strike-block / access-list,
+# NOT a detector). Sliding-window auto-block. The values below are the
+# framework defaults — moderate, suited to general-purpose API traffic.
+# For tighter postures see `prod-strict.yaml`; for higher per-IP ceilings
+# (CDN-fronted) see `prod-high-throughput.yaml`. Full operator guide:
+# docs/security/ddos-protection.md.
+# ---------------------------------------------------------------------------
+ddos:
+  enabled: true              # gate on (secure-by-default)
+  observe_only: false        # enforce; flip to true for shadow-mode validation
+  per_ip_limit: 1000         # max requests per source IP within the window
+  per_ip_window_s: 10        # sliding-window length (seconds)
+  block_ttl_s: 300           # auto-block duration on burst-exceed (5 min)
+  spike_multiplier: 3.0      # current_rps > 3 × baseline → spike_active
+  tightened_per_ip_rps: 20   # per-IP cap during spike (cluster-wire deferred)
+
+# ---------------------------------------------------------------------------
 # Rules — engine on; no custom rules by default. Detector chain handles
 # OWASP shapes; custom rules go in config/rules/*.yaml when needed.
 # ---------------------------------------------------------------------------

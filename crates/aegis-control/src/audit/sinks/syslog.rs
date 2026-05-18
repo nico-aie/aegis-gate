@@ -514,6 +514,9 @@ mod tests {
             route_id: None,
             rule_id: Some("xss".into()),
             risk_score: Some(72),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({ "mode": "enforce" }),
         }
     }

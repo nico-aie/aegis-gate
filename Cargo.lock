@@ -11,6 +11,7 @@ dependencies = [
  "aegis-proxy",
  "aegis-security",
  "arc-swap",
+ "base32",
  "blake3",
  "core_affinity",
  "opentelemetry",
@@ -23,6 +24,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -34,6 +36,7 @@ dependencies = [
  "arc-swap",
  "argon2",
  "async-trait",
+ "base32",
  "blake3",
  "chrono",
  "dashmap",
@@ -51,6 +54,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha1",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
@@ -58,6 +62,7 @@ dependencies = [
  "tokio-rustls 0.26.4",
  "tokio-stream",
  "tracing",
+ "uuid",
  "webpki-roots 0.26.11",
  "x509-parser 0.16.0",
 ]
@@ -139,6 +144,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower-service",
  "tracing",
+ "uuid",
  "webpki-roots 0.26.11",
  "x509-parser 0.16.0",
 ]
@@ -797,6 +803,12 @@ dependencies = [
  "tower-layer",
  "tower-service",
 ]
+
+[[package]]
+name = "base32"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
 
 [[package]]
 name = "base64"

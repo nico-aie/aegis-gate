@@ -126,15 +126,40 @@
 
 ## Last Completed
 
-**Task:** 2026-05-11 policy-qa + crate-audit triage + Phase-1..4
-fixes. 72 raw findings across 3 reports → 9-PR sub-plan in
-`plans/issue-fix/2026-05-11-policy-qa-and-audits/`; all 9 PRs
-landed across commits `2f50176` (Phase 1 dashboard) → `e445f31`
-(Phase 2 aegis-core) → `144c779` (regex/glob route guard) →
-`8c9b35c` (LB correctness) → `2ad3a61` (TierCache removal) →
-`cde14b7` + `30f7bf8` + `e705eff` (PR #7 response filtering full
-stack) → `3b01ade` (PR #8 SEC-18/SEC-21/CTL-20) → `<this PR>`
-(PR #9 docs + stub deprecation).
+**Task:** 2026-05-14 LT-RUN-6 + LT-RUN-7 fix plan execution.
+25 raw findings across two L-tester static audits → 5-phase
+fix plan at `plans/issue-fix/2026-05-14-l-tester-run6-7/`; all
+5 phases shipped.
+
+**Headline:** verification matrix re-graded 4 of the audit's
+Critical/High findings as **false positives** (auditor read
+trait surfaces the production data plane bypasses).  The FINAL
+release-readiness QC's 96% attack-detection rate empirically
+confirmed detectors fire — corroborating the re-grade.  Real
+bugs in unused-but-tested rule-engine code fixed anyway
+(EVAL-01 CIDR, EVAL-02 RateLimit).  9 unit tests added,
+1308 aegis-security tests still green.
+
+**False-positive cross-reference for future static auditors:**
+
+| Finding | Audit claim | Production reality |
+|---|---|---|
+| LT-RUN-6 SEC-07 "detectors disconnected" | Critical | Detectors fire at `aegis-proxy/src/data_plane.rs:507` via `run_all_filtered_timed`. `Pipeline::inbound()` is a legacy trait surface the proxy bypasses. |
+| LT-RUN-6 DDOS-01 "tick_rps never called" | Medium | `tick_rps()` runs every second from `tokio::spawn` at `aegis-proxy/src/run.rs:725-731`. |
+| LT-RUN-6 THREAT-01 "exact-match only" | Medium | `check_domain` has zero production callers (threat-intel hits come from audit-event fields, not the in-memory checker). |
+| LT-RUN-6 BOTS-01 "trusts caller-supplied reverse_dns" | Medium | `BotClassifier` has zero production callers — the proxy never populates `BotSignals.reverse_dns`. |
+
+Source-of-truth doc-comments now point future static audits at
+the correct call sites on `crates/aegis-security/src/pipeline.rs`
+(`Pipeline::inbound` + `Pipeline::on_response_start`).
+
+**Previous task** (2026-05-11): policy-qa + crate-audit triage
++ Phase-1..4 fixes; 72 raw findings across 3 reports → 9-PR
+sub-plan in `plans/issue-fix/2026-05-11-policy-qa-and-audits/`;
+all 9 PRs landed across commits `2f50176` → `e445f31` →
+`144c779` → `8c9b35c` → `2ad3a61` → `cde14b7` + `30f7bf8` +
+`e705eff` (PR #7 response filtering full stack) → `3b01ade`
+(PR #8 SEC-18/SEC-21/CTL-20) → PR #9 docs + stub deprecation.
 
 ### What shipped
 

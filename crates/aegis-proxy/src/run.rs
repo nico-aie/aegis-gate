@@ -213,6 +213,9 @@ pub async fn run(
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({"effective_mode_override": "required→optional"}),
         });
         // Heartbeat task — re-warns every 60s + re-emits the
@@ -240,6 +243,9 @@ pub async fn run(
                     route_id: None,
                     rule_id: None,
                     risk_score: None,
+                    method: None,
+                    path: None,
+                    mode: None,
                     fields: serde_json::Value::Null,
                 });
             }
@@ -256,8 +262,15 @@ pub async fn run(
     // The `not(feature = "ai")` branch fails boot loudly when
     // `cfg.ai.enabled = true` on a binary built without the
     // feature so the misconfiguration is visible.
+    // 2026-05-18 F-CRITICAL-012 (security audit, Phase F): include
+    // the canary detector when operator has configured honeypot
+    // paths via `risk.canary_paths`. Empty list → no canary
+    // appended → zero per-request cost.
     #[allow(unused_mut)]
-    let mut detector_vec = aegis_security::detectors::default_detectors_with(&cfg.detectors);
+    let mut detector_vec = aegis_security::detectors::default_detectors_with_canary(
+        &cfg.detectors,
+        &cfg.risk.canary_paths,
+    );
     #[cfg(not(feature = "ai"))]
     {
         if cfg.ai.enabled {
@@ -703,9 +716,55 @@ pub async fn run(
     // of request load. Without it, the spike-detection signal
     // would only update on requests, defeating the whole point
     // of "alert before traffic crashes the upstream".
+    // F-CRITICAL-006 (2026-05-17): wire the adaptive load shedder
+    // into ProxyContext. The data plane consults it after tier
+    // classification — Critical-tier requests pass unconditionally,
+    // lower tiers shed in priority order when the in-flight count
+    // exceeds the Gradient2-adapted limit. Boot log surfaces the
+    // initial knobs so operators see the gate is active.
+    if cfg.load_shedder.enabled {
+        let shedder = Arc::new(crate::shed::LoadShedder::new(
+            cfg.load_shedder.initial_limit,
+            cfg.load_shedder.min_limit,
+        ));
+        if upstream_ctx.load_shedder.set(shedder.clone()).is_err() {
+            tracing::warn!("load_shedder: already installed; skipping");
+        } else {
+            tracing::info!(
+                initial_limit = cfg.load_shedder.initial_limit,
+                min_limit = cfg.load_shedder.min_limit,
+                "load_shedder: runtime installed (Gradient2 adaptive concurrency)",
+            );
+        }
+    } else {
+        tracing::info!("load_shedder: cfg.load_shedder.enabled = false — gate not installed");
+    }
+
     if cfg.ddos.enabled {
+        // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.8): wire
+        // the WafConfig-level `fail_mode_by_tier` map into the
+        // runtime DdosConfig. Schema for this field landed in
+        // Phase G (`678baa2`) but no runtime read it until now.
+        // Spec §5.8 mandates fail-close on Critical, fail-open on
+        // Medium/CatchAll — `Tier::default_failure_mode()`
+        // already encodes that, so an empty map preserves the
+        // mandate; the per-tier YAML override lets operators
+        // tune posture per-deployment.
+        let mut ddos_runtime_cfg: aegis_security::ddos::DdosConfig =
+            cfg.ddos.clone().into();
+        for (tier, mode) in &cfg.fail_mode_by_tier {
+            let runtime_mode = match mode {
+                aegis_core::config::FailureModeConfig::FailClose => {
+                    aegis_core::tier::FailureMode::FailClose
+                }
+                aegis_core::config::FailureModeConfig::FailOpen => {
+                    aegis_core::tier::FailureMode::FailOpen
+                }
+            };
+            ddos_runtime_cfg.failure_mode.insert(*tier, runtime_mode);
+        }
         let runtime = Arc::new(aegis_security::ddos::DdosRuntime::new(
-            cfg.ddos.clone().into(),
+            ddos_runtime_cfg,
             state.clone(),
         ));
         if upstream_ctx.ddos.set(runtime.clone()).is_err() {
@@ -952,6 +1011,11 @@ pub async fn run(
         // skip. `set` is one-shot: subsequent boots can't
         // accidentally swap modes mid-run.
         let _ = upstream_ctx.interop_modes.set(rt.modes.clone());
+        // F-HIGH-005 — install the reset-in-progress flag the data
+        // plane consults at request entry to short-circuit with 503
+        // during a reset_state window. Same one-shot semantics as
+        // interop_modes.
+        let _ = upstream_ctx.reset_in_progress.set(rt.reset_in_progress.clone());
 
         // v2.3 §3 + NEW-2 (2026-05-08) — install the PoW issuer
         // so the data-plane challenge body carries
@@ -1199,6 +1263,26 @@ pub async fn run(
 
     // Admin (control-plane) listener.
     let admin_addr = cfg.listeners.admin.bind;
+    // F-HIGH-002 follow-up (2026-05-17 Phase 3 step 6): warn loudly
+    // when the admin listener is exposed AND no IP allowlist is
+    // configured. The Phase-3 decision was that empty allowlist
+    // means allow-all (matches current behaviour); this warn turns
+    // the gotcha into a visible setup-time signal. Loopback binds
+    // are exempt — `127.0.0.0/8` + `::1/128` are inherently
+    // already restricted by the OS.
+    {
+        let is_loopback = admin_addr.ip().is_loopback();
+        let allowlist_empty = cfg.admin.dashboard_auth.ip_allowlist.is_empty();
+        if !is_loopback && allowlist_empty {
+            tracing::warn!(
+                admin_bind = %admin_addr,
+                "admin: listener not bound to loopback AND ip_allowlist is empty — \
+                 every network-reachable client can attempt the auth chain. \
+                 Set `admin.dashboard_auth.ip_allowlist: [10.0.0.0/8, ...]` to \
+                 restrict, or bind admin to 127.0.0.1 / ::1.",
+            );
+        }
+    }
     let admin_tcp = crate::hotbin::adopt_or_bind(
         &mut inherited_listeners,
         "admin",
@@ -1639,6 +1723,13 @@ pub(crate) fn build_interop_runtime(
                 "command_injection".into(),
                 "template_injection".into(),
                 "nosql_injection".into(),
+                // 2026-05-17 F-CRITICAL-010 (control audit): the
+                // `open_redirect` detector emits live signals
+                // (see `detectors/open_redirect.rs`) but was
+                // missing from this capability list — set_profile
+                // for `open_redirect` mode would return
+                // "unsupported" while the rule still fired.
+                "open_redirect".into(),
             ],
         },
     );
@@ -1698,15 +1789,42 @@ pub(crate) fn build_interop_runtime(
     // documented gap — log_only-style false-positive verification
     // doesn't depend on it, so the v2.3 contract stays satisfied.
 
+    // F-CRITICAL-003 (2026-05-17 s-tester audit): pre-fix this was a
+    // `warn!` + `None` swallow that left the gateway running with no
+    // contract audit log. v2.3 §6 makes the contract audit mandatory
+    // when interop is enabled; running without it silently fails
+    // every Phase-2 scoring clause that correlates a decision back
+    // to an audit row. Now: best-effort mkdir-p on the parent dir,
+    // retry once, then `panic!` with an operator-actionable message
+    // on a second failure. The doc-comment on `MinimalJsonlSink::open`
+    // already specified this behaviour ("caller should fail-fast at
+    // boot in that case"); the run.rs caller was the bug.
     let audit_sink = match MinimalJsonlSink::open(&cfg.interop.audit_path) {
         Ok(s) => Some(Arc::new(s)),
-        Err(e) => {
-            tracing::warn!(
-                path = %cfg.interop.audit_path.display(),
-                error = %e,
-                "interop audit sink failed to open; continuing without contract audit log",
-            );
-            None
+        Err(first_err) => {
+            if let Some(parent) = cfg.interop.audit_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            match MinimalJsonlSink::open(&cfg.interop.audit_path) {
+                Ok(s) => Some(Arc::new(s)),
+                Err(retry_err) => {
+                    tracing::error!(
+                        path = %cfg.interop.audit_path.display(),
+                        first_error = %first_err,
+                        retry_error = %retry_err,
+                        "interop audit sink failed to open; v2.3 §6 mandates an audit log when interop is enabled",
+                    );
+                    panic!(
+                        "interop audit sink open failed for {}: {retry_err}. \
+                         Fix the path's permissions, mount a writable volume, or \
+                         set `cfg.interop.enabled = false` to disable the contract \
+                         audit log altogether.",
+                        cfg.interop.audit_path.display(),
+                    );
+                }
+            }
         }
     };
 
@@ -1728,6 +1846,7 @@ pub(crate) fn build_interop_runtime(
         audit: audit_sink,
         modes,
         control,
+        reset_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }))
 }
 
@@ -1803,6 +1922,9 @@ async fn run_handover(
         route_id: None,
         rule_id: Some("handover_initiated".to_string()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "handover_id": handover_id,
             "old_pid": our_pid,
@@ -1845,6 +1967,9 @@ async fn run_handover(
         route_id: None,
         rule_id: Some(outcome.rule_id().to_string()),
         risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
         fields: serde_json::json!({
             "handover_id": handover_id,
             "outcome": outcome_label,

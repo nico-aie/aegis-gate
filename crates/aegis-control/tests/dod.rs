@@ -11,7 +11,7 @@
 
 mod login_flow {
     use aegis_control::admin_auth::{
-        csrf, mtls, password, rate_limit, session, totp,
+        csrf, password, rate_limit, session, totp,
     };
 
     #[test]
@@ -99,31 +99,13 @@ mod login_flow {
         ));
     }
 
-    #[test]
-    fn mtls_auth_and_ip_allowlist() {
-        let config = mtls::MtlsConfig {
-            enabled: true,
-            ca_ref: "test-ca".into(),
-            allowed_sans: vec!["admin@aegis.local".into()],
-        };
-
-        // Valid SAN.
-        assert!(matches!(
-            mtls::verify_client_cert(&config, Some("admin@aegis.local")),
-            mtls::MtlsResult::Authenticated { .. }
-        ));
-
-        // Wrong SAN.
-        assert!(matches!(
-            mtls::verify_client_cert(&config, Some("evil@attacker.com")),
-            mtls::MtlsResult::RejectedSan { .. }
-        ));
-
-        // IP allowlist.
-        let nets: Vec<ipnet::IpNet> = vec!["10.0.0.0/8".parse().unwrap()];
-        assert!(mtls::check_ip_allowlist("10.1.2.3", &nets));
-        assert!(!mtls::check_ip_allowlist("192.168.1.1", &nets));
-    }
+    // 2026-05-17 F-CRITICAL-009 (control audit): the
+    // `admin_auth::mtls` integration test was removed when the
+    // module was deleted (zero production callers — `MtlsConfig`/
+    // `verify_client_cert`/`check_ip_allowlist` were never invoked
+    // by the proxy). The live admin-port mTLS lives in
+    // `crates/aegis-proxy/src/listener/tls.rs` (TLS-handshake-layer)
+    // and is exercised by the proxy's own integration tests.
 }
 
 // ===== 2. Audit chain verify ==============================================
@@ -149,6 +131,9 @@ mod audit_chain_verify {
             route_id: None,
             rule_id: None,
             risk_score: None,
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::Value::Null,
         }
     }
@@ -214,6 +199,9 @@ mod siem_multi_sink {
             route_id: Some("api".into()),
             rule_id: Some("sqli-1".into()),
             risk_score: Some(90),
+            method: None,
+            path: None,
+            mode: None,
             fields: serde_json::json!({"detector": "sqli"}),
         }
     }
@@ -298,83 +286,15 @@ mod siem_multi_sink {
     }
 }
 
-// ===== 4. FIPS compliance =================================================
-
-mod fips_compliance {
-    use aegis_control::compliance;
-    use aegis_core::config::{ComplianceMode, ComplianceProfile, WafConfig};
-
-    fn minimal_cfg() -> WafConfig {
-        let yaml = r#"
-listeners:
-  data:
-    - bind: "127.0.0.1:8080"
-  admin:
-    bind: "127.0.0.1:9090"
-routes:
-  - id: catch-all
-    path: "/"
-    upstream: default
-upstreams:
-  default:
-    members:
-      - addr: "127.0.0.1:3000"
-state:
-  backend: in_memory
-"#;
-        aegis_core::config::load_config_str(yaml).unwrap()
-    }
-
-    #[test]
-    fn fips_rejects_non_fips_algo_in_disallow_list() {
-        let mut cfg = minimal_cfg();
-        cfg.compliance = Some(ComplianceProfile {
-            modes: vec![],
-            min_tls_version: None,
-            disallow_algorithms: vec!["AES-256-GCM".into()],
-            pii_pseudonymize: false,
-        });
-        let err = compliance::apply(&[ComplianceMode::Fips], &mut cfg).unwrap_err();
-        assert!(err.to_string().contains("FIPS"));
-    }
-
-    #[test]
-    fn fips_sets_min_tls_12() {
-        let mut cfg = minimal_cfg();
-        compliance::apply(&[ComplianceMode::Fips], &mut cfg).unwrap();
-        let profile = cfg.compliance.as_ref().unwrap();
-        assert!(profile
-            .min_tls_version
-            .as_deref()
-            .is_some_and(|v| compliance::version_at_least(v, "1.2")));
-    }
-
-    #[test]
-    fn fips_disallows_legacy_ciphers() {
-        let mut cfg = minimal_cfg();
-        compliance::apply(&[ComplianceMode::Fips], &mut cfg).unwrap();
-        let profile = cfg.compliance.as_ref().unwrap();
-        for algo in compliance::FIPS_DISALLOWED {
-            assert!(
-                profile.disallow_algorithms.iter().any(|a| a == algo),
-                "expected {algo} in disallow list"
-            );
-        }
-    }
-
-    #[test]
-    fn fips_rejects_tls_below_12() {
-        let mut cfg = minimal_cfg();
-        cfg.compliance = Some(ComplianceProfile {
-            modes: vec![],
-            min_tls_version: Some("1.0".into()),
-            disallow_algorithms: Vec::new(),
-            pii_pseudonymize: false,
-        });
-        let err = compliance::apply(&[ComplianceMode::Fips], &mut cfg).unwrap_err();
-        assert!(err.to_string().contains("min_tls_version"));
-    }
-}
+// ===== 4. Compliance module — REMOVED 2026-05-17 ===========================
+//
+// The 4 `fips_compliance` tests were deleted along with the
+// `aegis_control::compliance` module. The v2.3 interop contract
+// does NOT require regulatory compliance modes (FIPS / PCI /
+// HIPAA / SOC2 / GDPR); the framework files wired through
+// `COMPLIANCE_PINNED = &[]` (always empty) and never actually
+// enforced anything. Removed in full rather than carrying dead
+// infrastructure.
 
 // ===== 5. SLO fast-burn fires + clears ====================================
 

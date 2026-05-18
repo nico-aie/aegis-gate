@@ -3,10 +3,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Health check responses.
+///
+/// 2026-05-17 F-CRITICAL-003 (control audit): `uptime_seconds` +
+/// `mode` + `active_rule_count` added so the dashboard surfaces
+/// the three fields Round-1 explicitly requires from
+/// `/healthz/ready`. All three are `Option` so callers that don't
+/// have the info available (test fixtures, single-node builds
+/// without interop) skip the fields rather than emit defaults.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct HealthResponse {
     pub status: &'static str,
     pub checks: HealthChecks,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_rule_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -67,6 +80,9 @@ pub fn check_ready(signal: &ReadinessSignal) -> (u16, HealthResponse) {
         HealthResponse {
             status: label,
             checks,
+            uptime_seconds: None,
+            mode: None,
+            active_rule_count: None,
         },
     )
 }
@@ -101,6 +117,25 @@ pub fn check_startup(probe: &StartupProbe) -> (u16, &'static str) {
         (200, "started")
     } else {
         (503, "starting")
+    }
+}
+
+impl HealthResponse {
+    /// F-CRITICAL-003 (2026-05-17 control audit): builder that
+    /// populates the Round-1 mandated `uptime_seconds` + `mode` +
+    /// `active_rule_count` fields. Caller computes uptime from
+    /// `aegis_control::api::about::boot_ts`, reads mode from the
+    /// interop runtime, and rule count from the live `RuleStore`.
+    pub fn with_runtime_info(
+        mut self,
+        uptime_seconds: u64,
+        mode: &'static str,
+        active_rule_count: u64,
+    ) -> Self {
+        self.uptime_seconds = Some(uptime_seconds);
+        self.mode = Some(mode);
+        self.active_rule_count = Some(active_rule_count);
+        self
     }
 }
 
@@ -189,6 +224,26 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"config_loaded\":true"));
+        // F-CRITICAL-003: the three new fields are `Option` with
+        // `skip_serializing_if = Option::is_none`, so callers that
+        // don't populate them get the legacy shape (no rotation
+        // of existing clients).
+        assert!(!json.contains("uptime_seconds"));
+        assert!(!json.contains("active_rule_count"));
+    }
+
+    #[test]
+    fn ready_response_with_runtime_info_carries_round1_fields() {
+        // F-CRITICAL-003 regression: builder populates the three
+        // Round-1 mandated fields. The dashboard's Health/Status
+        // view reads them from this exact JSON shape.
+        let s = all_ready();
+        let (_, resp) = check_ready(&s);
+        let resp = resp.with_runtime_info(123, "enforce", 7);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"uptime_seconds\":123"));
+        assert!(json.contains("\"mode\":\"enforce\""));
+        assert!(json.contains("\"active_rule_count\":7"));
     }
 
     // Startup checks.
