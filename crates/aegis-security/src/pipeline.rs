@@ -157,26 +157,61 @@ impl Pipeline {
 
 #[async_trait::async_trait]
 impl SecurityPipeline for Pipeline {
-    /// LT-RUN-6 SEC-07 closure (2026-05-14) — this method is the
-    /// `SecurityPipeline` trait surface but is **not** the
-    /// production hot path.  The data plane in
-    /// `aegis_proxy::data_plane` reaches detectors directly via
-    /// [`crate::detectors::run_all_filtered_timed`] (see
-    /// `crates/aegis-proxy/src/data_plane.rs` around line 507),
-    /// using a `Vec<Box<dyn Detector>>` seeded in
-    /// `crates/aegis-proxy/src/lib.rs:143`.
+    /// LT-RUN-6 SEC-07 closure (2026-05-14, reconfirmed 2026-05-18
+    /// QC Sprint 3.2) — this method is the `SecurityPipeline`
+    /// trait surface but is **NOT** the production hot path. It
+    /// runs the rules engine ONLY, not the OWASP detector chain,
+    /// not the canary detector, not the per-IP rate-limit, not
+    /// the DDoS gate, not the risk tracker. That's deliberate.
     ///
-    /// Several static audits (LT-RUN-5 / LT-RUN-6) flagged that
-    /// "detectors are never called from `inbound()`" — that's
-    /// expected.  This method delegates to the rules engine only
-    /// because the engine itself currently has zero production
-    /// callers; once the engine is wired (planned for the dashboard
-    /// simulator surface), this method becomes the canonical
-    /// composite entry point (rules + detectors).
+    /// **Why the bypass is correct:**
+    ///
+    /// The data plane in `aegis_proxy::data_plane::handle_data_request_inner`
+    /// runs the full security pipeline DIRECTLY in the request-
+    /// handler hot path: blacklist gate → DDoS gate → per-IP rate-
+    /// limit → strike-block → detector chain (via
+    /// [`crate::detectors::run_all_filtered_timed`]) → rules engine
+    /// (commit `c760d8f` Phase D F-CRITICAL-001) → risk tracker
+    /// (commit `2521d17` Phase E F-CRITICAL-001) → route resolution
+    /// → upstream forward.
+    ///
+    /// Each step is wired explicitly in the data plane because
+    /// it needs the per-step:
+    /// - tracing span context (per-stage histograms),
+    /// - audit-bus emission point,
+    /// - load-shed admission control,
+    /// - tier classification for §5.8 fail-mode lookup,
+    /// - composite RiskKey construction.
+    ///
+    /// Wrapping that 200-line hot path behind one `inbound()`
+    /// trait method would either:
+    /// 1. duplicate all the per-step machinery as trait params,
+    ///    losing the hot-path inlining the data plane gets today,
+    ///    OR
+    /// 2. force the data plane to call `inbound()` AND also do
+    ///    the per-step machinery separately — running the
+    ///    detector chain twice.
+    ///
+    /// The audit's "bypass" framing predates the data plane fully
+    /// landing the pipeline (Phase D + E + F closed it on the
+    /// data-plane side). The trait kept the rules-engine-only
+    /// shape because:
+    /// - it's the dashboard's `POST /api/rules/simulate` entry
+    ///   (rules-only is the right shape for rule preview), AND
+    /// - it's a backward-compat surface for the `NoopPipeline`
+    ///   that other tests use.
     ///
     /// **Do not** call this from a new aegis-proxy code path
-    /// without coordinating with the data plane — you'd double-run
-    /// detectors on every request.
+    /// without coordinating with the data plane — you'd double-
+    /// run the rules engine and (if you wire detectors too) end
+    /// up double-running the OWASP chain.
+    ///
+    /// **Tracking:** F-CRITICAL-008 (security audit, 2026-05-17)
+    /// flagged this as "bypass". After the Phase E/F/D
+    /// land-the-pipeline-in-the-data-plane commits, that finding
+    /// is reclassified — the data plane has all of it, so
+    /// consolidating it under `inbound()` would be a refactor
+    /// (architecture-only) not a security fix.
     async fn inbound(
         &self,
         view: RequestView<'_>,
