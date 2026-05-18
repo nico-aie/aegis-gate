@@ -435,6 +435,22 @@ pub(crate) async fn admin_accept_loop(
                     let reader_arc: Arc<dyn aegis_security::geoip::GeoIpLookup> =
                         Arc::new(reader);
                     services.attacks.set_geo_lookup(reader_arc.clone());
+                    // 2026-05-18 (QC follow-up TLS-wiring batch —
+                    // F-CRITICAL-015 activation): share the reader
+                    // with the data plane so `BotSignals` can
+                    // populate `asn` + `asn_classification` from
+                    // the live MaxMind DB. `set` returns Err if
+                    // somehow already installed — log + ignore.
+                    if upstream_ctx
+                        .geoip
+                        .set(reader_arc.clone())
+                        .is_err()
+                    {
+                        tracing::debug!(
+                            "geoip reader already installed on ProxyContext; \
+                             skipping duplicate",
+                        );
+                    }
                     // FIX 2026-05-03 — wrap the reader in an
                     // AccessListCountryLookup adapter so the
                     // runtime matcher resolves `kind: country`
@@ -1355,6 +1371,32 @@ pub(crate) async fn accept_loop(
                     // bot-mix.  The classifier is stateless +
                     // cheap (~10 string ops), so no shared instance
                     // needed.
+                    // 2026-05-18 (QC follow-up TLS-wiring batch —
+                    // F-CRITICAL-015 activation): look up peer ASN
+                    // via the GeoIP reader if it's installed, then
+                    // map ASN → ownership class via the hardcoded
+                    // table in `aegis_security::bots::classify_asn`.
+                    // No reader installed → ASN stays None and the
+                    // classifier's ladder branch is a no-op. Cheap:
+                    // one MaxMindReader lookup + one linear scan
+                    // over ~20 entries.
+                    let (peer_asn, asn_class) = match upstream_ctx
+                        .geoip
+                        .get()
+                    {
+                        Some(reader) => {
+                            let asn_opt = reader.asn(peer.ip());
+                            let class = asn_opt
+                                .map(aegis_security::bots::classify_asn)
+                                .unwrap_or(
+                                    aegis_security::bots::AsnClassification::Unknown,
+                                );
+                            (asn_opt, class)
+                        }
+                        None => {
+                            (None, aegis_security::bots::AsnClassification::Unknown)
+                        }
+                    };
                     let bot_signals = aegis_security::bots::BotSignals {
                         ja4_fingerprint: None,
                         h2_fingerprint: None,
@@ -1363,15 +1405,8 @@ pub(crate) async fn accept_loop(
                         has_js_challenge_pass: false,
                         failed_challenges: 0,
                         reverse_dns: None,
-                        // 2026-05-18 (QC Sprint 2.2): ASN-class
-                        // signal — populated by a future MaxMind ASN
-                        // wire-up. Today defaults to Unknown so the
-                        // classifier's ASN-score branch never fires
-                        // here; the field is plumbed so the wire-up
-                        // doesn't need another sweep.
-                        asn: None,
-                        asn_classification:
-                            aegis_security::bots::AsnClassification::Unknown,
+                        asn: peer_asn,
+                        asn_classification: asn_class,
                     };
                     let bot_category = match aegis_security::bots::BotClassifier::default()
                         .classify(&bot_signals)

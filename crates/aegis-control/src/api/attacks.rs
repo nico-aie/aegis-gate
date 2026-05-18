@@ -71,6 +71,15 @@ pub struct Attacker {
     /// CI-T8 — autonomous-system number from the GeoIP ASN DB.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asn: Option<u32>,
+    /// 2026-05-18 (QC TLS-wiring batch — F-CRITICAL-015
+    /// activation): ASN ownership classification per
+    /// `aegis_security::bots::classify_asn`. `"hosting"`,
+    /// `"datacenter"`, `"residential"`, `"mobile"`, or `"unknown"`.
+    /// Skipped from the wire shape when no ASN is known (saves
+    /// bytes for fingerprint-identifier rows where the field is
+    /// always Unknown).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asn_class: Option<String>,
 }
 
 /// JSON shape returned by `GET /api/attacks/top`.
@@ -338,6 +347,7 @@ impl AttacksAggregator {
                 last_seen: a.last_seen,
                 country: None,
                 asn: None,
+                asn_class: None,
             })
             .collect();
         // Sort by hits desc, then identifier asc for stable output.
@@ -744,6 +754,15 @@ impl AttacksHandler {
             if let Ok(ip) = a.identifier.parse::<std::net::IpAddr>() {
                 a.country = geo.country(ip);
                 a.asn = geo.asn(ip);
+                // 2026-05-18 (QC TLS-wiring batch — F-CRITICAL-015):
+                // surface ASN ownership classification on the
+                // Top Attackers row so operators can spot
+                // hosting-class traffic at a glance.
+                a.asn_class = a.asn.map(|asn| {
+                    aegis_security::bots::classify_asn(asn)
+                        .as_wire_str()
+                        .to_string()
+                });
             }
         }
     }

@@ -156,6 +156,7 @@ dependencies = [
  "aegis-core",
  "arc-swap",
  "async-trait",
+ "base64",
  "blake3",
  "bytes",
  "chrono",

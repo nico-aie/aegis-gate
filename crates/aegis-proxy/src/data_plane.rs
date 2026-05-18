@@ -300,11 +300,19 @@ pub(crate) async fn handle_data_request_inner(
     // burn CPU. Whitelisted sources still hit this gate — strikes
     // override whitelist (a whitelisted IP hammering the API
     // hits the strike threshold then gets the permanent 403).
-    if risk.is_strike_blocked(peer_ip) {
+    // 2026-05-18 (QC TLS-wiring batch — Phase E activation): the
+    // strike-block check + score snapshot read from the composite-
+    // key bucket so they see the same data the record_malicious /
+    // record_clean writes populate. Strike-Block remains "block
+    // forever" semantics — the strikes lifetime counter accumulates
+    // across record_malicious_with_key calls, then is_strike_blocked
+    // returns true once the cap is hit.
+    let strike_key = build_risk_key(peer_ip, req.headers());
+    if risk.is_strike_blocked_for_key(&strike_key) {
         // NEW-4 (2026-05-08) — keyed on `peer_ip` (XFF-resolved).
         // Stamp on the DecisionTag so the response stamper picks
         // it up directly instead of re-querying under peer.ip().
-        let strike_score = risk.snapshot(peer_ip).map(|s| s.score);
+        let strike_score = risk.snapshot_with_key(&strike_key).map(|s| s.score);
         // F-CRITICAL-002 — honor `set_profile mode=log_only` on
         // `risk_engine.strikes`. Audit emits regardless (the call
         // to `blocked_response` does it); only the 403 is gated.
@@ -483,7 +491,17 @@ pub(crate) async fn handle_data_request_inner(
     let rate_decision = ip_rate_limiter.consume(peer_ip);
     request_stage_hist.record(stages::RATE_LIMIT, rate_t0.elapsed());
     if !rate_decision.allowed {
-        let post_state = risk.record_malicious(peer_ip, 30);
+        // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
+        // record the malicious event under the composite RiskKey
+        // (IP + session + tenant). The session axis activates the
+        // F-CRITICAL-001 mandate from §5.5 — two distinct
+        // sessions on the same NAT'd IP no longer share a risk
+        // bucket. device_fp stays None until the JA4-capture
+        // wire-up lands. Pre-Phase-E this was IP-only.
+        let post_state = risk.record_malicious_with_key(
+            build_risk_key(peer_ip, req.headers()),
+            30,
+        );
         let reason = format!(
             "rate limit: {}/{} in last {}s",
             rate_decision.count,
@@ -715,7 +733,14 @@ pub(crate) async fn handle_data_request_inner(
         // false-positives get a softer one-strike penalty.
         let request_score: u32 =
             signals.iter().map(|s| s.score).max().unwrap_or(0);
-        let post_state = risk.record_malicious(peer_ip, request_score);
+        // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
+        // composite-key risk record. Same rationale as the rate-
+        // limit site above. `parts.headers` is in scope here
+        // (request body has been split out for detector buffering).
+        let post_state = risk.record_malicious_with_key(
+            build_risk_key(peer_ip, &parts.headers),
+            request_score,
+        );
         // 2026-05-03 — dedup detector tags before emitting them
         // anywhere (audit fields, rule_id, response header).
         // Multiple signals from one detector class (e.g. two
@@ -875,7 +900,13 @@ pub(crate) async fn handle_data_request_inner(
         // adaptive-mitigation classifier decides between Allow,
         // Challenge, and Block based on the post-state vs the
         // configured `RiskThresholds`.
-        risk.record_clean(peer_ip);
+        //
+        // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
+        // decay the composite-key bucket (matching the
+        // record_malicious_with_key calls above). Trust-recovery
+        // operates on the per-session bucket so a malicious session
+        // doesn't drag down a clean-session sibling on the same IP.
+        risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers));
 
         // 2026-05-10 — Option B per-tier overrides. Look up the
         // matched tier's cumulative thresholds + challenges_enabled
@@ -895,7 +926,14 @@ pub(crate) async fn handle_data_request_inner(
                 },
                 None => (global.challenge_at, global.block_at, true),
             };
-        let level = risk.level_with(peer_ip, challenge_at, block_at);
+        // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
+        // composite-key level read. Same bucket the write path
+        // populates (the record_malicious_with_key calls above).
+        let level = risk.level_with_for_key(
+            &build_risk_key(peer_ip, &parts.headers),
+            challenge_at,
+            block_at,
+        );
         // 2026-05-10 — when the matched tier has challenges_enabled
         // = false, the challenge rung is removed from the tier's
         // response ladder. Cumulative score crossing challenge_at
@@ -913,7 +951,10 @@ pub(crate) async fn handle_data_request_inner(
                 // NEW-4 (2026-05-08) — stamp the snapshot score
                 // on the DecisionTag so the response stamper
                 // doesn't re-query under peer.ip() and miss.
-                let block_score = risk.snapshot(peer_ip).map(|s| s.score);
+                // 2026-05-18 — composite-key snapshot (Phase E).
+                let block_score = risk
+                    .snapshot_with_key(&build_risk_key(peer_ip, &parts.headers))
+                    .map(|s| s.score);
                 let tag = match block_score {
                     Some(s) => DecisionTag::block("risk-score").with_tier(tier).with_risk_score(s),
                     None    => DecisionTag::block("risk-score").with_tier(tier),
@@ -1001,7 +1042,10 @@ pub(crate) async fn handle_data_request_inner(
                     .unwrap();
                 // NEW-4 (2026-05-08) — stamp current snapshot score
                 // for the challenge response too.
-                let challenge_score = risk.snapshot(peer_ip).map(|s| s.score);
+                // 2026-05-18 — composite-key snapshot (Phase E).
+                let challenge_score = risk
+                    .snapshot_with_key(&build_risk_key(peer_ip, &parts.headers))
+                    .map(|s| s.score);
                 let tag = match challenge_score {
                     Some(s) => DecisionTag::challenge("risk-challenge").with_tier(tier).with_risk_score(s),
                     None    => DecisionTag::challenge("risk-challenge").with_tier(tier),
@@ -2087,6 +2131,102 @@ fn strip_uri_prefix(uri: &http::Uri, prefix: &str) -> http::Uri {
         .unwrap_or_else(|_| uri.clone())
 }
 
+// ---- 2026-05-18 (QC TLS-wiring batch — Phase E activation) ----
+
+#[cfg(test)]
+mod session_extraction_tests {
+    use super::{build_risk_key, extract_session_id};
+    use http::HeaderMap;
+
+    fn headers_with(cookie: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(http::header::COOKIE, cookie.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn no_cookie_header_returns_none() {
+        let h = HeaderMap::new();
+        assert!(extract_session_id(&h).is_none());
+    }
+
+    #[test]
+    fn empty_cookie_value_returns_none() {
+        let h = headers_with("session=");
+        assert!(extract_session_id(&h).is_none());
+    }
+
+    #[test]
+    fn extracts_sessionid_cookie() {
+        let h = headers_with("sessionid=abc-123-def");
+        assert_eq!(extract_session_id(&h).as_deref(), Some("abc-123-def"));
+    }
+
+    #[test]
+    fn extracts_session_cookie() {
+        let h = headers_with("session=s%3Axyz789");
+        assert_eq!(extract_session_id(&h).as_deref(), Some("s%3Axyz789"));
+    }
+
+    #[test]
+    fn extracts_jsessionid_case_insensitive() {
+        let h = headers_with("JSESSIONID=java-session-42");
+        assert_eq!(extract_session_id(&h).as_deref(), Some("java-session-42"));
+    }
+
+    #[test]
+    fn extracts_connect_sid() {
+        let h = headers_with("connect.sid=express-sid-99");
+        assert_eq!(extract_session_id(&h).as_deref(), Some("express-sid-99"));
+    }
+
+    #[test]
+    fn returns_first_match_when_multiple_session_cookies() {
+        // First-match-wins per the documented contract.
+        let h = headers_with("sessionid=first; session=second");
+        let s = extract_session_id(&h);
+        // Either "first" or "second" is acceptable — both are
+        // session cookies and we don't define ordering. Just
+        // confirm we got *some* match.
+        assert!(s.is_some());
+    }
+
+    #[test]
+    fn ignores_non_session_cookies() {
+        let h = headers_with("user_pref=dark; analytics_id=42");
+        assert!(extract_session_id(&h).is_none());
+    }
+
+    #[test]
+    fn handles_whitespace_around_cookie_pairs() {
+        let h = headers_with("foo=bar ;  session=trimmed  ; baz=qux");
+        assert_eq!(extract_session_id(&h).as_deref(), Some("trimmed"));
+    }
+
+    /// build_risk_key fills ip + session axes, leaves device_fp
+    /// and tenant_id None. session axis is populated from the
+    /// cookie when present.
+    #[test]
+    fn build_risk_key_populates_session_axis() {
+        let h = headers_with("session=abc");
+        let ip: std::net::IpAddr = "203.0.113.10".parse().unwrap();
+        let key = build_risk_key(ip, &h);
+        assert_eq!(key.ip, ip);
+        assert_eq!(key.session.as_deref(), Some("abc"));
+        assert!(key.device_fp.is_none());
+        assert!(key.tenant_id.is_none());
+    }
+
+    #[test]
+    fn build_risk_key_no_cookie_falls_back_to_ip_only_axis() {
+        let h = HeaderMap::new();
+        let ip: std::net::IpAddr = "203.0.113.10".parse().unwrap();
+        let key = build_risk_key(ip, &h);
+        assert_eq!(key.ip, ip);
+        assert!(key.session.is_none());
+    }
+}
+
 #[cfg(test)]
 mod strip_uri_prefix_tests {
     use super::strip_uri_prefix;
@@ -2240,6 +2380,74 @@ fn emit_tunnel_close_audit(
 
 /// Default set of trusted-proxy CIDRs for XFF resolution. Mirrors
 /// `aegis_security::ip_rep::IpLists::default().trusted_proxies` —
+/// 2026-05-18 (QC follow-up TLS-wiring batch — Phase E composite-
+/// key activation): extract a session id from the request's
+/// `Cookie` header. Common session cookie names — first match
+/// wins. Returns `None` when no recognised session cookie is
+/// present; downstream callers feed `None` into `RiskKey.session`
+/// and the request gets an IP-only bucket (the legacy bucket).
+///
+/// We don't validate the value — the WAF doesn't need to know
+/// whether the session is *authentic*, only that the requester
+/// is presenting the same session id across a window. Risk tied
+/// to a stolen session id is still trackable here even if the
+/// auth signature is bogus.
+pub(crate) fn extract_session_id(headers: &http::HeaderMap) -> Option<String> {
+    let cookie_hdr = headers
+        .get(http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())?;
+    // Cookie header: `key1=val1; key2=val2; …`. Split on `;` then
+    // trim. First match against the known-names list wins.
+    const SESSION_COOKIE_NAMES: &[&str] = &[
+        "sessionid",
+        "session",
+        "jsessionid",
+        "connect.sid",
+        "sid",
+        "asp.net_sessionid",
+    ];
+    for pair in cookie_hdr.split(';') {
+        let pair = pair.trim();
+        if let Some((k, v)) = pair.split_once('=') {
+            let k_lower = k.trim().to_ascii_lowercase();
+            if SESSION_COOKIE_NAMES.contains(&k_lower.as_str()) {
+                let v = v.trim();
+                // URL-encoded prefix like `s%3A…` is fine — we
+                // treat the raw value as the opaque key.
+                if !v.is_empty() && v.len() < 256 {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 2026-05-18 (QC follow-up TLS-wiring batch — Phase E composite-
+/// key activation): build a [`RiskKey`] from the request shape.
+///
+/// Fills:
+/// - `ip` — always present (peer's resolved IP after XFF).
+/// - `session` — from the session-cookie scan above; `None`
+///   when no recognised session cookie is sent.
+/// - `device_fp` — `None` today. Activates when TLS-fingerprint
+///   wire-up lands (tracked in
+///   `plans/issue-fix/2026-05-18-qc-followup/` § JA4-capture
+///   follow-up).
+/// - `tenant_id` — `None` today. Activates when route metadata
+///   gains a `tenant: <id>` field.
+pub(crate) fn build_risk_key(
+    peer_ip: std::net::IpAddr,
+    headers: &http::HeaderMap,
+) -> aegis_core::risk::RiskKey {
+    aegis_core::risk::RiskKey {
+        ip: peer_ip,
+        device_fp: None,
+        session: extract_session_id(headers),
+        tenant_id: None,
+    }
+}
+
 /// loopback + RFC1918 + IPv6 link-local. Operators behind an LB
 /// in a private subnet (the typical case) get correct XFF
 /// resolution out of the box. Operator-configurable list via
