@@ -196,11 +196,90 @@ pub async fn admit(
         return Admit::Authenticated(id);
     }
 
+    // 2026-05-19 — friendly UX for browser navigations. If this is a
+    // GET that a browser issued for a document (Accept: text/html or
+    // Sec-Fetch-Dest: document), bounce to /admin/login?next=<path>
+    // instead of returning a raw JSON 401. Programmatic clients
+    // (SPA fetches, curl, service-account bearer probes) still get
+    // the 401 envelope so they can detect + handle it themselves —
+    // we only redirect when the request shape says "human in a tab".
+    if wants_html_navigation(req) {
+        let next = request_path_with_query(req);
+        return Admit::Denied(login_redirect_response(&next));
+    }
+
     Admit::Denied(deny_response(
         StatusCode::UNAUTHORIZED,
         "admin_unauthenticated",
         "missing or invalid session cookie / bearer token",
     ))
+}
+
+/// True when the unauthenticated request looks like a browser
+/// navigating to a page — not an XHR / fetch / curl call. We use
+/// this signal to decide between a 303 redirect (friendly) and a
+/// JSON 401 (machine-readable). Heuristics:
+///
+/// - Method must be GET (POST/PUT etc. can't be redirected safely
+///   anyway — the body would be dropped).
+/// - `Sec-Fetch-Dest: document` is the strongest signal (set by
+///   every modern browser on top-level navigation, never by
+///   `fetch()` / `XMLHttpRequest`).
+/// - Fallback: `Accept` header explicitly asks for `text/html`.
+/// - Reject `application/json` Accept (SPA fetches that the
+///   dashboard JS wants to handle inline).
+/// - Reject paths under `/api/` — those are JSON surfaces no
+///   matter what Accept says.
+fn wants_html_navigation<B>(req: &Request<B>) -> bool {
+    if req.method() != Method::GET {
+        return false;
+    }
+    let path = req.uri().path();
+    if path.starts_with("/api/") {
+        return false;
+    }
+    // Strongest signal: browser top-level navigation.
+    if let Some(dest) = req.headers().get("sec-fetch-dest").and_then(|h| h.to_str().ok()) {
+        if dest.eq_ignore_ascii_case("document") {
+            return true;
+        }
+    }
+    // Accept-header fallback for clients that don't send Sec-Fetch-*.
+    let Some(accept) = req.headers().get(hyper::header::ACCEPT).and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
+    let accept_lc = accept.to_ascii_lowercase();
+    // SPA fetches usually pin Accept to application/json — don't
+    // hijack those even if the URL happens to be HTML-ish.
+    if accept_lc.contains("application/json") {
+        return false;
+    }
+    accept_lc.contains("text/html")
+}
+
+/// Pull the path + query out of the request URI as an absolute
+/// path. Defaults to "/dashboard/" if the URI doesn't expose one
+/// (shouldn't happen in practice, but we never want to feed an
+/// empty `next=` to the login page).
+fn request_path_with_query<B>(req: &Request<B>) -> String {
+    req.uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| "/dashboard/".to_string())
+}
+
+/// Build a 303 See Other → `/admin/login?next=<url-encoded path>`.
+/// 303 (not 302) so a future POST-after-login flow gets coerced to
+/// GET on the login page, matching the existing `login.js` UX.
+fn login_redirect_response(next: &str) -> Response<Full<Bytes>> {
+    let location = aegis_control::dashboard::login_redirect(next);
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(hyper::header::LOCATION, location)
+        .header(hyper::header::CACHE_CONTROL, "no-store")
+        .header("x-waf-rule-id", "admin_unauthenticated")
+        .body(Full::new(Bytes::new()))
+        .unwrap()
 }
 
 /// Strip the client-supplied `X-Actor` header. F-CRITICAL-004 —
@@ -385,5 +464,61 @@ mod tests {
         assert!(requires_write_scope(&Method::PUT));
         assert!(requires_write_scope(&Method::PATCH));
         assert!(requires_write_scope(&Method::DELETE));
+    }
+
+    fn req(method: Method, uri: &str, headers: &[(&str, &str)]) -> Request<()> {
+        let mut b = Request::builder().method(method).uri(uri);
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        b.body(()).unwrap()
+    }
+
+    #[test]
+    fn redirect_fires_for_browser_navigation() {
+        let r = req(
+            Method::GET,
+            "/dashboard/",
+            &[("accept", "text/html,application/xhtml+xml,application/xml;q=0.9")],
+        );
+        assert!(wants_html_navigation(&r));
+    }
+
+    #[test]
+    fn redirect_fires_on_sec_fetch_dest_document() {
+        // Modern browsers send this even when Accept is unusual.
+        let r = req(Method::GET, "/dashboard/", &[("sec-fetch-dest", "document")]);
+        assert!(wants_html_navigation(&r));
+    }
+
+    #[test]
+    fn no_redirect_for_api_paths_even_with_html_accept() {
+        let r = req(Method::GET, "/api/ai/status", &[("accept", "text/html")]);
+        assert!(!wants_html_navigation(&r));
+    }
+
+    #[test]
+    fn no_redirect_for_json_fetch() {
+        let r = req(Method::GET, "/dashboard/", &[("accept", "application/json")]);
+        assert!(!wants_html_navigation(&r));
+    }
+
+    #[test]
+    fn no_redirect_for_non_get_methods() {
+        let r = req(Method::POST, "/dashboard/", &[("accept", "text/html")]);
+        assert!(!wants_html_navigation(&r));
+    }
+
+    #[test]
+    fn no_redirect_when_accept_missing() {
+        // curl / probes without Accept aren't browser navigations.
+        let r = req(Method::GET, "/dashboard/", &[]);
+        assert!(!wants_html_navigation(&r));
+    }
+
+    #[test]
+    fn request_path_preserves_query() {
+        let r = req(Method::GET, "/dashboard/rules?filter=ai", &[]);
+        assert_eq!(request_path_with_query(&r), "/dashboard/rules?filter=ai");
     }
 }
