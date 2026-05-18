@@ -109,6 +109,22 @@ pub enum Http3ConfigError {
     Tls(String),
     Bind(String),
     Internal(String),
+    /// 2026-05-18 — Sprint 1.1 of the 2026-05-18 QC follow-up plan.
+    /// The H3 listener bypasses the full security pipeline today —
+    /// `handle_h3_request` calls `crate::proxy::handle_request`
+    /// (the bare router), so QUIC requests skip detectors,
+    /// rate-limit, risk score, §5 headers, and §6 audit. Rather
+    /// than ship that gap behind a feature flag, `serve_http3`
+    /// refuses to boot until the wire-up lands. Operators who
+    /// need HTTP/3 see this error at boot and either stay on
+    /// HTTP/2 or wait for the dedicated wire-up PR.
+    ///
+    /// The proper fix (~80 LoC) wires
+    /// `crate::data_plane::handle_data_request` through the QUIC
+    /// path, threading detectors / mask / risk / rate-limiter /
+    /// metrics / bus / identity. Tracked in
+    /// `plans/issue-fix/2026-05-18-qc-followup/README.md` § S1.1.
+    SecurityPipelineNotWired,
 }
 
 impl std::fmt::Display for Http3ConfigError {
@@ -118,6 +134,14 @@ impl std::fmt::Display for Http3ConfigError {
             Http3ConfigError::Tls(m) => write!(f, "http3 tls config: {m}"),
             Http3ConfigError::Bind(m) => write!(f, "http3 bind failed: {m}"),
             Http3ConfigError::Internal(m) => write!(f, "http3 internal: {m}"),
+            Http3ConfigError::SecurityPipelineNotWired => write!(
+                f,
+                "http3 listener refuses to start — the QUIC code path bypasses the WAF \
+                 security pipeline (no detectors, no rate-limit, no risk score, no §5 \
+                 headers, no §6 audit). Wire-up is tracked in \
+                 plans/issue-fix/2026-05-18-qc-followup/README.md § S1.1. Stay on HTTP/2 \
+                 until that lands.",
+            ),
         }
     }
 }
@@ -182,8 +206,8 @@ mod runtime {
     /// must opt in explicitly to expose it.
     pub fn serve_http3(
         cfg: Http3Config,
-        rustls_cfg: rustls::ServerConfig,
-        ctx: Arc<crate::proxy::ProxyContext>,
+        _rustls_cfg: rustls::ServerConfig,
+        _ctx: Arc<crate::proxy::ProxyContext>,
     ) -> Result<
         (
             quinn::Endpoint,
@@ -191,23 +215,29 @@ mod runtime {
         ),
         Http3ConfigError,
     > {
-        tracing::warn!(
+        // 2026-05-18 (QC follow-up Sprint 1.1) — refuse to boot
+        // until the QUIC path is wired into `data_plane::handle_data_request`.
+        // The previous behaviour emitted a `warn!` and silently
+        // exposed a security-pipeline bypass on the bind address.
+        // That's a §5 / §6 / §10 contract violation per the
+        // 2026-05-18 QC report; hard-fail at startup is the
+        // smallest fix that closes the gap. Wire-up tracked in
+        // `plans/issue-fix/2026-05-18-qc-followup/README.md § S1.1`.
+        tracing::error!(
             bind = %cfg.bind,
-            "http3: SECURITY GAP — HTTP/3 traffic bypasses the WAF security pipeline \
-             (no detectors, no rate-limit, no risk scoring, no audit, no §5 headers). \
-             Do not enable in production until the data_plane wire-up lands. See \
-             plans/future/unwired-stubs-catalog.md § HTTP/3 pipeline wire-up.",
+            "http3: refusing to start — the QUIC listener bypasses the WAF security \
+             pipeline. Wire-up tracked in plans/issue-fix/2026-05-18-qc-followup/. \
+             Stay on HTTP/2 until that lands.",
         );
-        let server_config = build_quic_server_config(rustls_cfg, &cfg)?;
-        let endpoint = quinn::Endpoint::server(server_config, cfg.bind)
-            .map_err(|e| Http3ConfigError::Bind(e.to_string()))?;
-        let endpoint_clone = endpoint.clone();
-        let handle = tokio::spawn(async move {
-            run_accept_loop(endpoint_clone, ctx).await;
-        });
-        Ok((endpoint, handle))
+        Err(Http3ConfigError::SecurityPipelineNotWired)
     }
 
+    // 2026-05-18 QC Sprint 1.1: the three accept/handler functions
+    // below are kept in tree as the scaffold the §S1.1 wire-up will
+    // re-attach to, but `serve_http3` refuses to boot today so
+    // nothing calls them. `#[allow(dead_code)]` silences the
+    // unused-function warnings without losing the scaffold.
+    #[allow(dead_code)]
     async fn run_accept_loop(
         endpoint: quinn::Endpoint,
         ctx: Arc<crate::proxy::ProxyContext>,
@@ -229,6 +259,7 @@ mod runtime {
         }
     }
 
+    #[allow(dead_code)]
     async fn handle_quic_connection(
         connection: quinn::Connection,
         ctx: Arc<crate::proxy::ProxyContext>,
@@ -256,6 +287,7 @@ mod runtime {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn handle_h3_request(
         req_resolver: h3::server::RequestResolver<h3_quinn::Connection, Bytes>,
         ctx: Arc<crate::proxy::ProxyContext>,
@@ -481,5 +513,86 @@ mod tests {
                 .to_string()
                 .contains("internal")
         );
+    }
+
+    /// 2026-05-18 QC Sprint 1.1 regression: `serve_http3` MUST
+    /// refuse to start until the security-pipeline wire-up lands.
+    /// The previous behaviour (`warn!` + silent bypass) shipped a
+    /// §5 / §6 / §10 contract gap on the QUIC surface. Hard-fail
+    /// at boot is the smallest defensive fix.
+    #[cfg(feature = "http3")]
+    #[test]
+    fn serve_http3_refuses_to_start_until_pipeline_is_wired() {
+        use std::sync::Arc;
+        // Build a minimal rustls config + ProxyContext. We don't
+        // need either to be functional — `serve_http3` MUST error
+        // BEFORE it touches them.
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        #[derive(Debug)]
+        struct NoCertResolver;
+        impl rustls::server::ResolvesServerCert for NoCertResolver {
+            fn resolve(
+                &self,
+                _: rustls::server::ClientHello<'_>,
+            ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+                None
+            }
+        }
+        let builder = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("safe defaults compile");
+        let rustls_cfg = builder
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(NoCertResolver));
+
+        // ProxyContext::build needs a full WafConfig — too heavy
+        // for this test. Use a zero-arg dummy via the test-only
+        // constructor if one exists, else pre-test the error type.
+        // Easier: assert on the error type without actually
+        // calling — but we want a behavioural regression. Use a
+        // raw `serve_http3` call with a tiny config that would
+        // pass validation up to the pipeline check.
+        let cfg = Http3Config {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            ..Http3Config::default()
+        };
+        // We need a ProxyContext. Build via the test helper that
+        // already exists for other listener tests.
+        let waf_cfg = std::sync::Arc::new(
+            // Cheapest: use a YAML minimal that parses.
+            aegis_core::config::load_config_str(
+                "listeners:\n  data: [{ bind: \"0.0.0.0:8080\" }]\n  admin: { bind: \"127.0.0.1:9443\" }\nroutes:\n  - { id: catch-all, path: \"/\", upstream: default }\nupstreams:\n  default: { members: [{ addr: \"127.0.0.1:9999\" }] }\nstate: { backend: in_memory }\n",
+            )
+            .expect("yaml parses"),
+        );
+        let pipeline: Arc<aegis_security::Pipeline> =
+            Arc::new(aegis_security::Pipeline::new(Arc::new(
+                aegis_security::RuleSet::new(),
+            )));
+        let ctx = Arc::new(
+            crate::proxy::ProxyContext::build(&waf_cfg, pipeline)
+                .expect("proxy context"),
+        );
+
+        let result = serve_http3(cfg, rustls_cfg, ctx);
+        match result {
+            Err(Http3ConfigError::SecurityPipelineNotWired) => { /* expected */ }
+            other => panic!(
+                "expected SecurityPipelineNotWired, got {other:?}; the H3 \
+                 listener must refuse to boot until the security-pipeline \
+                 wire-up lands (see plans/issue-fix/2026-05-18-qc-followup/)",
+            ),
+        }
+    }
+
+    /// The SecurityPipelineNotWired error message must call out
+    /// the contract gap explicitly so an operator who sees it at
+    /// boot immediately understands why.
+    #[test]
+    fn security_pipeline_not_wired_message_is_explicit() {
+        let msg = Http3ConfigError::SecurityPipelineNotWired.to_string();
+        assert!(msg.contains("bypasses"));
+        assert!(msg.contains("security pipeline"));
+        assert!(msg.contains("HTTP/2"));
     }
 }
