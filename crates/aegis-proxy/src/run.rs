@@ -741,8 +741,30 @@ pub async fn run(
     }
 
     if cfg.ddos.enabled {
+        // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.8): wire
+        // the WafConfig-level `fail_mode_by_tier` map into the
+        // runtime DdosConfig. Schema for this field landed in
+        // Phase G (`678baa2`) but no runtime read it until now.
+        // Spec §5.8 mandates fail-close on Critical, fail-open on
+        // Medium/CatchAll — `Tier::default_failure_mode()`
+        // already encodes that, so an empty map preserves the
+        // mandate; the per-tier YAML override lets operators
+        // tune posture per-deployment.
+        let mut ddos_runtime_cfg: aegis_security::ddos::DdosConfig =
+            cfg.ddos.clone().into();
+        for (tier, mode) in &cfg.fail_mode_by_tier {
+            let runtime_mode = match mode {
+                aegis_core::config::FailureModeConfig::FailClose => {
+                    aegis_core::tier::FailureMode::FailClose
+                }
+                aegis_core::config::FailureModeConfig::FailOpen => {
+                    aegis_core::tier::FailureMode::FailOpen
+                }
+            };
+            ddos_runtime_cfg.failure_mode.insert(*tier, runtime_mode);
+        }
         let runtime = Arc::new(aegis_security::ddos::DdosRuntime::new(
-            cfg.ddos.clone().into(),
+            ddos_runtime_cfg,
             state.clone(),
         ));
         if upstream_ctx.ddos.set(runtime.clone()).is_err() {

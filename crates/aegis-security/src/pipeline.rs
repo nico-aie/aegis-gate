@@ -23,6 +23,16 @@ pub fn classify_tier(
     (tier, fm)
 }
 
+/// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): path-only tier
+/// classifier. The DDoS gate in the data plane runs BEFORE the
+/// full RequestView is assembled (and BEFORE route resolution),
+/// so it needs a path-only shortcut. Returns the same value as
+/// [`classify_tier`] would when route is `None`, just with a
+/// narrower input contract.
+pub fn classify_tier_from_path(path: &str) -> (Tier, FailureMode) {
+    path_heuristic(path)
+}
+
 fn path_heuristic(path: &str) -> (Tier, FailureMode) {
     let lower = path.to_ascii_lowercase();
 
