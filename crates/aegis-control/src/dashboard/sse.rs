@@ -79,7 +79,7 @@ pub fn event_matches(filter: &EventFilter, ev: &AuditEvent) -> bool {
         return false;
     }
     if !filter.actions.is_empty()
-        && !filter.actions.iter().any(|a| a == &ev.action)
+        && !filter.actions.iter().any(|a| a.as_str() == ev.action.as_str())
     {
         return false;
     }

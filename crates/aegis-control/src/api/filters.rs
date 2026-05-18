@@ -64,7 +64,7 @@ impl FilterCatalogue {
         let now = Instant::now();
         let class_str = audit_class_str(&ev.class).to_string();
         let actor = ev.client_ip.trim().to_string();
-        let action = ev.action.clone();
+        let action = ev.action.as_str().to_string();
         let route = ev.route_id.clone().unwrap_or_default();
 
         let mut state = self.inner.lock().expect("filter catalogue poisoned");

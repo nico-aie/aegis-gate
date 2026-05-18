@@ -111,7 +111,7 @@ pub fn build(ring: &Arc<AuditRing>, limit: u32) -> ConfigVersionsResponse {
         .map(|e| ConfigVersionEntry {
             seq: e.seq,
             ts: e.event.ts,
-            action: e.event.action.clone(),
+            action: e.event.action.as_str().to_string(),
             reason: e.event.reason.clone(),
             actor: extract_actor(&e.event.fields),
             source: extract_source(&e.event.fields),

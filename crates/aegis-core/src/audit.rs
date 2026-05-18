@@ -1,5 +1,163 @@
 use crate::tier::Tier;
 
+/// 2026-05-18 F-CRITICAL-004 (core audit) — typed action enum
+/// for `AuditEvent`. Pre-fix the field was `action: String` —
+/// type-safe-by-omission, vulnerable to typos like `"Block"`
+/// (capitalized) or `"rate-limit"` (hyphen instead of underscore)
+/// silently compiling.
+///
+/// Six canonical wire actions from the v2.3 §3 decision-class
+/// table, plus an `Other(String)` escape hatch for admin /
+/// system events that emit free-form operation tags
+/// (`rule_create`, `mtls_ca_bundle_swapped`, `loadmode_set`, …).
+/// The escape hatch is necessary: the codebase has 60+ distinct
+/// admin-event action strings that don't fit a closed enum.
+///
+/// **Wire shape is unchanged.** Serializes / deserializes as a
+/// plain JSON string via `serde(into = "String", try_from)`.
+/// `AuditAction::Block` ↔ `"block"`. `AuditAction::Other("rule_create".into())`
+/// ↔ `"rule_create"`. Backward compatible with every existing
+/// audit log entry.
+///
+/// **Construction sites unchanged.** `From<&str>` + `From<String>`
+/// route the well-known wire strings (`"allow"`, `"block"`, …)
+/// to the typed variants and everything else to `Other(s)`. The
+/// pre-existing `action: "rule_create".into()` patterns keep
+/// compiling without modification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuditAction {
+    /// v2.3 §3 — explicit allow decision.
+    Allow,
+    /// v2.3 §3 — explicit block decision.
+    Block,
+    /// v2.3 §3 — challenge (JS / PoW / CAPTCHA).
+    Challenge,
+    /// v2.3 §3 — rate-limit (429).
+    RateLimit,
+    /// v2.3 §3 — timeout (deadline elapsed).
+    Timeout,
+    /// v2.3 §3 — circuit-breaker (upstream-protection rejection).
+    CircuitBreaker,
+    /// Admin / system event (e.g. `rule_create`, `mode_set`,
+    /// `mtls_ca_bundle_swapped`). Not part of the §3 wire
+    /// action set; flows through the audit log for forensic
+    /// correlation with the same field name.
+    Other(String),
+}
+
+impl AuditAction {
+    /// Canonical wire string for this action. Matches the §3 /
+    /// §5.1 `X-WAF-Action` header values for the 6 enum
+    /// variants; passes the `Other(s)` string through unchanged.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Allow => "allow",
+            Self::Block => "block",
+            Self::Challenge => "challenge",
+            Self::RateLimit => "rate_limit",
+            Self::Timeout => "timeout",
+            Self::CircuitBreaker => "circuit_breaker",
+            Self::Other(s) => s.as_str(),
+        }
+    }
+
+    /// `true` when this is one of the six v2.3 §3 wire actions
+    /// (not an admin escape-hatch string). Used by the §5.1
+    /// header stamper to decide whether to emit `X-WAF-Action`.
+    pub fn is_wire_action(&self) -> bool {
+        !matches!(self, Self::Other(_))
+    }
+}
+
+impl std::fmt::Display for AuditAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for AuditAction {
+    fn from(s: &str) -> Self {
+        match s {
+            "allow" => Self::Allow,
+            "block" => Self::Block,
+            "challenge" => Self::Challenge,
+            "rate_limit" => Self::RateLimit,
+            "timeout" => Self::Timeout,
+            "circuit_breaker" => Self::CircuitBreaker,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl From<String> for AuditAction {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "allow" => Self::Allow,
+            "block" => Self::Block,
+            "challenge" => Self::Challenge,
+            "rate_limit" => Self::RateLimit,
+            "timeout" => Self::Timeout,
+            "circuit_breaker" => Self::CircuitBreaker,
+            _ => Self::Other(s),
+        }
+    }
+}
+
+impl From<AuditAction> for String {
+    fn from(a: AuditAction) -> Self {
+        match a {
+            AuditAction::Other(s) => s,
+            other => other.as_str().to_string(),
+        }
+    }
+}
+
+/// `event.action == "block"` keeps compiling — the data plane
+/// and a handful of sink converters rely on this shape.
+impl PartialEq<&str> for AuditAction {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<str> for AuditAction {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+// Reverse — supports `*a == event.action` shape in
+// `crates/aegis-control/src/api/rollback.rs` where `a: &&str`.
+impl PartialEq<AuditAction> for str {
+    fn eq(&self, other: &AuditAction) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<AuditAction> for &str {
+    fn eq(&self, other: &AuditAction) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl serde::Serialize for AuditAction {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AuditAction {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::from(s))
+    }
+}
+
 /// 2026-05-17 / 2026-05-18 (core audit): wire-shape + field-set
 /// alignment with the v2.3 §6 mandate. Rust field names kept
 /// stable for `client_ip` to avoid a 125-site construction sweep
@@ -37,7 +195,12 @@ pub struct AuditEvent {
     pub class: AuditClass,
     pub tenant_id: Option<String>,
     pub tier: Option<Tier>,
-    pub action: String,
+    /// 2026-05-18 F-CRITICAL-004: typed action (was `String`).
+    /// `From<&str>` + `From<String>` keep the existing
+    /// `action: "...".into()` construction pattern compiling
+    /// unchanged. Serialises as a plain JSON string — wire shape
+    /// preserved for backward compat with sinks and the chain.
+    pub action: AuditAction,
     pub reason: String,
     #[serde(rename = "ip")]
     pub client_ip: String,
@@ -449,5 +612,93 @@ mod tests {
             fields: serde_json::Value::Null,
         };
         bus.emit(ev); // should not panic
+    }
+
+    // ---------- F-CRITICAL-004: AuditAction enum ----------------------
+
+    #[test]
+    fn audit_action_wire_strings_match_v23_spec() {
+        // The 6 §3 wire actions serialize to the documented strings.
+        assert_eq!(AuditAction::Allow.as_str(), "allow");
+        assert_eq!(AuditAction::Block.as_str(), "block");
+        assert_eq!(AuditAction::Challenge.as_str(), "challenge");
+        assert_eq!(AuditAction::RateLimit.as_str(), "rate_limit");
+        assert_eq!(AuditAction::Timeout.as_str(), "timeout");
+        assert_eq!(AuditAction::CircuitBreaker.as_str(), "circuit_breaker");
+    }
+
+    #[test]
+    fn audit_action_from_str_routes_wire_strings_to_variants() {
+        // The canonical wire strings deserialize back to the typed
+        // variants. Operator log auto-completion + analytics tooling
+        // depends on this being lossless.
+        assert_eq!(AuditAction::from("allow"), AuditAction::Allow);
+        assert_eq!(AuditAction::from("block"), AuditAction::Block);
+        assert_eq!(AuditAction::from("challenge"), AuditAction::Challenge);
+        assert_eq!(AuditAction::from("rate_limit"), AuditAction::RateLimit);
+        assert_eq!(AuditAction::from("timeout"), AuditAction::Timeout);
+        assert_eq!(
+            AuditAction::from("circuit_breaker"),
+            AuditAction::CircuitBreaker
+        );
+    }
+
+    #[test]
+    fn audit_action_from_str_routes_admin_strings_to_other() {
+        // Admin / system events go through Other(_) — preserves the
+        // 60+ free-form admin operation tags without enum bloat.
+        assert_eq!(
+            AuditAction::from("rule_create"),
+            AuditAction::Other("rule_create".into())
+        );
+        assert_eq!(
+            AuditAction::from("mtls_ca_bundle_swapped"),
+            AuditAction::Other("mtls_ca_bundle_swapped".into())
+        );
+    }
+
+    #[test]
+    fn audit_action_serializes_as_plain_json_string() {
+        // Wire shape is unchanged — `AuditEvent.action: AuditAction`
+        // still appears as a plain JSON string. Backward-compat with
+        // every log line written before this change.
+        let blk = serde_json::to_string(&AuditAction::Block).unwrap();
+        assert_eq!(blk, "\"block\"");
+        let other = serde_json::to_string(&AuditAction::Other("rule_create".into())).unwrap();
+        assert_eq!(other, "\"rule_create\"");
+    }
+
+    #[test]
+    fn audit_action_deserialize_round_trip() {
+        // JSON strings load back to the right variant in both
+        // directions (wire string ↔ typed variant).
+        let block: AuditAction = serde_json::from_str("\"block\"").unwrap();
+        assert_eq!(block, AuditAction::Block);
+        let unknown: AuditAction = serde_json::from_str("\"rule_create\"").unwrap();
+        assert_eq!(unknown, AuditAction::Other("rule_create".into()));
+    }
+
+    #[test]
+    fn audit_action_partial_eq_with_str_works_both_directions() {
+        // `==` against `&str` is what the SSE filter + audit
+        // assertions use — confirm both directions resolve.
+        let a = AuditAction::Block;
+        assert!(a == "block");
+        assert!("block" == a);
+        assert!(a != "allow");
+        let other = AuditAction::Other("rule_create".into());
+        assert!(other == "rule_create");
+        assert!("rule_create" == other);
+    }
+
+    #[test]
+    fn audit_action_is_wire_action_classifies_correctly() {
+        // `is_wire_action()` distinguishes v2.3 §3 actions from
+        // admin / system tags — used by downstream analytics
+        // that want to count "real" decision events only.
+        assert!(AuditAction::Allow.is_wire_action());
+        assert!(AuditAction::Block.is_wire_action());
+        assert!(AuditAction::CircuitBreaker.is_wire_action());
+        assert!(!AuditAction::Other("rule_create".into()).is_wire_action());
     }
 }

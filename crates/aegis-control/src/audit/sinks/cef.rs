@@ -11,7 +11,7 @@ pub fn format_cef(ev: &AuditEvent) -> String {
         aegis_core::audit::AuditClass::Access => 1,
         aegis_core::audit::AuditClass::System => 3,
     };
-    let action = cef_escape(&ev.action);
+    let action = cef_escape(ev.action.as_str());
     let reason = cef_escape(&ev.reason);
     let mut ext = format!("src={} requestId={}", ev.client_ip, ev.request_id);
     if let Some(route) = &ev.route_id {
