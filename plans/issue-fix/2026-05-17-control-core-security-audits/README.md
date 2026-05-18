@@ -232,20 +232,32 @@ For each module: decide to wire OR delete. The README claims feature support, so
 | A — disqualification hotfixes | DONE | 3 commits: `3a1adde` (keyword corpus), `ece0728` (VipTalk token), `6484756` (mock data → 503) |
 | B — smallest CRITICALs | DONE | 1 bundle commit `7b48800` (6 fixes), plus targeted `6ec69ec`/`3c47141`/`64cd728`/`0959c3e` |
 | C.1 — audit wire shape | DONE | `63bada1` — serde rename/serialize_with for `ts_ms`/`ip`/`risk_score` clamp. No construction sweep needed. |
-| C.2 — audit new fields | DEFERRED | `method`/`path`/`mode` addition requires 45-site struct construction sweep + `action: String → enum` cross-crate refactor. Future session. |
+| C.2 — audit new fields | DONE (method/path/mode) | `method`/`path`/`mode` added in `4107ef8` — 73-site sweep + `with_request_info` builder. `action: String → enum` still deferred (cross-crate refactor). |
 | D — Round-1 dashboard | DONE (Block path) | F-CRITICAL-003 (`/healthz`) DONE in `6ec69ec`. F-CRITICAL-001 (rule CRUD live rebuild) DONE in `c760d8f` + UI polish in `6c6e997` — `Block` action terminally enforced in data plane; other 5 §3 actions tracked in [`plans/future/rule-non-block-actions.md`](../../future/rule-non-block-actions.md). F-CRITICAL-002 (compliance) MOOT (compliance removed in `a647b60` per Hackathon contract). |
-| E — security composite keys | NOT STARTED | Schema unblocked by Phase G (RlScope+RlKey new variants, fail_mode_by_tier). |
-| F — security depth features | NOT STARTED | Velocity engine, behavior signals, canary block, response filter §5.7. Schema unblocked by Phase G (canary_paths). |
+| E — security composite keys | DONE (storage layer) | `01c053c` RiskTracker + `5936257` IpRateLimiter migrated to `DashMap<RiskKey, …>`. IP-only API kept bit-compat; new `*_with_key` methods take the full composite. Data-plane composite-key extraction (build the RiskKey from RequestView) is the next slice — schema is ready. |
+| F — security depth features | DONE | 4 commits: `966f831` (canary detector), `ffe11c0` (behavior signals — 4× §5.2), `44ebdcc` (velocity sequence engine — login/otp → deposit/withdrawal), `755e9b2` (response filter §5.7 — header strip + IPv6 + JSON mask helper). |
 | G — core schema fields | DONE | 2 commits: `678baa2` (DDoS tier_overrides + fail_mode_by_tier + canary_paths), `4d91eeb` (RlScope/RlKey + DetectorsConfig per_tier). All `#[serde(default)]` — no breaking changes. |
 | H — correctness/ops | DONE | F-CRITICAL-012 (spawn_blocking) `0959c3e`, F-CRITICAL-013 (chain-on-disk + fsync + cross-day) `ed7b21e`, F-CRITICAL-015 (SSRF) `3c47141`, F-CRITICAL-016 (VecDeque) `64cd728`. |
 | I — dead-code deletion | DONE | `0ef3eaf` (5 modules, 2419 LoC) + `cf1926d` (dod.rs cleanup) + `a647b60` (compliance removal). |
 
-**Next session priorities (in order):**
-1. Phase C.2 — `AuditEvent` add `method`/`path`/`mode` fields + 45-site sweep + introduce `AuditAction` enum.
-2. Phase E — composite `{IP+device_fp+session}` keys for RiskTracker + IpRateLimiter (~300 LoC).
-3. Phase F — velocity engine, canary-path detector (consume Phase G schema), behavior signals.
-4. [`plans/future/rule-non-block-actions.md`](../../future/rule-non-block-actions.md) — wire the 5 non-Block rule actions (Allow, Challenge, RateLimited, LogOnly +1) for scoring depth.
+**All issue-fix phases are now closed.** Remaining loose ends are
+tracked outside this plan:
 
-**Now closed at the issue-fix plan level:** all phases except C.2 (deferred construction-sweep) + E + F. Everything still open is Round-2 benchmark scoring depth, not Round-1 Pass/Fail.
+1. **F-CRITICAL-004 — `action: String → AuditAction` enum.**
+   Cross-crate refactor (audit struct + interop headers + decision
+   action). Not blocking. Will land when the v2.3 §3 wire-shape
+   work needs the enum.
+2. **Phase E data-plane composite-key extraction.** Storage is
+   ready; the data plane still calls IP-only methods. Wiring
+   `RequestView → RiskKey { ip, device_fp: <ja4+ua hash>, session:
+   <cookie>, tenant_id: <route> }` and switching the call sites
+   to `*_with_key` is a separate commit.
+3. [`plans/future/rule-non-block-actions.md`](../../future/rule-non-block-actions.md)
+   — wire the 5 non-Block rule actions (Allow, Challenge,
+   RateLimited, LogOnly, +1) for scoring depth.
+
+Round-1 Pass/Fail is fully addressed. Round-2 benchmark scoring
+depth is materially advanced — every audit-mandated detector and
+both keyed subsystems are now in place.
 
 If you authorise with "go" + defaults, I'll start Phase A immediately.
