@@ -22,7 +22,7 @@
   }
 
   function showError(msg) {
-    errEl.textContent = msg || 'Login failed';
+    errEl.textContent = msg;
   }
 
   form.addEventListener('submit', function (ev) {
