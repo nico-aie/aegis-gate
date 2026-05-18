@@ -77,6 +77,7 @@ SMOKE_ADMIN      ?= http://localhost:9443
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
         dashboard redis-up redis-down obs-up obs-down urls logs login-reset \
         upstream-build upstream-up upstream-down \
+        juice-up juice-down juice-logs \
         mock-load mock-load-attacks mock-load-mix \
         stage bench-dev
 
@@ -311,6 +312,38 @@ upstream-up: ## Start the dev mock upstream on :9999 (idempotent — auto-invoke
 upstream-down: ## Stop the dev mock upstream
 	@pkill -f $(UPSTREAM_BIN_DEV) 2>/dev/null || true
 	@echo "upstream stopped"
+
+##@ Security validation upstream (opt-in — never auto-invoked)
+# OWASP Juice Shop runs as a real vulnerable backend so you can drive
+# real exploit chains through the WAF (SQLi / XSS / IDOR / SSRF / auth
+# bypass) and watch them get blocked end-to-end. Heavy (Node container,
+# ~500 MB pull, ~30s warm-up) — gated behind a docker-compose profile
+# so `make run-dev` never pays the cost.
+#
+# Workflow:
+#   make juice-up           # pull + start; first run can take a minute
+#   # edit config: add a route { upstream: http://localhost:3001 }
+#   make run-dev            # WAF boots as usual; routes traffic to juice
+#   curl https://localhost:8443/...   # exercise the app
+#   make juice-down         # stop when done
+
+juice-up: ## Start OWASP Juice Shop on :3001 for WAF security validation (opt-in)
+	@docker compose -f deploy/docker-compose.dev.yml --profile juice-shop up -d juice-shop
+	@echo
+	@echo "  Juice Shop:  http://localhost:3001"
+	@echo "  Wire as WAF upstream:"
+	@echo "    routes:"
+	@echo "      - id: juice-shop"
+	@echo "        prefix: /"
+	@echo "        upstream: { url: \"http://localhost:3001\" }"
+
+juice-down: ## Stop OWASP Juice Shop
+	@docker compose -f deploy/docker-compose.dev.yml --profile juice-shop stop juice-shop 2>/dev/null || true
+	@docker compose -f deploy/docker-compose.dev.yml --profile juice-shop rm -f juice-shop 2>/dev/null || true
+	@echo "juice-shop stopped"
+
+juice-logs: ## Tail Juice Shop container logs
+	@docker logs -f --tail 100 aegis-juice-shop
 
 ##@ Demo / observability traffic
 # Generate live traffic against the local WAF so the dashboard +
