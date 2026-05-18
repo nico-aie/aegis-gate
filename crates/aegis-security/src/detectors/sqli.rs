@@ -53,14 +53,27 @@ impl Detector for SqliDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
 
-        // Check URI (path + query), URL-decoded.
-        let uri_str = super::url_decode(&req.uri.to_string());
-        check_patterns(&uri_str, "uri", &mut signals);
+        // S1 (2026-05-18) — multi-variant decoder pipeline. Catches
+        // double-URL-encoded payloads (`%2527+OR+1=1`), HTML-entity
+        // encoded (`&apos; OR 1=1`), and unicode-escape (`'`)
+        // forms that the single-pass `url_decode` missed.
+        let raw_uri = req.uri.to_string();
+        for variant in super::normalize_for_detection(&raw_uri) {
+            check_patterns(&variant, "uri", &mut signals);
+            if !signals.is_empty() {
+                break;
+            }
+        }
 
         // Check body.
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() {
-            check_patterns(&super::url_decode(body), "body", &mut signals);
+        if !body.is_empty() && signals.is_empty() {
+            for variant in super::normalize_for_detection(body) {
+                check_patterns(&variant, "body", &mut signals);
+                if !signals.is_empty() {
+                    break;
+                }
+            }
         }
 
         // Check selected headers.
@@ -164,6 +177,13 @@ mod tests {
     positive_test!(sqli_and_1_eq_1, "/?id=1+AND+1=1");
     positive_test!(sqli_into_dumpfile, "/?q=INTO+DUMPFILE+'/tmp/x'");
     positive_test!(sqli_union_all_select, "/?q=UNION+ALL+SELECT+1,2,3");
+    // S1 (2026-05-18) — decoder-evasion positives.
+    // Each row is a payload that the single-pass `url_decode`
+    // missed and `normalize_for_detection` now catches.
+    positive_test!(sqli_double_url_encoded_union, "/?q=%2520UNION%2520SELECT%2520*%2520FROM%2520users");
+    positive_test!(sqli_html_entity_quote, "/?q=&apos;+OR+1=1--");
+    positive_test!(sqli_unicode_escape_quote, "/?q=\\u0027+OR+1=1--");
+    positive_test!(sqli_hex_escape_quote, "/?q=\\x27+OR+1=1--");
 
     // === Negative fixtures (should NOT detect) ===
 

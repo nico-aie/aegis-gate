@@ -140,6 +140,23 @@ pub(crate) fn html_entity_decode(input: &str) -> String {
                     b"amp" => Some(b"&"),
                     b"sol" => Some(b"/"),
                     b"colon" => Some(b":"),
+                    // 2026-05-18 S1 — path-traversal evasion entities.
+                    // `&period;`/`&dot;` → `.`, `&bsol;` → `\`, `&num;` → `#`
+                    // round out the URL-path characters attackers use to
+                    // bypass naive substring filters. The XSS subset
+                    // above is unchanged; this only extends coverage.
+                    b"period" | b"dot" => Some(b"."),
+                    b"bsol" => Some(b"\\"),
+                    b"num" => Some(b"#"),
+                    b"comma" => Some(b","),
+                    // 2026-05-18 S1 — shell-metachar entities for
+                    // command-injection evasion (e.g. `&semi;&dollar;(id)`).
+                    b"semi" => Some(b";"),
+                    b"dollar" => Some(b"$"),
+                    b"lpar" => Some(b"("),
+                    b"rpar" => Some(b")"),
+                    b"verbar" | b"vert" => Some(b"|"),
+                    b"grave" => Some(b"`"),
                     _ => None,
                 };
                 if let Some(r) = replacement {
@@ -182,6 +199,127 @@ pub(crate) fn url_decode(input: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Repeated URL-decode — applies [`url_decode`] up to `max_passes`
+/// times, stopping as soon as a pass produces no change.
+///
+/// 2026-05-18 S1 — handles double-encoded payloads like
+/// `%252fetc%252fpasswd` (decodes to `%2fetc%2fpasswd`, then to
+/// `/etc/passwd`). The single-pass variant only catches the first
+/// layer; chained encoding has been a documented WAF bypass for
+/// years (RFC 3986 doesn't forbid it; many app frameworks decode
+/// it transparently).
+///
+/// Bounded at 3 passes — three layers of `%25...%25...` is already
+/// excessive; further passes invite quadratic-allocation pathology
+/// on adversarial input.
+pub(crate) fn url_decode_repeated(input: &str, max_passes: usize) -> String {
+    let mut current = input.to_string();
+    for _ in 0..max_passes {
+        let next = url_decode(&current);
+        if next == current {
+            return current;
+        }
+        current = next;
+    }
+    current
+}
+
+/// Decode JavaScript / JSON-style escape sequences:
+///   - `\uHHHH` (4-hex-digit BMP code point)
+///   - `\xHH` (2-hex-digit byte)
+///
+/// 2026-05-18 S1 — closes the path-traversal evasion class where
+/// payloads use `../etc/passwd` or `\x2e\x2e/etc/passwd`
+/// (the JSON / JS source-form of `..`). Frameworks that parse JSON
+/// bodies decode these transparently; the WAF needs to see the
+/// decoded form too.
+///
+/// Cheap pre-filter: bail before allocating if no `\` is present.
+/// Malformed escapes pass through unchanged (the backslash is
+/// emitted and parsing resumes at the next char).
+pub(crate) fn unicode_escape_decode(input: &str) -> String {
+    if !input.contains('\\') {
+        return input.to_string();
+    }
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        match bytes[i + 1] {
+            // `\uHHHH` — 4 hex digits → Unicode code point.
+            b'u' if i + 5 < bytes.len() => {
+                let digits = &bytes[i + 2..i + 6];
+                if digits.iter().all(|b| b.is_ascii_hexdigit()) {
+                    let s = std::str::from_utf8(digits).unwrap_or("");
+                    if let Ok(code) = u32::from_str_radix(s, 16) {
+                        if let Some(ch) = char::from_u32(code) {
+                            let mut buf = [0u8; 4];
+                            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                            i += 6;
+                            continue;
+                        }
+                    }
+                }
+                out.push(b'\\');
+                i += 1;
+            }
+            // `\xHH` — 2 hex digits → single byte.
+            b'x' if i + 3 < bytes.len() => {
+                let digits = &bytes[i + 2..i + 4];
+                if digits.iter().all(|b| b.is_ascii_hexdigit()) {
+                    let s = std::str::from_utf8(digits).unwrap_or("");
+                    if let Ok(byte) = u8::from_str_radix(s, 16) {
+                        out.push(byte);
+                        i += 4;
+                        continue;
+                    }
+                }
+                out.push(b'\\');
+                i += 1;
+            }
+            _ => {
+                out.push(b'\\');
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Produce the set of normalised forms a detector should match
+/// against. Returns up to 4 variants — the raw input plus each
+/// distinct decoder output. Identical results are deduplicated so
+/// downstream pattern scans don't run more than once on the same
+/// string.
+///
+/// 2026-05-18 S1 — central pipeline used by path-traversal / sqli /
+/// command-injection detectors so the evasion-class coverage is
+/// uniform. XSS uses a narrower bespoke pipeline (URL → entity)
+/// already; widening it to call `normalize_for_detection` is a
+/// follow-up if the eval shows it needs the unicode-escape pass.
+///
+/// Order matters for short-circuiting: variants are emitted in
+/// increasing transform cost, so callers that find a match early
+/// can return without running the later passes.
+pub(crate) fn normalize_for_detection(input: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(4);
+    let mut push = |s: String| {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    };
+    push(input.to_string());
+    push(url_decode_repeated(input, 3));
+    push(html_entity_decode(input));
+    push(unicode_escape_decode(input));
+    out
 }
 
 /// Detector trait — each OWASP detector implements this.
@@ -528,6 +666,106 @@ mod tests {
         );
         assert!(signals.is_empty());
         assert!(fired.is_empty(), "no detector should fire on a clean request");
+    }
+
+    // ---------- S1 (2026-05-18) decoder helpers -------------------------
+
+    #[test]
+    fn url_decode_repeated_unwraps_double_encoding() {
+        // `%2525` → `%25` → `%`. Three passes needed for triple-encoded.
+        assert_eq!(url_decode_repeated("%2525", 3), "%");
+        assert_eq!(url_decode_repeated("%252fetc%252fpasswd", 3), "/etc/passwd");
+    }
+
+    #[test]
+    fn url_decode_repeated_stops_when_no_change() {
+        // Idempotent on already-decoded input — no extra allocations
+        // beyond the first comparison.
+        assert_eq!(url_decode_repeated("hello", 3), "hello");
+        assert_eq!(url_decode_repeated("/etc/passwd", 3), "/etc/passwd");
+    }
+
+    #[test]
+    fn url_decode_repeated_respects_max_passes() {
+        // Two-layer encoding with only one pass returns intermediate.
+        assert_eq!(url_decode_repeated("%2525", 1), "%25");
+        assert_eq!(url_decode_repeated("%2525", 2), "%");
+    }
+
+    #[test]
+    fn unicode_escape_decode_handles_u_form() {
+        assert_eq!(unicode_escape_decode("\\u002e\\u002e/x"), "../x");
+        assert_eq!(unicode_escape_decode("\\u0041\\u0042"), "AB");
+    }
+
+    #[test]
+    fn unicode_escape_decode_handles_x_form() {
+        assert_eq!(unicode_escape_decode("\\x2e\\x2e/x"), "../x");
+        assert_eq!(unicode_escape_decode("\\x27 OR 1=1"), "' OR 1=1");
+    }
+
+    #[test]
+    fn unicode_escape_decode_passes_through_no_backslash() {
+        // Cheap pre-filter: input without `\` returns as-is.
+        assert_eq!(unicode_escape_decode("/etc/passwd"), "/etc/passwd");
+        assert_eq!(unicode_escape_decode(""), "");
+    }
+
+    #[test]
+    fn unicode_escape_decode_passes_through_malformed() {
+        // `\u00` is not a complete escape — emit literal backslash.
+        assert_eq!(unicode_escape_decode("\\u00"), "\\u00");
+        // `\z` is not a recognised escape — same.
+        assert_eq!(unicode_escape_decode("\\z"), "\\z");
+    }
+
+    #[test]
+    fn html_entity_decode_handles_new_path_entities() {
+        // The new named entities added in S1 cover characters
+        // attackers use to disguise `..`, `\`, `#`.
+        assert_eq!(html_entity_decode("&period;&period;/x"), "../x");
+        assert_eq!(html_entity_decode("&dot;&dot;/x"), "../x");
+        assert_eq!(html_entity_decode("&bsol;windows"), "\\windows");
+        assert_eq!(html_entity_decode("&num;46"), "#46");
+    }
+
+    #[test]
+    fn html_entity_decode_handles_new_shell_entities() {
+        // The shell-metachar set lets us catch entity-encoded
+        // command-injection (`&semi;&dollar;(id)`).
+        assert_eq!(html_entity_decode("&semi;&dollar;(id)"), ";$(id)");
+        assert_eq!(html_entity_decode("&verbar;whoami"), "|whoami");
+        assert_eq!(html_entity_decode("&grave;id&grave;"), "`id`");
+    }
+
+    #[test]
+    fn normalize_for_detection_includes_raw_and_decoded_variants() {
+        let v = normalize_for_detection("%252e%252e/etc");
+        // Raw + repeated-URL-decoded; html/unicode passes don't
+        // contribute new variants here.
+        assert!(v.iter().any(|s| s == "%252e%252e/etc"));
+        assert!(v.iter().any(|s| s == "../etc"));
+    }
+
+    #[test]
+    fn normalize_for_detection_dedupes_identical_variants() {
+        // Clean input — every decoder pass is a no-op, so we
+        // should get just the original once.
+        let v = normalize_for_detection("/health");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0], "/health");
+    }
+
+    #[test]
+    fn normalize_for_detection_emits_entity_decoded_variant() {
+        let v = normalize_for_detection("&period;&period;/etc");
+        assert!(v.iter().any(|s| s == "../etc"));
+    }
+
+    #[test]
+    fn normalize_for_detection_emits_unicode_decoded_variant() {
+        let v = normalize_for_detection("\\u002e\\u002e/etc");
+        assert!(v.iter().any(|s| s == "../etc"));
     }
 
     #[test]
