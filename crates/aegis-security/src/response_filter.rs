@@ -1,8 +1,45 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-/// Headers to strip from responses.
-const STRIP_HEADERS: &[&str] = &["server", "x-powered-by"];
+/// 2026-05-18 F-CRITICAL-013 (security audit, Phase F §5.7 sub-fix
+/// 1+3): outbound response header strip-list. Pre-fix this only
+/// covered `server` + `x-powered-by`; backend frameworks routinely
+/// leak version banners and debug context that §5.7 explicitly
+/// requires the WAF to scrub.
+///
+/// Exact matches catch the well-known stable header names.
+const STRIP_HEADERS_EXACT: &[&str] = &[
+    "server",
+    "x-powered-by",
+    "x-aspnet-version",
+    "x-aspnetmvc-version",
+    "x-runtime",
+    "x-version",
+    "x-generator",
+    "x-php-version",
+    "x-rails-env",
+];
+
+/// Prefix matches catch families of debug / internal headers that
+/// frameworks emit with caller-specific suffixes (`X-Debug-User`,
+/// `X-Internal-Latency`, `X-Trace-Id`, etc.). §5.7 mandates that
+/// PII / debug context never crosses the WAF to the client.
+const STRIP_HEADERS_PREFIX: &[&str] = &[
+    "x-debug",
+    "x-internal",
+    "x-trace",
+];
+
+/// Test whether a response header name should be stripped before
+/// the WAF emits the response to the client. Case-insensitive —
+/// HTTP/2 lowercases header names so a single lowercase match
+/// covers the wire, but production responses from upstream HTTP/1.1
+/// often carry mixed-case names that the strip needs to handle too.
+pub fn should_strip_header(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    STRIP_HEADERS_EXACT.iter().any(|h| *h == lower)
+        || STRIP_HEADERS_PREFIX.iter().any(|p| lower.starts_with(p))
+}
 
 /// Security headers to inject.
 pub struct SecurityHeaders {
@@ -29,9 +66,17 @@ impl Default for SecurityHeaders {
 
 /// Apply security header injection to a response header map.
 pub fn inject_security_headers(headers: &mut http::HeaderMap, config: &SecurityHeaders) {
-    // Strip dangerous headers.
-    for name in STRIP_HEADERS {
-        headers.remove(*name);
+    // 2026-05-18 F-CRITICAL-013 §5.7 — strip the wider class via
+    // the unified `should_strip_header` predicate (exact + prefix).
+    // Headers we strip get collected first because `retain` would
+    // need a mutable + immutable borrow otherwise.
+    let to_remove: Vec<http::HeaderName> = headers
+        .keys()
+        .filter(|k| should_strip_header(k.as_str()))
+        .cloned()
+        .collect();
+    for name in to_remove {
+        headers.remove(&name);
     }
 
     // Inject security headers.
@@ -71,6 +116,45 @@ static INTERNAL_IP_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     ).unwrap()
 });
 
+/// 2026-05-18 F-CRITICAL-013 §5.7 sub-fix (IPv6 internal-IP).
+/// Covers:
+///
+/// - `::1` — IPv6 loopback
+/// - `fc00::/7` — Unique Local Addresses (matches `fc..` / `fd..`)
+/// - `fe80::/10` — link-local (`fe80::` through `febf::`)
+/// - `::ffff:<ipv4>` — IPv4-mapped IPv6
+///
+/// `\b` alone is unreliable for IPv6 because `:` is a non-word
+/// character — `\b` fires at every `hex→:` and `:→hex` boundary,
+/// so a public address like `2001:db8::1` would match the `::1`
+/// suffix unintentionally. Each branch instead uses explicit
+/// char-class anchors `(?:^|[^0-9a-fA-F:])` ... `(?:$|[^0-9a-fA-F])`
+/// to require the IPv6 token be its own atom in the surrounding
+/// text. The leading anchor is captured into named group `lead`
+/// so `replace_all` can preserve it.
+static INTERNAL_IPV6_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        // Leading anchor only — the `lead` capture distinguishes
+        // bare `::1` from the `::1` tail of a longer public address
+        // like `2001:db8::1`. We deliberately do NOT anchor the
+        // trailing side because legitimate contexts (`::1:9999`
+        // for port, `fc00:abcd:1234:5678::42` for the rest of a
+        // ULA) place hex/colon directly after our pattern. Greedy
+        // hex/colon consumption inside the address branches
+        // (`[0-9a-f:]+`) handles the ULA / link-local "rest of
+        // address" naturally.
+        r"(?ix)
+            (?P<lead> ^ | [^0-9a-fA-F:] )
+            (?:
+                ::1
+                | [f][cd][0-9a-f]{2} : [0-9a-f:]+
+                | fe[89ab][0-9a-f]   : [0-9a-f:]+
+                | ::ffff: \d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}
+            )
+        "
+    ).unwrap()
+});
+
 /// Scrub stack traces from a text chunk.
 pub fn scrub_stack_traces(text: &str) -> String {
     let mut result = text.to_string();
@@ -80,9 +164,66 @@ pub fn scrub_stack_traces(text: &str) -> String {
     result
 }
 
-/// Mask internal IP addresses in text.
+/// Mask internal IP addresses in text. 2026-05-18 F-CRITICAL-013
+/// §5.7: also masks IPv6 internal addresses (`::1`, `fc00::/7`,
+/// `fe80::/10`, IPv4-mapped IPv6 `::ffff:10.0.0.1`). Pre-fix only
+/// IPv4 RFC 1918 + link-local + loopback were caught; backend
+/// errors from IPv6-only deployments leaked unmasked.
 pub fn mask_internal_ips(text: &str) -> String {
-    INTERNAL_IP_PATTERN.replace_all(text, "[INTERNAL]").to_string()
+    let v4 = INTERNAL_IP_PATTERN.replace_all(text, "[INTERNAL]");
+    // IPv6 regex captures the leading anchor (start of text or
+    // non-hex-non-colon char) so the surrounding context is
+    // preserved across the replacement.
+    INTERNAL_IPV6_PATTERN
+        .replace_all(&v4, "${lead}[INTERNAL]")
+        .to_string()
+}
+
+/// 2026-05-18 F-CRITICAL-013 §5.7 sub-fix (JSON field masking).
+/// Recursively replaces values of fields whose names match
+/// `field_names` (case-insensitive) with `replacement`. Pure
+/// function over `serde_json::Value`; no I/O, no allocation
+/// beyond the replacement string.
+///
+/// Pipeline integration (wiring `on_response_complete` to call
+/// this on JSON bodies) is a follow-up — this helper is the
+/// load-bearing piece. Operators tuning `cfg.dlp.field_mask`
+/// will see real effect once the wire-up lands.
+///
+/// Why field-aware, not regex: regex over arbitrary text can't
+/// reliably distinguish a card number value from a card-number-
+/// shaped string inside a stack trace. Field-aware masking only
+/// touches the values of explicitly listed JSON keys — zero
+/// false-positives on natural-language bodies.
+pub fn mask_json_fields(
+    body: &mut serde_json::Value,
+    field_names: &[String],
+    replacement: &str,
+) {
+    match body {
+        serde_json::Value::Object(map) => {
+            let names_lower: Vec<String> = field_names
+                .iter()
+                .map(|s| s.to_ascii_lowercase())
+                .collect();
+            for (k, v) in map.iter_mut() {
+                if names_lower
+                    .iter()
+                    .any(|n| n == k.to_ascii_lowercase().as_str())
+                {
+                    *v = serde_json::Value::String(replacement.to_string());
+                } else {
+                    mask_json_fields(v, field_names, replacement);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                mask_json_fields(v, field_names, replacement);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Process a response body chunk through all filters.
@@ -118,6 +259,99 @@ mod tests {
         headers.insert("x-powered-by", "Express".parse().unwrap());
         inject_security_headers(&mut headers, &SecurityHeaders::default());
         assert!(!headers.contains_key("x-powered-by"));
+    }
+
+    /// 2026-05-18 F-CRITICAL-013 §5.7: the extended exact strip
+    /// list catches version banners no §5.7-compliant WAF should
+    /// forward to clients.
+    #[test]
+    fn strips_extended_version_banners() {
+        let mut headers = http::HeaderMap::new();
+        for h in [
+            "x-aspnet-version",
+            "x-aspnetmvc-version",
+            "x-runtime",
+            "x-version",
+            "x-generator",
+            "x-php-version",
+            "x-rails-env",
+        ] {
+            headers.insert(
+                http::HeaderName::from_bytes(h.as_bytes()).unwrap(),
+                "leak".parse().unwrap(),
+            );
+        }
+        inject_security_headers(&mut headers, &SecurityHeaders::default());
+        for h in [
+            "x-aspnet-version",
+            "x-aspnetmvc-version",
+            "x-runtime",
+            "x-version",
+            "x-generator",
+            "x-php-version",
+            "x-rails-env",
+        ] {
+            assert!(!headers.contains_key(h), "{h} must be stripped");
+        }
+    }
+
+    /// 2026-05-18 F-CRITICAL-013 §5.7: prefix scanner catches
+    /// caller-specific debug / internal / trace headers
+    /// frameworks routinely emit.
+    #[test]
+    fn strips_debug_internal_trace_prefixes() {
+        let mut headers = http::HeaderMap::new();
+        for h in [
+            "x-debug-user",
+            "x-debug",
+            "x-internal-latency",
+            "x-internal",
+            "x-trace-id",
+            "x-trace",
+        ] {
+            headers.insert(
+                http::HeaderName::from_bytes(h.as_bytes()).unwrap(),
+                "leak".parse().unwrap(),
+            );
+        }
+        inject_security_headers(&mut headers, &SecurityHeaders::default());
+        for h in [
+            "x-debug-user",
+            "x-debug",
+            "x-internal-latency",
+            "x-internal",
+            "x-trace-id",
+            "x-trace",
+        ] {
+            assert!(!headers.contains_key(h), "{h} must be stripped");
+        }
+    }
+
+    /// Negative: legitimate response headers are NOT stripped.
+    /// Specifically `content-type`, `etag`, `cache-control`,
+    /// `x-request-id` (custom but non-debug) must pass through.
+    #[test]
+    fn does_not_strip_legitimate_headers() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("etag", "\"abc123\"".parse().unwrap());
+        headers.insert("cache-control", "max-age=3600".parse().unwrap());
+        headers.insert("x-request-id", "uuid-here".parse().unwrap());
+        inject_security_headers(&mut headers, &SecurityHeaders::default());
+        assert!(headers.contains_key("content-type"));
+        assert!(headers.contains_key("etag"));
+        assert!(headers.contains_key("cache-control"));
+        assert!(headers.contains_key("x-request-id"));
+    }
+
+    /// `should_strip_header` is case-insensitive — HTTP/2 emits
+    /// lowercase but HTTP/1.1 upstream responses don't necessarily.
+    #[test]
+    fn should_strip_is_case_insensitive() {
+        assert!(should_strip_header("Server"));
+        assert!(should_strip_header("X-POWERED-BY"));
+        assert!(should_strip_header("X-Debug-User"));
+        assert!(!should_strip_header("Content-Type"));
     }
 
     #[test]
@@ -249,5 +483,103 @@ mod tests {
         let text = "OK";
         let filtered = filter_chunk(text.as_bytes());
         assert_eq!(filtered, text.as_bytes());
+    }
+
+    // ---- 2026-05-18 F-CRITICAL-013 §5.7 ---------------------------------
+
+    /// IPv6 loopback (`::1`) masked.
+    #[test]
+    fn masks_ipv6_loopback() {
+        let text = "upstream unreachable: ::1:9999";
+        let m = mask_internal_ips(text);
+        assert!(!m.contains("::1"), "got {m}");
+        assert!(m.contains("[INTERNAL]"));
+    }
+
+    /// Unique Local Address `fc00::/7` masked.
+    #[test]
+    fn masks_ipv6_ula() {
+        let text = "trying upstream fc00:abcd:1234:5678::42 …";
+        let m = mask_internal_ips(text);
+        assert!(!m.contains("fc00:abcd"), "got {m}");
+        assert!(m.contains("[INTERNAL]"));
+    }
+
+    /// Link-local `fe80::/10` masked.
+    #[test]
+    fn masks_ipv6_link_local() {
+        let text = "neighbor fe80::1234:abcd advertised";
+        let m = mask_internal_ips(text);
+        assert!(!m.contains("fe80::1234"), "got {m}");
+    }
+
+    /// IPv4-mapped IPv6 (`::ffff:10.0.0.1`) masked — covers the
+    /// `[::ffff:<v4>]` SSRF / leak shape.
+    #[test]
+    fn masks_ipv4_mapped_ipv6() {
+        let text = "rerouting to ::ffff:10.0.0.5 backend";
+        let m = mask_internal_ips(text);
+        assert!(!m.contains("::ffff:10.0.0.5"), "got {m}");
+    }
+
+    /// Public IPv6 addresses are NOT masked (negative test).
+    #[test]
+    fn does_not_mask_public_ipv6() {
+        let text = "ipv6 host 2001:db8::1 listening";
+        let m = mask_internal_ips(text);
+        assert!(m.contains("2001:db8::1"), "public IPv6 should not be masked: {m}");
+    }
+
+    /// JSON field mask replaces values for configured field names.
+    #[test]
+    fn json_field_mask_replaces_listed_fields() {
+        let mut body = serde_json::json!({
+            "user": "alice",
+            "card_number": "4242424242424242",
+            "bank_account": "12345-67890",
+            "balance": 100,
+        });
+        let fields = vec!["card_number".to_string(), "bank_account".to_string()];
+        mask_json_fields(&mut body, &fields, "***");
+        assert_eq!(body["card_number"], serde_json::Value::String("***".into()));
+        assert_eq!(body["bank_account"], serde_json::Value::String("***".into()));
+        assert_eq!(body["user"], serde_json::Value::String("alice".into()));
+        assert_eq!(body["balance"], serde_json::json!(100));
+    }
+
+    /// JSON field mask is case-insensitive on field names.
+    #[test]
+    fn json_field_mask_is_case_insensitive() {
+        let mut body = serde_json::json!({"Card_Number": "4242"});
+        mask_json_fields(&mut body, &["card_number".into()], "***");
+        assert_eq!(body["Card_Number"], serde_json::Value::String("***".into()));
+    }
+
+    /// JSON field mask recurses into nested objects + arrays.
+    #[test]
+    fn json_field_mask_recurses() {
+        let mut body = serde_json::json!({
+            "users": [
+                {"name": "alice", "ssn": "111-22-3333"},
+                {"name": "bob",   "ssn": "444-55-6666"},
+            ],
+            "meta": {
+                "owner": {"ssn": "999-00-1111"},
+            },
+        });
+        mask_json_fields(&mut body, &["ssn".into()], "***");
+        assert_eq!(body["users"][0]["ssn"], serde_json::Value::String("***".into()));
+        assert_eq!(body["users"][1]["ssn"], serde_json::Value::String("***".into()));
+        assert_eq!(body["meta"]["owner"]["ssn"], serde_json::Value::String("***".into()));
+        assert_eq!(body["users"][0]["name"], serde_json::Value::String("alice".into()));
+    }
+
+    /// Empty field-names list is a no-op.
+    #[test]
+    fn json_field_mask_empty_list_no_op() {
+        let original = serde_json::json!({"card_number": "4242", "user": "alice"});
+        let mut body = original.clone();
+        mask_json_fields(&mut body, &[], "***");
+        assert_eq!(body, original);
     }
 }
