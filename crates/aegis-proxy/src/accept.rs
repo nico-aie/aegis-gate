@@ -1460,7 +1460,7 @@ pub(crate) async fn accept_loop(
                         // on every post-classify_tier exit point in
                         // the data plane.
                         tier: decision.tier,
-                        action: action.to_string(),
+                        action: action.to_string().into(),
                         reason: decision
                             .rule_id
                             .clone()

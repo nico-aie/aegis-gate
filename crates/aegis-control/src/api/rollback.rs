@@ -188,7 +188,7 @@ pub fn rollback_for_seq(
         });
     }
     if !ROLLBACKABLE_ACTIONS.iter().any(|a| *a == event.action) {
-        return Err(RollbackError::NotRollbackable(event.action.clone()));
+        return Err(RollbackError::NotRollbackable(event.action.as_str().to_string()));
     }
 
     match event.action.as_str() {
@@ -260,7 +260,7 @@ fn apply_rule_rollback(
             store.delete(id);
             Ok(RollbackOutcome {
                 rolled_back_to_seq: seq,
-                action: event.action.clone(),
+                action: event.action.as_str().to_string(),
                 before: serde_json::Value::Null,
                 after: live_before.unwrap_or(serde_json::Value::Null),
             })
@@ -294,7 +294,7 @@ fn apply_rule_rollback(
             }
             Ok(RollbackOutcome {
                 rolled_back_to_seq: seq,
-                action: event.action.clone(),
+                action: event.action.as_str().to_string(),
                 before: serde_json::json!({"id": id, "body": body, "enabled": enabled}),
                 after: live_before.unwrap_or(serde_json::Value::Null),
             })
@@ -320,7 +320,7 @@ fn apply_rule_rollback(
             let _ = store.upsert(id, &live.body, prior_enabled);
             Ok(RollbackOutcome {
                 rolled_back_to_seq: seq,
-                action: event.action.clone(),
+                action: event.action.as_str().to_string(),
                 before: serde_json::json!({"id": id, "enabled": prior_enabled}),
                 after: live_before,
             })
@@ -364,7 +364,7 @@ fn apply_mode_rollback(
 
     Ok(RollbackOutcome {
         rolled_back_to_seq: seq,
-        action: event.action.clone(),
+        action: event.action.as_str().to_string(),
         before: serde_json::json!({ "mode": mode_str(target_mode) }),
         after: serde_json::json!({ "mode": mode_str(live_mode) }),
     })
@@ -431,7 +431,7 @@ fn apply_risk_thresholds_rollback(
 
     Ok(RollbackOutcome {
         rolled_back_to_seq: seq,
-        action: event.action.clone(),
+        action: event.action.as_str().to_string(),
         before: serde_json::json!({
             "challenge_at": target.challenge_at,
             "block_at":     target.block_at,
@@ -476,7 +476,7 @@ fn apply_mtls_sans_rollback(
 
     Ok(RollbackOutcome {
         rolled_back_to_seq: seq,
-        action: event.action.clone(),
+        action: event.action.as_str().to_string(),
         before: serde_json::json!({ "allowed": before_list }),
         after: serde_json::json!({ "allowed": live }),
     })
@@ -507,7 +507,7 @@ fn apply_access_list_rollback(
         .get("diff")
         .ok_or_else(|| RollbackError::MissingBefore("diff".into()))?;
 
-    let is_add = event.action.ends_with("_add");
+    let is_add = event.action.as_str().ends_with("_add");
 
     if is_add {
         // Roll back an add → DELETE the entry that was added.
@@ -524,14 +524,14 @@ fn apply_access_list_rollback(
             // Idempotent: report success with empty after.
             return Ok(RollbackOutcome {
                 rolled_back_to_seq: seq,
-                action: event.action.clone(),
+                action: event.action.as_str().to_string(),
                 before: serde_json::json!({ "removed_id": id, "already_gone": true }),
                 after: serde_json::Value::Null,
             });
         }
         Ok(RollbackOutcome {
             rolled_back_to_seq: seq,
-            action: event.action.clone(),
+            action: event.action.as_str().to_string(),
             before: serde_json::json!({ "removed_id": id }),
             after: serde_json::Value::Null,
         })
@@ -551,7 +551,7 @@ fn apply_access_list_rollback(
             .map_err(RollbackError::ApplyFailed)?;
         Ok(RollbackOutcome {
             rolled_back_to_seq: seq,
-            action: event.action.clone(),
+            action: event.action.as_str().to_string(),
             before: serde_json::to_value(&restored).unwrap_or(serde_json::Value::Null),
             after: serde_json::Value::Null,
         })
@@ -639,7 +639,7 @@ fn apply_detector_mask_rollback(
 
     Ok(RollbackOutcome {
         rolled_back_to_seq: seq,
-        action: event.action.clone(),
+        action: event.action.as_str().to_string(),
         before: before.clone(),
         after: serde_json::json!({
             "base": live_base_body,
@@ -679,7 +679,7 @@ fn apply_verbosity_rollback(
 
     Ok(RollbackOutcome {
         rolled_back_to_seq: seq,
-        action: event.action.clone(),
+        action: event.action.as_str().to_string(),
         before: serde_json::json!({ "level": verbosity_str(target) }),
         after: serde_json::json!({ "level": verbosity_str(live) }),
     })
@@ -765,7 +765,7 @@ fn apply_loadmode_rollback(
 
     Ok(RollbackOutcome {
         rolled_back_to_seq: seq,
-        action: event.action.clone(),
+        action: event.action.as_str().to_string(),
         before: serde_json::json!({
             "override_active": override_active,
             "effective_mode": target_override.map(load_mode_str),

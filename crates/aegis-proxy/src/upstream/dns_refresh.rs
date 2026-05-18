@@ -358,7 +358,7 @@ fn emit_dns_resolved(
         class: AuditClass::System,
         tenant_id: None,
         tier: None,
-        action: "pool_dns_resolved".to_string(),
+        action: "pool_dns_resolved".into(),
         reason: format!(
             "dns refresh changed resolved IP set for pool `{pool_name}` (+{} / -{})",
             added.len(),

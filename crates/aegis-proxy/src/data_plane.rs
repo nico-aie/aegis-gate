@@ -1587,7 +1587,7 @@ pub(crate) async fn forward_allow_to_upstream(
                             class: aegis_core::audit::AuditClass::Access,
                             tenant_id: None,
                             tier: None,
-                            action: "websocket_close".to_string(),
+                            action: "websocket_close".into(),
                             reason: "ws_bridge_closed".to_string(),
                             client_ip: peer_ip.to_string(),
                             route_id: Some(route_id_for_task.clone()),
@@ -1641,7 +1641,7 @@ pub(crate) async fn forward_allow_to_upstream(
                 // 2026-05-05 — populate route's tier so Live Feed
                 // shows the real classification, not a risk-bucket.
                 tier: Some(route_ctx.tier),
-                action: "websocket_open".to_string(),
+                action: "websocket_open".into(),
                 reason: "ws_bridge_started".to_string(),
                 client_ip: peer_ip.to_string(),
                 route_id: Some(route_ctx.route_id.clone()),

@@ -478,7 +478,7 @@ async fn handle_rollback(
                 class: aegis_core::audit::AuditClass::Admin,
                 tenant_id: None,
                 tier: None,
-                action: rollback_action,
+                action: rollback_action.into(),
                 reason: format!(
                     "operator rolled back to audit version {}",
                     outcome.rolled_back_to_seq,
