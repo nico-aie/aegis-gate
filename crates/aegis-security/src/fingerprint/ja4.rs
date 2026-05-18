@@ -50,22 +50,37 @@ pub fn compute(
         SniType::None => 'x',
     };
 
-    let cipher_count = cipher_suites.len().min(99);
-    let ext_count = extensions.len().min(99);
+    // 2026-05-18 (QC Sprint 2.1 — F-CRITICAL-011): strip GREASE
+    // values before hashing. Chrome (and other browsers) rotate
+    // a GREASE marker into a random slot of the cipher / extension
+    // list on every TLS handshake — without stripping, every
+    // connection from the same Chrome install produces a
+    // different JA4 cipher_hash / ext_hash and the fingerprint
+    // can't be used for device-stability checks (e.g. the
+    // F-CRITICAL-010 device→IP reverse map). Per draft-ietf-tls-
+    // grease-04 / RFC 8701, GREASE values match the pattern
+    // `0x?A?A` where each nibble is 'A' — testable as
+    // `(v & 0x0F0F) == 0x0A0A`.
+    //
+    // **No sort.** The pre-fix code did `.sort_unstable()` after
+    // collecting, on the rationale of "stability across handshake
+    // re-orderings". But the JA4 spec calls for ORIGINAL ORDER —
+    // the cipher list's order IS the fingerprint signal. Sorting
+    // collapsed legitimate client-distinguishing reorderings into
+    // a single hash. After this fix, cipher_hash / ext_hash
+    // distinguish clients that reorder their ClientHello lists.
+    let cipher_count = cipher_suites.iter().filter(|c| !is_grease(**c)).count().min(99);
+    let ext_count = extensions.iter().filter(|e| !is_grease(**e)).count().min(99);
 
-    // Sort cipher suites and extensions for stability.
-    let mut sorted_ciphers: Vec<u16> = cipher_suites.to_vec();
-    sorted_ciphers.sort_unstable();
-    let mut sorted_exts: Vec<u16> = extensions.to_vec();
-    sorted_exts.sort_unstable();
-
-    let cipher_str = sorted_ciphers
+    let cipher_str = cipher_suites
         .iter()
+        .filter(|c| !is_grease(**c))
         .map(|c| format!("{c:04x}"))
         .collect::<Vec<_>>()
         .join(",");
-    let ext_str = sorted_exts
+    let ext_str = extensions
         .iter()
+        .filter(|e| !is_grease(**e))
         .map(|e| format!("{e:04x}"))
         .collect::<Vec<_>>()
         .join(",");
@@ -96,6 +111,20 @@ pub fn compute_salted(
 fn truncated_hash(input: &str) -> String {
     let hash = blake3::hash(input.as_bytes());
     hash.to_hex()[..12].to_string()
+}
+
+/// 2026-05-18 (QC Sprint 2.1 — F-CRITICAL-011): GREASE marker
+/// predicate per RFC 8701. Chrome and other modern browsers
+/// rotate one GREASE value into the cipher / extension lists on
+/// every handshake; the JA4 spec calls for filtering them out so
+/// the fingerprint is stable across connections.
+///
+/// GREASE values are `0x?A?A` where the top nibble of each byte
+/// is `A` — testable as `(v & 0x0F0F) == 0x0A0A`. That covers
+/// `0x0A0A`, `0x1A1A`, …, `0xFAFA` (16 reserved values).
+#[inline]
+pub(crate) fn is_grease(v: u16) -> bool {
+    (v & 0x0F0F) == 0x0A0A
 }
 
 #[cfg(test)]
@@ -235,5 +264,98 @@ mod tests {
         let a = compute_salted(p, v, s, &c, &e, &s1);
         let b = compute_salted(p, v, s, &c, &e, &s2);
         assert_ne!(a, b);
+    }
+
+    // ---- 2026-05-18 QC Sprint 2.1 — F-CRITICAL-011 ----
+
+    /// GREASE predicate covers all 16 reserved values from RFC 8701.
+    #[test]
+    fn is_grease_matches_rfc_8701_values() {
+        // All 16 reserved GREASE values.
+        for hi in 0..=15 {
+            let v = ((hi << 4) | 0x0A) as u16;
+            let v = (v << 8) | v;
+            assert!(
+                is_grease(v),
+                "expected 0x{v:04x} to be GREASE",
+            );
+        }
+        // Non-GREASE values.
+        for v in [0x1301u16, 0x1303, 0x002b, 0x000a, 0xc02b, 0xc02f] {
+            assert!(!is_grease(v), "expected 0x{v:04x} NOT to be GREASE");
+        }
+    }
+
+    /// The KEY regression test for F-CRITICAL-011: Chrome's
+    /// per-handshake GREASE rotation must NOT change the JA4.
+    /// Same client, two handshakes with different GREASE slots →
+    /// identical fingerprint.
+    #[test]
+    fn ja4_stable_under_chrome_grease_rotation() {
+        // Chrome ClientHello with GREASE 0x0A0A in different slots.
+        let ciphers_a: Vec<u16> = vec![
+            0x0A0A, 0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f,
+            0xc02c, 0xc030, 0xcca9, 0xcca8, 0xc013, 0xc014,
+            0x009c, 0x009d, 0x002f, 0x0035,
+        ];
+        // Same handshake, GREASE rotated to a different position +
+        // value (0x1A1A this time).
+        let ciphers_b: Vec<u16> = vec![
+            0x1301, 0x1302, 0x1A1A, 0x1303, 0xc02b, 0xc02f,
+            0xc02c, 0xc030, 0xcca9, 0xcca8, 0xc013, 0xc014,
+            0x009c, 0x009d, 0x002f, 0x0035,
+        ];
+        let exts: Vec<u16> = vec![
+            0x002b, 0x002d, 0x0033, 0x000a, 0x000b, 0x0017,
+            0xff01, 0x0005,
+        ];
+        let a = compute(ProtoType::Tcp, 0x0304, SniType::Domain, &ciphers_a, &exts);
+        let b = compute(ProtoType::Tcp, 0x0304, SniType::Domain, &ciphers_b, &exts);
+        assert_eq!(a, b, "GREASE rotation must not change JA4 (got {a} vs {b})");
+    }
+
+    /// Same rationale for the extension list.
+    #[test]
+    fn ja4_stable_under_grease_in_extensions() {
+        let ciphers: Vec<u16> = vec![0x1301, 0x1302, 0x1303];
+        let exts_a: Vec<u16> = vec![0x0A0A, 0x002b, 0x002d, 0x0033];
+        let exts_b: Vec<u16> = vec![0x002b, 0x4A4A, 0x002d, 0x0033];
+        let a = compute(ProtoType::Tcp, 0x0304, SniType::Domain, &ciphers, &exts_a);
+        let b = compute(ProtoType::Tcp, 0x0304, SniType::Domain, &ciphers, &exts_b);
+        assert_eq!(a, b);
+    }
+
+    /// Counter-test: NON-GREASE reordering DOES change the JA4.
+    /// The pre-fix code sorted ciphers, which masked legitimate
+    /// client-distinguishing reorderings.
+    #[test]
+    fn ja4_changes_when_non_grease_ciphers_reorder() {
+        let ciphers_a: Vec<u16> = vec![0x1301, 0x1302, 0x1303];
+        let ciphers_b: Vec<u16> = vec![0x1303, 0x1302, 0x1301]; // reversed
+        let exts: Vec<u16> = vec![0x002b];
+        let a = compute(ProtoType::Tcp, 0x0304, SniType::Domain, &ciphers_a, &exts);
+        let b = compute(ProtoType::Tcp, 0x0304, SniType::Domain, &ciphers_b, &exts);
+        assert_ne!(
+            a, b,
+            "non-GREASE cipher reordering should differentiate JA4 \
+             (the pre-fix sort_unstable collapsed this signal)",
+        );
+    }
+
+    /// GREASE count is excluded from the cipher_count / ext_count
+    /// fields. Chrome with 17 ciphers (1 GREASE + 16 real) reports
+    /// 10 (0x10 = 16) not 11.
+    #[test]
+    fn ja4_count_excludes_grease() {
+        let ciphers: Vec<u16> =
+            vec![0x0A0A, 0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f];
+        let exts: Vec<u16> = vec![0x002b];
+        let fp = compute(ProtoType::Tcp, 0x0304, SniType::Domain, &ciphers, &exts);
+        // Format: q ver sni cipher_count ext_count _ cipher_hash _ ext_hash
+        // → "t13d05" not "t13d06".
+        assert!(
+            fp.starts_with("t13d05"),
+            "cipher_count must exclude GREASE (got prefix in {fp})",
+        );
     }
 }
