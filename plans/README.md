@@ -1,6 +1,6 @@
 # Plans
 
-Cleaned up 2026-05-10. The top level holds tracking + reference
+Cleaned up 2026-05-19. The top level holds tracking + reference
 files only — every closed or paused plan lives in
 [`archive/`](./archive/), and feature plans we've intentionally
 deferred live in [`future/`](./future/).
@@ -12,19 +12,15 @@ plans/
 ├── README.md                       ← this file (entry point)
 ├── plan.md                         ← AI-assistant guide for this repo
 ├── implementation-matrix.md        ← doc-by-doc Implemented / Partial / Designed status
-├── dns-upstream-resolution.md      ← active plan (2026-05-11)
 ├── future/                         ← deferred features (operator-confirmed, not yet built)
 └── archive/                        ← closed / shipped / paused plans (read-only history)
 ```
 
 ## Active plans
 
-- [`dns-upstream-resolution.md`](./dns-upstream-resolution.md) —
-  Let operators address backends by hostname
-  (`api.example.com:443`) instead of pinning a `SocketAddr`.
-  Phase 1 (boot-time resolve) ≈ 2d, Phase 2 (background refresh
-  via hickory-resolver) ≈ 3d, Phase 3 (dashboard polish) ≈ 1d.
-  **Drafted 2026-05-11, not started.**
+None at top level. Pick up the next track from `future/` (each
+file is self-contained — Status / Why deferred / Code anchor /
+Future plan / Restoration checklist).
 
 ## Reference (kept at top level)
 
@@ -40,15 +36,35 @@ Features we've decided to defer. Each plan captures the
 restoration spec so a future revisit doesn't have to recompose
 context from scattered comments.
 
+- [`smart-caching.md`](./future/smart-caching.md) — opt-in
+  in-memory LRU response cache; flips `X-WAF-Cache: HIT/MISS`
+  from the always-`BYPASS` baseline. Phase 1 (in-memory + GET
+  allow-list) ≈ 3d. **Drafted 2026-05-19, designed only.**
 - [`compliance-profiles.md`](./future/compliance-profiles.md) —
   per-regime detector pinning + clamp enforcement (FIPS / PCI /
   SOC 2 / GDPR / HIPAA). Modes still parse and surface as
   documentation tags today; the lock is a no-op until the pin
   list is repopulated. **Status: Deferred 2026-05-10.**
+- [`audit-cold-tier-export.md`](./future/audit-cold-tier-export.md) —
+  scheduled long-tail audit exports (S3 / SFTP) beyond the
+  200-event ring cap. **Drafted, not started.**
+- [`multi-node-metrics-aggregation.md`](./future/multi-node-metrics-aggregation.md) —
+  cluster-wide Prometheus rollup once the multi-node deploy
+  lands. **Drafted, not started.**
+- [`risk-composite-key-data-plane.md`](./future/risk-composite-key-data-plane.md) —
+  remaining JA4 device-FP fold-in for the composite-key risk
+  bucket. Storage + most data-plane sites already landed.
+  **Tracked, partial.**
+- [`rule-non-block-actions.md`](./future/rule-non-block-actions.md) —
+  rule actions beyond block/log (challenge, tarpit, mirror).
+  **Drafted, not started.**
+- [`unwired-stubs-catalog.md`](./future/unwired-stubs-catalog.md) —
+  running catalogue of types / traits the rule engine declares
+  but doesn't yet evaluate.
 
 > **Adding a future plan**: new file in `future/<short-slug>.md`
 > with sections "Status / Why deferred / Code anchor / Future
-> plan / Restoration checklist". Mirror `compliance-profiles.md`.
+> plan / Restoration checklist". Mirror `smart-caching.md`.
 
 ## `archive/`
 
@@ -99,6 +115,12 @@ When picking up new work:
 
 ## Recent cleanups
 
+- 2026-05-19 — moved 13 closed issue-fix sprints (2026-05-11
+  → 2026-05-18) into `archive/issue-fix/`; archived shipped
+  `dns-upstream-resolution.md` (hickory-resolver + multi-A
+  expansion landed); flipped smart-caching matrix row from
+  Implemented to Deferred (TierCache removed 2026-05-11);
+  drafted `future/smart-caching.md`.
 - 2026-05-10 — folded ~25 top-level shipped plans into
   `archive/`; moved `issue-fix/`, `phase-b/`,
   `multi-node-deployment/` into `archive/`. Top level now
