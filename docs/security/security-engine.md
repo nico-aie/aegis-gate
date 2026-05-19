@@ -11,6 +11,15 @@
 > system-wide architecture context see [`Architecture.md`](../../Architecture.md)
 > §4 (Request Lifecycle) and §5 (Security Pipeline).
 
+> **2026-05-19 — composite-key migration.** Where this page says
+> "per-IP" for the Strike-Block gate, Cumulative IP risk score,
+> or Rate Limit, read it as **"per-`RiskKey { ip, device_fp?, session? }`
+> bucket"**. Two browsers on the same NAT'd IP each carry their own
+> bucket. **DDoS Gate stays per-IP by design** — volumetric protection
+> must fire fast regardless of session. The "Cumulative IP risk
+> thresholds" *card name* on the dashboard is preserved for operator
+> memory; the underlying counter is per-bucket.
+
 ---
 
 ## TL;DR — one paragraph
@@ -21,7 +30,7 @@ the request (block / 403, redirect to challenge, return 429) or adds
 a **score** to the request's running risk total. After all gates run,
 the WAF compares the total to the route's **tier risk threshold** —
 above the line it blocks, otherwise it forwards to the upstream pool.
-Independently, every detector hit also accrues to a **per-IP strike
+Independently, every detector hit also accrues to a **per-bucket strike
 score** that decays exponentially — a client that's been bad recently
 can be blocked at the gate even if today's individual request is
 clean.
@@ -287,7 +296,7 @@ Visible in:
 Reset to 0 at the start of every request — independent of any other
 request.
 
-### Cumulative IP risk score (per-IP, sticky)
+### Cumulative risk score (per-bucket, sticky)
 
 A second number tracked **per source IP**, persisted in the state
 backend (`StateBackend::add_risk` → Redis). Every detector hit AND
@@ -334,24 +343,34 @@ score-based gate above.
 
 Visible in:
 
-- The Investigation page's "Recent requests" table — column **IP risk**
-  (renamed 2026-05-04 from the misleading "Risk")
-- Top Attackers page (the leaderboard sort)
-- `tracking.risk` API surface
-- Per-IP detail panel in the request inspector
+- The Investigation page's "Recent requests" table — column **Risk score**
+  (renamed 2026-05-19 from "IP risk" after the composite-key migration —
+  the score is per-`RiskKey { ip, device_fp?, session? }` bucket now,
+  not per-IP).
+- Top Attackers page → **Composite RiskKey view** (one row per
+  bucket, with surgical reset).
+- `/api/risk` API surface — `RiskSnapshot` carries `device_fp` +
+  `session` axes (omitted via `skip_serializing_if = None` for
+  plain-HTTP / anonymous rows).
+- Per-bucket detail panel in the request inspector.
 
-A request can show **`IP risk = 100` and `action = ALLOW`** when:
-- The IP got hammered earlier (detectors fired, score climbed).
+A request can show **`Risk score = 100` and `action = ALLOW`** when:
+- The bucket got hammered earlier (detectors fired, score climbed).
 - The current request happens to not match any detector.
 - Per-request score = 0; route's tier threshold not crossed.
 - Score-gate `block_at` also not crossed (or already cleared by decay).
 
-That's expected behaviour, not a bug. To **block on cumulative IP
-score alone** (i.e. "if this client has been bad, refuse them
+That's expected behaviour, not a bug. To **block on cumulative
+score alone** (i.e. "if this bucket has been bad, refuse it
 regardless of what this single request looks like"), lower
-`risk.thresholds.block_at` from the Settings card. The trade-off:
-false positives if a legitimate user briefly trips a detector and
-shares an IP (NAT / corporate proxy / shared loopback in dev).
+`risk.thresholds.block_at` from the Traffic Gates card. The
+false-positive risk on shared egress is **dramatically reduced**
+as of 2026-05-19: legit user B on a NAT'd IP now has a separate
+bucket from attacker A on the same IP because TLS fingerprint +
+session cookie split them apart. The remaining trade-off is
+narrower (two legit users behind the same shared egress with
+the same browser shape AND no session cookie, e.g. anonymous
+public endpoints).
 
 ### What contributes to score
 

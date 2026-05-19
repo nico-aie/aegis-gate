@@ -5,6 +5,15 @@
 > UI**. This page explains why, and walks through every operator action
 > available for tuning risk to your environment.
 
+> **2026-05-19 — composite-key migration.** Cumulative risk scores
+> are now per-`RiskKey { ip, device_fp?, session? }` bucket, not
+> per-IP. Two browsers on the same NAT'd IP each carry their own
+> bucket score; reset one without disturbing the other via the
+> Top Attackers → Composite RiskKey view → "Reset bucket" button
+> (or `POST /api/risk/reset_key`). The legacy IP-only reset
+> (`POST /api/risk/<ip>/reset`) still exists and wipes every
+> bucket sharing that IP.
+
 ---
 
 ## TL;DR
@@ -72,7 +81,7 @@ The follow-up work on task #293 surfaces every detector's score (read-only) on t
 
 ### 1. Move a detector class to `log_only` (safest)
 
-`log_only` mode runs the detector and writes the audit row, but doesn't add to the per-IP risk score and doesn't gate the request. Use this when a detector is **noisy in your environment but you still want forensic visibility**.
+`log_only` mode runs the detector and writes the audit row, but doesn't add to the per-bucket risk score and doesn't gate the request. Use this when a detector is **noisy in your environment but you still want forensic visibility**.
 
 **Dashboard:** Settings → Mode profile → set `policies: ["recon"]` to `log_only`.
 
@@ -215,7 +224,7 @@ See [`profiles.md`](./profiles.md) for the empirical comparison + per-knob trade
 | Detector firing on legitimate traffic | `log_only` for that detector class | Per-tier override on the affected tier | Allow rule for the specific UA / route |
 | WAF blocking too aggressively | Raise `challenge_at` to 50 | Raise `block_at` to 90 | Move from `prod-strict` to `prod-balanced` profile |
 | WAF blocking too permissively | Lower `challenge_at` to 30 | Add `RaiseRisk(25)` rule on the affected detector | Move from `prod-balanced` to `prod-strict` profile |
-| Scanner from internal IP being banned | Whitelist the IP via Allow rule | Move the `recon` detector to `log_only` | Strikes-window reset (`POST /api/risk/reset` per IP) |
+| Scanner from internal IP being banned | Whitelist the IP via Allow rule | Move the `recon` detector to `log_only` | Strikes-window reset — surgical (`POST /api/risk/reset_key` for one bucket) or IP-wide (`POST /api/risk/<ip>/reset`) |
 | OAuth callback to partner domain blocked | Add domain to `open_redirect.allowed_domains` | (rare) move `open_redirect` to `log_only` | (rare) disable `open_redirect` for the OAuth route via per-tier override |
 | Specific detector should escalate faster on `/admin/**` | `RaiseRisk(delta: 25)` rule scoped to route | Lower `block_at` globally | (don't) edit the score |
 | Detector seems too noisy site-wide | Read its per-detector doc — many take a config knob | `log_only` until you've audited the noise | Raise thresholds globally |
@@ -261,7 +270,7 @@ The right path is:
 ## Cross-refs
 
 - [`security/security-engine.md`](../security/security-engine.md) — pipeline + risk-weight ladder + threshold trio.
-- [`security/risk-scoring.md`](../security/risk-scoring.md) — per-IP score accumulation, strikes window, ASN modifiers.
+- [`security/risk-scoring.md`](../security/risk-scoring.md) — per-bucket score accumulation, strikes window, ASN modifiers.
 - [`operator/profiles.md`](./profiles.md) — three production profiles + per-knob trade-off table.
 - [`control-plane/dashboard.md`](../control-plane/dashboard.md#simulator) — simulator usage.
 - [`control-plane/config-hot-reload.md`](../control-plane/config-hot-reload.md) — what's hot-reloadable vs reload-required.
