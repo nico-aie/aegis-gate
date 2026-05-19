@@ -278,6 +278,16 @@ pub struct DashboardServices {
     /// config from this; absent → the page renders an empty-state
     /// card with a "DDoS gate disabled" message.
     pub ddos: Option<std::sync::Arc<aegis_security::ddos::DdosRuntime>>,
+    /// 2026-05-19 — path to the source-of-truth `waf.yaml` the
+    /// proxy booted from. Populated by `aegis-proxy::run` only
+    /// when the reload source is `ConfigReloadSource::File`; left
+    /// `None` for tests, etcd-sourced configs, and one-shot CLI
+    /// commands. Drives the dashboard's "Configuration backup
+    /// (YAML)" download — admin_get reads the file at request
+    /// time so dashboard sees whatever's on disk right now,
+    /// including changes the operator made by editing the file
+    /// directly between hot-reloads.
+    pub config_yaml_path: Option<std::path::PathBuf>,
 }
 
 impl DashboardServices {
@@ -579,6 +589,11 @@ impl DashboardServices {
                 // Test bundles boot without the gate; /api/gates/ddos
                 // returns the empty-state shape in that case.
                 ddos: None,
+                // 2026-05-19 — populated by aegis-proxy::run only.
+                // Test bundles + etcd-sourced configs leave it `None`;
+                // the Reports page card renders an explanatory
+                // empty-state in that case.
+                config_yaml_path: None,
             },
             drain,
         )

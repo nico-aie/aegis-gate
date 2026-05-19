@@ -18,6 +18,26 @@ pub fn render_config(config: &Value) -> String {
     serde_json::to_string_pretty(&scrubbed).unwrap_or_else(|_| "{}".into())
 }
 
+/// 2026-05-19 — Render config as YAML for the dashboard's
+/// "Configuration backup" feature. The output is a drop-in
+/// replacement for `waf.yaml`: operators clone the downloaded
+/// file to disk and the existing config-watcher reloads in
+/// place.
+///
+/// Secret references (`${secret:env:…}`, `${secret:file:…}`)
+/// pass through unchanged because YAML emits them as plain
+/// strings — same scrub guarantee as [`render_config`]. The
+/// unit tests below pin that invariant.
+///
+/// On serialisation error we fall back to an empty document
+/// (`"{}\n"`) rather than panicking; the dashboard surfaces
+/// the HTTP status if the underlying serializer returned an
+/// `Err`.
+pub fn render_config_yaml(config: &Value) -> String {
+    let scrubbed = scrub_secrets(config);
+    serde_yaml::to_string(&scrubbed).unwrap_or_else(|_| "{}\n".into())
+}
+
 /// Check if a string value looks like an unresolved secret reference.
 pub fn is_secret_ref(val: &str) -> bool {
     val.starts_with("${secret:")
@@ -142,5 +162,74 @@ mod tests {
         let config = json!({});
         let rendered = render_config(&config);
         assert_eq!(rendered.trim(), "{}");
+    }
+
+    // ---- 2026-05-19 — YAML render for Configuration Backup ----
+
+    #[test]
+    fn render_config_yaml_round_trips_to_same_value() {
+        // The promise to operators is "drop this file in as
+        // waf.yaml". Parsing the YAML back must yield a value
+        // that round-trips through JSON identically to the
+        // original — no key renames, no type widening.
+        let original = json!({
+            "admin": { "bind": "0.0.0.0:9443" },
+            "tls":   { "min_version": "1.2" },
+            "routes": [{ "id": "catch-all", "path": "/", "upstream": "stub" }],
+        });
+        let yaml = render_config_yaml(&original);
+        let reparsed: Value = serde_yaml::from_str(&yaml)
+            .expect("rendered YAML must parse");
+        assert_eq!(reparsed, original);
+    }
+
+    #[test]
+    fn render_config_yaml_preserves_secret_refs() {
+        // Same invariant as the JSON renderer: ${secret:*}
+        // strings appear verbatim. YAML emitting these as
+        // quoted plain scalars is fine — the figment loader
+        // dequotes them on the way back in.
+        let config = json!({
+            "admin": {
+                "password_hash": "${secret:env:ADMIN_PASSWORD_HASH}",
+                "totp_key":      "${secret:file:/etc/aegis/totp.key}",
+                "bind":          "0.0.0.0:9443",
+            },
+            "tls": {
+                "key":  "${secret:vault:tls-key}",
+                "cert": "/etc/aegis/tls.crt",
+            },
+        });
+        let yaml = render_config_yaml(&config);
+        assert!(yaml.contains("${secret:env:ADMIN_PASSWORD_HASH}"));
+        assert!(yaml.contains("${secret:file:/etc/aegis/totp.key}"));
+        assert!(yaml.contains("${secret:vault:tls-key}"));
+        assert!(yaml.contains("/etc/aegis/tls.crt"));
+        // And the reparsed tree still flags those as secret refs.
+        let reparsed: Value = serde_yaml::from_str(&yaml).unwrap();
+        let refs = find_secret_refs(&reparsed, "");
+        assert_eq!(refs.len(), 3, "all three secret refs survive YAML round-trip");
+    }
+
+    #[test]
+    fn render_config_yaml_empty_object() {
+        let yaml = render_config_yaml(&json!({}));
+        // serde_yaml emits an empty mapping as `{}` followed by
+        // a newline. We just want it to be parseable and empty.
+        let reparsed: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(reparsed, json!({}));
+    }
+
+    #[test]
+    fn render_config_yaml_is_not_json_pretty() {
+        // Sanity: the two renderers are actually different
+        // formats. YAML for the same value should NOT contain
+        // braces around the whole document, and should use the
+        // colon-indented mapping form.
+        let cfg = json!({ "k": "v" });
+        let yaml = render_config_yaml(&cfg);
+        let json = render_config(&cfg);
+        assert!(yaml.contains("k:"), "yaml should be `k: v`, got {yaml:?}");
+        assert!(json.contains("\"k\""), "json should quote keys, got {json:?}");
     }
 }

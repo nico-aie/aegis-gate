@@ -10356,6 +10356,37 @@ function PageReports() {
     }
   }
 
+  // 2026-05-19 — Configuration backup. Hits the new
+  // /api/config/backup.yaml endpoint which streams the
+  // source-of-truth waf.yaml byte-for-byte. Different shape from
+  // the Compliance snapshot above: this is a drop-in replacement
+  // for the host's waf.yaml (operators clone it to a new node
+  // and the config-watcher reloads in place); Compliance snapshot
+  // is a forensic JSON bundle including live mask state.
+  async function downloadConfigBackup() {
+    setBusyId('config-backup');
+    try {
+      const r = await fetch('/api/config/backup.yaml', { credentials: 'same-origin' });
+      if (r.status === 404) {
+        const body = await r.json().catch(() => ({}));
+        window.aegisToast(
+          body.message
+            || 'WAF booted from a non-file config source — no waf.yaml to back up',
+          'warn',
+        );
+        return;
+      }
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      const blob = await r.blob();
+      downloadBlob(`aegis-config-${ts()}.yaml`, blob);
+      window.aegisToast('Configuration backup downloaded', 'ok');
+    } catch (err) {
+      window.aegisToast(`Configuration backup failed: ${err.message || err}`, 'err');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function downloadComplianceSnapshot() {
     setBusyId('compliance');
     try {
@@ -10410,10 +10441,23 @@ function PageReports() {
     {
       id: 'compliance',
       title: 'Compliance snapshot',
-      sub: 'Active runtime config + detector mask, JSON snapshot — sourced from /api/config + /api/detectors',
+      sub: 'Active runtime config + detector mask, JSON snapshot — sourced from /api/config + /api/detectors. Forensic / audit-attestation use.',
       kind: 'click',
       onClick: downloadComplianceSnapshot,
       label: 'Download JSON',
+    },
+    // 2026-05-19 — drop-in waf.yaml backup. Different shape from
+    // Compliance snapshot: this is the source-of-truth file
+    // suitable for cloning to a new node. Secret refs preserved
+    // as-is (${secret:env:…}, ${secret:file:…}) — no plaintext
+    // credentials are emitted.
+    {
+      id: 'config-backup',
+      title: 'Configuration backup (YAML)',
+      sub: 'Drop-in replacement for waf.yaml — clone the on-disk config to a new node. Secret references (${secret:*}) preserved as-is; in-memory dashboard mutations (rule CRUD, hot-flipped mask, risk-threshold edits) are NOT included.',
+      kind: 'click',
+      onClick: downloadConfigBackup,
+      label: 'Download YAML',
     },
   ];
   return (

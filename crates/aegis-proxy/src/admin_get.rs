@@ -134,6 +134,70 @@ pub(crate) fn admin_router(
             }))
         }
 
+        // 2026-05-19 — Configuration backup (Phase 1 of the
+        // dashboard's "clone this config to a new node" workflow).
+        //
+        // Serves the source-of-truth `waf.yaml` file the proxy
+        // booted from, byte-for-byte. Includes whatever the
+        // operator currently has on disk — comments preserved,
+        // `${secret:*}` references preserved. Returns 404 when
+        // the proxy booted from a non-file source (etcd / test
+        // bundle); the dashboard renders an explanatory empty
+        // state in that case.
+        //
+        // Does NOT include in-memory dashboard mutations (rule
+        // CRUD, hot-flipped detector mask, risk-threshold edits,
+        // mode toggle). Those live in dedicated persistence
+        // sinks (`cfg.detectors.persistence.path` for the mask;
+        // the rule store + risk thresholds are runtime-only).
+        // The dashboard card surfaces this caveat next to the
+        // download button.
+        "/api/config/backup.yaml" => {
+            match services.config_yaml_path.as_ref() {
+                Some(path) => match std::fs::read(path) {
+                    Ok(bytes) => Response::builder()
+                        .status(200)
+                        .header("content-type", "application/yaml; charset=utf-8")
+                        .header(
+                            "content-disposition",
+                            format!(
+                                "attachment; filename=\"{}\"",
+                                path.file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("waf.yaml"),
+                            ),
+                        )
+                        .header("cache-control", "private, no-store")
+                        .body(Full::new(Bytes::from(bytes)))
+                        .unwrap(),
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "/api/config/backup.yaml: failed to read source-of-truth file",
+                        );
+                        json_response(
+                            500,
+                            &serde_json::json!({
+                                "ok": false,
+                                "reason": "read_failed",
+                                "message": format!("could not read config file: {e}"),
+                            }),
+                        )
+                    }
+                },
+                None => json_response(
+                    404,
+                    &serde_json::json!({
+                        "ok": false,
+                        "reason": "no_file_source",
+                        "message": "proxy booted from a non-file config source \
+                                    (etcd / test bundle); no waf.yaml to back up",
+                    }),
+                ),
+            }
+        }
+
         // DD-T7 — config-version visibility for hot-reload UI.
         // Returns the current rules-store revision so the dashboard
         // can poll after a mutation and surface "Applied in X.Xs".
