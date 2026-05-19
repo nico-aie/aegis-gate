@@ -91,17 +91,31 @@ pub type SharedModel = Arc<Model>;
 /// handle.  Cheap to clone.
 pub struct AiDetector {
     model: SharedModel,
-    /// Top-1 softmax probability the model must reach before
-    /// the verdict counts.  When the model output doesn't
-    /// expose probabilities (sklearn's Sequence<Map<i64,f32>>
-    /// is awkward to extract today), `Prediction::confidence`
-    /// reports `1.0` so this gate is effectively a no-op.
+    /// 2026-05-19 — `P(Attack)` threshold the model must clear
+    /// before the verdict counts as malicious. Operators tune
+    /// this knob to trade FP rate vs detection rate without
+    /// retraining:
+    ///   - 0.50 (default)  — argmax behaviour: trust the model's
+    ///                       binary verdict
+    ///   - 0.70 / 0.85 / 0.95 — escalating "high-confidence only"
+    ///                       gates that match the calibration
+    ///                       advice in `config/dev.yaml`
+    /// Falls back to argmax behaviour when the model exporter
+    /// doesn't ship a dense probability tensor (legacy sklearn
+    /// shape — `prob_attack` is 1.0 when is_attack, 0.0 else).
     threshold: f32,
     /// Per-signal score added to the risk total when AI flags
     /// a request.  Mirrors the score the regex detectors
     /// contribute (50–60 each); set high enough that AI alone
     /// can drive a block when other detectors are silent.
     score: u32,
+    /// 2026-05-19 — When true, multiply `score` by `prob_attack`
+    /// so high-confidence attacks contribute the full AI score
+    /// to the risk aggregator and borderline cases (e.g.
+    /// `prob_attack = 0.55`) contribute only a fraction.
+    /// Default `false` (preserves backward compatibility — every
+    /// hit emits the full `score`).
+    scale_score_by_prob: bool,
     /// Metrics recorder.  Defaults to [`NoopAiMetricsSink`];
     /// the boot path replaces it with the live AiMetrics
     /// implementation when /metrics is wired.
@@ -128,6 +142,7 @@ impl AiDetector {
             model: Arc::new(model),
             threshold,
             score: super::scores::ai::AI,
+            scale_score_by_prob: false,
             metrics: Arc::new(NoopAiMetricsSink),
             runtime_enabled: Arc::new(AtomicBool::new(true)),
         })
@@ -141,9 +156,19 @@ impl AiDetector {
             model,
             threshold,
             score: super::scores::ai::AI,
+            scale_score_by_prob: false,
             metrics: Arc::new(NoopAiMetricsSink),
             runtime_enabled: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// 2026-05-19 — Enable proportional signal-score scaling.
+    /// When on, `Signal.score = round(score * prob_attack)` so a
+    /// borderline `prob_attack = 0.55` contributes ~33 (when base
+    /// score = 60) instead of the full 60. Default off.
+    pub fn with_prob_scaled_score(mut self, on: bool) -> Self {
+        self.scale_score_by_prob = on;
+        self
     }
 
     /// Get a clone of the runtime-toggle handle. The control
@@ -271,18 +296,49 @@ impl Detector for AiDetector {
             Ok(p) => {
                 let lat_seconds = (p.latency_us as f64) / 1_000_000.0;
                 self.metrics.record_prediction(p.is_attack, lat_seconds);
-                if p.is_attack && p.confidence >= self.threshold {
+
+                // 2026-05-19 — Gate on `prob_attack` (probability that
+                // the request is malicious, regardless of which class
+                // won argmax) instead of the previous
+                // `is_attack && confidence >= threshold` shape. Two
+                // benefits:
+                //   1. `threshold` is interpretable: it's the minimum
+                //      P(Attack) the operator accepts as evidence of an
+                //      attack. 0.5 == argmax behaviour, 0.85/0.95 ==
+                //      "high-confidence only" gating.
+                //   2. Multi-class model upgrades are transparent:
+                //      P(Attack) = 1 - P(Normal) regardless of K, so
+                //      future `[Normal, SQLi, XSS, RCE, ...]` models
+                //      plug in without changing the gate.
+                tracing::trace!(
+                    prob_attack = p.prob_attack,
+                    class_idx = p.class_idx,
+                    threshold = self.threshold,
+                    latency_us = p.latency_us,
+                    "ai prediction",
+                );
+
+                if p.prob_attack >= self.threshold {
+                    // Score contribution: full base score, or scaled by
+                    // P(Attack) when the operator opted into smooth
+                    // risk-aggregator semantics via
+                    // `with_prob_scaled_score(true)`.
+                    let signal_score = if self.scale_score_by_prob {
+                        ((self.score as f32) * p.prob_attack).round() as u32
+                    } else {
+                        self.score
+                    };
                     vec![Signal {
-                        score: self.score,
+                        score: signal_score,
                         tag: "ai".into(),
                         field: "request".into(),
                     }]
                 } else {
                     if p.is_attack {
-                        // Verdict said attack but confidence
-                        // was under threshold — count the
-                        // safety fall-through so operators
-                        // can tune the threshold from data.
+                        // Model's argmax committed to "attack" but
+                        // P(Attack) was below the operator's gate —
+                        // count the fall-through so operators can tune
+                        // the threshold from data.
                         self.metrics
                             .record_fallback(fallback_reason::LOW_CONFIDENCE);
                     }

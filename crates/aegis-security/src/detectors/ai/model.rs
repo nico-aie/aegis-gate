@@ -34,20 +34,37 @@ use super::features::NUM_FEATURES;
 /// A single prediction result.
 #[derive(Clone, Debug)]
 pub struct Prediction {
-    /// Predicted class index (0..K-1).
+    /// Predicted class index (0..K-1) — the model's argmax over
+    /// the probability row.
     pub class_idx: i64,
     /// True when `class_idx != normal_class_idx`.  For the
     /// bundled binary model `normal_class_idx == 0`.  When the
     /// underlying model swaps to a different layout we just flip
     /// the configured normal index — no other plumbing changes.
     pub is_attack: bool,
-    /// Top-1 softmax probability when the model exposes a dense
-    /// `probabilities` output, otherwise `1.0`.  Used by the
-    /// detector to gate on the `confidence_threshold` knob.
+    /// Top-1 softmax probability — `probabilities[class_idx]`.
+    /// Equals `prob_attack` when `is_attack == true`, otherwise
+    /// equals `prob_normal`. Falls back to `1.0` when the model
+    /// doesn't expose a dense `probabilities` tensor.
     pub confidence: f32,
+    /// 2026-05-19 — P(Attack) ∈ [0, 1]. Sum of probabilities of
+    /// all non-normal classes (== `probabilities[1]` for the
+    /// binary model). Use this for threshold-gating in the
+    /// detector — independent of which class won argmax. Falls
+    /// back to `1.0` if `is_attack` and `0.0` otherwise when
+    /// probabilities aren't available.
+    pub prob_attack: f32,
     /// Wall-clock inference time, useful for the metric +
     /// fall-back logic.
     pub latency_us: u64,
+}
+
+impl Prediction {
+    /// Convenience: P(Normal) = 1 - P(Attack).
+    #[inline]
+    pub fn prob_normal(&self) -> f32 {
+        1.0 - self.prob_attack
+    }
 }
 
 /// Errors the loader / inference can produce.
@@ -123,14 +140,32 @@ impl Model {
 
         // Pull the predicted class index from the `label` output.
         let class_idx = extract_class_idx(&outputs)?;
-        let confidence = extract_confidence(&outputs, class_idx).unwrap_or(1.0);
+        let is_attack = class_idx != self.normal_class_idx;
+
+        // 2026-05-19 — Extract the full probability row once, then
+        // derive both `confidence` (probability of the predicted
+        // class) and `prob_attack` (sum of non-normal classes) from
+        // it. For the bundled binary model, `prob_attack` reduces
+        // to `probabilities[1]`.
+        let probs = extract_probabilities(&outputs).unwrap_or_default();
+        let confidence = probs
+            .get(class_idx as usize)
+            .filter(|p| p.is_finite())
+            .copied()
+            .unwrap_or(1.0);
+        let prob_attack = compute_prob_attack(&probs, self.normal_class_idx)
+            // Fallback: if probabilities aren't dense, use the
+            // argmax label as the only signal. is_attack ⇒ 1.0,
+            // else 0.0 — keeps the threshold gate sensible.
+            .unwrap_or(if is_attack { 1.0 } else { 0.0 });
 
         let latency_us = started.elapsed().as_micros() as u64;
 
         Ok(Prediction {
             class_idx,
-            is_attack: class_idx != self.normal_class_idx,
+            is_attack,
             confidence,
+            prob_attack,
             latency_us,
         })
     }
@@ -150,27 +185,46 @@ fn extract_class_idx(outputs: &SessionOutputs) -> Result<i64, ModelError> {
         .ok_or_else(|| ModelError::Output("empty label tensor".into()))
 }
 
-/// Read top-1 softmax probability from the `probabilities`
-/// output.
+/// 2026-05-19 — Extract the full probability row from the
+/// `probabilities` output. Batch is always 1 (per-request
+/// inference) so the returned slice is the K-element row for the
+/// single sample, in class-index order. Returns an empty Vec when
+/// the model doesn't expose a dense tensor (legacy
+/// `Sequence<Map<i64, f32>>` exporters); the caller falls back to
+/// the argmax label.
+fn extract_probabilities(outputs: &SessionOutputs) -> Option<Vec<f32>> {
+    let entry = outputs.get("probabilities")?;
+    let (_shape, data) = entry.try_extract_tensor::<f32>().ok()?;
+    Some(data.to_vec())
+}
+
+/// Compute P(Attack) = 1 - P(Normal) = sum of probabilities
+/// across all non-normal classes.
 ///
-/// The bundled binary model exports `probabilities` as a dense
-/// `[batch, K]` `f32` tensor — we extract row 0 and index by
-/// `class_idx`.  Older sklearn exporters emit it as
-/// `Sequence<Map<i64, f32>>`, which the public `ort` API can't
-/// decode today; in that case we return `None` and the detector
-/// treats the threshold gate as a no-op (the model committed to
-/// a class via argmax, so we trust it).
-fn extract_confidence(outputs: &SessionOutputs, class_idx: i64) -> Option<f32> {
-    if class_idx < 0 {
+/// For the bundled binary model (`normal_class_idx == 0`, classes
+/// `[Normal, Attack]`), this reduces to `probs[1]`. For future
+/// multi-class layouts (e.g. `[Normal, SQLi, XSS, RCE, …]`), it
+/// aggregates every malicious class — operator threshold becomes
+/// "model is at least X% sure the request is malicious of any
+/// kind", which is what the WAF cares about.
+///
+/// Returns `None` when probs is empty (rare; only the legacy
+/// sklearn `ZipMap` shape that ORT can't decode today).
+fn compute_prob_attack(probs: &[f32], normal_class_idx: i64) -> Option<f32> {
+    if probs.is_empty() {
         return None;
     }
-    let entry = outputs.get("probabilities")?;
-    // Batch is always 1 (the WAF runs inference per request), so
-    // `data` is the K-element row for the single sample, in
-    // class-index order.  We don't need to read the shape — just
-    // index by `class_idx` and let `get` bound-check.
-    let (_shape, data) = entry.try_extract_tensor::<f32>().ok()?;
-    data.get(class_idx as usize)
-        .filter(|p| p.is_finite())
-        .copied()
+    let p_normal = if normal_class_idx >= 0 {
+        probs
+            .get(normal_class_idx as usize)
+            .filter(|p| p.is_finite())
+            .copied()
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    // Clamp to [0, 1] — softmax should already be normalised but
+    // sklearn's LogisticRegression isotonic-calibrated output
+    // occasionally drifts by 1e-7.
+    Some((1.0 - p_normal).clamp(0.0, 1.0))
 }
