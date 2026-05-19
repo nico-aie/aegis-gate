@@ -33,6 +33,44 @@ pub fn device_id(
     hasher.finalize().to_hex().to_string()
 }
 
+/// 2026-05-19 — short device-fingerprint hash for the
+/// [`aegis_core::risk::RiskKey::device_fp`] axis. Distinct from
+/// [`device_id`] above: this one is purpose-built for the
+/// composite RiskKey, takes only `(ja4, ua)`, and returns a
+/// 16-hex-character (64-bit) prefix of blake3.
+///
+/// Why no salt: the value is only ever used as an in-memory
+/// HashMap key + the first 8 chars are surfaced through
+/// `RiskSnapshot` to operators. A 64-bit unkeyed digest is
+/// collision-safe at our scale (≪ 2³² distinct device shapes
+/// per cluster lifetime) and lets two operators staring at the
+/// same JA4+UA pair on different deployments compare notes
+/// without the salt-swap mismatch the `device_id` helper has.
+///
+/// Why include `ua`: the same JA4 is shared across many distinct
+/// browsers (Chrome 120 on macOS, Chrome 120 on Linux, …). The
+/// UA disambiguates them without re-deriving JA4. Pass `None` if
+/// the request didn't ship a User-Agent header — the hash stays
+/// stable, both branches still bucket-isolate from non-UA-less
+/// peers because the JA4 alone differs.
+///
+/// Why NO ip: the IP is already a separate axis on `RiskKey`.
+/// Including it here would re-collapse buckets onto the IP axis
+/// — defeating the whole point of the composite key.
+pub fn device_fp_hash(ja4: &str, ua: Option<&str>) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(ja4.as_bytes());
+    // Domain separator prevents any pathological "ja4 || ua" pair
+    // from colliding with a different "ja4' || ua'" pair via
+    // shifting the boundary.
+    h.update(b"\0");
+    h.update(ua.unwrap_or("").as_bytes());
+    // 16 hex chars = 64 bits. Plenty of entropy for collision
+    // resistance at any cluster scale; short enough that the
+    // dashboard can render it inline.
+    h.finalize().to_hex().to_string()[..16].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +156,61 @@ mod tests {
         let salt = [1u8; 32];
         let id = device_id(&fp, Some("h2"), Some("ua"), &["accept".into()], &salt);
         assert_eq!(id.len(), 64); // blake3 hex
+    }
+
+    // ---- device_fp_hash (2026-05-19) ----
+
+    #[test]
+    fn device_fp_hash_length() {
+        // 64-bit / 16 hex chars — the contract.
+        let h = device_fp_hash("t13d1516h2_8daaf6152771_b0da82dd1658", Some("Mozilla/5.0"));
+        assert_eq!(h.len(), 16);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn device_fp_hash_deterministic() {
+        let a = device_fp_hash("ja4-x", Some("UA-1"));
+        let b = device_fp_hash("ja4-x", Some("UA-1"));
+        assert_eq!(a, b, "same inputs must yield same hash");
+    }
+
+    #[test]
+    fn device_fp_hash_distinguishes_ja4() {
+        let a = device_fp_hash("ja4-x", Some("UA"));
+        let b = device_fp_hash("ja4-y", Some("UA"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn device_fp_hash_distinguishes_ua() {
+        // Two browsers with the same JA4 must hash differently
+        // when their UA strings differ.
+        let a = device_fp_hash("same-ja4", Some("Chrome/120 macOS"));
+        let b = device_fp_hash("same-ja4", Some("Chrome/120 Linux"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn device_fp_hash_no_ua_is_stable() {
+        // The None branch hashes to a stable value (distinct from
+        // any populated UA hash). Two requests from the same JA4
+        // with no UA bucket together.
+        let a = device_fp_hash("ja4-x", None);
+        let b = device_fp_hash("ja4-x", None);
+        assert_eq!(a, b);
+        let c = device_fp_hash("ja4-x", Some(""));
+        // Empty UA hashes the same as no UA — `unwrap_or("")`.
+        assert_eq!(a, c);
+    }
+
+    #[test]
+    fn device_fp_hash_domain_separator_prevents_boundary_collision() {
+        // Without a domain separator, "ab"+"cd" and "a"+"bcd" would
+        // hash identically (both concatenate to "abcd"). The
+        // `\0` separator splits them.
+        let a = device_fp_hash("ab", Some("cd"));
+        let b = device_fp_hash("a", Some("bcd"));
+        assert_ne!(a, b);
     }
 }

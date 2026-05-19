@@ -6,13 +6,27 @@
 
 > **2026-05-18 Phase E (F-CRITICAL-002):** the per-IP volumetric
 > guard's storage upgraded from `DashMap<IpAddr, …>` to
-> `DashMap<RiskKey, …>` (composite of IP + device_fp + session +
-> tenant). The IP-only API (`consume(ip)`, `reset(ip)`) keeps
-> working by internally constructing `RiskKey::from_ip(ip)`. New
+> `DashMap<RiskKey, …>` (composite of IP + device_fp + session).
+> The IP-only API (`consume(ip)`, `reset(ip)`) keeps working by
+> internally constructing `RiskKey::from_ip(ip)`. New
 > `consume_with_key` / `consume_at_with_key` / `reset_with_key`
 > methods take the full composite — two sessions on the same NAT'd
 > IP get independent rate-limit buckets. Mirrors the `RiskTracker`
 > migration in commit 01c053c.
+>
+> **2026-05-19:** `tenant_id` axis removed from `RiskKey` (the
+> multi-tenant feature was deprecated upstream). The composite key
+> is now exactly `{ip, device_fp, session}`.
+>
+> **2026-05-19 (data-plane completion):** the per-IP volumetric
+> guard call site in `data_plane.rs` switched from
+> `consume(peer_ip)` to `consume_with_key(build_risk_key(...))`,
+> so two TLS sessions on the same NAT'd IP with different JA4 /
+> User-Agent / session-cookie shapes now get **independent**
+> token buckets in production. The legacy `consume(ip)` API
+> stays alive for IP-only callers (operator-driven resets etc.)
+> and the IP-only bucket becomes the floor for anonymous /
+> plain-HTTP traffic where the composite axes are `None`.
 
 > **Two limiter surfaces, two contracts** (clarified after
 > the 2026-04-29 cluster smoke surfaced the distinction):

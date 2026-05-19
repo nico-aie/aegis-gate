@@ -7,6 +7,17 @@
 > `crates/aegis-security/src/detectors/`. The dashboard surfaces
 > them on the **Traffic Gates** page under the Policy menu group.
 
+> **2026-05-19 — Composite-key migration.** Three of the four
+> gates (Strike-Block, Cumulative IP risk thresholds, Rate Limit)
+> now key on the composite `RiskKey { ip, device_fp?, session? }`
+> instead of just `IpAddr`. Two browsers on the same NAT'd IP
+> each get their own bucket. **DDoS Gate stays IP-keyed by
+> design** — volumetric protection must fire fast regardless of
+> session shape, and a flooding source rotating cookies should
+> not escape. Where this doc still says "per-IP", read it as
+> "per-bucket" for the three migrated gates and as "per-TCP-peer-IP"
+> for the DDoS gate.
+
 ## Why "gates" and not "detectors"
 
 The detector chain (sqli, xss, path_traversal, …) emits
@@ -36,9 +47,9 @@ costs the least CPU.
 | # | Gate | Module | Returns | Trigger |
 |---|---|---|---|---|
 | 1 | **Access list** | `aegis-control/src/api/blacklist.rs` | 403 + `X-WAF-Action: block` | IP / CIDR / country on the operator blacklist |
-| 2 | **Strike-block** | `aegis-security/src/risk/tracker.rs` | 403 + `X-WAF-Action: block` + `X-WAF-Rule-Id: risk-strikes` | Per-IP lifetime strikes ≥ `risk.strikes.block_at` (default 50) **AND** `risk.strikes.enabled = true` (opt-in, default `false` since 2026-05-10) |
-| 3 | **Rate-limit** | `aegis-security/src/rate_limit/` | 429 + `X-WAF-Action: rate_limit` | Token bucket exceeded for this request |
-| 4 | **DDoS gate** | `aegis-security/src/ddos.rs` | 403 + `X-WAF-Action: block` | Per-IP sliding-window burst exceeded **OR** previously auto-blocked |
+| 2 | **Strike-block** | `aegis-security/src/risk/tracker.rs` | 403 + `X-WAF-Action: block` + `X-WAF-Rule-Id: risk-strikes` | **Per-RiskKey-bucket** lifetime strikes ≥ `risk.strikes.block_at` (default 50) **AND** `risk.strikes.enabled = true` (opt-in, default `false` since 2026-05-10) |
+| 3 | **Rate-limit** | `aegis-security/src/rate_limit/` | 429 + `X-WAF-Action: rate_limit` | **Per-RiskKey-bucket** token-counter exceeded for this request |
+| 4 | **DDoS gate** | `aegis-security/src/ddos.rs` | 403 + `X-WAF-Action: block` | **Per-TCP-peer-IP** sliding-window burst exceeded **OR** previously auto-blocked. **Intentionally NOT keyed by the composite RiskKey** — a flooding source can't escape by rotating session cookies. |
 
 > The **Cumulative IP risk thresholds** (#3 on the dashboard's
 > Traffic Gates page) is not a fifth short-circuit gate — it
@@ -71,26 +82,28 @@ attribute blocks to this gate in the audit log and dashboards.
 
 ### Rate Limit vs DDoS — what's the difference?
 
-These look similar (both per-IP, both have a "limit + window" pair) but they have **opposite enforcement semantics**:
+They look similar (both have a "limit + window" pair) but they have **opposite enforcement semantics AND opposite keying**:
 
 | Property | Rate Limit | DDoS Gate |
 |---|---|---|
 | Algorithm | Sliding-window token bucket | Sliding-window auto-block |
+| **Keying** | **Composite RiskKey** `{ip, device_fp?, session?}` (2026-05-19) | **TCP peer IP** (intentional) |
 | Trigger | Window count exceeds `limit` | Window count exceeds `per_ip_limit` |
 | Response | 429 `X-WAF-Action: rate_limit` | 403 `X-WAF-Action: block` |
-| Recovery | **Automatic** — IP allowed again as the window slides | **TTL'd** — IP rejected for `block_ttl_s` (default 300s) |
-| State location | In-process `DashMap<IpAddr, VecDeque<Instant>>` | Cluster `StateBackend::auto_block` keyspace |
+| Recovery | **Automatic** — bucket allowed again as the window slides | **TTL'd** — IP rejected for `block_ttl_s` (default 300s) |
+| State location | In-process `DashMap<RiskKey, VecDeque<Instant>>` | Cluster `StateBackend::auto_block` keyspace |
 | Cluster scope | Per-node | Cluster-wide via shared backend |
-| Use case | "Steady-state per-IP budget" — APIs with rate fairness | "Sustained-burst quarantine" — DDoS-grade protection |
+| Use case | "Steady-state per-bucket budget" — APIs with rate fairness | "Sustained-burst quarantine" — DDoS-grade protection |
+| Session-rotation attack? | Attacker can rotate cookies to get a fresh bucket | Attacker stays blocked — IP is the only key |
 
 In practice operators configure both:
 
-- **Rate Limit** at e.g. `1000 req / 60 s` (≈16 req/s per IP). Catches abusive clients gracefully — they get 429, can back off and retry.
-- **DDoS Gate** at e.g. `1000 req / 10 s` (a much tighter burst window: 100 req/s sustained for 10 s). Catches actual flood attacks — burst-exceed → 5-minute auto-block. The IP is rejected entirely for that duration.
+- **Rate Limit** at e.g. `1000 req / 60 s` (≈16 req/s per bucket). Catches abusive clients gracefully — they get 429, can back off and retry. Legit user B sharing a NAT'd egress with attacker A keeps their own bucket budget.
+- **DDoS Gate** at e.g. `1000 req / 10 s` (a much tighter burst window: 100 req/s sustained for 10 s). Catches actual flood attacks — burst-exceed → 5-minute auto-block. The IP is rejected entirely for that duration regardless of session shape.
 
 The Rate Limit's 429 lets a misbehaving client recover. The DDoS Gate's 403 + TTL doesn't — by design, because if you're at "100 req/s sustained for 10 s from one IP" you're not a misbehaving client, you're an attack.
 
-Both are **hot-reloadable** via the dashboard's edit modals (`PUT /api/rate-limit`, `PUT /api/gates/ddos`). Per-IP state is preserved across edits — flooding sources don't get a free reset when you tighten thresholds mid-attack.
+Both are **hot-reloadable** via the dashboard's edit modals (`PUT /api/rate-limit`, `PUT /api/gates/ddos`). State (per-bucket timestamps for Rate Limit, per-IP TTL'd block list for DDoS) is preserved across edits — flooding sources don't get a free reset when you tighten thresholds mid-attack.
 
 After all four pass, the request enters the detector chain. The
 [detectors](../security/detectors/README.md) emit signals that
@@ -116,14 +129,14 @@ The Traffic Gates page polls `/api/blacklist`, `/api/whitelist`,
 | Gate / Knob | Tune via | Hot-reload? |
 |---|---|---|
 | Access list | Dashboard → Access Lists page (`POST /api/blacklist` etc.) | ✅ yes — audit-mutated |
-| Strike-block (enable + threshold) | Dashboard → Traffic Gates → Strike-Block card → Edit (`PUT /api/gates/strikes`) — toggles `enabled` and tunes `block_at`. Reset a single IP via `POST /api/risk/<ip>/reset`. | ✅ yes — audit-mutated (2026-05-10) |
+| Strike-block (enable + threshold) | Dashboard → Traffic Gates → Strike-Block card → Edit (`PUT /api/gates/strikes`) — toggles `enabled` and tunes `block_at`. Reset every bucket sharing an IP via `POST /api/risk/<ip>/reset`; reset ONE composite-key bucket via `POST /api/risk/reset_key` (or the per-row button on Top Attackers → Composite RiskKey view). | ✅ yes — audit-mutated (2026-05-10; surgical reset added 2026-05-19) |
 | Cumulative IP risk thresholds (global defaults) | Dashboard → Traffic Gates → Cumulative IP risk card (`PUT /api/risk/thresholds`) | ✅ yes — audit-mutated (moved 2026-05-10) |
 | Per-tier `challenges_enabled` toggle | Dashboard → Detectors & Tiers → Edit tier (`PUT /api/tiers/<name>`) | ✅ yes — audit-mutated (defaults to `false` on every tier — challenges are opt-in) |
 | Per-tier `cumulative_challenge_at` / `cumulative_block_at` overrides | API only — `PUT /api/tiers/<name>` accepts the fields, but the dashboard does not surface inputs (use the global thresholds above unless you have a strong per-tier need) | ✅ yes — audit-mutated |
 | Rate-limit | Dashboard → Traffic Gates → Rate Limit card → Edit (`PUT /api/rate-limit`) | ✅ yes — audit-mutated (2026-05-09) |
 | DDoS thresholds | Dashboard → Traffic Gates → DDoS card → Edit (`PUT /api/gates/ddos`) | ✅ yes — audit-mutated (2026-05-09) |
 
-All four gates are hot-reloadable. Per-IP state is preserved across edits — flooding sources don't get a free reset when operators tighten thresholds mid-attack. Every change is captured in the audit chain via `AuditedMutate`.
+All four gates are hot-reloadable. Per-bucket (Strike-Block, Cumulative-risk, Rate Limit) and per-IP (DDoS) state is preserved across edits — flooding sources don't get a free reset when operators tighten thresholds mid-attack. Every change is captured in the audit chain via `AuditedMutate`.
 
 ### "Why was my legit traffic blocked?"
 

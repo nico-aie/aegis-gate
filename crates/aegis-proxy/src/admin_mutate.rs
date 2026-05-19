@@ -2097,6 +2097,143 @@ pub(crate) async fn handle_risk_reset(
     }
 }
 
+/// 2026-05-19 — surgical reset for one composite-key bucket.
+///
+/// Distinct from [`handle_risk_reset`] which keys by IP only and
+/// wipes every bucket sharing that IP. This handler takes a JSON
+/// body `{ip, device_fp?, session?}` and deletes exactly one
+/// `RiskKey` — useful when an operator wants to clear one
+/// flagged session on a NAT'd IP without disturbing legit
+/// sessions on the same egress.
+///
+/// Audit-mutated through the existing `AuditedMutate` pipeline;
+/// CSRF + actor handling identical to `handle_risk_reset`.
+pub(crate) async fn handle_risk_reset_key(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        ip: String,
+        #[serde(default)]
+        device_fp: Option<String>,
+        #[serde(default)]
+        session: Option<String>,
+    }
+
+    // CSRF + actor + request_id — same pattern as handle_risk_reset.
+    let csrf_cookie = req
+        .headers()
+        .get_all(hyper::header::COOKIE)
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .find_map(|raw| extract_named_cookie(raw, "aegis_csrf"))
+        .map(|s| s.to_string());
+    let csrf_header = req
+        .headers()
+        .get("x-csrf-token")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+    let actor = req
+        .headers()
+        .get("x-aegis-actor")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("admin")
+        .to_string();
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            blake3::hash(
+                format!(
+                    "risk-reset-key:{}",
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                )
+                .as_bytes(),
+            )
+            .to_hex()
+            .to_string()
+        });
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "body read failed".into(),
+                ),
+            );
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let parsed: Body = match serde_json::from_str(body_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
+    let Ok(ip): Result<std::net::IpAddr, _> = parsed.ip.parse() else {
+        return json_response(
+            400,
+            &serde_json::json!({"error": "invalid_ip", "value": parsed.ip}),
+        );
+    };
+
+    let key = aegis_core::risk::RiskKey {
+        ip,
+        device_fp: parsed.device_fp.clone(),
+        session: parsed.session.clone(),
+    };
+
+    let resource = "/api/risk/reset_key";
+    let before = serde_json::json!({
+        "ip": ip.to_string(),
+        "device_fp": parsed.device_fp,
+        "session": parsed.session,
+    });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: csrf_cookie.as_deref(),
+        csrf_header: csrf_header.as_deref(),
+        actor: &actor,
+        request_id: &request_id,
+        resource,
+        action: "risk_reset_key",
+        reason: "operator clears one composite-key risk bucket",
+    };
+    let risk = services.risk.clone();
+    let outcome = services.mutate.apply(
+        &req_ctx,
+        before,
+        serde_json::json!({"score": 0, "strikes": 0}),
+        move || {
+            let removed = risk.reset_with_key(&key);
+            Ok::<bool, String>(removed)
+        },
+    );
+    match outcome {
+        Ok(o) => json_body_response(
+            200,
+            serde_json::json!({
+                "ok": true,
+                "ip": ip.to_string(),
+                "device_fp": parsed.device_fp,
+                "session": parsed.session,
+                "had_state": o.value,
+            })
+            .to_string(),
+            "private, no-store",
+        ),
+        Err(err) => mutation_error_response(err),
+    }
+}
+
 pub(crate) async fn handle_detectors_put(
     req: hyper::Request<hyper::body::Incoming>,
     cfg: &WafConfig,

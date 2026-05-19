@@ -35,7 +35,7 @@ in-memory on `WafError::State` (split-brain safe).
 |---|---|---|
 | Sliding-window rate limits | `ZADD` + `PEXPIRE` (atomic Lua) | atomic incr-and-test in <1 ms |
 | Token buckets | `HMSET tokens, ts` (Lua refill) | same |
-| Risk scores per `RiskKey{ip, device_fp, session, tenant}` | `INCRBY` w/ cap + TTL | aggregated across N nodes |
+| Risk scores per `RiskKey{ip, device_fp, session}` (2026-05-19 — `tenant_id` axis removed) | `INCRBY` w/ cap + TTL | aggregated across N nodes |
 | Auto-block flags per IP | `SET key TTL` | TTL is native |
 | CSRF / replay nonces | `SET NX` (consume-once) | atomic compare-and-set |
 | Cluster leader lease | `SET NX PX` ([`cluster_lease/redis.rs`](../../crates/aegis-proxy/src/cluster_lease/redis.rs)) | leader election without external coordinator |

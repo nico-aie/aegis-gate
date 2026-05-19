@@ -65,6 +65,14 @@ const RESERVED_RULE_IDS: &[&str] = &[
     "template_injection",
     "nosql_injection",
     "open_redirect",
+    // 2026-05-19 — DetectorClass extension (Phase F + AI promotion
+    // to first-class togglable classes). Keep this list in sync with
+    // `DetectorClass::ALL`; `reserved_list_matches_detector_class_names`
+    // is the drift guard.
+    "behavior_signals",
+    "velocity",
+    "canary",
+    "ai",
 ];
 
 /// Validate a candidate rule id. Returns `None` on accept,

@@ -50,9 +50,25 @@ pub struct RiskState {
 }
 
 /// Wire-friendly snapshot for `/api/risk` responses.
+///
+/// 2026-05-19 — `device_fp` + `session` surfaced so the dashboard's
+/// Top Attackers table can distinguish two browsers on the same
+/// NAT'd IP. Both fields are `Option<String>` and use
+/// `skip_serializing_if = "Option::is_none"` so legacy JSON
+/// consumers continue to see the IP-only shape on rows where the
+/// composite axes are absent (plain-HTTP traffic, anonymous
+/// public endpoints).
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct RiskSnapshot {
     pub ip: String,
+    /// 16-hex-char blake3 prefix of `(JA4 ‖ User-Agent)`. Stable
+    /// across requests within a TLS session. Absent on plain HTTP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_fp: Option<String>,
+    /// Session cookie value (typically a short opaque id). Absent
+    /// when no recognised session cookie is sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     pub score: u32,
     pub strikes: u32,
     /// Seconds since the client's last request — useful for the
@@ -408,6 +424,16 @@ impl RiskTracker {
                 };
                 RiskSnapshot {
                     ip: key.ip.to_string(),
+                    // 2026-05-19 — composite-key axes now surfaced
+                    // so the dashboard can render one row per
+                    // (ip, device_fp, session) bucket. The plan
+                    // is for the SPA to truncate device_fp to the
+                    // first 8 hex chars for display; we ship the
+                    // full 16-char value here so future tooling
+                    // (e.g. the surgical reset endpoint) doesn't
+                    // need a round-trip to disambiguate.
+                    device_fp: key.device_fp.clone(),
+                    session: key.session.clone(),
                     score: slot.score,
                     strikes: slot.strikes,
                     idle_seconds: now
@@ -446,6 +472,9 @@ impl RiskTracker {
         };
         Some(RiskSnapshot {
             ip: ip.to_string(),
+            // IP-only API → composite axes are unknown here.
+            device_fp: None,
+            session: None,
             score: state.score,
             strikes: state.strikes,
             idle_seconds: now
@@ -856,7 +885,6 @@ mod tests {
             ip: ip(ip_str),
             device_fp: device_fp.map(String::from),
             session: session.map(String::from),
-            tenant_id: None,
         }
     }
 
@@ -961,5 +989,41 @@ mod tests {
         assert!(t.snapshot_with_key(&k1).is_none());
         assert!(t.snapshot_with_key(&k2).is_some());
         assert!(t.snapshot(p).is_some());
+    }
+
+    /// 2026-05-19 — `top()` surfaces device_fp + session in the
+    /// wire shape so the dashboard can render one row per
+    /// composite-key bucket.
+    #[test]
+    fn top_populates_composite_axes_in_snapshot() {
+        let t = RiskTracker::new(&cfg());
+        let alice = key_with("10.0.0.10", Some("fp-alice-1234"), Some("sess-alice"));
+        let bob = key_with("10.0.0.10", Some("fp-bob-5678"), Some("sess-bob"));
+        let anon = key_with("10.0.0.11", None, None);
+        t.record_malicious_with_key(alice.clone(), 25);
+        t.record_malicious_with_key(bob.clone(), 35);
+        t.record_malicious_with_key(anon.clone(), 15);
+
+        let rows = t.top(10);
+        // Two NAT'd-IP buckets + one IP-only bucket = 3 rows.
+        assert_eq!(rows.len(), 3);
+        let alice_row = rows
+            .iter()
+            .find(|r| r.device_fp.as_deref() == Some("fp-alice-1234"))
+            .expect("alice row");
+        assert_eq!(alice_row.ip, "10.0.0.10");
+        assert_eq!(alice_row.session.as_deref(), Some("sess-alice"));
+        let bob_row = rows
+            .iter()
+            .find(|r| r.device_fp.as_deref() == Some("fp-bob-5678"))
+            .expect("bob row");
+        assert_eq!(bob_row.ip, "10.0.0.10");
+        assert_eq!(bob_row.session.as_deref(), Some("sess-bob"));
+        let anon_row = rows
+            .iter()
+            .find(|r| r.ip == "10.0.0.11")
+            .expect("anon row");
+        assert!(anon_row.device_fp.is_none(), "no TLS → device_fp is None");
+        assert!(anon_row.session.is_none(), "no cookie → session is None");
     }
 }

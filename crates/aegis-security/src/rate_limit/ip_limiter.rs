@@ -497,7 +497,6 @@ mod tests {
             ip: ip(ip_str),
             device_fp: device_fp.map(String::from),
             session: session.map(String::from),
-            tenant_id: None,
         }
     }
 
@@ -554,5 +553,26 @@ mod tests {
         l.reset_with_key(&k1);
         // tracked count drops by exactly 1.
         assert_eq!(l.tracked(), before - 1);
+    }
+
+    /// 2026-05-19 — sanity check for the data-plane swap. Two
+    /// distinct composite keys with the same IP get independent
+    /// token buckets, so attacker bob's flood doesn't 429 legit
+    /// user alice through the same NAT.
+    #[test]
+    fn consume_with_key_isolates_two_sessions_on_same_ip() {
+        let l = limiter(2, 60); // limit=2 per 60s window
+        let alice = key("10.0.0.1", Some("fp-alice"), Some("sess-alice"));
+        let bob   = key("10.0.0.1", Some("fp-bob"),   Some("sess-bob"));
+
+        // Bob burns through his bucket.
+        assert!(l.consume_with_key(bob.clone()).allowed);
+        assert!(l.consume_with_key(bob.clone()).allowed);
+        assert!(!l.consume_with_key(bob.clone()).allowed, "3rd req for bob is over the cap");
+
+        // Alice on the same IP is unaffected.
+        assert!(l.consume_with_key(alice.clone()).allowed);
+        assert!(l.consume_with_key(alice.clone()).allowed);
+        assert!(!l.consume_with_key(alice.clone()).allowed, "alice's own cap also enforced");
     }
 }

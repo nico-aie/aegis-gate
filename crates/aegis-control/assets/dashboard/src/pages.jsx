@@ -28,6 +28,33 @@ function fmtAbsoluteTimestamp(d) {
   });
 }
 
+// 2026-05-19 — `AuditEvent` ts wire shape was renamed to `ts_ms`
+// (integer milliseconds) at the Rust serde layer; the legacy
+// string `ts` is no longer emitted (see crates/aegis-core/src/
+// audit.rs:188 — `#[serde(rename = "ts_ms", serialize_with =
+// serialize_ts_as_ms)]`). Pre-fix every dashboard surface read
+// `e.ts` and got `undefined`, turning `new Date(undefined)`
+// into Invalid Date → `NaN:NaN:NaN`. This helper centralises
+// the field-name fallback so adding another sink shape later
+// touches one site.
+//
+// Returns NaN when neither field is parseable; callers gate on
+// `Number.isFinite` and render "—".
+function eventTimestampMs(ev) {
+  if (!ev || typeof ev !== 'object') return NaN;
+  if (typeof ev.ts_ms === 'number' && Number.isFinite(ev.ts_ms)) {
+    return ev.ts_ms;
+  }
+  if (typeof ev.ts === 'number' && Number.isFinite(ev.ts)) {
+    return ev.ts;
+  }
+  if (typeof ev.ts === 'string' && ev.ts.length > 0) {
+    const parsed = Date.parse(ev.ts);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+  return NaN;
+}
+
 // ============== OVERVIEW ==============
 // Color palette for OWASP categories — used to overlay a colour on
 // API-returned `name` strings (which are stable identifiers like
@@ -75,6 +102,12 @@ function PageOverview() {
   const topApi = window.useAttacksTopApi(900, 5);  // /api/attacks/top — 5 attackers, 15m
   const tick = window.useTicking(2000);
   const [drawerEvent, setDrawerEvent] = useStateP(null);
+  // 2026-05-19 — "Live attack origins" is the biggest card on the
+  // Overview page. Operators staring at zero blips on a quiet
+  // system prefer to fold it; collapsed state hides the WorldMap
+  // body (the expensive render) but keeps the title + pills
+  // visible so the count is still at a glance.
+  const [originsExpanded, setOriginsExpanded] = useStateP(true);
 
   // CQF-T4 — wire the "Block" button on each Top Attackers row.
   // Uses the audit-mutated POST /api/blacklist endpoint shipped
@@ -340,11 +373,46 @@ function PageOverview() {
 
       {/* World map (wow #1) */}
       <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--hairline)' }}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>Live attack origins</div>
-            <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Real-time geolocation of blocked requests · last 60s</div>
-          </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '12px 16px',
+            borderBottom: originsExpanded ? '1px solid var(--hairline)' : 'none',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setOriginsExpanded(!originsExpanded)}
+            aria-expanded={originsExpanded}
+            title={originsExpanded ? 'Collapse Live attack origins' : 'Expand Live attack origins'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              color: 'inherit',
+              textAlign: 'left',
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{ fontSize: 10, color: 'var(--ink-dim)', width: 12 }}
+            >
+              {originsExpanded ? '▼' : '▶'}
+            </span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Live attack origins</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                Real-time geolocation of blocked requests · last 60s
+                {!originsExpanded && ' · collapsed'}
+              </div>
+            </div>
+          </button>
           <div style={{ display: 'flex', gap: 8 }}>
             <span className="pill block">{topAttackers.length} active sources</span>
             <span
@@ -368,15 +436,19 @@ function PageOverview() {
             </span>
           </div>
         </div>
-        {blips.length === 0 && topAttackers.length > 0 && (
-          <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--ink-dim)', borderBottom: '1px solid var(--hairline)' }}>
-            {geoipLoaded
-              ? 'Map empty because none of the current attackers have a public IP MaxMind can resolve (e.g. localhost). The Top Attackers table below still shows every IP.'
-              : <>Map empty because GeoIP DB isn't loaded. The Top Attackers table below still shows every IP.{' '}<a href="#/help" style={{ color: 'var(--accent)' }}>How to install GeoIP →</a></>
-            }
-          </div>
+        {originsExpanded && (
+          <>
+            {blips.length === 0 && topAttackers.length > 0 && (
+              <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--ink-dim)', borderBottom: '1px solid var(--hairline)' }}>
+                {geoipLoaded
+                  ? 'Map empty because none of the current attackers have a public IP MaxMind can resolve (e.g. localhost). The Top Attackers table below still shows every IP.'
+                  : <>Map empty because GeoIP DB isn't loaded. The Top Attackers table below still shows every IP.{' '}<a href="#/help" style={{ color: 'var(--accent)' }}>How to install GeoIP →</a></>
+                }
+              </div>
+            )}
+            <window.WorldMap blips={blips} h={300} />
+          </>
         )}
-        <window.WorldMap blips={blips} h={300} />
       </div>
 
       {/* Traffic chart + distribution */}
@@ -1634,7 +1706,7 @@ function PageAuditLog() {
       const cutoff = Date.now() - sec * 1000;
       out = out.filter(row => {
         const e = row.event || row;
-        const ts = e.ts ? Date.parse(e.ts) : NaN;
+        const ts = eventTimestampMs(e);
         return Number.isFinite(ts) ? ts >= cutoff : true;
       });
     }
@@ -1648,14 +1720,23 @@ function PageAuditLog() {
     return out;
   }, [rawEvents, windowKey, classFilter]);
 
-  function fmt(ts) {
-    try {
-      const d = new Date(ts);
-      const h = String(d.getHours()).padStart(2, '0');
-      const m = String(d.getMinutes()).padStart(2, '0');
-      const s = String(d.getSeconds()).padStart(2, '0');
-      return `${h}:${m}:${s}`;
-    } catch (_) { return ts; }
+  function fmt(ev) {
+    // 2026-05-19 — accept either an event object or a bare value
+    // so call sites stay short. The wire shape is `ts_ms: i64`
+    // (rename from the deserialized `ts: DateTime<Utc>` in
+    // aegis-core/audit.rs; the legacy `ts` string is no longer
+    // emitted). Falling back to a plain Date constructor when a
+    // raw value is passed keeps existing inline `fmt(row.ts)`
+    // calls working if any survive.
+    const ms = typeof ev === 'object' && ev !== null
+      ? eventTimestampMs(ev)
+      : (typeof ev === 'number' ? ev : Date.parse(ev));
+    if (!Number.isFinite(ms)) return '—';
+    const d = new Date(ms);
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    const s = String(d.getSeconds()).padStart(2, '0');
+    return `${h}:${m}:${s}`;
   }
   function classPill(c) {
     if (c === 'admin')     return 'warn';
@@ -1777,7 +1858,7 @@ function PageAuditLog() {
               const e = row.event || row; // /api/audit/since flattens AuditEvent into the row
               return (
                 <tr key={row.seq}>
-                  <td className="num dim">{fmt(e.ts)}</td>
+                  <td className="num dim">{fmt(e)}</td>
                   <td><span className={`pill ${classPill(e.class)}`}>{e.class}</span></td>
                   <td className="mono" style={{ color: 'var(--ink)' }}>{e.action}</td>
                   <td className="mono">{e.client_ip || '—'}</td>
@@ -8961,7 +9042,7 @@ function PageInvestigation() {
       const p = f.path || e.path || '/';
       byPath[p] = (byPath[p] || 0) + 1;
       if (e.client_ip) ips.add(e.client_ip);
-      const ts = e.ts ? Date.parse(e.ts) : NaN;
+      const ts = eventTimestampMs(e);
       if (Number.isFinite(ts)) {
         earliest = Math.min(earliest, ts);
         latest = Math.max(latest, ts);
@@ -9199,8 +9280,8 @@ function PageInvestigation() {
                       <th style={{ width: 70 }}>Status</th>
                       <th
                         style={{ width: 80 }}
-                        title="Cumulative risk score for this client IP (decays over time). NOT the score of this single request — a request can be allowed even when its IP carries high risk if the request itself didn't trigger any detector."
-                      >IP risk</th>
+                        title="Cumulative risk score for this request's RiskKey bucket ({ip, device_fp?, session?}) — decays over time. Two browsers on the same NAT'd IP each carry their own bucket score. This is NOT the score of this single request — a request can be allowed even when its bucket carries high risk if the request itself didn't trigger any detector."
+                      >Risk score</th>
                       <th>Rule</th>
                     </tr>
                   </thead>
@@ -9211,7 +9292,10 @@ function PageInvestigation() {
                       return (
                         <tr key={`${e.request_id || i}`} onClick={() => setSelected(e)} style={{ cursor: 'pointer' }}>
                           <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-                            {e.ts ? new Date(e.ts).toLocaleTimeString() : '—'}
+                            {(() => {
+                              const ms = eventTimestampMs(e);
+                              return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString() : '—';
+                            })()}
                           </td>
                           <td><window.ActionPill value={e.action || '—'} /></td>
                           <td className="mono">{e.client_ip || '—'}</td>
@@ -9381,7 +9465,10 @@ function PageInvestigation() {
                   return (
                     <tr key={i}>
                       <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
-                        {e.ts ? new Date(e.ts).toLocaleTimeString() : '—'}
+                        {(() => {
+                          const ms = eventTimestampMs(e);
+                          return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString() : '—';
+                        })()}
                       </td>
                       <td><span className={`pill ${e.action === 'block' ? 'down' : e.action === 'allow' ? 'up' : 'warn'}`}>{e.action || '—'}</span></td>
                       <td className="num">{e.client_ip || '—'}</td>
@@ -9449,6 +9536,14 @@ function PageTrafficGates() {
       <CumulativeIpRiskCard />
       <RateLimitGateCard />
       <DdosGateCard />
+      {/* 2026-05-19 — per-bucket scores moved to the Top Attackers
+          page as a "Composite RiskKey view" toggle so operators
+          have one mental model for "who's worth investigating". */}
+      <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <window.I.Shield />
+        <span>Looking for per-bucket risk scores (one row per IP / device_fp / session)?</span>
+        <a href="#/top-attackers?view=riskkey" style={{ color: 'var(--accent)', fontWeight: 600 }}>Top Attackers → Composite RiskKey view</a>
+      </div>
     </>
   );
 }
@@ -9463,7 +9558,7 @@ function TrafficGatesFlowDiagram() {
   const stages = [
     { id: 'access-list',   label: '1. Access List',   target: 'access-list-card',  hint: 'IP / CIDR / country block + bypass' },
     { id: 'strike-block',  label: '2. Strike-Block',  target: 'strike-block-card', hint: 'Lifetime malicious-event counter' },
-    { id: 'cumulative-ip', label: '3. Cumulative IP', target: 'cum-ip-risk-card',  hint: 'Per-IP risk score (decays over time)' },
+    { id: 'cumulative-ip', label: '3. Cumulative IP', target: 'cum-ip-risk-card',  hint: 'Per-RiskKey-bucket score (decays over time) — keyed by {ip, device_fp?, session?}' },
     { id: 'rate-limit',    label: '4. Rate Limit',    target: 'rate-limit-card',   hint: 'Global per-IP token bucket' },
     { id: 'ddos',          label: '5. DDoS',          target: 'ddos-card',         hint: 'Sliding-window burst + EWMA spike' },
   ];
@@ -9629,7 +9724,7 @@ function StrikeBlockGateCard() {
     <div id="strike-block-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="2. Strike-Block"
-        sub="Per-IP lifetime strike counter — permanent block once threshold crossed (opt-in)"
+        sub="Per-RiskKey-bucket lifetime strike counter — permanent block once threshold crossed (opt-in). Buckets are keyed by {ip, device_fp?, session?}; two sessions on the same NAT'd IP each climb independently."
       />
       <div style={{ padding: 16 }}>
         {!cfg ? (
@@ -9656,8 +9751,11 @@ function StrikeBlockGateCard() {
                 <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: cfg.at_or_over_threshold > 0 ? 'var(--down)' : 'var(--ink)' }}>
                   {cfg.at_or_over_threshold}
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>
-                  of {cfg.tracked_ips} tracked {cfg.tracked_ips === 1 ? 'IP' : 'IPs'}
+                <div
+                  style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}
+                  title={`The /api/gates/strikes JSON still names this field "tracked_ips" for wire compatibility, but the value counts unique RiskKey buckets — one per (ip, device_fp?, session?) combination — not unique IPs. See the docs for the 2026-05-19 composite-key migration.`}
+                >
+                  of {cfg.tracked_ips} tracked {cfg.tracked_ips === 1 ? 'bucket' : 'buckets'}
                 </div>
               </div>
             </div>
@@ -9665,8 +9763,8 @@ function StrikeBlockGateCard() {
               <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
                 {enabled
                   ? <>Gate is firing. {cfg.at_or_over_threshold > 0
-                      ? <strong>{cfg.at_or_over_threshold} {cfg.at_or_over_threshold === 1 ? 'IP is' : 'IPs are'} currently 403'd</strong>
-                      : 'No IP at or above threshold.'}{' '}Per-IP strikes preserved across edits.</>
+                      ? <strong>{cfg.at_or_over_threshold} {cfg.at_or_over_threshold === 1 ? 'bucket is' : 'buckets are'} currently 403'd</strong>
+                      : 'No bucket at or above threshold.'}{' '}Per-bucket strikes preserved across edits.</>
                   : <>Gate is off — strike counts still climb in <code>/api/risk</code> for forensics, but the data plane does not 403. Enable to opt in.</>
                 }
               </div>
@@ -9679,11 +9777,11 @@ function StrikeBlockGateCard() {
       </div>
       <GateExplain
         rows={[
-          ['How it fires', 'Each detector hit increments the IP\'s lifetime strike counter by 1. When it crosses block_at, the IP 403s at the gate before any further detector cost.'],
-          ['Counter', <span key="c"><strong>Lifetime, never decays.</strong> An IP that hits block_at stays blocked across days unless an operator resets it.</span>],
+          ['How it fires', <span key="hf">Each detector hit increments the request's RiskKey bucket's lifetime strike counter by 1. When the bucket crosses <code>block_at</code>, the next request on that bucket 403s at the gate before any further detector cost. Bucket is keyed by <code>{`{ip, device_fp?, session?}`}</code> — two browsers on the same NAT'd IP each have their own counter.</span>],
+          ['Counter', <span key="c"><strong>Lifetime, never decays.</strong> A bucket that hits <code>block_at</code> stays blocked across days unless an operator resets it.</span>],
           ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: risk-strikes</code>, '. ', <code key="rs">X-WAF-Risk-Score</code>, ' continues to report the (decayed) cumulative score, distinct from the strike count.'],
-          ['Recovery', <span key="r">Manual — <code>POST /api/risk/&lt;ip&gt;/reset</code> per IP, or disable the gate entirely from this card.</span>],
-          ['Tunable', <span key="t">Edit modal on this card — flip <code>enabled</code> and tune <code>block_at</code>. Audit-mutated <code>PUT /api/gates/strikes</code>; per-IP strike state preserved across edits.</span>],
+          ['Recovery', <span key="r">Two options: <code>POST /api/risk/&lt;ip&gt;/reset</code> wipes every bucket sharing that IP (legacy IP-only reset, simpler operator UX); <a href="#/top-attackers?view=riskkey" style={{ color: 'var(--accent)' }}>Top Attackers → Composite RiskKey view</a> lets you reset one bucket without disturbing siblings on the same IP. Or disable the gate entirely from this card.</span>],
+          ['Tunable', <span key="t">Edit modal on this card — flip <code>enabled</code> and tune <code>block_at</code>. Audit-mutated <code>PUT /api/gates/strikes</code>; per-bucket strike state preserved across edits.</span>],
           ['When to use', 'Production hardening for repeat offenders. For benchmark / risk-decay lifecycle tests, leave disabled (default) so cumulative score is the only score-based gate.'],
         ]}
       />
@@ -9806,7 +9904,7 @@ function CumulativeIpRiskCard() {
       };
       const r = await window.settingsRiskThresholdsPut(body);
       if (r && r.ok) {
-        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
+        window.aegisToast(`Risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
         riskApi.reload && riskApi.reload();
       } else {
         const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
@@ -9823,7 +9921,7 @@ function CumulativeIpRiskCard() {
     <div id="cum-ip-risk-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="3. Cumulative IP risk thresholds"
-        sub="Per-IP decaying score — challenge then block, recovers when score decays"
+        sub="Per-RiskKey-bucket decaying score — challenge then block, recovers when score decays. Buckets are keyed by {ip, device_fp?, session?}; thresholds below are tracker-wide and apply to every bucket."
       />
       <div style={{ padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -9840,19 +9938,19 @@ function CumulativeIpRiskCard() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
+              <span>Allow score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
             </div>
             <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
           </div>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
+              <span>Challenge score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
             </div>
             <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
+              Block score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse further requests from this bucket until score decays
             </div>
             <button
               className="btn primary"
@@ -9867,8 +9965,8 @@ function CumulativeIpRiskCard() {
       </div>
       <GateExplain
         rows={[
-          ['How it fires', 'Each detector hit adds weight to the IP\'s cumulative score (sum of signals). Crossing challenge_at serves a JS/CAPTCHA challenge; crossing block_at refuses requests at the gate.'],
-          ['Counter', <span key="c"><strong>Decays exponentially</strong> (half-life ~5m from <code>risk.decay_half_life</code>). Score drifts down between hits; an IP that stops attacking eventually recovers.</span>],
+          ['How it fires', <span key="hf">Each detector hit adds weight to the request's RiskKey bucket score (sum of signals). Crossing <code>challenge_at</code> serves a JS/CAPTCHA challenge; crossing <code>block_at</code> refuses requests at the gate. Bucket is keyed by <code>{`{ip, device_fp?, session?}`}</code> — two browsers on the same NAT'd IP each accumulate independently.</span>],
+          ['Counter', <span key="c"><strong>Decays exponentially</strong> (half-life ~5m from <code>risk.decay_half_life</code>). Score drifts down between hits; a bucket that stops attracting detector hits eventually recovers.</span>],
           ['Response', <span key="rsp">429 + <code>X-WAF-Action: challenge</code> when above challenge_at; 403 + <code>X-WAF-Action: block</code> + <code>X-WAF-Rule-Id: risk-score</code> when above block_at. <code>X-WAF-Risk-Score</code> reports this same accumulated score, satisfying the contract's accumulation+decay invariant.</span>],
           ['Recovery', 'Automatic — score decays toward zero as time passes without new detector hits.'],
           ['Tunable', <span key="t">Sliders above. Audit-mutated <code>PUT /api/risk/thresholds</code>; takes effect on the next request.</span>],
@@ -9894,7 +9992,7 @@ function RateLimitGateCard() {
     <div id="rate-limit-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="4. Rate Limit"
-        sub="Per-IP token bucket — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window."
+        sub="Per-RiskKey-bucket token-counter — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window. Buckets are keyed by {ip, device_fp?, session?} — two sessions on the same NAT'd IP each get their own quota."
       />
       <div style={{ padding: 16 }}>
         {!cfg ? (
@@ -9915,7 +10013,7 @@ function RateLimitGateCard() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
               <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
-                Effective rate: <strong>{(cfg.limit / Math.max(cfg.window_seconds, 1)).toFixed(2)} req/s per IP</strong>.
+                Effective rate: <strong>{(cfg.limit / Math.max(cfg.window_seconds, 1)).toFixed(2)} req/s per bucket</strong>.
                 Hot-reloadable — edits take effect on the next request without restart.
               </div>
               <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
@@ -9927,12 +10025,12 @@ function RateLimitGateCard() {
       </div>
       <GateExplain
         rows={[
-          ['How it fires', 'Per-IP token bucket counts requests within a sliding window. When the count exceeds limit, the request is denied.'],
-          ['Counter', <span key="c">In-process per-IP timestamp deque (per node). <strong>Window slides → automatic recovery.</strong></span>],
+          ['How it fires', <span key="hf">Per-RiskKey-bucket counter on a sliding window. When the count exceeds <code>limit</code> within <code>window</code>, the request is denied. Bucket is keyed by <code>{`{ip, device_fp?, session?}`}</code> so two sessions on the same NAT'd IP each get their own quota — attacker A's flood doesn't 429 legit user B.</span>],
+          ['Counter', <span key="c">In-process per-bucket timestamp deque (per node). <strong>Window slides → automatic recovery.</strong></span>],
           ['Response', '429 + ', <code key="rc">X-WAF-Action: rate_limit</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ip-rate-limit</code>, '. Misbehaving clients can back off and retry.'],
-          ['Recovery', 'Automatic — IP allowed again as soon as the window slides past old timestamps.'],
-          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/rate-limit</code>; per-IP timestamp state preserved.</span>],
-          ['When to use', '"Steady-state per-IP budget" — APIs with rate fairness. For sustained-burst quarantine (DDoS-grade), use the DDoS gate (#5) instead.'],
+          ['Recovery', 'Automatic — bucket allowed again as soon as the window slides past old timestamps.'],
+          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/rate-limit</code>; per-bucket timestamp state preserved.</span>],
+          ['When to use', '"Steady-state per-bucket budget" — APIs with rate fairness. For sustained-burst quarantine (DDoS-grade, keyed by TCP peer IP regardless of session), use the DDoS gate (#5) instead.'],
         ]}
       />
       {editing && (
@@ -9994,8 +10092,8 @@ function RateLimitEditModal({ current, onClose, onSaved }) {
               style={{ marginTop: 4, width: '100%' }} />
           </label>
           <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
-            Effective: <strong>{(limit / Math.max(parseInt(windowSeconds, 10), 1)).toFixed(2)} req/s per IP</strong>.
-            Per-IP timestamp state is preserved across the edit — flooding sources don't get a free reset.
+            Effective: <strong>{(limit / Math.max(parseInt(windowSeconds, 10), 1)).toFixed(2)} req/s per bucket</strong>.
+            Per-bucket timestamp state is preserved across the edit — flooding sources don't get a free reset.
             Audit-mutated; the change appears in the audit chain.
           </div>
           {err && <div style={{ fontSize: 11, color: 'var(--down)' }}>Error: {err}</div>}
@@ -10067,7 +10165,7 @@ function DdosGateCard() {
     <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="5. DDoS Gate"
-        sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s)"
+        sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s). Intentionally keyed by TCP peer IP, NOT the composite RiskKey — a flooding source can't escape by rotating session cookies."
       />
       <div style={{ padding: 16 }}>
         {/* Status row */}
@@ -10506,6 +10604,21 @@ const TOP_ATTACKERS_WINDOWS = {
 
 function PageTopAttackers() {
   const [win, setWin] = useStateP('1h');
+  // 2026-05-19 — two view modes share the same page so operators
+  // have one mental model for "who's worth investigating". The
+  // legacy `identifier` view consumes /api/attacks/top
+  // (AttacksAggregator, keyed by IP / fp:<ja4> / etc.); the new
+  // `riskkey` view consumes /api/risk (RiskTracker per-bucket
+  // scores, one row per composite RiskKey). Deep-link via
+  // `#/top-attackers?view=riskkey`.
+  const [view, setView] = useStateP(() => {
+    try {
+      const q = (location.hash.split('?')[1] || '').split('&');
+      const v = q.find(s => s.startsWith('view='));
+      if (v && v.slice(5) === 'riskkey') return 'riskkey';
+    } catch (_) { /* ignore */ }
+    return 'identifier';
+  });
   const windowSeconds = TOP_ATTACKERS_WINDOWS[win] ?? 3600;
   const top = window.useApi
     ? window.useApi(
@@ -10513,9 +10626,98 @@ function PageTopAttackers() {
         { intervalMs: 5000, fallback: null },
       )
     : { data: null };
+  const risk = window.useApi
+    ? window.useApi(
+        '/api/risk?limit=50',
+        { intervalMs: 5000, fallback: null },
+      )
+    : { data: null };
   const attackers = top.data?.attackers ?? [];
+  const buckets = risk.data?.clients ?? [];
   const geoLoaded = top.data?.geoip_loaded === true;
   const [busyId, setBusyId] = useStateP(null);
+  const [collapseByIp, setCollapseByIp] = useStateP(false);
+  const [resetBusy, setResetBusy] = useStateP(null);
+
+  // Keep the URL in sync with the active view so a refresh or
+  // bookmark survives the choice. Only touches the query portion
+  // of the route hash; the path stays /top-attackers.
+  useEffectP(() => {
+    const target = view === 'riskkey' ? '?view=riskkey' : '';
+    const cur = location.hash || '#/top-attackers';
+    const [pathPart] = cur.split('?');
+    const next = `${pathPart}${target}`;
+    if (cur !== next) {
+      history.replaceState(null, '', next);
+    }
+  }, [view]);
+
+  async function surgicalReset(row) {
+    const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
+    setResetBusy(id);
+    try {
+      // 2026-05-19 — uses `window.csrfMutate` (the dashboard's
+      // standard helper from data.jsx) so the request carries the
+      // CSRF cookie + header pair the admin gate validates. The
+      // earlier raw-fetch + `window.getCsrfToken` shape silently
+      // 403'd every reset (the helper doesn't exist), making the
+      // button decorative; a tester-skill functional test caught
+      // that before merge.
+      const r = await window.csrfMutate('/api/risk/reset_key', {
+        method: 'POST',
+        body: JSON.stringify({
+          ip: row.ip,
+          device_fp: row.device_fp ?? null,
+          session: row.session ?? null,
+        }),
+      });
+      // csrfMutate returns `{status, ...body}` — not a Response.
+      if (r.status >= 200 && r.status < 300 && r.ok !== false) {
+        window.aegisToast(`Reset bucket ${id}`, 'ok');
+        risk.reload && risk.reload();
+      } else {
+        window.aegisToast(
+          `Reset failed: ${r.message || r.reason || `status ${r.status}`}`,
+          'err',
+        );
+      }
+    } catch (e) {
+      window.aegisToast(`Reset error: ${e.message || e}`, 'err');
+    } finally {
+      setResetBusy(null);
+    }
+  }
+
+  // RiskKey-view "Group by IP" — collapses composite rows
+  // sharing an IP into one summary row. Useful when an operator
+  // just wants the legacy IP-keyed read of the same data.
+  const groupedBuckets = collapseByIp
+    ? Object.values(
+        buckets.reduce((acc, row) => {
+          if (!acc[row.ip]) {
+            acc[row.ip] = {
+              ip: row.ip,
+              device_fp: null,
+              session: null,
+              score: 0,
+              strikes: 0,
+              idle_seconds: row.idle_seconds,
+              level: row.level,
+              strike_blocked: row.strike_blocked,
+              _bucket_count: 0,
+            };
+          }
+          const g = acc[row.ip];
+          g.score = Math.max(g.score, row.score || 0);
+          g.strikes = Math.max(g.strikes, row.strikes || 0);
+          g.idle_seconds = Math.min(g.idle_seconds, row.idle_seconds);
+          if (row.level === 'block' || g.level !== 'block') g.level = row.level;
+          if (row.strike_blocked) g.strike_blocked = true;
+          g._bucket_count += 1;
+          return acc;
+        }, {}),
+      )
+    : buckets;
 
   async function blockAttacker(identifier) {
     if (!identifier) return;
@@ -10557,31 +10759,85 @@ function PageTopAttackers() {
           <h1 className="page-title">
             Top Attackers
             <window.PageTitleRefresh
-              onClick={() => top.reload && top.reload()}
+              onClick={() => {
+                if (view === 'riskkey') risk.reload && risk.reload();
+                else top.reload && top.reload();
+              }}
               label="Refresh top attackers"
             />
           </h1>
           <p className="page-subtitle">
-            Ranked by hits in the last {win} · pivot or block in one click
-            {geoLoaded ? '' : ' · GeoIP DB not loaded — country / ASN columns will be empty until make geoip-link runs'}
+            {view === 'identifier' ? (
+              <>
+                Ranked by hits in the last {win} · pivot or block in one click
+                {geoLoaded ? '' : ' · GeoIP DB not loaded — country / ASN columns will be empty until make geoip-link runs'}
+              </>
+            ) : (
+              <>
+                One row per composite RiskKey ({'{'}IP, device_fp, session{'}'}) · live from <code>/api/risk</code>
+                {' '}· surgical reset wipes exactly one bucket
+              </>
+            )}
           </p>
         </div>
-        <div className="page-actions">
-          <select
-            className="input select"
-            value={win}
-            onChange={e => setWin(e.target.value)}
-            style={{ width: 90 }}
-          >
-            {Object.keys(TOP_ATTACKERS_WINDOWS).map(v => <option key={v}>{v}</option>)}
-          </select>
+        <div className="page-actions" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* 2026-05-19 — view toggle. Identifier view consumes
+              the AttacksAggregator (keyed by IP / fp:<ja4>); the
+              Composite RiskKey view consumes the RiskTracker
+              top-N. Deep-linkable via ?view=riskkey. */}
+          <div role="tablist" style={{ display: 'inline-flex', border: '1px solid var(--hairline)', borderRadius: 6, overflow: 'hidden' }}>
+            <button
+              role="tab"
+              aria-selected={view === 'identifier'}
+              className="btn btn-sm"
+              onClick={() => setView('identifier')}
+              style={{
+                background: view === 'identifier' ? 'var(--surface-2)' : 'transparent',
+                color: view === 'identifier' ? 'var(--ink)' : 'var(--ink-dim)',
+                border: 'none',
+                borderRadius: 0,
+                fontWeight: view === 'identifier' ? 600 : 400,
+              }}
+              title="AttacksAggregator — one row per IP / fp:<ja4> with hits, country, ASN, blocking detectors"
+            >
+              Identifier view
+            </button>
+            <button
+              role="tab"
+              aria-selected={view === 'riskkey'}
+              className="btn btn-sm"
+              onClick={() => setView('riskkey')}
+              style={{
+                background: view === 'riskkey' ? 'var(--surface-2)' : 'transparent',
+                color: view === 'riskkey' ? 'var(--ink)' : 'var(--ink-dim)',
+                border: 'none',
+                borderRadius: 0,
+                fontWeight: view === 'riskkey' ? 600 : 400,
+              }}
+              title="RiskTracker — one row per composite RiskKey {ip, device_fp?, session?} with score, strikes, level"
+            >
+              Composite RiskKey view
+            </button>
+          </div>
+          {view === 'identifier' && (
+            <select
+              className="input select"
+              value={win}
+              onChange={e => setWin(e.target.value)}
+              style={{ width: 90 }}
+              title="Time window (Identifier view only — RiskKey view is always live)"
+            >
+              {Object.keys(TOP_ATTACKERS_WINDOWS).map(v => <option key={v}>{v}</option>)}
+            </select>
+          )}
         </div>
       </div>
 
-      {/* Empty state: lead with the same "what you'll see here"
-          framing the Threat-Intel page uses, so a fresh boot
-          isn't visually broken. */}
-      {attackers.length === 0 ? (
+      {view === 'identifier' ? (
+        /* Identifier view (legacy) — AttacksAggregator: one row
+           per IP / fp:<ja4> ranked by hits in the time window.
+           Same shape and copy as before this refactor. */
+        attackers.length === 0 ? (
         <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
           {top.data === null ? (
             <>Loading top attackers…</>
@@ -10667,6 +10923,125 @@ function PageTopAttackers() {
               })}
             </tbody>
           </table>
+        </div>
+      )
+      ) : (
+        /* 2026-05-19 — Composite RiskKey view. Reads /api/risk
+           (RiskTracker top-N). One row per
+           {ip, device_fp?, session?} bucket; per-row surgical
+           reset wipes exactly one bucket. */
+        <div className="card" style={{ padding: 16 }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={collapseByIp}
+                onChange={e => setCollapseByIp(e.target.checked)}
+              />
+              <span>Group by IP</span>
+              <span style={{ color: 'var(--ink-dim)' }}>
+                (collapses composite-key rows into one summary row per IP)
+              </span>
+            </label>
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              {buckets.length} bucket{buckets.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          {buckets.length === 0 ? (
+            <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+              {risk.data === null
+                ? 'Loading risk buckets…'
+                : 'No tracked clients yet — drive some traffic to populate the table.'}
+            </div>
+          ) : (
+            <table className="tbl tbl-compact">
+              <thead>
+                <tr>
+                  <th style={{ width: 140 }}>IP</th>
+                  <th style={{ width: 110 }}>device_fp</th>
+                  <th style={{ width: 110 }}>session</th>
+                  <th style={{ width: 60 }}>Score</th>
+                  <th style={{ width: 70 }}>Strikes</th>
+                  <th style={{ width: 80 }}>Level</th>
+                  <th style={{ width: 90 }}>Idle</th>
+                  <th style={{ width: 130 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupedBuckets.map((row, i) => {
+                  const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
+                  const levelColour =
+                    row.level === 'block' ? 'var(--down)'
+                    : row.level === 'challenge' ? 'var(--warn)'
+                    : 'var(--ink-dim)';
+                  const dfShort = row.device_fp ? row.device_fp.slice(0, 8) : null;
+                  const sessShort = row.session ? row.session.slice(0, 8) : null;
+                  return (
+                    <tr key={`${id}-${i}`}>
+                      <td className="mono">
+                        <a
+                          href={`#/investigation?pivot=${encodeURIComponent(row.ip)}&kind=ip`}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            location.hash = `/investigation?pivot=${encodeURIComponent(row.ip)}&kind=ip`;
+                          }}
+                          style={{ color: 'var(--accent)', cursor: 'pointer' }}
+                          title={`Pivot Investigation on ${row.ip}`}
+                        >{row.ip}</a>
+                      </td>
+                      <td
+                        className="mono dim"
+                        title={row.device_fp || 'no TLS fingerprint (plain HTTP)'}
+                      >
+                        {dfShort ? `${dfShort}…` : <span style={{ opacity: 0.5 }}>—</span>}
+                      </td>
+                      <td
+                        className="mono dim"
+                        title={row.session || 'no session cookie'}
+                      >
+                        {sessShort ? `${sessShort}…` : <span style={{ opacity: 0.5 }}>—</span>}
+                      </td>
+                      <td className="num">{row.score}</td>
+                      <td className="num">{row.strikes}</td>
+                      <td>
+                        <span
+                          className="pill"
+                          style={{ color: levelColour, border: `1px solid ${levelColour}` }}
+                        >
+                          {row.strike_blocked ? '🔒 ' : ''}
+                          {row.level}
+                        </span>
+                      </td>
+                      <td className="dim">{row.idle_seconds}s</td>
+                      <td>
+                        {collapseByIp ? (
+                          <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>
+                            {row._bucket_count} bucket{row._bucket_count === 1 ? '' : 's'}
+                          </span>
+                        ) : (
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => surgicalReset(row)}
+                            disabled={resetBusy === id}
+                            title="POST /api/risk/reset_key — wipes exactly this composite-key bucket; siblings on the same IP keep their state."
+                          >
+                            {resetBusy === id ? '…' : 'Reset bucket'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 8 }}>
+            IP-only reset (wipe every bucket sharing an IP) still
+            available via <code>PUT /api/risk/&lt;ip&gt;/reset</code>;
+            this view uses the <code>POST /api/risk/reset_key</code>{' '}
+            surgical variant.
+          </div>
         </div>
       )}
 
