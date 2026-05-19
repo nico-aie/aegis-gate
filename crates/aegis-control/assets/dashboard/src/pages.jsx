@@ -1036,7 +1036,8 @@ const DETECTOR_COLORS = {
   // class hues above (greens/teals for state-based signals;
   // reds/oranges shared with severity-class detectors).
   canary:                       '#EF4444', // red — single-hit-block tier
-  behavior_burst:               '#14B8A6', // teal — automated-shape signal
+  // 2026-05-19 — `behavior_burst` retired (single-IP benchmarks
+  // tripped it on every repeat). Teal #14B8A6 is now unassigned.
   behavior_no_ua:               '#06B6D4', // cyan — UA-absence signal
   behavior_missing_referer:     '#0EA5E9', // sky — CSRF-shape signal
   behavior_zero_depth:          '#3B82F6', // blue — first-touch signal
@@ -2944,7 +2945,7 @@ const CLASS_DESCRIPTIONS = {
   template_injection: 'Server-side template injection (Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars).',
   nosql_injection: 'MongoDB-flavour operator injection (`?param[$ne]=foo`, `{$where:…}`).',
   open_redirect: 'Suspicious external URLs in `?next=` / `?redirect_uri=`. Allowlist via `cfg.detectors.open_redirect.allowed_domains`.',
-  behavior_signals: 'Stateful per-IP signals — burst (<50 ms), missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — high false-positive rate on single-IP smoke tests / NAT\'d egress; enable once you have real-IP traffic.',
+  behavior_signals: 'Stateful per-IP signals — missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — designed to stack with OWASP detectors on bot-shaped traffic; turn on once you have real-IP traffic.',
   velocity: 'Cross-endpoint sequence engine — flags chains like login→deposit < 5 s, login→withdrawal < 5 s. DEFAULT ON; zero cost when the upstream has no matching routes.',
   canary: 'Operator-supplied recon tripwire (`/wp-admin`, `/.env`, …). DEFAULT OFF AND inert until you populate `cfg.risk.canary_paths` — enabling alone is a no-op.',
   ai: 'ONNX machine-learning classifier. Heavy per request; per-tier overrides are recommended (e.g. on for Critical, off for Low to skip inference on static-asset traffic). Hot-flippable globally via the AI Detector card too.',
@@ -5439,7 +5440,12 @@ function PageSettings() {
   const runtime = window.useRuntimeApi();
   const showRuntimeHint = !!runtime?.data;
 
-  const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
+  // 2026-05-19 — Honeypot Paths card removed (was local-only with
+  // no backend mutation surface). The real honeypot/canary
+  // implementation now lives behind the `canary` detector on the
+  // Detectors page; operator-supplied paths come from
+  // `cfg.risk.canary_paths` (YAML-only today). The local
+  // `useStateP(['/.env', …])` was decorative only.
 
   async function toggleShadow() {
     if (busy) return;
@@ -5531,46 +5537,29 @@ function PageSettings() {
         </div>
       </div>
 
-      {/* 2026-05-10 — "Cumulative IP risk thresholds" card moved to
-          Traffic Gates → next to Strike-Block, so the per-IP-risk
-          knobs (lifetime strikes + decaying score thresholds) live
-          on one page with a side-by-side semantics callout. */}
-      <div className="card" style={{ marginBottom: 12, padding: 14, background: 'var(--surface-2)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <window.I.Shield />
-          <div style={{ flex: 1, fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.5 }}>
-            <strong style={{ color: 'var(--ink)' }}>Cumulative IP risk thresholds moved.</strong>{' '}
-            They now live with Strike-Block on the
-            {' '}
-            <a href="#/traffic-gates" style={{ color: 'var(--accent)', fontWeight: 600 }}>Traffic Gates</a>
-            {' '}page so the full per-IP-risk story (lifetime strikes vs. decaying score) sits in one place.
-          </div>
-        </div>
-      </div>
+      {/* 2026-05-19 — three dashboards features removed from this
+          page during cleanup:
+          1. "Cumulative IP risk thresholds" (moved to Traffic Gates
+             on 2026-05-10 — breadcrumb below points operators there).
+          2. "Challenge Engine" card (local-only dropdown; the
+             backend always renders JS challenge — no API to swap
+             challenge type today).
+          3. "Honeypot Paths" card (local-only chip editor with no
+             backend mutation surface; cfg.risk.canary_paths is
+             YAML-only and now consumed by the first-class
+             `canary` detector on the Detectors page).
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Challenge Engine</div>
-          <span className="pill warn" title="Selection is local-only — backend always uses JS challenge today">not wired</span>
-        </div>
-        <div className="field-label">Challenge type</div>
-        <select className="input select" defaultValue="JS Challenge"><option>JS Challenge</option><option>JS + CAPTCHA</option><option>Strict (PoW)</option></select>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Honeypot Paths</div>
-          <span className="pill warn" title="Honeypot list is local-only. Backend honeypot config is loaded from waf.yaml at boot.">not wired</span>
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-          {honeypots.map(p => (
-            <span key={p} className="chip active">{p} <span className="chip-x" onClick={() => setHoneypots(hp => hp.filter(x => x !== p))}><window.I.X /></span></span>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <input className="input" placeholder="/trap-path" />
-          <button className="icon-btn"><window.I.Plus /></button>
-        </div>
+          Inline redirect line below keeps operator memory happy
+          without a full-card stub. */}
+      <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <window.I.Shield />
+        <span>Looking for cumulative IP risk thresholds, challenge type, or honeypot paths?</span>
+        <span style={{ color: 'var(--ink-mute)' }}>·</span>
+        <a href="#/traffic-gates" style={{ color: 'var(--accent)', fontWeight: 600 }}>Traffic Gates</a>
+        <span style={{ color: 'var(--ink-mute)' }}>(risk thresholds)</span>
+        <span style={{ color: 'var(--ink-mute)' }}>·</span>
+        <a href="#/detectors" style={{ color: 'var(--accent)', fontWeight: 600 }}>Detectors</a>
+        <span style={{ color: 'var(--ink-mute)' }}>(<code>canary</code> for honeypots)</span>
       </div>
 
       <ResponseFilterCard />
@@ -10367,6 +10356,37 @@ function PageReports() {
     }
   }
 
+  // 2026-05-19 — Configuration backup. Hits the new
+  // /api/config/backup.yaml endpoint which streams the
+  // source-of-truth waf.yaml byte-for-byte. Different shape from
+  // the Compliance snapshot above: this is a drop-in replacement
+  // for the host's waf.yaml (operators clone it to a new node
+  // and the config-watcher reloads in place); Compliance snapshot
+  // is a forensic JSON bundle including live mask state.
+  async function downloadConfigBackup() {
+    setBusyId('config-backup');
+    try {
+      const r = await fetch('/api/config/backup.yaml', { credentials: 'same-origin' });
+      if (r.status === 404) {
+        const body = await r.json().catch(() => ({}));
+        window.aegisToast(
+          body.message
+            || 'WAF booted from a non-file config source — no waf.yaml to back up',
+          'warn',
+        );
+        return;
+      }
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      const blob = await r.blob();
+      downloadBlob(`aegis-config-${ts()}.yaml`, blob);
+      window.aegisToast('Configuration backup downloaded', 'ok');
+    } catch (err) {
+      window.aegisToast(`Configuration backup failed: ${err.message || err}`, 'err');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function downloadComplianceSnapshot() {
     setBusyId('compliance');
     try {
@@ -10421,10 +10441,23 @@ function PageReports() {
     {
       id: 'compliance',
       title: 'Compliance snapshot',
-      sub: 'Active runtime config + detector mask, JSON snapshot — sourced from /api/config + /api/detectors',
+      sub: 'Active runtime config + detector mask, JSON snapshot — sourced from /api/config + /api/detectors. Forensic / audit-attestation use.',
       kind: 'click',
       onClick: downloadComplianceSnapshot,
       label: 'Download JSON',
+    },
+    // 2026-05-19 — drop-in waf.yaml backup. Different shape from
+    // Compliance snapshot: this is the source-of-truth file
+    // suitable for cloning to a new node. Secret refs preserved
+    // as-is (${secret:env:…}, ${secret:file:…}) — no plaintext
+    // credentials are emitted.
+    {
+      id: 'config-backup',
+      title: 'Configuration backup (YAML)',
+      sub: 'Drop-in replacement for waf.yaml — clone the LIVE runtime state to a new node. Reflects dashboard PUTs: AI enabled, detector mask (base + per-tier), DDoS knobs. Secret references (${secret:*}) preserved as-is.',
+      kind: 'click',
+      onClick: downloadConfigBackup,
+      label: 'Download YAML',
     },
   ];
   return (
