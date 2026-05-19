@@ -3248,6 +3248,11 @@ function DetectorMaskCard() {
 // or per-tier overrides above (all surfaced on this same page).
 function DetectorScorePanel({ scoreTable }) {
   const [expanded, setExpanded] = useStateP(false);
+  // 2026-05-19 — clickable class detail. The help-cursor chips +
+  // class labels in the full table open a modal showing the full
+  // description + every sub-tag with score / tier / note. Replaces
+  // the prior "hover-only tooltip with no follow-through" UX.
+  const [detailClass, setDetailClass] = useStateP(null);
   // 2026-05-10 — read live thresholds from /api/risk/thresholds
   // so the explanatory text shows the operator's *current* values,
   // not the hardcoded defaults. The Cumulative IP risk thresholds
@@ -3348,23 +3353,42 @@ function DetectorScorePanel({ scoreTable }) {
         <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'minmax(140px, auto) 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
           {classOrder.map(cls => (
             <React.Fragment key={cls}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)' }}>{cls}</div>
+              {/* Class label is now a clickable affordance — opens
+                  the detail modal. The trailing "ⓘ" makes the click
+                  target discoverable; the prior hover-cursor only
+                  hinted at help without follow-through. */}
+              <button
+                type="button"
+                onClick={() => setDetailClass(cls)}
+                title={`Open full details for ${cls}`}
+                style={{
+                  fontSize: 11, fontWeight: 600, color: 'var(--ink)',
+                  background: 'transparent', border: 'none', padding: 0,
+                  textAlign: 'left', cursor: 'pointer',
+                  display: 'inline-flex', alignItems: 'baseline', gap: 4,
+                }}
+              >
+                {cls}
+                <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontWeight: 400 }} aria-hidden="true">ⓘ</span>
+              </button>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {byClass[cls].map(row => {
                   const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
                   return (
-                    <span
+                    <button
+                      type="button"
                       key={`${row.class}-${row.tag}`}
-                      title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}`}
+                      onClick={() => setDetailClass(row.class)}
+                      title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}\n\nClick for full details.`}
                       style={{
                         fontSize: 10, padding: '2px 8px', borderRadius: 4,
                         background: tierStyle.bg, color: tierStyle.fg,
                         fontWeight: 500, fontFamily: 'monospace',
-                        cursor: 'help',
+                        cursor: 'pointer', border: '1px solid transparent',
                       }}
                     >
                       {row.tag} · {row.score}
-                    </span>
+                    </button>
                   );
                 })}
               </div>
@@ -3372,6 +3396,117 @@ function DetectorScorePanel({ scoreTable }) {
           ))}
         </div>
       )}
+
+      {detailClass && (
+        <DetectorDetailModal
+          cls={detailClass}
+          rows={byClass[detailClass] || []}
+          onClose={() => setDetailClass(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// 2026-05-19 — modal opened from `DetectorScorePanel` chips +
+// class labels. Surfaces the per-class description, every signal
+// the class can emit (tag · score · tier · note), and a config-
+// pointer line so operators know which YAML knob / API call
+// changes its behaviour.
+function DetectorDetailModal({ cls, rows, onClose }) {
+  const description = CLASS_DESCRIPTIONS[cls] || null;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <div className="modal-head">
+          <div className="modal-title">
+            <code style={{ fontFamily: 'monospace' }}>{cls}</code>{' '}
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)', fontWeight: 400 }}>
+              · detector details
+            </span>
+          </div>
+          <button className="btn btn-sm" onClick={onClose} aria-label="Close">×</button>
+        </div>
+        <div className="modal-body">
+          {description ? (
+            <p style={{ fontSize: 12, lineHeight: 1.55, marginTop: 0, color: 'var(--ink)' }}>
+              {description}
+            </p>
+          ) : (
+            <p style={{ fontSize: 12, lineHeight: 1.55, marginTop: 0, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+              No per-class description available yet — see the signals below
+              for the per-tag detail this detector emits.
+            </p>
+          )}
+
+          <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '12px 0 6px' }}>
+            Signals this detector can emit
+          </div>
+          {rows.length === 0 ? (
+            <p style={{ fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+              No catalogue entries for this class — the detector runs but
+              its sub-tag scores aren't published in <code>score_table</code>.
+            </p>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, auto) 1fr', columnGap: 12, rowGap: 8, alignItems: 'baseline' }}>
+              {rows.map(row => {
+                const tierStyle = SCORE_TIER_STYLE[row.tier] || SCORE_TIER_STYLE.probe;
+                return (
+                  <React.Fragment key={`${row.class}-${row.tag}`}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontFamily: 'monospace', fontSize: 11 }}>
+                      <span style={{ color: 'var(--ink)', fontWeight: 600 }}>{row.tag}</span>
+                      <span style={{
+                        fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                        background: tierStyle.bg, color: tierStyle.fg,
+                        fontWeight: 600,
+                      }}>
+                        +{row.score}
+                      </span>
+                      <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>{tierStyle.label}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.45 }}>
+                      {row.note}
+                    </div>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ fontSize: 10, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '14px 0 6px' }}>
+            Where it's configured
+          </div>
+          <ul style={{ fontSize: 11, color: 'var(--ink)', lineHeight: 1.55, paddingLeft: 18, margin: 0 }}>
+            <li>
+              <strong>Global toggle:</strong>{' '}
+              {cls === 'ai' ? (
+                <>
+                  <code>cfg.ai.enabled</code> (sibling block) — also hot-flippable via{' '}
+                  <code>PUT /api/ai/enabled</code> and the <em>AI Detector</em> row on this page.
+                </>
+              ) : (
+                <>
+                  <code>cfg.detectors.{cls}.enabled</code> — hot-flippable via{' '}
+                  <code>PUT /api/detectors</code> and the chip in the mask grid above.
+                </>
+              )}
+            </li>
+            <li>
+              <strong>Per-tier override:</strong>{' '}
+              <code>cfg.detectors.per_tier.&lt;tier&gt;.{cls}</code> ·{' '}
+              or click <em>Override Base mask</em> on the tier row to flip the chip.
+            </li>
+            <li>
+              <strong>Mask bit:</strong>{' '}
+              <code>DetectorClass::{cls.split('_').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('')}</code>
+              {' '}— gates the dispatcher loop; disabled classes pay zero CPU.
+            </li>
+          </ul>
+        </div>
+        <div className="modal-foot">
+          <button className="btn" onClick={onClose}>Close</button>
+        </div>
+      </div>
     </div>
   );
 }
