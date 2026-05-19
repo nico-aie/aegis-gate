@@ -44,7 +44,7 @@ use crate::admin_mutate::{
     handle_mtls_sans_put, handle_mtls_sans_test, handle_pool_delete,
     handle_ai_enabled_get, handle_ai_enabled_put, handle_response_filter_get,
     handle_response_filter_put, handle_pool_upsert,
-    handle_risk_reset, handle_risk_thresholds_put, handle_route_delete,
+    handle_risk_reset, handle_risk_reset_key, handle_risk_thresholds_put, handle_route_delete,
     handle_route_upsert, handle_rules_delete, handle_rules_post,
     handle_rules_put, handle_rules_toggle, handle_tier_put,
     handle_upstreams_config_put,
@@ -115,6 +115,16 @@ pub(crate) async fn handle_admin_request(
         {
             return handle_risk_reset(req, ip_seg, services).await;
         }
+    }
+
+    // 2026-05-19 — POST /api/risk/reset_key. Surgical reset that
+    // wipes ONE composite-key bucket (IP + optional device_fp +
+    // optional session). Distinct from PUT /api/risk/{ip}/reset
+    // which wipes every bucket sharing that IP. Audit-mutated;
+    // CSRF-gated; admin-only via the auth middleware that runs
+    // before this dispatcher.
+    if method == hyper::Method::POST && path == "/api/risk/reset_key" {
+        return handle_risk_reset_key(req, services).await;
     }
 
     // CI-T12 — PUT /api/risk/thresholds — audit-mutated;

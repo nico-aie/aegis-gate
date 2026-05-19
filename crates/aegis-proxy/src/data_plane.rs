@@ -314,7 +314,7 @@ pub(crate) async fn handle_data_request_inner(
     // forever" semantics — the strikes lifetime counter accumulates
     // across record_malicious_with_key calls, then is_strike_blocked
     // returns true once the cap is hit.
-    let strike_key = build_risk_key(peer_ip, req.headers());
+    let strike_key = build_risk_key(peer_ip, req.headers(), tls_fingerprint);
     if risk.is_strike_blocked_for_key(&strike_key) {
         // NEW-4 (2026-05-08) — keyed on `peer_ip` (XFF-resolved).
         // Stamp on the DecisionTag so the response stamper picks
@@ -494,8 +494,15 @@ pub(crate) async fn handle_data_request_inner(
     // strike, so repeat offenders eventually cross
     // `risk.strikes.block_at` and get the permanent 403 path
     // above instead of the 429 here.
+    //
+    // 2026-05-19 Phase E completion — the per-IP guard now keys
+    // on the composite `RiskKey`. Two TLS sessions from the same
+    // NAT'd IP with different (JA4, UA, session-cookie) shapes
+    // get independent buckets, so legit user B isn't penalised
+    // for attacker A's flood when they share an egress proxy.
     let rate_t0 = std::time::Instant::now();
-    let rate_decision = ip_rate_limiter.consume(peer_ip);
+    let rate_decision = ip_rate_limiter
+        .consume_with_key(build_risk_key(peer_ip, req.headers(), tls_fingerprint));
     request_stage_hist.record(stages::RATE_LIMIT, rate_t0.elapsed());
     if !rate_decision.allowed {
         // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
@@ -506,7 +513,7 @@ pub(crate) async fn handle_data_request_inner(
         // bucket. device_fp stays None until the JA4-capture
         // wire-up lands. Pre-Phase-E this was IP-only.
         let post_state = risk.record_malicious_with_key(
-            build_risk_key(peer_ip, req.headers()),
+            build_risk_key(peer_ip, req.headers(), tls_fingerprint),
             30,
         );
         let reason = format!(
@@ -779,7 +786,7 @@ pub(crate) async fn handle_data_request_inner(
         // limit site above. `parts.headers` is in scope here
         // (request body has been split out for detector buffering).
         let post_state = risk.record_malicious_with_key(
-            build_risk_key(peer_ip, &parts.headers),
+            build_risk_key(peer_ip, &parts.headers, tls_fingerprint),
             request_score,
         );
         // 2026-05-03 — dedup detector tags before emitting them
@@ -947,7 +954,7 @@ pub(crate) async fn handle_data_request_inner(
         // record_malicious_with_key calls above). Trust-recovery
         // operates on the per-session bucket so a malicious session
         // doesn't drag down a clean-session sibling on the same IP.
-        risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers));
+        risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers, tls_fingerprint));
 
         // 2026-05-10 — Option B per-tier overrides. Look up the
         // matched tier's cumulative thresholds + challenges_enabled
@@ -971,7 +978,7 @@ pub(crate) async fn handle_data_request_inner(
         // composite-key level read. Same bucket the write path
         // populates (the record_malicious_with_key calls above).
         let level = risk.level_with_for_key(
-            &build_risk_key(peer_ip, &parts.headers),
+            &build_risk_key(peer_ip, &parts.headers, tls_fingerprint),
             challenge_at,
             block_at,
         );
@@ -994,7 +1001,7 @@ pub(crate) async fn handle_data_request_inner(
                 // doesn't re-query under peer.ip() and miss.
                 // 2026-05-18 — composite-key snapshot (Phase E).
                 let block_score = risk
-                    .snapshot_with_key(&build_risk_key(peer_ip, &parts.headers))
+                    .snapshot_with_key(&build_risk_key(peer_ip, &parts.headers, tls_fingerprint))
                     .map(|s| s.score);
                 let tag = match block_score {
                     Some(s) => DecisionTag::block("risk-score").with_tier(tier).with_risk_score(s),
@@ -1085,7 +1092,7 @@ pub(crate) async fn handle_data_request_inner(
                 // for the challenge response too.
                 // 2026-05-18 — composite-key snapshot (Phase E).
                 let challenge_score = risk
-                    .snapshot_with_key(&build_risk_key(peer_ip, &parts.headers))
+                    .snapshot_with_key(&build_risk_key(peer_ip, &parts.headers, tls_fingerprint))
                     .map(|s| s.score);
                 let tag = match challenge_score {
                     Some(s) => DecisionTag::challenge("risk-challenge").with_tier(tier).with_risk_score(s),
@@ -2243,26 +2250,85 @@ mod session_extraction_tests {
         assert_eq!(extract_session_id(&h).as_deref(), Some("trimmed"));
     }
 
-    /// build_risk_key fills ip + session axes, leaves device_fp
-    /// (device_fp None). session axis is populated from the
-    /// cookie when present.
+    /// build_risk_key fills ip + session axes. device_fp stays
+    /// `None` on the plain-HTTP path (no TLS fingerprint
+    /// available), `Some(16 hex chars)` on the TLS path.
     #[test]
     fn build_risk_key_populates_session_axis() {
         let h = headers_with("session=abc");
         let ip: std::net::IpAddr = "203.0.113.10".parse().unwrap();
-        let key = build_risk_key(ip, &h);
+        let key = build_risk_key(ip, &h, None);
         assert_eq!(key.ip, ip);
         assert_eq!(key.session.as_deref(), Some("abc"));
-        assert!(key.device_fp.is_none());
+        assert!(key.device_fp.is_none(), "plain HTTP leaves device_fp None");
     }
 
     #[test]
     fn build_risk_key_no_cookie_falls_back_to_ip_only_axis() {
         let h = HeaderMap::new();
         let ip: std::net::IpAddr = "203.0.113.10".parse().unwrap();
-        let key = build_risk_key(ip, &h);
+        let key = build_risk_key(ip, &h, None);
         assert_eq!(key.ip, ip);
         assert!(key.session.is_none());
+    }
+
+    /// 2026-05-19 — TLS fingerprint produces a stable device_fp axis.
+    /// Two requests with the same JA4 + UA hash to the same bucket;
+    /// two requests with the same JA4 but different UA bucket apart.
+    #[test]
+    fn build_risk_key_populates_device_fp_from_tls() {
+        use http::HeaderValue;
+        let mut h = HeaderMap::new();
+        h.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static("Mozilla/5.0 (Macintosh)"),
+        );
+        let ip: std::net::IpAddr = "203.0.113.10".parse().unwrap();
+        let fp = aegis_core::TlsFingerprint {
+            ja3: "abc".into(),
+            ja4: "t13d1516h2_8daaf6152771_b0da82dd1658".into(),
+        };
+
+        let a = build_risk_key(ip, &h, Some(&fp));
+        let b = build_risk_key(ip, &h, Some(&fp));
+        assert_eq!(a.device_fp, b.device_fp, "same JA4 + UA → same hash");
+        assert_eq!(a.device_fp.as_ref().map(|s| s.len()), Some(16));
+
+        // Different UA on the same JA4 → different bucket.
+        let mut h2 = HeaderMap::new();
+        h2.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static("curl/8.0"),
+        );
+        let c = build_risk_key(ip, &h2, Some(&fp));
+        assert_ne!(a.device_fp, c.device_fp, "different UA → different hash");
+    }
+
+    /// Same IP + same JA4 + same UA but different session cookies
+    /// must give us TWO distinct keys — the whole point of the
+    /// composite migration.
+    #[test]
+    fn build_risk_key_two_sessions_on_same_ip_bucket_apart() {
+        use http::HeaderValue;
+        let ip: std::net::IpAddr = "203.0.113.10".parse().unwrap();
+        let fp = aegis_core::TlsFingerprint {
+            ja3: "abc".into(),
+            ja4: "ja4-shared".into(),
+        };
+        let ua = HeaderValue::from_static("Mozilla/5.0");
+        let mut h1 = HeaderMap::new();
+        h1.insert(http::header::USER_AGENT, ua.clone());
+        h1.insert(http::header::COOKIE, HeaderValue::from_static("session=alice"));
+        let mut h2 = HeaderMap::new();
+        h2.insert(http::header::USER_AGENT, ua);
+        h2.insert(http::header::COOKIE, HeaderValue::from_static("session=bob"));
+
+        let alice = build_risk_key(ip, &h1, Some(&fp));
+        let bob = build_risk_key(ip, &h2, Some(&fp));
+        assert_eq!(alice.ip, bob.ip, "same IP");
+        assert_eq!(alice.device_fp, bob.device_fp, "same TLS device");
+        assert_ne!(alice.session, bob.session, "session axis splits the bucket");
+        assert_ne!(alice, bob);
     }
 }
 
@@ -2469,9 +2535,13 @@ pub(crate) fn extract_session_id(headers: &http::HeaderMap) -> Option<String> {
 /// - `ip` — always present (peer's resolved IP after XFF).
 /// - `session` — from the session-cookie scan above; `None`
 ///   when no recognised session cookie is sent.
-/// - `device_fp` — `None` today. Activates when TLS-fingerprint
-///   wire-up lands (tracked in
-///   `plans/future/risk-composite-key-data-plane.md`).
+/// - `device_fp` — `Some(blake3-16hex(ja4 ‖ ua))` when the TLS
+///   handshake produced a fingerprint (HTTPS data plane); `None`
+///   on plain HTTP. See
+///   [`aegis_security::fingerprint::device_fp_hash`] for the
+///   exact construction. Two TLS sessions from the same NAT'd IP
+///   with different JA4 / User-Agent shapes now bucket
+///   independently — that's the whole point of the composite key.
 ///
 /// 2026-05-19 — `tenant_id` axis removed from `RiskKey` (the
 /// multi-tenant feature was deprecated upstream; every populator
@@ -2479,10 +2549,17 @@ pub(crate) fn extract_session_id(headers: &http::HeaderMap) -> Option<String> {
 pub(crate) fn build_risk_key(
     peer_ip: std::net::IpAddr,
     headers: &http::HeaderMap,
+    tls_fp: Option<&aegis_core::TlsFingerprint>,
 ) -> aegis_core::risk::RiskKey {
+    let device_fp = tls_fp.map(|fp| {
+        let ua = headers
+            .get(http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok());
+        aegis_security::fingerprint::device_fp_hash(&fp.ja4, ua)
+    });
     aegis_core::risk::RiskKey {
         ip: peer_ip,
-        device_fp: None,
+        device_fp,
         session: extract_session_id(headers),
     }
 }
