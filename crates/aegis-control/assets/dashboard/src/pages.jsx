@@ -10454,7 +10454,7 @@ function PageReports() {
     {
       id: 'config-backup',
       title: 'Configuration backup (YAML)',
-      sub: 'Drop-in replacement for waf.yaml — clone the on-disk config to a new node. Secret references (${secret:*}) preserved as-is; in-memory dashboard mutations (rule CRUD, hot-flipped mask, risk-threshold edits) are NOT included.',
+      sub: 'Drop-in replacement for waf.yaml — clone the LIVE runtime state to a new node. Reflects dashboard PUTs: AI enabled, detector mask (base + per-tier), DDoS knobs. Secret references (${secret:*}) preserved as-is.',
       kind: 'click',
       onClick: downloadConfigBackup,
       label: 'Download YAML',

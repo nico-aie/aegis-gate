@@ -153,9 +153,117 @@ pub(crate) fn admin_router(
         // The dashboard card surfaces this caveat next to the
         // download button.
         "/api/config/backup.yaml" => {
-            match services.config_yaml_path.as_ref() {
-                Some(path) => match std::fs::read(path) {
-                    Ok(bytes) => Response::builder()
+            let Some(path) = services.config_yaml_path.as_ref() else {
+                return json_response(
+                    404,
+                    &serde_json::json!({
+                        "ok": false,
+                        "reason": "no_file_source",
+                        "message": "proxy booted from a non-file config source \
+                                    (etcd / test bundle); no waf.yaml to back up",
+                    }),
+                );
+            };
+            let on_disk = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "/api/config/backup.yaml: failed to read source-of-truth file",
+                    );
+                    return json_response(
+                        500,
+                        &serde_json::json!({
+                            "ok": false,
+                            "reason": "read_failed",
+                            "message": format!("could not read config file: {e}"),
+                        }),
+                    );
+                }
+            };
+
+            // Build a RuntimeOverlay from the live ArcSwap stores so
+            // the downloaded YAML reflects dashboard mutations on
+            // top of whatever's on disk. Operators who hot-flip
+            // AI off / disable a detector class / tighten DDoS get
+            // a backup that matches what's actually running.
+            use aegis_control::api::config::{
+                apply_runtime_overlay, DdosOverlay, RuntimeOverlay,
+            };
+            use aegis_security::detectors::mask::{
+                tier_str, DetectorClass, ALL_TIERS,
+            };
+            let mask_state = services.detector_mask.load_state();
+            let mut detector_base = std::collections::BTreeMap::new();
+            for class in DetectorClass::ALL {
+                detector_base.insert(
+                    class.as_str().to_string(),
+                    mask_state.base.is_enabled(class),
+                );
+            }
+            let mut detector_per_tier = std::collections::BTreeMap::new();
+            for tier in ALL_TIERS {
+                if let Some(m) = mask_state.override_for(tier) {
+                    let mut tier_map = std::collections::BTreeMap::new();
+                    for class in DetectorClass::ALL {
+                        tier_map.insert(
+                            class.as_str().to_string(),
+                            m.is_enabled(class),
+                        );
+                    }
+                    detector_per_tier.insert(tier_str(tier).to_string(), tier_map);
+                }
+            }
+            let ai_enabled =
+                Some(mask_state.base.is_enabled(DetectorClass::Ai));
+            let ddos = services.ddos.as_ref().map(|rt| {
+                let snap = rt.config_snapshot();
+                DdosOverlay {
+                    enabled: snap.enabled,
+                    observe_only: snap.observe_only,
+                    per_ip_limit: snap.per_ip_limit,
+                    per_ip_window_s: snap.per_ip_window_s,
+                    block_ttl_s: snap.block_ttl_s,
+                    spike_multiplier: snap.spike_multiplier,
+                    tightened_per_ip_rps: snap.tightened_per_ip_rps,
+                }
+            });
+            let overlay = RuntimeOverlay {
+                ai_enabled,
+                detector_base: Some(detector_base),
+                detector_per_tier: if detector_per_tier.is_empty() {
+                    None
+                } else {
+                    Some(detector_per_tier)
+                },
+                ddos,
+            };
+            match apply_runtime_overlay(&on_disk, &overlay) {
+                Ok(merged) => Response::builder()
+                    .status(200)
+                    .header("content-type", "application/yaml; charset=utf-8")
+                    .header(
+                        "content-disposition",
+                        format!(
+                            "attachment; filename=\"{}\"",
+                            path.file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("waf.yaml"),
+                        ),
+                    )
+                    .header("cache-control", "private, no-store")
+                    .body(Full::new(Bytes::from(merged)))
+                    .unwrap(),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "/api/config/backup.yaml: overlay failed; falling back to on-disk file",
+                    );
+                    // Fail-soft: serve the unmodified on-disk file
+                    // so the operator still gets something usable.
+                    Response::builder()
                         .status(200)
                         .header("content-type", "application/yaml; charset=utf-8")
                         .header(
@@ -167,34 +275,11 @@ pub(crate) fn admin_router(
                                     .unwrap_or("waf.yaml"),
                             ),
                         )
+                        .header("x-aegis-backup-warning", "overlay_failed_serving_on_disk")
                         .header("cache-control", "private, no-store")
-                        .body(Full::new(Bytes::from(bytes)))
-                        .unwrap(),
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %path.display(),
-                            error = %e,
-                            "/api/config/backup.yaml: failed to read source-of-truth file",
-                        );
-                        json_response(
-                            500,
-                            &serde_json::json!({
-                                "ok": false,
-                                "reason": "read_failed",
-                                "message": format!("could not read config file: {e}"),
-                            }),
-                        )
-                    }
-                },
-                None => json_response(
-                    404,
-                    &serde_json::json!({
-                        "ok": false,
-                        "reason": "no_file_source",
-                        "message": "proxy booted from a non-file config source \
-                                    (etcd / test bundle); no waf.yaml to back up",
-                    }),
-                ),
+                        .body(Full::new(Bytes::from(on_disk)))
+                        .unwrap()
+                }
             }
         }
 
