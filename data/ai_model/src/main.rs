@@ -6,6 +6,7 @@ use ort::{inputs, session::Session};
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::io::Write;
 use std::time::Instant;
 
 // ─── CLI helpers ──────────────────────────────────────────────────────────────
@@ -30,6 +31,14 @@ struct Row {
     category: String,
 }
 
+/// Extended row for dataset_unified.csv (includes `source` column).
+#[derive(Deserialize)]
+struct UnifiedRow {
+    text: String,
+    category: String,
+    source: String,
+}
+
 fn load_csv(path: &str) -> Vec<Row> {
     match csv::Reader::from_path(path) {
         Ok(mut rdr) => rdr.deserialize().filter_map(|r| r.ok()).collect(),
@@ -40,16 +49,42 @@ fn load_csv(path: &str) -> Vec<Row> {
     }
 }
 
-// ─── Feature extraction (parallel via rayon) ──────────────────────────────────
+fn load_unified_csv(path: &str) -> Vec<UnifiedRow> {
+    match csv::Reader::from_path(path) {
+        Ok(mut rdr) => rdr.deserialize().filter_map(|r| r.ok()).collect(),
+        Err(e) => {
+            eprintln!("  [WARN] cannot open {path}: {e}");
+            vec![]
+        }
+    }
+}
+
+// ─── Feature extraction ───────────────────────────────────────────────────────
+
+/// Threshold below which rayon thread-pool wakeup overhead exceeds the benefit
+/// of parallelism. Tune down if CPU count is high, up if requests are very long.
+const PAR_THRESHOLD: usize = 64;
 
 fn build_feature_matrix(requests: &[&str]) -> Array2<f32> {
-    let feats: Vec<[f32; NUM_FEATURES]> =
-        requests.par_iter().map(|req| extract_features(req)).collect();
-    let n = feats.len();
+    let n = requests.len();
     let mut mat = Array2::<f32>::zeros((n, NUM_FEATURES));
-    for (i, feat) in feats.iter().enumerate() {
-        for (j, &v) in feat.iter().enumerate() {
-            mat[[i, j]] = v;
+    if n >= PAR_THRESHOLD {
+        // Parallel path: collect into a temp vec then copy to avoid rayon + ndarray
+        // borrow conflicts.
+        let feats: Vec<[f32; NUM_FEATURES]> =
+            requests.par_iter().map(|req| extract_features(req)).collect();
+        for (i, feat) in feats.iter().enumerate() {
+            for (j, &v) in feat.iter().enumerate() {
+                mat[[i, j]] = v;
+            }
+        }
+    } else {
+        // Sequential path: avoids rayon thread-pool wakeup for small batches.
+        for (i, req) in requests.iter().enumerate() {
+            let feat = extract_features(req);
+            for (j, &v) in feat.iter().enumerate() {
+                mat[[i, j]] = v;
+            }
         }
     }
     mat
@@ -299,6 +334,38 @@ fn evaluate_source(
     })
 }
 
+// ─── Save predictions CSV ─────────────────────────────────────────────────────
+
+/// Write per-row predictions to a CSV file.
+/// Columns: source, true_label, predicted, score, text_preview (first 120 chars of first line)
+fn save_predictions(
+    path: &str,
+    source: &str,
+    rows: &[Row],
+    y_true: &[i64],
+    y_pred: &[i64],
+    scores: &[f32],
+) {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path);
+    let mut f = match file {
+        Ok(f) => std::io::BufWriter::new(f),
+        Err(e) => {
+            eprintln!("  [WARN] cannot open {path}: {e}");
+            return;
+        }
+    };
+    for (((row, &yt), &yp), &s) in rows.iter().zip(y_true).zip(y_pred).zip(scores) {
+        let true_label  = if yt == 1 { "Attack" } else { "Normal" };
+        let pred_label  = if yp == 1 { "Attack" } else { "Normal" };
+        let first_line  = row.text.lines().next().unwrap_or("").replace(',', " ");
+        let preview     = &first_line[..first_line.len().min(120)];
+        writeln!(f, "{source},{true_label},{pred_label},{s:.4},{preview}").ok();
+    }
+}
+
 // ─── Benchmark ────────────────────────────────────────────────────────────────
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
@@ -370,8 +437,10 @@ fn main() {
     let batch_size: usize = get_flag(&args, "--batch-size")
         .and_then(|s| s.parse().ok())
         .unwrap_or(8192);
-    let do_bench  = args.iter().any(|a| a == "--bench");
-    let bench_only = args.iter().any(|a| a == "--bench-only");
+    let do_bench    = args.iter().any(|a| a == "--bench");
+    let bench_only  = args.iter().any(|a| a == "--bench-only");
+    let do_unified  = args.iter().any(|a| a == "--unified");
+    let save_preds  = get_flag(&args, "--save-preds");
 
     let all_sources     = ["legitimate", "malicious", "srbh", "csic", "huggingface", "modern"];
     let default_sources = ["legitimate", "malicious", "modern"];
@@ -394,13 +463,61 @@ fn main() {
     // ── Evaluation ────────────────────────────────────────────────────────────
     let mut results: Vec<SourceResult> = vec![];
 
-    if !bench_only {
+    // Initialise predictions CSV (write header once, append per source below).
+    if let Some(ref p) = save_preds {
+        match std::fs::write(p, "source,true_label,predicted,score,text_preview\n") {
+            Ok(_)  => println!("Saving per-row predictions -> {p}"),
+            Err(e) => eprintln!("  [WARN] cannot create {p}: {e}"),
+        }
+    }
+
+    if do_unified && !bench_only {
+        // Evaluate the full dataset_unified.csv, broken down by source column.
+        println!("\nLoading unified CSV: {unified_csv} ...");
+        let unified_rows = load_unified_csv(unified_csv);
+        if unified_rows.is_empty() {
+            eprintln!("  [WARN] unified CSV empty or not found — run build_clean_dataset.py first");
+        } else {
+            println!("  Loaded {} rows — grouping by source ...", unified_rows.len());
+            let mut by_source: HashMap<String, Vec<Row>> = HashMap::new();
+            for r in unified_rows {
+                by_source.entry(r.source).or_default().push(Row {
+                    text: r.text,
+                    category: r.category,
+                });
+            }
+            let mut sorted_sources: Vec<String> = by_source.keys().cloned().collect();
+            sorted_sources.sort();
+            for src in &sorted_sources {
+                let rows = &by_source[src];
+                if let Some(r) = evaluate_source(&mut session, src, rows, batch_size) {
+                    results.push(r);
+                }
+                if let Some(ref p) = save_preds {
+                    let reqs: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+                    let (preds, scores) = predict_all(&mut session, &reqs, batch_size);
+                    let y_true: Vec<i64> = rows.iter()
+                        .map(|r| if r.category == "Normal" { 0 } else { 1 })
+                        .collect();
+                    save_predictions(p, src, rows, &y_true, &preds, &scores);
+                }
+            }
+        }
+    } else if !bench_only {
         for src in &sources {
             let csv_path = format!("{eval_dir}/{src}.csv");
             println!("\nLoading {src} from {csv_path} ...");
             let rows = load_csv(&csv_path);
             if let Some(r) = evaluate_source(&mut session, src, &rows, batch_size) {
                 results.push(r);
+            }
+            if let Some(ref p) = save_preds {
+                let reqs: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+                let (preds, scores) = predict_all(&mut session, &reqs, batch_size);
+                let y_true: Vec<i64> = rows.iter()
+                    .map(|r| if r.category == "Normal" { 0 } else { 1 })
+                    .collect();
+                save_predictions(p, src, &rows, &y_true, &preds, &scores);
             }
         }
     }

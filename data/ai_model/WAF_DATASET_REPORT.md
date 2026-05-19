@@ -1,6 +1,6 @@
 # WAF Training Dataset — Phân tích & So sánh
 
-> **Cập nhật:** 2026-04-30  
+> **Cập nhật:** 2026-05-18  
 > **Mục đích:** Tổng hợp toàn bộ nguồn data đang có, đánh giá chất lượng, hỗ trợ lựa chọn data cho việc train model WAF.
 
 ---
@@ -16,9 +16,10 @@
 | 5 | **CSIC 2010** | 97,065 | 1 binary (Normal/Attack) | Raw HTTP | 2010 | ⭐⭐ |
 | 6 | **HuggingFace ai-waf-dataset** | 11,949 | Binary → pattern-mapped | Full HTTP text | 2024 | ⭐⭐⭐ |
 | 7 | **PayloadsAllTheThings / SecLists** | 1,314 raw → ~6,061 wrapped | 4 loại | Raw payloads | 2024–2025 | ⭐⭐⭐⭐ |
+| 8 | **LLM Generator v1** *(mới)* | 210,000 (200K attack + 10K clean) | **21 classes** — bao gồm 8 class mới | NDJSON | 2026 | ⭐⭐⭐⭐ |
 
-**Tổng ước tính (trước cap):** ~2,085,000 samples  
-**Classes có trong dataset:** Normal, Injection, XSS, XXE, Manipulation, HTTP abusion, Log4Shell, Scanning, Fake the Source of Data, Dictionary Attack, SSTI *(mới)*
+**Tổng ước tính (trước cap):** ~2,295,000 samples  
+**Classes có trong dataset:** Normal, Injection, XSS, XXE, Manipulation, HTTP abusion, Log4Shell, Scanning, Fake the Source of Data, Dictionary Attack, SSTI *(cũ)* + **SSRF, LDAP Injection, NoSQL Injection, Open Redirect, HTTP Smuggling, GraphQL Abuse, RCE/Deserialization, Prototype Pollution, JWT Abuse, WebSocket Abuse, Evasion Chain, Polyglot** *(mới từ LLM Generator)*
 
 ---
 
@@ -284,47 +285,263 @@ GET /api/v1/search?q={"$gt":""}              ← NoSQL Injection
 
 ---
 
+### Nguồn 8 — LLM Generator v1 (`data/llm_generator_v1/`)
+
+> **Được tạo:** 2026-05-08 bằng LLM (`generate_v4.py`), seed=42, contract `EN_waf_interop_contract_v2.3`
+
+#### Cấu trúc thư mục
+
+| File | Samples | Mục đích |
+|------|--------:|---------|
+| `attacks_v4.ndjson` | **200,000** | Dataset attack chính (v4), NDJSON |
+| `clean_baselines_v4.ndjson` | **10,000** | Legitimate traffic, phải được WAF allow |
+| `attacks.json` | 57 | Test set nhỏ v1 (8 classes) |
+| `attacks_v2.json` | ~100 | Test set v2 (8 classes mở rộng) |
+| `attacks_v3.json` | 220 | Test set v3 (20 classes) |
+| `attacks_v4.meta.json` | — | Metadata đầy đủ cho v4 |
+| `contract_tests.json` | ~30 | Compliance test cases (control-plane) |
+
+#### Phân phối class trong attacks_v4.ndjson
+
+| Class | Samples | Tương đương class cũ | Class mới? |
+|-------|--------:|----------------------|:----------:|
+| recon | 22,000 | Scanning | Mở rộng |
+| evasion_chain | 18,000 | — | **Mới** |
+| sqli | 18,000 | Injection (subset) | Mở rộng |
+| xss | 18,000 | XSS | Mở rộng |
+| polyglot | 16,000 | — | **Mới** |
+| path_traversal | 14,000 | Manipulation | Mở rộng |
+| ssrf | 14,000 | Fake the Source of Data | Mở rộng |
+| command_injection | 14,000 | Injection (subset) | Mở rộng |
+| ssti | 10,000 | SSTI | Tăng 10× |
+| xxe | 8,000 | XXE | Tăng 13× |
+| open_redirect | 6,000 | — | **Mới** |
+| ldap_injection | 6,000 | — | **Mới** |
+| header_injection | 6,000 | HTTP abusion (subset) | Mở rộng |
+| nosql_injection | 6,000 | Injection (subset) | Mở rộng |
+| prototype_pollution | 4,000 | — | **Mới** |
+| log4shell | 4,000 | Log4Shell | Tăng 18× |
+| graphql_abuse | 4,000 | — | **Mới** |
+| rce_deserialization | 4,000 | — | **Mới** |
+| http_smuggling | 3,000 | — | **Mới** |
+| jwt_abuse | 3,000 | — | **Mới** |
+| websocket | 2,000 | — | **Mới** |
+| **TỔNG ATTACK** | **200,000** | | |
+| clean (v4) | 10,000 | Normal | — |
+
+**8 classes hoàn toàn mới:** evasion_chain, polyglot, open_redirect, ldap_injection, prototype_pollution, graphql_abuse, rce_deserialization, http_smuggling, jwt_abuse, websocket *(10 class nếu tính hết)*
+
+#### Format mỗi entry (attacks_v4.ndjson)
+
+```json
+{
+  "id": "sqli-a4282461db",
+  "class": "sqli",
+  "label": "sqli · obf=urlenc",
+  "method": "GET",
+  "path": "/support",
+  "expected_action": "block",
+  "expected_rule": "sqli",
+  "obf": "urlenc",
+  "base_payload": "1' AND extractvalue(1,concat(0x7e,(SELECT version())))--",
+  "query": "u=1%27%20AND%20extractvalue%281%2C...",
+  "headers": {
+    "user-agent": "Wfuzz/3.1.0",
+    "accept": "text/plain",
+    "x-forwarded-for": "208.67.222.222"
+  }
+}
+```
+
+**Các trường đặc biệt so với dataset cũ:**
+- `obf`: Kỹ thuật obfuscation được dùng (urlenc, urlenc2x, urlenc3x, hex, uniesc, case, sqlcomment, ws, tab, newline, html_dec, html_hex, none)
+- `base_payload`: Raw payload TRƯỚC khi obfuscate — rất có giá trị để phân tích
+- `expected_action`: WAF phải trả về action gì (block/challenge/rate_limit/allow)
+- `expected_rule`: Rule detector nào phải match
+
+**Obfuscation distribution (sample từ 5,000 entries sqli đầu):**
+
+| Obfuscation | Count (sample) | Mô tả |
+|-------------|:--------------:|-------|
+| urlenc2x | 675 | Double URL encoding |
+| newline | 645 | Newline injection |
+| ws | 640 | Whitespace trick |
+| case | 632 | Case variation |
+| none | 624 | Raw payload |
+| sqlcomment | 606 | SQL comment insertion |
+| urlenc | 597 | Single URL encode |
+| hex | 581 | Hex encoding |
+
+**Format clean_baselines_v4.ndjson:**
+```json
+{
+  "id": "clean-54ca09a985",
+  "class": "clean",
+  "label": "legitimate traffic",
+  "method": "GET",
+  "path": "/api/products",
+  "expected_action": "allow",
+  "expected_rule": null,
+  "query": "page=2",
+  "headers": { "user-agent": "python-requests/2.32.3", ... }
+}
+```
+
+**Ưu điểm:**
+- **Label 100% chính xác** — không có label noise như SRBH2020
+- **8–10 classes hoàn toàn mới** không có trong bất kỳ dataset cũ nào
+- **Obfuscation metadata** rõ ràng — có thể train model để nhận diện từng loại evasion riêng
+- **base_payload** cho phép phân tích và augmentation thêm
+- **Reproducible** — seed=42, cùng input → cùng output byte-identical
+- **Scale lớn:** Log4Shell từ 220 → 4,000; SSTI từ 967 → 10,000; XXE từ 594 → 8,000
+- **evasion_chain và polyglot:** Class mới cho phép train model nhận biết multi-vector attacks
+
+**Nhược điểm:**
+- **100% synthetic** — LLM-generated, không phải real traffic → có thể không cover hết các pattern thực tế
+- **User-agent pool hạn chế** — headers được tạo từ pool cố định (~22 IP, ~75% legit + 25% scanner UA), không đa dạng như openappsec legitimate
+- **Không có Normal traffic đa dạng** — clean_baselines chỉ 10,000 samples, rất ít so với 200K attacks (tỷ lệ 1:20)
+- **Class mapping không trực tiếp:** `evasion_chain`, `polyglot`, `graphql_abuse`... không map được sang taxonomy cũ của project (11 classes), cần quyết định merge hay tách
+- **Format khác:** NDJSON vs JSON/CSV cũ — cần adapter khi dùng với `build_dataset.py`
+- **"ssrf" ≠ "Fake the Source of Data":** Tuy gần giống nhưng SSRF là server-side, còn SRBH2020's "Fake the Source of Data" bao gồm header spoofing rộng hơn
+
+**Khuyến nghị khi dùng:**
+- **Dùng ngay:** XXE, Log4Shell, SSTI — giải quyết class nhỏ trong dataset cũ
+- **Mapping cần thiết:** `sqli` → Injection, `xss` → XSS, `path_traversal` → Manipulation, `ssrf` → Fake the Source of Data, `recon` → Scanning
+- **Tách class mới:** Cân nhắc thêm `ldap_injection`, `nosql_injection`, `graphql_abuse`, `prototype_pollution`, `http_smuggling` vào taxonomy
+- **Bỏ hoặc merge:** `evasion_chain` và `polyglot` — nên merge vào class chính tương ứng (theo attack vector chính của từng sample), không nên là class độc lập
+- **False positive corpus:** `clean_baselines_v4.ndjson` rất có giá trị để test tỷ lệ false positive của model
+
+---
+
 ## 3. Phân phối class tổng hợp (trước cap)
 
-| Class | Source 1 | Source 2 | Source 3 combine | Source 3 transfer | Source 4* | Source 5 | Source 6 | **TỔNG** |
-|-------|--------:|--------:|-----------------:|------------------:|----------:|---------:|---------:|---------:|
-| Normal | — | ~1,300,000 | 226,509 | — | 72,000 | 8,658 | — | **~1,607,167** |
-| Injection | 3,432 | — | 261,885 | 8,565 | 699 | 376 | 775 | **~275,732** |
-| XSS | 41,888 | — | — | — | 1,450 | 294 | 646 | **~44,278** |
-| Manipulation | 28,314 | — | 24,519 | 3,449 | 0 | 38 | 3,720 | **~60,040** |
-| HTTP abusion | — | — | 23,181 | 534 | 22,722 | 2,206 | — | **~48,643** |
-| Fake the Source of Data | — | — | 55,982 | — | — | — | — | **55,982** |
-| Scanning | — | — | 2,382 | — | — | — | — | **2,382** |
-| Log4Shell | 220 | — | — | — | — | — | — | **220** |
-| XXE | 70 | — | — | — | 194 | 330 | — | **594** |
-| Dictionary Attack | — | — | — | 306 | — | — | — | **306** |
-| SSTI | — | — | — | — | — | 47 | 920 | **967** |
+| Class | Src 1 | Src 2 | Src 3 combine | Src 3 transfer | Src 4* | Src 5 | Src 6 | **Src 8 (LLM)** | **TỔNG** |
+|-------|------:|------:|--------------:|---------------:|-------:|------:|------:|----------------:|---------:|
+| Normal | — | ~1,300,000 | 226,509 | — | 72,000 | 8,658 | — | 10,000 (clean) | **~1,617,167** |
+| Injection (SQLi) | 3,432 | — | 261,885 | 8,565 | 699 | 376 | 775 | 18,000 | **~293,732** |
+| XSS | 41,888 | — | — | — | 1,450 | 294 | 646 | 18,000 | **~62,278** |
+| Manipulation/Path Traversal | 28,314 | — | 24,519 | 3,449 | 0 | 38 | 3,720 | 14,000 | **~74,040** |
+| HTTP abusion | — | — | 23,181 | 534 | 22,722 | 2,206 | — | — | **~48,643** |
+| Fake the Source / SSRF | — | — | 55,982 | — | — | — | — | 14,000 | **69,982** |
+| Scanning / Recon | — | — | 2,382 | — | — | — | — | 22,000 | **24,382** |
+| Log4Shell | 220 | — | — | — | — | — | — | 4,000 | **4,220** |
+| XXE | 70 | — | — | — | 194 | 330 | — | 8,000 | **8,594** |
+| Dictionary Attack | — | — | — | 306 | — | — | — | — | **306** |
+| SSTI | — | — | — | — | — | 47 | 920 | 10,000 | **10,967** |
+| Command Injection | *(trong Injection)* | — | — | — | — | — | — | 14,000 | **~14,000+** |
+| NoSQL Injection | — | — | — | — | — | — | ~46 | 6,000 | **~6,046** |
+| Header Injection | — | — | — | — | — | — | — | 6,000 | **6,000** |
+| LDAP Injection | — | — | — | — | — | — | — | 6,000 | **6,000** |
+| Open Redirect | — | — | — | — | — | — | — | 6,000 | **6,000** |
+| Prototype Pollution | — | — | — | — | — | — | — | 4,000 | **4,000** |
+| GraphQL Abuse | — | — | — | — | — | — | — | 4,000 | **4,000** |
+| RCE/Deserialization | — | — | — | — | — | — | — | 4,000 | **4,000** |
+| HTTP Smuggling | — | — | — | — | — | — | — | 3,000 | **3,000** |
+| JWT Abuse | — | — | — | — | — | — | — | 3,000 | **3,000** |
+| WebSocket Abuse | — | — | — | — | — | — | — | 2,000 | **2,000** |
+| Evasion Chain | — | — | — | — | — | — | — | 18,000 | **18,000** |
+| Polyglot | — | — | — | — | — | — | — | 16,000 | **16,000** |
 
-> *Source 4 (CSIC 2010) anomalous labels là auto-classified bằng regex, không phải label gốc.
+> *Source 4 (CSIC 2010) anomalous labels là auto-classified bằng regex, không phải label gốc.  
+> Src 8 = `attacks_v4.ndjson` (200K) + `clean_baselines_v4.ndjson` (10K).
 
-**Vấn đề imbalance rõ ràng:**
-- Normal (~1.6M) gấp ~5,800× Log4Shell (220)
-- Dictionary Attack (306) và SSTI (967) cực kỳ thiếu data
-- Cần cap 50,000/class và augmentation riêng cho các class nhỏ
+**Cải thiện sau khi thêm LLM Generator v1:**
+- Log4Shell: 220 → **4,220** (+18×)
+- SSTI: 967 → **10,967** (+11×)
+- XXE: 594 → **8,594** (+13×)
+- Scanning/Recon: 2,382 → **24,382** (+10×)
+- **10 classes mới** hoàn toàn không có trong dataset cũ
+
+**Vấn đề imbalance còn lại:**
+- Dictionary Attack (306) vẫn cực kỳ thiếu — chưa có nguồn bổ sung
+- Normal (~1.6M) vẫn áp đảo, nhưng đây là tự nhiên cho WAF traffic
+- `evasion_chain` (18K) và `polyglot` (16K) cần quyết định merge hay giữ làm class riêng
 
 ---
 
-## 4. So sánh format & compatibility
+## 4. So sánh LLM Generator v1 vs các dataset cũ
 
-| Thuộc tính | openappsec JSON | SRBH2020 CSV | CSIC 2010 Raw | HuggingFace | PayloadsATT |
-|------------|:--------------:|:-----------:|:-------------:|:-----------:|:-----------:|
-| Format gốc | JSON object | CSV text | Raw HTTP/1.1 | Full HTTP text | Raw string |
-| Có HTTP headers | Có | Không | Có | Có | Không |
-| Có body (POST) | Có | Có | Có | Có | Không (payload only) |
-| JSON body support | Không | Không | Không | Một phần | Synthetic |
-| REST /api/ paths | Không | Một phần | Không | Có | Synthetic |
-| Label chi tiết | Có (file-based) | Có | Không | Binary only | Không |
-| Năm thu thập | 2023–2024 | 2020 | 2010 | 2024 | 2024–2025 |
-| Dùng được trực tiếp | Có | Có | Cần parse | Cần parse | Cần wrap |
+### 4a. Đặc điểm kỹ thuật so sánh
+
+| Thuộc tính | Dataset cũ (tổng hợp) | LLM Generator v1 |
+|------------|:---------------------:|:----------------:|
+| Nguồn gốc | Real traffic + academic | LLM-generated synthetic |
+| Format | JSON / CSV / Raw HTTP | NDJSON (streaming-friendly) |
+| Label quality | Từ tốt (openappsec) đến noise (SRBH2020) | 100% chính xác (programmatic) |
+| Obfuscation info | Không có | Có (`obf` field + `base_payload`) |
+| Expected action | Không có | Có (`block/challenge/rate_limit/allow`) |
+| Class taxonomy | CAPEC-based (11 classes) | Attack-type based (21 classes) |
+| Coverage | 11 classes | **21 classes** (10 mới) |
+| Evasion diversity | Hạn chế (encoding chủ yếu) | 13 kỹ thuật obfuscation documented |
+| Reproducibility | Không (real traffic) | Có (seed=42 → byte-identical) |
+| False positive corpus | Không riêng biệt | Có (`clean_baselines_v4.ndjson`, 10K) |
+
+### 4b. Class mapping giữa 2 hệ taxonomy
+
+| Class cũ (project) | Class tương đương trong LLM v4 | Ghi chú |
+|--------------------|-------------------------------|---------|
+| Injection | sqli + command_injection + ldap_injection + nosql_injection | LLM tách chi tiết hơn |
+| XSS | xss | Giống nhau |
+| XXE | xxe | Giống nhau |
+| Manipulation | path_traversal | path_traversal = LFI/directory traversal |
+| HTTP abusion | header_injection + http_smuggling + websocket | LLM tách thêm 2 loại mới |
+| Fake the Source of Data | ssrf | SSRF ≈ FSOD nhưng hẹp hơn |
+| Scanning | recon | recon = Scanning mở rộng |
+| Log4Shell | log4shell | Giống nhau |
+| SSTI | ssti | Giống nhau |
+| Dictionary Attack | jwt_abuse *(gần nhất)* | Không có class tương đương chính xác |
+| *(không có)* | open_redirect | Class hoàn toàn mới |
+| *(không có)* | prototype_pollution | Class hoàn toàn mới |
+| *(không có)* | graphql_abuse | Class hoàn toàn mới |
+| *(không có)* | rce_deserialization | Class hoàn toàn mới |
+| *(không có)* | evasion_chain | Multi-class evasion — nên merge theo vector chính |
+| *(không có)* | polyglot | Multi-class — nên merge theo vector chính |
+
+### 4c. Tác động lên class nhỏ (vấn đề cũ)
+
+Bảng dưới so sánh trước/sau khi thêm LLM Generator v1:
+
+| Class | Trước (cũ) | Sau (+LLM v4) | Đánh giá |
+|-------|----------:|-------------:|----------|
+| Log4Shell | 220 | 4,220 | Giải quyết hoàn toàn — không còn underfitting |
+| SSTI | 967 | 10,967 | Giải quyết hoàn toàn |
+| XXE | 594 | 8,594 | Giải quyết hoàn toàn |
+| Scanning | 2,382 | 24,382 | Giải quyết hoàn toàn |
+| Dictionary Attack | 306 | 306 | **Vẫn còn vấn đề** — không có class tương đương trong LLM v4 |
+
+### 4d. Rủi ro khi mix LLM synthetic với real traffic
+
+1. **Distribution mismatch:** LLM tạo ra headers từ pool hạn chế (~22 IP, UA pool cố định). Real traffic có phân phối tự nhiên đa dạng hơn nhiều. Model có thể học shortcut từ LLM headers thay vì payload.
+
+2. **Payload repetition risk:** Với seed cố định và template có hạn, LLM có thể tạo ra nhiều biến thể của cùng một pattern. Cần check n-gram similarity trước khi mix vào train set.
+
+3. **evasion_chain và polyglot không map được:** 34,000 samples (18K + 16K) cần được xử lý riêng — không thể label là class đơn. Options:
+   - Phân tích từng sample và assign class theo vector attack chính
+   - Tạo class mới "Evasion" và "Polyglot" trong taxonomy
+   - Bỏ ra khỏi training, chỉ dùng để test robustness
+
+4. **`clean_baselines_v4.ndjson` là FP corpus, không phải Normal training data:** 10,000 samples này được thiết kế để test WAF không block nhầm, nhưng chúng synthetic. Không nên replace openappsec legitimate làm Normal training data.
 
 ---
 
-## 5. Đánh giá chất lượng & vấn đề đã phát hiện
+## 5. So sánh format & compatibility
+
+| Thuộc tính | openappsec JSON | SRBH2020 CSV | CSIC 2010 Raw | HuggingFace | PayloadsATT | **LLM Gen v1** |
+|------------|:--------------:|:-----------:|:-------------:|:-----------:|:-----------:|:--------------:|
+| Format gốc | JSON object | CSV text | Raw HTTP/1.1 | Full HTTP text | Raw string | **NDJSON** |
+| Có HTTP headers | Có | Không | Có | Có | Không | **Có** |
+| Có body (POST) | Có | Có | Có | Có | Không | **Có (JSON)** |
+| JSON body support | Không | Không | Không | Một phần | Synthetic | **Có** |
+| REST /api/ paths | Không | Một phần | Không | Có | Synthetic | **Có** |
+| Label chi tiết | Có (file-based) | Có | Không | Binary only | Không | **Có (21 classes)** |
+| Obfuscation info | Không | Không | Không | Không | Không | **Có (13 types)** |
+| Real traffic | Có | Có | Có | Có | Không | **Không (synthetic)** |
+| Năm thu thập | 2023–2024 | 2020 | 2010 | 2024 | 2024–2025 | **2026** |
+| Dùng được trực tiếp | Có | Có | Cần parse | Cần parse | Cần wrap | **Cần NDJSON adapter** |
+
+---
+
+## 6. Đánh giá chất lượng & vấn đề đã phát hiện (dataset cũ)
 
 ### 5.1 Label noise (SRBH2020)
 
@@ -376,7 +593,7 @@ Model nhầm CSIC Normal sang HTTP abusion do unusual methods (TRACE), Spanish c
 
 ---
 
-## 6. Filter & Selection Guide
+## 7. Filter & Selection Guide
 
 ### 6.1 Cấu hình recommended (balanced, high-quality)
 
@@ -438,7 +655,7 @@ Cảnh báo: Normal class sẽ gấp 1,600× Log4Shell → model bias nặng v�
 
 ---
 
-## 7. Thư mục & cấu trúc file
+## 8. Thư mục & cấu trúc file
 
 ```
 ml_waf/
@@ -476,6 +693,16 @@ ml_waf/
 │   ├── cmd_unix.txt              (83 CMD injection payloads)
 │   └── lfi_jhaddix.txt           (930 LFI/traversal payloads)
 │
+├── data/llm_generator_v1/        # Source 8 — LLM-generated synthetic dataset
+│   ├── attacks_v4.ndjson         (200,000 attacks, 21 classes, seed=42) ← MAIN
+│   ├── clean_baselines_v4.ndjson (10,000 legitimate FP corpus)
+│   ├── attacks_v4.meta.json      (metadata: class counts, obfuscations)
+│   ├── attacks_v3.json           (220 samples, 20 classes — smaller test set)
+│   ├── attacks_v2.json           (v2 intermediate)
+│   ├── attacks.json              (57 samples, 8 classes — v1 test set)
+│   ├── contract_tests.json       (compliance tests: control-plane + headers)
+│   └── README.md                 (contract EN_waf_interop_contract_v2.3)
+│
 ├── dataset_unified.csv           # Output tổng hợp (build_dataset.py)
 ├── build_dataset.py              # Merge & sample pipeline
 ├── train.py                      # Training script
@@ -485,7 +712,7 @@ ml_waf/
 
 ---
 
-## 8. Kết quả model hiện tại (tham khảo)
+## 9. Kết quả model hiện tại (tham khảo)
 
 ### Multi-class (11 classes)
 
@@ -516,7 +743,7 @@ ml_waf/
 
 ---
 
-## 9. Checklist trước khi train
+## 10. Checklist trước khi train
 
 - [ ] Chạy `python build_dataset.py` để rebuild `dataset_unified.csv`
 - [ ] Kiểm tra class distribution trong output (tránh class < 500 samples)
@@ -525,6 +752,14 @@ ml_waf/
 - [ ] Sau train: chạy binary evaluation (Normal vs Attack) song song với multi-class
 - [ ] Benchmark Rust inference sau khi export ONNX mới
 
+**Checklist bổ sung khi integrate LLM Generator v1:**
+- [ ] Viết adapter chuyển `attacks_v4.ndjson` (NDJSON) → format CSV của `build_dataset.py`
+- [ ] Quyết định taxonomy: giữ nguyên 11 class hay thêm class mới (ldap_injection, nosql_injection, graphql_abuse, etc.)
+- [ ] Xử lý `evasion_chain` và `polyglot` — merge vào class theo vector chính hay tạo class riêng
+- [ ] Kiểm tra n-gram similarity giữa LLM-generated payloads và test set để tránh data leakage
+- [ ] Dùng `clean_baselines_v4.ndjson` như FP test corpus (không mix vào Normal training)
+- [ ] Nếu thêm class mới: update taxonomy trong `features.py` và rebuild label encoder
+
 ---
 
-*Report này được tự động sinh từ phân tích dữ liệu thực tế. Cập nhật lại sau mỗi lần thêm nguồn data mới.*
+*Report được cập nhật thủ công sau khi phân tích dữ liệu thực tế và so sánh với nguồn mới. Cập nhật lại sau mỗi lần thêm nguồn data.*

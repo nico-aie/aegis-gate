@@ -1,5 +1,5 @@
 /// WAF feature extraction — exact port of ml_waf/features.py.
-/// 26 dense float32 features per HTTP request string.
+/// 27 dense float32 features per HTTP request string.
 ///
 /// Input format (multi-line):
 ///   Line 0:  "METHOD /url [body]"
@@ -10,6 +10,22 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 pub const NUM_FEATURES: usize = 27;
+
+/// Mirror build_clean_dataset.py truncation limits so live inference matches training.
+const MAX_URL_BYTES: usize = 4_096;
+const MAX_BODY_BYTES: usize = 8_192;
+
+/// Truncate `s` to at most `max_bytes`, respecting UTF-8 char boundaries.
+fn truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut idx = max_bytes;
+    while !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &s[..idx]
+}
 
 pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "request_len",
@@ -154,8 +170,8 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
 
     let mut parts = first_line.splitn(3, ' ');
     let method = parts.next().unwrap_or("GET");
-    let url    = parts.next().unwrap_or("/");
-    let body   = parts.next().unwrap_or("");
+    let url    = truncate(parts.next().unwrap_or("/"), MAX_URL_BYTES);
+    let body   = truncate(parts.next().unwrap_or(""), MAX_BODY_BYTES);
 
     let (path, query) = match url.find('?') {
         Some(pos) => (&url[..pos], &url[pos + 1..]),
@@ -186,8 +202,8 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';' | '=' | '%' | '&' | '+'))
         .count() as f32;
 
-    let full_dec_lower = full_dec.to_lowercase();
-    let path_traversal = full_dec_lower.matches("../").count() as f32;
+    // "../" is already lowercase — no need to lowercase full_dec before matching.
+    let path_traversal = full_dec.matches("../").count() as f32;
 
     [
         request.len() as f32,                                              // 0  total length (incl. headers)
