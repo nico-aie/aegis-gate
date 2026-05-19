@@ -60,11 +60,32 @@ pub enum DetectorClass {
     /// 30; `allowed_domains` allowlist suppresses operator-approved
     /// targets.
     OpenRedirect,
+    /// 2026-05-19 — promoted from "always-on stealth detector" to a
+    /// first-class togglable class. Stateful per-IP behaviour
+    /// signals: burst (<50 ms), missing UA, missing Referer on
+    /// mutations, zero-depth first-touch. Default OFF — high FP on
+    /// single-IP smoke tests / NAT'd egress.
+    BehaviorSignals,
+    /// 2026-05-19 — cross-endpoint sequence engine. Detects
+    /// login→deposit / login→withdrawal chains tighter than 5 s.
+    /// Default ON — zero cost when the upstream has no matching
+    /// routes.
+    Velocity,
+    /// 2026-05-19 — operator-supplied recon tripwire (`/wp-admin`,
+    /// `/.env`, etc.). Inert unless `cfg.risk.canary_paths` is
+    /// non-empty AND this toggle is on. Default OFF.
+    Canary,
+    /// 2026-05-19 — the ONNX classifier detector. Previously gated
+    /// only by `cfg.ai.enabled` + a separate AtomicBool; now also
+    /// reflected in the mask so the dashboard can list it and
+    /// per-tier overrides apply (Phase 3 — wires the hot-path
+    /// short-circuit).
+    Ai,
 }
 
 impl DetectorClass {
     /// All classes in the order they appear in `DetectorsConfig`.
-    pub const ALL: [DetectorClass; 12] = [
+    pub const ALL: [DetectorClass; 16] = [
         DetectorClass::Sqli,
         DetectorClass::Xss,
         DetectorClass::PathTraversal,
@@ -77,6 +98,10 @@ impl DetectorClass {
         DetectorClass::TemplateInjection,
         DetectorClass::NoSqlInjection,
         DetectorClass::OpenRedirect,
+        DetectorClass::BehaviorSignals,
+        DetectorClass::Velocity,
+        DetectorClass::Canary,
+        DetectorClass::Ai,
     ];
 
     /// Wire-compatible string used in `Detector::id()` and the JSON
@@ -95,6 +120,10 @@ impl DetectorClass {
             DetectorClass::TemplateInjection => "template_injection",
             DetectorClass::NoSqlInjection => "nosql_injection",
             DetectorClass::OpenRedirect => "open_redirect",
+            DetectorClass::BehaviorSignals => "behavior_signals",
+            DetectorClass::Velocity => "velocity",
+            DetectorClass::Canary => "canary",
+            DetectorClass::Ai => "ai",
         }
     }
 
@@ -114,6 +143,10 @@ impl DetectorClass {
             DetectorClass::TemplateInjection => 1 << 9,
             DetectorClass::NoSqlInjection => 1 << 10,
             DetectorClass::OpenRedirect => 1 << 11,
+            DetectorClass::BehaviorSignals => 1 << 12,
+            DetectorClass::Velocity => 1 << 13,
+            DetectorClass::Canary => 1 << 14,
+            DetectorClass::Ai => 1 << 15,
         }
     }
 
@@ -190,6 +223,21 @@ impl DetectorMask {
         }
         if cfg.open_redirect.enabled {
             m.set(DetectorClass::OpenRedirect, true);
+        }
+        // 2026-05-19 — Phase F detectors promoted to togglable mask
+        // bits. Defaults applied via DetectorsConfig::default in
+        // aegis-core (behavior_signals=false, velocity=true,
+        // canary=false). `Ai` is seeded in aegis-proxy::run from
+        // `cfg.ai.enabled` because the AI config lives in a sibling
+        // struct (cfg.ai), not in DetectorsConfig.
+        if cfg.behavior_signals.enabled {
+            m.set(DetectorClass::BehaviorSignals, true);
+        }
+        if cfg.velocity.enabled {
+            m.set(DetectorClass::Velocity, true);
+        }
+        if cfg.canary.enabled {
+            m.set(DetectorClass::Canary, true);
         }
         m
     }
@@ -278,6 +326,25 @@ pub struct DetectorMaskBody {
     /// `#[serde(default)]` back-compat.
     #[serde(default)]
     pub open_redirect: bool,
+    /// 2026-05-19 — behaviour-signals detector (burst / no-UA /
+    /// missing-Referer / zero-depth). Stateful per-IP; default OFF
+    /// on the schema side, see `DetectorsConfig::default`.
+    #[serde(default)]
+    pub behavior_signals: bool,
+    /// 2026-05-19 — cross-endpoint velocity-sequence engine. Default
+    /// ON. Zero cost when the upstream has no matching routes.
+    #[serde(default)]
+    pub velocity: bool,
+    /// 2026-05-19 — canary recon tripwire. Default OFF; also gated
+    /// by `cfg.risk.canary_paths` being non-empty.
+    #[serde(default)]
+    pub canary: bool,
+    /// 2026-05-19 — ONNX classifier detector. Mirrors
+    /// `cfg.ai.enabled` at boot; runtime PUT /api/ai/enabled keeps
+    /// flipping both this bit AND the existing AtomicBool so the
+    /// hot path stays cheap.
+    #[serde(default)]
+    pub ai: bool,
 }
 
 impl From<DetectorMask> for DetectorMaskBody {
@@ -295,6 +362,10 @@ impl From<DetectorMask> for DetectorMaskBody {
             template_injection: m.is_enabled(DetectorClass::TemplateInjection),
             nosql_injection: m.is_enabled(DetectorClass::NoSqlInjection),
             open_redirect: m.is_enabled(DetectorClass::OpenRedirect),
+            behavior_signals: m.is_enabled(DetectorClass::BehaviorSignals),
+            velocity: m.is_enabled(DetectorClass::Velocity),
+            canary: m.is_enabled(DetectorClass::Canary),
+            ai: m.is_enabled(DetectorClass::Ai),
         }
     }
 }
@@ -314,6 +385,10 @@ impl From<DetectorMaskBody> for DetectorMask {
             .with(DetectorClass::TemplateInjection, b.template_injection)
             .with(DetectorClass::NoSqlInjection, b.nosql_injection)
             .with(DetectorClass::OpenRedirect, b.open_redirect)
+            .with(DetectorClass::BehaviorSignals, b.behavior_signals)
+            .with(DetectorClass::Velocity, b.velocity)
+            .with(DetectorClass::Canary, b.canary)
+            .with(DetectorClass::Ai, b.ai)
     }
 }
 
@@ -492,13 +567,37 @@ mod tests {
     }
 
     #[test]
-    fn all_enabled_default_matches_config_default() {
+    fn default_config_mask_matches_documented_defaults() {
+        // 2026-05-19 — adjusted from "default == all_enabled" because
+        // the Phase F detectors landed with non-uniform defaults:
+        //  - behavior_signals: OFF (high FP on single-IP smoke tests)
+        //  - velocity: ON (zero cost when upstream lacks matching routes)
+        //  - canary: OFF (inert without cfg.risk.canary_paths anyway)
+        // AI is also OFF in from_config — its bit is seeded later in
+        // aegis-proxy::run from cfg.ai.enabled (sibling config block).
         let cfg = DetectorsConfig::default();
         let mask = DetectorMask::from_config(&cfg);
-        assert_eq!(mask, DetectorMask::all_enabled());
-        for c in DetectorClass::ALL {
-            assert!(mask.is_enabled(c), "default mask missing {c:?}");
+        // 12 OWASP classes still on by default
+        for c in [
+            DetectorClass::Sqli,
+            DetectorClass::Xss,
+            DetectorClass::PathTraversal,
+            DetectorClass::Ssrf,
+            DetectorClass::HeaderInjection,
+            DetectorClass::BodyAbuse,
+            DetectorClass::Recon,
+            DetectorClass::BruteForce,
+            DetectorClass::CommandInjection,
+            DetectorClass::TemplateInjection,
+            DetectorClass::NoSqlInjection,
+            DetectorClass::OpenRedirect,
+        ] {
+            assert!(mask.is_enabled(c), "OWASP class {c:?} should be on by default");
         }
+        assert!(mask.is_enabled(DetectorClass::Velocity), "velocity is ON by default");
+        assert!(!mask.is_enabled(DetectorClass::BehaviorSignals), "behavior_signals is OFF by default");
+        assert!(!mask.is_enabled(DetectorClass::Canary), "canary is OFF by default");
+        assert!(!mask.is_enabled(DetectorClass::Ai), "AI bit seeded by aegis-proxy::run, not from_config");
     }
 
     #[test]
@@ -521,6 +620,25 @@ mod tests {
         // Every other class still on.
         for c in DetectorClass::ALL.iter().filter(|c| **c != DetectorClass::Sqli) {
             assert!(m2.is_enabled(*c), "{c:?} flipped unexpectedly");
+        }
+    }
+
+    #[test]
+    fn phase_f_and_ai_ids_resolve_and_gate() {
+        // 2026-05-19 — the dispatcher (run_all_filtered_timed) gates
+        // detectors by `mask.is_enabled_id(d.id())`. For Phase F +
+        // AI to be per-tier overridable, each id must round-trip
+        // through DetectorClass::from_id and respect the mask bit.
+        for (id, class) in [
+            ("behavior_signals", DetectorClass::BehaviorSignals),
+            ("velocity", DetectorClass::Velocity),
+            ("canary", DetectorClass::Canary),
+            ("ai", DetectorClass::Ai),
+        ] {
+            assert_eq!(DetectorClass::from_id(id), Some(class), "{id} did not round-trip");
+            let off = DetectorMask::all_enabled().with(class, false);
+            assert!(!off.is_enabled_id(id), "{id} should be skipped when bit off");
+            assert!(off.is_enabled_id("sqli"), "OWASP detectors must stay on when only {id} is off");
         }
     }
 
@@ -595,9 +713,17 @@ mod tests {
         assert_eq!(entries.len(), DetectorClass::ALL.len());
         assert_eq!(entries[0], (DetectorClass::Sqli, true));
         assert_eq!(entries[1], (DetectorClass::Xss, false));
+        // 2026-05-19 — last entry is now Ai (bit 15) after the
+        // Phase F + AI promotion to first-class togglable classes.
+        // Order: …, OpenRedirect, BehaviorSignals, Velocity, Canary, Ai.
         assert_eq!(
             entries[entries.len() - 1].0,
+            DetectorClass::Ai,
+        );
+        assert_eq!(
+            entries[11].0,
             DetectorClass::OpenRedirect,
+            "OpenRedirect stays at index 11 — never reorder",
         );
     }
 
