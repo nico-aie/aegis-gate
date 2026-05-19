@@ -14,6 +14,40 @@ Code, Cursor, etc.) can drive it end-to-end without judgement calls.
 > Architectural picture → [`../Architecture.md`](../Architecture.md).
 > Verify each feature works → [`../docs/FEATURES.md`](../docs/FEATURES.md).
 
+> **v2.5 delta — read this before deploying for OC judging.**
+>
+> The committee final-round brief (2026-05) introduced a three-host
+> evaluation topology and tightened the control-plane bind contract:
+>
+> ```
+> [Benchmarker (OC)]  ──►  [Team WAF host]  ──►  [Upstream target-app (OC)]
+>   public network         data plane :8080/:8443 public
+>                          /__waf_control/* loopback-only
+>                          benchmarker reaches it via SSH tunnel
+> ```
+>
+> Concrete changes in this codebase since v2.3:
+>
+> 1. **`/__waf_control/*` is peer-IP-gated to loopback on both the
+>    admin listener and the data-plane short-circuit.** Non-loopback
+>    callers see 404 / login-redirect — the namespace is invisible.
+>    The benchmarker must reach it via SSH local-forward (`ssh -L`).
+> 2. **`/challenge/verify` is now a PUBLIC endpoint on the data plane**
+>    (not under `/__waf_control/*`), per v2.5 §4. The benchmarker
+>    POSTs solutions without an SSH tunnel.
+> 3. **Challenge JSON body uses contract field names**:
+>    `challenge_token`, `submit_url`, `submit_method` (no more
+>    `nonce` / `submit_to`). The token packs nonce + difficulty +
+>    expiry + MAC into one opaque string.
+> 4. **`prod-balanced.yaml` ships judging-ready** —
+>    `interop.audit_path: ./waf_audit.log` and
+>    `interop.control_secret: waf-hackathon-2026-ctrl`. The
+>    placeholder values from earlier drafts have been removed.
+>
+> The v2.3-era sections below still apply for the bulk of staging
+> setup — only the interop-conformance subsection (§ 7.5) needed
+> the wire-shape and tunnel adjustments documented in-place.
+
 ---
 
 ## What you'll have at the end
@@ -119,9 +153,9 @@ ls -la target/release/waf
 **Expected**: `target/release/waf` ≈ 50–60 MB. `version` prints a
 build banner with the commit hash, Rust version, and feature flags.
 
-### 2.5 · Stage the v2.3 binary contract
+### 2.5 · Stage the v2.5 binary contract
 
-The OC's benchmarker (`waf_interop_contract_v2.3 §8`) expects three
+The OC's benchmarker (`waf_interop_contract_v2.5 §8`) expects three
 things in the working directory it runs from:
 
 | Path | Required | What it is |
@@ -495,12 +529,12 @@ Verify after running a few attack waves:
 
 ```sh
 # Should always be 0 — strike-block never fires:
-grep -c '"rule_id":"risk-strikes"' /var/log/aegis/waf_audit.log
+grep -c '"rule_id":"risk-strikes"' ./waf_audit.log
 # → 0
 
 # And as a positive check, ensure detectors are still firing
 # (i.e. you didn't accidentally turn the security pipeline off):
-grep -c '"rule_id":"sqli"\|"rule_id":"xss"\|"rule_id":"path_traversal"' /var/log/aegis/waf_audit.log
+grep -c '"rule_id":"sqli"\|"rule_id":"xss"\|"rule_id":"path_traversal"' ./waf_audit.log
 # → > 0 after sending some SQLi / XSS / traversal probes
 ```
 
@@ -694,24 +728,29 @@ Detectors page reflects the active mask.
 
 ---
 
-## 7.5 · v2.3 interop contract conformance
+## 7.5 · v2.5 interop contract conformance
 
-The OC's benchmarker (`waf_interop_contract_v2.3`) exercises a small
+The OC's benchmarker (`waf_interop_contract_v2.5`) exercises a small
 control plane + response-header surface. Verify every requirement
 **before** running the perf harness so contract failures surface
 deterministically.
 
 ### Configure the interop control secret
 
-The control plane is gated by `X-Benchmark-Secret`. Set the value in
-`config/staging.yaml`:
+The hackathon shared secret is fixed: `waf-hackathon-2026-ctrl`. The
+v2.5 `prod-balanced.yaml` ships it baked in, alongside the contract-
+default audit path:
 
 ```yaml
 interop:
   enabled: true
-  audit_path: /var/log/aegis/waf_audit.log    # § 6 — minimal JSONL log
-  control_secret: "${secret:env:AEGIS_BENCHMARK_SECRET}"
+  audit_path: "./waf_audit.log"             # § 8 — contract-default path
+  control_secret: "waf-hackathon-2026-ctrl"  # § 2.2 — hackathon shared secret
 ```
+
+For non-hackathon staging where you want a rotating secret, swap to
+`control_secret: "${secret:env:AEGIS_BENCHMARK_SECRET}"` and the
+classic env-var workflow:
 
 ```sh
 export AEGIS_BENCHMARK_SECRET="$(openssl rand -base64 32 | tr -d '=+/' | head -c 40)"
@@ -719,11 +758,31 @@ echo "AEGIS_BENCHMARK_SECRET=$AEGIS_BENCHMARK_SECRET" | sudo tee -a /etc/aegis-g
 sudo systemctl restart aegis-gate
 ```
 
+### Reach `/__waf_control/*` from the benchmarker host (SSH tunnel)
+
+Per the v2.5 committee brief, `/__waf_control/*` is loopback-only on
+the team's WAF host. The benchmarker (OC) reaches it via an SSH
+local-forward from its own loopback to the WAF's loopback admin port:
+
+```sh
+# On the benchmarker host:
+ssh -N -L 9443:127.0.0.1:9443 team@waf-host
+
+# Then control calls hit benchmarker:localhost:9443 → WAF:127.0.0.1:9443
+curl -ks -H "X-Benchmark-Secret: waf-hackathon-2026-ctrl" \
+  https://127.0.0.1:9443/__waf_control/capabilities | jq
+```
+
+Hitting `/__waf_control/*` directly on the WAF's public IP returns a
+404 / login redirect — the namespace is invisible to non-loopback
+peers. This is the intended committee shape; do not "fix" it by
+removing the gate.
+
 ### Verify the four required control endpoints (§ 2.1)
 
 ```sh
-SECRET="$AEGIS_BENCHMARK_SECRET"
-HOST="https://staging-waf.example.com"        # use your staging URL
+SECRET="waf-hackathon-2026-ctrl"
+HOST="https://127.0.0.1:9443"                 # via the SSH tunnel above
 
 # 1. Capabilities — discover supported features + active modes
 curl -ks -H "X-Benchmark-Secret: $SECRET" "$HOST/__waf_control/capabilities" | jq
@@ -732,9 +791,9 @@ curl -ks -H "X-Benchmark-Secret: $SECRET" "$HOST/__waf_control/capabilities" | j
 # active.default_mode:"enforce", active.overrides:{}
 
 # 2. Reset — synchronous, atomic, audit log NOT touched
-LINES_BEFORE=$(wc -l < /var/log/aegis/waf_audit.log)
+LINES_BEFORE=$(wc -l < ./waf_audit.log)
 curl -ks -X POST -H "X-Benchmark-Secret: $SECRET" "$HOST/__waf_control/reset_state" | jq
-LINES_AFTER=$(wc -l < /var/log/aegis/waf_audit.log)
+LINES_AFTER=$(wc -l < ./waf_audit.log)
 echo "audit lines:  before=$LINES_BEFORE  after=$LINES_AFTER"
 # Expected: ok:true, action:"reset_state", audit_log_preserved:true,
 #           lines_after >= lines_before (NEVER lower — append-only)
@@ -755,7 +814,56 @@ curl -ksi "$HOST/__waf_control/capabilities" | head -1
 # Expected: HTTP/2 403
 curl -ksi -H "X-Benchmark-Secret: wrong" "$HOST/__waf_control/capabilities" | head -1
 # Expected: HTTP/2 403
+
+# 6. Loopback gate (v2.5) — hitting /__waf_control/* on the PUBLIC
+#    interface (not the SSH-tunnel loopback) must NOT expose the
+#    control surface.
+PUBLIC_HOST="https://$(hostname -I | awk '{print $1}'):9443"
+curl -ksi -H "X-Benchmark-Secret: $SECRET" "$PUBLIC_HOST/__waf_control/capabilities" | head -1
+# Expected: HTTP/2 302 (login redirect) or 401 — NOT 200.
+# If you see 200 here, the peer-IP loopback gate has regressed.
 ```
+
+### Verify the public challenge-verify endpoint (§ 4)
+
+v2.5 moved `/challenge/verify` out of the local-only `/__waf_control/*`
+namespace and onto the public data plane so the external benchmarker
+can POST PoW solutions without an SSH tunnel.
+
+```sh
+DATA_HOST="https://staging-waf.example.com:8443"   # public data plane
+
+# 1. Trigger a challenge by driving repeated SQLi-shaped requests until
+#    the risk bucket crosses `challenge_at`. The 429 body carries the
+#    contract-shape JSON:
+curl -ksi "$DATA_HOST/?q=1%27%20OR%20%271%27%3D%271"
+# Expected body fields (v2.5 §4 Format A):
+#   {
+#     "challenge": true,
+#     "challenge_type": "proof_of_work",
+#     "challenge_token": "<opaque>",   ← echoed back on submit
+#     "difficulty": 16,
+#     "submit_url": "/challenge/verify",
+#     "submit_method": "POST",
+#     ...
+#   }
+
+# 2. Solve the PoW off-line (find a `nonce` string n such that
+#    blake3(internal_nonce || ":" || n) has ≥ difficulty leading
+#    zero bits — the internal_nonce is the first dot-separated
+#    segment of challenge_token).
+
+# 3. Submit the solution to the PUBLIC verify endpoint:
+curl -ks -X POST -H 'content-type: application/json' \
+  -d '{"challenge_token":"<echo>","nonce":"<work>"}' \
+  "$DATA_HOST/challenge/verify"
+# Expected: 200 {"ok": true, "action": "challenge_verified"}
+# Replay of the same solution returns 403 {"error":"replay"}.
+```
+
+If `/challenge/verify` returns 404, the data-plane mount is missing —
+check `crates/aegis-proxy/src/accept.rs` for the
+`should_dispatch_data_plane_control` neighbourhood.
 
 ### Verify the six required response headers (§ 5.1)
 
@@ -817,7 +925,7 @@ curl -ksi "$HOST/?q=1%27%20OR%20%271%27%3D%271"
 #   ... + body from upstream
 
 # 3. Confirm audit chain DID record it
-tail -1 /var/log/aegis/waf_audit.log | jq '{action, rule_id, mode, ip, path}'
+tail -1 ./waf_audit.log | jq '{action, rule_id, mode, ip, path}'
 # Expected: action="block", rule_id="sqli", mode="log_only"
 
 # 4. Restore enforce
@@ -838,14 +946,14 @@ Eight required fields (`request_id`, `ts_ms`, `ip`, `method`, `path`,
 `action`, `risk_score`, `mode`); IP must be the TCP peer (not XFF).
 
 ```sh
-tail -1 /var/log/aegis/waf_audit.log | jq 'keys'
+tail -1 ./waf_audit.log | jq 'keys'
 # Expected (sorted): ["action","ip","method","mode","path","request_id",
 #                     "risk_score","rule_id","tier","ts_ms"]
 # `rule_id` and `tier` are bonus fields per § 6 ("MAY add extra JSON fields").
 
 # X-WAF-Request-Id matches audit request_id on the same request:
 RID=$(curl -ksi "$HOST/" | grep -i '^x-waf-request-id:' | awk '{print $2}' | tr -d '\r')
-grep "\"request_id\":\"$RID\"" /var/log/aegis/waf_audit.log | jq .
+grep "\"request_id\":\"$RID\"" ./waf_audit.log | jq .
 # Expected: exactly one row, fully populated.
 ```
 

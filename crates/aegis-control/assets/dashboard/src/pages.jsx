@@ -269,10 +269,6 @@ function PageOverview() {
           </h1>
           <p className="page-subtitle">Realtime WAF traffic monitoring · last update {tick}s</p>
         </div>
-        <div className="page-actions">
-          <button className="btn"><window.I.Download /> Export</button>
-          <button className="btn primary"><window.I.External /> Open Grafana</button>
-        </div>
       </div>
 
       {firingAlerts.length > 0 && (
@@ -501,7 +497,7 @@ function PageOverview() {
       <div className="card">
         <div className="card-head">
           <div className="card-title">Top attacker IPs · 15m</div>
-          <button className="btn sm">View all →</button>
+          <a className="btn sm" href="#/top-attackers">View all →</a>
         </div>
         <table className="tbl tbl-compact">
           <thead>
@@ -926,7 +922,6 @@ function PageLiveFeed() {
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn"><window.I.Download /> CSV</button>
           <button className={`btn ${paused ? 'primary' : ''}`} onClick={() => setPaused(p => !p)}>
             {paused ? <><window.I.Play /> Resume</> : <><window.I.Pause /> Pause</>}
           </button>

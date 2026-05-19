@@ -1071,17 +1071,22 @@ pub(crate) async fn handle_data_request_inner(
                 // skip the interop runtime), fall back to the
                 // legacy challenge_type-only body — degraded but
                 // never panic.
+                // v2.5 contract §4 Format A — fields the benchmarker
+                // reads to solve: `challenge_token`, `difficulty`,
+                // `submit_url`, `submit_method`. Submit body is
+                // `{"challenge_token":"<echo>","nonce":"<work>"}`.
+                // The token packs (nonce, difficulty, expires_at_ms,
+                // mac) so the server can verify statelessly.
                 let body = match upstream_ctx.pow_issuer.get() {
                     Some(issuer) => {
                         let challenge = issuer.issue();
                         serde_json::json!({
                             "challenge": true,
                             "challenge_type": "proof_of_work",
-                            "nonce": challenge.nonce,
+                            "challenge_token": challenge.challenge_token(),
                             "difficulty": challenge.difficulty,
-                            "expires_at_ms": challenge.expires_at_ms,
-                            "mac": challenge.mac,
-                            "submit_to": "/__waf_control/challenge_verify",
+                            "submit_url": "/challenge/verify",
+                            "submit_method": "POST",
                             "reason": "risk score over challenge threshold",
                         })
                     }
