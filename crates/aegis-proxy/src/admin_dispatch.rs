@@ -96,7 +96,16 @@ pub(crate) async fn handle_admin_request(
     // Always under `/__waf_control/*`; auth via `X-Benchmark-Secret`.
     // No-op (404) when the binary was built without the
     // interop surface.
-    if path.starts_with("/__waf_control/") {
+    //
+    // 2026-05-19 committee bind contract: even when the admin
+    // listener is exposed on a routable interface (dev profile
+    // pins `0.0.0.0:9443` so docker-host Prometheus can scrape
+    // `/metrics`), the control plane MUST stay local-only. Gate
+    // on `peer.ip().is_loopback()` so the surface is invisible
+    // to any non-loopback caller — request falls through to the
+    // 404 path below, indistinguishable from any unknown route.
+    // X-Benchmark-Secret is still enforced inside the handler.
+    if path.starts_with("/__waf_control/") && peer.ip().is_loopback() {
         return handle_interop_control(req, services).await;
     }
 

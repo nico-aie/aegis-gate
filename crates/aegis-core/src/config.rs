@@ -592,6 +592,26 @@ impl WafConfig {
         if let Some(tls) = self.tls.as_ref() {
             validate_tls_hardening(tls)?;
         }
+        // 2026-05-19 committee bind contract: `/__waf_control/*`
+        // MUST be local-only on the team's server. The control
+        // surface is now peer-IP-gated to loopback at both mounts
+        // (admin_dispatch + data-plane accept short-circuit), so a
+        // non-loopback admin bind is safe — the surface is invisible
+        // to anyone outside the host. But a loopback bind is still
+        // the documented committee shape, so emit a one-line boot
+        // notice on stderr when interop is enabled AND the admin
+        // listener is not loopback. Operators see the reminder;
+        // deploys do not hard-fail (which would break the dev
+        // Prometheus / docker scrape path that pins 0.0.0.0:9443).
+        if self.interop.enabled && !self.listeners.admin.bind.ip().is_loopback() {
+            eprintln!(
+                "aegis: NOTICE interop enabled but admin bind {} is non-loopback. \
+                 /__waf_control/* is peer-IP-gated to loopback regardless; \
+                 committee deploys SHOULD bind admin to 127.0.0.1:<port> \
+                 (see config/profiles/prod-balanced.yaml).",
+                self.listeners.admin.bind
+            );
+        }
         if let Some(redirect) = self.listeners.force_https.as_ref() {
             if redirect.status != 301 && redirect.status != 308 {
                 return Err(crate::error::WafError::Config(format!(
