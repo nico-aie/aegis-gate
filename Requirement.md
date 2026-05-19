@@ -241,21 +241,33 @@ blacklist enforcement, response header hardening.
 
 ### 10.5 Risk scoring and challenge
 
-- Composite identity `RiskKey = (ip, device_fp, session, tenant_id)`.
+- Composite identity `RiskKey = (ip, device_fp, session)`. The
+  multi-tenant axis was removed 2026-05-19 when the tenant
+  feature was retired upstream; `device_fp` and `session` are
+  `Option<String>` so anonymous IP-only traffic still buckets.
 - Score contributions from detectors, IP reputation, bot class,
   behavioral anomalies, transaction velocity, and threat-intel feeds.
 - Score decays over time; canary-route hits set the score to max
   instantly.
-- **Decision thresholds:**
-  - `< 30` → allow
-  - `30 – 70` → challenge
-  - `> 70` → block
-- **Challenge escalation ladder:** `None → JS → PoW → CAPTCHA → Block`,
-  driven by `(risk, human_confidence, bot_class, tier)`.
-- **Challenge tokens** are HMAC-signed, single-use via a nonce stored
-  in the state backend, and non-downgradable within their TTL.
-- **CAPTCHA providers:** Cloudflare Turnstile, hCaptcha, Google
-  reCAPTCHA v3 — pluggable via a `CaptchaProvider` trait.
+- **Decision thresholds:** `challenge_at` / `block_at` per profile
+  (defaults: challenge 30, block 70). Profile flip is hot-reloadable
+  via `POST /__waf_control/set_profile`.
+- **Challenge: self-built PoW per v2.5 §4 Format A.** The data
+  plane stamps a 429 with
+  `{challenge, challenge_type, challenge_token, difficulty,
+  submit_url: /challenge/verify, submit_method: POST}`. The
+  benchmarker solves `blake3(internal_nonce || ":" || work)` to
+  the configured difficulty, then POSTs
+  `{challenge_token, nonce}` to the **public** `/challenge/verify`
+  endpoint on the data plane. Server verifies MAC + expiry +
+  work + single-use nonce; on success returns
+  `200 {ok: true, action: "challenge_verified"}`. No third-party
+  CAPTCHA is in the critical path for the hackathon contract.
+- **Challenge tokens** are HMAC-signed (blake3 keyed digest),
+  single-use via a nonce stored in the state backend, and
+  non-downgradable within their TTL. The `challenge_token` wire
+  string packs `nonce.difficulty.expires_at_ms.mac` so the server
+  can verify statelessly.
 - **Human-confidence score** persists across sessions and decays; a
   returning legitimate user sees fewer challenges.
 
@@ -837,22 +849,33 @@ ID prefix `B-`).
 - [x] Red-team attack simulation (SQLi / XSS / SSRF / brute force) blocked
 - [x] Load test sustains ≥ 5 000 RPS with p99 overhead ≤ 5 ms — run-04 measured 31.7 k RPS plain, 31.8 k RPS over TLS, p95 ≤ 1.04 ms
 - [x] Benchmark mode emits `X-Aegis-*` headers — core slice shipped (B5-T2). Full IP allowlist / HMAC tokens / per-detector timing / dashboard panel deferred to follow-up `B-T1..B-T6` plan
+- [x] **v2.5 contract — `/__waf_control/*` reachable + `X-Benchmark-Secret` enforced** (`waf-hackathon-2026-ctrl`); peer-IP-gated to loopback at both mounts.
+- [x] **v2.5 contract — `/challenge/verify` public on data plane** with `{challenge_token, nonce}` body, 200 OK + JSON on success.
+- [x] **v2.5 contract — six mandatory response headers** stamped on every decision class (`X-WAF-Request-Id`, `-Risk-Score`, `-Action`, `-Rule-Id`, `-Cache`, `-Mode`) + bonus `X-WAF-Overhead-Latency`.
+- [x] **v2.5 contract — `./waf_audit.log`** JSONL append-only sink with `request_id, ts_ms, ip (TCP peer), method, path, action, risk_score, mode` + bonus `rule_id, tier`. `reset_state` preserves the file.
+- [x] **v2.5 contract — distinct source IPs are distinct clients** (default trusted_proxies = empty; `peer.ip()` wins).
 
 ---
 
-## 36. Hackathon WAF-FE §2 contract (2026-04-30)
+## 36. Hackathon v2.5 interop contract (2026-05-19)
 
-The Aegis WAF Console (DD-T0..T8) closes every clause of the
-Hackathon WAF-FE v2.3 §2 dashboard contract. Verified by
-[`tests/dashboard/round1-acceptance.sh`](tests/dashboard/round1-acceptance.sh).
+Aegis-Gate closes every clause of the
+[`EN_waf_interop_contract_v2.5.md`](Hackathon_Doc/EN_waf_interop_contract_v2.5.md)
+spec. Smoke tests live in
+[`deploy/STAGING-BENCHMARK.md`](deploy/STAGING-BENCHMARK.md) § 7.5.
 
 | Clause | Status | Verification |
 |---|---|---|
-| Real-time monitor ≤ 5 s | ✅ | `/dashboard/sse` round-trip, dry-run-measured |
-| Rule Add / Edit / Delete / Enable / Disable via UI | ✅ | DD-T6 `POST/PUT/DELETE /api/rules`, `PUT /api/rules/{id}/toggle` (audit-mutated, CSRF-gated) |
-| Audit Log search/filter (time, IP, Rule ID, Request ID) | ✅ | `/api/audit/since?ip&rule_id&request_id&from&to` consumed via `useAuditLogApi` |
-| Health/Status: uptime, current mode, active rules | ✅ | Overview page reads `/api/about`, `/api/loadmode`, `/api/rules` |
-| Hot-reload ≤ 10 s with visible UI indicator | ✅ | DD-T7 `/api/config/version` + `waitForVersion()` + toast |
-| Create rule ≤ 5 clicks | ✅ | NewRuleModal: + New Rule → form → Save = 3 clicks |
-| Find audit event ≤ 30 s | ✅ | Incremental search input filters `useAuditLogApi` query params |
-| No mock-only features | ✅ | Six "must-work" pages backed by real endpoints; mock fallback only when an endpoint is unreachable |
+| §2.1 — control endpoints (`capabilities`, `reset_state`, `set_profile`, `flush_cache`) | ✅ | `crates/aegis-control/src/interop/control.rs`; `flush_cache` returns `supported:false` gracefully (no cache today, see `plans/future/smart-caching.md`) |
+| §2.2 — `X-Benchmark-Secret` auth + 403 on missing/wrong | ✅ | `control.rs::check_auth` w/ constant-time compare; `prod-balanced.yaml` ships `waf-hackathon-2026-ctrl` |
+| §2.6 — `/__waf_control/*` local-only bind | ✅ | Peer-IP gate at admin (`admin_dispatch.rs`) + data-plane (`accept.rs::should_dispatch_data_plane_control`); benchmarker reaches via SSH tunnel |
+| §3 — six decision classes (`allow`/`block`/`challenge`/`rate_limit`/`timeout`/`circuit_breaker`) | ✅ | Typed `Action` enum, wire strings unit-tested in `headers.rs` |
+| §4 — self-built PoW challenge | ✅ | `aegis-security/src/challenge/pow.rs` (blake3-keyed, single-use nonce, MAC-bound) |
+| §4 Format A — issue body: `challenge_token`, `difficulty`, `submit_url`, `submit_method` | ✅ | `data_plane.rs` 429 branch; `challenge_token` packs `nonce.difficulty.expires_at_ms.mac` |
+| §4 submit body — `{challenge_token, nonce}` to public `/challenge/verify` | ✅ | `accept.rs` short-circuits POST `/challenge/verify` before the loopback control gate |
+| §5.1 — six mandatory observability headers | ✅ | `Decision::stamp()` writes all six unconditionally; unit-tested |
+| §5.2 — bonus `X-WAF-Overhead-Latency` | ✅ | Per-request `Instant::now()` captured at listener `service_fn` entry |
+| §5.3 — `log_only` mode passes through with intended action stamped | ✅ | `data_plane.rs::log_only_intent` upstream-forward path |
+| §6 — JSONL audit log, TCP peer IP, append-only across `reset_state` | ✅ | `interop::audit::MinimalJsonlSink` |
+| §8 — `./waf run` + `./waf.yaml` binary contract | ✅ | `Makefile::stage` target; `main.rs` cwd candidate lookup |
+| §10 — distinct source IPs are distinct clients | ✅ | `data_plane.rs::default_trusted_proxies` returns empty list; composite `RiskKey` keys on `peer_ip` |

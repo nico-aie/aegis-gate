@@ -208,9 +208,8 @@ make build && make stage   # creates ./waf symlink + ./waf.yaml
 ./waf run                   # boots against prod-balanced profile
 ```
 
-Key submission docs:
-- [`SUBMISSION_GUIDE.md`](SUBMISSION_GUIDE.md) — per-feature workflow per §3 candidate briefing.
-- [`deploy/STAGING-BENCHMARK.md`](deploy/STAGING-BENCHMARK.md) — three-host benchmarker topology + SSH tunnel for `/__waf_control/*`.
+Key references:
+- [`deploy/STAGING-BENCHMARK.md`](deploy/STAGING-BENCHMARK.md) — three-host benchmarker topology + SSH tunnel for `/__waf_control/*` + `/challenge/verify` smoke tests.
 - `config/profiles/prod-balanced.yaml` — staged config; ships
   `interop.audit_path: ./waf_audit.log`,
   `interop.control_secret: waf-hackathon-2026-ctrl`.
