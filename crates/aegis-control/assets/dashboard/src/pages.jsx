@@ -9637,7 +9637,7 @@ function StrikeBlockGateCard() {
     <div id="strike-block-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="2. Strike-Block"
-        sub="Per-IP lifetime strike counter — permanent block once threshold crossed (opt-in)"
+        sub="Per-RiskKey-bucket lifetime strike counter — permanent block once threshold crossed (opt-in). Buckets are keyed by {ip, device_fp?, session?}; two sessions on the same NAT'd IP each climb independently."
       />
       <div style={{ padding: 16 }}>
         {!cfg ? (
@@ -9664,8 +9664,11 @@ function StrikeBlockGateCard() {
                 <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: cfg.at_or_over_threshold > 0 ? 'var(--down)' : 'var(--ink)' }}>
                   {cfg.at_or_over_threshold}
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}>
-                  of {cfg.tracked_ips} tracked {cfg.tracked_ips === 1 ? 'IP' : 'IPs'}
+                <div
+                  style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 2 }}
+                  title={`The /api/gates/strikes JSON still names this field "tracked_ips" for wire compatibility, but the value counts unique RiskKey buckets — one per (ip, device_fp?, session?) combination — not unique IPs. See the docs for the 2026-05-19 composite-key migration.`}
+                >
+                  of {cfg.tracked_ips} tracked {cfg.tracked_ips === 1 ? 'bucket' : 'buckets'}
                 </div>
               </div>
             </div>
@@ -9673,8 +9676,8 @@ function StrikeBlockGateCard() {
               <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
                 {enabled
                   ? <>Gate is firing. {cfg.at_or_over_threshold > 0
-                      ? <strong>{cfg.at_or_over_threshold} {cfg.at_or_over_threshold === 1 ? 'IP is' : 'IPs are'} currently 403'd</strong>
-                      : 'No IP at or above threshold.'}{' '}Per-IP strikes preserved across edits.</>
+                      ? <strong>{cfg.at_or_over_threshold} {cfg.at_or_over_threshold === 1 ? 'bucket is' : 'buckets are'} currently 403'd</strong>
+                      : 'No bucket at or above threshold.'}{' '}Per-bucket strikes preserved across edits.</>
                   : <>Gate is off — strike counts still climb in <code>/api/risk</code> for forensics, but the data plane does not 403. Enable to opt in.</>
                 }
               </div>
@@ -9687,11 +9690,11 @@ function StrikeBlockGateCard() {
       </div>
       <GateExplain
         rows={[
-          ['How it fires', 'Each detector hit increments the IP\'s lifetime strike counter by 1. When it crosses block_at, the IP 403s at the gate before any further detector cost.'],
-          ['Counter', <span key="c"><strong>Lifetime, never decays.</strong> An IP that hits block_at stays blocked across days unless an operator resets it.</span>],
+          ['How it fires', <span key="hf">Each detector hit increments the request's RiskKey bucket's lifetime strike counter by 1. When the bucket crosses <code>block_at</code>, the next request on that bucket 403s at the gate before any further detector cost. Bucket is keyed by <code>{`{ip, device_fp?, session?}`}</code> — two browsers on the same NAT'd IP each have their own counter.</span>],
+          ['Counter', <span key="c"><strong>Lifetime, never decays.</strong> A bucket that hits <code>block_at</code> stays blocked across days unless an operator resets it.</span>],
           ['Response', '403 + ', <code key="rc">X-WAF-Action: block</code>, ' + ', <code key="rid">X-WAF-Rule-Id: risk-strikes</code>, '. ', <code key="rs">X-WAF-Risk-Score</code>, ' continues to report the (decayed) cumulative score, distinct from the strike count.'],
-          ['Recovery', <span key="r">Manual — <code>POST /api/risk/&lt;ip&gt;/reset</code> per IP, or disable the gate entirely from this card.</span>],
-          ['Tunable', <span key="t">Edit modal on this card — flip <code>enabled</code> and tune <code>block_at</code>. Audit-mutated <code>PUT /api/gates/strikes</code>; per-IP strike state preserved across edits.</span>],
+          ['Recovery', <span key="r">Two options: <code>POST /api/risk/&lt;ip&gt;/reset</code> wipes every bucket sharing that IP (legacy IP-only reset, simpler operator UX); <a href="#/top-attackers?view=riskkey" style={{ color: 'var(--accent)' }}>Top Attackers → Composite RiskKey view</a> lets you reset one bucket without disturbing siblings on the same IP. Or disable the gate entirely from this card.</span>],
+          ['Tunable', <span key="t">Edit modal on this card — flip <code>enabled</code> and tune <code>block_at</code>. Audit-mutated <code>PUT /api/gates/strikes</code>; per-bucket strike state preserved across edits.</span>],
           ['When to use', 'Production hardening for repeat offenders. For benchmark / risk-decay lifecycle tests, leave disabled (default) so cumulative score is the only score-based gate.'],
         ]}
       />
@@ -9814,7 +9817,7 @@ function CumulativeIpRiskCard() {
       };
       const r = await window.settingsRiskThresholdsPut(body);
       if (r && r.ok) {
-        window.aegisToast(`IP risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
+        window.aegisToast(`Risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
         riskApi.reload && riskApi.reload();
       } else {
         const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
@@ -9831,7 +9834,7 @@ function CumulativeIpRiskCard() {
     <div id="cum-ip-risk-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="3. Cumulative IP risk thresholds"
-        sub="Per-IP decaying score — challenge then block, recovers when score decays"
+        sub="Per-RiskKey-bucket decaying score — challenge then block, recovers when score decays. Buckets are keyed by {ip, device_fp?, session?}; thresholds below are tracker-wide and apply to every bucket."
       />
       <div style={{ padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -9848,19 +9851,19 @@ function CumulativeIpRiskCard() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Allow IP score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
+              <span>Allow score (0 – {allow}) — let the request through, no gate</span><span className="num">{allow}</span>
             </div>
             <input type="range" min="0" max="100" value={allow} disabled={riskBusy} onChange={e => setAllow(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
           </div>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span>Challenge IP score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
+              <span>Challenge score ({allow + 1} – {challenge}) — JS / CAPTCHA before allowing</span><span className="num">{challenge}</span>
             </div>
             <input type="range" min={allow+1} max="100" value={challenge} disabled={riskBusy} onChange={e => setChallenge(+e.target.value)} style={{ width: '100%', accentColor: 'var(--brand-yellow)' }} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-              Block IP score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse all further requests from this IP until score decays
+              Block score: <span className="num" style={{ color: 'var(--down)' }}>≥ {challenge + 1}</span> — refuse further requests from this bucket until score decays
             </div>
             <button
               className="btn primary"
@@ -9875,8 +9878,8 @@ function CumulativeIpRiskCard() {
       </div>
       <GateExplain
         rows={[
-          ['How it fires', 'Each detector hit adds weight to the IP\'s cumulative score (sum of signals). Crossing challenge_at serves a JS/CAPTCHA challenge; crossing block_at refuses requests at the gate.'],
-          ['Counter', <span key="c"><strong>Decays exponentially</strong> (half-life ~5m from <code>risk.decay_half_life</code>). Score drifts down between hits; an IP that stops attacking eventually recovers.</span>],
+          ['How it fires', <span key="hf">Each detector hit adds weight to the request's RiskKey bucket score (sum of signals). Crossing <code>challenge_at</code> serves a JS/CAPTCHA challenge; crossing <code>block_at</code> refuses requests at the gate. Bucket is keyed by <code>{`{ip, device_fp?, session?}`}</code> — two browsers on the same NAT'd IP each accumulate independently.</span>],
+          ['Counter', <span key="c"><strong>Decays exponentially</strong> (half-life ~5m from <code>risk.decay_half_life</code>). Score drifts down between hits; a bucket that stops attracting detector hits eventually recovers.</span>],
           ['Response', <span key="rsp">429 + <code>X-WAF-Action: challenge</code> when above challenge_at; 403 + <code>X-WAF-Action: block</code> + <code>X-WAF-Rule-Id: risk-score</code> when above block_at. <code>X-WAF-Risk-Score</code> reports this same accumulated score, satisfying the contract's accumulation+decay invariant.</span>],
           ['Recovery', 'Automatic — score decays toward zero as time passes without new detector hits.'],
           ['Tunable', <span key="t">Sliders above. Audit-mutated <code>PUT /api/risk/thresholds</code>; takes effect on the next request.</span>],
@@ -9902,7 +9905,7 @@ function RateLimitGateCard() {
     <div id="rate-limit-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="4. Rate Limit"
-        sub="Per-IP token bucket — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window."
+        sub="Per-RiskKey-bucket token-counter — returns 429 + X-WAF-Action: rate_limit when window exceeded. Allows retry after window. Buckets are keyed by {ip, device_fp?, session?} — two sessions on the same NAT'd IP each get their own quota."
       />
       <div style={{ padding: 16 }}>
         {!cfg ? (
@@ -9923,7 +9926,7 @@ function RateLimitGateCard() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
               <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
-                Effective rate: <strong>{(cfg.limit / Math.max(cfg.window_seconds, 1)).toFixed(2)} req/s per IP</strong>.
+                Effective rate: <strong>{(cfg.limit / Math.max(cfg.window_seconds, 1)).toFixed(2)} req/s per bucket</strong>.
                 Hot-reloadable — edits take effect on the next request without restart.
               </div>
               <button className="btn primary" onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 12px' }}>
@@ -9935,12 +9938,12 @@ function RateLimitGateCard() {
       </div>
       <GateExplain
         rows={[
-          ['How it fires', 'Per-IP token bucket counts requests within a sliding window. When the count exceeds limit, the request is denied.'],
-          ['Counter', <span key="c">In-process per-IP timestamp deque (per node). <strong>Window slides → automatic recovery.</strong></span>],
+          ['How it fires', <span key="hf">Per-RiskKey-bucket counter on a sliding window. When the count exceeds <code>limit</code> within <code>window</code>, the request is denied. Bucket is keyed by <code>{`{ip, device_fp?, session?}`}</code> so two sessions on the same NAT'd IP each get their own quota — attacker A's flood doesn't 429 legit user B.</span>],
+          ['Counter', <span key="c">In-process per-bucket timestamp deque (per node). <strong>Window slides → automatic recovery.</strong></span>],
           ['Response', '429 + ', <code key="rc">X-WAF-Action: rate_limit</code>, ' + ', <code key="rid">X-WAF-Rule-Id: ip-rate-limit</code>, '. Misbehaving clients can back off and retry.'],
-          ['Recovery', 'Automatic — IP allowed again as soon as the window slides past old timestamps.'],
-          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/rate-limit</code>; per-IP timestamp state preserved.</span>],
-          ['When to use', '"Steady-state per-IP budget" — APIs with rate fairness. For sustained-burst quarantine (DDoS-grade), use the DDoS gate (#5) instead.'],
+          ['Recovery', 'Automatic — bucket allowed again as soon as the window slides past old timestamps.'],
+          ['Tunable', <span key="t">Edit modal on this card. Audit-mutated <code>PUT /api/rate-limit</code>; per-bucket timestamp state preserved.</span>],
+          ['When to use', '"Steady-state per-bucket budget" — APIs with rate fairness. For sustained-burst quarantine (DDoS-grade, keyed by TCP peer IP regardless of session), use the DDoS gate (#5) instead.'],
         ]}
       />
       {editing && (
@@ -10002,8 +10005,8 @@ function RateLimitEditModal({ current, onClose, onSaved }) {
               style={{ marginTop: 4, width: '100%' }} />
           </label>
           <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
-            Effective: <strong>{(limit / Math.max(parseInt(windowSeconds, 10), 1)).toFixed(2)} req/s per IP</strong>.
-            Per-IP timestamp state is preserved across the edit — flooding sources don't get a free reset.
+            Effective: <strong>{(limit / Math.max(parseInt(windowSeconds, 10), 1)).toFixed(2)} req/s per bucket</strong>.
+            Per-bucket timestamp state is preserved across the edit — flooding sources don't get a free reset.
             Audit-mutated; the change appears in the audit chain.
           </div>
           {err && <div style={{ fontSize: 11, color: 'var(--down)' }}>Error: {err}</div>}
@@ -10075,7 +10078,7 @@ function DdosGateCard() {
     <div id="ddos-card" className="card" style={{ marginBottom: 12 }}>
       <window.SectionHeader
         title="5. DDoS Gate"
-        sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s)"
+        sub="Per-IP sliding-window burst gate + EWMA spike mode — returns 403 + X-WAF-Action: block on burst-exceed (auto-blocks IP for block_ttl_s). Intentionally keyed by TCP peer IP, NOT the composite RiskKey — a flooding source can't escape by rotating session cookies."
       />
       <div style={{ padding: 16 }}>
         {/* Status row */}
