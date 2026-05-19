@@ -330,10 +330,15 @@ pub(crate) async fn handle_data_request_inner(
         let stk_mode = interop_modes
             .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-strikes")))
             .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+        // 2026-05-19 — stamp `risk-strikes` on the audit event so
+        // the AttacksAggregator's detector_name() can map it to
+        // "ip-strikes" instead of falling through to "unknown".
+        // Pre-fix the Attack Distribution donut showed a mystery
+        // "unknown" slice for every Strike-Block 403.
         let resp = blocked_response(
             peer,
             "blocked by repeat-offender strikes",
-            None,
+            Some("risk-strikes".into()),
             strike_score,
             req.uri(),
             req.method(),
@@ -1016,10 +1021,14 @@ pub(crate) async fn handle_data_request_inner(
                 let rs_mode = interop_modes
                     .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-score")))
                     .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                // 2026-05-19 — stamp `risk-score` on the audit event
+                // so the AttacksAggregator can map it to "ip-risk"
+                // instead of falling through to "unknown". See the
+                // matching stamp on the Strike-Block path above.
                 let resp = blocked_response(
                     peer,
                     "blocked by risk score",
-                    None,
+                    Some("risk-score".into()),
                     block_score,
                     &parts.uri,
                     &parts.method,
