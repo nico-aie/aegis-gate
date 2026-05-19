@@ -28,6 +28,33 @@ function fmtAbsoluteTimestamp(d) {
   });
 }
 
+// 2026-05-19 — `AuditEvent` ts wire shape was renamed to `ts_ms`
+// (integer milliseconds) at the Rust serde layer; the legacy
+// string `ts` is no longer emitted (see crates/aegis-core/src/
+// audit.rs:188 — `#[serde(rename = "ts_ms", serialize_with =
+// serialize_ts_as_ms)]`). Pre-fix every dashboard surface read
+// `e.ts` and got `undefined`, turning `new Date(undefined)`
+// into Invalid Date → `NaN:NaN:NaN`. This helper centralises
+// the field-name fallback so adding another sink shape later
+// touches one site.
+//
+// Returns NaN when neither field is parseable; callers gate on
+// `Number.isFinite` and render "—".
+function eventTimestampMs(ev) {
+  if (!ev || typeof ev !== 'object') return NaN;
+  if (typeof ev.ts_ms === 'number' && Number.isFinite(ev.ts_ms)) {
+    return ev.ts_ms;
+  }
+  if (typeof ev.ts === 'number' && Number.isFinite(ev.ts)) {
+    return ev.ts;
+  }
+  if (typeof ev.ts === 'string' && ev.ts.length > 0) {
+    const parsed = Date.parse(ev.ts);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+  return NaN;
+}
+
 // ============== OVERVIEW ==============
 // Color palette for OWASP categories — used to overlay a colour on
 // API-returned `name` strings (which are stable identifiers like
@@ -75,6 +102,12 @@ function PageOverview() {
   const topApi = window.useAttacksTopApi(900, 5);  // /api/attacks/top — 5 attackers, 15m
   const tick = window.useTicking(2000);
   const [drawerEvent, setDrawerEvent] = useStateP(null);
+  // 2026-05-19 — "Live attack origins" is the biggest card on the
+  // Overview page. Operators staring at zero blips on a quiet
+  // system prefer to fold it; collapsed state hides the WorldMap
+  // body (the expensive render) but keeps the title + pills
+  // visible so the count is still at a glance.
+  const [originsExpanded, setOriginsExpanded] = useStateP(true);
 
   // CQF-T4 — wire the "Block" button on each Top Attackers row.
   // Uses the audit-mutated POST /api/blacklist endpoint shipped
@@ -340,11 +373,46 @@ function PageOverview() {
 
       {/* World map (wow #1) */}
       <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--hairline)' }}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>Live attack origins</div>
-            <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>Real-time geolocation of blocked requests · last 60s</div>
-          </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '12px 16px',
+            borderBottom: originsExpanded ? '1px solid var(--hairline)' : 'none',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setOriginsExpanded(!originsExpanded)}
+            aria-expanded={originsExpanded}
+            title={originsExpanded ? 'Collapse Live attack origins' : 'Expand Live attack origins'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              color: 'inherit',
+              textAlign: 'left',
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{ fontSize: 10, color: 'var(--ink-dim)', width: 12 }}
+            >
+              {originsExpanded ? '▼' : '▶'}
+            </span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Live attack origins</div>
+              <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                Real-time geolocation of blocked requests · last 60s
+                {!originsExpanded && ' · collapsed'}
+              </div>
+            </div>
+          </button>
           <div style={{ display: 'flex', gap: 8 }}>
             <span className="pill block">{topAttackers.length} active sources</span>
             <span
@@ -368,15 +436,19 @@ function PageOverview() {
             </span>
           </div>
         </div>
-        {blips.length === 0 && topAttackers.length > 0 && (
-          <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--ink-dim)', borderBottom: '1px solid var(--hairline)' }}>
-            {geoipLoaded
-              ? 'Map empty because none of the current attackers have a public IP MaxMind can resolve (e.g. localhost). The Top Attackers table below still shows every IP.'
-              : <>Map empty because GeoIP DB isn't loaded. The Top Attackers table below still shows every IP.{' '}<a href="#/help" style={{ color: 'var(--accent)' }}>How to install GeoIP →</a></>
-            }
-          </div>
+        {originsExpanded && (
+          <>
+            {blips.length === 0 && topAttackers.length > 0 && (
+              <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--ink-dim)', borderBottom: '1px solid var(--hairline)' }}>
+                {geoipLoaded
+                  ? 'Map empty because none of the current attackers have a public IP MaxMind can resolve (e.g. localhost). The Top Attackers table below still shows every IP.'
+                  : <>Map empty because GeoIP DB isn't loaded. The Top Attackers table below still shows every IP.{' '}<a href="#/help" style={{ color: 'var(--accent)' }}>How to install GeoIP →</a></>
+                }
+              </div>
+            )}
+            <window.WorldMap blips={blips} h={300} />
+          </>
         )}
-        <window.WorldMap blips={blips} h={300} />
       </div>
 
       {/* Traffic chart + distribution */}
@@ -1634,7 +1706,7 @@ function PageAuditLog() {
       const cutoff = Date.now() - sec * 1000;
       out = out.filter(row => {
         const e = row.event || row;
-        const ts = e.ts ? Date.parse(e.ts) : NaN;
+        const ts = eventTimestampMs(e);
         return Number.isFinite(ts) ? ts >= cutoff : true;
       });
     }
@@ -1648,14 +1720,23 @@ function PageAuditLog() {
     return out;
   }, [rawEvents, windowKey, classFilter]);
 
-  function fmt(ts) {
-    try {
-      const d = new Date(ts);
-      const h = String(d.getHours()).padStart(2, '0');
-      const m = String(d.getMinutes()).padStart(2, '0');
-      const s = String(d.getSeconds()).padStart(2, '0');
-      return `${h}:${m}:${s}`;
-    } catch (_) { return ts; }
+  function fmt(ev) {
+    // 2026-05-19 — accept either an event object or a bare value
+    // so call sites stay short. The wire shape is `ts_ms: i64`
+    // (rename from the deserialized `ts: DateTime<Utc>` in
+    // aegis-core/audit.rs; the legacy `ts` string is no longer
+    // emitted). Falling back to a plain Date constructor when a
+    // raw value is passed keeps existing inline `fmt(row.ts)`
+    // calls working if any survive.
+    const ms = typeof ev === 'object' && ev !== null
+      ? eventTimestampMs(ev)
+      : (typeof ev === 'number' ? ev : Date.parse(ev));
+    if (!Number.isFinite(ms)) return '—';
+    const d = new Date(ms);
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    const s = String(d.getSeconds()).padStart(2, '0');
+    return `${h}:${m}:${s}`;
   }
   function classPill(c) {
     if (c === 'admin')     return 'warn';
@@ -1777,7 +1858,7 @@ function PageAuditLog() {
               const e = row.event || row; // /api/audit/since flattens AuditEvent into the row
               return (
                 <tr key={row.seq}>
-                  <td className="num dim">{fmt(e.ts)}</td>
+                  <td className="num dim">{fmt(e)}</td>
                   <td><span className={`pill ${classPill(e.class)}`}>{e.class}</span></td>
                   <td className="mono" style={{ color: 'var(--ink)' }}>{e.action}</td>
                   <td className="mono">{e.client_ip || '—'}</td>
@@ -8961,7 +9042,7 @@ function PageInvestigation() {
       const p = f.path || e.path || '/';
       byPath[p] = (byPath[p] || 0) + 1;
       if (e.client_ip) ips.add(e.client_ip);
-      const ts = e.ts ? Date.parse(e.ts) : NaN;
+      const ts = eventTimestampMs(e);
       if (Number.isFinite(ts)) {
         earliest = Math.min(earliest, ts);
         latest = Math.max(latest, ts);
@@ -9211,7 +9292,10 @@ function PageInvestigation() {
                       return (
                         <tr key={`${e.request_id || i}`} onClick={() => setSelected(e)} style={{ cursor: 'pointer' }}>
                           <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-                            {e.ts ? new Date(e.ts).toLocaleTimeString() : '—'}
+                            {(() => {
+                              const ms = eventTimestampMs(e);
+                              return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString() : '—';
+                            })()}
                           </td>
                           <td><window.ActionPill value={e.action || '—'} /></td>
                           <td className="mono">{e.client_ip || '—'}</td>
@@ -9381,7 +9465,10 @@ function PageInvestigation() {
                   return (
                     <tr key={i}>
                       <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
-                        {e.ts ? new Date(e.ts).toLocaleTimeString() : '—'}
+                        {(() => {
+                          const ms = eventTimestampMs(e);
+                          return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString() : '—';
+                        })()}
                       </td>
                       <td><span className={`pill ${e.action === 'block' ? 'down' : e.action === 'allow' ? 'up' : 'warn'}`}>{e.action || '—'}</span></td>
                       <td className="num">{e.client_ip || '—'}</td>
