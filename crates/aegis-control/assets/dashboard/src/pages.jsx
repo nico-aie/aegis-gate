@@ -2921,7 +2921,34 @@ const MASK_CLASSES = [
   'sqli', 'xss', 'path_traversal', 'ssrf', 'header_injection',
   'body_abuse', 'recon', 'brute_force', 'command_injection',
   'template_injection', 'nosql_injection', 'open_redirect',
+  // 2026-05-19 — Phase F detectors promoted to first-class togglable
+  // classes. Order matches DetectorClass::ALL on the backend.
+  'behavior_signals', 'velocity', 'canary', 'ai',
 ];
+
+// 2026-05-19 — one-line per-class help text rendered into the chip
+// tooltip + the score-table reference card. Behavioural / ML
+// detectors get the most explanation because their defaults and
+// FP shape are non-obvious; OWASP detectors get a one-liner since
+// the chip label and the per-signal `note` already cover the rest.
+const CLASS_DESCRIPTIONS = {
+  sqli: 'Classical + boolean + time-based + UNION SQL injection.',
+  xss: 'Reflected / stored / DOM XSS via script tags, event handlers, javascript: URIs.',
+  path_traversal: 'Directory traversal — `..`, encoded variants, sensitive paths.',
+  ssrf: 'Server-side request forgery — internal IPs, cloud metadata, file:/gopher:/dict: schemes.',
+  header_injection: 'CRLF / X-Forwarded-Host poisoning / method+URL override bypasses.',
+  body_abuse: 'Oversize body, deep JSON nesting, prototype pollution, mass-assignment, XXE.',
+  recon: 'Recon path probes (`/.env`, `/wp-admin`, actuators) + scanner user-agents (sqlmap, nikto, …).',
+  brute_force: 'Login-failure rate cap; default 10/min per IP.',
+  command_injection: 'Shell-meta payloads + Log4Shell / JNDI lookups.',
+  template_injection: 'Server-side template injection (Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars).',
+  nosql_injection: 'MongoDB-flavour operator injection (`?param[$ne]=foo`, `{$where:…}`).',
+  open_redirect: 'Suspicious external URLs in `?next=` / `?redirect_uri=`. Allowlist via `cfg.detectors.open_redirect.allowed_domains`.',
+  behavior_signals: 'Stateful per-IP signals — burst (<50 ms), missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — high false-positive rate on single-IP smoke tests / NAT\'d egress; enable once you have real-IP traffic.',
+  velocity: 'Cross-endpoint sequence engine — flags chains like login→deposit < 5 s, login→withdrawal < 5 s. DEFAULT ON; zero cost when the upstream has no matching routes.',
+  canary: 'Operator-supplied recon tripwire (`/wp-admin`, `/.env`, …). DEFAULT OFF AND inert until you populate `cfg.risk.canary_paths` — enabling alone is a no-op.',
+  ai: 'ONNX machine-learning classifier. Heavy per request; per-tier overrides are recommended (e.g. on for Critical, off for Low to skip inference on static-asset traffic). Hot-flippable globally via the AI Detector card too.',
+};
 
 // 5-tier framework chip palette — keeps the score chip colour
 // in sync with the docs in `plans/issue-fix/tester-n-2026-05-08-
@@ -3075,12 +3102,14 @@ function DetectorMaskCard() {
             // reference table below.
             const dominant = dominantByClass[cls];
             const tierStyle = dominant ? (SCORE_TIER_STYLE[dominant.tier] || SCORE_TIER_STYLE.probe) : null;
+            const description = CLASS_DESCRIPTIONS[cls];
             const baseTitle = dominant
               ? `${cls} → top score ${dominant.score} (${tierStyle.label}) via tag ${dominant.tag}`
               : cls;
+            const descBlock = description ? `\n\n${description}` : '';
             const titleText = locked
-              ? `${baseTitle}\n\n🔒 pinned by active compliance mode`
-              : `${baseTitle}\n\n${enabled ? 'enabled — click to disable' : 'disabled — click to enable'}`;
+              ? `${baseTitle}${descBlock}\n\n🔒 pinned by active compliance mode`
+              : `${baseTitle}${descBlock}\n\n${enabled ? 'enabled — click to disable' : 'disabled — click to enable'}`;
             const chipBg = enabled && tierStyle ? tierStyle.bg : 'transparent';
             const chipFg = enabled && tierStyle ? tierStyle.fg : 'var(--ink-dim)';
             return (
@@ -4034,12 +4063,14 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
                     const enabled = !!overrideMask[cls];
                     const baseEnabled = !!baseMask[cls];
                     const differsFromBase = enabled !== baseEnabled;
+                    const description = CLASS_DESCRIPTIONS[cls];
+                    const baseTitle = `${cls} — ${enabled ? 'on' : 'off'}${differsFromBase ? ` (Base: ${baseEnabled ? 'on' : 'off'})` : ''}`;
                     return (
                       <button
                         key={cls}
                         type="button"
                         onClick={() => toggleOverrideClass(cls)}
-                        title={`${cls} — ${enabled ? 'on' : 'off'}${differsFromBase ? ` (Base: ${baseEnabled ? 'on' : 'off'})` : ''}`}
+                        title={description ? `${baseTitle}\n\n${description}` : baseTitle}
                         style={{
                           fontSize: 10, padding: '3px 9px', borderRadius: 4,
                           background: enabled ? 'rgba(14,203,129,0.14)' : 'transparent',

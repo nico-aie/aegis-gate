@@ -274,6 +274,48 @@ pub const CATALOG: &[ScoreEntry] = &[
         score: ai::AI,
         note: "AI / ML classifier verdict (model confidence ≥ threshold). Only present when `cfg.ai.enabled = true`.",
     },
+    // 2026-05-19 — Phase F behaviour-signals (stateful per-IP).
+    // Default OFF on the schema — high FP on single-IP smoke tests.
+    ScoreEntry {
+        class: "behavior_signals",
+        tag: "behavior_burst",
+        score: 25,
+        note: "Two requests from the same IP within 50 ms — automated-client signature.",
+    },
+    ScoreEntry {
+        class: "behavior_signals",
+        tag: "behavior_no_ua",
+        score: 15,
+        note: "Empty / missing `User-Agent` header.",
+    },
+    ScoreEntry {
+        class: "behavior_signals",
+        tag: "behavior_missing_referer",
+        score: 20,
+        note: "POST / PUT / PATCH / DELETE without a `Referer` header — CSRF-shaped traffic.",
+    },
+    ScoreEntry {
+        class: "behavior_signals",
+        tag: "behavior_zero_depth",
+        score: 15,
+        note: "First request from a peer with no `Cookie` AND no `Referer` — fresh stateless touch (crawlers / scanners).",
+    },
+    // 2026-05-19 — Phase F velocity sequence engine. Default ON;
+    // zero cost when the upstream has no matching routes.
+    ScoreEntry {
+        class: "velocity",
+        tag: "velocity_sequence",
+        score: 60,
+        note: "Cross-endpoint flow attack (login→deposit < 5 s, login→withdrawal < 5 s, etc.) that wouldn't trip individual rate caps.",
+    },
+    // 2026-05-19 — Phase F canary recon tripwire. Inert until
+    // `cfg.risk.canary_paths` is non-empty AND the toggle is on.
+    ScoreEntry {
+        class: "canary",
+        tag: "canary",
+        score: 90,
+        note: "Hit on an operator-supplied honeypot path (`cfg.risk.canary_paths`). Auto-block tier.",
+    },
 ];
 
 /// Tier label for a score. Mirrors the 5-tier framework documented
@@ -315,11 +357,14 @@ mod tests {
     #[test]
     fn scores_fall_on_documented_ladder() {
         // The 5-tier ladder allows 25 / 30 / 35–40 / 45 / 50 / 60.
-        // Anything off-ladder is a smell — either the score should
-        // be moved to a documented tier, or the ladder should be
-        // updated (and this test relaxed) with operator + doc
-        // updates.
-        let allowed = [25u32, 30, 35, 40, 45, 50, 60];
+        // 2026-05-19 — extended for Phase F detectors:
+        //  - 15 / 20 — behaviour-signals sub-block accumulators
+        //    (per-signal score is below block_at by design;
+        //     scores stack with OWASP signals).
+        //  - 70 — velocity-sequence higher-severity rule
+        //    (login→withdrawal < 5 s).
+        //  - 90 — canary auto-block tier.
+        let allowed = [15u32, 20, 25, 30, 35, 40, 45, 50, 60, 70, 90];
         for entry in CATALOG {
             assert!(
                 allowed.contains(&entry.score),
