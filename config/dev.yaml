@@ -45,6 +45,13 @@ listeners:
     # (`config/profiles/prod-*.yaml`) bind to specific internal
     # addresses; never expose the admin listener on a public
     # interface.
+    #
+    # 2026-05-19 committee bind contract: even though this listener
+    # is on 0.0.0.0, `/__waf_control/*` is peer-IP-gated to
+    # loopback at both mounts (admin_dispatch.rs + accept.rs
+    # data-plane short-circuit). The control surface is invisible
+    # to any non-loopback caller regardless of bind. Benchmarker
+    # reaches it via SSH tunnel from loopback.
     bind: "0.0.0.0:9443"
   # P4 — optional plain-HTTP redirect listener; off by default in
   # dev so the data plane stays on :8080 without conflicts.
