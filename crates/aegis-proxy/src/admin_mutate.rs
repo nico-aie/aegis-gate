@@ -2933,12 +2933,21 @@ pub(crate) async fn handle_ai_enabled_put(
     };
 
     let toggle_for_apply = Arc::clone(&toggle);
+    // 2026-05-19 — also flip the `Ai` mask bit so GET /api/detectors
+    // stays consistent with the AtomicBool. Phase 3 wires the AI
+    // dispatcher to AND both gates, so either toggle path now
+    // effectively disables AI.
+    let mask_for_apply = services.detector_mask.clone();
     let outcome = services.mutate.apply::<_, (), &'static str>(
         &req_ctx,
         before,
         after,
         move || {
             toggle_for_apply.set(patch.enabled);
+            use aegis_security::detectors::mask::DetectorClass;
+            let mut base = mask_for_apply.load_state().base;
+            base = base.with(DetectorClass::Ai, patch.enabled);
+            mask_for_apply.store(base);
             Ok(())
         },
     );

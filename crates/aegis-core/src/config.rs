@@ -2270,6 +2270,26 @@ pub struct DetectorsConfig {
     /// (every external URL flags).
     #[serde(default)]
     pub open_redirect: OpenRedirectConfig,
+    /// 2026-05-19 — Phase F behaviour-signals detector. Stateful
+    /// per-IP signals: burst (<50 ms), missing UA, missing Referer
+    /// on mutations, zero-depth first-touch. **Default OFF** because
+    /// single-IP smoke tests / NAT'd egress trip it heavily. Turn
+    /// on once you have real-IP traffic to score.
+    #[serde(default = "default_detector_toggle_off")]
+    pub behavior_signals: DetectorToggle,
+    /// 2026-05-19 — Phase F cross-endpoint velocity engine.
+    /// Detects login→deposit / login→withdrawal sequences tighter
+    /// than 5 s. **Default ON** — zero cost when the upstream has
+    /// no matching routes (it just doesn't fire).
+    #[serde(default = "default_detector_toggle")]
+    pub velocity: DetectorToggle,
+    /// 2026-05-19 — Phase F canary recon tripwire. Fires on
+    /// hits against operator-supplied honeypot paths
+    /// (`cfg.risk.canary_paths`). **Default OFF**; also gated by
+    /// `canary_paths` being non-empty so flipping this on alone
+    /// is a no-op until you also populate the path list.
+    #[serde(default = "default_detector_toggle_off")]
+    pub canary: DetectorToggle,
     /// DURABLE-T2 — optional file-backed persistence for the live
     /// detector mask. When set, the proxy writes the mask state to
     /// `path` after every audit-mutated PUT and reloads from it at
@@ -2338,6 +2358,25 @@ pub struct TierDetectorMask {
     pub nosql_injection: Option<bool>,
     #[serde(default)]
     pub open_redirect: Option<bool>,
+    /// 2026-05-19 — per-tier override for the Phase F
+    /// behaviour-signals detector. `None` = inherit global; the
+    /// global default is OFF (cf. `DetectorsConfig::default`).
+    #[serde(default)]
+    pub behavior_signals: Option<bool>,
+    /// 2026-05-19 — per-tier override for the cross-endpoint
+    /// velocity sequence engine. `None` = inherit global.
+    #[serde(default)]
+    pub velocity: Option<bool>,
+    /// 2026-05-19 — per-tier override for the canary tripwire.
+    /// `None` = inherit global. Inert without `canary_paths`.
+    #[serde(default)]
+    pub canary: Option<bool>,
+    /// 2026-05-19 — per-tier override for the AI (ONNX) detector.
+    /// Common use case: `low: { ai: false }` to skip ML inference
+    /// on static-asset traffic, `critical: { ai: true }` to force
+    /// it on regardless of the global toggle.
+    #[serde(default)]
+    pub ai: Option<bool>,
 }
 
 /// File-backed persistence config for the live detector mask.
@@ -2352,6 +2391,15 @@ pub struct DetectorMaskPersistenceConfig {
 fn default_detector_toggle() -> DetectorToggle {
     DetectorToggle {
         enabled: true,
+    }
+}
+
+/// 2026-05-19 — opt-in default for detectors that are too noisy or
+/// too narrowly scoped to ship on by default (`behavior_signals`,
+/// `canary`). Operators turn them on explicitly per-deployment.
+fn default_detector_toggle_off() -> DetectorToggle {
+    DetectorToggle {
+        enabled: false,
     }
 }
 
@@ -2370,6 +2418,9 @@ impl Default for DetectorsConfig {
             template_injection: default_detector_toggle(),
             nosql_injection: default_detector_toggle(),
             open_redirect: OpenRedirectConfig::default(),
+            behavior_signals: default_detector_toggle_off(),
+            velocity: default_detector_toggle(),
+            canary: default_detector_toggle_off(),
             persistence: None,
             per_tier: HashMap::new(),
         }

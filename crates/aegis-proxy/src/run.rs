@@ -287,6 +287,21 @@ pub async fn run(
     // `/api/detectors` (P2 of the security-toggle plan).
     let mask = aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors);
 
+    // 2026-05-19 — seed the `Ai` bit from `cfg.ai.enabled`. The AI
+    // detector config lives in a sibling `cfg.ai` block (not in
+    // `cfg.detectors`), so `from_config` above can't see it. We
+    // OR the bit in here so `GET /api/detectors` lists AI alongside
+    // the OWASP toggles and per-tier overrides can target it.
+    // The existing `Arc<AtomicBool>` (set further down) stays as
+    // the global kill-switch; Phase 3 wires the AI dispatcher to
+    // AND both gates so toggling either off skips inference.
+    {
+        use aegis_security::detectors::mask::DetectorClass;
+        let mut base = mask.load_state().base;
+        base = base.with(DetectorClass::Ai, cfg.ai.enabled);
+        mask.store(base);
+    }
+
     // CC-T (compliance-on-boot) — `cfg.detectors.<class>.enabled:
     // false` flipped together with `cfg.compliance.modes: [pci|...]`
     // would silently bypass the compliance mandate without this

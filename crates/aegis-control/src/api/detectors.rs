@@ -439,6 +439,7 @@ mod tests {
                 template_injection: true,
                 nosql_injection: true,
                 open_redirect: true,
+                ..Default::default()
             }),
         );
         let next = apply_put_body(initial, body, &[]).unwrap();
@@ -488,6 +489,7 @@ mod tests {
                 template_injection: true,
                 nosql_injection: true,
                 open_redirect: true,
+                ..Default::default()
             }),
         );
         let next = apply_put_body(
@@ -518,6 +520,7 @@ mod tests {
             template_injection: true,
             nosql_injection: true,
             open_redirect: true,
+            ..Default::default()
         });
         let next = apply_put_body(
             MaskState::default(),
