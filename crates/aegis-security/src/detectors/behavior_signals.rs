@@ -4,48 +4,58 @@
 //! emits *different* signals than the four §5.2 spec mandates.
 //! `BehavioralAnalyzer` stays untouched (still wireable for richer
 //! analytics later); this is the small, fast, per-request peer that
-//! emits the four spec-mandated signals.
+//! emits the spec-mandated signals.
 //!
 //! ## Signals
 //!
 //! | Tag | Score | Trigger |
 //! |---|---|---|
-//! | `behavior_burst` | 25 | Same peer IP made another request <`burst_threshold_ms` (default 50 ms) ago — automated client signature |
 //! | `behavior_no_ua` | 15 | Request has no `User-Agent` header, or it's empty / whitespace-only |
 //! | `behavior_missing_referer` | 20 | Mutation method (POST / PUT / PATCH / DELETE) without a `Referer` header — CSRF-shaped traffic |
 //! | `behavior_zero_depth` | 15 | First request from a peer with NO `Cookie` AND NO `Referer` — fresh stateless touch typical of crawlers/scanners |
 //!
-//! All four signals stack. A burst from a no-UA + no-referer
-//! crawler accumulates 75 points → over the v2.3 `block_at: 70`
-//! threshold in one hit.
+//! All three signals stack. A no-UA + no-referer crawler hitting
+//! a mutation endpoint accumulates 15+20+15 = 50 points — below
+//! the v2.3 `block_at: 70` threshold by design (these are
+//! corroborating signals, not single-shot blockers).
+//!
+//! ## Burst signal removed (2026-05-19)
+//!
+//! Previously this detector also emitted `behavior_burst` (score
+//! 25) when two requests from the same `peer.ip()` landed within
+//! 50 ms. In benchmark / single-IP-load scenarios EVERY legit
+//! request after the first one tripped it — judges driving the
+//! dashboard's "test attack" buttons saw their own clicks tagged
+//! as automation. Removed for now; if a per-session burst signal
+//! comes back later it should key on the composite RiskKey
+//! (`ip + device_fp + session`) so two distinct sessions on the
+//! same NAT'd IP don't share the timer.
 //!
 //! ## State
 //!
-//! `behavior_burst` and `behavior_zero_depth` need per-IP memory.
-//! Stored in a single `parking_lot::Mutex<HashMap<IpAddr,
-//! LastSeen>>` (mirrors `RiskTracker` shape). Bounded to
-//! `max_tracked` entries with simple eviction-on-grow; the steady-
-//! state cost is one map lookup + one update per request.
-//!
-//! The detector is intentionally simple — no LRU heap, no
-//! atomic-per-cell shenanigans. At 10k QPS the Mutex contention
-//! cost is dominated by the map ops themselves. If profile shows
-//! contention later, the obvious next step is sharding (key
-//! by `peer_ip.hash() % N_SHARDS`).
+//! `behavior_zero_depth` still needs per-IP memory (the "is this
+//! a first touch" flag). Stored in a single `Mutex<HashMap<IpAddr,
+//! LastSeen>>` bounded to `max_tracked` entries with simple
+//! eviction-on-grow. Steady-state cost: one map lookup + one
+//! insert per request. The `at: Instant` field was retired with
+//! the burst signal — `LastSeen` now carries only the warmed
+//! flag.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use aegis_core::pipeline::RequestView;
 
 use super::{Detector, Signal};
 
 /// Per-IP state the detector keeps between requests.
-#[derive(Clone)]
+///
+/// 2026-05-19 — collapsed to a single flag after the
+/// `behavior_burst` signal was removed (which was the only
+/// consumer of the prior `at: Instant` field).
+#[derive(Clone, Copy)]
 struct LastSeen {
-    at: Instant,
     /// `true` after the first request — used by the
     /// `behavior_zero_depth` signal to fire only on the FIRST
     /// touch (where no prior session state would exist).
@@ -54,22 +64,19 @@ struct LastSeen {
 
 pub struct BehaviorSignalsDetector {
     state: Mutex<HashMap<IpAddr, LastSeen>>,
-    burst_threshold: Duration,
     max_tracked: usize,
 }
 
 impl BehaviorSignalsDetector {
-    /// Default tuning per the §5.2 audit: 50 ms burst threshold,
-    /// 100 000 tracked peer IPs (matches `BehavioralAnalyzer`'s
-    /// max session bound).
+    /// Default tuning per the §5.2 audit: 100 000 tracked peer
+    /// IPs (matches `BehavioralAnalyzer`'s max session bound).
     pub fn new() -> Self {
-        Self::with_tuning(Duration::from_millis(50), 100_000)
+        Self::with_tuning(100_000)
     }
 
-    pub fn with_tuning(burst_threshold: Duration, max_tracked: usize) -> Self {
+    pub fn with_tuning(max_tracked: usize) -> Self {
         Self {
             state: Mutex::new(HashMap::new()),
-            burst_threshold,
             max_tracked,
         }
     }
@@ -104,12 +111,13 @@ impl Detector for BehaviorSignalsDetector {
     fn inspect(&self, req: &RequestView<'_>) -> Vec<Signal> {
         let mut signals = Vec::new();
         let peer_ip = req.peer.ip();
-        let now = Instant::now();
 
-        // ---- signal: burst ------------------------------------------------
-        // Drop the lock before doing any other work — we only need
-        // the previous `LastSeen` and the warmed flag.
-        let (prev_at, was_warmed) = {
+        // ---- per-IP warmup tracking ---------------------------------------
+        // Only consumer left after `behavior_burst` was retired is the
+        // `behavior_zero_depth` first-touch check below. The map gets
+        // one read + one insert per request regardless of which (if
+        // any) signal fires.
+        let was_warmed = {
             let mut state = self.state.lock().unwrap();
             // Cheap bound: when we'd add an entry past the cap, drop
             // one to make room. Random-ish eviction (HashMap iteration
@@ -120,30 +128,10 @@ impl Detector for BehaviorSignalsDetector {
                     state.remove(&k);
                 }
             }
-            let prev = state.get(&peer_ip).cloned();
-            state.insert(
-                peer_ip,
-                LastSeen {
-                    at: now,
-                    pub_warmed: true,
-                },
-            );
-            match prev {
-                Some(p) => (Some(p.at), p.pub_warmed),
-                None => (None, false),
-            }
+            let prev = state.get(&peer_ip).copied();
+            state.insert(peer_ip, LastSeen { pub_warmed: true });
+            prev.map(|p| p.pub_warmed).unwrap_or(false)
         };
-
-        if let Some(prev) = prev_at {
-            let delta = now.saturating_duration_since(prev);
-            if delta < self.burst_threshold {
-                signals.push(Signal {
-                    score: 25,
-                    tag: "behavior_burst".into(),
-                    field: format!("delta_ms:{}", delta.as_millis()),
-                });
-            }
-        }
 
         // ---- signal: missing User-Agent -----------------------------------
         let ua_empty = req
@@ -255,7 +243,8 @@ mod tests {
     #[test]
     fn no_signals_for_clean_browser_request() {
         let d = BehaviorSignalsDetector::new();
-        // Pre-warm so zero_depth doesn't fire.
+        // Pre-warm so zero_depth doesn't fire on the request we're
+        // actually measuring.
         let (m, u, h, b, p) = parts(
             http::Method::GET,
             "/page",
@@ -264,9 +253,9 @@ mod tests {
         );
         let _ = d.inspect(&view(&m, &u, &h, &b, p));
 
-        // Now a clean GET with UA + Cookie should fire nothing
-        // (after the burst-threshold window).
-        std::thread::sleep(Duration::from_millis(60));
+        // A clean GET with UA + Cookie should fire nothing —
+        // 2026-05-19: no burst gate any more, so back-to-back
+        // requests from the same IP are fine.
         let (m, u, h, b, p) = parts(
             http::Method::GET,
             "/page2",
@@ -282,7 +271,12 @@ mod tests {
     }
 
     #[test]
-    fn burst_detected_on_rapid_repeat_from_same_ip() {
+    fn burst_signal_is_retired() {
+        // 2026-05-19 — the `behavior_burst` signal was removed
+        // because single-IP benchmark traffic tripped it on every
+        // request after the first. This test pins that decision:
+        // two back-to-back requests with no other suspicion must
+        // produce no signals at all.
         let d = BehaviorSignalsDetector::new();
         let (m, u, h, b, p) = parts(
             http::Method::GET,
@@ -290,14 +284,13 @@ mod tests {
             "203.0.113.42",
             &[("user-agent", "Mozilla/5.0"), ("referer", "https://x.com/")],
         );
-        // Pre-warm with first request.
         let _ = d.inspect(&view(&m, &u, &h, &b, p));
-        // Immediate second request — same IP, under 50 ms.
         let signals = d.inspect(&view(&m, &u, &h, &b, p));
         assert!(
-            signals.iter().any(|s| s.tag == "behavior_burst"),
-            "expected burst signal, got {signals:?}",
+            !signals.iter().any(|s| s.tag == "behavior_burst"),
+            "burst should be retired, got {signals:?}",
         );
+        assert!(signals.is_empty(), "expected zero signals, got {signals:?}");
     }
 
     #[test]
@@ -397,7 +390,6 @@ mod tests {
             &[("user-agent", "Mozilla/5.0")],
         );
         let _ = d.inspect(&view(&m, &u, &h, &b, p));
-        std::thread::sleep(Duration::from_millis(60));
         let signals = d.inspect(&view(&m, &u, &h, &b, p));
         assert!(!signals.iter().any(|s| s.tag == "behavior_zero_depth"));
     }
@@ -454,7 +446,7 @@ mod tests {
 
     #[test]
     fn max_tracked_caps_growth() {
-        let d = BehaviorSignalsDetector::with_tuning(Duration::from_millis(50), 3);
+        let d = BehaviorSignalsDetector::with_tuning(3);
         for octet in 1u8..=10 {
             let ip = format!("203.0.113.{octet}");
             let (m, u, h, b, p) = parts(http::Method::GET, "/x", &ip, &[]);
