@@ -5439,7 +5439,12 @@ function PageSettings() {
   const runtime = window.useRuntimeApi();
   const showRuntimeHint = !!runtime?.data;
 
-  const [honeypots, setHoneypots] = useStateP(['/.env', '/.git/config', '/wp-admin/install.php', '/phpmyadmin', '/aws/credentials', '/actuator/env']);
+  // 2026-05-19 — Honeypot Paths card removed (was local-only with
+  // no backend mutation surface). The real honeypot/canary
+  // implementation now lives behind the `canary` detector on the
+  // Detectors page; operator-supplied paths come from
+  // `cfg.risk.canary_paths` (YAML-only today). The local
+  // `useStateP(['/.env', …])` was decorative only.
 
   async function toggleShadow() {
     if (busy) return;
@@ -5531,46 +5536,29 @@ function PageSettings() {
         </div>
       </div>
 
-      {/* 2026-05-10 — "Cumulative IP risk thresholds" card moved to
-          Traffic Gates → next to Strike-Block, so the per-IP-risk
-          knobs (lifetime strikes + decaying score thresholds) live
-          on one page with a side-by-side semantics callout. */}
-      <div className="card" style={{ marginBottom: 12, padding: 14, background: 'var(--surface-2)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <window.I.Shield />
-          <div style={{ flex: 1, fontSize: 12, color: 'var(--ink-mute)', lineHeight: 1.5 }}>
-            <strong style={{ color: 'var(--ink)' }}>Cumulative IP risk thresholds moved.</strong>{' '}
-            They now live with Strike-Block on the
-            {' '}
-            <a href="#/traffic-gates" style={{ color: 'var(--accent)', fontWeight: 600 }}>Traffic Gates</a>
-            {' '}page so the full per-IP-risk story (lifetime strikes vs. decaying score) sits in one place.
-          </div>
-        </div>
-      </div>
+      {/* 2026-05-19 — three dashboards features removed from this
+          page during cleanup:
+          1. "Cumulative IP risk thresholds" (moved to Traffic Gates
+             on 2026-05-10 — breadcrumb below points operators there).
+          2. "Challenge Engine" card (local-only dropdown; the
+             backend always renders JS challenge — no API to swap
+             challenge type today).
+          3. "Honeypot Paths" card (local-only chip editor with no
+             backend mutation surface; cfg.risk.canary_paths is
+             YAML-only and now consumed by the first-class
+             `canary` detector on the Detectors page).
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Challenge Engine</div>
-          <span className="pill warn" title="Selection is local-only — backend always uses JS challenge today">not wired</span>
-        </div>
-        <div className="field-label">Challenge type</div>
-        <select className="input select" defaultValue="JS Challenge"><option>JS Challenge</option><option>JS + CAPTCHA</option><option>Strict (PoW)</option></select>
-      </div>
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div className="card-title">Honeypot Paths</div>
-          <span className="pill warn" title="Honeypot list is local-only. Backend honeypot config is loaded from waf.yaml at boot.">not wired</span>
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-          {honeypots.map(p => (
-            <span key={p} className="chip active">{p} <span className="chip-x" onClick={() => setHoneypots(hp => hp.filter(x => x !== p))}><window.I.X /></span></span>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <input className="input" placeholder="/trap-path" />
-          <button className="icon-btn"><window.I.Plus /></button>
-        </div>
+          Inline redirect line below keeps operator memory happy
+          without a full-card stub. */}
+      <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <window.I.Shield />
+        <span>Looking for cumulative IP risk thresholds, challenge type, or honeypot paths?</span>
+        <span style={{ color: 'var(--ink-mute)' }}>·</span>
+        <a href="#/traffic-gates" style={{ color: 'var(--accent)', fontWeight: 600 }}>Traffic Gates</a>
+        <span style={{ color: 'var(--ink-mute)' }}>(risk thresholds)</span>
+        <span style={{ color: 'var(--ink-mute)' }}>·</span>
+        <a href="#/detectors" style={{ color: 'var(--accent)', fontWeight: 600 }}>Detectors</a>
+        <span style={{ color: 'var(--ink-mute)' }}>(<code>canary</code> for honeypots)</span>
       </div>
 
       <ResponseFilterCard />
