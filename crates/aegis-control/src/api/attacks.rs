@@ -1001,6 +1001,40 @@ mod tests {
         assert_eq!(detector_name(&ev), "unknown");
     }
 
+    /// 2026-05-19 — Strike-Block and Cumulative-risk gates stamp
+    /// these rule_ids on their Detection-class audit events
+    /// (data_plane.rs::blocked_response sites). The aggregator
+    /// must map them to honest synthetic labels — otherwise the
+    /// Attack Distribution donut shows a "unknown" slice that's
+    /// indistinguishable from malformed events.
+    #[test]
+    fn detector_name_maps_risk_strikes_to_ip_strikes() {
+        let ev = det_event(None, Some("risk-strikes"));
+        assert_eq!(detector_name(&ev), "ip-strikes");
+    }
+
+    #[test]
+    fn detector_name_maps_risk_score_to_ip_risk() {
+        let ev = det_event(None, Some("risk-score"));
+        assert_eq!(detector_name(&ev), "ip-risk");
+    }
+
+    #[test]
+    fn distribution_does_not_show_unknown_for_risk_blocks() {
+        // Two risk-strikes + one risk-score block → only "ip-strikes"
+        // (2 events) and "ip-risk" (1 event) in the distribution.
+        // No "unknown" bucket pollutes the chart.
+        let agg = AttacksAggregator::new();
+        agg.record(&det_event(None, Some("risk-strikes")));
+        agg.record(&det_event(None, Some("risk-strikes")));
+        agg.record(&det_event(None, Some("risk-score")));
+        let r = agg.distribution(900);
+        let names: Vec<&str> = r.categories.iter().map(|c| c.name.as_str()).collect();
+        assert!(!names.contains(&"unknown"), "got {names:?}");
+        assert!(names.contains(&"ip-strikes"));
+        assert!(names.contains(&"ip-risk"));
+    }
+
     #[test]
     fn fields_detector_wins_over_rule_id() {
         // If both are present, fields.detector takes precedence —
