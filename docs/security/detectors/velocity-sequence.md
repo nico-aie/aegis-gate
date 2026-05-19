@@ -41,9 +41,12 @@ Scores 50-70 are picked so:
 - `login → withdrawal` at 70 is exactly on the block threshold
   in v2.3 defaults — one match = block. This is the riskiest
   shape (cashout, irreversible).
-- Combined with `behavior_burst` (25) from the §5.2 detector,
-  any sequence + sub-50ms timing pushes deterministically over
-  the block line.
+- Stacking with any other detector hit (e.g. `behavior_no_ua` +20
+  on a UA-less bot, an OWASP class score, a recon path probe)
+  pushes a single sequence match deterministically over the
+  block line. The previous `behavior_burst` (25) co-signal was
+  retired 2026-05-19 — see
+  [behavior-signals.md](./behavior-signals.md#behavior_burst-retired-2026-05-19).
 
 ## Endpoint tagging
 

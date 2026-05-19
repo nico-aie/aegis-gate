@@ -1036,7 +1036,8 @@ const DETECTOR_COLORS = {
   // class hues above (greens/teals for state-based signals;
   // reds/oranges shared with severity-class detectors).
   canary:                       '#EF4444', // red — single-hit-block tier
-  behavior_burst:               '#14B8A6', // teal — automated-shape signal
+  // 2026-05-19 — `behavior_burst` retired (single-IP benchmarks
+  // tripped it on every repeat). Teal #14B8A6 is now unassigned.
   behavior_no_ua:               '#06B6D4', // cyan — UA-absence signal
   behavior_missing_referer:     '#0EA5E9', // sky — CSRF-shape signal
   behavior_zero_depth:          '#3B82F6', // blue — first-touch signal
@@ -2944,7 +2945,7 @@ const CLASS_DESCRIPTIONS = {
   template_injection: 'Server-side template injection (Jinja2, Twig, Mako, Freemarker, Velocity, SpEL, Handlebars).',
   nosql_injection: 'MongoDB-flavour operator injection (`?param[$ne]=foo`, `{$where:…}`).',
   open_redirect: 'Suspicious external URLs in `?next=` / `?redirect_uri=`. Allowlist via `cfg.detectors.open_redirect.allowed_domains`.',
-  behavior_signals: 'Stateful per-IP signals — burst (<50 ms), missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — high false-positive rate on single-IP smoke tests / NAT\'d egress; enable once you have real-IP traffic.',
+  behavior_signals: 'Stateful per-IP signals — missing UA, missing Referer on mutations, zero-depth first-touch. DEFAULT OFF — designed to stack with OWASP detectors on bot-shaped traffic; turn on once you have real-IP traffic.',
   velocity: 'Cross-endpoint sequence engine — flags chains like login→deposit < 5 s, login→withdrawal < 5 s. DEFAULT ON; zero cost when the upstream has no matching routes.',
   canary: 'Operator-supplied recon tripwire (`/wp-admin`, `/.env`, …). DEFAULT OFF AND inert until you populate `cfg.risk.canary_paths` — enabling alone is a no-op.',
   ai: 'ONNX machine-learning classifier. Heavy per request; per-tier overrides are recommended (e.g. on for Critical, off for Low to skip inference on static-asset traffic). Hot-flippable globally via the AI Detector card too.',
