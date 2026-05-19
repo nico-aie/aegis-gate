@@ -15,9 +15,19 @@
 > `reset(ip)`, `is_strike_blocked(ip)`) keep working and internally
 > construct `RiskKey::from_ip(ip)`. New `*_with_key` / `*_for_key`
 > variants take the full composite — two sessions on the same NAT'd
-> IP get independent buckets. IP-only and composite calls populate
-> different buckets even at the same IP, which is exactly the
-> auditor's intent: don't conflate sessions.
+> IP get independent buckets.
+>
+> **2026-05-19 — data-plane wire-up shipped.** `build_risk_key(peer_ip,
+> headers, tls_fp)` populates the `session` axis from cookies and
+> the `device_fp` axis from `blake3-16hex(JA4 ‖ User-Agent)` on the
+> TLS path; the production data plane now calls the `*_with_key`
+> variants. Plain HTTP still buckets by IP only (no TLS fingerprint
+> available). The `tenant_id` axis was removed the same day —
+> multi-tenancy was deprecated upstream and the field was
+> hard-coded to `None` everywhere. New surgical reset endpoint
+> `POST /api/risk/reset_key` wipes one bucket without disturbing
+> siblings on the same IP; legacy `POST /api/risk/<ip>/reset`
+> remains for IP-wide resets.
 
 ## Purpose
 
@@ -27,22 +37,34 @@ challenge, high → block. Canary routes instantly max the score.
 
 ## Composite identity
 
-```
-RiskKey = (client_ip, device_fp, session, authenticated_user)
+```rust
+pub struct RiskKey {
+    pub ip: IpAddr,
+    pub device_fp: Option<String>,
+    pub session: Option<String>,
+}
 ```
 
-- `device_fp` — JA3/JA4 + UA hash (see [`device-fingerprinting.md`](./device-fingerprinting.md))
-- `session` — session cookie or bearer-derived id
-- `authenticated_user` — optional, present when JWT / OIDC validated
+- `ip` — TCP peer IP (post-XFF). Always present.
+- `device_fp` — `Some(blake3-16hex(JA4 ‖ UA))` on the TLS path;
+  `None` on plain HTTP. See [`device-fingerprinting.md`](./device-fingerprinting.md).
+- `session` — session-cookie value from the request; `None` when
+  no recognised session cookie is sent.
 
-Any missing field collapses to `_`. The key hashes to a single state-backend
-entry.
+The `authenticated_user` axis is **not on the current `RiskKey`** —
+JWT/OIDC identity flows through a separate `ClientIdentity` channel
+and contributes to risk via detector signals, not the bucket key.
+The `tenant_id` axis was removed 2026-05-19 (deprecated upstream).
+
+Any missing optional field stays `None` and buckets together with
+other requests in that same state — e.g. plain-HTTP traffic without
+a session cookie shares the IP-only bucket.
 
 ## Score reference
 
 The risk score is the **sum of every signal** that fired on a request,
-capped at `max_score` (default 100) and persisted per-IP via the state
-backend on every update. Two kinds of contributors:
+capped at `max_score` (default 100) and persisted per-RiskKey-bucket
+via the state backend on every update. Two kinds of contributors:
 
 ### A. Detector signals (hardcoded per-class)
 
@@ -132,13 +154,13 @@ T=5m+  Score has decayed from 100 to 50 (half-life 5 min):
 ```
 
 **Key thing to internalize**: the per-request score (one request's
-detector signals summed) and the per-IP cumulative risk score are
+detector signals summed) and the per-bucket cumulative risk score are
 *two different numbers*. The first decides if THIS request gets
 blocked at the route's tier gate. The second decides if SUBSEQUENT
 requests from this IP get the challenge / access-gate-block
 treatment. See
 [security-engine.md § Risk model](./security-engine.md#risk-model)
-for the full per-request vs per-IP separation.
+for the full per-request vs per-bucket separation.
 
 ## Worked example: AI detector chain
 
@@ -263,7 +285,7 @@ for response shapes.
 
 - `aegis-security::risk::RiskEngine` — legacy half-life accumulator
 - `aegis-security::risk::tracker::RiskTracker` — **P6** in-memory
-  per-IP store with strikes + trust recovery; DashMap-backed; cheap
+  per-RiskKey-bucket store with strikes + trust recovery; DashMap-backed; cheap
   to clone (Arc-shared). Hot path = one map lookup + bitfield AND.
 - `aegis-control::api::risk` — `/api/risk*` HTTP surface
 - `aegis-proxy::handle_risk_reset` — audit-mutated reset path

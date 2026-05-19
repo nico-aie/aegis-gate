@@ -160,6 +160,10 @@ resets. That's an additive endpoint, no breaking change.
 | `RiskSnapshot` wire-shape extension | ✅ done (additive `device_fp` + `session` Option fields) |
 | `top()` populator for new fields | ✅ done (`tracker.rs::top` now stamps both axes) |
 | Dashboard "Composite RiskKey" view on Top Attackers | ✅ done — Top Attackers page gets a two-tab toggle (Identifier view / Composite RiskKey view); deep-linkable via `#/top-attackers?view=riskkey`. "Group by IP" collapse toggle + per-row surgical reset button live on the new view. The earlier Traffic Gates card was replaced with a one-line breadcrumb pointing operators at the unified surface. |
+| Surgical reset CSRF | ✅ done — initial implementation used a non-existent `window.getCsrfToken`; fixed in `ac2b403` to use `window.csrfMutate` (the dashboard's standard helper). Tester finding `high-top-risk-buckets-reset-button-broken-csrf.md` marked resolved. |
+| Investigation "Risk score" relabel | ✅ done — column header "IP risk" → "Risk score" + tooltip rewritten around the bucket model. Help-page glossary entries + FAQ updated. |
+| Traffic Gates card relabels (Strike-Block / Cumulative risk / Rate Limit) | ✅ done — all three card subtitles + tile footers + GateExplain rows describe the bucket model. **DDoS Gate** gets an explicit "intentionally per-TCP-peer-IP, NOT composite" callout. |
+| Operator doc updates | ✅ done — `docs/operator/traffic-gates.md` + `docs/operator/risk-tuning.md` + `docs/security/security-engine.md` + `docs/security/risk-scoring.md` + `config/REFERENCE.md` updated for the composite-key reality, with a callout box noting which gates migrated and which stayed IP-keyed. |
 | Surgical reset endpoint | ✅ done (`POST /api/risk/reset_key`, audit-mutated) |
 
 ## Sizing (remaining work)

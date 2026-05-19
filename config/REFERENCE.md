@@ -242,9 +242,13 @@ Hot-flippable via `PUT /api/ai/enabled` (audit-mutated).
 
 ## `risk`
 
-Cumulative per-IP risk score (decaying) plus per-IP lifetime
-strike counter. Detector hits increase the score; sustained
-high-risk IPs eventually trip the strike block.
+Cumulative per-RiskKey-bucket risk score (decaying) plus
+per-bucket lifetime strike counter. Detector hits increase the
+score; sustained high-risk buckets eventually trip the strike
+block. Buckets are keyed by `{ip, device_fp?, session?}` —
+two browsers on the same NAT'd IP each carry their own score
+(2026-05-19 composite-key migration). Thresholds below are
+tracker-wide and apply to every bucket uniformly.
 
 | Field | Default | Notes |
 |---|---|---|
@@ -254,9 +258,13 @@ high-risk IPs eventually trip the strike block.
 | `thresholds.challenge_at` | `30` | Score threshold for challenge tier |
 | `thresholds.block_at` | `70` | Score threshold for block tier |
 | `thresholds.max` | `100` | Hard ceiling (clamped on update) |
-| `strikes.block_at` | `50` | Lifetime strikes that trip permanent block |
-| `trust_recovery.per_hour` | `30` | Trust-recovery rate when an IP behaves |
+| `strikes.block_at` | `50` | Lifetime strikes (per bucket) that trip permanent block |
+| `trust_recovery.per_hour` | `30` | Trust-recovery rate when a bucket behaves |
 | `canary_paths[]` | `[]` | Hit on any of these → auto-block. Consumed by the `canary` detector |
+
+**Resetting state:**
+- `POST /api/risk/<ip>/reset` — wipes **every** bucket sharing that IP (cluster-wide convenience).
+- `POST /api/risk/reset_key` with `{ip, device_fp?, session?}` — wipes **exactly one** bucket; siblings on the same IP keep their state. Same surface drives the per-row "Reset bucket" button on Top Attackers → Composite RiskKey view.
 
 ```yaml
 risk:
