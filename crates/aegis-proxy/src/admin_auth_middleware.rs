@@ -139,7 +139,7 @@ pub async fn admit(
     // Step 2 — mTLS happens at TLS handshake; nothing to do here.
 
     // Open endpoints — no session required.
-    if is_open_endpoint(method, path) {
+    if is_open_endpoint(method, path, &peer) {
         return Admit::OpenEndpoint;
     }
 
@@ -292,12 +292,18 @@ pub fn strip_client_actor(req: &mut Request<hyper::body::Incoming>) {
 
 /// Open endpoints — no auth required. Kept tight; everything else
 /// requires a session or bearer token.
-fn is_open_endpoint(method: &Method, path: &str) -> bool {
+fn is_open_endpoint(method: &Method, path: &str, peer: &SocketAddr) -> bool {
     // Interop control plane checked first because it spans both
     // GET and POST and has its own X-Benchmark-Secret auth in the
     // dispatcher — admin-port session auth would double-gate it.
+    //
+    // 2026-05-19 committee bind contract: only loopback peers may
+    // skip admin auth on /__waf_control/*. Non-loopback callers
+    // get routed through the normal session-cookie gate, which
+    // means they hit the login redirect for any path that isn't
+    // an open-by-design endpoint — same UX as any unknown route.
     if path.starts_with("/__waf_control/") {
-        return true;
+        return peer.ip().is_loopback();
     }
     if method == Method::GET {
         // Health probes + login page + static SPA assets.
@@ -415,44 +421,63 @@ mod tests {
     // ergonomic). These unit tests target the pure helpers.
     use super::*;
 
+    fn loopback_peer() -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], 50_000))
+    }
+
+    fn remote_peer() -> SocketAddr {
+        SocketAddr::from(([203, 0, 113, 7], 50_000))
+    }
+
     #[test]
     fn health_probes_are_open() {
-        assert!(is_open_endpoint(&Method::GET, "/healthz"));
-        assert!(is_open_endpoint(&Method::GET, "/healthz/ready"));
-        assert!(is_open_endpoint(&Method::GET, "/readyz"));
-        assert!(is_open_endpoint(&Method::GET, "/metrics"));
+        let p = loopback_peer();
+        assert!(is_open_endpoint(&Method::GET, "/healthz", &p));
+        assert!(is_open_endpoint(&Method::GET, "/healthz/ready", &p));
+        assert!(is_open_endpoint(&Method::GET, "/readyz", &p));
+        assert!(is_open_endpoint(&Method::GET, "/metrics", &p));
     }
 
     #[test]
     fn login_endpoints_are_open() {
-        assert!(is_open_endpoint(&Method::GET, "/admin/login"));
-        assert!(is_open_endpoint(&Method::GET, "/admin/login.js"));
-        assert!(is_open_endpoint(&Method::POST, "/admin/login"));
-        assert!(is_open_endpoint(&Method::POST, "/admin/logout"));
+        let p = remote_peer();
+        assert!(is_open_endpoint(&Method::GET, "/admin/login", &p));
+        assert!(is_open_endpoint(&Method::GET, "/admin/login.js", &p));
+        assert!(is_open_endpoint(&Method::POST, "/admin/login", &p));
+        assert!(is_open_endpoint(&Method::POST, "/admin/logout", &p));
     }
 
     #[test]
     fn dashboard_assets_are_open() {
-        assert!(is_open_endpoint(&Method::GET, "/dashboard"));
-        assert!(is_open_endpoint(&Method::GET, "/dashboard/index.html"));
-        assert!(is_open_endpoint(&Method::GET, "/static/app.js"));
-        assert!(is_open_endpoint(&Method::GET, "/assets/icon.png"));
+        let p = remote_peer();
+        assert!(is_open_endpoint(&Method::GET, "/dashboard", &p));
+        assert!(is_open_endpoint(&Method::GET, "/dashboard/index.html", &p));
+        assert!(is_open_endpoint(&Method::GET, "/static/app.js", &p));
+        assert!(is_open_endpoint(&Method::GET, "/assets/icon.png", &p));
     }
 
     #[test]
-    fn interop_control_is_open_from_this_gate() {
+    fn interop_control_open_only_from_loopback() {
         // Interop has its own X-Benchmark-Secret check inside the
-        // dispatch — this gate must let it through.
-        assert!(is_open_endpoint(&Method::POST, "/__waf_control/reset_state"));
-        assert!(is_open_endpoint(&Method::GET, "/__waf_control/capabilities"));
+        // dispatch, but the committee bind contract requires the
+        // surface itself to be local-only — non-loopback callers
+        // must NOT be admitted as OpenEndpoint.
+        let lo = loopback_peer();
+        assert!(is_open_endpoint(&Method::POST, "/__waf_control/reset_state", &lo));
+        assert!(is_open_endpoint(&Method::GET, "/__waf_control/capabilities", &lo));
+
+        let rem = remote_peer();
+        assert!(!is_open_endpoint(&Method::POST, "/__waf_control/reset_state", &rem));
+        assert!(!is_open_endpoint(&Method::GET, "/__waf_control/capabilities", &rem));
     }
 
     #[test]
     fn api_endpoints_require_auth() {
-        assert!(!is_open_endpoint(&Method::GET, "/api/routes"));
-        assert!(!is_open_endpoint(&Method::PUT, "/api/detectors"));
-        assert!(!is_open_endpoint(&Method::POST, "/api/rules"));
-        assert!(!is_open_endpoint(&Method::DELETE, "/api/rules/abc"));
+        let p = remote_peer();
+        assert!(!is_open_endpoint(&Method::GET, "/api/routes", &p));
+        assert!(!is_open_endpoint(&Method::PUT, "/api/detectors", &p));
+        assert!(!is_open_endpoint(&Method::POST, "/api/rules", &p));
+        assert!(!is_open_endpoint(&Method::DELETE, "/api/rules/abc", &p));
     }
 
     #[test]
