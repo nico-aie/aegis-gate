@@ -167,27 +167,41 @@ know reload took effect. SLA: ≤ 10 s (Hackathon WAF-FE §2 #5).
 
 ## Section reference (what's in each YAML)
 
-| Section | Purpose | Spec |
-|---|---|---|
-| `listeners` | Bind ports for data + admin planes | [`docs/architecture/protocols.md`](../docs/architecture/protocols.md) |
-| `routes` | Host + path → upstream mapping | [`docs/data-plane/routing.md`](../docs/data-plane/routing.md) |
-| `upstreams` | Backend pools + LB strategy + circuit breakers | [`docs/data-plane/upstreams.md`](../docs/data-plane/upstreams.md) |
-| `tls` | Cert sources, ACME, OCSP stapling | [`docs/data-plane/tls.md`](../docs/data-plane/tls.md) |
-| `security` | Rule files, detector toggles | [`docs/security/rule-engine.md`](../docs/security/rule-engine.md) |
-| `risk` | Scoring weights, strike thresholds, decay | [`docs/security/risk-engine.md`](../docs/security/risk-engine.md) |
-| `load_mode` | Auto-degradation thresholds (elevated / critical RPS) | [`docs/operations/load-modes.md`](../docs/operations/load-modes.md) |
-| `state` | In-memory or Redis-backed counters / leases | [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) |
-| `admin` | Auth (argon2 / TOTP / mTLS / IP allowlist), CSRF, sessions | [`docs/control-plane/dashboard-auth.md`](../docs/control-plane/dashboard-auth.md) |
-| `audit` | Hash chain + SIEM sinks (8 formats) | [`docs/observability/siem-export.md`](../docs/observability/siem-export.md) |
-| `slo` | SLO definitions + multi-burn alert receivers | [`docs/observability/slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) |
-| `compliance` | Profile clamp (FIPS / PCI / SOC2 / GDPR / HIPAA) | [`docs/operations/compliance.md`](../docs/operations/compliance.md) |
-| `gitops` | Config-as-code git poll-and-pull | [`docs/control-plane/gitops-change-management.md`](../docs/control-plane/gitops-change-management.md) |
-| `runtime` | Worker count + CPU pinning | [`docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md) |
-| `node` | Stable cluster node identity | [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) |
-| `interop` | External interop contract surface (always on) | [`plans/interop-contract.md`](../plans/interop-contract.md) |
+> **Looking for a per-block walkthrough?** Open
+> [`REFERENCE.md`](./REFERENCE.md) — it has one section per
+> top-level YAML block with the operator-relevant knobs, defaults,
+> and a link back to the topic deep-dive. The table below is the
+> 30-second index; `REFERENCE.md` is the 5-minute scan.
 
-For full schema details with every field, fork `prod.yaml` and
-read its inline comments — every block carries an explanation.
+| Section | Purpose | Per-knob ref | Deep-dive |
+|---|---|---|---|
+| `listeners` | Bind ports for data + admin planes | [REFERENCE.md#listeners](./REFERENCE.md#listeners) | [`docs/architecture/protocols.md`](../docs/architecture/protocols.md) |
+| `routes` | Host + path → upstream mapping | [REFERENCE.md#routes](./REFERENCE.md#routes) | [`docs/data-plane/routing-ingress.md`](../docs/data-plane/routing-ingress.md) |
+| `upstreams` | Backend pools + LB strategy + circuit breakers | [REFERENCE.md#upstreams](./REFERENCE.md#upstreams) | [`docs/data-plane/upstream-pools.md`](../docs/data-plane/upstream-pools.md) |
+| `tls` | Cert sources, ACME, OCSP stapling | [REFERENCE.md#tls](./REFERENCE.md#tls) | [`docs/data-plane/tls-termination.md`](../docs/data-plane/tls-termination.md) |
+| `detectors` | OWASP + Phase F detector chain + per-tier mask | [REFERENCE.md#detectors](./REFERENCE.md#detectors) | [`docs/security/detectors/README.md`](../docs/security/detectors/README.md) |
+| `ai` | ONNX classifier detector | [REFERENCE.md#ai](./REFERENCE.md#ai) | per-deployment calibration in [`docs/security/detectors/README.md`](../docs/security/detectors/README.md) |
+| `risk` | Scoring weights, strike thresholds, decay | [REFERENCE.md#risk](./REFERENCE.md#risk) | [`docs/operator/risk-tuning.md`](../docs/operator/risk-tuning.md) |
+| `load_mode` | Auto-degradation thresholds (elevated / critical RPS) | [REFERENCE.md#load_mode](./REFERENCE.md#load_mode) | [`docs/data-plane/graceful-degradation.md`](../docs/data-plane/graceful-degradation.md) |
+| `load_shedder` | Adaptive concurrency limiter (Gradient2) | [REFERENCE.md#load_shedder](./REFERENCE.md#load_shedder) | source comments in `crates/aegis-proxy/src/shed.rs` |
+| `ddos` | Per-IP burst gate + EWMA spike | [REFERENCE.md#ddos](./REFERENCE.md#ddos) | [`docs/security/ddos-protection.md`](../docs/security/ddos-protection.md) |
+| `rate_limit` | Per-IP token-bucket limiter | [REFERENCE.md#rate_limit](./REFERENCE.md#rate_limit) | [`docs/security/rate-limiting.md`](../docs/security/rate-limiting.md) |
+| `state` | In-memory or Redis-backed counters / leases | [REFERENCE.md#state](./REFERENCE.md#state) | [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) |
+| `admin` | Auth (argon2 / TOTP / mTLS / IP allowlist), CSRF, sessions | [REFERENCE.md#admin](./REFERENCE.md#admin) | [`docs/control-plane/dashboard-auth.md`](../docs/control-plane/dashboard-auth.md) |
+| `audit` | Hash chain + SIEM sinks | [REFERENCE.md#audit](./REFERENCE.md#audit) | [`docs/observability/audit-logging.md`](../docs/observability/audit-logging.md) |
+| `slo` | SLO definitions + multi-burn alert receivers | [REFERENCE.md#slo](./REFERENCE.md#slo) | [`docs/observability/slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) |
+| `compliance` | Profile clamp (FIPS / PCI / SOC2 / GDPR / HIPAA) | [REFERENCE.md#compliance](./REFERENCE.md#compliance) | [`docs/operations/compliance.md`](../docs/operations/compliance.md) |
+| `gitops` | Config-as-code git poll-and-pull | [REFERENCE.md#gitops](./REFERENCE.md#gitops) | [`docs/control-plane/gitops-change-management.md`](../docs/control-plane/gitops-change-management.md) |
+| `runtime` | Worker count + CPU pinning | [REFERENCE.md#runtime](./REFERENCE.md#runtime) | [`docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md) |
+| `node` | Stable cluster node identity | [REFERENCE.md#node](./REFERENCE.md#node) | [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md) |
+| `interop` | External interop contract surface | [REFERENCE.md#interop](./REFERENCE.md#interop) | [`plans/archive/interop-contract.md`](../plans/archive/interop-contract.md) + [`docs/control-plane/api.openapi.yaml`](../docs/control-plane/api.openapi.yaml) |
+| `proxy` | Global body cap | [REFERENCE.md#proxy](./REFERENCE.md#proxy) | (knob-only — see source `crates/aegis-core/src/config.rs::ProxyConfig`) |
+| `logging` | Tracing verbosity | [REFERENCE.md#logging](./REFERENCE.md#logging) | hot-flippable via `set_profile` |
+
+For per-field detail beyond [`REFERENCE.md`](./REFERENCE.md), read
+the `///` doc comments on `WafConfig` and its sub-structs in
+[`crates/aegis-core/src/config.rs`](../crates/aegis-core/src/config.rs)
+— authoritative and always in sync with the binary.
 
 ---
 
