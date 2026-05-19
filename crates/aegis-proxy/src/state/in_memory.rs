@@ -423,7 +423,6 @@ mod tests {
             ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             device_fp: None,
             session: None,
-            tenant_id: None,
         };
         assert_eq!(b.get_risk(&key).await.unwrap(), 0);
     }
@@ -435,7 +434,6 @@ mod tests {
             ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             device_fp: None,
             session: None,
-            tenant_id: None,
         };
         let v = b.add_risk(&key, 50, 100).await.unwrap();
         assert_eq!(v, 50);
@@ -459,7 +457,6 @@ mod tests {
             ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99)),
             device_fp: None,
             session: None,
-            tenant_id: None,
         };
         b.add_risk(&key, 10, 100).await.unwrap();
         // Reach into the DashMap to verify the TTL is non-None.

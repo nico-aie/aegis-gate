@@ -582,7 +582,6 @@ impl CompiledRoute {
             tier: self.tier,
             failure_mode: self.failure_mode,
             upstream: self.upstream.clone(),
-            tenant_id: None,
             auth_required: self.auth_required.clone(),
             pool_scheme: self.pool_scheme,
             tcp_destination_allowlist: self.tcp_destination_allowlist.clone(),

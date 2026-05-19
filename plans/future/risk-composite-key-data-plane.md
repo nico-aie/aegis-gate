@@ -1,19 +1,29 @@
 # RiskTracker / IpRateLimiter — data-plane composite-key extraction
 
-> **Status:** Drafted 2026-05-18. Tracks the deferred half of
+> **Status:** Drafted 2026-05-18. Updated 2026-05-19 — most of the
+> data-plane swap has landed (`build_risk_key` + `*_with_key`
+> production call sites); see "Where we actually stand" below.
+> Tracks the remaining half of
 > [security F-CRITICAL-001 + 002](../issue-fix/2026-05-17-control-core-security-audits/README.md#phase-e--security-architecture-composite-keys--algorithm-correctness)
 > — Phase E.
 >
 > Commits `01c053c` (RiskTracker) + `5936257` (IpRateLimiter)
 > migrated the **storage layer** to a composite key
-> `RiskKey { ip, device_fp, session, tenant_id }`. The old IP-only
-> API surface is bit-compat (every legacy method internally builds
+> `RiskKey { ip, device_fp, session }`. The old IP-only API
+> surface is bit-compat (every legacy method internally builds
 > `RiskKey::from_ip(ip)`), so the data plane keeps compiling and
 > running without changes. The audit's intent — "don't conflate
-> two sessions on the same NAT'd IP" — is **not yet realised**:
-> until the data plane builds the full composite key, every
-> request still lands in the IP-only bucket and the new map
-> dimensions stay `None`.
+> two sessions on the same NAT'd IP" — is **partially realised**:
+> the `session` axis is now populated from cookies, but
+> `device_fp` is still `None` until JA4 is folded into the key.
+>
+> **2026-05-19 — `tenant_id` axis removed.** The multi-tenant
+> feature was deprecated upstream; every populator site was
+> hard-coded to `None`. Dropping the axis simplifies the
+> composite-key surface and saves an `Option<String>` per
+> bucket. `AuditEvent.tenant_id` is a separate wire-contract
+> field and stays for SIEM-sink compatibility (every sink
+> shape references it; removing would break the contract).
 
 ## Where the gap is
 
@@ -41,27 +51,29 @@ the full `RiskKey`.
 
 ### 1. Build the composite key at request boundary
 
-In the data plane, just before the first risk lookup, build:
+**Already landed** as `build_risk_key(peer_ip, headers)` in
+`crates/aegis-proxy/src/data_plane.rs`. Today it populates `ip`
+and `session` (via `extract_session_id`) but leaves `device_fp`
+as `None` — the JA4 fingerprint is captured at the accept layer
+but not folded into the key yet.
 
 ```rust
-let risk_key = aegis_core::risk::RiskKey {
+// Current shape:
+aegis_core::risk::RiskKey {
     ip: peer_ip,
-    device_fp: signals.ja4_fingerprint.as_ref().map(|ja4| {
-        // stable 32-bit hash of ja4 + UA — same shape both sides
-        // of the request lifecycle so we don't fragment buckets.
-        device_fp_hash(ja4, view.user_agent())
-    }),
-    session: view.session_cookie().map(str::to_owned),
-    tenant_id: route_ctx.tenant_id.clone(),  // already in scope
-};
+    device_fp: None,                            // ← still needs wiring
+    session: extract_session_id(headers),       // ← done
+}
 ```
 
-Helpers to add (one file, ~30 LoC):
+What's left here:
 
-- `crates/aegis-security/src/identity/device_fp.rs` (new):
-  `pub fn device_fp_hash(ja4: &str, ua: Option<&str>) -> String` —
-  short blake3 hex digest. Stable across requests within a TLS
+- `crates/aegis-security/src/identity/device_fp.rs` (new file,
+  ~30 LoC): `pub fn device_fp_hash(ja4: &str, ua: Option<&str>) -> String`
+  — short blake3 hex digest. Stable across requests within a TLS
   session. **Don't** include IP — that's already a separate axis.
+- Thread `signals.ja4_fingerprint` into `build_risk_key`'s caller
+  and let the helper produce `Some(device_fp_hash(ja4, ua))`.
 
 ### 2. Swap call sites to the `*_with_key` variants
 
@@ -85,11 +97,11 @@ floor for any traffic whose composite axes are `None`.
 ### 3. Extend the wire shape
 
 `crates/aegis-security/src/risk/tracker.rs::RiskSnapshot` today
-hides `device_fp` / `session` / `tenant_id` because the dashboard
-deep-links by IP alone (see `tracker.rs:370-377` TODO comment).
-Once the data plane populates composite keys, a single IP will
-appear in `top()` once per (device_fp, session, tenant) combo —
-the dashboard will look like it has duplicate rows.
+hides `device_fp` / `session` because the dashboard deep-links
+by IP alone (see `tracker.rs:370-377` TODO comment). Once the
+data plane populates composite keys, a single IP will appear in
+`top()` once per (device_fp, session) combo — the dashboard will
+look like it has duplicate rows.
 
 Additive change:
 
@@ -98,7 +110,6 @@ pub struct RiskSnapshot {
     pub ip: String,
     pub device_fp: Option<String>,   // NEW
     pub session: Option<String>,     // NEW
-    pub tenant_id: Option<String>,   // NEW
     pub score: u32,
     pub strikes: u32,
     pub idle_seconds: u64,
@@ -118,8 +129,8 @@ its own update lands.
 table:
 
 - Add columns (or a "details" disclosure row): `device_fp` (first 8
-  hex chars), `session` (first 8 chars), `tenant_id`.
-- Collapse rows where **all three** are `None` to a single
+  hex chars), `session` (first 8 chars).
+- Collapse rows where **both** are `None` to a single
   "IP-only" row so anonymous public-endpoint traffic doesn't
   visually fragment.
 - Deep-link target stays the IP-only filter for now; per-session
@@ -130,20 +141,39 @@ table:
 `POST /api/risk/reset` and `POST /api/gates/strikes/reset` today
 take `{ip}`. Decision: keep the IP-only reset (operator UX is
 simpler) AND wipe every bucket whose `RiskKey::ip` matches. Add
-an admin-only `{ip, device_fp?, session?, tenant_id?}` shape for
-surgical resets. That's an additive endpoint, no breaking change.
+an admin-only `{ip, device_fp?, session?}` shape for surgical
+resets. That's an additive endpoint, no breaking change.
 
-## Sizing
+## Where we actually stand (2026-05-19)
+
+| Plan item | Status |
+|---|---|
+| Storage layer composite key | ✅ done (commits `01c053c`, `5936257`) |
+| `build_risk_key(peer_ip, headers)` helper | ✅ done (`data_plane.rs::build_risk_key`) |
+| Production data-plane `*_with_key` swaps | ✅ done (8 call sites in `data_plane.rs`) |
+| `extract_session_id` session axis | ✅ done — session populated from cookies |
+| JA4 captured at TLS layer | ✅ done (`accept.rs:1439`) |
+| `tenant_id` axis | ✅ removed (multi-tenant deprecated upstream) |
+| `device_fp_hash(ja4, ua)` helper | ❌ pending |
+| `device_fp` axis populated in `build_risk_key` | ❌ pending |
+| `IpRateLimiter` data-plane swap | ❌ pending (`data_plane.rs:498` still IP-only `consume`) |
+| `RiskSnapshot` wire-shape extension | ❌ pending |
+| `top()` populator for new fields | ❌ pending |
+| Dashboard Top Attackers columns | ❌ pending |
+| Surgical reset endpoint | ❌ pending |
+
+## Sizing (remaining work)
 
 | Piece | Est. LoC |
 |---|---|
-| `device_fp_hash` helper + test | ~30 |
-| Data-plane key-builder + 15 call-site swaps | ~80 |
-| `RiskSnapshot` extension + `top()` populate | ~20 |
-| Dashboard table columns + collapse logic | ~80 |
-| Surgical reset endpoint (admin) | ~50 |
-| Tests (composite keys are honoured, `None` axes still merge IP-only buckets) | ~120 |
-| **Total** | **~380** |
+| `device_fp_hash` helper + JA4 wire-up | ~50 |
+| `IpRateLimiter` data-plane `consume_with_key` swap | ~20 |
+| `RiskSnapshot` extension + `top()` populate | ~25 |
+| Dashboard table columns + collapse logic | ~100 |
+| Surgical reset endpoint (admin) | ~60 |
+| Tests (composite keys honoured, IP-only buckets still merge) | ~120 |
+| Docs touch (architecture/storage-and-contract, rate-limiting) | ~20 |
+| **Total remaining** | **~395** |
 
 ## Why deferred (not "missing")
 

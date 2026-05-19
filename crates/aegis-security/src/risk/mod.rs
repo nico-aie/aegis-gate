@@ -146,7 +146,6 @@ mod tests {
             ip: "10.0.0.1".parse().unwrap(),
             device_fp: None,
             session: None,
-            tenant_id: None,
         }
     }
 

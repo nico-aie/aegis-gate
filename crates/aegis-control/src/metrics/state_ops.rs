@@ -368,7 +368,6 @@ mod tests {
             ip: "1.1.1.1".parse().unwrap(),
             device_fp: None,
             session: None,
-            tenant_id: None,
         };
         let _ = backend.get_risk(&key).await;
         let _ = backend.add_risk(&key, 5, 100).await;
