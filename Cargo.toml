@@ -160,7 +160,14 @@ maxminddb = "0.24"
 # build (~50 MB).  Faster + broader op-set support than the
 # pure-Rust alternatives, matches the runtime the operator
 # validated their model against.
-ort = { version = "=2.0.0-rc.12", features = ["download-binaries", "ndarray"] }
+# 2026-05-20 — switched from `download-binaries` to `load-dynamic` so
+# the WAF binary doesn't link against the ort-shipped prebuilt
+# (which requires glibc 2.38 — unavailable on this RHEL 9.7 host).
+# Runtime loads libonnxruntime.so via dlopen at the path set in the
+# `ORT_DYLIB_PATH` env var (see /etc/aegis-gate.env). The .so itself
+# was built from source against the host glibc — see
+# data/onnxruntime/ build notes in deploy/ docs / memory.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "std", "tracing", "api-24"] }
 ndarray = "0.17"
 
 # HTTP/3 stack (B5-T1 — Phase B). Pulled only via the
