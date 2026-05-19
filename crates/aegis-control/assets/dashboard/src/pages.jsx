@@ -9449,7 +9449,201 @@ function PageTrafficGates() {
       <CumulativeIpRiskCard />
       <RateLimitGateCard />
       <DdosGateCard />
+      <TopRiskBucketsCard />
     </>
+  );
+}
+
+// 2026-05-19 — surfaces the composite-key buckets the data plane
+// populates after the Phase E migration. Distinct from the
+// /api/attacks/top "Top Attackers" page (which is keyed by
+// identifier, fed by a separate AttacksAggregator): this card
+// reads /api/risk so each row corresponds to one
+// `RiskKey { ip, device_fp?, session? }` bucket. Operators can
+// see two browsers on the same NAT'd IP as two rows and reset
+// one without disturbing the other.
+function TopRiskBucketsCard() {
+  const risk = window.useApi
+    ? window.useApi('/api/risk?limit=50', { intervalMs: 5000, fallback: null })
+    : { data: null };
+  const [collapseByIp, setCollapseByIp] = useStateP(false);
+  const [resetBusy, setResetBusy] = useStateP(null);
+  // Field is `clients` per RiskListResponse (aegis-control/src/api/risk.rs).
+  const entries = risk.data?.clients ?? [];
+
+  async function surgicalReset(row) {
+    const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
+    setResetBusy(id);
+    try {
+      const r = await fetch('/api/risk/reset_key', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'content-type': 'application/json',
+          'x-csrf-token': window.getCsrfToken ? window.getCsrfToken() : '',
+        },
+        body: JSON.stringify({
+          ip: row.ip,
+          device_fp: row.device_fp ?? null,
+          session: row.session ?? null,
+        }),
+      });
+      if (r.ok) {
+        window.aegisToast(`Reset bucket ${id}`, 'ok');
+        risk.reload && risk.reload();
+      } else {
+        const body = await r.json().catch(() => ({}));
+        window.aegisToast(
+          `Reset failed: ${body.message || body.reason || `status ${r.status}`}`,
+          'err',
+        );
+      }
+    } catch (e) {
+      window.aegisToast(`Reset error: ${e.message || e}`, 'err');
+    } finally {
+      setResetBusy(null);
+    }
+  }
+
+  // Optional "group by IP" view: collapse rows sharing an IP into
+  // one summary row with the max score across buckets. Useful when
+  // an operator just wants the legacy IP-keyed read.
+  const grouped = collapseByIp
+    ? Object.values(
+        entries.reduce((acc, row) => {
+          if (!acc[row.ip]) {
+            acc[row.ip] = {
+              ip: row.ip,
+              device_fp: null,
+              session: null,
+              score: 0,
+              strikes: 0,
+              idle_seconds: row.idle_seconds,
+              level: row.level,
+              strike_blocked: row.strike_blocked,
+              _bucket_count: 0,
+            };
+          }
+          const g = acc[row.ip];
+          g.score = Math.max(g.score, row.score || 0);
+          g.strikes = Math.max(g.strikes, row.strikes || 0);
+          g.idle_seconds = Math.min(g.idle_seconds, row.idle_seconds);
+          if (row.level === 'block' || g.level !== 'block') g.level = row.level;
+          if (row.strike_blocked) g.strike_blocked = true;
+          g._bucket_count += 1;
+          return acc;
+        }, {}),
+      )
+    : entries;
+
+  return (
+    <div id="top-risk-buckets-card" className="card" style={{ marginBottom: 12 }}>
+      <window.SectionHeader
+        title="6. Top risk buckets"
+        sub="Per-(IP, device_fp, session) bucket scores — one row per composite RiskKey. Two browsers on the same NAT'd IP appear as two rows; reset one without disturbing the other."
+      />
+      <div style={{ padding: 16 }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={collapseByIp}
+              onChange={e => setCollapseByIp(e.target.checked)}
+            />
+            <span>Group by IP</span>
+            <span style={{ color: 'var(--ink-dim)' }}>
+              (collapses composite-key rows into one summary row per IP)
+            </span>
+          </label>
+          <div style={{ flex: 1 }} />
+          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+            {entries.length} bucket{entries.length === 1 ? '' : 's'} ·{' '}
+            <a href="#/help" style={{ color: 'var(--accent)' }}>What's a RiskKey?</a>
+          </span>
+        </div>
+        {entries.length === 0 ? (
+          <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+            No tracked clients yet — drive some traffic to populate the table.
+          </div>
+        ) : (
+          <table className="tbl tbl-compact">
+            <thead>
+              <tr>
+                <th style={{ width: 140 }}>IP</th>
+                <th style={{ width: 110 }}>device_fp</th>
+                <th style={{ width: 110 }}>session</th>
+                <th style={{ width: 60 }}>Score</th>
+                <th style={{ width: 70 }}>Strikes</th>
+                <th style={{ width: 80 }}>Level</th>
+                <th style={{ width: 90 }}>Idle</th>
+                <th style={{ width: 110 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {grouped.map((row, i) => {
+                const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
+                const levelColour =
+                  row.level === 'block' ? 'var(--down)'
+                  : row.level === 'challenge' ? 'var(--warn)'
+                  : 'var(--ink-dim)';
+                const dfShort = row.device_fp ? row.device_fp.slice(0, 8) : null;
+                const sessShort = row.session ? row.session.slice(0, 8) : null;
+                return (
+                  <tr key={`${id}-${i}`}>
+                    <td className="mono">{row.ip}</td>
+                    <td
+                      className="mono dim"
+                      title={row.device_fp || 'no TLS fingerprint (plain HTTP)'}
+                    >
+                      {dfShort ? `${dfShort}…` : <span style={{ opacity: 0.5 }}>—</span>}
+                    </td>
+                    <td
+                      className="mono dim"
+                      title={row.session || 'no session cookie'}
+                    >
+                      {sessShort ? `${sessShort}…` : <span style={{ opacity: 0.5 }}>—</span>}
+                    </td>
+                    <td className="num">{row.score}</td>
+                    <td className="num">{row.strikes}</td>
+                    <td>
+                      <span
+                        className="pill"
+                        style={{ color: levelColour, border: `1px solid ${levelColour}` }}
+                      >
+                        {row.strike_blocked ? '🔒 ' : ''}
+                        {row.level}
+                      </span>
+                    </td>
+                    <td className="dim">{row.idle_seconds}s</td>
+                    <td>
+                      {collapseByIp ? (
+                        <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>
+                          {row._bucket_count} bucket{row._bucket_count === 1 ? '' : 's'}
+                        </span>
+                      ) : (
+                        <button
+                          className="btn btn-sm"
+                          onClick={() => surgicalReset(row)}
+                          disabled={resetBusy === id}
+                          title="POST /api/risk/reset_key — wipes exactly this composite-key bucket; siblings on the same IP keep their state."
+                        >
+                          {resetBusy === id ? '…' : 'Reset bucket'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+        <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 8 }}>
+          IP-only reset (wipe every bucket sharing an IP) still available via{' '}
+          <code>PUT /api/risk/&lt;ip&gt;/reset</code>; this card uses the
+          {' '}<code>POST /api/risk/reset_key</code> surgical variant.
+        </div>
+      </div>
+    </div>
   );
 }
 

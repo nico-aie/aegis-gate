@@ -144,23 +144,23 @@ simpler) AND wipe every bucket whose `RiskKey::ip` matches. Add
 an admin-only `{ip, device_fp?, session?}` shape for surgical
 resets. That's an additive endpoint, no breaking change.
 
-## Where we actually stand (2026-05-19)
+## Where we actually stand (2026-05-19 — data-plane wire-up landed)
 
 | Plan item | Status |
 |---|---|
 | Storage layer composite key | ✅ done (commits `01c053c`, `5936257`) |
-| `build_risk_key(peer_ip, headers)` helper | ✅ done (`data_plane.rs::build_risk_key`) |
+| `build_risk_key(peer_ip, headers, tls_fp)` helper | ✅ done (`data_plane.rs::build_risk_key`) |
 | Production data-plane `*_with_key` swaps | ✅ done (8 call sites in `data_plane.rs`) |
 | `extract_session_id` session axis | ✅ done — session populated from cookies |
 | JA4 captured at TLS layer | ✅ done (`accept.rs:1439`) |
 | `tenant_id` axis | ✅ removed (multi-tenant deprecated upstream) |
-| `device_fp_hash(ja4, ua)` helper | ❌ pending |
-| `device_fp` axis populated in `build_risk_key` | ❌ pending |
-| `IpRateLimiter` data-plane swap | ❌ pending (`data_plane.rs:498` still IP-only `consume`) |
-| `RiskSnapshot` wire-shape extension | ❌ pending |
-| `top()` populator for new fields | ❌ pending |
-| Dashboard Top Attackers columns | ❌ pending |
-| Surgical reset endpoint | ❌ pending |
+| `device_fp_hash(ja4, ua)` helper | ✅ done (`fingerprint::device_fp_hash`) |
+| `device_fp` axis populated in `build_risk_key` | ✅ done (TLS path → `Some(blake3-16hex)`) |
+| `IpRateLimiter` data-plane swap | ✅ done (`data_plane.rs:498` uses `consume_with_key`) |
+| `RiskSnapshot` wire-shape extension | ✅ done (additive `device_fp` + `session` Option fields) |
+| `top()` populator for new fields | ✅ done (`tracker.rs::top` now stamps both axes) |
+| Dashboard Top risk buckets card | ✅ done (`pages.jsx::TopRiskBucketsCard` on Traffic Gates page; "Group by IP" toggle + per-row surgical reset button) |
+| Surgical reset endpoint | ✅ done (`POST /api/risk/reset_key`, audit-mutated) |
 
 ## Sizing (remaining work)
 
