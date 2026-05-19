@@ -4,9 +4,21 @@ date: 2026-05-19T12:30Z
 severity: HIGH
 area: dashboard
 component: top-risk-buckets / surgical-reset
-status: open
+status: resolved
+resolution_commit: feat/risk-composite-key-data-plane (pending push)
 test_mode: functional
 ---
+
+> **Resolved 2026-05-19** — `surgicalReset` rewritten to use
+> `window.csrfMutate` (the standard helper from `data.jsx`)
+> instead of the non-existent `window.getCsrfToken`. The reset
+> button now actually clears the targeted composite-key bucket;
+> verified by re-running the repro steps. The card itself moved
+> from the Traffic Gates page to the Top Attackers page →
+> Composite RiskKey view (`#/top-attackers?view=riskkey`) per
+> the Option A refactor, so the single remaining call site
+> lives in `PageTopAttackers::surgicalReset`.
+
 
 # "Reset bucket" button on Top risk buckets card silently fails (broken CSRF helper reference)
 

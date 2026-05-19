@@ -9199,8 +9199,8 @@ function PageInvestigation() {
                       <th style={{ width: 70 }}>Status</th>
                       <th
                         style={{ width: 80 }}
-                        title="Cumulative risk score for this client IP (decays over time). NOT the score of this single request — a request can be allowed even when its IP carries high risk if the request itself didn't trigger any detector."
-                      >IP risk</th>
+                        title="Cumulative risk score for this request's RiskKey bucket ({ip, device_fp?, session?}) — decays over time. Two browsers on the same NAT'd IP each carry their own bucket score. This is NOT the score of this single request — a request can be allowed even when its bucket carries high risk if the request itself didn't trigger any detector."
+                      >Risk score</th>
                       <th>Rule</th>
                     </tr>
                   </thead>
@@ -9471,7 +9471,7 @@ function TrafficGatesFlowDiagram() {
   const stages = [
     { id: 'access-list',   label: '1. Access List',   target: 'access-list-card',  hint: 'IP / CIDR / country block + bypass' },
     { id: 'strike-block',  label: '2. Strike-Block',  target: 'strike-block-card', hint: 'Lifetime malicious-event counter' },
-    { id: 'cumulative-ip', label: '3. Cumulative IP', target: 'cum-ip-risk-card',  hint: 'Per-IP risk score (decays over time)' },
+    { id: 'cumulative-ip', label: '3. Cumulative IP', target: 'cum-ip-risk-card',  hint: 'Per-RiskKey-bucket score (decays over time) — keyed by {ip, device_fp?, session?}' },
     { id: 'rate-limit',    label: '4. Rate Limit',    target: 'rate-limit-card',   hint: 'Global per-IP token bucket' },
     { id: 'ddos',          label: '5. DDoS',          target: 'ddos-card',         hint: 'Sliding-window burst + EWMA spike' },
   ];
@@ -10566,26 +10566,28 @@ function PageTopAttackers() {
     const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
     setResetBusy(id);
     try {
-      const r = await fetch('/api/risk/reset_key', {
+      // 2026-05-19 — uses `window.csrfMutate` (the dashboard's
+      // standard helper from data.jsx) so the request carries the
+      // CSRF cookie + header pair the admin gate validates. The
+      // earlier raw-fetch + `window.getCsrfToken` shape silently
+      // 403'd every reset (the helper doesn't exist), making the
+      // button decorative; a tester-skill functional test caught
+      // that before merge.
+      const r = await window.csrfMutate('/api/risk/reset_key', {
         method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'content-type': 'application/json',
-          'x-csrf-token': window.getCsrfToken ? window.getCsrfToken() : '',
-        },
         body: JSON.stringify({
           ip: row.ip,
           device_fp: row.device_fp ?? null,
           session: row.session ?? null,
         }),
       });
-      if (r.ok) {
+      // csrfMutate returns `{status, ...body}` — not a Response.
+      if (r.status >= 200 && r.status < 300 && r.ok !== false) {
         window.aegisToast(`Reset bucket ${id}`, 'ok');
         risk.reload && risk.reload();
       } else {
-        const body = await r.json().catch(() => ({}));
         window.aegisToast(
-          `Reset failed: ${body.message || body.reason || `status ${r.status}`}`,
+          `Reset failed: ${r.message || r.reason || `status ${r.status}`}`,
           'err',
         );
       }
