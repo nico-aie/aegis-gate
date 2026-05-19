@@ -125,6 +125,13 @@ pub(crate) async fn admin_accept_loop(
     // adapter for `kind: country` matching after the MaxMind
     // reader is opened below.
     upstream_ctx: Arc<crate::proxy::ProxyContext>,
+    // 2026-05-19 — source-of-truth waf.yaml path. `Some` when
+    // `reload_source` is `ConfigReloadSource::File`; `None` for
+    // etcd / static / test boots. Stashed on
+    // `services.config_yaml_path` so the dashboard's
+    // "Configuration backup (YAML)" download can read the file
+    // at request time.
+    config_yaml_path: Option<std::path::PathBuf>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -357,6 +364,9 @@ pub(crate) async fn admin_accept_loop(
     services.blacklist = upstream_ctx.blacklist.clone();
     services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
+    // 2026-05-19 — surface the source-of-truth YAML path so the
+    // dashboard's Configuration Backup card can fetch it.
+    services.config_yaml_path = config_yaml_path;
 
     // 2026-05-10 — share the TierStore between DashboardServices
     // (PUT /api/tiers/{name}) and ProxyContext (data plane reads

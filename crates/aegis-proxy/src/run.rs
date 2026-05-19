@@ -953,6 +953,15 @@ pub async fn run(
     // PUT /api/detectors are preserved.
     // `ConfigReloadSource::None` skips the spawn entirely (used
     // by tests + one-shot CLI commands).
+    //
+    // 2026-05-19 — capture the source-of-truth YAML path before
+    // the match consumes `reload_source`. The admin plane stashes
+    // it on `services.config_yaml_path` so the dashboard's
+    // Configuration Backup download can serve the file.
+    let config_yaml_path: Option<std::path::PathBuf> = match &reload_source {
+        ConfigReloadSource::File(p) => Some(p.clone()),
+        _ => None,
+    };
     match reload_source {
         ConfigReloadSource::None => {
             tracing::info!("config reload watcher: disabled (ConfigReloadSource::None)");
@@ -1447,6 +1456,7 @@ pub async fn run(
         admin_inflight,
         admin_tls_acceptor,
         upstream_ctx.clone(),
+        config_yaml_path.clone(),
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);
