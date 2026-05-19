@@ -1216,25 +1216,56 @@ pub(crate) async fn accept_loop(
                         .map(|p| p.as_str())
                         .unwrap_or_else(|| req.uri().path())
                         .to_string();
-                    // v2.3 contract (deploy/STAGING-BENCHMARK.md §7.5):
-                    // the OC benchmarker hits /__waf_control/* on the
-                    // public TLS data plane, not the admin port. Short-
-                    // circuit the security pipeline here so the control
-                    // surface is reachable on whichever listener the
-                    // operator exposes externally. Auth via
-                    // X-Benchmark-Secret is enforced inside the handler.
-                    if path.starts_with("/__waf_control/") {
+                    // v2.5 contract §4 — challenge verify is the
+                    // benchmarker-facing public endpoint (different
+                    // from the local-only control plane). Mount on
+                    // the data plane so the external benchmarker
+                    // can POST solutions without an SSH tunnel.
+                    // No admin auth, no loopback gate; the PoW MAC
+                    // + single-use nonce store provide the security.
+                    if method == hyper::Method::POST && path.split('?').next() == Some("/challenge/verify") {
+                        let resp = crate::admin_dispatch::handle_challenge_verify(
+                            req,
+                            upstream_ctx.pow_issuer.get(),
+                            Some(&state_backend_for_interop),
+                        ).await;
+                        let resp = crate::admin_dispatch::stamp_interop_response(
+                            resp,
+                            aegis_control::interop::headers::DecisionTag::allow(),
+                            interop.as_ref(),
+                            peer,
+                            &method,
+                            &path,
+                            0,
+                            request_start,
+                        );
+                        return Ok::<_, Infallible>(resp);
+                    }
+                    // 2026-05-19 committee deployment contract:
+                    // /__waf_control/* MUST bind local-only on the
+                    // team's server (benchmarker SSH-tunnels in and
+                    // hits it from loopback). Gate the short-circuit
+                    // on peer.is_loopback() so a non-loopback caller
+                    // on the public data plane never sees the control
+                    // surface — the request falls through to the
+                    // normal pipeline, which proxies to upstream and
+                    // returns whatever the target-app would (typically
+                    // 404). This hides the existence of the control
+                    // namespace entirely. X-Benchmark-Secret is still
+                    // enforced inside the handler as defence-in-depth.
+                    //
+                    // Earlier v2.3 contract treated /__waf_control/* as
+                    // reachable on the public TLS data plane; the
+                    // committee's final-round guidance overrides that.
+                    if should_dispatch_data_plane_control(&path, &peer) {
                         if let Some(rt) = interop.as_ref() {
-                            // NEW-2 (2026-05-08) — pass through
-                            // the PoW issuer + state backend so
-                            // /__waf_control/challenge_verify can
-                            // validate solutions. Both are
-                            // installed once at boot from run.rs.
+                            // v2.5 (2026-05-19) — challenge_verify
+                            // is no longer on /__waf_control/*; it
+                            // moved to the public /challenge/verify
+                            // data-plane mount above this branch.
                             let resp = crate::admin_dispatch::handle_interop_control_with_rt(
                                 req,
                                 rt.as_ref(),
-                                upstream_ctx.pow_issuer.get(),
-                                Some(&state_backend_for_interop),
                             ).await;
                             // F-CRITICAL-001 (2026-05-17 s-tester
                             // audit): control-endpoint responses
@@ -1571,5 +1602,94 @@ pub(crate) async fn accept_loop(
                 None => {} // unreachable — handshake-failure path returned above
             }
         });
+    }
+}
+
+/// 2026-05-19 committee bind contract — only loopback peers may
+/// reach the `/__waf_control/*` short-circuit on the public data
+/// plane. Non-loopback callers fall through to the normal
+/// security pipeline (which proxies to upstream and returns the
+/// target-app's 404), so the existence of the control namespace
+/// is invisible from outside the host.
+fn should_dispatch_data_plane_control(
+    path: &str,
+    peer: &std::net::SocketAddr,
+) -> bool {
+    path.starts_with("/__waf_control/") && peer.ip().is_loopback()
+}
+
+#[cfg(test)]
+mod control_gate_tests {
+    use super::should_dispatch_data_plane_control;
+    use std::net::SocketAddr;
+
+    fn lo() -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], 50_000))
+    }
+
+    fn lo_v6() -> SocketAddr {
+        // ::1 is loopback as well
+        "[::1]:50000".parse().unwrap()
+    }
+
+    fn remote_v4() -> SocketAddr {
+        SocketAddr::from(([203, 0, 113, 7], 50_000))
+    }
+
+    fn remote_v6() -> SocketAddr {
+        "[2001:db8::1]:50000".parse().unwrap()
+    }
+
+    #[test]
+    fn loopback_v4_dispatches() {
+        assert!(should_dispatch_data_plane_control(
+            "/__waf_control/capabilities",
+            &lo()
+        ));
+        assert!(should_dispatch_data_plane_control(
+            "/__waf_control/reset_state",
+            &lo()
+        ));
+    }
+
+    #[test]
+    fn loopback_v6_dispatches() {
+        assert!(should_dispatch_data_plane_control(
+            "/__waf_control/capabilities",
+            &lo_v6()
+        ));
+    }
+
+    #[test]
+    fn non_loopback_v4_does_not_dispatch() {
+        assert!(!should_dispatch_data_plane_control(
+            "/__waf_control/capabilities",
+            &remote_v4()
+        ));
+        assert!(!should_dispatch_data_plane_control(
+            "/__waf_control/set_profile",
+            &remote_v4()
+        ));
+    }
+
+    #[test]
+    fn non_loopback_v6_does_not_dispatch() {
+        assert!(!should_dispatch_data_plane_control(
+            "/__waf_control/capabilities",
+            &remote_v6()
+        ));
+    }
+
+    #[test]
+    fn non_control_path_never_dispatches() {
+        assert!(!should_dispatch_data_plane_control("/", &lo()));
+        assert!(!should_dispatch_data_plane_control("/api/health", &lo()));
+        // Defensive — committee says control namespace ONLY under
+        // /__waf_control/*; anything that merely *contains* the
+        // substring must not trigger the short-circuit.
+        assert!(!should_dispatch_data_plane_control(
+            "/x/__waf_control/capabilities",
+            &lo()
+        ));
     }
 }

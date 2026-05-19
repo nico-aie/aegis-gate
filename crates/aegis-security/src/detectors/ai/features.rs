@@ -74,6 +74,28 @@ use regex::Regex;
 /// `[batch, NUM_FEATURES]`.
 pub const NUM_FEATURES: usize = 27;
 
+/// 2026-05-19 — Mirror the training preprocessing limits.
+/// `build_clean_dataset.py` truncates URL ≤ 4 KiB and body ≤ 8 KiB
+/// before computing features. Inference MUST do the same; otherwise
+/// a 20 KiB request produces feature values (`request_len`,
+/// `entropy`, regex hit counts) that the model has never seen.
+const MAX_URL_BYTES: usize = 4_096;
+const MAX_BODY_BYTES: usize = 8_192;
+
+/// Slice-truncate at most `max_bytes`, snapping to the nearest
+/// UTF-8 char boundary so the borrowed string stays valid.
+#[inline]
+fn truncate_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut idx = max_bytes;
+    while !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &s[..idx]
+}
+
 /// Static names — useful for debugging / logging the top-3
 /// contributors when `cfg.ai.explain` is on (future work).
 #[allow(dead_code)]
@@ -264,8 +286,11 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
     // default to GET / "/" / "".
     let mut parts = first_line.splitn(3, ' ');
     let method = parts.next().unwrap_or("GET");
-    let url = parts.next().unwrap_or("/");
-    let body = parts.next().unwrap_or("");
+    // 2026-05-19 — Truncate URL + body to match training preprocessing
+    // (see MAX_URL_BYTES / MAX_BODY_BYTES). Without this, oversized
+    // requests produce feature distributions the model never saw.
+    let url = truncate_bytes(parts.next().unwrap_or("/"), MAX_URL_BYTES);
+    let body = truncate_bytes(parts.next().unwrap_or(""), MAX_BODY_BYTES);
 
     // URL → (path, query).
     let (path, query) = match url.find('?') {

@@ -204,5 +204,14 @@ admin:
 # ---------------------------------------------------------------------------
 interop:
   enabled: true
-  audit_path: "/var/log/aegis/contract-audit.jsonl"
-  control_secret: "REPLACE FROM SECRET MANAGER"
+  # v2.5 §8 — the benchmarker reads `./waf_audit.log` relative to the
+  # WAF's cwd. Earlier this was `/var/log/aegis/contract-audit.jsonl`
+  # which (a) may not be writable in the judging sandbox and (b) is
+  # not where the benchmarker looks. Keep the contract default.
+  audit_path: "./waf_audit.log"
+  # v2.5 §2.2 — the OC harness sends `X-Benchmark-Secret: waf-hackathon-2026-ctrl`
+  # against every /__waf_control/* call. The earlier "REPLACE FROM
+  # SECRET MANAGER" placeholder failed every request with 403. Use
+  # the documented value for the hackathon stage; rotate via a
+  # secret-ref in real prod.
+  control_secret: "waf-hackathon-2026-ctrl"
