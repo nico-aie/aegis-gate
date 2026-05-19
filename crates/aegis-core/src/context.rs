@@ -7,7 +7,9 @@ pub struct RequestCtx {
     pub request_id: String,
     pub received_at: std::time::Instant,
     pub client: ClientInfo,
-    pub tenant_id: Option<String>,
+    // 2026-05-19 — `tenant_id` removed (was always `None`; multi-tenant
+    // feature deprecated upstream). `AuditEvent.tenant_id` keeps its
+    // own wire-contract field for SIEM-sink compatibility.
     pub trace_id: Option<String>,
     pub fields: BTreeMap<String, FieldValue>,
 }
@@ -38,7 +40,8 @@ pub struct RouteCtx {
     pub tier: Tier,
     pub failure_mode: FailureMode,
     pub upstream: String,
-    pub tenant_id: Option<String>,
+    // 2026-05-19 — `tenant_id` removed (was always `None`; multi-tenant
+    // feature deprecated upstream).
     /// MTLS-T4 — required client-identity kinds for this
     /// route. Empty = any identity admitted (default open).
     /// Non-empty acts as an allow-list against
@@ -92,12 +95,10 @@ mod tests {
                 h2_fingerprint: None,
                 user_agent: Some("curl/8.0".into()),
             },
-            tenant_id: None,
             trace_id: None,
             fields: BTreeMap::new(),
         };
         assert!(ctx.fields.is_empty());
-        assert!(ctx.tenant_id.is_none());
     }
 
     #[test]
@@ -122,7 +123,6 @@ mod tests {
             tier: Tier::Critical,
             failure_mode: FailureMode::FailClose,
             upstream: "auth-pool".into(),
-            tenant_id: None,
             auth_required: Vec::new(),
             pool_scheme: crate::config::UpstreamScheme::Auto,
             tcp_destination_allowlist: Vec::new(),

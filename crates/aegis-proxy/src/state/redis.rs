@@ -684,7 +684,6 @@ mod backend {
                 ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
                 device_fp: Some("ja4-abc".into()),
                 session: None,
-                tenant_id: None,
             };
             assert_eq!(
                 RedisBackend::risk_key_str(&k),

@@ -83,7 +83,6 @@ mod tests {
                 h2_fingerprint: None,
                 user_agent: None,
             },
-            tenant_id: None,
             trace_id: None,
             fields: BTreeMap::new(),
         }
@@ -95,7 +94,6 @@ mod tests {
             tier: Tier::Low,
             failure_mode: FailureMode::FailOpen,
             upstream: "default".into(),
-            tenant_id: None,
             auth_required: Vec::new(),
             pool_scheme: aegis_core::config::UpstreamScheme::Auto,
             tcp_destination_allowlist: Vec::new(),

@@ -180,7 +180,6 @@ mod tests {
             ip: "10.0.0.1".parse().unwrap(),
             device_fp: Some("fp".into()),
             session: Some("sess".into()),
-            tenant_id: None,
         }
     }
 

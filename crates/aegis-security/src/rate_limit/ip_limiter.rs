@@ -497,7 +497,6 @@ mod tests {
             ip: ip(ip_str),
             device_fp: device_fp.map(String::from),
             session: session.map(String::from),
-            tenant_id: None,
         }
     }
 

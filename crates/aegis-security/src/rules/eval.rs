@@ -386,7 +386,6 @@ mod tests {
             tier: Tier::Medium,
             failure_mode: FailureMode::FailOpen,
             upstream: "pool".into(),
-            tenant_id: None,
             auth_required: Vec::new(),
             pool_scheme: aegis_core::config::UpstreamScheme::Auto,
             tcp_destination_allowlist: Vec::new(),

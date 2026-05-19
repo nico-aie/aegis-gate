@@ -99,9 +99,14 @@ observed on node A is recognized on node B within replication latency.
 - Fingerprints are salted hashes with a per-deployment secret
 - TTL in the device store (default 24h, extended by recent activity)
 - Not written to disk unless the operator explicitly enables debug tracing
-- Per-tenant partitioned: fingerprints are never cross-referenced across
-  tenants
 - GDPR: see [`data-residency-retention.md`](../operations/data-residency-retention.md)
+
+> **2026-05-19 — multi-tenant feature deprecated.** The earlier
+> "per-tenant partitioned" claim was removed; tenant separation
+> belongs to operator-side deployment scoping (one cluster per
+> tenant) rather than in-process partitioning. The
+> `data-residency-retention.md` enterprise addendum is kept for
+> reference but no longer load-bearing.
 
 ## Configuration
 

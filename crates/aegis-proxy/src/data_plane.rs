@@ -1836,7 +1836,6 @@ pub(crate) async fn forward_allow_to_upstream(
                     h2_fingerprint: None,
                     user_agent: None,
                 },
-                tenant_id: route_ctx.tenant_id.clone(),
                 trace_id: None,
                 fields: std::collections::BTreeMap::new(),
             };
@@ -2245,7 +2244,7 @@ mod session_extraction_tests {
     }
 
     /// build_risk_key fills ip + session axes, leaves device_fp
-    /// and tenant_id None. session axis is populated from the
+    /// (device_fp None). session axis is populated from the
     /// cookie when present.
     #[test]
     fn build_risk_key_populates_session_axis() {
@@ -2255,7 +2254,6 @@ mod session_extraction_tests {
         assert_eq!(key.ip, ip);
         assert_eq!(key.session.as_deref(), Some("abc"));
         assert!(key.device_fp.is_none());
-        assert!(key.tenant_id.is_none());
     }
 
     #[test]
@@ -2473,10 +2471,11 @@ pub(crate) fn extract_session_id(headers: &http::HeaderMap) -> Option<String> {
 ///   when no recognised session cookie is sent.
 /// - `device_fp` — `None` today. Activates when TLS-fingerprint
 ///   wire-up lands (tracked in
-///   `plans/issue-fix/2026-05-18-qc-followup/` § JA4-capture
-///   follow-up).
-/// - `tenant_id` — `None` today. Activates when route metadata
-///   gains a `tenant: <id>` field.
+///   `plans/future/risk-composite-key-data-plane.md`).
+///
+/// 2026-05-19 — `tenant_id` axis removed from `RiskKey` (the
+/// multi-tenant feature was deprecated upstream; every populator
+/// was hard-coded to `None`).
 pub(crate) fn build_risk_key(
     peer_ip: std::net::IpAddr,
     headers: &http::HeaderMap,
@@ -2485,7 +2484,6 @@ pub(crate) fn build_risk_key(
         ip: peer_ip,
         device_fp: None,
         session: extract_session_id(headers),
-        tenant_id: None,
     }
 }
 
