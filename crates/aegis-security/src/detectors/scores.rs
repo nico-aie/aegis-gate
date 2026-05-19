@@ -275,13 +275,11 @@ pub const CATALOG: &[ScoreEntry] = &[
         note: "AI / ML classifier verdict (model confidence ≥ threshold). Only present when `cfg.ai.enabled = true`.",
     },
     // 2026-05-19 — Phase F behaviour-signals (stateful per-IP).
-    // Default OFF on the schema — high FP on single-IP smoke tests.
-    ScoreEntry {
-        class: "behavior_signals",
-        tag: "behavior_burst",
-        score: 25,
-        note: "Two requests from the same IP within 50 ms — automated-client signature.",
-    },
+    // Default OFF on the schema — three corroborating signals
+    // intended to stack with OWASP detectors. The original
+    // `behavior_burst` (score 25, two requests <50 ms apart) was
+    // retired the same day because single-IP benchmark traffic
+    // tripped it on every request after the first.
     ScoreEntry {
         class: "behavior_signals",
         tag: "behavior_no_ua",
