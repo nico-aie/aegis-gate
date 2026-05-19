@@ -488,27 +488,35 @@ pub fn default_detectors_with_canary(
     canary_paths: &[String],
 ) -> Vec<Box<dyn Detector>> {
     let mut v = default_detectors_with(cfg);
-    if !canary_paths.is_empty() {
+    // 2026-05-19 — three Phase F detectors are now first-class
+    // togglable classes (see DetectorClass::{BehaviorSignals,
+    // Velocity, Canary}). Each only gets registered when its
+    // DetectorsConfig toggle is on, so the dispatcher loop pays
+    // zero cost for detectors the operator turned off. Canary
+    // additionally requires `canary_paths` to be non-empty — an
+    // empty list means there's nothing to trip on, so registering
+    // it would just be an always-empty loop iteration per request.
+    if cfg.canary.enabled && !canary_paths.is_empty() {
         v.push(Box::new(canary::CanaryDetector::new(canary_paths)));
     }
-    // 2026-05-18 F-CRITICAL-004 (security audit, Phase F) — the
-    // four §5.2 behaviour signals (burst / no-UA / missing-Referer
-    // on mutations / zero-depth first-touch). Always-on peer of
-    // the OWASP detectors; per-request cost is one Mutex-guarded
-    // HashMap lookup. Scores are sub-block-threshold individually
-    // so they accumulate with the OWASP signals rather than
-    // single-shot blocking.
-    v.push(Box::new(
-        behavior_signals::BehaviorSignalsDetector::new(),
-    ));
-    // 2026-05-18 F-CRITICAL-003 (security audit, Phase F) — the
-    // velocity sequence engine. Detects cross-endpoint flow
-    // attacks (login→deposit < 5s, login→withdrawal < 5s, etc.)
-    // that don't trip individual rate caps. Hardcoded ruleset
-    // for v1; operator-tunable config is a future enhancement.
-    v.push(Box::new(
-        velocity_sequence::VelocitySequenceDetector::new(),
-    ));
+    if cfg.behavior_signals.enabled {
+        // 2026-05-18 F-CRITICAL-004 (security audit, Phase F) — the
+        // four §5.2 behaviour signals (burst / no-UA /
+        // missing-Referer on mutations / zero-depth first-touch).
+        // Stateful per-IP; default OFF as of 2026-05-19 because the
+        // 50 ms burst threshold trips on single-IP smoke tests.
+        v.push(Box::new(
+            behavior_signals::BehaviorSignalsDetector::new(),
+        ));
+    }
+    if cfg.velocity.enabled {
+        // 2026-05-18 F-CRITICAL-003 (security audit, Phase F) — the
+        // velocity sequence engine. Default ON; zero cost when the
+        // upstream has no /login, /otp, /deposit, /withdrawal routes.
+        v.push(Box::new(
+            velocity_sequence::VelocitySequenceDetector::new(),
+        ));
+    }
     v
 }
 

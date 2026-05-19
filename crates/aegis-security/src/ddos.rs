@@ -366,6 +366,20 @@ impl DdosDetector {
         tier: Option<Tier>,
     ) -> aegis_core::Result<DdosResult> {
         let cfg = self.config.load();
+        // 2026-05-19 — hot-flippable enable/disable. The runtime is
+        // always installed at boot (see aegis-proxy::run); whether
+        // the gate actually enforces is decided here at decision
+        // time so PUT /api/gates/ddos { enabled: false } takes
+        // effect without a restart. Returning a clean (non-blocked,
+        // no-spike) result keeps the downstream audit/telemetry
+        // paths in their "happy" branch — no false ddos events.
+        if !cfg.enabled {
+            return Ok(DdosResult {
+                blocked: false,
+                reason: None,
+                spike_active: false,
+            });
+        }
         // 1. Check if already auto-blocked. Per-IP — tier doesn't
         // change who's blocked, only how fast they got blocked.
         if state.is_auto_blocked(ip).await? {
@@ -415,6 +429,17 @@ impl DdosDetector {
     /// Update cluster spike detection.  Called periodically (e.g. every second).
     pub fn tick_rps(&self) {
         let cfg = self.config.load();
+        // 2026-05-19 — when the gate is hot-disabled, freeze the
+        // EWMA. We zero `rolling_rps` so the counter doesn't keep
+        // accumulating across the disabled window, but leave
+        // `baseline_rps` / `spike_active` untouched — the next
+        // re-enable starts from the prior steady-state instead of
+        // re-warming for ~30 ticks.
+        if !cfg.enabled {
+            self.rolling_rps.store(0, Ordering::Relaxed);
+            self.spike_active.store(0, Ordering::Relaxed);
+            return;
+        }
         let current = self.rolling_rps.swap(0, Ordering::Relaxed);
         let baseline = self.baseline_rps.load(Ordering::Relaxed);
 
@@ -876,5 +901,107 @@ mod tests {
             .expect("critical override carried through");
         assert_eq!(limit.per_ip_limit, 50);
         assert_eq!(limit.per_ip_window_s, 10);
+    }
+
+    // ---- 2026-05-19 — hot-flippable cfg.enabled ----
+
+    /// With `enabled = false`, even a hot bucket that *would*
+    /// trip the per-IP cap returns `blocked = false`. Mirrors
+    /// the dashboard PUT { enabled: false } operator flow.
+    #[tokio::test]
+    async fn check_with_tier_returns_unblocked_when_disabled() {
+        let cfg = DdosConfig {
+            enabled: false,
+            // Tight limit — if the gate were enforcing, request #2
+            // would block. The test proves the cap is bypassed.
+            per_ip_limit: 1,
+            per_ip_window_s: 10,
+            ..Default::default()
+        };
+        let state = Arc::new(MockState::new());
+        let detector = DdosDetector::new(cfg);
+        let ip: IpAddr = "10.0.0.50".parse().unwrap();
+        for _ in 0..10 {
+            let r = detector
+                .check_with_tier(state.as_ref(), ip, Some(Tier::Critical))
+                .await
+                .unwrap();
+            assert!(!r.blocked, "disabled gate must never block");
+            assert!(!r.spike_active, "disabled gate must report no spike");
+            assert!(r.reason.is_none());
+        }
+    }
+
+    /// Disable → enable round-trip via `set_config`: requests pass
+    /// while disabled, then start enforcing once enabled flips
+    /// back. Per-IP window state survives the swap (operator
+    /// tightening doesn't reset every flooding source IP).
+    #[tokio::test]
+    async fn set_config_hot_flip_enables_and_disables_in_place() {
+        let base = DdosConfig {
+            enabled: true,
+            per_ip_limit: 2,
+            per_ip_window_s: 60,
+            ..Default::default()
+        };
+        let state = Arc::new(MockState::new());
+        let detector = DdosDetector::new(base.clone());
+        let ip: IpAddr = "10.0.0.51".parse().unwrap();
+
+        // 1. Disable. Burst freely.
+        detector.set_config(DdosConfig {
+            enabled: false,
+            ..base.clone()
+        });
+        for _ in 0..20 {
+            let r = detector
+                .check_with_tier(state.as_ref(), ip, Some(Tier::Low))
+                .await
+                .unwrap();
+            assert!(!r.blocked, "burst under disabled gate must pass");
+        }
+
+        // 2. Re-enable. From a *fresh* IP so the test isolates the
+        //    flip behaviour from the lingering MockState counter
+        //    accumulated above. (The autoblock side-effect of the
+        //    enabled-side cap is exercised by other tests.)
+        detector.set_config(base.clone());
+        let fresh: IpAddr = "10.0.0.52".parse().unwrap();
+        let r1 = detector
+            .check_with_tier(state.as_ref(), fresh, Some(Tier::Low))
+            .await
+            .unwrap();
+        assert!(!r1.blocked, "first req under enabled gate allowed");
+        let r2 = detector
+            .check_with_tier(state.as_ref(), fresh, Some(Tier::Low))
+            .await
+            .unwrap();
+        assert!(!r2.blocked, "second req still under cap");
+        let r3 = detector
+            .check_with_tier(state.as_ref(), fresh, Some(Tier::Low))
+            .await
+            .unwrap();
+        assert!(r3.blocked, "third req exceeds the per_ip_limit=2 cap");
+    }
+
+    /// `tick_rps` freezes the EWMA while disabled: rolling counts
+    /// drain, spike flag clears, but baseline doesn't decay so the
+    /// next re-enable resumes from the prior steady state.
+    #[test]
+    fn tick_rps_freezes_ewma_when_disabled() {
+        let detector = DdosDetector::new(DdosConfig {
+            enabled: false,
+            spike_multiplier: 2.0,
+            ..Default::default()
+        });
+        detector.baseline_rps.store(500, Ordering::Relaxed);
+        detector.rolling_rps.store(9_999, Ordering::Relaxed);
+        detector.spike_active.store(1, Ordering::Relaxed);
+
+        detector.tick_rps();
+
+        assert_eq!(detector.baseline_rps(), 500, "baseline preserved across disabled tick");
+        assert_eq!(detector.current_rps(), 0, "rolling drained");
+        assert!(!detector.is_spike_active(), "spike cleared while disabled");
     }
 }

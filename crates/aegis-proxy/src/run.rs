@@ -287,6 +287,21 @@ pub async fn run(
     // `/api/detectors` (P2 of the security-toggle plan).
     let mask = aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors);
 
+    // 2026-05-19 — seed the `Ai` bit from `cfg.ai.enabled`. The AI
+    // detector config lives in a sibling `cfg.ai` block (not in
+    // `cfg.detectors`), so `from_config` above can't see it. We
+    // OR the bit in here so `GET /api/detectors` lists AI alongside
+    // the OWASP toggles and per-tier overrides can target it.
+    // The existing `Arc<AtomicBool>` (set further down) stays as
+    // the global kill-switch; Phase 3 wires the AI dispatcher to
+    // AND both gates so toggling either off skips inference.
+    {
+        use aegis_security::detectors::mask::DetectorClass;
+        let mut base = mask.load_state().base;
+        base = base.with(DetectorClass::Ai, cfg.ai.enabled);
+        mask.store(base);
+    }
+
     // CC-T (compliance-on-boot) — `cfg.detectors.<class>.enabled:
     // false` flipped together with `cfg.compliance.modes: [pci|...]`
     // would silently bypass the compliance mandate without this
@@ -740,57 +755,64 @@ pub async fn run(
         tracing::info!("load_shedder: cfg.load_shedder.enabled = false — gate not installed");
     }
 
-    if cfg.ddos.enabled {
-        // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.8): wire
-        // the WafConfig-level `fail_mode_by_tier` map into the
-        // runtime DdosConfig. Schema for this field landed in
-        // Phase G (`678baa2`) but no runtime read it until now.
-        // Spec §5.8 mandates fail-close on Critical, fail-open on
-        // Medium/CatchAll — `Tier::default_failure_mode()`
-        // already encodes that, so an empty map preserves the
-        // mandate; the per-tier YAML override lets operators
-        // tune posture per-deployment.
-        let mut ddos_runtime_cfg: aegis_security::ddos::DdosConfig =
-            cfg.ddos.clone().into();
-        for (tier, mode) in &cfg.fail_mode_by_tier {
-            let runtime_mode = match mode {
-                aegis_core::config::FailureModeConfig::FailClose => {
-                    aegis_core::tier::FailureMode::FailClose
-                }
-                aegis_core::config::FailureModeConfig::FailOpen => {
-                    aegis_core::tier::FailureMode::FailOpen
-                }
-            };
-            ddos_runtime_cfg.failure_mode.insert(*tier, runtime_mode);
-        }
-        let runtime = Arc::new(aegis_security::ddos::DdosRuntime::new(
-            ddos_runtime_cfg,
-            state.clone(),
-        ));
-        if upstream_ctx.ddos.set(runtime.clone()).is_err() {
-            tracing::warn!("ddos: runtime already installed; skipping");
-        } else {
-            tracing::info!(
-                observe_only = runtime.observe_only(),
-                per_ip_limit = cfg.ddos.per_ip_limit,
-                spike_multiplier = cfg.ddos.spike_multiplier,
-                "ddos: runtime installed (observe-only Phase 1)",
-            );
-            // Spawn the spike-detection ticker. Drop guard not
-            // needed — handle leaks at shutdown the same way the
-            // health-check handles do; the proxy supervisor owns
-            // the process lifetime.
-            let runtime_for_tick = runtime.clone();
-            handles.push(tokio::spawn(async move {
-                let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
-                loop {
-                    iv.tick().await;
-                    runtime_for_tick.tick_rps();
-                }
-            }));
-        }
+    // 2026-05-19 — DDoS runtime is now installed unconditionally so
+    // operators can hot-flip `enabled` from the dashboard
+    // (PUT /api/gates/ddos) without restarting. Enforcement is
+    // gated inside `DdosDetector::check_with_tier`, which reads
+    // the ArcSwap'd `cfg.enabled` on every request. Boot log
+    // distinguishes the initial state so operators see whether
+    // the gate is active out of the gate.
+    //
+    // 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005, §5.8): wire
+    // the WafConfig-level `fail_mode_by_tier` map into the
+    // runtime DdosConfig. Schema for this field landed in
+    // Phase G (`678baa2`) but no runtime read it until now.
+    // Spec §5.8 mandates fail-close on Critical, fail-open on
+    // Medium/CatchAll — `Tier::default_failure_mode()`
+    // already encodes that, so an empty map preserves the
+    // mandate; the per-tier YAML override lets operators
+    // tune posture per-deployment.
+    let mut ddos_runtime_cfg: aegis_security::ddos::DdosConfig =
+        cfg.ddos.clone().into();
+    for (tier, mode) in &cfg.fail_mode_by_tier {
+        let runtime_mode = match mode {
+            aegis_core::config::FailureModeConfig::FailClose => {
+                aegis_core::tier::FailureMode::FailClose
+            }
+            aegis_core::config::FailureModeConfig::FailOpen => {
+                aegis_core::tier::FailureMode::FailOpen
+            }
+        };
+        ddos_runtime_cfg.failure_mode.insert(*tier, runtime_mode);
+    }
+    let runtime = Arc::new(aegis_security::ddos::DdosRuntime::new(
+        ddos_runtime_cfg,
+        state.clone(),
+    ));
+    if upstream_ctx.ddos.set(runtime.clone()).is_err() {
+        tracing::warn!("ddos: runtime already installed; skipping");
     } else {
-        tracing::info!("ddos: cfg.ddos.enabled = false — detector not installed");
+        tracing::info!(
+            initial_enabled = cfg.ddos.enabled,
+            observe_only = runtime.observe_only(),
+            per_ip_limit = cfg.ddos.per_ip_limit,
+            spike_multiplier = cfg.ddos.spike_multiplier,
+            "ddos: runtime installed; enabled is hot-flippable via PUT /api/gates/ddos",
+        );
+        // Spawn the spike-detection ticker. Drop guard not
+        // needed — handle leaks at shutdown the same way the
+        // health-check handles do; the proxy supervisor owns
+        // the process lifetime. The ticker itself short-circuits
+        // when `cfg.enabled = false` so the EWMA freezes during
+        // disabled windows.
+        let runtime_for_tick = runtime.clone();
+        handles.push(tokio::spawn(async move {
+            let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                iv.tick().await;
+                runtime_for_tick.tick_rps();
+            }
+        }));
     }
 
     // Spawn live health-check tasks for every pool that carries
