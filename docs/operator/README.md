@@ -5,6 +5,8 @@ Start here if you have a binary and need to make it do something.
 
 | Doc | When you need it |
 |---|---|
+| [`../../config/README.md`](../../config/README.md) | **Start here** — picking the right profile, validate + run, fork-prod-yaml workflow |
+| [`../../config/REFERENCE.md`](../../config/REFERENCE.md) | **Per-block config walkthrough** — every top-level YAML section, key knobs, defaults, and links into the topic deep-dives |
 | [soc-runbook.md](./soc-runbook.md) | **SOC team cheat sheet** — config → build → deploy → login → test → monitor, plus 4 incident playbooks |
 | [viptalk-setup.md](./viptalk-setup.md) | Wire SLO alerts to a real VipTalk room (env vars, smoke test, troubleshooting) |
 | [usage.md](./usage.md) | Day-1 bring-up + day-2 runbook (config, security toggles, hot-reload, audit verification) |
