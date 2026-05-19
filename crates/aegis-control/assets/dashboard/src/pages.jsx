@@ -9449,201 +9449,15 @@ function PageTrafficGates() {
       <CumulativeIpRiskCard />
       <RateLimitGateCard />
       <DdosGateCard />
-      <TopRiskBucketsCard />
-    </>
-  );
-}
-
-// 2026-05-19 — surfaces the composite-key buckets the data plane
-// populates after the Phase E migration. Distinct from the
-// /api/attacks/top "Top Attackers" page (which is keyed by
-// identifier, fed by a separate AttacksAggregator): this card
-// reads /api/risk so each row corresponds to one
-// `RiskKey { ip, device_fp?, session? }` bucket. Operators can
-// see two browsers on the same NAT'd IP as two rows and reset
-// one without disturbing the other.
-function TopRiskBucketsCard() {
-  const risk = window.useApi
-    ? window.useApi('/api/risk?limit=50', { intervalMs: 5000, fallback: null })
-    : { data: null };
-  const [collapseByIp, setCollapseByIp] = useStateP(false);
-  const [resetBusy, setResetBusy] = useStateP(null);
-  // Field is `clients` per RiskListResponse (aegis-control/src/api/risk.rs).
-  const entries = risk.data?.clients ?? [];
-
-  async function surgicalReset(row) {
-    const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
-    setResetBusy(id);
-    try {
-      const r = await fetch('/api/risk/reset_key', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'content-type': 'application/json',
-          'x-csrf-token': window.getCsrfToken ? window.getCsrfToken() : '',
-        },
-        body: JSON.stringify({
-          ip: row.ip,
-          device_fp: row.device_fp ?? null,
-          session: row.session ?? null,
-        }),
-      });
-      if (r.ok) {
-        window.aegisToast(`Reset bucket ${id}`, 'ok');
-        risk.reload && risk.reload();
-      } else {
-        const body = await r.json().catch(() => ({}));
-        window.aegisToast(
-          `Reset failed: ${body.message || body.reason || `status ${r.status}`}`,
-          'err',
-        );
-      }
-    } catch (e) {
-      window.aegisToast(`Reset error: ${e.message || e}`, 'err');
-    } finally {
-      setResetBusy(null);
-    }
-  }
-
-  // Optional "group by IP" view: collapse rows sharing an IP into
-  // one summary row with the max score across buckets. Useful when
-  // an operator just wants the legacy IP-keyed read.
-  const grouped = collapseByIp
-    ? Object.values(
-        entries.reduce((acc, row) => {
-          if (!acc[row.ip]) {
-            acc[row.ip] = {
-              ip: row.ip,
-              device_fp: null,
-              session: null,
-              score: 0,
-              strikes: 0,
-              idle_seconds: row.idle_seconds,
-              level: row.level,
-              strike_blocked: row.strike_blocked,
-              _bucket_count: 0,
-            };
-          }
-          const g = acc[row.ip];
-          g.score = Math.max(g.score, row.score || 0);
-          g.strikes = Math.max(g.strikes, row.strikes || 0);
-          g.idle_seconds = Math.min(g.idle_seconds, row.idle_seconds);
-          if (row.level === 'block' || g.level !== 'block') g.level = row.level;
-          if (row.strike_blocked) g.strike_blocked = true;
-          g._bucket_count += 1;
-          return acc;
-        }, {}),
-      )
-    : entries;
-
-  return (
-    <div id="top-risk-buckets-card" className="card" style={{ marginBottom: 12 }}>
-      <window.SectionHeader
-        title="6. Top risk buckets"
-        sub="Per-(IP, device_fp, session) bucket scores — one row per composite RiskKey. Two browsers on the same NAT'd IP appear as two rows; reset one without disturbing the other."
-      />
-      <div style={{ padding: 16 }}>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={collapseByIp}
-              onChange={e => setCollapseByIp(e.target.checked)}
-            />
-            <span>Group by IP</span>
-            <span style={{ color: 'var(--ink-dim)' }}>
-              (collapses composite-key rows into one summary row per IP)
-            </span>
-          </label>
-          <div style={{ flex: 1 }} />
-          <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
-            {entries.length} bucket{entries.length === 1 ? '' : 's'} ·{' '}
-            <a href="#/help" style={{ color: 'var(--accent)' }}>What's a RiskKey?</a>
-          </span>
-        </div>
-        {entries.length === 0 ? (
-          <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-            No tracked clients yet — drive some traffic to populate the table.
-          </div>
-        ) : (
-          <table className="tbl tbl-compact">
-            <thead>
-              <tr>
-                <th style={{ width: 140 }}>IP</th>
-                <th style={{ width: 110 }}>device_fp</th>
-                <th style={{ width: 110 }}>session</th>
-                <th style={{ width: 60 }}>Score</th>
-                <th style={{ width: 70 }}>Strikes</th>
-                <th style={{ width: 80 }}>Level</th>
-                <th style={{ width: 90 }}>Idle</th>
-                <th style={{ width: 110 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {grouped.map((row, i) => {
-                const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
-                const levelColour =
-                  row.level === 'block' ? 'var(--down)'
-                  : row.level === 'challenge' ? 'var(--warn)'
-                  : 'var(--ink-dim)';
-                const dfShort = row.device_fp ? row.device_fp.slice(0, 8) : null;
-                const sessShort = row.session ? row.session.slice(0, 8) : null;
-                return (
-                  <tr key={`${id}-${i}`}>
-                    <td className="mono">{row.ip}</td>
-                    <td
-                      className="mono dim"
-                      title={row.device_fp || 'no TLS fingerprint (plain HTTP)'}
-                    >
-                      {dfShort ? `${dfShort}…` : <span style={{ opacity: 0.5 }}>—</span>}
-                    </td>
-                    <td
-                      className="mono dim"
-                      title={row.session || 'no session cookie'}
-                    >
-                      {sessShort ? `${sessShort}…` : <span style={{ opacity: 0.5 }}>—</span>}
-                    </td>
-                    <td className="num">{row.score}</td>
-                    <td className="num">{row.strikes}</td>
-                    <td>
-                      <span
-                        className="pill"
-                        style={{ color: levelColour, border: `1px solid ${levelColour}` }}
-                      >
-                        {row.strike_blocked ? '🔒 ' : ''}
-                        {row.level}
-                      </span>
-                    </td>
-                    <td className="dim">{row.idle_seconds}s</td>
-                    <td>
-                      {collapseByIp ? (
-                        <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>
-                          {row._bucket_count} bucket{row._bucket_count === 1 ? '' : 's'}
-                        </span>
-                      ) : (
-                        <button
-                          className="btn btn-sm"
-                          onClick={() => surgicalReset(row)}
-                          disabled={resetBusy === id}
-                          title="POST /api/risk/reset_key — wipes exactly this composite-key bucket; siblings on the same IP keep their state."
-                        >
-                          {resetBusy === id ? '…' : 'Reset bucket'}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-        <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 8 }}>
-          IP-only reset (wipe every bucket sharing an IP) still available via{' '}
-          <code>PUT /api/risk/&lt;ip&gt;/reset</code>; this card uses the
-          {' '}<code>POST /api/risk/reset_key</code> surgical variant.
-        </div>
+      {/* 2026-05-19 — per-bucket scores moved to the Top Attackers
+          page as a "Composite RiskKey view" toggle so operators
+          have one mental model for "who's worth investigating". */}
+      <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <window.I.Shield />
+        <span>Looking for per-bucket risk scores (one row per IP / device_fp / session)?</span>
+        <a href="#/top-attackers?view=riskkey" style={{ color: 'var(--accent)', fontWeight: 600 }}>Top Attackers → Composite RiskKey view</a>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -10700,6 +10514,21 @@ const TOP_ATTACKERS_WINDOWS = {
 
 function PageTopAttackers() {
   const [win, setWin] = useStateP('1h');
+  // 2026-05-19 — two view modes share the same page so operators
+  // have one mental model for "who's worth investigating". The
+  // legacy `identifier` view consumes /api/attacks/top
+  // (AttacksAggregator, keyed by IP / fp:<ja4> / etc.); the new
+  // `riskkey` view consumes /api/risk (RiskTracker per-bucket
+  // scores, one row per composite RiskKey). Deep-link via
+  // `#/top-attackers?view=riskkey`.
+  const [view, setView] = useStateP(() => {
+    try {
+      const q = (location.hash.split('?')[1] || '').split('&');
+      const v = q.find(s => s.startsWith('view='));
+      if (v && v.slice(5) === 'riskkey') return 'riskkey';
+    } catch (_) { /* ignore */ }
+    return 'identifier';
+  });
   const windowSeconds = TOP_ATTACKERS_WINDOWS[win] ?? 3600;
   const top = window.useApi
     ? window.useApi(
@@ -10707,9 +10536,96 @@ function PageTopAttackers() {
         { intervalMs: 5000, fallback: null },
       )
     : { data: null };
+  const risk = window.useApi
+    ? window.useApi(
+        '/api/risk?limit=50',
+        { intervalMs: 5000, fallback: null },
+      )
+    : { data: null };
   const attackers = top.data?.attackers ?? [];
+  const buckets = risk.data?.clients ?? [];
   const geoLoaded = top.data?.geoip_loaded === true;
   const [busyId, setBusyId] = useStateP(null);
+  const [collapseByIp, setCollapseByIp] = useStateP(false);
+  const [resetBusy, setResetBusy] = useStateP(null);
+
+  // Keep the URL in sync with the active view so a refresh or
+  // bookmark survives the choice. Only touches the query portion
+  // of the route hash; the path stays /top-attackers.
+  useEffectP(() => {
+    const target = view === 'riskkey' ? '?view=riskkey' : '';
+    const cur = location.hash || '#/top-attackers';
+    const [pathPart] = cur.split('?');
+    const next = `${pathPart}${target}`;
+    if (cur !== next) {
+      history.replaceState(null, '', next);
+    }
+  }, [view]);
+
+  async function surgicalReset(row) {
+    const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
+    setResetBusy(id);
+    try {
+      const r = await fetch('/api/risk/reset_key', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'content-type': 'application/json',
+          'x-csrf-token': window.getCsrfToken ? window.getCsrfToken() : '',
+        },
+        body: JSON.stringify({
+          ip: row.ip,
+          device_fp: row.device_fp ?? null,
+          session: row.session ?? null,
+        }),
+      });
+      if (r.ok) {
+        window.aegisToast(`Reset bucket ${id}`, 'ok');
+        risk.reload && risk.reload();
+      } else {
+        const body = await r.json().catch(() => ({}));
+        window.aegisToast(
+          `Reset failed: ${body.message || body.reason || `status ${r.status}`}`,
+          'err',
+        );
+      }
+    } catch (e) {
+      window.aegisToast(`Reset error: ${e.message || e}`, 'err');
+    } finally {
+      setResetBusy(null);
+    }
+  }
+
+  // RiskKey-view "Group by IP" — collapses composite rows
+  // sharing an IP into one summary row. Useful when an operator
+  // just wants the legacy IP-keyed read of the same data.
+  const groupedBuckets = collapseByIp
+    ? Object.values(
+        buckets.reduce((acc, row) => {
+          if (!acc[row.ip]) {
+            acc[row.ip] = {
+              ip: row.ip,
+              device_fp: null,
+              session: null,
+              score: 0,
+              strikes: 0,
+              idle_seconds: row.idle_seconds,
+              level: row.level,
+              strike_blocked: row.strike_blocked,
+              _bucket_count: 0,
+            };
+          }
+          const g = acc[row.ip];
+          g.score = Math.max(g.score, row.score || 0);
+          g.strikes = Math.max(g.strikes, row.strikes || 0);
+          g.idle_seconds = Math.min(g.idle_seconds, row.idle_seconds);
+          if (row.level === 'block' || g.level !== 'block') g.level = row.level;
+          if (row.strike_blocked) g.strike_blocked = true;
+          g._bucket_count += 1;
+          return acc;
+        }, {}),
+      )
+    : buckets;
 
   async function blockAttacker(identifier) {
     if (!identifier) return;
@@ -10751,31 +10667,85 @@ function PageTopAttackers() {
           <h1 className="page-title">
             Top Attackers
             <window.PageTitleRefresh
-              onClick={() => top.reload && top.reload()}
+              onClick={() => {
+                if (view === 'riskkey') risk.reload && risk.reload();
+                else top.reload && top.reload();
+              }}
               label="Refresh top attackers"
             />
           </h1>
           <p className="page-subtitle">
-            Ranked by hits in the last {win} · pivot or block in one click
-            {geoLoaded ? '' : ' · GeoIP DB not loaded — country / ASN columns will be empty until make geoip-link runs'}
+            {view === 'identifier' ? (
+              <>
+                Ranked by hits in the last {win} · pivot or block in one click
+                {geoLoaded ? '' : ' · GeoIP DB not loaded — country / ASN columns will be empty until make geoip-link runs'}
+              </>
+            ) : (
+              <>
+                One row per composite RiskKey ({'{'}IP, device_fp, session{'}'}) · live from <code>/api/risk</code>
+                {' '}· surgical reset wipes exactly one bucket
+              </>
+            )}
           </p>
         </div>
-        <div className="page-actions">
-          <select
-            className="input select"
-            value={win}
-            onChange={e => setWin(e.target.value)}
-            style={{ width: 90 }}
-          >
-            {Object.keys(TOP_ATTACKERS_WINDOWS).map(v => <option key={v}>{v}</option>)}
-          </select>
+        <div className="page-actions" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* 2026-05-19 — view toggle. Identifier view consumes
+              the AttacksAggregator (keyed by IP / fp:<ja4>); the
+              Composite RiskKey view consumes the RiskTracker
+              top-N. Deep-linkable via ?view=riskkey. */}
+          <div role="tablist" style={{ display: 'inline-flex', border: '1px solid var(--hairline)', borderRadius: 6, overflow: 'hidden' }}>
+            <button
+              role="tab"
+              aria-selected={view === 'identifier'}
+              className="btn btn-sm"
+              onClick={() => setView('identifier')}
+              style={{
+                background: view === 'identifier' ? 'var(--surface-2)' : 'transparent',
+                color: view === 'identifier' ? 'var(--ink)' : 'var(--ink-dim)',
+                border: 'none',
+                borderRadius: 0,
+                fontWeight: view === 'identifier' ? 600 : 400,
+              }}
+              title="AttacksAggregator — one row per IP / fp:<ja4> with hits, country, ASN, blocking detectors"
+            >
+              Identifier view
+            </button>
+            <button
+              role="tab"
+              aria-selected={view === 'riskkey'}
+              className="btn btn-sm"
+              onClick={() => setView('riskkey')}
+              style={{
+                background: view === 'riskkey' ? 'var(--surface-2)' : 'transparent',
+                color: view === 'riskkey' ? 'var(--ink)' : 'var(--ink-dim)',
+                border: 'none',
+                borderRadius: 0,
+                fontWeight: view === 'riskkey' ? 600 : 400,
+              }}
+              title="RiskTracker — one row per composite RiskKey {ip, device_fp?, session?} with score, strikes, level"
+            >
+              Composite RiskKey view
+            </button>
+          </div>
+          {view === 'identifier' && (
+            <select
+              className="input select"
+              value={win}
+              onChange={e => setWin(e.target.value)}
+              style={{ width: 90 }}
+              title="Time window (Identifier view only — RiskKey view is always live)"
+            >
+              {Object.keys(TOP_ATTACKERS_WINDOWS).map(v => <option key={v}>{v}</option>)}
+            </select>
+          )}
         </div>
       </div>
 
-      {/* Empty state: lead with the same "what you'll see here"
-          framing the Threat-Intel page uses, so a fresh boot
-          isn't visually broken. */}
-      {attackers.length === 0 ? (
+      {view === 'identifier' ? (
+        /* Identifier view (legacy) — AttacksAggregator: one row
+           per IP / fp:<ja4> ranked by hits in the time window.
+           Same shape and copy as before this refactor. */
+        attackers.length === 0 ? (
         <div className="card" style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
           {top.data === null ? (
             <>Loading top attackers…</>
@@ -10861,6 +10831,125 @@ function PageTopAttackers() {
               })}
             </tbody>
           </table>
+        </div>
+      )
+      ) : (
+        /* 2026-05-19 — Composite RiskKey view. Reads /api/risk
+           (RiskTracker top-N). One row per
+           {ip, device_fp?, session?} bucket; per-row surgical
+           reset wipes exactly one bucket. */
+        <div className="card" style={{ padding: 16 }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={collapseByIp}
+                onChange={e => setCollapseByIp(e.target.checked)}
+              />
+              <span>Group by IP</span>
+              <span style={{ color: 'var(--ink-dim)' }}>
+                (collapses composite-key rows into one summary row per IP)
+              </span>
+            </label>
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+              {buckets.length} bucket{buckets.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          {buckets.length === 0 ? (
+            <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+              {risk.data === null
+                ? 'Loading risk buckets…'
+                : 'No tracked clients yet — drive some traffic to populate the table.'}
+            </div>
+          ) : (
+            <table className="tbl tbl-compact">
+              <thead>
+                <tr>
+                  <th style={{ width: 140 }}>IP</th>
+                  <th style={{ width: 110 }}>device_fp</th>
+                  <th style={{ width: 110 }}>session</th>
+                  <th style={{ width: 60 }}>Score</th>
+                  <th style={{ width: 70 }}>Strikes</th>
+                  <th style={{ width: 80 }}>Level</th>
+                  <th style={{ width: 90 }}>Idle</th>
+                  <th style={{ width: 130 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupedBuckets.map((row, i) => {
+                  const id = `${row.ip}|${row.device_fp ?? ''}|${row.session ?? ''}`;
+                  const levelColour =
+                    row.level === 'block' ? 'var(--down)'
+                    : row.level === 'challenge' ? 'var(--warn)'
+                    : 'var(--ink-dim)';
+                  const dfShort = row.device_fp ? row.device_fp.slice(0, 8) : null;
+                  const sessShort = row.session ? row.session.slice(0, 8) : null;
+                  return (
+                    <tr key={`${id}-${i}`}>
+                      <td className="mono">
+                        <a
+                          href={`#/investigation?pivot=${encodeURIComponent(row.ip)}&kind=ip`}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            location.hash = `/investigation?pivot=${encodeURIComponent(row.ip)}&kind=ip`;
+                          }}
+                          style={{ color: 'var(--accent)', cursor: 'pointer' }}
+                          title={`Pivot Investigation on ${row.ip}`}
+                        >{row.ip}</a>
+                      </td>
+                      <td
+                        className="mono dim"
+                        title={row.device_fp || 'no TLS fingerprint (plain HTTP)'}
+                      >
+                        {dfShort ? `${dfShort}…` : <span style={{ opacity: 0.5 }}>—</span>}
+                      </td>
+                      <td
+                        className="mono dim"
+                        title={row.session || 'no session cookie'}
+                      >
+                        {sessShort ? `${sessShort}…` : <span style={{ opacity: 0.5 }}>—</span>}
+                      </td>
+                      <td className="num">{row.score}</td>
+                      <td className="num">{row.strikes}</td>
+                      <td>
+                        <span
+                          className="pill"
+                          style={{ color: levelColour, border: `1px solid ${levelColour}` }}
+                        >
+                          {row.strike_blocked ? '🔒 ' : ''}
+                          {row.level}
+                        </span>
+                      </td>
+                      <td className="dim">{row.idle_seconds}s</td>
+                      <td>
+                        {collapseByIp ? (
+                          <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>
+                            {row._bucket_count} bucket{row._bucket_count === 1 ? '' : 's'}
+                          </span>
+                        ) : (
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => surgicalReset(row)}
+                            disabled={resetBusy === id}
+                            title="POST /api/risk/reset_key — wipes exactly this composite-key bucket; siblings on the same IP keep their state."
+                          >
+                            {resetBusy === id ? '…' : 'Reset bucket'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 8 }}>
+            IP-only reset (wipe every bucket sharing an IP) still
+            available via <code>PUT /api/risk/&lt;ip&gt;/reset</code>;
+            this view uses the <code>POST /api/risk/reset_key</code>{' '}
+            surgical variant.
+          </div>
         </div>
       )}
 

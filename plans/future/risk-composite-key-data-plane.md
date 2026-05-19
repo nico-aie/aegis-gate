@@ -159,7 +159,7 @@ resets. That's an additive endpoint, no breaking change.
 | `IpRateLimiter` data-plane swap | ✅ done (`data_plane.rs:498` uses `consume_with_key`) |
 | `RiskSnapshot` wire-shape extension | ✅ done (additive `device_fp` + `session` Option fields) |
 | `top()` populator for new fields | ✅ done (`tracker.rs::top` now stamps both axes) |
-| Dashboard Top risk buckets card | ✅ done (`pages.jsx::TopRiskBucketsCard` on Traffic Gates page; "Group by IP" toggle + per-row surgical reset button) |
+| Dashboard "Composite RiskKey" view on Top Attackers | ✅ done — Top Attackers page gets a two-tab toggle (Identifier view / Composite RiskKey view); deep-linkable via `#/top-attackers?view=riskkey`. "Group by IP" collapse toggle + per-row surgical reset button live on the new view. The earlier Traffic Gates card was replaced with a one-line breadcrumb pointing operators at the unified surface. |
 | Surgical reset endpoint | ✅ done (`POST /api/risk/reset_key`, audit-mutated) |
 
 ## Sizing (remaining work)
