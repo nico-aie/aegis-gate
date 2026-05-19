@@ -1216,6 +1216,31 @@ pub(crate) async fn accept_loop(
                         .map(|p| p.as_str())
                         .unwrap_or_else(|| req.uri().path())
                         .to_string();
+                    // v2.5 contract §4 — challenge verify is the
+                    // benchmarker-facing public endpoint (different
+                    // from the local-only control plane). Mount on
+                    // the data plane so the external benchmarker
+                    // can POST solutions without an SSH tunnel.
+                    // No admin auth, no loopback gate; the PoW MAC
+                    // + single-use nonce store provide the security.
+                    if method == hyper::Method::POST && path.split('?').next() == Some("/challenge/verify") {
+                        let resp = crate::admin_dispatch::handle_challenge_verify(
+                            req,
+                            upstream_ctx.pow_issuer.get(),
+                            Some(&state_backend_for_interop),
+                        ).await;
+                        let resp = crate::admin_dispatch::stamp_interop_response(
+                            resp,
+                            aegis_control::interop::headers::DecisionTag::allow(),
+                            interop.as_ref(),
+                            peer,
+                            &method,
+                            &path,
+                            0,
+                            request_start,
+                        );
+                        return Ok::<_, Infallible>(resp);
+                    }
                     // 2026-05-19 committee deployment contract:
                     // /__waf_control/* MUST bind local-only on the
                     // team's server (benchmarker SSH-tunnels in and
@@ -1234,16 +1259,13 @@ pub(crate) async fn accept_loop(
                     // committee's final-round guidance overrides that.
                     if should_dispatch_data_plane_control(&path, &peer) {
                         if let Some(rt) = interop.as_ref() {
-                            // NEW-2 (2026-05-08) — pass through
-                            // the PoW issuer + state backend so
-                            // /__waf_control/challenge_verify can
-                            // validate solutions. Both are
-                            // installed once at boot from run.rs.
+                            // v2.5 (2026-05-19) — challenge_verify
+                            // is no longer on /__waf_control/*; it
+                            // moved to the public /challenge/verify
+                            // data-plane mount above this branch.
                             let resp = crate::admin_dispatch::handle_interop_control_with_rt(
                                 req,
                                 rt.as_ref(),
-                                upstream_ctx.pow_issuer.get(),
-                                Some(&state_backend_for_interop),
                             ).await;
                             // F-CRITICAL-001 (2026-05-17 s-tester
                             // audit): control-endpoint responses

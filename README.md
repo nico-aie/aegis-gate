@@ -197,6 +197,24 @@ Open <https://127.0.0.1:9443/> · login `admin` / `aegis-test-1234`.
 > generation, real-upstream wiring, troubleshooting): →
 > [`QUICKSTART.md`](QUICKSTART.md).
 
+### Hackathon submission deploy (v2.5 contract)
+
+The OC contract expects the binary at `./waf` and the config at
+`./waf.yaml` in the working directory. **Before judging, run
+both steps** — `cargo run` alone will not satisfy the contract.
+
+```sh
+make build && make stage   # creates ./waf symlink + ./waf.yaml
+./waf run                   # boots against prod-balanced profile
+```
+
+Key submission docs:
+- [`SUBMISSION_GUIDE.md`](SUBMISSION_GUIDE.md) — per-feature workflow per §3 candidate briefing.
+- [`deploy/STAGING-BENCHMARK.md`](deploy/STAGING-BENCHMARK.md) — three-host benchmarker topology + SSH tunnel for `/__waf_control/*`.
+- `config/profiles/prod-balanced.yaml` — staged config; ships
+  `interop.audit_path: ./waf_audit.log`,
+  `interop.control_secret: waf-hackathon-2026-ctrl`.
+
 ### Dashboard JSX workflow
 
 The dashboard is a pre-compiled `app.js` embedded into the

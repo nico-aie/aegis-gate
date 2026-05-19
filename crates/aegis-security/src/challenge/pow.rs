@@ -80,6 +80,46 @@ pub struct PowChallenge {
     pub mac: String,
 }
 
+impl PowChallenge {
+    /// 2026-05-19 v2.5 contract §4 — encode (nonce, difficulty,
+    /// expires_at_ms, mac) into a single opaque `challenge_token`
+    /// string that the benchmarker echoes back on verify. Dot-
+    /// separated because nonce/mac are hex and the other fields
+    /// are digits, so no field can contain a dot.
+    pub fn challenge_token(&self) -> String {
+        format!(
+            "{}.{}.{}.{}",
+            self.nonce, self.difficulty, self.expires_at_ms, self.mac
+        )
+    }
+
+    /// Reverse of [`Self::challenge_token`]. Returns `None` when
+    /// the input is malformed.
+    pub fn unpack_token(token: &str) -> Option<UnpackedToken> {
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts.len() != 4 {
+            return None;
+        }
+        let difficulty: u8 = parts[1].parse().ok()?;
+        let expires_at_ms: i64 = parts[2].parse().ok()?;
+        Some(UnpackedToken {
+            nonce: parts[0].to_string(),
+            difficulty,
+            expires_at_ms,
+            mac: parts[3].to_string(),
+        })
+    }
+}
+
+/// Fields unpacked from a `challenge_token`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnpackedToken {
+    pub nonce: String,
+    pub difficulty: u8,
+    pub expires_at_ms: i64,
+    pub mac: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum PowError {
     /// MAC didn't match — body was tampered with or issuer key
@@ -295,6 +335,30 @@ mod tests {
         assert_eq!(c.nonce.len(), 32);
         assert_eq!(c.mac.len(), 64); // blake3 keyed digest hex
         assert!(c.expires_at_ms > now_ms());
+    }
+
+    #[test]
+    fn challenge_token_roundtrips() {
+        // v2.5 §4 wire-shape regression. The opaque challenge_token
+        // packs (nonce, difficulty, expires_at_ms, mac); benchmarker
+        // echoes it back unchanged on verify.
+        let issuer = issuer();
+        let c = issuer.issue();
+        let token = c.challenge_token();
+        let u = PowChallenge::unpack_token(&token).expect("token unpacks");
+        assert_eq!(u.nonce, c.nonce);
+        assert_eq!(u.difficulty, c.difficulty);
+        assert_eq!(u.expires_at_ms, c.expires_at_ms);
+        assert_eq!(u.mac, c.mac);
+    }
+
+    #[test]
+    fn challenge_token_rejects_malformed_inputs() {
+        assert!(PowChallenge::unpack_token("").is_none());
+        assert!(PowChallenge::unpack_token("only.three.fields").is_none());
+        assert!(PowChallenge::unpack_token("nonce.NaN.1234.mac").is_none());
+        // Extra trailing field → rejected (token shape is exactly 4).
+        assert!(PowChallenge::unpack_token("a.8.123.mac.extra").is_none());
     }
 
     #[tokio::test]

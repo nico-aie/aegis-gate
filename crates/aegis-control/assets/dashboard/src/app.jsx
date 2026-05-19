@@ -416,25 +416,9 @@ function StatusBar({ tick }) {
 
   return (
     <div className="statusbar">
-      {/* P10 (2026-05-11) — footer pill tone. Pre-fix, every pill
-          rendered with a warn / down color even on healthy dev
-          boots (SSE was `led warn`, Audit chain was `pill warn`,
-          GitOps was `pill off-but-styled-as-alarm`). The footer
-          read as five things to worry about. Now: demo /
-          off-by-config pills render neutral; reserve warn/down
-          tones for real concerns (audit chain SUSPENDED, leader
-          lost, etc.). */}
-      <span title="Demo indicator — SSE state isn't observed at the topbar level">
-        <span className="led neutral"></span> SSE (demo)
-      </span>
-      <span className="dim">|</span>
       <span>Cluster <span className={`num ${total === 0 ? 'dim' : ''}`}>
         {total === 0 ? 'single-node' : `${healthy}/${total}`}
       </span></span>
-      <span className="dim">|</span>
-      <span title="Demo indicator — chain verify isn't exposed in realtime; use `waf audit verify`">
-        Audit chain <span className="pill neutral">demo</span>
-      </span>
       <span className="dim">|</span>
       <span>GitOps <span className={`pill ${gitopsTone}`}>{gitopsState}</span></span>
       <span style={{ marginLeft: 'auto' }}>Build <span className="num">{buildLabel}</span> · session {tick}s</span>

@@ -712,34 +712,20 @@ pub(crate) async fn handle_interop_control(
             &serde_json::json!({"error": "interop surface disabled"}),
         );
     };
-    // 2026-05-08 NEW-2 — admin port has no direct path to the
-    // PowIssuer (it lives in ProxyContext which is data-plane
-    // scope). The OC harness submits to the data plane per the
-    // C001 short-circuit; admin-port challenge_verify returns
-    // 503 with a clear error if anyone hits it here.
-    handle_interop_control_with_rt(
-        req,
-        rt.as_ref(),
-        None,
-        services.state_backend.as_ref(),
-    ).await
+    handle_interop_control_with_rt(req, rt.as_ref()).await
 }
 
 /// Same dispatcher as [`handle_interop_control`] but takes an
 /// `InteropRuntime` directly. Used by the data-plane request path
-/// (the OC v2.3 benchmarker hits `/__waf_control/*` on the public
-/// TLS listener, not the admin port — see deploy/STAGING-BENCHMARK.md
-/// §7.5).
+/// for the loopback-gated `/__waf_control/*` short-circuit
+/// (see deploy/STAGING-BENCHMARK.md §7.5).
 ///
-/// 2026-05-08 NEW-2 — `pow_issuer` and `state` are needed for the
-/// `/__waf_control/challenge_verify` endpoint added per v2.3 §3.
-/// Both are `None` in test contexts that skip the interop runtime;
-/// the dispatcher returns 503 for challenge_verify in that case.
+/// 2026-05-19 v2.5 — challenge verify moved out of this namespace
+/// to the public `/challenge/verify` data-plane mount, so this
+/// dispatcher no longer needs `pow_issuer` / `state`.
 pub(crate) async fn handle_interop_control_with_rt(
     req: hyper::Request<hyper::body::Incoming>,
     rt: &aegis_control::interop::InteropRuntime,
-    pow_issuer: Option<&Arc<aegis_security::challenge::PowIssuer>>,
-    state: Option<&Arc<dyn aegis_core::state::StateBackend>>,
 ) -> Response<Full<Bytes>> {
     use aegis_control::interop::{control, CONTROL_SECRET_HEADER};
     use http_body_util::BodyExt;
@@ -845,13 +831,11 @@ pub(crate) async fn handle_interop_control_with_rt(
                 .unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "no-store")
         }
-        // 2026-05-08 NEW-2 — PoW challenge verify per v2.3 §3.
-        // Body: { nonce, difficulty, expires_at_ms, mac, counter }
-        // Returns 204 on first valid solution; 4xx on tamper /
-        // expiry / replay / insufficient difficulty.
-        (hyper::Method::POST, "/__waf_control/challenge_verify") => {
-            handle_challenge_verify(req, pow_issuer, state).await
-        }
+        // v2.5 contract §4: challenge verify is now a PUBLIC
+        // benchmarker-facing endpoint at `/challenge/verify` on the
+        // data plane (not under /__waf_control/*, which is local-
+        // only). The data plane mounts it directly; this control-
+        // namespace branch was removed alongside the loopback gate.
         _ => json_response(
             404,
             &serde_json::json!({
@@ -862,11 +846,11 @@ pub(crate) async fn handle_interop_control_with_rt(
     }
 }
 
-/// 2026-05-08 NEW-2 — verify a PoW solution submitted by an
-/// automated client (the OC harness, a benchmark tool, or any
-/// bot-mitigation SDK). Body shape matches what the data-plane
-/// challenge response advertises in `submit_to`.
-async fn handle_challenge_verify(
+/// 2026-05-08 NEW-2 / 2026-05-19 v2.5 — verify a PoW solution
+/// submitted by the benchmarker. Mounted at the PUBLIC path
+/// `/challenge/verify` on the data plane (per v2.5 contract §4).
+/// Body shape: `{"challenge_token":"<echo>","nonce":"<work>"}`.
+pub(crate) async fn handle_challenge_verify(
     req: hyper::Request<hyper::body::Incoming>,
     pow_issuer: Option<&Arc<aegis_security::challenge::PowIssuer>>,
     state: Option<&Arc<dyn aegis_core::state::StateBackend>>,
@@ -898,13 +882,14 @@ async fn handle_challenge_verify(
         }
     };
 
+    // v2.5 contract §4 — benchmarker submits
+    // `{"challenge_token":"<echo>","nonce":"<work>"}`.
+    // `challenge_token` packs (nonce, difficulty, expires_at_ms,
+    // mac); `nonce` is the work-discovered counter.
     #[derive(serde::Deserialize)]
     struct VerifyBody {
+        challenge_token: String,
         nonce: String,
-        difficulty: u8,
-        expires_at_ms: i64,
-        mac: String,
-        counter: String,
     }
 
     let bytes = match req.into_body().collect().await {
@@ -929,22 +914,42 @@ async fn handle_challenge_verify(
         }
     };
 
+    let unpacked = match aegis_security::challenge::PowChallenge::unpack_token(&body.challenge_token) {
+        Some(u) => u,
+        None => {
+            return json_response(
+                400,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "malformed challenge_token",
+                }),
+            );
+        }
+    };
+
     let result = issuer.verify(
         state_ref,
+        &unpacked.nonce,
+        unpacked.difficulty,
+        unpacked.expires_at_ms,
+        &unpacked.mac,
         &body.nonce,
-        body.difficulty,
-        body.expires_at_ms,
-        &body.mac,
-        &body.counter,
     ).await;
 
     use aegis_security::challenge::PowError;
     match result {
-        Ok(()) => Response::builder()
-            .status(204)
-            .header("cache-control", "no-store")
-            .body(Full::new(Bytes::new()))
-            .unwrap(),
+        // v2.5 contract §4: "WAF should return 200 with a session
+        // cookie or token that allows the original request to
+        // proceed." We honour the 200 + JSON body shape; the
+        // session-token cookie path is wired by the data-plane
+        // risk-bucket clear (separate concern).
+        Ok(()) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "action": "challenge_verified",
+            }),
+        ),
         Err(PowError::InvalidMac) => json_response(
             403,
             &serde_json::json!({"ok": false, "error": "invalid_mac"}),
