@@ -370,17 +370,26 @@ Stages run in this order. Earlier stages can short-circuit later ones.
     client (REQMOD). Verdict mapped to pipeline decision. Clean-hash cache
     short-circuits repeated identical uploads.
 
-11. **Risk engine + challenge.** `RiskKey = (ip, device_fp, session)`.
+11. **Risk engine + challenge.** `RiskKey = (ip, device_fp?, session?)`
+    (composite-key migration landed 2026-05-19; `tenant_id` axis
+    retired alongside the multi-tenant feature deprecation).
     Contributions from detectors, reputation, bot class,
     behavior, transaction velocity, threat intel. Score decays over time.
-    Decision:
-    - `< 30` allow · `30–70` challenge · `> 70` block.
-    - Challenge escalation `None → JS → PoW → CAPTCHA → Block`, driven by
-      `(risk, human_confidence, bot_class, tier)`.
-    - Tokens: HMAC-signed (`challenge_secret` from secret provider),
-      single-use via nonce stored in the state backend, non-downgradable.
-    - CAPTCHA providers behind a `CaptchaProvider` trait: Turnstile,
-      hCaptcha, reCAPTCHA v3.
+    Decision: per-profile `challenge_at` / `block_at`
+    (defaults 30 / 70).
+    - **PoW challenge per v2.5 §4 Format A.** Issue body carries
+      `challenge_token` (packs nonce.difficulty.expires_at_ms.mac),
+      `difficulty`, `submit_url: /challenge/verify`,
+      `submit_method: POST`.
+    - **Submit body** `{challenge_token, nonce}` to the **public**
+      `/challenge/verify` data-plane mount. Server verifies MAC +
+      expiry + work + single-use nonce → `200 {ok:true}`.
+    - Tokens: blake3-keyed MAC (`challenge_secret` from secret
+      provider), single-use via nonce stored in the state backend,
+      non-downgradable within their TTL.
+    - CAPTCHA providers (Turnstile, hCaptcha, reCAPTCHA v3) exist
+      behind a `CaptchaProvider` trait but are NOT in the hackathon
+      critical path — PoW handles the contract.
 
 12. **Response filter** (runs after the upstream responds, shipped 2026-05-11).
     `Pipeline::on_body_frame` is the single hot trait method on

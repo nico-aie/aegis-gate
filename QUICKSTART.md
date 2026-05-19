@@ -175,10 +175,10 @@ make obs-down    # tear down
 
 ---
 
-## 8 · Drive the v2.3 benchmark contract locally
+## 8 · Drive the v2.5 benchmark contract locally
 
-The dev profile already satisfies the OC's [v2.3 interop
-contract](Hackathon_Doc/EN_waf_interop_contract_v2.3.md) — same surface
+The dev profile already satisfies the OC's [v2.5 interop
+contract](Hackathon_Doc/EN_waf_interop_contract_v2.5.md) — same surface
 as staging, just on `127.0.0.1` instead of a public host. One command
 boots dev and announces the contract endpoints:
 
@@ -189,12 +189,20 @@ make bench-dev
 This is a `make run-dev` superset that additionally:
 
 - Symlinks `./waf -> target/release/waf` and copies `config/dev.yaml`
-  to `./waf.yaml` (v2.3 §8 binary contract — config + binary in cwd)
+  to `./waf.yaml` (v2.5 §8 binary contract — config + binary in cwd)
 - Echoes the four `/__waf_control/*` endpoints + the
   `X-Benchmark-Secret` value (defaults to the contract's
   `waf-hackathon-2026-ctrl`; override via `AEGIS_BENCHMARK_SECRET`)
 - Hands off to `./waf run --config ./waf.yaml` so the OC harness
   invocation matches the staging shape
+
+> **v2.5 contract surface — two ports, two namespaces:**
+>
+> - `/__waf_control/*` is **loopback-only** on both the admin and
+>   data-plane mounts. Local curls work (you're already on
+>   loopback). External callers see 404 / login redirect.
+> - `/challenge/verify` is **public** on the data plane (so the
+>   external benchmarker can POST PoW solutions without a tunnel).
 
 ### Verify the contract end-to-end
 
@@ -220,10 +228,18 @@ curl -ski "$HOST/?q=1%27%20OR%20%271%27%3D%271" | grep -i '^x-waf-' | sort
 
 # 5. Audit chain shows the would-have-blocked event
 tail -1 ./waf_audit.log | jq '{action, rule_id, mode}'
+
+# 6. PoW challenge — drive a few more SQLi-shaped requests to trip
+#    the risk-challenge threshold, then read the 429 body for
+#    challenge_token + difficulty. Solve and POST:
+curl -sk -X POST -H 'content-type: application/json' \
+  -d '{"challenge_token":"<echo>","nonce":"<work>"}' \
+  "$HOST/challenge/verify"
+# Expected: 200 {"ok":true,"action":"challenge_verified"}
 ```
 
 Full conformance walkthrough — exactly the same flow staging uses:
-[`deploy/STAGING-BENCHMARK.md §7.5`](deploy/STAGING-BENCHMARK.md#75--v23-interop-contract-conformance).
+[`deploy/STAGING-BENCHMARK.md §7.5`](deploy/STAGING-BENCHMARK.md#75--v25-interop-contract-conformance).
 
 When you're done iterating, `Ctrl-C` to stop the WAF and
 `rm -f ./waf ./waf.yaml ./waf_audit.log` to clean the staged artifacts

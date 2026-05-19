@@ -8,7 +8,7 @@ specified in `docs/`". Each doc carries a one-line `> **Status:**`
 banner that mirrors a row here; the banner is generated from this
 table — keep them in sync.
 
-**As of:** 2026-05-03 (post HACK-T1..T5 + rollback v6 + MTLS-T7..T11 + TCP-T1..T6 CONNECT tunneling + FDP-T1..T6 binary-handover primitives + SWEEP-T tooling + AI-T design lock-in + geoip XFF + dashboard 3-state pill).
+**As of:** 2026-05-19 (post v2.5 interop contract — challenge wire shape, `/challenge/verify` public mount, loopback-gated `/__waf_control/*`, composite-key risk + IpRateLimiter data-plane wire-up, dashboard mockup sweep, prod-balanced.yaml judging-ready). Earlier baseline: HACK-T1..T5 + rollback v6 + MTLS-T7..T11 + TCP-T1..T6 + FDP-T1..T6 + AI-T + geoip XFF.
 
 > **Verify before relying on a row.** Codebase moves; before acting
 > on any "Implemented" claim, check the named module path. When
@@ -52,7 +52,7 @@ table — keep them in sync.
 | [`per-route-quotas.md`](../docs/data-plane/per-route-quotas.md) | **Implemented** | `aegis-proxy/src/quota.rs`. |
 | [`transformations-cors.md`](../docs/data-plane/transformations-cors.md) | **Implemented** | `aegis-proxy/src/transform/{cors,vars,mod}.rs`. |
 | [`service-discovery.md`](../docs/data-plane/service-discovery.md) | **Implemented** | B2 closed (T5..T7): `sd/mod.rs` (file + diff + churn) + feature-gated `consul` / `etcd` / `k8s` watchers. DNS SRV remains designed-only. |
-| [`smart-caching.md`](../docs/data-plane/smart-caching.md) | **Implemented** | `aegis-proxy/src/cache/mod.rs` — `TierCache`, vary-aware, max-age honored. |
+| [`smart-caching.md`](../docs/data-plane/smart-caching.md) | **Deferred** | TierCache removed 2026-05-11 (PROXY-08/09 — zero callers); `X-WAF-Cache` header still stamped as `BYPASS` per contract. Restoration spec: [`plans/future/smart-caching.md`](./future/smart-caching.md). |
 | [`adaptive-load-shedding.md`](../docs/data-plane/adaptive-load-shedding.md) | **Implemented** | `aegis-proxy/src/shed.rs` + `aegis-core/src/load_mode.rs` (P7). |
 | [`graceful-degradation.md`](../docs/data-plane/graceful-degradation.md) | **Implemented** | Circuit breaker (`upstream/circuit.rs`) + load shedder (`shed.rs`) + cache fallback. |
 
