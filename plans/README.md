@@ -44,6 +44,12 @@ context from scattered comments.
   5-min dedup, per-severity receiver routing, ack/silence
   history. Phase 1 (event router) ≈ 2d. **Drafted 2026-05-20,
   designed only.**
+- [`audit-log-disk-growth.md`](./future/audit-log-disk-growth.md) —
+  `./waf_audit.log` grows ~6 GB/min under a high-RPS attack flood
+  (soak-measured). Contract §6 forbids in-run rotation/truncation,
+  so the fix is disk-sizing guidance + boot disk guard + between-run
+  rotation tooling, NOT in-run rotation. **Drafted 2026-05-20,
+  designed only.**
 - [`smart-caching.md`](./future/smart-caching.md) — opt-in
   in-memory LRU response cache; flips `X-WAF-Cache: HIT/MISS`
   from the always-`BYPASS` baseline. Phase 1 (in-memory + GET
@@ -123,6 +129,10 @@ When picking up new work:
 
 ## Recent cleanups
 
+- 2026-05-20 — memory soak (73k RPS): fixed AttacksAggregator
+  count cap (`MAX_EVENTS`) in code; drafted
+  `future/audit-log-disk-growth.md` for the 9 GB/90s audit-log
+  growth (contract §6 forbids in-run rotation).
 - 2026-05-20 — drafted `future/alerts-refactor.md` (VipTalk-
   focused alert mechanism refactor: non-SLO event classes,
   rich chat payload + dedup, per-severity receiver routing,
