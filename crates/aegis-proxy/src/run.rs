@@ -1808,6 +1808,17 @@ pub(crate) fn build_interop_runtime(
                 // for `open_redirect` mode would return
                 // "unsupported" while the rule still fired.
                 "open_redirect".into(),
+                // 2026-05-20 (committee interop fix): the three
+                // Phase-F detectors fire AND block but were missing
+                // here, so the BTC could neither audit them via
+                // `capabilities` nor flip them enforce↔log_only via
+                // `set_profile` (they were hard-pinned to Enforce in
+                // `rule_to_feature`). velocity + behavior_signals
+                // emit dynamic per-rule tags but map to these single
+                // policy names via prefix in `rule_to_feature`.
+                "canary".into(),
+                "velocity".into(),
+                "behavior_signals".into(),
             ],
         },
     );
