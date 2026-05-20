@@ -236,6 +236,11 @@ pub(crate) async fn handle_data_request_inner(
     // the upstream-forward path (no decay) and stamps the score on
     // the allow response.
     let mut detected_under_threshold: Option<u32> = None;
+    // 2026-05-21 — comma-joined detector tags that fired but stayed
+    // under the tier block threshold. Attached to the forwarded
+    // `allow` decision so the listener-side audit records
+    // `fields.detectors` instead of `detectors: null`.
+    let mut detected_detectors: Option<String> = None;
 
     // Resolve the effective client IP: walk X-Forwarded-For
     // backwards through the trusted-proxy CIDR list and return
@@ -899,7 +904,18 @@ pub(crate) async fn handle_data_request_inner(
                 reason: reason.clone(),
                 client_ip: peer_ip.to_string(),
                 route_id: None,
-                rule_id: None,
+                // 2026-05-21 — populate the audit `rule_id` with the
+                // joined detector tags so it matches the
+                // `X-WAF-Rule-Id` response header (set from
+                // `DecisionTag::block(detector_rule)` below) and is
+                // queryable the same way as the allow-detected path.
+                // Was `None`, which left blocks with `rule_id: null`
+                // even though the header carried the tags.
+                rule_id: Some(if tags.is_empty() {
+                    "detectors".to_string()
+                } else {
+                    tags.join(",")
+                }),
                 risk_score: Some(post_state.score),
                 method: None,
                 path: None,
@@ -947,6 +963,10 @@ pub(crate) async fn handle_data_request_inner(
             // `allow` with the elevated X-WAF-Risk-Score so the
             // benchmarker still sees risk on the response.
             detected_under_threshold = Some(post_state.score);
+            // Carry the fired detector tags onto the allow decision so
+            // the audit log records them (otherwise the forwarded
+            // request logs as a plain allow with `detectors: null`).
+            detected_detectors = Some(tags.join(","));
         } else if detector_mode == aegis_control::interop::headers::Mode::LogOnly {
             log_only_intent = Some(block_tag);
             // Fall through — skip the 403 and the risk gate below
@@ -999,7 +1019,17 @@ pub(crate) async fn handle_data_request_inner(
         // detection (the log_only case stamps its own intent at the
         // tail).
         match detected_under_threshold {
-            Some(score) if log_only_intent.is_none() => (resp, tag.with_risk_score(score)),
+            Some(score) if log_only_intent.is_none() => {
+                let mut t = tag.with_risk_score(score);
+                // Label the forwarded `allow` with the fired detector
+                // tags so X-WAF-Rule-Id (stamped from `rule_id`) AND
+                // the audit `rule_id` both carry the detectors and
+                // match — even though the request was allowed.
+                if let Some(d) = detected_detectors.take() {
+                    t = t.with_rule_id(d);
+                }
+                (resp, t)
+            }
             _ => (resp, tag),
         }
     } else {
