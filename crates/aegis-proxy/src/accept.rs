@@ -1523,6 +1523,13 @@ pub(crate) async fn accept_loop(
                         // the data plane.
                         tier: decision.tier,
                         action: action.to_string().into(),
+                        // 2026-05-21 — for an under-threshold detection
+                        // the data plane sets `decision.rule_id` to the
+                        // fired detector tags on the forwarded `allow`
+                        // tag, so both this audit `rule_id` AND the
+                        // `X-WAF-Rule-Id` response header (stamped from
+                        // the same `decision.rule_id`) carry the
+                        // detectors and stay in lock-step.
                         reason: decision
                             .rule_id
                             .clone()

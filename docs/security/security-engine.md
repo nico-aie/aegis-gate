@@ -307,7 +307,9 @@ so the distinction matters.
 
 Sum of every signal that fired on **this single request**. Compared
 against the matched route's tier `risk_threshold` (critical 50 / high
-70 / medium 80 / low 90 by default) to decide block vs allow.
+70 / medium 70 / low 70 by default — medium/low lowered from 80/90 on
+2026-05-21 so a single clear exploit at score 70 blocks on every tier,
+not just critical+high) to decide block vs allow.
 
 **Where to edit:** the dashboard **Detectors page → Edit tier** modal
 (audit-mutated `PUT /api/tiers/{name}`). YAML equivalent in
@@ -479,24 +481,27 @@ Host: localhost:8080
 
 1. **Listener** parses the request.
 2. **Route table** matches `catch-all` (no host pin, prefix `/`).
-   Tier = `low` (threshold 90). Upstream = `stub-pool`.
+   Tier = `low` (threshold 70). Upstream = `stub-pool`.
 3. **Access gate**: source IP not blacklisted, not rate-limited.
    Strike score = 0. Pass.
 4. **Detector chain** runs all enabled detectors. The sqli detector's
    Aho-Corasick catches `OR '1'='1` plus the `'` opener — emits
    `Signal { tag: "sqli", score: 70 }`.
 5. **Rule engine** has no operator rule matching this URL. No-op.
-6. **Per-request tier gate** (Option B, 2026-05-20): the request's
-   summed detector score (`70`) is compared to the matched tier's
-   `risk_threshold`. For `low` that's **90 — 70 < 90, so the WAF does
-   NOT block per-request** (the request forwards upstream, reported
-   `allow` with `X-WAF-Risk-Score: 70`). The SAME request against a
-   route pinned `critical` (50) or `high` (70) **would** block, since
-   `70 ≥ 50` / `70 ≥ 70`. RCE-class hits (Log4Shell, XXE = 90) block
-   on every tier including `low`.
-7. **Audit + metrics**: `action: "allow"` (or "block" on a
-   critical/high-tier route), `fields.detectors: ["sqli"]`,
-   `fields.risk_score: 70`.
+6. **Per-request tier gate** (Option B, 2026-05-20; thresholds amended
+   2026-05-21): the request's summed detector score (`70`) is compared
+   to the matched tier's `risk_threshold`. For `low` that's now **70 —
+   `70 ≥ 70`, so the WAF BLOCKS** (403). All tiers default ≤ 70, so a
+   single clear exploit blocks regardless of path. RCE-class hits
+   (Log4Shell, XXE = 90) and canary (100) block with extra margin.
+   A weaker single signal (e.g. lone `recon` = 50) stays under 70, so
+   it forwards as `allow` — but the audit + `X-WAF-Rule-Id` still
+   record `recon` (see step 7).
+7. **Audit + metrics**: `action: "block"`, `rule_id: "sqli"`
+   (matches the `X-WAF-Rule-Id` header), `fields.detectors: ["sqli"]`,
+   `risk_score: 70`. For an under-threshold forward the action is
+   `allow` but `rule_id`/`X-WAF-Rule-Id` still carry the fired
+   detectors — the detection is never silent.
 8. **Cumulative IP risk score** climbs by `max(signal)` = 70 (the
    cumulative gate uses max per SEC-M003, not the per-request sum).
    Two more hits in 5 min

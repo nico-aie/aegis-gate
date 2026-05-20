@@ -86,12 +86,23 @@ impl Tier {
                 70,
                 100,
             ),
-            "medium" => (vec!["rate", "rules", "sqli", "xss"], 80, 1000),
+            // 2026-05-21 — medium/low `risk_threshold` lowered from
+            // 80/90 to 70 so a single clear exploit (sqli, xss,
+            // path_traversal, … = score 70) BLOCKS on every tier, not
+            // just critical+high. Pre-fix a textbook SQLi on a low/
+            // medium-tier path (`/`, `/static`, …) summed to 70 < 80/90
+            // and was forwarded to upstream (200) — a false negative
+            // the staging deploy + OC benchmark would fail on. Weaker
+            // signals (recon 25/50, oversize 30, AI fallback 60, …) stay
+            // below 70 and still accumulate before blocking, so the
+            // false-positive guard is intact. `block_threshold`
+            // (count-based) is unchanged.
+            "medium" => (vec!["rate", "rules", "sqli", "xss"], 70, 1000),
             // `low` is the most permissive tier. Anything unknown
             // also falls here defensively (validators reject unknown
             // names elsewhere, but `defaults_for` is also called
             // from the migration path for forward-compat).
-            _ => (vec!["rate", "rules"], 90, 10_000),
+            _ => (vec!["rate", "rules"], 70, 10_000),
         };
         Tier {
             name: name.into(),
@@ -254,6 +265,32 @@ mod tests {
     fn seed_names_match_canonical_tier_enum() {
         let s = TierStore::new();
         assert!(s.get("low").is_some(), "low row must exist");
+    }
+
+    /// 2026-05-21 regression — a single clear exploit scores 70
+    /// (`scores::sqli::SQLI` etc.); every tier's default
+    /// `risk_threshold` must be <= 70 so one such hit blocks on ANY
+    /// tier, not just critical+high. Pre-fix low/medium were 90/80,
+    /// so a textbook SQLi on `/` (low tier) summed to 70 < 90 and was
+    /// forwarded to upstream (200) — a false negative. Guards against
+    /// anyone bumping low/medium back above the clear-exploit score.
+    #[test]
+    fn default_thresholds_block_single_clear_exploit_on_every_tier() {
+        const CLEAR_EXPLOIT_SCORE: u32 = 70;
+        for name in ["critical", "high", "medium", "low"] {
+            let t = Tier::defaults_for(name);
+            assert!(
+                t.risk_threshold <= CLEAR_EXPLOIT_SCORE,
+                "{name} risk_threshold ({}) must be <= {CLEAR_EXPLOIT_SCORE} so a single \
+                 clear exploit blocks on this tier",
+                t.risk_threshold,
+            );
+        }
+        // Exact defaults after the 2026-05-21 calibration.
+        assert_eq!(Tier::defaults_for("critical").risk_threshold, 50);
+        assert_eq!(Tier::defaults_for("high").risk_threshold, 70);
+        assert_eq!(Tier::defaults_for("medium").risk_threshold, 70);
+        assert_eq!(Tier::defaults_for("low").risk_threshold, 70);
     }
 
     #[test]
