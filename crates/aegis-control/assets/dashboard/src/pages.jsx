@@ -1034,7 +1034,17 @@ function PageLiveFeed() {
                       <span className="dim mono" style={{ fontSize: 10 }}>http</span>
                     )}
                   </td>
-                  <td className="mono" style={{ color: 'var(--ink)' }}>{e.path}</td>
+                  <td
+                    className="mono"
+                    style={{
+                      color: 'var(--ink)',
+                      maxWidth: 320,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title={e.path}
+                  >{e.path}</td>
                   <td><span className="dim" style={{ fontSize: 11 }}>{e.region}</span></td>
                   <td><window.TierPill value={e.tier} /></td>
                   <td><window.RiskMeter value={e.risk} /></td>
