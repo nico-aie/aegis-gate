@@ -307,6 +307,13 @@ impl DdosRuntime {
     pub fn is_spike_active(&self) -> bool {
         self.detector.is_spike_active()
     }
+
+    /// 2026-05-20 — clear temporary spike-detection state on
+    /// `/__waf_control/reset_state`. Forwards to
+    /// [`DdosDetector::reset`]. Durable config is preserved.
+    pub fn reset(&self) {
+        self.detector.reset();
+    }
 }
 
 impl DdosDetector {
@@ -469,6 +476,21 @@ impl DdosDetector {
     pub fn baseline_rps(&self) -> u64 {
         self.baseline_rps.load(Ordering::Relaxed)
     }
+
+    /// 2026-05-20 — clear the temporary spike-detection state for
+    /// `/__waf_control/reset_state` (committee item 6, "temporary
+    /// enforcement state"). Resets `rolling_rps` + `spike_active`
+    /// to zero and `baseline_rps` to the cold-start default so the
+    /// next benchmark run re-warms from a clean slate. Config
+    /// (thresholds, enabled flag) is left intact — it's durable.
+    /// The per-IP sliding window + auto-block entries live in the
+    /// StateBackend and are cleared separately by
+    /// `StateBackend::reset_ephemeral`.
+    pub fn reset(&self) {
+        self.rolling_rps.store(0, Ordering::Relaxed);
+        self.spike_active.store(0, Ordering::Relaxed);
+        self.baseline_rps.store(100, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -623,6 +645,32 @@ mod tests {
         detector.rolling_rps.store(50, Ordering::Relaxed);
         detector.tick_rps();
         assert!(!detector.is_spike_active());
+    }
+
+    // 2026-05-20 — reset_state committee item 6. reset() must
+    // clear the temporary enforcement atomics but leave config
+    // (thresholds, enabled flag) intact.
+    #[test]
+    fn reset_clears_spike_state_but_preserves_config() {
+        let cfg = DdosConfig {
+            spike_multiplier: 2.0,
+            per_ip_limit: 4242,
+            ..Default::default()
+        };
+        let detector = DdosDetector::new(cfg);
+        detector.baseline_rps.store(900, Ordering::Relaxed);
+        detector.rolling_rps.store(5000, Ordering::Relaxed);
+        detector.tick_rps();
+        assert!(detector.is_spike_active(), "precondition: spike active");
+
+        detector.reset();
+
+        assert!(!detector.is_spike_active(), "spike_active should clear");
+        assert_eq!(detector.current_rps(), 0, "rolling_rps should clear");
+        assert_eq!(detector.baseline_rps(), 100, "baseline resets to cold-start");
+        // Durable config untouched.
+        assert_eq!(detector.config_snapshot().per_ip_limit, 4242);
+        assert_eq!(detector.config_snapshot().spike_multiplier, 2.0);
     }
 
     #[test]
