@@ -196,13 +196,40 @@ block on their own; they accumulate signals.
 | Template injection | `template_injection` | URL, body — Jinja2 / Twig / SpEL / Freemarker / Velocity / Handlebars |
 | NoSQL injection | `nosql_injection` | URL, body — MongoDB operator injection (`[$ne]`, `[$where]`, `"$gt":`) |
 | Open redirect | `open_redirect` | Query string — suspicious external URLs in redirect-style params (`?next=`, `?redirect_uri=`); allowlist via `cfg.detectors.open_redirect.allowed_domains` |
-| AI (optional) | `ai` | URL + body, run through ONNX classifier |
+| Canary | `canary` | URL path — operator-curated honeypot paths (`risk.canary_paths`, editable on the Settings page). Score 100. Default OFF. |
+| Velocity sequence | `velocity_*` | Cross-endpoint flow (login→withdrawal < 5 s, …) |
+| Behaviour signals | `behavior_*` | Missing UA / Referer on mutations / zero-depth first-touch |
+| AI (optional) | `ai` | URL + body, run through ONNX classifier — **short-circuit, see below** |
 
 Per-detector deep-dives in [`detectors/`](detectors/).
 
 The **detector mask** is the runtime gate. Flipping a class off (Detectors
 page → Edit row → Save) stops the WAF from running it on the next
 request. Audit-mutated, hot-swap, no restart.
+
+#### AI short-circuit (Base detectors win)
+
+The AI classifier is **deferred** to the end of the chain and runs
+**only when no Base-mask (signature) detector fired on this request**.
+The dispatcher (`run_all_filtered_timed` in
+`crates/aegis-security/src/detectors/mod.rs`) collects the signature
+detectors first; if any of them emitted a signal, it skips the AI
+detector entirely. Rationale:
+
+- **Fewer false positives.** A deterministic signature hit (sqli, xss,
+  …) is already high-confidence and carries its own calibrated score;
+  layering a probabilistic AI verdict on top only adds noise and the
+  risk of double-counting. The signature detectors are the
+  authoritative signal when they fire.
+- **Lower cost.** ONNX inference is the most expensive step in the
+  chain; skipping it on the (common) requests that a cheap regex
+  already flagged keeps the hot path fast.
+
+So AI is a **fallback for the long tail** — novel or obfuscated
+payloads that slip past every signature detector. When it does run and
+returns `attack`, it contributes score 60 as the sole detector signal.
+Toggling AI off (kill-switch or `set_profile`) removes it from the
+chain regardless of the short-circuit.
 
 ### Stage 5 — Rule engine
 

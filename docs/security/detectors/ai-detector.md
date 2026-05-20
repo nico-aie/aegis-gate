@@ -33,6 +33,20 @@ extra false positives. Compared to the old 11-class model on
 the same harness, FP rate dropped roughly **100×** (40.0 % →
 0.44 %).
 
+### Short-circuit: AI runs only when no Base detector fired
+
+AI is **deferred** to the end of the chain. The dispatcher
+(`run_all_filtered_timed`) runs the Base-mask signature detectors
+first and **skips AI entirely if any of them emitted a signal**. A
+deterministic signature hit is already authoritative + carries its
+own calibrated score, so layering a probabilistic verdict on top only
+adds noise and double-counting risk — and ONNX inference is the
+chain's most expensive step, so skipping it on already-flagged
+requests keeps the hot path fast. AI is therefore the **fallback for
+the long tail**: novel/obfuscated payloads that slip past every
+signature. See [`../security-engine.md`](../security-engine.md#ai-short-circuit-base-detectors-win)
+for the full flow.
+
 ## Detection strategy
 
 1. **Build a request string** — multi-line, matching the training
