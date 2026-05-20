@@ -656,6 +656,65 @@ mod tests {
     }
 
     #[test]
+    fn borderline_benign_traffic_produces_no_signal() {
+        // 2026-05-20 FP review — realistic legit traffic that
+        // *resembles* attacks (the classic WAF false-positive
+        // sources): SQL keywords in natural language, math `<`/`>`,
+        // internal redirects, absolute CDN/OAuth URLs, semicolon/pipe
+        // delimited params, handlebars, bracketed array params, and
+        // probe-like substrings inside legit path segments. With AI
+        // as the fallback for novel/obfuscated attacks, the Base
+        // signature detectors must NOT fire on any of these.
+        let detectors = default_detectors();
+        let m = http::Method::GET;
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::empty();
+        let cases = [
+            // SQL keywords in legitimate natural-language / params
+            ("nl-select", "/search?q=select%20a%20size%20for%20your%20shoes"),
+            ("nl-union", "/products?q=union%20jack%20flag%20t-shirt"),
+            ("nl-where", "/help?q=where%20is%20my%20order"),
+            ("nl-order-by", "/catalog?sort=price&order=desc"),
+            ("nl-drop", "/blog?title=how%20to%20drop%20a%20table%20safely"),
+            ("delete-account", "/api/users/123?action=delete"),
+            // XSS-ish legit
+            ("math-lt-gt", "/calc?expr=5%3C3%20%26%26%202%3E1"),
+            ("emoji-lt3", "/post?msg=%3C3%20you%20all"),
+            ("legit-html-desc", "/preview?html=%3Cb%3Ebold%3C%2Fb%3E%20text"),
+            // path-ish legit
+            ("redirect-internal", "/login?redirect=/account/settings"),
+            ("file-dotted", "/download?file=report.2024.final.pdf"),
+            ("semver-path", "/assets/v1.2.3/app.js"),
+            // SSRF-ish legit URL params
+            ("legit-img-url", "/proxy?url=https%3A%2F%2Fcdn.example.com%2Fimg%2Fhero.png"),
+            ("oauth-redirect", "/oauth/callback?redirect_uri=https%3A%2F%2Fapp.example.com%2Fdone"),
+            // command-ish legit (semicolons / pipes in normal params)
+            ("semicolon-filter", "/list?filter=price%3Aasc%3Bcategory%3Ashoes"),
+            ("pipe-delimited", "/report?cols=name%7Cprice%7Cstock"),
+            // template-ish (handlebars in a legit templating param)
+            ("handlebars-name", "/render?tpl=Hello%20%7B%7Buser.first_name%7D%7D"),
+            // nosql-ish legit (bracketed array params — common in PHP/Rails)
+            ("array-param", "/search?tags%5B%5D=red&tags%5B%5D=blue"),
+            ("filter-bracket", "/products?filter%5Bcolor%5D=red&filter%5Bsize%5D=10"),
+            // recon-ish legit (paths that contain probe-like substrings)
+            ("env-in-path", "/api/environment/config"),
+            ("admin-product", "/administration-guide"),
+            ("git-in-name", "/docs/using-git-with-our-api"),
+        ];
+        for (label, path) in cases {
+            let uri: http::Uri = path.parse().unwrap();
+            let req = view(&m, &uri, &h, &b);
+            let (signals, _) =
+                run_all_filtered_timed(&detectors, DetectorMask::all_enabled(), &req, |_, _| {});
+            assert!(
+                signals.is_empty(),
+                "false positive on borderline-benign `{label}` ({path}): {:?}",
+                signals.iter().map(|s| format!("{}:{}", s.tag, s.score)).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
     fn benign_traffic_categories_produce_no_signal() {
         // 2026-05-20 FP guard — the AppSec brief's "commonly
         // legitimate" categories (ad-tech, analytics, encoded JSON,
