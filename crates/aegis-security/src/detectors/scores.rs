@@ -12,8 +12,15 @@
 //! Operators asked "what score does each detector emit, and how does
 //! it interact with `risk.thresholds`?" — see [`docs/operator/risk-
 //! tuning.md`](../../../../docs/operator/risk-tuning.md). Detector
-//! scores are a calibrated ladder (25 / 30 / 35–40 / 45 / 50 / 60)
-//! that interacts with `challenge_at` (40) and `block_at` (80). The
+//! scores are a calibrated ladder (25 / 30 / 35 / 50 / 60 / 70 / 90).
+//! 2026-05-20 (Option B) — clear single-request exploits (sqli, xss,
+//! ssrf, path_traversal, cmdi, ssti, nosql, CRLF) score 70 so one hit
+//! reaches the per-request tier gate on the protective tiers
+//! (critical=50, high=70); definitive-RCE (Log4Shell, XXE) score 90
+//! so they block on every tier including `low`. Probing / low-severity
+//! signals (recon path 25, body oversize 30, open_redirect 50) stay
+//! moderate so they only block on stricter tiers or via cumulative
+//! accumulation. The
 //! UI needs to display the calibration so operators can read it; it
 //! is **not** an editor. Editing scores via the dashboard is
 //! deliberately not supported — see the operator guide for the
@@ -41,28 +48,38 @@ use serde::Serialize;
 
 // Per-class scores.
 
+// 2026-05-20 (Option B recalibration) — raised the clear-exploit
+// detector scores so a SINGLE high-confidence attack reaches the
+// per-request tier gate on the protective tiers (critical=50,
+// high=70). Definitive-RCE classes (Log4Shell, XXE) score 90 so
+// they block on EVERY tier including `low`. Low-severity / probing
+// signals (recon path, body oversize, open_redirect) stay moderate
+// so they only block on stricter tiers or via cumulative
+// accumulation. All values stay on the documented ladder
+// {15,20,25,30,35,40,45,50,60,70,90}.
+
 pub mod sqli {
-    pub const SQLI: u32 = 40;
+    pub const SQLI: u32 = 70;
 }
 
 pub mod xss {
-    pub const XSS: u32 = 35;
+    pub const XSS: u32 = 70;
 }
 
 pub mod path_traversal {
-    pub const PATH_TRAVERSAL: u32 = 45;
+    pub const PATH_TRAVERSAL: u32 = 70;
 }
 
 pub mod ssrf {
-    pub const SSRF: u32 = 50;
+    pub const SSRF: u32 = 70;
 }
 
 pub mod header_injection {
     /// CRLF / Set-Cookie / Location injection in user input.
-    pub const CRLF: u32 = 40;
+    pub const CRLF: u32 = 70;
     /// X-Forwarded-Host poisoning (keyword needles, > 2 hosts,
     /// internal-IP literal). Lower than CRLF — heuristic is broader.
-    pub const XFH: u32 = 35;
+    pub const XFH: u32 = 50;
 }
 
 pub mod body_abuse {
@@ -71,45 +88,45 @@ pub mod body_abuse {
     /// JSON nesting deeper than `max_nesting_depth`.
     pub const DEEP_NESTING: u32 = 35;
     /// `__proto__` / `constructor.prototype` shape (GAP-010).
-    pub const PROTO_POLLUTION: u32 = 45;
+    pub const PROTO_POLLUTION: u32 = 50;
     /// Privileged-field key (`role`, `is_admin`, `password_hash`, …).
-    pub const MASS_ASSIGNMENT: u32 = 50;
+    pub const MASS_ASSIGNMENT: u32 = 60;
     /// XML external-entity declaration (`<!ENTITY ... SYSTEM ...>`).
-    pub const XXE: u32 = 60;
+    pub const XXE: u32 = 90;
 }
 
 pub mod recon {
     /// Path probe / canary route (`/.env`, `/wp-admin`, …).
     pub const PATH: u32 = 25;
     /// Scanner User-Agent (`sqlmap`, `nikto`, `nmap`, …).
-    pub const TOOL: u32 = 30;
+    pub const TOOL: u32 = 50;
 }
 
 pub mod brute_force {
     /// Default per `BruteForceDetector::default()`. Operator-
     /// configurable via the constructor — operators raising the
     /// detector's threshold typically also raise this score.
-    pub const DEFAULT: u32 = 35;
+    pub const DEFAULT: u32 = 50;
 }
 
 pub mod command_injection {
     /// Shell-meta payload (`$()`, backticks, `| cmd`, `; cmd`,
     /// reverse-shell shapes, …).
-    pub const BASELINE: u32 = 50;
+    pub const BASELINE: u32 = 70;
     /// Log4Shell / JNDI lookup (CVE-2021-44228) — Critical-RCE tier.
-    pub const LOG4SHELL: u32 = 60;
+    pub const LOG4SHELL: u32 = 90;
 }
 
 pub mod template_injection {
-    pub const TEMPLATE_INJECTION: u32 = 50;
+    pub const TEMPLATE_INJECTION: u32 = 70;
 }
 
 pub mod nosql_injection {
-    pub const NOSQL_INJECTION: u32 = 50;
+    pub const NOSQL_INJECTION: u32 = 70;
 }
 
 pub mod open_redirect {
-    pub const OPEN_REDIRECT: u32 = 30;
+    pub const OPEN_REDIRECT: u32 = 50;
 }
 
 pub mod ai {
@@ -405,7 +422,7 @@ mod tests {
         let first = arr.first().expect("non-empty");
         assert_eq!(first["class"], "sqli");
         assert_eq!(first["tag"], "sqli");
-        assert_eq!(first["score"], 40);
+        assert_eq!(first["score"], 70);
         assert!(
             first["note"].as_str().unwrap().len() > 5,
             "note must be a non-empty string",

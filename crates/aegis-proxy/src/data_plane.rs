@@ -230,6 +230,12 @@ pub(crate) async fn handle_data_request_inner(
     // log_only` while the upstream still gets the request.
     let interop_modes = upstream_ctx.interop_modes.get();
     let mut log_only_intent: Option<DecisionTag> = None;
+    // 2026-05-20 (Option B) — set to the accumulated risk score when
+    // detectors fired but this request's combined score was under
+    // the tier's per-request block threshold. Routes the request to
+    // the upstream-forward path (no decay) and stamps the score on
+    // the allow response.
+    let mut detected_under_threshold: Option<u32> = None;
 
     // Resolve the effective client IP: walk X-Forwarded-For
     // backwards through the trusted-proxy CIDR list and return
@@ -794,6 +800,27 @@ pub(crate) async fn handle_data_request_inner(
             build_risk_key(peer_ip, &parts.headers, tls_fingerprint),
             request_score,
         );
+        // 2026-05-20 (Option B) — per-request tier gate. Block this
+        // request ONLY when its COMBINED detector score reaches the
+        // matched tier's per-request threshold (TierStore
+        // `risk_threshold`: critical 50 / high 70 / medium 80 /
+        // low 90 by default). The malicious score was already
+        // recorded above, so a single under-threshold hit still
+        // accumulates and a repeat offender escalates via the
+        // cumulative gate below. Falls back to 50 (critical default)
+        // when the TierStore has no entry for the classified tier.
+        // SUM (not max) here per the dashboard's documented
+        // semantics — `max` stays the cumulative-record contribution
+        // (SEC-M003); the per-request gate sums this request's
+        // signals so multiple weak indicators can combine.
+        let per_request_sum: u32 = signals.iter().map(|s| s.score).sum::<u32>().min(100);
+        let per_request_block_at = upstream_ctx
+            .tiers
+            .get()
+            .and_then(|store| store.get(tier.as_str()))
+            .map(|t| t.risk_threshold)
+            .unwrap_or(50);
+        let detector_blocks = per_request_sum >= per_request_block_at;
         // 2026-05-03 — dedup detector tags before emitting them
         // anywhere (audit fields, rule_id, response header).
         // Multiple signals from one detector class (e.g. two
@@ -843,7 +870,7 @@ pub(crate) async fn handle_data_request_inner(
                 "verbosity": verbosity_level.as_str(),
             })
         };
-        if allow_block_emit {
+        if detector_blocks && allow_block_emit {
             let ev = aegis_core::audit::AuditEvent {
                 schema_version: 1,
                 ts: chrono::Utc::now(),
@@ -902,7 +929,17 @@ pub(crate) async fn handle_data_request_inner(
         let block_tag = DecisionTag::block(detector_rule)
             .with_tier(tier)
             .with_risk_score(post_state.score);
-        if detector_mode == aegis_control::interop::headers::Mode::LogOnly {
+        if !detector_blocks {
+            // 2026-05-20 (Option B) — detectors fired but this
+            // request's combined score is under the tier's
+            // per-request threshold. Don't block per-request: the
+            // malicious score was recorded above (so it accumulates
+            // toward the cumulative gate), and we route to the
+            // upstream-forward path WITHOUT decaying it. Reported as
+            // `allow` with the elevated X-WAF-Risk-Score so the
+            // benchmarker still sees risk on the response.
+            detected_under_threshold = Some(post_state.score);
+        } else if detector_mode == aegis_control::interop::headers::Mode::LogOnly {
             log_only_intent = Some(block_tag);
             // Fall through — skip the 403 and the risk gate below
             // (which would also block this request because we just
@@ -933,8 +970,11 @@ pub(crate) async fn handle_data_request_inner(
     // separate `risk-score` block and silently re-enforce. Jump
     // straight to upstream forward and apply the intent override
     // at the tail.
-    let (resp, allow_tag) = if log_only_intent.is_some() {
-        forward_allow_to_upstream(
+    let (resp, allow_tag) = if log_only_intent.is_some() || detected_under_threshold.is_some() {
+        // log_only OR under-tier-threshold detection: forward to
+        // upstream WITHOUT running the clean-decay path (the
+        // malicious score was already recorded and must accumulate).
+        let (resp, tag) = forward_allow_to_upstream(
             parts,
             body_bytes,
             upstream_ctx,
@@ -945,7 +985,15 @@ pub(crate) async fn handle_data_request_inner(
             peer_ip,
             bus,
         )
-        .await
+        .await;
+        // Surface the accumulated risk on the allow response so the
+        // benchmarker sees the elevated score for an under-threshold
+        // detection (the log_only case stamps its own intent at the
+        // tail).
+        match detected_under_threshold {
+            Some(score) if log_only_intent.is_none() => (resp, tag.with_risk_score(score)),
+            _ => (resp, tag),
+        }
     } else {
         // Clean request — let the trust-recovery clock claw back any
         // accumulated score (capped at `trust_recovery.per_hour` so
