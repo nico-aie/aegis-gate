@@ -114,12 +114,12 @@ pub mod open_redirect {
 
 pub mod ai {
     /// AI / ML classifier verdict (model confidence ≥ threshold).
-    /// 2026-05-20 — lowered 60 → 40 so a standalone AI hit no
-    /// longer single-handedly crosses the block threshold; it now
-    /// contributes meaningful weight that must combine with another
-    /// signal (or a high model probability via the scaled path) to
-    /// block. Reduces AI-only false-positive blocks.
-    pub const AI: u32 = 40;
+    /// 2026-05-20 — restored to 60 (briefly 40). With the AI
+    /// short-circuit now in place (AI only runs when NO Base
+    /// detector matched), a standalone AI verdict is the sole
+    /// signal on that request, so it carries the full
+    /// Critical-RCE-class weight.
+    pub const AI: u32 = 60;
 }
 
 // Catalog — flat table consumed by the API.

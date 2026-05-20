@@ -164,8 +164,8 @@ impl AiDetector {
 
     /// 2026-05-19 — Enable proportional signal-score scaling.
     /// When on, `Signal.score = round(score * prob_attack)` so a
-    /// borderline `prob_attack = 0.55` contributes ~22 (when base
-    /// score = 40) instead of the full 40. Default off.
+    /// borderline `prob_attack = 0.55` contributes ~33 (when base
+    /// score = 60) instead of the full 60. Default off.
     pub fn with_prob_scaled_score(mut self, on: bool) -> Self {
         self.scale_score_by_prob = on;
         self
@@ -188,7 +188,7 @@ impl AiDetector {
         self
     }
 
-    /// Override the per-hit score (default 40).  A request
+    /// Override the per-hit score (default 60).  A request
     /// whose total score crosses the strike threshold gets
     /// blocked; tuning the AI score lets operators dial up /
     /// down its standalone weight.
