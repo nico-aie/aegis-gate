@@ -62,10 +62,16 @@ pub struct BurnRateWindow {
 }
 
 /// Alert severity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Info` was added 2026-05-20 alongside the alerts refactor so
+/// resolved / informational events (e.g. `DdosModeCleared`,
+/// `UpstreamPoolRecovered`) can be routed away from the on-call
+/// pager room. Existing JSON payloads serialise unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AlertSeverity {
     Page,
     Ticket,
+    Info,
 }
 
 /// Default SLO set for a WAF.
@@ -123,11 +129,300 @@ pub struct SloAlert {
     pub runbook_url: String,
 }
 
+/// Multi-source operator alert (2026-05-20 alerts refactor).
+///
+/// Subsumes [`SloAlert`] plus the operationally-important non-
+/// SLO event classes. The dispatcher routes by
+/// [`Self::severity`]; per-variant chat formatting lives in
+/// [`crate::slo::dispatch::format_event_text`].
+///
+/// Variants flagged "wired" emit from a production code path
+/// today; the rest are surface placeholders so the dispatcher
+/// shape is stable while later phases land the producers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AlertEvent {
+    /// SLO burn-rate breach (legacy path; wired).
+    Slo(SloAlert),
+    /// DDoS gate flipped into enforce mode (wired).
+    DdosModeEntered {
+        fired_at: DateTime<Utc>,
+        trigger: String,
+        observed_rps: u32,
+    },
+    /// DDoS gate exited enforce mode back to normal (wired).
+    DdosModeCleared {
+        fired_at: DateTime<Utc>,
+        duration_seconds: u64,
+    },
+    /// One or more TLS certs are within the expiry warning
+    /// window (wired by the daily cert poll).
+    CertExpiringSoon {
+        fired_at: DateTime<Utc>,
+        host: String,
+        days_remaining: u32,
+        not_after: DateTime<Utc>,
+    },
+    /// Risk tracker observed N unique source IPs hitting
+    /// strike-block in a short window (not yet wired —
+    /// Phase B producer).
+    StrikeBlockSurge {
+        fired_at: DateTime<Utc>,
+        unique_ips: u32,
+        window_seconds: u32,
+        top_rule_ids: Vec<String>,
+    },
+    /// Upstream pool dropped below healthy membership (not
+    /// yet wired — Phase B producer).
+    UpstreamPoolDegraded {
+        fired_at: DateTime<Utc>,
+        pool: String,
+        healthy: u32,
+        total: u32,
+        first_down: String,
+    },
+    /// Upstream pool returned to fully healthy (not yet wired).
+    UpstreamPoolRecovered {
+        fired_at: DateTime<Utc>,
+        pool: String,
+    },
+    /// Cluster leader lease was lost or rotated (not yet wired).
+    LeaderLost {
+        fired_at: DateTime<Utc>,
+        previous_leader: String,
+        our_node: String,
+    },
+    /// Hot-reload of config failed; last-known-good is still
+    /// live (not yet wired — Phase B producer).
+    HotReloadFailed {
+        fired_at: DateTime<Utc>,
+        reason: String,
+        last_known_good_version: u64,
+    },
+    /// GitOps poll detected drift between repo and live config
+    /// (not yet wired).
+    GitOpsDrift {
+        fired_at: DateTime<Utc>,
+        repo: String,
+        expected: String,
+        observed: String,
+    },
+    /// Audit-chain verify detected a hash mismatch (not yet
+    /// wired — Phase B producer).
+    AuditChainBreak {
+        fired_at: DateTime<Utc>,
+        last_good_seq: u64,
+        observed_seq: u64,
+    },
+}
+
+impl AlertEvent {
+    /// Routing severity. Operators wire one receiver per
+    /// severity class (Page → on-call, Ticket → ITSM, Info →
+    /// audit feed) via [`AlertReceiver::severities`].
+    pub fn severity(&self) -> AlertSeverity {
+        match self {
+            AlertEvent::Slo(a) => a.severity,
+            AlertEvent::DdosModeEntered { .. } => AlertSeverity::Page,
+            AlertEvent::DdosModeCleared { .. } => AlertSeverity::Info,
+            AlertEvent::CertExpiringSoon { days_remaining, .. } => {
+                // < 7 days is page-worthy; 7–30 is a ticket.
+                if *days_remaining < 7 {
+                    AlertSeverity::Page
+                } else {
+                    AlertSeverity::Ticket
+                }
+            }
+            AlertEvent::StrikeBlockSurge { .. } => AlertSeverity::Page,
+            AlertEvent::UpstreamPoolDegraded { .. } => AlertSeverity::Page,
+            AlertEvent::UpstreamPoolRecovered { .. } => AlertSeverity::Info,
+            AlertEvent::LeaderLost { .. } => AlertSeverity::Page,
+            AlertEvent::HotReloadFailed { .. } => AlertSeverity::Ticket,
+            AlertEvent::GitOpsDrift { .. } => AlertSeverity::Ticket,
+            AlertEvent::AuditChainBreak { .. } => AlertSeverity::Page,
+        }
+    }
+
+    /// Time the event fired. Used for dedup-window math.
+    pub fn fired_at(&self) -> DateTime<Utc> {
+        match self {
+            AlertEvent::Slo(a) => a.fired_at,
+            AlertEvent::DdosModeEntered { fired_at, .. } => *fired_at,
+            AlertEvent::DdosModeCleared { fired_at, .. } => *fired_at,
+            AlertEvent::CertExpiringSoon { fired_at, .. } => *fired_at,
+            AlertEvent::StrikeBlockSurge { fired_at, .. } => *fired_at,
+            AlertEvent::UpstreamPoolDegraded { fired_at, .. } => *fired_at,
+            AlertEvent::UpstreamPoolRecovered { fired_at, .. } => *fired_at,
+            AlertEvent::LeaderLost { fired_at, .. } => *fired_at,
+            AlertEvent::HotReloadFailed { fired_at, .. } => *fired_at,
+            AlertEvent::GitOpsDrift { fired_at, .. } => *fired_at,
+            AlertEvent::AuditChainBreak { fired_at, .. } => *fired_at,
+        }
+    }
+
+    /// Dedup fingerprint — a hash of the variant tag plus its
+    /// load-bearing fields. Two events with the same fingerprint
+    /// inside the dedup window get suppressed (with a
+    /// `(+N suppressed)` note on the next emission).
+    ///
+    /// `SloAlert` keys on `(sli, severity, window_hours)` so a
+    /// repeated burn-rate breach in the same window dedups.
+    /// `CertExpiringSoon` keys on `(host, not_after_day)` so a
+    /// re-fire on the same calendar day suppresses.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        match self {
+            AlertEvent::Slo(a) => {
+                "slo".hash(&mut h);
+                format!("{:?}", a.sli).hash(&mut h);
+                a.severity.hash(&mut h);
+                a.window_hours.hash(&mut h);
+            }
+            AlertEvent::DdosModeEntered { trigger, .. } => {
+                "ddos_entered".hash(&mut h);
+                trigger.hash(&mut h);
+            }
+            AlertEvent::DdosModeCleared { .. } => {
+                "ddos_cleared".hash(&mut h);
+            }
+            AlertEvent::CertExpiringSoon { host, not_after, .. } => {
+                "cert_expiring".hash(&mut h);
+                host.hash(&mut h);
+                not_after.date_naive().to_string().hash(&mut h);
+            }
+            AlertEvent::StrikeBlockSurge { window_seconds, .. } => {
+                "strike_surge".hash(&mut h);
+                window_seconds.hash(&mut h);
+            }
+            AlertEvent::UpstreamPoolDegraded { pool, .. } => {
+                "pool_degraded".hash(&mut h);
+                pool.hash(&mut h);
+            }
+            AlertEvent::UpstreamPoolRecovered { pool, .. } => {
+                "pool_recovered".hash(&mut h);
+                pool.hash(&mut h);
+            }
+            AlertEvent::LeaderLost { previous_leader, .. } => {
+                "leader_lost".hash(&mut h);
+                previous_leader.hash(&mut h);
+            }
+            AlertEvent::HotReloadFailed { last_known_good_version, .. } => {
+                "hot_reload_failed".hash(&mut h);
+                last_known_good_version.hash(&mut h);
+            }
+            AlertEvent::GitOpsDrift { repo, .. } => {
+                "gitops_drift".hash(&mut h);
+                repo.hash(&mut h);
+            }
+            AlertEvent::AuditChainBreak { observed_seq, .. } => {
+                "audit_chain_break".hash(&mut h);
+                observed_seq.hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dedup cache
+// ---------------------------------------------------------------------------
+
+/// In-memory dedup cache used by
+/// [`dispatch::dispatch_event`] to suppress refires of the same
+/// fingerprint inside a sliding window.
+///
+/// Operator default is 5 minutes; configure via
+/// `cfg.slo.dedup_seconds` (0 disables — preserves the pre-
+/// 2026-05-20 behaviour where every tick fires).
+#[derive(Debug)]
+pub struct AlertDedupCache {
+    window: Duration,
+    /// fingerprint → (last_emit_ts, suppressed_since_last_emit)
+    entries: Mutex<HashMap<u64, (DateTime<Utc>, u32)>>,
+}
+
+impl AlertDedupCache {
+    pub fn new(window_seconds: u64) -> Self {
+        Self {
+            window: Duration::seconds(window_seconds as i64),
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 5-minute default — the operator-recommended value.
+    pub fn default_window() -> Self {
+        Self::new(300)
+    }
+
+    /// Returns `(should_emit, suppressed_count)`. When
+    /// `should_emit` is true, the suppressed count is the
+    /// number of fires we silently dropped since the last
+    /// successful emission for this fingerprint (zero on the
+    /// first emit).
+    pub fn check(&self, fingerprint: u64, now: DateTime<Utc>) -> DedupDecision {
+        let mut entries = self.entries.lock().expect("dedup cache poisoned");
+        match entries.get_mut(&fingerprint) {
+            Some((last_emit, suppressed)) => {
+                if now - *last_emit < self.window {
+                    *suppressed = suppressed.saturating_add(1);
+                    DedupDecision::Suppress
+                } else {
+                    let drained = *suppressed;
+                    *last_emit = now;
+                    *suppressed = 0;
+                    DedupDecision::Emit { suppressed: drained }
+                }
+            }
+            None => {
+                entries.insert(fingerprint, (now, 0));
+                DedupDecision::Emit { suppressed: 0 }
+            }
+        }
+    }
+
+    /// Test helper — reset the cache.
+    #[cfg(test)]
+    pub fn clear(&self) {
+        self.entries.lock().expect("dedup cache poisoned").clear();
+    }
+}
+
+impl Default for AlertDedupCache {
+    fn default() -> Self {
+        Self::default_window()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DedupDecision {
+    Emit { suppressed: u32 },
+    Suppress,
+}
+
 /// Alert receiver configuration.
+///
+/// `severities` (2026-05-20) is an optional filter — when set,
+/// the dispatcher only routes events whose severity is in the
+/// list. An empty / missing list means "all severities", which
+/// preserves the pre-refactor behaviour. Typical use: one
+/// receiver pointed at the on-call room with `severities:
+/// [Page]`, a separate receiver pointed at the audit/ops room
+/// with `severities: [Ticket, Info]`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AlertReceiver {
     pub name: String,
     pub kind: ReceiverKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub severities: Vec<AlertSeverity>,
+}
+
+impl AlertReceiver {
+    /// True if this receiver should accept an event of the
+    /// given severity. Empty filter = accept everything.
+    pub fn accepts(&self, severity: AlertSeverity) -> bool {
+        self.severities.is_empty() || self.severities.contains(&severity)
+    }
 }
 
 /// Alert receiver kind.
@@ -190,6 +485,7 @@ pub fn default_receivers() -> Vec<AlertReceiver> {
             vec![AlertReceiver {
                 name: "default-viptalk".to_string(),
                 kind: ReceiverKind::VipTalk { bot_token, room_ids },
+                severities: Vec::new(),
             }]
         }
         _ => {
@@ -323,7 +619,7 @@ impl SloEngine {
                 if is_burning && !already_active {
                     let alert = SloAlert {
                         sli: obj.sli.clone(),
-                        severity: burn.severity.clone(),
+                        severity: burn.severity,
                         fired_at: Utc::now(),
                         resolved_at: None,
                         burn_rate: error_rate / budget,
@@ -659,6 +955,7 @@ mod tests {
             kind: ReceiverKind::PagerDuty {
                 routing_key: "key123".into(),
             },
+            severities: Vec::new(),
         };
         let json = serde_json::to_string(&recv).unwrap();
         assert!(json.contains("PagerDuty"));
