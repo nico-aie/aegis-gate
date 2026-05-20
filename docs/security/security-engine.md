@@ -382,19 +382,19 @@ safely without touching the calibrated score ladder):
 
 | Contributor | Where it adds | Default delta | Source |
 |---|---|---:|---|
-| SQL injection | per-request + per-IP | **40** | `detectors/sqli.rs` |
-| XSS | per-request + per-IP | **35** | `detectors/xss.rs` |
-| Path traversal | per-request + per-IP | **45** | `detectors/path_traversal.rs` |
-| SSRF | per-request + per-IP | **50** | `detectors/ssrf.rs` |
-| Header injection / CRLF / smuggling | per-request + per-IP | **40** | `detectors/header_injection.rs` |
-| Recon (probe / canary) | per-request + per-IP | **25 / 30** | `detectors/recon.rs` |
-| Body abuse (size → depth → mass-assign → proto-pollution → XXE) | per-request + per-IP | **30 / 35 / 45 / 50 / 60** | `detectors/body_abuse.rs` |
-| Brute force | per-request + per-IP | YAML-configured | `detectors/brute_force.rs` |
-| Command injection | per-request + per-IP | **50** (Log4Shell **60**) | `detectors/command_injection.rs` |
-| Template injection (SSTI) | per-request + per-IP | **50** | `detectors/template_injection.rs` |
-| NoSQL injection | per-request + per-IP | **50** | `detectors/nosql_injection.rs` |
-| Open redirect | per-request + per-IP | **30** | `detectors/open_redirect.rs` |
-| **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` |
+| SQL injection | per-request + per-IP | **70** | `detectors/sqli.rs` |
+| XSS | per-request + per-IP | **70** | `detectors/xss.rs` |
+| Path traversal | per-request + per-IP | **70** | `detectors/path_traversal.rs` |
+| SSRF | per-request + per-IP | **70** | `detectors/ssrf.rs` |
+| Header injection — CRLF / smuggling | per-request + per-IP | **70** (XFH poisoning **50**) | `detectors/header_injection.rs` |
+| Recon (probe / scanner-UA) | per-request + per-IP | **25 / 50** | `detectors/recon.rs` |
+| Body abuse (size → depth → proto-pollution → mass-assign → XXE) | per-request + per-IP | **30 / 35 / 50 / 60 / 90** | `detectors/body_abuse.rs` |
+| Brute force | per-request + per-IP | **50** (default; YAML-configurable) | `detectors/brute_force.rs` |
+| Command injection | per-request + per-IP | **70** (Log4Shell **90**) | `detectors/command_injection.rs` |
+| Template injection (SSTI) | per-request + per-IP | **70** | `detectors/template_injection.rs` |
+| NoSQL injection | per-request + per-IP | **70** | `detectors/nosql_injection.rs` |
+| Open redirect | per-request + per-IP | **50** | `detectors/open_redirect.rs` |
+| **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` — runs only when no Base detector matched |
 
 Identity / behaviour weights (configurable in `cfg.risk.weights`,
 default **10 each**):
@@ -457,17 +457,22 @@ Host: localhost:8080
    Strike score = 0. Pass.
 4. **Detector chain** runs all enabled detectors. The sqli detector's
    Aho-Corasick catches `OR '1'='1` plus the `'` opener — emits
-   `Signal { tag: "sqli", score: 60 }`.
+   `Signal { tag: "sqli", score: 70 }`.
 5. **Rule engine** has no operator rule matching this URL. No-op.
-6. **Risk + tier gate**: `composite = 60`. Threshold for `low` is
-   90 — 60 < 90 means **the WAF would NOT block**. But: the **bundled
-   sqli detector's score weight is 60** in dev, so single hits don't
-   block on the catch-all tier by default. Same request against a
-   route pinned `tier_override: critical` (threshold 50) **would**
-   block.
-7. **Audit + metrics**: `action: "allow"` (or "block" if critical),
-   `fields.detectors: ["sqli"]`, `fields.risk_score: 60`.
-8. **Cumulative IP risk score** climbs by 60. Two more hits in 5 min
+6. **Per-request tier gate** (Option B, 2026-05-20): the request's
+   summed detector score (`70`) is compared to the matched tier's
+   `risk_threshold`. For `low` that's **90 — 70 < 90, so the WAF does
+   NOT block per-request** (the request forwards upstream, reported
+   `allow` with `X-WAF-Risk-Score: 70`). The SAME request against a
+   route pinned `critical` (50) or `high` (70) **would** block, since
+   `70 ≥ 50` / `70 ≥ 70`. RCE-class hits (Log4Shell, XXE = 90) block
+   on every tier including `low`.
+7. **Audit + metrics**: `action: "allow"` (or "block" on a
+   critical/high-tier route), `fields.detectors: ["sqli"]`,
+   `fields.risk_score: 70`.
+8. **Cumulative IP risk score** climbs by `max(signal)` = 70 (the
+   cumulative gate uses max per SEC-M003, not the per-request sum).
+   Two more hits in 5 min
    → score saturates at `risk.thresholds.max` (100 in prod) → crosses
    `risk.thresholds.block_at` (default **80** in prod, deliberately
    pushed to 99999 in `config/dev.yaml` so shared-loopback dev traffic

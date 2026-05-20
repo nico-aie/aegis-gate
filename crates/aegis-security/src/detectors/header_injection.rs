@@ -770,7 +770,7 @@ mod tests {
             .into_iter()
             .find(|s| s.tag == "url_override_bypass")
             .expect("url_override_bypass signal");
-        assert_eq!(signal.score, 40, "url_override_bypass should score 40 (header tier)");
+        assert_eq!(signal.score, 70, "url_override_bypass should score 70 (header tier — CRLF)");
         assert_eq!(signal.field, "x-original-url");
     }
 
@@ -914,6 +914,6 @@ mod tests {
             .into_iter()
             .find(|s| s.tag == "method_override_bypass")
             .expect("method_override_bypass signal");
-        assert_eq!(signal.score, 35, "method_override_bypass should score 35 (header tier — XFH)");
+        assert_eq!(signal.score, 50, "method_override_bypass should score 50 (header tier — XFH)");
     }
 }
