@@ -132,7 +132,10 @@ rate_limit:
       scope: global
       key: ip
       algo: sliding_window
-      limit: 6000
+      # 2026-05-20 — loose per-IP volumetric backstop (1M / 60s) so
+      # high-RPS benchmark traffic from a small set of source IPs
+      # isn't throttled. Tighten for a real deployment.
+      limit: 1000000
       window: "1m"
 
 # ---------------------------------------------------------------------------

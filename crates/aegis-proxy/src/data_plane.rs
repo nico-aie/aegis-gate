@@ -2632,7 +2632,16 @@ fn blocked_response(
         .to_string(),
         class: aegis_core::audit::AuditClass::Detection,
         tenant_id: None,
-        tier: None,
+        // 2026-05-20 — early-block paths (blacklist / strike-block /
+        // rate-limit / body errors) return BEFORE route+tier
+        // classification, so this previously emitted `tier: None`.
+        // The dashboard then fell back to a RISK-derived tier
+        // (`tierForRisk`), which made a benign low-tier path on a
+        // high-risk IP render as "crit" in Live Feed. Stamp the
+        // cheap path-heuristic tier here so the audit event carries
+        // the real route sensitivity (e.g. /catalog → low,
+        // /login → critical) regardless of where the block fired.
+        tier: Some(aegis_security::pipeline::classify_tier_from_path(uri.path()).0),
         action: "block".into(),
         reason: reason.into(),
         client_ip: peer.ip().to_string(),
