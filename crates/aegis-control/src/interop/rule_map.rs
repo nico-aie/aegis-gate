@@ -54,6 +54,21 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "nosql_injection" | "nosqli" => ("rules_engine", "nosql_injection"),
         "open_redirect" | "openredir" => ("rules_engine", "open_redirect"),
 
+        // 2026-05-20 — Phase-F detectors (committee interop fix).
+        // canary / velocity / behavior_signals can fire AND block,
+        // so the BTC must be able to see them in `capabilities` and
+        // flip them enforce↔log_only via `set_profile`. Previously
+        // these returned `None` → hard-pinned to Enforce, so a phase
+        // that log_only'd "everything but SQLi" would still block on
+        // them. velocity + behavior_signals emit dynamic per-rule
+        // tags (`velocity_login_to_withdrawal`, `behavior_no_ua`, …)
+        // so they match by prefix; proto_pollution is emitted by the
+        // body_abuse detector and shares that policy.
+        "canary" => ("rules_engine", "canary"),
+        "proto_pollution" => ("rules_engine", "body_abuse"),
+        p if p.starts_with("velocity_") => ("rules_engine", "velocity"),
+        p if p.starts_with("behavior_") => ("rules_engine", "behavior_signals"),
+
         // ---- rate_limit ----
         "ip-rate-limit" | "rate_limit" => ("rate_limit", "per_ip"),
 
@@ -155,6 +170,55 @@ mod tests {
             rule_to_feature("openredir"),
             Some(("rules_engine", "open_redirect")),
         );
+    }
+
+    #[test]
+    fn phase_f_detectors_map_to_rules_engine() {
+        // 2026-05-20 committee interop fix — canary / velocity /
+        // behavior_signals must be toggleable so the BTC can put
+        // them into log_only during a focused test phase.
+        assert_eq!(
+            rule_to_feature("canary"),
+            Some(("rules_engine", "canary")),
+        );
+        // velocity + behavior_signals emit dynamic per-rule tags;
+        // they map to the single policy name by prefix.
+        assert_eq!(
+            rule_to_feature("velocity_login_to_withdrawal"),
+            Some(("rules_engine", "velocity")),
+        );
+        assert_eq!(
+            rule_to_feature("velocity_login_to_deposit"),
+            Some(("rules_engine", "velocity")),
+        );
+        assert_eq!(
+            rule_to_feature("behavior_no_ua"),
+            Some(("rules_engine", "behavior_signals")),
+        );
+        assert_eq!(
+            rule_to_feature("behavior_zero_depth"),
+            Some(("rules_engine", "behavior_signals")),
+        );
+        // proto_pollution rides the body_abuse policy (same detector).
+        assert_eq!(
+            rule_to_feature("proto_pollution"),
+            Some(("rules_engine", "body_abuse")),
+        );
+    }
+
+    #[test]
+    fn phase_f_log_only_is_honoured() {
+        // End-to-end: a set_profile that log_only's velocity must
+        // make the data-plane mode lookup return LogOnly for a
+        // dynamic velocity tag.
+        let store = ModeStore::new(Mode::Enforce);
+        store.set_policy("rules_engine", "velocity", Mode::LogOnly);
+        assert_eq!(
+            mode_for_rule(&store, Some("velocity_login_to_withdrawal")),
+            Mode::LogOnly,
+        );
+        // canary still enforces because only velocity was flipped.
+        assert_eq!(mode_for_rule(&store, Some("canary")), Mode::Enforce);
     }
 
     #[test]

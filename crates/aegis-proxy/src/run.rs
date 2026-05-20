@@ -262,14 +262,19 @@ pub async fn run(
     // The `not(feature = "ai")` branch fails boot loudly when
     // `cfg.ai.enabled = true` on a binary built without the
     // feature so the misconfiguration is visible.
-    // 2026-05-18 F-CRITICAL-012 (security audit, Phase F): include
-    // the canary detector when operator has configured honeypot
-    // paths via `risk.canary_paths`. Empty list → no canary
-    // appended → zero per-request cost.
+    // 2026-05-18 F-CRITICAL-012 (security audit, Phase F): wire the
+    // canary detector. 2026-05-20 — the honeypot path set now lives
+    // in a shared, hot-swappable `CanaryPaths` handle so it can be
+    // edited live from the Settings page via PUT
+    // /api/risk/canary-paths. We seed it from `cfg.risk.canary_paths`
+    // and clone the handle into `DashboardServices` further down so
+    // the admin mutation and the data-plane detector share state.
+    let canary_paths =
+        aegis_security::detectors::canary::CanaryPaths::new(&cfg.risk.canary_paths);
     #[allow(unused_mut)]
     let mut detector_vec = aegis_security::detectors::default_detectors_with_canary(
         &cfg.detectors,
-        &cfg.risk.canary_paths,
+        &canary_paths,
     );
     #[cfg(not(feature = "ai"))]
     {
@@ -1452,6 +1457,10 @@ pub async fn run(
     let admin_state_backend = state.clone();
     let admin_identity_tracker = identity_tracker.clone();
     let admin_detectors = detectors.clone();
+    // 2026-05-20 — share the live canary handle with the admin
+    // listener so PUT /api/risk/canary-paths edits the same set the
+    // data-plane CanaryDetector reads.
+    let admin_canary_paths = canary_paths.clone();
     let admin_request_stage_hist = request_stage_hist.clone();
     let admin_route_latency_hist = route_latency_hist.clone();
     let admin_route_activity = route_activity.clone();
@@ -1484,6 +1493,7 @@ pub async fn run(
         admin_state_backend,
         admin_identity_tracker,
         admin_detectors,
+        admin_canary_paths,
         admin_request_stage_hist,
         admin_route_latency_hist,
         admin_route_activity,
@@ -1798,6 +1808,17 @@ pub(crate) fn build_interop_runtime(
                 // for `open_redirect` mode would return
                 // "unsupported" while the rule still fired.
                 "open_redirect".into(),
+                // 2026-05-20 (committee interop fix): the three
+                // Phase-F detectors fire AND block but were missing
+                // here, so the BTC could neither audit them via
+                // `capabilities` nor flip them enforce↔log_only via
+                // `set_profile` (they were hard-pinned to Enforce in
+                // `rule_to_feature`). velocity + behavior_signals
+                // emit dynamic per-rule tags but map to these single
+                // policy names via prefix in `rule_to_feature`.
+                "canary".into(),
+                "velocity".into(),
+                "behavior_signals".into(),
             ],
         },
     );

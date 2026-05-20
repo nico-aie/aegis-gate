@@ -1,9 +1,23 @@
 # Risk tuning — what to do instead of editing detector scores
 
-> Aegis-Gate's per-detector risk scores (e.g. `sqli=50`, `cmdi=50`,
-> `Log4Shell=60`, `recon_path=25`) are **not editable from the console
+> Aegis-Gate's per-detector risk scores (e.g. `sqli=70`, `cmdi=70`,
+> `Log4Shell=90`, `recon_path=25`) are **not editable from the console
 > UI**. This page explains why, and walks through every operator action
 > available for tuning risk to your environment.
+
+> **2026-05-20 — per-request tier gate (Option B).** A request is now
+> blocked per-request when the **sum** of its detector scores reaches
+> the matched tier's per-request threshold (`risk_threshold`:
+> critical 50 / high 70 / medium 80 / low 90). This is separate from
+> the **cumulative** IP-risk gate (which accumulates across requests
+> and decays). Detector scores were recalibrated so a single clear
+> exploit (sqli/xss/ssrf/path_traversal/cmdi/ssti/nosql/CRLF = 70)
+> blocks on the protective tiers (critical, high), and definitive-RCE
+> (Log4Shell, XXE = 90) blocks on **every** tier including `low`.
+> Route → tier assignment therefore decides how aggressively each
+> route blocks: put sensitive/public-attack-surface routes on
+> `critical`/`high`; a route left on `low` only blocks RCE-class
+> single hits (or multi-signal sums ≥ 90).
 
 > **2026-05-19 — composite-key migration.** Cumulative risk scores
 > are now per-`RiskKey { ip, device_fp?, session? }` bucket, not
@@ -42,16 +56,33 @@ Each detector emits a score from a small, **deliberately calibrated** ladder:
 
 | Tier | Score | Detectors | Meaning |
 |---|---|---|---|
-| Critical RCE / CVE | **60** | Log4Shell (`${jndi:…}`), AI-classified attacks, XXE | Direct compromise vector, single hit warrants challenge or block |
-| High-confidence injection | **50** | sqli, xss (escaped), cmdi, ssrf, ssti, nosqli, mass-assignment | Pattern is unambiguous; one hit shouldn't block but two should |
-| Broader pattern | **45** | path_traversal, prototype pollution | Same impact ceiling as injection but pattern is more permissive |
-| Header heuristic | **35–40** | header_injection (CRLF / smuggling), body_oversize, body_deep_nesting | Strong signal in the right context, weak in the wrong one |
-| Phishing / info disclosure | **30** | open_redirect, recon_tool UA | Indirect compromise; signal accumulation is the point |
-| Probe / canary | **25** | recon_path | Single hit is information-only; rate matters more than score |
+| Definitive RCE / CVE | **90** | Log4Shell (`${jndi:…}`), XXE | Direct compromise vector; one hit blocks on EVERY tier incl. `low` |
+| High-confidence exploit | **70** | sqli, xss, cmdi (baseline), ssrf, ssti, nosqli, path_traversal, header_injection (CRLF) | Unambiguous attack; one hit reaches the per-request gate on critical (50) + high (70) |
+| Privileged / mass-assignment | **60** | body mass-assignment | Strong abuse signal; blocks on critical/high/medium |
+| Heuristic | **50** | header XFH, prototype pollution, open_redirect, recon_tool UA, brute_force | Context-dependent; blocks on critical only as a single hit, else accumulates |
+| Body shape | **30–35** | body_oversize, body_deep_nesting | Weak alone; meaningful in combination |
+| Probe / canary | **25** | recon_path | Single hit is information-only; rate / accumulation matters more than score |
 
-The **interaction between scores and `challenge_at` / `block_at`** is what makes the score ladder meaningful. A `recon_path = 25` is calibrated *together* with `challenge_at: 40` so that one canary probe doesn't fire a challenge — but two recon-path hits + one xss hit (25 + 25 + 35 = max 35 under M003 = 35) still don't reach challenge, while a *third* probe of any kind tips it over.
+Two gates consume these scores:
 
-If operators could move scores arbitrarily, the ladder loses its meaning. A site that bumps `recon_path` to 50 effectively halves the threshold on every recon probe — but the threshold (40) was set on the assumption that the ladder is what it is. The two knobs would interact non-linearly and break each other.
+1. **Per-request gate (Option B, 2026-05-20):** block when the
+   **sum** of this request's detector scores ≥ the matched tier's
+   `risk_threshold` (critical 50 / high 70 / medium 80 / low 90). A
+   lone `sqli=70` blocks on critical+high; two probes (`recon_path 25`
+   + `recon_tool 50` = 75) block on critical+high too; an RCE
+   (`Log4Shell 90`) blocks everywhere.
+2. **Cumulative gate:** each malicious request also adds `max(signal)`
+   to the per-`RiskKey` bucket (SEC-M003 — max, not sum, to avoid a
+   single multi-class hit clamping the bucket). When the bucket
+   crosses `challenge_at` / `block_at` (or the tier's
+   `cumulative_*` overrides) the client is challenged/blocked even on
+   later requests that don't directly trip a detector.
+
+If operators could move scores arbitrarily, both gates lose their
+calibration — a site that bumps `recon_path` to 70 makes every single
+canary probe block on critical/high, defeating the "probing
+accumulates, doesn't block" intent. Tune the **thresholds** (per-tier
+`risk_threshold` + the cumulative trio), not the scores.
 
 ### Reason 2 — every safe outcome is reachable via the threshold trio
 

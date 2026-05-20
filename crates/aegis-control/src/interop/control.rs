@@ -567,6 +567,11 @@ mod tests {
                     "template_injection".into(),
                     "nosql_injection".into(),
                     "open_redirect".into(),
+                    // 2026-05-20 committee interop fix — Phase-F
+                    // detectors. Keep in sync with build_interop_runtime.
+                    "canary".into(),
+                    "velocity".into(),
+                    "behavior_signals".into(),
                 ],
             },
         );

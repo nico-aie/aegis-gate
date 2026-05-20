@@ -72,21 +72,40 @@ These come straight from `crates/aegis-security/src/detectors/*.rs`. A
 single detector hit emits a `Signal { tag, score }`; the engine sums
 all signals from the chain.
 
+> **2026-05-20 recalibration (Option B).** The per-request block gate
+> sums this request's signals and compares to the matched tier's
+> `risk_threshold` (critical 50 / high 70 / medium 80 / low 90). Clear
+> exploits score 70 (block on critical+high); definitive RCE scores 90
+> (block on every tier); operator-curated canary honeypots score 100
+> (~0 false positives — blocks even above a custom threshold). The
+> **cumulative** bucket, by contrast, adds
+> `max(signal)` per request (SEC-M003), not the sum. Values below are
+> the single-source-of-truth scores from
+> `crates/aegis-security/src/detectors/scores.rs`.
+
 | Detector | Tag | Score | Source |
 |---|---|---:|---|
-| SQL injection | `sqli` | **40** | `detectors/sqli.rs:80` |
-| XSS | `xss` | **35** | `detectors/xss.rs:77` |
-| Path traversal | `path_traversal` | **45** | `detectors/path_traversal.rs:61` |
-| SSRF | `ssrf` | **50** | `detectors/ssrf.rs:74` |
-| Header injection / CRLF / smuggling | `header_injection` | **40** | `detectors/header_injection.rs:62` (each variant) |
-| Recon — common probe path | `recon` | **25** | `detectors/recon.rs:88` |
-| Recon — canary path | `recon` | **30** | `detectors/recon.rs:101` |
-| Body abuse — oversize | `body_abuse` | **30** | `detectors/body_abuse.rs:67` |
-| Body abuse — nesting depth 1 | `body_abuse` | **35** | `detectors/body_abuse.rs:85` |
-| Body abuse — nesting depth 2 | `body_abuse` | **50** | `detectors/body_abuse.rs:93` |
-| Body abuse — nesting depth 3 | `body_abuse` | **60** | `detectors/body_abuse.rs:109` |
-| Brute force | `brute_force` | configurable in YAML | `detectors/brute_force.rs:97` (default off; set per-route) |
-| **AI classifier** (verdict = attack) | `ai` | **60** | `detectors/ai/mod.rs:130` — fires whenever the ONNX model returns `attack` with confidence ≥ `ai.confidence_threshold` |
+| SQL injection | `sqli` | **70** | `scores::sqli::SQLI` |
+| XSS | `xss` | **70** | `scores::xss::XSS` |
+| Path traversal | `path_traversal` | **70** | `scores::path_traversal::PATH_TRAVERSAL` |
+| SSRF | `ssrf` | **70** | `scores::ssrf::SSRF` |
+| Command injection (baseline) | `command_injection` | **70** | `scores::command_injection::BASELINE` |
+| Log4Shell / JNDI | `command_injection` | **90** | `scores::command_injection::LOG4SHELL` |
+| Template injection (SSTI) | `template_injection` | **70** | `scores::template_injection::TEMPLATE_INJECTION` |
+| NoSQL injection | `nosql_injection` | **70** | `scores::nosql_injection::NOSQL_INJECTION` |
+| Header injection — CRLF | `header_injection` | **70** | `scores::header_injection::CRLF` |
+| Header injection — XFH poisoning | `header_injection` | **50** | `scores::header_injection::XFH` |
+| Body abuse — XXE | `body_abuse` | **90** | `scores::body_abuse::XXE` |
+| Body abuse — mass assignment | `body_abuse` | **60** | `scores::body_abuse::MASS_ASSIGNMENT` |
+| Body abuse — proto pollution | `body_abuse` | **50** | `scores::body_abuse::PROTO_POLLUTION` |
+| Body abuse — deep nesting | `body_abuse` | **35** | `scores::body_abuse::DEEP_NESTING` |
+| Body abuse — oversize | `body_abuse` | **30** | `scores::body_abuse::OVERSIZE` |
+| Open redirect | `open_redirect` | **50** | `scores::open_redirect::OPEN_REDIRECT` |
+| Recon — scanner UA | `recon` | **50** | `scores::recon::TOOL` |
+| Recon — probe path | `recon` | **25** | `scores::recon::PATH` |
+| Brute force | `brute_force` | **50** (default) | `scores::brute_force::DEFAULT` (off by default; set per-route) |
+| **Canary honeypot** (path hit) | `canary` | **100** | `detectors::canary` — operator-curated honeypot paths (`risk.canary_paths`); ~0 FP → max confidence, single-hit block at every tier. Default OFF. |
+| **AI classifier** (verdict = attack) | `ai` | **60** | `scores::ai::AI` — runs ONLY when no Base detector matched (short-circuit), so its verdict is the sole signal |
 
 ### B. Identity / behaviour signals (configurable in YAML)
 

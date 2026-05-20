@@ -335,9 +335,9 @@ function PageOverview() {
           sparkColor="#3B82F6"
         />
         <window.StatTile
-          title="Block rate"
+          title="Block rate · since start"
           value={blockRate !== undefined ? `${blockRate.toFixed(1)}%` : '—'}
-          sub={<><span className="num">{blocksTotal.toLocaleString()}</span> blocked total</>}
+          sub={<><span className="num">{blocksTotal.toLocaleString()}</span> blocked · process-lifetime (not windowed)</>}
           icon={<window.I.Ban />}
           tone="down"
           sparkData={sparkBlocked}
@@ -623,12 +623,25 @@ function RequestDetail({ data }) {
   const routeId = data?.route_id || data?.fields?.route_id || null;
   const fields = data?.fields && typeof data.fields === 'object' ? data.fields : null;
   const detectorReason = rules.length > 0 ? rules.join(', ') : (cats.length > 0 ? cats.join(', ') : reason);
+  // 2026-05-20 — request echo captured on detection blocks: redacted
+  // headers + a bounded body preview. Rendered in dedicated sections
+  // below and excluded from the generic "Extra fields" dump.
+  const reqHeaders = fields?.request_headers && typeof fields.request_headers === 'object'
+    ? fields.request_headers
+    : null;
+  const headerEntries = reqHeaders
+    ? Object.entries(reqHeaders).sort(([a], [b]) => a.localeCompare(b))
+    : [];
+  const bodyPreview = typeof fields?.request_body_preview === 'string' ? fields.request_body_preview : null;
+  const bodyBytes = Number.isFinite(Number(fields?.request_body_bytes)) ? Number(fields.request_body_bytes) : null;
+  const bodyTruncated = fields?.request_body_truncated === true;
   // Render any backend-emitted scalar that isn't already covered
   // by the dedicated rows above. Stable key ordering so the
   // drawer doesn't reflow on every poll.
+  const ECHO_KEYS = ['request_headers', 'request_body_preview', 'request_body_bytes', 'request_body_truncated'];
   const extraEntries = fields
     ? Object.entries(fields)
-        .filter(([k]) => !['method', 'path', 'status', 'region', 'route_id', 'latency_ms'].includes(k))
+        .filter(([k]) => !['method', 'path', 'status', 'region', 'route_id', 'latency_ms', ...ECHO_KEYS].includes(k))
         .sort(([a], [b]) => a.localeCompare(b))
     : [];
 
@@ -725,6 +738,52 @@ function RequestDetail({ data }) {
           <div style={{ fontSize: 12, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {rules.map(r => <span key={r} className="pill neutral" style={{ fontSize: 10 }}>{r}</span>)}
           </div>
+        </div>
+      )}
+      {headerEntries.length > 0 && (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6 }}>
+            Request headers
+          </div>
+          <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, padding: 8, maxHeight: 220, overflow: 'auto' }}>
+            {headerEntries.map(([k, v]) => {
+              const redacted = v === '[redacted]';
+              return (
+                <div key={k} style={{ display: 'flex', gap: 8, lineHeight: 1.6 }}>
+                  <span style={{ color: 'var(--accent)', minWidth: 140, flexShrink: 0 }}>{k}</span>
+                  <span style={{ wordBreak: 'break-all', color: redacted ? 'var(--ink-faint)' : 'var(--ink)', fontStyle: redacted ? 'italic' : 'normal' }}>
+                    {String(v)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {bodyPreview != null && (
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>Request payload</span>
+            {bodyBytes != null && (
+              <span className="dim" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 10 }}>
+                {bodyBytes} byte{bodyBytes === 1 ? '' : 's'}{bodyTruncated ? ' · preview truncated' : ''}
+              </span>
+            )}
+          </div>
+          {bodyPreview === '' ? (
+            <div style={{ fontSize: 11, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+              (empty body)
+            </div>
+          ) : (
+            <pre style={{ fontSize: 11, fontFamily: 'var(--font-mono)', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, padding: 8, margin: 0, maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--ink)' }}>
+              {bodyPreview}
+            </pre>
+          )}
+          {bodyTruncated && (
+            <div style={{ fontSize: 10, color: 'var(--ink-faint)', marginTop: 4 }}>
+              Showing the first 2 KB. Sensitive header values are masked as <code>[redacted]</code>.
+            </div>
+          )}
         </div>
       )}
       {extraEntries.length > 0 && (
@@ -5340,6 +5399,151 @@ function MtlsCaBundleCard() {
 // page; allows operators to add/remove DNS / wildcard / SPIFFE
 // patterns and test admit decisions without making a real mTLS
 // handshake. Empty list = admit anything (back-compat).
+// 2026-05-20 — Canary honeypot path editor. Replaces the old
+// local-only chip stub: this card reads `/api/risk/canary-paths`
+// and edits the live set through the audit-mutated PUT, so paths
+// hot-apply with no restart. Each add/remove sends the full
+// (replace-only) list, matching the Settings page's "changes apply
+// immediately" contract. The `enabled` flag reflects whether the
+// `canary` detector mask bit is on — editing paths while it's off
+// is allowed (so operators can stage a list) but inert until they
+// enable the detector on the Detectors page.
+function CanaryPathsCard() {
+  const api = window.useCanaryPathsApi();
+  const list = Array.isArray(api?.data?.paths) ? api.data.paths : [];
+  const enabled = api?.data?.enabled === true;
+  const [draft, setDraft] = useStateP('');
+  const [busy, setBusy] = useStateP(false);
+
+  async function applyList(next, okMsg) {
+    setBusy(true);
+    try {
+      const r = await window.canaryPathsPut(next);
+      if (r && r.ok) {
+        window.aegisToast(okMsg, 'ok');
+        setDraft('');
+        api.reload && api.reload();
+        return true;
+      }
+      const msg = (r && (r.message || r.error || r.reason)) || `HTTP ${r && r.status}`;
+      window.aegisToast(`Canary paths: ${msg}`, 'err');
+      return false;
+    } catch (e) {
+      window.aegisToast(`Canary paths error: ${e.message || e}`, 'err');
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addOne() {
+    const next = (draft || '').trim();
+    if (!next || busy) return;
+    if (!next.startsWith('/')) {
+      window.aegisToast("Canary path must start with '/' (e.g. /wp-admin)", 'warn');
+      return;
+    }
+    if (list.includes(next)) {
+      window.aegisToast(`'${next}' is already a canary path`, 'warn');
+      return;
+    }
+    await applyList([...list, next], `Added canary path '${next}'`);
+  }
+
+  async function removeOne(p) {
+    if (busy) return;
+    if (!confirm(`Remove canary path '${p}'?`)) return;
+    await applyList(list.filter(x => x !== p), `Removed canary path '${p}'`);
+  }
+
+  const empty = list.length === 0;
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Canary Honeypot Paths</div>
+          <div className="card-subtitle">
+            Paths no legitimate client should ever request
+            (<code>/wp-admin</code>, <code>/.env</code>,
+            {' '}<code>/phpmyadmin/*</code>). A single hit scores 100
+            (max confidence) and blocks at every tier. Edits hot-apply
+            via audit-mutated <code>PUT /api/risk/canary-paths</code> —
+            no restart. Use a trailing <code>/*</code> to match any
+            subpath.
+          </div>
+        </div>
+        <span className={`pill ${empty ? 'warn' : 'ok'}`}>
+          {empty ? 'none configured' : `${list.length} path${list.length === 1 ? '' : 's'}`}
+        </span>
+      </div>
+
+      {!enabled && (
+        <div className="banner warn" style={{ marginBottom: 8 }}>
+          <div style={{ flex: 1, fontSize: 12 }}>
+            The <code>canary</code> detector is currently <strong>off</strong>,
+            so these paths are inert. Enable it on the{' '}
+            <a href="#/detectors" style={{ color: 'var(--accent)', fontWeight: 600 }}>
+              Detectors page
+            </a>{' '}
+            to start tripping on honeypot hits.
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+        <input
+          type="text"
+          placeholder="/wp-admin   or   /.env   or   /phpmyadmin/*"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') addOne(); }}
+          disabled={busy}
+          style={{ flex: 1, padding: '6px 8px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'var(--ink)', fontFamily: 'monospace' }}
+        />
+        <button className="btn primary" onClick={addOne} disabled={busy || !draft.trim()}>
+          Add path
+        </button>
+      </div>
+
+      {empty ? (
+        <div style={{ padding: 8, fontSize: 12, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+          No honeypot paths configured — the canary detector never fires.
+        </div>
+      ) : (
+        <table className="table" style={{ width: '100%' }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left' }}>Path</th>
+              <th style={{ textAlign: 'left', width: 90 }}>Match</th>
+              <th style={{ textAlign: 'right', width: 120 }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map(p => (
+              <tr key={p}>
+                <td style={{ fontFamily: 'monospace' }}>{p}</td>
+                <td style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+                  {p.endsWith('*') ? 'prefix' : 'exact'}
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  <button
+                    className="btn danger"
+                    disabled={busy}
+                    onClick={() => removeOne(p)}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function MtlsSansCard() {
   const api = window.useMtlsSansApi();
   const list = Array.isArray(api?.data?.allowed) ? api.data.allowed : [];
@@ -5635,30 +5839,29 @@ function PageSettings() {
         </div>
       </div>
 
-      {/* 2026-05-19 — three dashboards features removed from this
-          page during cleanup:
+      {/* 2026-05-19 — two dashboard features removed from this page
+          during cleanup:
           1. "Cumulative IP risk thresholds" (moved to Traffic Gates
              on 2026-05-10 — breadcrumb below points operators there).
           2. "Challenge Engine" card (local-only dropdown; the
              backend always renders JS challenge — no API to swap
              challenge type today).
-          3. "Honeypot Paths" card (local-only chip editor with no
-             backend mutation surface; cfg.risk.canary_paths is
-             YAML-only and now consumed by the first-class
-             `canary` detector on the Detectors page).
+          2026-05-20 — the "Honeypot Paths" card is BACK (CanaryPathsCard
+          below), now backed by the audit-mutated
+          PUT /api/risk/canary-paths and hot-applied to the live
+          canary detector.
 
           Inline redirect line below keeps operator memory happy
           without a full-card stub. */}
       <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <window.I.Shield />
-        <span>Looking for cumulative IP risk thresholds, challenge type, or honeypot paths?</span>
+        <span>Looking for cumulative IP risk thresholds or challenge type?</span>
         <span style={{ color: 'var(--ink-mute)' }}>·</span>
         <a href="#/traffic-gates" style={{ color: 'var(--accent)', fontWeight: 600 }}>Traffic Gates</a>
         <span style={{ color: 'var(--ink-mute)' }}>(risk thresholds)</span>
-        <span style={{ color: 'var(--ink-mute)' }}>·</span>
-        <a href="#/detectors" style={{ color: 'var(--accent)', fontWeight: 600 }}>Detectors</a>
-        <span style={{ color: 'var(--ink-mute)' }}>(<code>canary</code> for honeypots)</span>
       </div>
+
+      <CanaryPathsCard />
 
       <ResponseFilterCard />
 
@@ -9183,10 +9386,15 @@ function PageInvestigation() {
           })
           .slice()
           .sort((a, b) => {
-            const ea = a.event || a, eb = b.event || b;
-            const ta = ea.ts ? Date.parse(ea.ts) : 0;
-            const tb = eb.ts ? Date.parse(eb.ts) : 0;
-            return tb - ta;
+            // 2026-05-20 — the wire timestamp field is `ts_ms`, NOT
+            // `ts`; reading `ea.ts` gave undefined → Date.parse → NaN
+            // → both sides 0 → the "newest first" sort was a no-op,
+            // so Recent requests showed the OLDEST 200 (stale allows)
+            // and recent blocks never surfaced. Use the shared
+            // `eventTimestampMs` helper (prefers ts_ms).
+            const ta = eventTimestampMs(a.event || a);
+            const tb = eventTimestampMs(b.event || b);
+            return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0);
           });
 
         return (

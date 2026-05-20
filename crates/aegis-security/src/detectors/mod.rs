@@ -404,8 +404,21 @@ pub fn run_all_filtered_timed(
 ) -> (Vec<Signal>, Vec<&'static str>) {
     let mut signals = Vec::new();
     let mut fired: Vec<&'static str> = Vec::new();
+    // 2026-05-20 — AI/ML short-circuit. The AI classifier is the
+    // noisiest, costliest detector (it over-fires on benign traffic
+    // and pays ~700µs/inference). A request already caught by a
+    // Base-mask signature detector doesn't need the ML verdict, so
+    // we DEFER the `ai` detector and only run it when NO Base
+    // detector matched. This both avoids AI false positives piling
+    // onto an already-decided request and skips the inference cost
+    // on the common attack path.
+    let mut ai_detector: Option<&Box<dyn Detector>> = None;
     for d in detectors {
         if !mask.is_enabled_id(d.id()) {
+            continue;
+        }
+        if d.id() == "ai" {
+            ai_detector = Some(d);
             continue;
         }
         let t0 = std::time::Instant::now();
@@ -415,6 +428,19 @@ pub fn run_all_filtered_timed(
             fired.push(d.id());
         }
         signals.extend(s);
+    }
+    // Run AI only when it's enabled in the mask AND no Base detector
+    // fired on this request.
+    if fired.is_empty() {
+        if let Some(d) = ai_detector {
+            let t0 = std::time::Instant::now();
+            let s = d.inspect(req);
+            record(d.id(), t0.elapsed());
+            if !s.is_empty() {
+                fired.push(d.id());
+            }
+            signals.extend(s);
+        }
     }
     (signals, fired)
 }
@@ -474,31 +500,29 @@ pub fn default_detectors_with(
 
 /// 2026-05-18 F-CRITICAL-012 (security audit, Phase F) — variant
 /// of [`default_detectors_with`] that also appends the
-/// [`canary::CanaryDetector`] when `risk.canary_paths` is non-empty.
-/// Canary is a peer of the OWASP detectors but data-driven from
-/// `RiskConfig` rather than `DetectorsConfig`; this entry point
+/// [`canary::CanaryDetector`], wired to a shared [`canary::CanaryPaths`]
+/// handle. Canary is a peer of the OWASP detectors but data-driven
+/// from `RiskConfig` rather than `DetectorsConfig`; this entry point
 /// keeps the call site in `aegis-proxy::run` to a single line.
 ///
-/// Empty `canary_paths` → no canary detector is appended, so the
-/// detector list is identical to the base path. Saves the per-
-/// request cost of one always-empty loop iteration on deployments
-/// that don't use honeypots.
+/// 2026-05-20 — the canary detector is now **always** registered
+/// from the shared handle so the path set is editable live via
+/// `PUT /api/risk/canary-paths` and the `Canary` mask bit can be
+/// flipped on at runtime, both with no chain rebuild. Execution is
+/// gated by the `Canary` mask bit (seeded from `cfg.canary.enabled`),
+/// so a disabled or empty canary costs one `ArcSwap` load that the
+/// dispatcher skips entirely when the bit is off.
 pub fn default_detectors_with_canary(
     cfg: &aegis_core::config::DetectorsConfig,
-    canary_paths: &[String],
+    canary_paths: &canary::CanaryPaths,
 ) -> Vec<Box<dyn Detector>> {
     let mut v = default_detectors_with(cfg);
-    // 2026-05-19 — three Phase F detectors are now first-class
-    // togglable classes (see DetectorClass::{BehaviorSignals,
-    // Velocity, Canary}). Each only gets registered when its
-    // DetectorsConfig toggle is on, so the dispatcher loop pays
-    // zero cost for detectors the operator turned off. Canary
-    // additionally requires `canary_paths` to be non-empty — an
-    // empty list means there's nothing to trip on, so registering
-    // it would just be an always-empty loop iteration per request.
-    if cfg.canary.enabled && !canary_paths.is_empty() {
-        v.push(Box::new(canary::CanaryDetector::new(canary_paths)));
-    }
+    // Always register canary from the shared handle; the `Canary`
+    // mask bit gates whether the dispatcher actually runs it, and
+    // the path set is hot-swappable via the admin control plane.
+    v.push(Box::new(canary::CanaryDetector::from_handle(
+        canary_paths.clone(),
+    )));
     if cfg.behavior_signals.enabled {
         // 2026-05-18 F-CRITICAL-004 (security audit, Phase F) — the
         // four §5.2 behaviour signals (burst / no-UA /
@@ -549,6 +573,178 @@ mod tests {
             peer: "127.0.0.1:1234".parse().unwrap(),
             tls: None,
             body: b,
+        }
+    }
+
+    #[test]
+    fn legit_graphql_query_is_not_recon_but_introspection_is() {
+        // 2026-05-20 FP fix — a normal GraphQL query (incl. the
+        // benign `__typename` meta-field) must NOT trip the recon
+        // detector; only introspection (`__schema` / `__type(` /
+        // IntrospectionQuery) is recon.
+        let detectors = default_detectors();
+        let m = http::Method::GET;
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::empty();
+
+        // Legit query the operator flagged — must produce NO signal.
+        let legit: http::Uri = "/r/api/aggregator/graphql?query=%7B%20findContent(%20brand%3A%20%22berries%22%20environment%3A%20%22production%22%20contentType%3A%20%22marketing_spots_pdp%22%20query%3A%20%22%7B%7B%5C%22brand%5C%22%3A%20%5C%22berries%5C%22%7D%20%7D%22%20locale%3A%20%22en-us%22%20)%20%7B%20content%20__typename%20%7D%7D".parse().unwrap();
+        let req = view(&m, &legit, &h, &b);
+        let (signals, _) =
+            run_all_filtered_timed(&detectors, DetectorMask::all_enabled(), &req, |_, _| {});
+        assert!(
+            signals.is_empty(),
+            "legit GraphQL query must not fire any detector: {:?}",
+            signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+        );
+
+        // Introspection — must still flag recon.
+        let introspect: http::Uri =
+            "/api/graphql?query=%7B__schema%7BqueryType%7Bname%7D%7D%7D".parse().unwrap();
+        let req = view(&m, &introspect, &h, &b);
+        let (signals, _) =
+            run_all_filtered_timed(&detectors, DetectorMask::all_enabled(), &req, |_, _| {});
+        assert!(
+            signals.iter().any(|s| s.tag == "recon_path"),
+            "GraphQL introspection should still trip recon: {:?}",
+            signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+        );
+    }
+
+    struct AlwaysFire(&'static str);
+    impl Detector for AlwaysFire {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn inspect(&self, _req: &RequestView<'_>) -> Vec<Signal> {
+            vec![Signal { score: 40, tag: self.0.into(), field: "test".into() }]
+        }
+    }
+
+    #[test]
+    fn ai_short_circuits_when_base_detector_fires() {
+        // 2026-05-20 — the AI detector must NOT run when a Base
+        // detector already matched; it MUST run when none did.
+        let m = http::Method::GET;
+        let (_, u, h, b) = make_req("/");
+        let req = view(&m, &u, &h, &b);
+        let mask = DetectorMask::all_enabled();
+
+        // Base detector fires → AI deferred + skipped.
+        let with_base: Vec<Box<dyn Detector>> =
+            vec![Box::new(AlwaysFire("sqli")), Box::new(AlwaysFire("ai"))];
+        let (signals, fired) =
+            run_all_filtered_timed(&with_base, mask, &req, |_, _| {});
+        assert!(fired.contains(&"sqli"));
+        assert!(!fired.contains(&"ai"), "AI ran despite a Base detector match");
+        assert!(!signals.iter().any(|s| s.tag == "ai"));
+
+        // No base detector fires → AI runs.
+        struct NeverFire;
+        impl Detector for NeverFire {
+            fn id(&self) -> &'static str { "sqli" }
+            fn inspect(&self, _req: &RequestView<'_>) -> Vec<Signal> { Vec::new() }
+        }
+        let ai_only: Vec<Box<dyn Detector>> =
+            vec![Box::new(NeverFire), Box::new(AlwaysFire("ai"))];
+        let (signals, fired) =
+            run_all_filtered_timed(&ai_only, mask, &req, |_, _| {});
+        assert!(fired.contains(&"ai"), "AI should run when no Base detector fired");
+        assert!(signals.iter().any(|s| s.tag == "ai"));
+    }
+
+    #[test]
+    fn borderline_benign_traffic_produces_no_signal() {
+        // 2026-05-20 FP review — realistic legit traffic that
+        // *resembles* attacks (the classic WAF false-positive
+        // sources): SQL keywords in natural language, math `<`/`>`,
+        // internal redirects, absolute CDN/OAuth URLs, semicolon/pipe
+        // delimited params, handlebars, bracketed array params, and
+        // probe-like substrings inside legit path segments. With AI
+        // as the fallback for novel/obfuscated attacks, the Base
+        // signature detectors must NOT fire on any of these.
+        let detectors = default_detectors();
+        let m = http::Method::GET;
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::empty();
+        let cases = [
+            // SQL keywords in legitimate natural-language / params
+            ("nl-select", "/search?q=select%20a%20size%20for%20your%20shoes"),
+            ("nl-union", "/products?q=union%20jack%20flag%20t-shirt"),
+            ("nl-where", "/help?q=where%20is%20my%20order"),
+            ("nl-order-by", "/catalog?sort=price&order=desc"),
+            ("nl-drop", "/blog?title=how%20to%20drop%20a%20table%20safely"),
+            ("delete-account", "/api/users/123?action=delete"),
+            // XSS-ish legit
+            ("math-lt-gt", "/calc?expr=5%3C3%20%26%26%202%3E1"),
+            ("emoji-lt3", "/post?msg=%3C3%20you%20all"),
+            ("legit-html-desc", "/preview?html=%3Cb%3Ebold%3C%2Fb%3E%20text"),
+            // path-ish legit
+            ("redirect-internal", "/login?redirect=/account/settings"),
+            ("file-dotted", "/download?file=report.2024.final.pdf"),
+            ("semver-path", "/assets/v1.2.3/app.js"),
+            // SSRF-ish legit URL params
+            ("legit-img-url", "/proxy?url=https%3A%2F%2Fcdn.example.com%2Fimg%2Fhero.png"),
+            ("oauth-redirect", "/oauth/callback?redirect_uri=https%3A%2F%2Fapp.example.com%2Fdone"),
+            // command-ish legit (semicolons / pipes in normal params)
+            ("semicolon-filter", "/list?filter=price%3Aasc%3Bcategory%3Ashoes"),
+            ("pipe-delimited", "/report?cols=name%7Cprice%7Cstock"),
+            // template-ish (handlebars in a legit templating param)
+            ("handlebars-name", "/render?tpl=Hello%20%7B%7Buser.first_name%7D%7D"),
+            // nosql-ish legit (bracketed array params — common in PHP/Rails)
+            ("array-param", "/search?tags%5B%5D=red&tags%5B%5D=blue"),
+            ("filter-bracket", "/products?filter%5Bcolor%5D=red&filter%5Bsize%5D=10"),
+            // recon-ish legit (paths that contain probe-like substrings)
+            ("env-in-path", "/api/environment/config"),
+            ("admin-product", "/administration-guide"),
+            ("git-in-name", "/docs/using-git-with-our-api"),
+        ];
+        for (label, path) in cases {
+            let uri: http::Uri = path.parse().unwrap();
+            let req = view(&m, &uri, &h, &b);
+            let (signals, _) =
+                run_all_filtered_timed(&detectors, DetectorMask::all_enabled(), &req, |_, _| {});
+            assert!(
+                signals.is_empty(),
+                "false positive on borderline-benign `{label}` ({path}): {:?}",
+                signals.iter().map(|s| format!("{}:{}", s.tag, s.score)).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn benign_traffic_categories_produce_no_signal() {
+        // 2026-05-20 FP guard — the AppSec brief's "commonly
+        // legitimate" categories (ad-tech, analytics, encoded JSON,
+        // CDN cache-bust, tracking IDs, RTB, browser telemetry,
+        // normal catalog/search) MUST NOT trip any detector. Locks
+        // in FP-safety against future pattern changes.
+        let detectors = default_detectors();
+        let m = http::Method::GET;
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::empty();
+        let benign = [
+            ("google-ads-gampad", "/gampad/ads?gdfp_req=1&output=vast&sz=640x480&iu=/1234/video&correlator=1620000000"),
+            ("ga-analytics-collect", "/collect?v=1&_v=j96&tid=UA-12345-1&cid=555&t=pageview&dl=https%3A%2F%2Fshop.example.com%2Fcatalog&dt=Catalog&z=1620000000"),
+            ("url-encoded-json", "/api/track?data=%7B%22event%22%3A%22view%22%2C%22sku%22%3A%22ABC-123%22%2C%22price%22%3A19.99%7D"),
+            ("cdn-cache-bust", "/assets/app.js?v=4.2.1&_=1620000000"),
+            ("fbclid-tracking", "/landing?utm_source=fb&utm_medium=cpc&fbclid=IwAR0abcDEF1234567890xyz"),
+            ("long-adtech-qs", "/rtb/bid?imp=1&w=300&h=250&bidfloor=0.5&dealid=xyz&crid=creative_998877&adm=%3Cdiv%3Ead%3C%2Fdiv%3E&nurl=https%3A%2F%2Fwin.example.com%2Fn"),
+            ("browser-telemetry", "/beacon?navStart=1620000000&domComplete=1620000123&fp=a1b2c3d4e5&res=1920x1080&tz=-480"),
+            ("normal-catalog", "/catalog?sort=price&dir=asc&cat=shoes&page=2"),
+            ("normal-search", "/search?q=blue%20running%20shoes%20size%2010"),
+            ("graphql-typename", "/api/graphql?query=%7Bme%7Bid%20__typename%7D%7D"),
+        ];
+        for (label, path) in benign {
+            let uri: http::Uri = path.parse().unwrap();
+            let req = view(&m, &uri, &h, &b);
+            let (signals, _) =
+                run_all_filtered_timed(&detectors, DetectorMask::all_enabled(), &req, |_, _| {});
+            assert!(
+                signals.is_empty(),
+                "false positive on benign `{label}`: {:?}",
+                signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+            );
         }
     }
 

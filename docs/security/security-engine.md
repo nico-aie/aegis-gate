@@ -196,13 +196,40 @@ block on their own; they accumulate signals.
 | Template injection | `template_injection` | URL, body — Jinja2 / Twig / SpEL / Freemarker / Velocity / Handlebars |
 | NoSQL injection | `nosql_injection` | URL, body — MongoDB operator injection (`[$ne]`, `[$where]`, `"$gt":`) |
 | Open redirect | `open_redirect` | Query string — suspicious external URLs in redirect-style params (`?next=`, `?redirect_uri=`); allowlist via `cfg.detectors.open_redirect.allowed_domains` |
-| AI (optional) | `ai` | URL + body, run through ONNX classifier |
+| Canary | `canary` | URL path — operator-curated honeypot paths (`risk.canary_paths`, editable on the Settings page). Score 100. Default OFF. |
+| Velocity sequence | `velocity_*` | Cross-endpoint flow (login→withdrawal < 5 s, …) |
+| Behaviour signals | `behavior_*` | Missing UA / Referer on mutations / zero-depth first-touch |
+| AI (optional) | `ai` | URL + body, run through ONNX classifier — **short-circuit, see below** |
 
 Per-detector deep-dives in [`detectors/`](detectors/).
 
 The **detector mask** is the runtime gate. Flipping a class off (Detectors
 page → Edit row → Save) stops the WAF from running it on the next
 request. Audit-mutated, hot-swap, no restart.
+
+#### AI short-circuit (Base detectors win)
+
+The AI classifier is **deferred** to the end of the chain and runs
+**only when no Base-mask (signature) detector fired on this request**.
+The dispatcher (`run_all_filtered_timed` in
+`crates/aegis-security/src/detectors/mod.rs`) collects the signature
+detectors first; if any of them emitted a signal, it skips the AI
+detector entirely. Rationale:
+
+- **Fewer false positives.** A deterministic signature hit (sqli, xss,
+  …) is already high-confidence and carries its own calibrated score;
+  layering a probabilistic AI verdict on top only adds noise and the
+  risk of double-counting. The signature detectors are the
+  authoritative signal when they fire.
+- **Lower cost.** ONNX inference is the most expensive step in the
+  chain; skipping it on the (common) requests that a cheap regex
+  already flagged keeps the hot path fast.
+
+So AI is a **fallback for the long tail** — novel or obfuscated
+payloads that slip past every signature detector. When it does run and
+returns `attack`, it contributes score 60 as the sole detector signal.
+Toggling AI off (kill-switch or `set_profile`) removes it from the
+chain regardless of the short-circuit.
 
 ### Stage 5 — Rule engine
 
@@ -382,19 +409,19 @@ safely without touching the calibrated score ladder):
 
 | Contributor | Where it adds | Default delta | Source |
 |---|---|---:|---|
-| SQL injection | per-request + per-IP | **40** | `detectors/sqli.rs` |
-| XSS | per-request + per-IP | **35** | `detectors/xss.rs` |
-| Path traversal | per-request + per-IP | **45** | `detectors/path_traversal.rs` |
-| SSRF | per-request + per-IP | **50** | `detectors/ssrf.rs` |
-| Header injection / CRLF / smuggling | per-request + per-IP | **40** | `detectors/header_injection.rs` |
-| Recon (probe / canary) | per-request + per-IP | **25 / 30** | `detectors/recon.rs` |
-| Body abuse (size → depth → mass-assign → proto-pollution → XXE) | per-request + per-IP | **30 / 35 / 45 / 50 / 60** | `detectors/body_abuse.rs` |
-| Brute force | per-request + per-IP | YAML-configured | `detectors/brute_force.rs` |
-| Command injection | per-request + per-IP | **50** (Log4Shell **60**) | `detectors/command_injection.rs` |
-| Template injection (SSTI) | per-request + per-IP | **50** | `detectors/template_injection.rs` |
-| NoSQL injection | per-request + per-IP | **50** | `detectors/nosql_injection.rs` |
-| Open redirect | per-request + per-IP | **30** | `detectors/open_redirect.rs` |
-| **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` |
+| SQL injection | per-request + per-IP | **70** | `detectors/sqli.rs` |
+| XSS | per-request + per-IP | **70** | `detectors/xss.rs` |
+| Path traversal | per-request + per-IP | **70** | `detectors/path_traversal.rs` |
+| SSRF | per-request + per-IP | **70** | `detectors/ssrf.rs` |
+| Header injection — CRLF / smuggling | per-request + per-IP | **70** (XFH poisoning **50**) | `detectors/header_injection.rs` |
+| Recon (probe / scanner-UA) | per-request + per-IP | **25 / 50** | `detectors/recon.rs` |
+| Body abuse (size → depth → proto-pollution → mass-assign → XXE) | per-request + per-IP | **30 / 35 / 50 / 60 / 90** | `detectors/body_abuse.rs` |
+| Brute force | per-request + per-IP | **50** (default; YAML-configurable) | `detectors/brute_force.rs` |
+| Command injection | per-request + per-IP | **70** (Log4Shell **90**) | `detectors/command_injection.rs` |
+| Template injection (SSTI) | per-request + per-IP | **70** | `detectors/template_injection.rs` |
+| NoSQL injection | per-request + per-IP | **70** | `detectors/nosql_injection.rs` |
+| Open redirect | per-request + per-IP | **50** | `detectors/open_redirect.rs` |
+| **AI / ML classifier** | per-request + per-IP | **60** | `detectors/ai/mod.rs` — runs only when no Base detector matched |
 
 Identity / behaviour weights (configurable in `cfg.risk.weights`,
 default **10 each**):
@@ -457,17 +484,22 @@ Host: localhost:8080
    Strike score = 0. Pass.
 4. **Detector chain** runs all enabled detectors. The sqli detector's
    Aho-Corasick catches `OR '1'='1` plus the `'` opener — emits
-   `Signal { tag: "sqli", score: 60 }`.
+   `Signal { tag: "sqli", score: 70 }`.
 5. **Rule engine** has no operator rule matching this URL. No-op.
-6. **Risk + tier gate**: `composite = 60`. Threshold for `low` is
-   90 — 60 < 90 means **the WAF would NOT block**. But: the **bundled
-   sqli detector's score weight is 60** in dev, so single hits don't
-   block on the catch-all tier by default. Same request against a
-   route pinned `tier_override: critical` (threshold 50) **would**
-   block.
-7. **Audit + metrics**: `action: "allow"` (or "block" if critical),
-   `fields.detectors: ["sqli"]`, `fields.risk_score: 60`.
-8. **Cumulative IP risk score** climbs by 60. Two more hits in 5 min
+6. **Per-request tier gate** (Option B, 2026-05-20): the request's
+   summed detector score (`70`) is compared to the matched tier's
+   `risk_threshold`. For `low` that's **90 — 70 < 90, so the WAF does
+   NOT block per-request** (the request forwards upstream, reported
+   `allow` with `X-WAF-Risk-Score: 70`). The SAME request against a
+   route pinned `critical` (50) or `high` (70) **would** block, since
+   `70 ≥ 50` / `70 ≥ 70`. RCE-class hits (Log4Shell, XXE = 90) block
+   on every tier including `low`.
+7. **Audit + metrics**: `action: "allow"` (or "block" on a
+   critical/high-tier route), `fields.detectors: ["sqli"]`,
+   `fields.risk_score: 70`.
+8. **Cumulative IP risk score** climbs by `max(signal)` = 70 (the
+   cumulative gate uses max per SEC-M003, not the per-request sum).
+   Two more hits in 5 min
    → score saturates at `risk.thresholds.max` (100 in prod) → crosses
    `risk.thresholds.block_at` (default **80** in prod, deliberately
    pushed to 99999 in `config/dev.yaml` so shared-loopback dev traffic

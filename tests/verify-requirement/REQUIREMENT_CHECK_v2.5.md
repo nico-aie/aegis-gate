@@ -152,7 +152,7 @@ The contract says "local/admin-only" for control endpoints, so exposing on admin
 
 **Current state:** No such document found in the repository. `README.md` and `QUICKSTART.md` cover operational setup but not the policy workflow format required by the OC.
 
-**Fix:** Create a `SUBMISSION_GUIDE.md` (or similar) documenting each feature listed in `capabilities`: `access_control` (blacklist/whitelist), `rules_engine` (sqli, xss, path_traversal, ssrf, header_injection, body_abuse, recon, brute_force, ai, command_injection, template_injection, nosql_injection, open_redirect), `rate_limit` (per_ip), `risk_engine` (score, strikes).
+**Fix:** Create a `SUBMISSION_GUIDE.md` (or similar) documenting each feature listed in `capabilities`: `access_control` (blacklist/whitelist), `rules_engine` (sqli, xss, path_traversal, ssrf, header_injection, body_abuse, recon, brute_force, ai, command_injection, template_injection, nosql_injection, open_redirect, **canary, velocity, behavior_signals** — Phase-F detectors added to the capability list + `set_profile` on 2026-05-20 so the BTC can audit and toggle them), `rate_limit` (per_ip), `risk_engine` (score, strikes).
 
 ---
 
