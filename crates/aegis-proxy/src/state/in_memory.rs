@@ -269,6 +269,19 @@ impl StateBackend for InMemoryBackend {
         Ok(self.kv.remove(&k).is_some())
     }
 
+    /// 2026-05-20 — `/__waf_control/reset_state` ephemeral wipe.
+    /// The in-memory backend stores ONLY ephemeral state (risk
+    /// keys, auto-block entries, nonces, rate-limit windows, and
+    /// arbitrary `set` keys) — there is no durable operator config
+    /// here (that lives in `WafConfig` / `ArcSwap`). So clearing
+    /// the whole map is the correct ephemeral reset. Returns the
+    /// number of entries dropped.
+    async fn reset_ephemeral(&self) -> Result<u64> {
+        let n = self.kv.len() as u64;
+        self.kv.clear();
+        Ok(n)
+    }
+
     /// SC-T1 — health snapshot for the in-memory backend.
     ///
     /// Always reports `connected: true` (the data structure is owned
@@ -340,6 +353,43 @@ mod tests {
         b.del("key1").await.unwrap();
         let val = b.get("key1").await.unwrap();
         assert!(val.is_none());
+    }
+
+    // 2026-05-20 — reset_state full-clear regression. After
+    // reset_ephemeral, every ephemeral state class the committee
+    // enumerated must read empty: rate-limit windows, challenge
+    // nonces, auto-block, backend risk keys.
+    #[tokio::test]
+    async fn reset_ephemeral_clears_all_state_classes() {
+        let b = backend();
+        let ip: IpAddr = Ipv4Addr::new(203, 0, 113, 9).into();
+        let rk = RiskKey::from_ip(ip);
+
+        // Populate one of each ephemeral class.
+        b.incr_window("client-x", Duration::from_secs(60), 100).await.unwrap(); // rate-limit window
+        assert!(b.put_nonce("nonce-abc", Duration::from_secs(60)).await.unwrap()); // challenge nonce
+        b.auto_block(ip, Duration::from_secs(60)).await.unwrap(); // enforcement state
+        b.add_risk(&rk, 40, 100).await.unwrap(); // backend risk key
+
+        // Sanity: state is present before the wipe.
+        assert!(b.is_auto_blocked(ip).await.unwrap());
+        assert_eq!(b.get_risk(&rk).await.unwrap(), 40);
+        assert!(b.len() > 0);
+
+        let cleared = b.reset_ephemeral().await.unwrap();
+        assert!(cleared >= 4, "expected ≥4 keys cleared, got {cleared}");
+
+        // Every class now reads clean.
+        assert!(!b.is_auto_blocked(ip).await.unwrap(), "auto-block survived reset");
+        assert_eq!(b.get_risk(&rk).await.unwrap(), 0, "risk key survived reset");
+        // A previously-used nonce is free again (put succeeds).
+        assert!(
+            b.put_nonce("nonce-abc", Duration::from_secs(60)).await.unwrap(),
+            "nonce store survived reset",
+        );
+        // Rate-limit window restarts from count 1.
+        let r = b.incr_window("client-x", Duration::from_secs(60), 100).await.unwrap();
+        assert_eq!(r.count, 1, "rate-limit window survived reset");
     }
 
     #[tokio::test]

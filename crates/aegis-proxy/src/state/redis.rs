@@ -562,6 +562,61 @@ mod backend {
             Ok(n > 0)
         }
 
+        /// 2026-05-20 — `/__waf_control/reset_state` ephemeral wipe.
+        ///
+        /// SCAN + DEL scoped to the ephemeral key prefixes only:
+        /// `g:risk:*`, `g:block:*`, `g:nonce:*`, `g:rl:sw:*`,
+        /// `g:rl:tb:*`. Deliberately NOT a `FLUSHDB` — the cluster
+        /// leader lease (`leader:*`) and any other durable keys (or
+        /// keys from co-tenant apps sharing the Redis) MUST survive.
+        /// A FLUSHDB here would flap the leader and reset every
+        /// node's view on a single reset_state call.
+        ///
+        /// SCAN is cursor-based + non-blocking; we DEL in batches.
+        /// Returns the total number of keys deleted.
+        async fn reset_ephemeral(&self) -> Result<u64> {
+            const EPHEMERAL_PATTERNS: &[&str] = &[
+                "g:risk:*",
+                "g:block:*",
+                "g:nonce:*",
+                "g:rl:sw:*",
+                "g:rl:tb:*",
+            ];
+            let mut total: u64 = 0;
+            let mut c = self.conn().await?;
+            for pattern in EPHEMERAL_PATTERNS {
+                let mut cursor: u64 = 0;
+                loop {
+                    let (next, keys): (u64, Vec<String>) = self
+                        .with_timeout(
+                            "reset_ephemeral_scan",
+                            redis::cmd("SCAN")
+                                .arg(cursor)
+                                .arg("MATCH")
+                                .arg(*pattern)
+                                .arg("COUNT")
+                                .arg(512)
+                                .query_async(&mut c),
+                        )
+                        .await?;
+                    if !keys.is_empty() {
+                        let deleted: i64 = self
+                            .with_timeout(
+                                "reset_ephemeral_del",
+                                redis::cmd("DEL").arg(&keys).query_async(&mut c),
+                            )
+                            .await?;
+                        total += deleted.max(0) as u64;
+                    }
+                    cursor = next;
+                    if cursor == 0 {
+                        break;
+                    }
+                }
+            }
+            Ok(total)
+        }
+
         /// SC-T1 — health snapshot for the dashboard's Scaling page.
         ///
         /// Caches the heavy parts (`INFO`, `DBSIZE`) for 5s so the
