@@ -31,6 +31,15 @@ use serde::Serialize;
 /// `distribution(window_seconds)` can answer any query without
 /// retaining unused history.
 const RETENTION: Duration = Duration::from_secs(900);
+/// 2026-05-20 (memory soak) — hard count cap on retained events.
+/// `RETENTION` bounds the window by TIME but not by RATE: under a
+/// sustained high-RPS attack flood the 15-min window could hold
+/// tens of millions of `AttackEntry` (multi-GB). This cap turns
+/// the buffer into a drop-oldest ring so memory is bounded by
+/// COUNT regardless of request rate. 200k entries × ~200 B ≈ 40 MB
+/// worst case — generous for the dashboard's rolling charts while
+/// preventing the flood-amplification growth a soak surfaced.
+const MAX_EVENTS: usize = 200_000;
 /// Default response cache TTL.
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(1);
 
@@ -177,8 +186,10 @@ struct AttackEntry {
 
 #[derive(Default)]
 struct AggregatorState {
-    /// Retained `AttackEntry`s in the broadest documented window
-    /// (`RETENTION`); oldest entries are dropped on each record.
+    /// Retained `AttackEntry`s, bounded by BOTH the broadest
+    /// documented window (`RETENTION`, time) AND [`MAX_EVENTS`]
+    /// (count). Oldest entries are dropped on each record when
+    /// either bound is exceeded — a drop-oldest ring.
     events: VecDeque<AttackEntry>,
 }
 
@@ -204,6 +215,13 @@ impl AttacksAggregator {
     pub fn reset(&self) {
         let mut s = self.inner.lock().expect("attacks agg poisoned");
         s.events.clear();
+    }
+
+    /// Test-only — number of retained events. Used to assert the
+    /// `MAX_EVENTS` count cap holds under flood.
+    #[cfg(test)]
+    fn event_count(&self) -> usize {
+        self.inner.lock().expect("attacks agg poisoned").events.len()
     }
 
     /// Ingest one audit event. Non-`Detection` events are ignored —
@@ -245,13 +263,22 @@ impl AttacksAggregator {
         let mut state = self.inner.lock().expect("attacks mutex poisoned");
         let now = entry.when;
         state.events.push_back(entry);
-        // Drop anything outside the retention window.
+        // Drop anything outside the retention window (time bound).
         while let Some(front) = state.events.front() {
             if now.duration_since(front.when) > RETENTION {
                 state.events.pop_front();
             } else {
                 break;
             }
+        }
+        // 2026-05-20 — count bound. Under a sustained high-RPS flood
+        // the time window alone can hold millions of entries; cap the
+        // buffer to MAX_EVENTS by dropping the oldest. The dashboard's
+        // distribution/top queries stay accurate for the most-recent
+        // MAX_EVENTS, which at any realistic dashboard cadence covers
+        // the displayed windows.
+        while state.events.len() > MAX_EVENTS {
+            state.events.pop_front();
         }
     }
 
@@ -941,6 +968,25 @@ mod tests {
         let r = agg.distribution(900);
         assert_eq!(r.window_seconds, 900);
         assert!(r.categories.is_empty());
+    }
+
+    // 2026-05-20 memory soak — the retained-event buffer must be
+    // bounded by COUNT (MAX_EVENTS), not just by the time window.
+    // Recording well past the cap (all within the window, so the
+    // time-prune never fires) must leave the buffer at MAX_EVENTS
+    // via drop-oldest.
+    #[test]
+    fn record_caps_event_count_under_flood() {
+        let agg = AttacksAggregator::new();
+        let ev = det_event(Some("sqli"), None);
+        for _ in 0..(MAX_EVENTS + 5_000) {
+            agg.record(&ev);
+        }
+        assert_eq!(
+            agg.event_count(),
+            MAX_EVENTS,
+            "buffer must cap at MAX_EVENTS under sustained flood",
+        );
     }
 
     #[test]
