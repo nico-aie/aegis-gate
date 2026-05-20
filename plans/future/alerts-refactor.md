@@ -1,11 +1,47 @@
 # Alerts refactor — operator-useful alerting (VipTalk-first)
 
-> **Status (2026-05-20): Designed, not started.** The SLO alert
-> path ships today and delivers to VipTalk; this plan widens
-> the surface (more event classes, richer payload, dedup,
-> severity routing) without expanding to Slack / PagerDuty /
-> Alertmanager. Everything pivots on VipTalk as the primary
-> receiver.
+> **Status (2026-05-20): Phase 1 core + Phase 2 dedup + Phase 3
+> severity routing SHIPPED; producers + dashboard UI + Phase 4
+> deferred.** Branch `feat/alerts-refactor-viptalk`.
+>
+> **What shipped:**
+> - `AlertEvent` enum (`crates/aegis-control/src/slo.rs`)
+>   subsuming `SloAlert` + 10 non-SLO variants, with
+>   `severity()` / `fired_at()` / `fingerprint()`.
+> - `dispatch_event(event, receivers, dedup)`
+>   (`slo/dispatch.rs`) with severity routing + dedup gate;
+>   `send_alert` kept as a back-compat wrapper.
+> - `AlertDedupCache` (5-min default window, configurable;
+>   `(+N suppressed)` note on re-emit).
+> - `AlertSeverity::Info` variant + `AlertReceiver.severities`
+>   filter (empty = all; serde-default so existing configs are
+>   unchanged).
+> - `format_event_text(event, suppressed)` — per-variant VipTalk
+>   chat formatting.
+> - SLO eval task (`accept.rs`) now dispatches through
+>   `dispatch_event` with a process-lifetime dedup cache, so a
+>   multi-tick burn breach fires VipTalk once instead of every
+>   30 s.
+> - 6 new unit tests (severity matrix, receiver filter, dedup
+>   window + fingerprint distinctness, event formatting).
+>
+> **What remains (Phase B — needs boot-path plumbing):**
+> - Producers for the 9 non-SLO variants. Each needs an
+>   `AlertEvent` sender threaded from `run.rs` into the
+>   subsystem (ddos.rs, upstream/health.rs, listener/tls.rs
+>   cert poll, risk/tracker.rs, supervisor.rs, gitops poll,
+>   audit chain-verify, cluster leader watcher). The enum
+>   variants + formatting are ready; only emission sites are
+>   missing. **Recommended: an `mpsc::UnboundedSender<AlertEvent>`
+>   + one consumer task in the admin loop reusing the same
+>   dedup cache + receiver list.**
+> - Dashboard severity-filter multiselect on the Tracking page
+>   receiver editor (Phase 3 UI half).
+> - Phase 4 (alert history + ack/silence).
+> - `cfg.slo.dedup_seconds` config knob (today the cache uses
+>   the hard-coded 5-min default; wire it to config).
+>
+> Original design below — kept for the deferred phases.
 
 ## Why
 

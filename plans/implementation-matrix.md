@@ -115,7 +115,7 @@ table — keep them in sync.
 | [`prometheus-otel.md`](../docs/observability/prometheus-otel.md) | **Implemented** | `metrics/{exporter,request_duration,mod}.rs` + `tracing_init.rs` + `access_log.rs`. Per-stage WAF latency landed F-T10. |
 | [`audit-logging.md`](../docs/observability/audit-logging.md) | **Implemented** | `audit/{chain,verify,witness,state_snapshot,mod}.rs`. SHA-256 hash chain + `audit verify` CLI + verbosity gating (P8). |
 | [`siem-log-forwarding.md`](../docs/observability/siem-log-forwarding.md) | **Implemented** | All 8 sinks: `audit/sinks/{cef,ecs,jsonl,kafka,leef,ocsf,splunk_hec,syslog}.rs`. Cold-tier surface @ `/api/cold-tier`. |
-| [`slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) | **Implemented** | `slo.rs` (674 lines) — 5 SLI kinds, multi-burn windows, 5 receiver kinds. |
+| [`slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) | **Implemented** | `slo.rs` — 5 SLI kinds, multi-burn windows, 5 receiver kinds. 2026-05-20 alerts refactor added `AlertEvent` router + `AlertDedupCache` + per-severity `AlertReceiver.severities` routing + `dispatch_event`; producers for the 9 non-SLO event classes + dashboard severity UI remain (see [`plans/future/alerts-refactor.md`](./future/alerts-refactor.md)). |
 
 ## 7. Operations
 

@@ -583,6 +583,7 @@ mod tests {
                 bot_token: token.into(),
                 room_ids: vec!["!room:matrix.example".into()],
             },
+            severities: Vec::new(),
         }
     }
 
@@ -592,6 +593,7 @@ mod tests {
             kind: ReceiverKind::Slack {
                 webhook_url: url.into(),
             },
+            severities: Vec::new(),
         }
     }
 
@@ -803,6 +805,7 @@ mod tests {
                 bot_token: "tok".into(),
                 room_ids: vec![],
             },
+            severities: Vec::new(),
         }];
         let err = validate_receivers(&r).unwrap_err();
         match &err {
@@ -820,6 +823,7 @@ mod tests {
                 bot_token: "tok".into(),
                 room_ids: vec!["   ".into(), "\t".into()],
             },
+            severities: Vec::new(),
         }];
         assert_eq!(
             validate_receivers(&r).unwrap_err(),
@@ -847,6 +851,7 @@ mod tests {
             kind: ReceiverKind::PagerDuty {
                 routing_key: "".into(),
             },
+            severities: Vec::new(),
         }];
         match validate_receivers(&r).unwrap_err() {
             ReceiverValidationError::EmptyTarget { field, .. } => {
@@ -864,6 +869,7 @@ mod tests {
                 instance: "".into(),
                 table: "incident".into(),
             },
+            severities: Vec::new(),
         }];
         match validate_receivers(&r).unwrap_err() {
             ReceiverValidationError::EmptyTarget { field, .. } => {
@@ -878,6 +884,7 @@ mod tests {
                 instance: "acme.service-now.com".into(),
                 table: "".into(),
             },
+            severities: Vec::new(),
         }];
         match validate_receivers(&r).unwrap_err() {
             ReceiverValidationError::EmptyTarget { field, .. } => assert_eq!(field, "table"),
@@ -893,6 +900,7 @@ mod tests {
                 base_url: "".into(),
                 project: "OPS".into(),
             },
+            severities: Vec::new(),
         }];
         match validate_receivers(&r).unwrap_err() {
             ReceiverValidationError::EmptyTarget { field, .. } => {
@@ -907,6 +915,7 @@ mod tests {
         let r = vec![AlertReceiver {
             name: "am".into(),
             kind: ReceiverKind::AlertmanagerWebhook { url: "".into() },
+            severities: Vec::new(),
         }];
         match validate_receivers(&r).unwrap_err() {
             ReceiverValidationError::EmptyTarget { field, .. } => assert_eq!(field, "url"),
