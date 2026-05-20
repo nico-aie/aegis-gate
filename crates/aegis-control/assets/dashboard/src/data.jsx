@@ -1171,6 +1171,28 @@ async function settingsRiskThresholdsPut(body) {
   return r.json().catch(() => ({ error: `HTTP ${r.status}` }));
 }
 
+// 2026-05-20 — canary honeypot paths (read + audit-mutated PUT).
+// GET returns `{ paths, count, enabled }`; PUT replaces the whole
+// set and hot-applies it via the shared CanaryPaths handle. Same
+// CSRF + JSON pattern as the risk-thresholds pair above.
+function useCanaryPathsApi() {
+  return useApi('/api/risk/canary-paths', {
+    intervalMs: 15000,
+    fallback: { paths: [], count: 0, enabled: false },
+  });
+}
+async function canaryPathsPut(paths) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/risk/canary-paths', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ paths }),
+  });
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
+
 // CI-T6 — settings mutation helpers. Same CSRF + JSON pattern as
 // the Rule CRUD wrappers above.
 async function settingsModePut(mode) {
@@ -1297,6 +1319,8 @@ Object.assign(window, {
   useModeApi, settingsModePut,
   // CI-T12 — risk thresholds (read + audit-mutated PUT)
   useRiskThresholdsApi, settingsRiskThresholdsPut,
+  // 2026-05-20 — canary honeypot paths (read + audit-mutated PUT)
+  useCanaryPathsApi, canaryPathsPut,
   // CC-T2.* — alert-receivers (read + audit-mutated PUT/DELETE/POST-test)
   useAlertReceiversApi, alertReceiversPut, alertReceiverDelete, alertReceiverTest,
   // MTLS-T7 — Allowed SAN allowlist (read + audit-mutated PUT/DELETE/POST-test)

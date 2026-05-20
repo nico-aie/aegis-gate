@@ -261,6 +261,15 @@ pub struct DashboardServices {
     /// returns 404.
     pub detectors:
         Option<std::sync::Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>>,
+    /// 2026-05-20 — shared, hot-swappable canary honeypot path set.
+    /// Same `CanaryPaths` handle the data-plane `CanaryDetector`
+    /// reads, so the audit-mutated `PUT /api/risk/canary-paths`
+    /// handler edits the live honeypot list with no chain rebuild
+    /// or restart. Defaults to an empty set in `spawn_*`; the proxy
+    /// boot path (`accept.rs`) overrides it with the live handle
+    /// seeded from `cfg.risk.canary_paths`. Test bundles keep the
+    /// empty default — `GET /api/risk/canary-paths` returns `[]`.
+    pub canary_paths: aegis_security::detectors::canary::CanaryPaths,
     /// MTLS-T7 — live, mutable allowed-SAN list. The boot path
     /// seeds it from `cfg.tls.client_auth.allowed_sans`; the
     /// audit-mutated `PUT/DELETE /api/mtls/sans` handlers update
@@ -582,6 +591,11 @@ impl DashboardServices {
                 // HACK-T3 — wired by the proxy boot path. Until then
                 // `/api/rules/simulate` returns 503.
                 detectors: None,
+                // 2026-05-20 — empty default; the proxy boot path
+                // (`accept.rs`) overrides with the live handle seeded
+                // from `cfg.risk.canary_paths`.
+                canary_paths:
+                    aegis_security::detectors::canary::CanaryPaths::default(),
                 // MTLS-T7 — wired by the proxy boot path. Until then
                 // identity extraction skips the allowlist gate.
                 allowed_sans: None,

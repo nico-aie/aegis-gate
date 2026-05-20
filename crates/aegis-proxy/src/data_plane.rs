@@ -861,14 +861,22 @@ pub(crate) async fn handle_data_request_inner(
         let fields = if load_mode.is_critical() || !allow_verbose_fields {
             serde_json::Value::Null
         } else {
-            serde_json::json!({
+            let mut f = serde_json::json!({
                 "path": parts.uri.to_string(),
                 "method": parts.method.to_string(),
                 "detectors": tags,
                 "strikes": post_state.strikes,
                 "load_mode": load_mode.as_str(),
                 "verbosity": verbosity_level.as_str(),
-            })
+            });
+            // 2026-05-20 — attach the redacted request echo (headers
+            // + bounded body preview) so the dashboard detail drawer
+            // can show what tripped the detector. Body is in scope
+            // here (post-buffer); rides the same verbosity gate above.
+            if let serde_json::Value::Object(ref mut map) = f {
+                map.extend(request_echo_fields(&parts.headers, Some(&body_bytes)));
+            }
+            f
         };
         if detector_blocks && allow_block_emit {
             let ev = aegis_core::audit::AuditEvent {
@@ -2439,6 +2447,73 @@ mod strip_uri_prefix_tests {
     }
 }
 
+#[cfg(test)]
+mod request_echo_tests {
+    use super::{is_sensitive_header, request_echo_fields};
+    use http::HeaderMap;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                http::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                http::header::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn sensitive_header_values_are_masked() {
+        let h = headers(&[
+            ("user-agent", "curl/8.0"),
+            ("authorization", "Bearer sk-secret"),
+            ("cookie", "session=abc"),
+            ("x-api-key", "deadbeef"),
+        ]);
+        let echo = request_echo_fields(&h, None);
+        let hdrs = echo["request_headers"].as_object().unwrap();
+        assert_eq!(hdrs["user-agent"], "curl/8.0");
+        assert_eq!(hdrs["authorization"], "[redacted]");
+        assert_eq!(hdrs["cookie"], "[redacted]");
+        assert_eq!(hdrs["x-api-key"], "[redacted]");
+    }
+
+    #[test]
+    fn body_preview_is_bounded_and_flags_truncation() {
+        let small = b"id=1&q=hello";
+        let echo = request_echo_fields(&HeaderMap::new(), Some(small));
+        assert_eq!(echo["request_body_preview"], "id=1&q=hello");
+        assert_eq!(echo["request_body_bytes"], 12);
+        assert_eq!(echo["request_body_truncated"], false);
+
+        let big = vec![b'a'; 5000];
+        let echo = request_echo_fields(&HeaderMap::new(), Some(&big));
+        assert_eq!(echo["request_body_bytes"], 5000);
+        assert_eq!(echo["request_body_truncated"], true);
+        assert_eq!(echo["request_body_preview"].as_str().unwrap().len(), 2048);
+    }
+
+    #[test]
+    fn no_body_keys_when_body_is_none() {
+        let echo = request_echo_fields(&HeaderMap::new(), None);
+        assert!(echo.contains_key("request_headers"));
+        assert!(!echo.contains_key("request_body_preview"));
+        assert!(!echo.contains_key("request_body_bytes"));
+    }
+
+    #[test]
+    fn sensitive_header_classifier_catches_substrings() {
+        assert!(is_sensitive_header("authorization"));
+        assert!(is_sensitive_header("x-refresh-token"));
+        assert!(is_sensitive_header("my-password-field"));
+        assert!(is_sensitive_header("x-some-apikey"));
+        assert!(!is_sensitive_header("user-agent"));
+        assert!(!is_sensitive_header("content-type"));
+        assert!(!is_sensitive_header("accept"));
+    }
+}
+
 /// event. Centralised so every deny path uses the same shape
 /// (audit class `Access`, `x-waf-rule-id` response header,
 /// plain-text body with the message).
@@ -2624,6 +2699,89 @@ pub(crate) fn build_risk_key(
         device_fp,
         session: extract_session_id(headers),
     }
+}
+
+/// 2026-05-20 — bounded, redacted request echo for the audit
+/// `fields` bag so the dashboard's request-detail drawer can show
+/// the headers + payload that tripped a detector. Only invoked on
+/// detection / block paths (not every request) and behind the same
+/// load-mode + verbosity gate as the rest of `fields`, so the
+/// volume + audit-log disk cost stays bounded.
+///
+/// Security: header values for auth / cookie / token / API-key
+/// names are masked to `[redacted]` (the key is kept so operators
+/// know the header was present); the body is capped to a small
+/// UTF-8-lossy preview with a `truncated` flag. `body = None` for
+/// the early IP-reputation block paths that fire before the body
+/// is buffered.
+fn request_echo_fields(
+    headers: &http::HeaderMap,
+    body: Option<&[u8]>,
+) -> serde_json::Map<String, serde_json::Value> {
+    const MAX_HEADERS: usize = 64;
+    const MAX_BODY_PREVIEW: usize = 2048;
+
+    let mut hdrs = serde_json::Map::new();
+    for (name, value) in headers.iter().take(MAX_HEADERS) {
+        let key = name.as_str().to_ascii_lowercase();
+        let rendered = if is_sensitive_header(&key) {
+            "[redacted]".to_string()
+        } else {
+            value.to_str().unwrap_or("[binary]").to_string()
+        };
+        // Last value wins for repeated header names — multi-valued
+        // request headers are rare and the preview is forensic, not
+        // authoritative.
+        hdrs.insert(key, serde_json::Value::String(rendered));
+    }
+
+    let mut out = serde_json::Map::new();
+    out.insert(
+        "request_headers".to_string(),
+        serde_json::Value::Object(hdrs),
+    );
+
+    if let Some(b) = body {
+        let total = b.len();
+        let slice = &b[..total.min(MAX_BODY_PREVIEW)];
+        out.insert(
+            "request_body_preview".to_string(),
+            serde_json::Value::String(String::from_utf8_lossy(slice).into_owned()),
+        );
+        out.insert(
+            "request_body_bytes".to_string(),
+            serde_json::Value::from(total),
+        );
+        out.insert(
+            "request_body_truncated".to_string(),
+            serde_json::Value::Bool(total > MAX_BODY_PREVIEW),
+        );
+    }
+    out
+}
+
+/// Header names whose VALUES carry secrets and must never reach the
+/// audit log / dashboard. The name itself is still surfaced so an
+/// operator can see the header was present.
+fn is_sensitive_header(lower_name: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-auth-token",
+        "x-csrf-token",
+        "x-xsrf-token",
+        "x-amz-security-token",
+        "x-aegis-actor",
+    ];
+    EXACT.contains(&lower_name)
+        || lower_name.contains("secret")
+        || lower_name.contains("token")
+        || lower_name.contains("password")
+        || lower_name.contains("apikey")
+        || lower_name.contains("api-key")
 }
 
 /// loopback + RFC1918 + IPv6 link-local. Operators behind an LB

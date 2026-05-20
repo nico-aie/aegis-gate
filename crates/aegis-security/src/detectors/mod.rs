@@ -500,31 +500,29 @@ pub fn default_detectors_with(
 
 /// 2026-05-18 F-CRITICAL-012 (security audit, Phase F) — variant
 /// of [`default_detectors_with`] that also appends the
-/// [`canary::CanaryDetector`] when `risk.canary_paths` is non-empty.
-/// Canary is a peer of the OWASP detectors but data-driven from
-/// `RiskConfig` rather than `DetectorsConfig`; this entry point
+/// [`canary::CanaryDetector`], wired to a shared [`canary::CanaryPaths`]
+/// handle. Canary is a peer of the OWASP detectors but data-driven
+/// from `RiskConfig` rather than `DetectorsConfig`; this entry point
 /// keeps the call site in `aegis-proxy::run` to a single line.
 ///
-/// Empty `canary_paths` → no canary detector is appended, so the
-/// detector list is identical to the base path. Saves the per-
-/// request cost of one always-empty loop iteration on deployments
-/// that don't use honeypots.
+/// 2026-05-20 — the canary detector is now **always** registered
+/// from the shared handle so the path set is editable live via
+/// `PUT /api/risk/canary-paths` and the `Canary` mask bit can be
+/// flipped on at runtime, both with no chain rebuild. Execution is
+/// gated by the `Canary` mask bit (seeded from `cfg.canary.enabled`),
+/// so a disabled or empty canary costs one `ArcSwap` load that the
+/// dispatcher skips entirely when the bit is off.
 pub fn default_detectors_with_canary(
     cfg: &aegis_core::config::DetectorsConfig,
-    canary_paths: &[String],
+    canary_paths: &canary::CanaryPaths,
 ) -> Vec<Box<dyn Detector>> {
     let mut v = default_detectors_with(cfg);
-    // 2026-05-19 — three Phase F detectors are now first-class
-    // togglable classes (see DetectorClass::{BehaviorSignals,
-    // Velocity, Canary}). Each only gets registered when its
-    // DetectorsConfig toggle is on, so the dispatcher loop pays
-    // zero cost for detectors the operator turned off. Canary
-    // additionally requires `canary_paths` to be non-empty — an
-    // empty list means there's nothing to trip on, so registering
-    // it would just be an always-empty loop iteration per request.
-    if cfg.canary.enabled && !canary_paths.is_empty() {
-        v.push(Box::new(canary::CanaryDetector::new(canary_paths)));
-    }
+    // Always register canary from the shared handle; the `Canary`
+    // mask bit gates whether the dispatcher actually runs it, and
+    // the path set is hot-swappable via the admin control plane.
+    v.push(Box::new(canary::CanaryDetector::from_handle(
+        canary_paths.clone(),
+    )));
     if cfg.behavior_signals.enabled {
         // 2026-05-18 F-CRITICAL-004 (security audit, Phase F) — the
         // four §5.2 behaviour signals (burst / no-UA /

@@ -2000,6 +2000,124 @@ pub(crate) async fn handle_risk_thresholds_put(
     }
 }
 
+/// 2026-05-20 — `PUT /api/risk/canary-paths`. Audit-mutated; replaces
+/// the live canary honeypot path set and hot-applies it via the
+/// shared [`CanaryPaths`] handle (no chain rebuild / restart). The
+/// data-plane `CanaryDetector` reads the new set on the next request.
+///
+/// Body: `{"paths": ["/wp-admin", "/.env", "/phpmyadmin/*", ...]}`.
+/// Entries are trimmed; blanks dropped; duplicates removed (first
+/// wins). Each entry must start with `/` (canary entries are request
+/// paths) and stay within the length / count caps so a runaway PUT
+/// can't bloat the per-request matcher loop.
+pub(crate) async fn handle_risk_canary_paths_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+
+    // Caps: honeypot lists are small by nature. These bound the
+    // per-request matcher loop and the audit-log payload size.
+    const MAX_CANARY_PATHS: usize = 256;
+    const MAX_CANARY_PATH_LEN: usize = 512;
+
+    let pre = mutation_preamble(&req, "risk-canary-paths-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+        ),
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        paths: Vec<String>,
+    }
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str }) {
+        Ok(b) => b,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "expected {{\"paths\": [\"/wp-admin\", ...]}}: {e}"
+            )),
+        ),
+    };
+
+    // Normalize: trim, drop blanks, dedupe (first occurrence wins,
+    // order preserved). Validate shape + caps before applying.
+    let mut normalized: Vec<String> = Vec::with_capacity(parsed.paths.len());
+    for raw in &parsed.paths {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with('/') {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "canary path must start with '/': {trimmed:?}"
+                )),
+            );
+        }
+        if trimmed.len() > MAX_CANARY_PATH_LEN {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "canary path exceeds {MAX_CANARY_PATH_LEN} chars: {:?}…",
+                    &trimmed[..MAX_CANARY_PATH_LEN.min(trimmed.len())]
+                )),
+            );
+        }
+        let owned = trimmed.to_string();
+        if !normalized.contains(&owned) {
+            normalized.push(owned);
+        }
+    }
+    if normalized.len() > MAX_CANARY_PATHS {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "too many canary paths ({}); max is {MAX_CANARY_PATHS}",
+                normalized.len()
+            )),
+        );
+    }
+
+    let current = services.canary_paths.raw();
+    let before = serde_json::json!({ "paths": current });
+    let after = serde_json::json!({ "paths": normalized });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/risk/canary-paths",
+        action: "risk_canary_paths_set",
+        reason: "operator updated canary honeypot paths",
+    };
+    let handle = services.canary_paths.clone();
+    let to_apply = normalized.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        after,
+        || {
+            handle.set(&to_apply);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "paths": normalized,
+                "count": normalized.len(),
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 pub(crate) async fn handle_risk_reset(
     req: hyper::Request<hyper::body::Incoming>,
     ip_segment: &str,
