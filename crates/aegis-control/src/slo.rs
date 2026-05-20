@@ -328,6 +328,12 @@ impl AlertEvent {
 // Dedup cache
 // ---------------------------------------------------------------------------
 
+/// Size above which [`AlertDedupCache::check`] runs a stale-entry
+/// prune. Generous — the event-class fingerprint space is small;
+/// crossing this means a high-cardinality variant (e.g.
+/// `CertExpiringSoon` keyed on host × date) is accreting.
+const DEDUP_PRUNE_THRESHOLD: usize = 256;
+
 /// In-memory dedup cache used by
 /// [`dispatch::dispatch_event`] to suppress refires of the same
 /// fingerprint inside a sliding window.
@@ -362,6 +368,20 @@ impl AlertDedupCache {
     /// first emit).
     pub fn check(&self, fingerprint: u64, now: DateTime<Utc>) -> DedupDecision {
         let mut entries = self.entries.lock().expect("dedup cache poisoned");
+
+        // 2026-05-20 memory-leak audit — the cache was insert-only,
+        // so distinct fingerprints (e.g. CertExpiringSoon keyed on
+        // host × date) accreted over long uptime. Prune entries
+        // stale beyond 2× the window when the map grows past a soft
+        // threshold. Pruning an entry loses nothing: if its
+        // fingerprint fires again it Emits fresh; a stale entry
+        // would have Emitted (not Suppressed) on the next check
+        // anyway. Throttled by size so the common path stays O(1).
+        if entries.len() > DEDUP_PRUNE_THRESHOLD {
+            let stale_after = self.window * 2;
+            entries.retain(|_, (last_emit, _)| now - *last_emit < stale_after);
+        }
+
         match entries.get_mut(&fingerprint) {
             Some((last_emit, suppressed)) => {
                 if now - *last_emit < self.window {
@@ -385,6 +405,13 @@ impl AlertDedupCache {
     #[cfg(test)]
     pub fn clear(&self) {
         self.entries.lock().expect("dedup cache poisoned").clear();
+    }
+
+    /// Test helper — number of tracked fingerprints. Used to
+    /// assert the stale-entry prune keeps the map bounded.
+    #[cfg(test)]
+    pub fn entry_count(&self) -> usize {
+        self.entries.lock().expect("dedup cache poisoned").len()
     }
 }
 
@@ -552,6 +579,11 @@ impl SliRingBuffer {
 // SLO engine
 // ---------------------------------------------------------------------------
 
+/// Cap on `SloEngine::fired_history`. Mirrors the audit ring's
+/// 200-entry bound — enough for the dashboard's history view
+/// without growing unbounded over a long-running process.
+const MAX_FIRED_HISTORY: usize = 200;
+
 /// The SLO engine: tracks SLIs and fires alerts.
 pub struct SloEngine {
     objectives: Vec<SloObjective>,
@@ -632,6 +664,13 @@ impl SloEngine {
                     };
                     active.push(alert.clone());
                     history.push(alert.clone());
+                    // 2026-05-20 memory-leak audit — fired_history was
+                    // push-only and grew unbounded over uptime. Cap to
+                    // a ring of the most-recent MAX_FIRED_HISTORY.
+                    if history.len() > MAX_FIRED_HISTORY {
+                        let excess = history.len() - MAX_FIRED_HISTORY;
+                        history.drain(0..excess);
+                    }
                     new_alerts.push(alert);
                 } else if !is_burning && already_active {
                     // Resolve.
@@ -650,6 +689,14 @@ impl SloEngine {
             }
         }
 
+        // 2026-05-20 memory-leak audit — `active_alerts` previously
+        // marked entries resolved but never removed them, so the Vec
+        // grew unbounded. The resolution has now been emitted into
+        // `new_alerts`; drop the resolved rows so `active` only ever
+        // holds genuinely-active alerts (the getter already filters
+        // these out, but the storage was still accreting them).
+        active.retain(|a| a.resolved_at.is_none());
+
         new_alerts
     }
 
@@ -667,6 +714,15 @@ impl SloEngine {
     /// Get full alert history.
     pub fn alert_history(&self) -> Vec<SloAlert> {
         self.fired_history.lock().unwrap().clone()
+    }
+
+    /// Test-only — raw length of the `active_alerts` storage Vec
+    /// (NOT filtered by `resolved_at`). Used to assert the
+    /// memory-leak fix: resolved entries are dropped rather than
+    /// accreted.
+    #[cfg(test)]
+    fn active_storage_len(&self) -> usize {
+        self.active_alerts.lock().unwrap().len()
     }
 
     /// Get current budget status for all objectives. Includes a
@@ -886,6 +942,36 @@ mod tests {
         engine.evaluate();
         let history = engine.alert_history();
         assert_eq!(history.len(), 1);
+    }
+
+    // 2026-05-20 memory-leak audit — across repeated fire→resolve
+    // cycles, the active_alerts storage must NOT accrete resolved
+    // entries (it previously marked-but-never-removed them).
+    #[test]
+    fn resolved_alerts_are_dropped_from_active_storage() {
+        let engine = SloEngine::new(fast_burn_objective());
+        for _ in 0..3 {
+            // Fire.
+            for _ in 0..100 {
+                engine.record(availability_sample(0.9));
+            }
+            engine.evaluate();
+            assert_eq!(engine.active_alerts().len(), 1);
+            // Resolve by flushing the buffer with healthy samples.
+            for _ in 0..10_000 {
+                engine.record(availability_sample(1.0));
+            }
+            engine.evaluate();
+            assert!(engine.active_alerts().is_empty());
+            // Raw storage never carries resolved rows forward.
+            assert_eq!(
+                engine.active_storage_len(),
+                0,
+                "resolved entries must be dropped, not accreted",
+            );
+        }
+        // History recorded each of the 3 fires (capped, well under).
+        assert_eq!(engine.alert_history().len(), 3);
     }
 
     #[test]

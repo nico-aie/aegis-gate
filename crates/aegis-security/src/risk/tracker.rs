@@ -39,6 +39,22 @@ use super::RiskLevel;
 
 const DEFAULT_TRUST_PER_HOUR: u32 = 30;
 
+/// 2026-05-20 (memory-leak audit) — RiskTracker's `map` had no
+/// eviction, so under distinct-source-IP attack traffic it grew
+/// one `Slot` per unique `RiskKey` forever (freed only by
+/// `reset_state`). Mirror `IpRateLimiter`'s self-throttled
+/// idle-sweep: at most one sweep per [`IDLE_SWEEP_INTERVAL`],
+/// dropping slots untouched for longer than [`IDLE_TTL`].
+///
+/// The TTL is generous (1 hour ≫ any benchmark window) so the
+/// strike-block guarantee holds for ACTIVELY-offending sources —
+/// a repeat attacker keeps `last_seen` fresh and is never swept.
+/// Only a source that goes fully silent past the TTL is forgotten,
+/// which is exactly what trust-recovery already models (its score
+/// would have decayed to 0 long before).
+const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+const IDLE_TTL: Duration = Duration::from_secs(3600);
+
 /// Snapshot of one client's risk state. Returned from every
 /// mutating call so the caller can act on the post-state without
 /// a follow-up read.
@@ -110,6 +126,10 @@ struct TrackerInner {
     /// across edits — operators tightening thresholds don't
     /// reset every accumulating IP.
     strikes: arc_swap::ArcSwap<StrikeConfig>,
+    /// Throttle anchor for [`RiskTracker::maybe_sweep`] — last
+    /// time the idle-eviction pass ran. Mirrors
+    /// `IpRateLimiter::last_sweep`.
+    last_sweep: parking_lot::Mutex<Instant>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -132,8 +152,32 @@ impl RiskTracker {
                 strikes: arc_swap::ArcSwap::from_pointee(
                     cfg.strikes.clone().unwrap_or_default(),
                 ),
+                last_sweep: parking_lot::Mutex::new(Instant::now()),
             }),
         }
+    }
+
+    /// 2026-05-20 — self-throttled idle eviction. Drops `Slot`s
+    /// untouched for longer than [`IDLE_TTL`]; runs at most once
+    /// per [`IDLE_SWEEP_INTERVAL`]. Called from the record paths so
+    /// the map stays bounded under high-cardinality (distinct-IP /
+    /// distinct-session) traffic without a dedicated reaper task.
+    /// Hot-path cost is one `try_lock` on the common (no-sweep)
+    /// path. Identical pattern to `IpRateLimiter::maybe_sweep`.
+    fn maybe_sweep(&self, now: Instant) {
+        let mut guard = match self.inner.last_sweep.try_lock() {
+            Some(g) => g,
+            None => return,
+        };
+        if now.saturating_duration_since(*guard) < IDLE_SWEEP_INTERVAL {
+            return;
+        }
+        *guard = now;
+        drop(guard);
+
+        self.inner
+            .map
+            .retain(|_, slot| now.saturating_duration_since(slot.last_seen) < IDLE_TTL);
     }
 
     /// 2026-05-10 — atomic Strike-Block config swap. The next
@@ -216,7 +260,10 @@ impl RiskTracker {
         entry.score = (entry.score + delta).min(self.inner.thresholds.load().max);
         entry.strikes = entry.strikes.saturating_add(1);
         entry.last_seen = now;
-        slot_to_state(*entry)
+        let state = slot_to_state(*entry);
+        drop(entry); // release the DashMap shard guard before sweeping
+        self.maybe_sweep(now);
+        state
     }
 
     /// Register a clean request. Applies the trust-recovery cap
@@ -256,7 +303,10 @@ impl RiskTracker {
         let recovery = trust_decay_points(elapsed, self.inner.trust.per_hour);
         entry.score = entry.score.saturating_sub(recovery);
         entry.last_seen = now;
-        slot_to_state(*entry)
+        let state = slot_to_state(*entry);
+        drop(entry); // release the DashMap shard guard before sweeping
+        self.maybe_sweep(now);
+        state
     }
 
     /// Read the current state without mutating.
@@ -533,6 +583,48 @@ mod tests {
         let t = RiskTracker::new(&cfg());
         assert!(t.snapshot(ip("1.1.1.1")).is_none());
         assert_eq!(t.level(ip("1.1.1.1")), RiskLevel::Allow);
+    }
+
+    // 2026-05-20 memory-leak audit — the map must not grow without
+    // bound. Idle slots beyond IDLE_TTL get swept on the next
+    // record; an actively-touched slot survives.
+    #[test]
+    fn maybe_sweep_evicts_idle_slots_but_keeps_active() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+
+        // Two distinct keys observed at t0 (simulates a burst of
+        // distinct source IPs).
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.0.0.1")), 20, t0);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.0.0.2")), 20, t0);
+        assert_eq!(t.len(), 2);
+
+        // A third key observed > IDLE_TTL later. This record call
+        // triggers maybe_sweep (well past IDLE_SWEEP_INTERVAL), which
+        // drops the two now-idle slots and keeps the fresh one.
+        let later = t0 + IDLE_TTL + Duration::from_secs(120);
+        t.record_malicious_at_with_key(RiskKey::from_ip(ip("10.0.0.3")), 20, later);
+        assert_eq!(t.len(), 1, "idle slots should be swept, active one kept");
+        assert!(t.snapshot(ip("10.0.0.3")).is_some());
+        assert!(t.snapshot(ip("10.0.0.1")).is_none());
+    }
+
+    #[test]
+    fn maybe_sweep_keeps_recently_active_repeat_offender() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        let t0 = Instant::now();
+        let key = RiskKey::from_ip(ip("10.0.0.9"));
+        // A repeat offender that keeps hitting stays fresh across a
+        // span longer than IDLE_TTL, so it's never swept.
+        t.record_malicious_at_with_key(key.clone(), 20, t0);
+        let mid = t0 + Duration::from_secs(1800); // 30 min — refreshes last_seen
+        t.record_malicious_at_with_key(key.clone(), 20, mid);
+        let late = t0 + IDLE_TTL + Duration::from_secs(120);
+        t.record_malicious_at_with_key(key.clone(), 20, late);
+        assert_eq!(t.len(), 1);
+        assert!(t.snapshot(ip("10.0.0.9")).is_some(), "active offender survives");
     }
 
     #[test]
