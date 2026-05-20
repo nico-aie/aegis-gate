@@ -615,6 +615,29 @@ mod tests {
     }
 
     #[test]
+    fn dedup_prunes_stale_entries_beyond_threshold() {
+        // 2026-05-20 memory-leak audit — distinct fingerprints must
+        // not accrete forever. Past the prune threshold, entries
+        // stale beyond 2× the window are dropped.
+        let cache = AlertDedupCache::new(60); // 60s window → 120s stale cutoff
+        let t0 = chrono::Utc::now();
+        // Insert > threshold distinct stale fingerprints at t0.
+        for fp in 0..300u64 {
+            assert_eq!(cache.check(fp, t0), DedupDecision::Emit { suppressed: 0 });
+        }
+        // A fresh check 10 minutes later (well past 2× window) triggers
+        // the prune; all 300 stale entries are dropped and only the
+        // freshly-checked fingerprint remains.
+        let later = t0 + chrono::Duration::seconds(600);
+        let _ = cache.check(99_999, later);
+        assert!(
+            cache.entry_count() <= 1,
+            "stale entries should be pruned, got {}",
+            cache.entry_count(),
+        );
+    }
+
+    #[test]
     fn dedup_distinguishes_fingerprints() {
         let cache = AlertDedupCache::new(300);
         let now = chrono::Utc::now();
