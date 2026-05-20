@@ -6833,6 +6833,12 @@ function PageTracking() {
   const slo = window.useSloApi();
   const certs = window.useCertsApi();
   const alerts = window.useAlertsApi();
+  // 2026-05-21 — Active alerts is driven by the overlay-aware
+  // /api/incidents enriched list (same source the Incidents page +
+  // notification bell use) so an ack/snooze/resolve there is
+  // reflected here. /api/alerts reads a separate legacy store
+  // (tracking.ack_store) that the Incidents resolve never touches.
+  const incidentsApi = window.useIncidentsApi();
   const gitops = window.useGitopsApi();
   // CC-T2.2 — alert channels (read + audit-mutated PUT/DELETE/POST-test)
   const alertReceivers = window.useAlertReceiversApi();
@@ -6944,40 +6950,55 @@ function PageTracking() {
         </div>
         <div className="col-6 card">
           {(() => {
-            const firing = alerts.data?.firing || [];
-            const resolved = alerts.data?.resolved || [];
+            // Overlay-aware: a `firing` alert is one whose IncidentTracker
+            // status is still `firing` (ack/snooze/resolve all drop it).
+            // Falls back to the legacy /api/alerts shape only when the
+            // SLO engine isn't wired (test builds → no enriched list).
+            const enriched = Array.isArray(incidentsApi.data?.incidents)
+              ? incidentsApi.data.incidents.map(i => ({
+                  name: `${i.sli}-${i.window_hours}h`,
+                  severity: i.severity,
+                  since: i.fired_at,
+                  runbook_url: i.runbook_url,
+                  status: i.status,
+                }))
+              : (alerts.data?.firing || []).map(a => ({ ...a, status: 'firing' }));
+            const firing = enriched.filter(a => a.status === 'firing');
+            const acked = enriched.filter(a => a.status === 'acknowledged');
             return (
-              <window.SectionHeader
-                title="Active alerts"
-                sub={`${firing.length} firing · ${resolved.length} acked`}
-              />
+              <>
+                <window.SectionHeader
+                  title="Active alerts"
+                  sub={`${firing.length} firing · ${acked.length} acked`}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {firing.length === 0 && (
+                    <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
+                      No alerts firing.
+                    </div>
+                  )}
+                  {firing.map(a => (
+                    <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 12 }}>
+                      <span className={`pill ${a.severity === 'page' ? 'err' : a.severity === 'ticket' ? 'warn' : 'info'}`}>
+                        {a.severity}
+                      </span>
+                      <div style={{ flex: 1 }}>
+                        <div className="mono" style={{ color: 'var(--ink)' }}>{a.name}</div>
+                        {a.runbook_url && (
+                          <a href={a.runbook_url} target="_blank" rel="noopener noreferrer" className="dim" style={{ fontSize: 11 }}>
+                            runbook ↗
+                          </a>
+                        )}
+                      </div>
+                      <span className="dim" style={{ fontSize: 11 }}>
+                        {a.since ? new Date(a.since).toLocaleTimeString() : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
             );
           })()}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {(alerts.data?.firing || []).length === 0 && (
-              <div style={{ padding: 12, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                No alerts firing.
-              </div>
-            )}
-            {(alerts.data?.firing || []).map(a => (
-              <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, background: 'var(--canvas-2)', borderRadius: 6, fontSize: 12 }}>
-                <span className={`pill ${a.severity === 'page' ? 'err' : a.severity === 'ticket' ? 'warn' : 'info'}`}>
-                  {a.severity}
-                </span>
-                <div style={{ flex: 1 }}>
-                  <div className="mono" style={{ color: 'var(--ink)' }}>{a.name}</div>
-                  {a.runbook_url && (
-                    <a href={a.runbook_url} target="_blank" rel="noopener noreferrer" className="dim" style={{ fontSize: 11 }}>
-                      runbook ↗
-                    </a>
-                  )}
-                </div>
-                <span className="dim" style={{ fontSize: 11 }}>
-                  {a.since ? new Date(a.since).toLocaleTimeString() : ''}
-                </span>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
 
