@@ -848,6 +848,11 @@ pub(crate) async fn admin_accept_loop(
         let shared = Arc::clone(&shared_receivers);
         let ring = dispatch_ring.clone();
         tokio::spawn(async move {
+            // 2026-05-20 alerts refactor — a process-lifetime dedup
+            // cache so a multi-tick burn-rate breach in the same
+            // window fires VipTalk once (with a `(+N suppressed)`
+            // note on the next emission) instead of every 30 s.
+            let dedup = aegis_control::slo::AlertDedupCache::default_window();
             let mut tick =
                 tokio::time::interval(std::time::Duration::from_secs(30));
             tick.tick().await; // skip the immediate first tick
@@ -859,8 +864,14 @@ pub(crate) async fn admin_accept_loop(
                 }
                 let receivers = (**shared.load()).clone();
                 for alert in &new_alerts {
-                    let summary =
-                        aegis_control::slo::dispatch::send_alert(alert, &receivers).await;
+                    let event =
+                        aegis_control::slo::AlertEvent::Slo(alert.clone());
+                    let summary = aegis_control::slo::dispatch::dispatch_event(
+                        &event,
+                        &receivers,
+                        Some(&dedup),
+                    )
+                    .await;
                     let now = chrono::Utc::now().timestamp();
                     for name in &summary.delivered {
                         // VipTalk dispatch with the `alerts`

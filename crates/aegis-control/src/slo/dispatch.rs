@@ -15,7 +15,9 @@
 //! no-op that logs the alert at `info` and returns Ok — useful
 //! for development builds.
 
-use crate::slo::{AlertReceiver, ReceiverKind, SloAlert};
+use crate::slo::{
+    AlertDedupCache, AlertEvent, AlertReceiver, DedupDecision, ReceiverKind, SloAlert,
+};
 
 /// Outcome of dispatching one alert across one receiver list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,24 +60,77 @@ impl DispatchSummary {
 /// non-default region.
 pub const DEFAULT_VIPTALK_API_BASE: &str = "https://api.viptalk.org";
 
-/// Dispatch one alert across a receiver list.
+/// Dispatch one SLO alert across a receiver list.
 ///
-/// Returns a [`DispatchSummary`] showing which receivers were
-/// delivered in-process, which are operator-side, and which
-/// errored. Never panics — every failure is captured in the
-/// `failed` vec.
+/// Back-compat wrapper around [`dispatch_event`] — preserved so
+/// existing call sites that hold a `&SloAlert` keep working. New
+/// code should build an [`AlertEvent`] and call `dispatch_event`
+/// (which adds dedup + severity routing).
 pub async fn send_alert(
     alert: &SloAlert,
     receivers: &[AlertReceiver],
 ) -> DispatchSummary {
+    dispatch_event(&AlertEvent::Slo(alert.clone()), receivers, None).await
+}
+
+/// Dispatch one [`AlertEvent`] across a receiver list (2026-05-20
+/// alerts refactor).
+///
+/// - **Severity routing**: a receiver only sees the event when
+///   [`AlertReceiver::accepts`] returns true for the event's
+///   severity. An empty filter accepts everything.
+/// - **Dedup**: when `dedup` is `Some`, an event whose
+///   fingerprint fired inside the cache window is suppressed;
+///   the next emission after the window carries a
+///   `(+N suppressed)` note.
+/// - **Delivery**: VipTalk is delivered in-process (behind the
+///   `alerts` feature). Every other [`ReceiverKind`] is
+///   classified `external` for an operator-side dispatcher.
+///
+/// Never panics — every failure is captured in the `failed` vec.
+pub async fn dispatch_event(
+    event: &AlertEvent,
+    receivers: &[AlertReceiver],
+    dedup: Option<&AlertDedupCache>,
+) -> DispatchSummary {
     let mut summary = DispatchSummary::empty();
+    let severity = event.severity();
+
+    // Dedup gate — short-circuit the whole dispatch when this
+    // fingerprint fired recently.
+    let suppressed = match dedup {
+        Some(cache) => match cache.check(event.fingerprint(), event.fired_at()) {
+            DedupDecision::Suppress => {
+                tracing::debug!(
+                    severity = ?severity,
+                    "alert suppressed by dedup window",
+                );
+                return summary;
+            }
+            DedupDecision::Emit { suppressed } => suppressed,
+        },
+        None => 0,
+    };
+
+    // `text` is consumed only in the `alerts`-feature VipTalk
+    // branch; without the feature the dispatch no-ops.
+    #[cfg_attr(not(feature = "alerts"), allow(unused_variables))]
+    let text = format_event_text(event, suppressed);
 
     for r in receivers {
+        if !r.accepts(severity) {
+            tracing::debug!(
+                receiver = %r.name,
+                severity = ?severity,
+                "receiver severity filter excludes this event",
+            );
+            continue;
+        }
         match &r.kind {
             ReceiverKind::VipTalk { bot_token, room_ids } => {
                 #[cfg(feature = "alerts")]
                 {
-                    match send_viptalk(bot_token, room_ids, alert).await {
+                    match send_viptalk(bot_token, room_ids, &text).await {
                         Ok(()) => summary.delivered.push(r.name.clone()),
                         Err(e) => {
                             tracing::warn!(
@@ -101,8 +156,7 @@ pub async fn send_alert(
                     // message instead of a phantom green check.
                     tracing::warn!(
                         receiver = %r.name,
-                        sli = ?alert.sli,
-                        severity = ?alert.severity,
+                        severity = ?severity,
                         "viptalk delivery NOT sent — binary missing `alerts` feature; \
                          rebuild with FEATURES=\"redis geoip alerts\" to enable",
                     );
@@ -129,7 +183,7 @@ pub async fn send_alert(
 async fn send_viptalk(
     bot_token: &str,
     room_ids: &[String],
-    alert: &SloAlert,
+    text: &str,
 ) -> Result<(), String> {
     use std::time::Duration;
 
@@ -174,8 +228,6 @@ async fn send_viptalk(
         bot_token
     );
 
-    let text = format_alert_text(alert);
-
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -186,7 +238,7 @@ async fn send_viptalk(
     // repeating the field. The `reqwest::form` helper sends
     // duplicate keys when we pass an array of (key, value)
     // tuples, which matches what the upstream expects.
-    let mut form: Vec<(&str, &str)> = vec![("text", text.as_str())];
+    let mut form: Vec<(&str, &str)> = vec![("text", text)];
     for room in room_ids {
         form.push(("roomIds", room.as_str()));
     }
@@ -228,6 +280,81 @@ pub fn format_alert_text(alert: &SloAlert) -> String {
         resolved = resolved,
         runbook = alert.runbook_url,
     )
+}
+
+/// Format any [`AlertEvent`] as a single VipTalk chat message
+/// (2026-05-20 alerts refactor). Pure function so tests assert
+/// the exact wire format. `suppressed` is the dedup-window count
+/// of fires we dropped since the last emission — appended as a
+/// `(+N suppressed since last alert)` note when non-zero.
+pub fn format_event_text(event: &AlertEvent, suppressed: u32) -> String {
+    let sev = event.severity();
+    let body = match event {
+        AlertEvent::Slo(a) => return append_suppressed(format_alert_text(a), suppressed),
+        AlertEvent::DdosModeEntered { trigger, observed_rps, .. } => format!(
+            "[{sev:?}] DDoS gate entered ENFORCE\n\
+             Trigger: {trigger}\n\
+             Observed: {observed_rps} rps"
+        ),
+        AlertEvent::DdosModeCleared { duration_seconds, .. } => format!(
+            "[{sev:?}] DDoS gate cleared — back to NORMAL\n\
+             Enforce duration: {duration_seconds}s"
+        ),
+        AlertEvent::CertExpiringSoon { host, days_remaining, not_after, .. } => format!(
+            "[{sev:?}] TLS cert expiring soon\n\
+             Host: {host}\n\
+             Expires: {not_after} ({days_remaining} days)",
+            not_after = not_after.to_rfc3339(),
+        ),
+        AlertEvent::StrikeBlockSurge { unique_ips, window_seconds, top_rule_ids, .. } => format!(
+            "[{sev:?}] Strike-block surge\n\
+             {unique_ips} unique IPs blocked in {window_seconds}s\n\
+             Top rules: {rules}",
+            rules = if top_rule_ids.is_empty() {
+                "—".to_string()
+            } else {
+                top_rule_ids.join(", ")
+            },
+        ),
+        AlertEvent::UpstreamPoolDegraded { pool, healthy, total, first_down, .. } => format!(
+            "[{sev:?}] Upstream pool degraded\n\
+             Pool: {pool} ({healthy}/{total} healthy)\n\
+             First down: {first_down}"
+        ),
+        AlertEvent::UpstreamPoolRecovered { pool, .. } => {
+            format!("[{sev:?}] Upstream pool recovered — {pool} fully healthy")
+        }
+        AlertEvent::LeaderLost { previous_leader, our_node, .. } => format!(
+            "[{sev:?}] Cluster leader lost\n\
+             Previous: {previous_leader}\n\
+             This node: {our_node}"
+        ),
+        AlertEvent::HotReloadFailed { reason, last_known_good_version, .. } => format!(
+            "[{sev:?}] Hot-reload FAILED — last-known-good still live\n\
+             Reason: {reason}\n\
+             LKG config version: {last_known_good_version}"
+        ),
+        AlertEvent::GitOpsDrift { repo, expected, observed, .. } => format!(
+            "[{sev:?}] GitOps drift detected\n\
+             Repo: {repo}\n\
+             Expected: {expected}\n\
+             Observed: {observed}"
+        ),
+        AlertEvent::AuditChainBreak { last_good_seq, observed_seq, .. } => format!(
+            "[{sev:?}] AUDIT CHAIN BREAK\n\
+             Last good seq: {last_good_seq}\n\
+             Observed seq: {observed_seq}"
+        ),
+    };
+    append_suppressed(body, suppressed)
+}
+
+fn append_suppressed(body: String, suppressed: u32) -> String {
+    if suppressed == 0 {
+        body
+    } else {
+        format!("{body}\n(+{suppressed} suppressed since last alert)")
+    }
 }
 
 #[cfg(test)]
@@ -274,18 +401,21 @@ mod tests {
                     bot_token: "test-token".into(),
                     room_ids: vec!["!room:example.com".into()],
                 },
+                severities: Vec::new(),
             },
             AlertReceiver {
                 name: "pd".into(),
                 kind: ReceiverKind::PagerDuty {
                     routing_key: "test-key".into(),
                 },
+                severities: Vec::new(),
             },
             AlertReceiver {
                 name: "alertmanager".into(),
                 kind: ReceiverKind::AlertmanagerWebhook {
                     url: "https://am.example.com/api/v2/alerts".into(),
                 },
+                severities: Vec::new(),
             },
         ];
 
@@ -315,7 +445,7 @@ mod tests {
         // or `?` would let an attacker compose a different
         // upstream URL via path-traversal. Reject pre-dispatch
         // so the reqwest client never sees the dirty value.
-        let alert = fake_alert();
+        let text = format_alert_text(&fake_alert());
         for bad in [
             "..%2F169.254.169.254%2F",
             "evil@attacker.com",
@@ -325,7 +455,7 @@ mod tests {
             "with space",
             "",
         ] {
-            let err = send_viptalk(bad, &["!room:example.com".into()], &alert)
+            let err = send_viptalk(bad, &["!room:example.com".into()], &text)
                 .await
                 .unwrap_err();
             assert!(
@@ -357,6 +487,7 @@ mod tests {
                 bot_token: "tok".into(),
                 room_ids: vec!["!room:matrix".into()],
             },
+            severities: Vec::new(),
         }];
         let summary = send_alert(&fake_alert(), &receivers).await;
         assert!(
@@ -382,6 +513,7 @@ mod tests {
                 bot_token: "tok".into(),
                 room_ids: vec!["!room:example.com".into()],
             },
+            severities: Vec::new(),
         }];
         let summary = send_alert(&fake_alert(), &receivers).await;
         std::env::remove_var("AEGIS_VIPTALK_API_BASE");
@@ -391,5 +523,137 @@ mod tests {
             "expected vt in failed: {summary:?}"
         );
         assert!(!summary.is_clean());
+    }
+
+    // -- 2026-05-20 alerts refactor ----------------------------------------
+
+    use crate::slo::{AlertDedupCache, AlertEvent, DedupDecision};
+
+    fn vt(name: &str, severities: Vec<AlertSeverity>) -> AlertReceiver {
+        AlertReceiver {
+            name: name.into(),
+            kind: ReceiverKind::VipTalk {
+                bot_token: "tok".into(),
+                room_ids: vec!["!room:example.com".into()],
+            },
+            severities,
+        }
+    }
+
+    fn ddos_event() -> AlertEvent {
+        AlertEvent::DdosModeEntered {
+            fired_at: chrono::Utc::now(),
+            trigger: "cumulative-risk".into(),
+            observed_rps: 1840,
+        }
+    }
+
+    #[test]
+    fn event_severity_routing_matrix() {
+        assert_eq!(ddos_event().severity(), AlertSeverity::Page);
+        assert_eq!(
+            AlertEvent::DdosModeCleared { fired_at: chrono::Utc::now(), duration_seconds: 12 }
+                .severity(),
+            AlertSeverity::Info,
+        );
+        // Cert < 7 days → Page; ≥ 7 days → Ticket.
+        let soon = AlertEvent::CertExpiringSoon {
+            fired_at: chrono::Utc::now(),
+            host: "api.example.com".into(),
+            days_remaining: 3,
+            not_after: chrono::Utc::now(),
+        };
+        assert_eq!(soon.severity(), AlertSeverity::Page);
+        let later = AlertEvent::CertExpiringSoon {
+            fired_at: chrono::Utc::now(),
+            host: "api.example.com".into(),
+            days_remaining: 21,
+            not_after: chrono::Utc::now(),
+        };
+        assert_eq!(later.severity(), AlertSeverity::Ticket);
+    }
+
+    #[test]
+    fn receiver_severity_filter() {
+        let page_only = vt("oncall", vec![AlertSeverity::Page]);
+        let ticket_info = vt("audit", vec![AlertSeverity::Ticket, AlertSeverity::Info]);
+        let all = vt("everything", vec![]);
+        assert!(page_only.accepts(AlertSeverity::Page));
+        assert!(!page_only.accepts(AlertSeverity::Ticket));
+        assert!(ticket_info.accepts(AlertSeverity::Info));
+        assert!(!ticket_info.accepts(AlertSeverity::Page));
+        assert!(all.accepts(AlertSeverity::Page));
+        assert!(all.accepts(AlertSeverity::Info));
+    }
+
+    #[tokio::test]
+    async fn dispatch_event_respects_severity_filter() {
+        // DDoS-entered is Page severity; a Ticket-only receiver
+        // must be skipped (not delivered, not external).
+        let receivers = vec![vt("ticket-only", vec![AlertSeverity::Ticket])];
+        let summary = dispatch_event(&ddos_event(), &receivers, None).await;
+        assert!(summary.delivered.is_empty());
+        assert!(summary.external.is_empty());
+        assert!(summary.skipped_feature_off.is_empty());
+    }
+
+    #[test]
+    fn dedup_suppresses_inside_window_and_counts() {
+        let cache = AlertDedupCache::new(300);
+        let fp = ddos_event().fingerprint();
+        let t0 = chrono::Utc::now();
+        // First fire emits with zero suppressed.
+        assert_eq!(cache.check(fp, t0), DedupDecision::Emit { suppressed: 0 });
+        // Two more inside the window → suppressed.
+        assert_eq!(cache.check(fp, t0 + chrono::Duration::seconds(10)), DedupDecision::Suppress);
+        assert_eq!(cache.check(fp, t0 + chrono::Duration::seconds(20)), DedupDecision::Suppress);
+        // Past the window → emit, carrying the suppressed count.
+        assert_eq!(
+            cache.check(fp, t0 + chrono::Duration::seconds(400)),
+            DedupDecision::Emit { suppressed: 2 },
+        );
+    }
+
+    #[test]
+    fn dedup_distinguishes_fingerprints() {
+        let cache = AlertDedupCache::new(300);
+        let now = chrono::Utc::now();
+        let ddos = ddos_event().fingerprint();
+        let cert = AlertEvent::CertExpiringSoon {
+            fired_at: now,
+            host: "api.example.com".into(),
+            days_remaining: 3,
+            not_after: now,
+        }
+        .fingerprint();
+        assert_ne!(ddos, cert);
+        // Each fingerprint emits independently on first sight.
+        assert_eq!(cache.check(ddos, now), DedupDecision::Emit { suppressed: 0 });
+        assert_eq!(cache.check(cert, now), DedupDecision::Emit { suppressed: 0 });
+    }
+
+    #[test]
+    fn format_event_text_covers_variants_and_suppressed_suffix() {
+        let text = format_event_text(&ddos_event(), 0);
+        assert!(text.contains("[Page]"), "got: {text}");
+        assert!(text.contains("DDoS gate entered ENFORCE"), "got: {text}");
+        assert!(text.contains("1840 rps"), "got: {text}");
+        assert!(!text.contains("suppressed"), "no suffix at 0: {text}");
+
+        let with_suffix = format_event_text(&ddos_event(), 9);
+        assert!(
+            with_suffix.contains("(+9 suppressed since last alert)"),
+            "got: {with_suffix}",
+        );
+
+        let surge = AlertEvent::StrikeBlockSurge {
+            fired_at: chrono::Utc::now(),
+            unique_ips: 27,
+            window_seconds: 60,
+            top_rule_ids: vec!["sqli".into(), "ai".into()],
+        };
+        let stext = format_event_text(&surge, 0);
+        assert!(stext.contains("27 unique IPs"), "got: {stext}");
+        assert!(stext.contains("sqli, ai"), "got: {stext}");
     }
 }

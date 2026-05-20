@@ -36,6 +36,14 @@ Features we've decided to defer. Each plan captures the
 restoration spec so a future revisit doesn't have to recompose
 context from scattered comments.
 
+- [`alerts-refactor.md`](./future/alerts-refactor.md) —
+  Operator-useful alerting; VipTalk-first. Adds non-SLO event
+  classes (DDoS mode, strike-block surge, upstream degraded,
+  cert expiry, leader lost, hot-reload fail, GitOps drift,
+  audit-chain break), rich chat payload + dashboard deep-link,
+  5-min dedup, per-severity receiver routing, ack/silence
+  history. Phase 1 (event router) ≈ 2d. **Drafted 2026-05-20,
+  designed only.**
 - [`smart-caching.md`](./future/smart-caching.md) — opt-in
   in-memory LRU response cache; flips `X-WAF-Cache: HIT/MISS`
   from the always-`BYPASS` baseline. Phase 1 (in-memory + GET
@@ -115,6 +123,10 @@ When picking up new work:
 
 ## Recent cleanups
 
+- 2026-05-20 — drafted `future/alerts-refactor.md` (VipTalk-
+  focused alert mechanism refactor: non-SLO event classes,
+  rich chat payload + dedup, per-severity receiver routing,
+  ack/silence history).
 - 2026-05-19 — moved 13 closed issue-fix sprints (2026-05-11
   → 2026-05-18) into `archive/issue-fix/`; archived shipped
   `dns-upstream-resolution.md` (hickory-resolver + multi-A
