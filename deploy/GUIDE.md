@@ -250,6 +250,34 @@ under `fips`) fail fast with a precise error.
 
 ---
 
+## Upgrade notes
+
+Behavior changes a deployer should know about, newest first.
+
+### 2026-05-21 — tier thresholds + detector logging
+
+- **Default tier `risk_threshold` lowered: medium 80 → 70, low 90 → 70**
+  (critical 50 / high 70 unchanged). A single clear exploit (sqli, xss,
+  path_traversal, cmdi, ssti, nosql, header-CRLF = score 70) now blocks
+  on **every** tier, not just critical+high. Previously a textbook SQLi
+  on a low/medium-tier path (`/`, `/static`, …) was forwarded to
+  upstream (200) — a false negative. **Action for deployers:** if you
+  pinned custom per-tier `risk_threshold` values in `cfg.tiers.*` or via
+  the dashboard, re-check them — anything above 70 on medium/low will
+  let single clear exploits through. Weaker signals (recon, oversize,
+  AI-fallback 60, …) still accumulate, so this should not increase
+  false positives on benign traffic. Live-tunable via the dashboard
+  **Detectors → Edit tier** modal or `PUT /api/tiers/{name}`.
+- **Audit `rule_id` now matches `X-WAF-Rule-Id`** for detector-driven
+  decisions. Blocks already stamped the detector tags on the
+  `X-WAF-Rule-Id` header but logged `rule_id: null`; the audit now
+  carries the same tags. An under-threshold detection that is forwarded
+  as `allow` is likewise labelled with the fired detectors in both the
+  header and the audit `rule_id` (action stays `allow`), so a detection
+  is never silent in the log. **Action for deployers:** none required;
+  if you parse the audit JSONL, `rule_id` is now populated on more rows
+  (detector blocks + detected-but-allowed) — it was `null` before.
+
 ## Cross-references
 
 - [`../QUICKSTART.md`](../QUICKSTART.md) — local dev path.

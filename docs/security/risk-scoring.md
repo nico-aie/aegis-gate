@@ -72,16 +72,25 @@ These come straight from `crates/aegis-security/src/detectors/*.rs`. A
 single detector hit emits a `Signal { tag, score }`; the engine sums
 all signals from the chain.
 
-> **2026-05-20 recalibration (Option B).** The per-request block gate
-> sums this request's signals and compares to the matched tier's
-> `risk_threshold` (critical 50 / high 70 / medium 80 / low 90). Clear
-> exploits score 70 (block on critical+high); definitive RCE scores 90
-> (block on every tier); operator-curated canary honeypots score 100
-> (~0 false positives — blocks even above a custom threshold). The
-> **cumulative** bucket, by contrast, adds
-> `max(signal)` per request (SEC-M003), not the sum. Values below are
-> the single-source-of-truth scores from
-> `crates/aegis-security/src/detectors/scores.rs`.
+> **2026-05-20 recalibration (Option B), amended 2026-05-21.** The
+> per-request block gate sums this request's signals and compares to
+> the matched tier's `risk_threshold`. Defaults are now **critical 50 /
+> high 70 / medium 70 / low 70** — medium/low were lowered from 80/90
+> on 2026-05-21 so a single clear exploit (score 70) blocks on **every**
+> tier, not just critical+high. (Pre-fix, a textbook SQLi on a low-tier
+> path like `/` summed to 70 < 90 and was forwarded to upstream — a
+> false negative.) Weaker / probing signals (recon 25/50, oversize 30,
+> AI fallback 60, …) stay below 70 and must still accumulate before
+> blocking, so the false-positive guard holds. Definitive RCE scores 90
+> and canary honeypots score 100 (block on every tier with margin). The
+> **cumulative** bucket, by contrast, adds `max(signal)` per request
+> (SEC-M003), not the sum. Values below are the single-source-of-truth
+> scores from `crates/aegis-security/src/detectors/scores.rs`.
+>
+> When a detector fires but the summed score stays under the tier
+> threshold, the request is forwarded as `allow` and labelled with the
+> fired detectors in BOTH `X-WAF-Rule-Id` and the audit `rule_id` (they
+> stay in lock-step), so the detection is never silent in the log.
 
 | Detector | Tag | Score | Source |
 |---|---|---:|---|

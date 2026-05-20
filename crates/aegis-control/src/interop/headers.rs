@@ -158,6 +158,17 @@ impl DecisionTag {
         Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
     }
 
+    /// 2026-05-21 — attach a rule_id to an existing tag. Used by the
+    /// data plane to label an under-threshold detection that was
+    /// forwarded as `allow` with the fired detector tags, so the
+    /// `X-WAF-Rule-Id` response header AND the audit `rule_id` field
+    /// both carry the detectors and stay in lock-step (contract:
+    /// header and log must match).
+    pub fn with_rule_id(mut self, rule_id: impl Into<String>) -> Self {
+        self.rule_id = Some(rule_id.into());
+        self
+    }
+
     /// Attach the resolved tier; used by the data plane after
     /// classify_tier resolves so the listener-side audit emit and
     /// `X-WAF-Tier` response header can reflect the truth.
@@ -282,6 +293,17 @@ mod tests {
     fn mode_strings_match_spec() {
         assert_eq!(Mode::Enforce.as_str(), "enforce");
         assert_eq!(Mode::LogOnly.as_str(), "log_only");
+    }
+
+    /// 2026-05-21 — an under-threshold detection is forwarded as
+    /// `allow` but labelled with the fired detectors via
+    /// `with_rule_id`, so `X-WAF-Rule-Id` + the audit `rule_id`
+    /// both carry them. Action must stay `allow`.
+    #[test]
+    fn with_rule_id_labels_an_allow_without_changing_action() {
+        let tag = DecisionTag::allow().with_rule_id("recon,ai");
+        assert_eq!(tag.action, Action::Allow);
+        assert_eq!(tag.rule_id.as_deref(), Some("recon,ai"));
     }
 
     #[test]
