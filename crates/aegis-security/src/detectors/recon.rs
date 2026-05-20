@@ -55,10 +55,17 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)/_ignition/(?:execute-solution|health-check|update-config)\b",
         // Swagger / OpenAPI surface enumeration.
         r"(?i)/(?:swagger-ui\.html|swagger\.json|swagger\.yaml|v\d+/api-docs|api-docs|openapi\.json|openapi\.yaml)\b",
-        // GraphQL introspection / playground — usually disabled
-        // in prod. Operators with intentional public GraphQL can
-        // disable this class via `set_profile`.
-        r"(?i)/graphql(?:/|\?|$)",
+        // GraphQL recon. 2026-05-20 — DON'T flag the bare `/graphql`
+        // endpoint: it's a normal API surface and matching the path
+        // blocked every legitimate query (e.g.
+        // `/api/aggregator/graphql?query={ findContent(...) }`). The
+        // real recon signal is INTROSPECTION — `__schema`,
+        // `__type(name:…)`, or a named `IntrospectionQuery`. Note
+        // `__typename` is a benign meta-field and must NOT match
+        // (hence `__type\s*\(`, which `__typename` can't satisfy).
+        // The interactive IDE/playground surfaces ARE recon-worthy
+        // (rarely exposed in prod) so they stay path-matched.
+        r"(?i)(?:__schema\b|\bIntrospectionQuery\b|__type\s*\()",
         r"(?i)/graphiql(?:/|\?|$)",
         r"(?i)/playground(?:/|\?|$)",
         // Kubernetes API namespaces / pods / deployments.
@@ -235,6 +242,23 @@ mod tests {
         };
     }
 
+    macro_rules! path_negative {
+        ($name:ident, $input:expr) => {
+            #[test]
+            fn $name() {
+                let d = ReconDetector;
+                let (m, u, h, b) = view_with_path($input);
+                let req = make_view(&m, &u, &h, &b);
+                let s = d.inspect(&req);
+                assert!(
+                    !s.iter().any(|s| s.tag == "recon_path"),
+                    "false positive: recon fired on benign path: {}",
+                    $input,
+                );
+            }
+        };
+    }
+
     path_positive!(env_file, "/.env");
     path_positive!(env_prod, "/.env.production");
     path_positive!(git_dir, "/.git/HEAD");
@@ -283,8 +307,13 @@ mod tests {
     path_positive!(swagger_ui,            "/swagger-ui.html");
     path_positive!(swagger_json,          "/swagger.json");
     path_positive!(openapi_v3,            "/v3/api-docs");
-    path_positive!(graphql_root,          "/graphql");
-    path_positive!(graphql_query,         "/graphql?query=__schema");
+    // 2026-05-20 FP fix — the bare GraphQL endpoint is normal API
+    // traffic, NOT recon. Only introspection (`__schema` / `__type(`
+    // / IntrospectionQuery) and the IDE surfaces are recon.
+    path_negative!(graphql_root,          "/graphql");
+    path_negative!(graphql_legit_query,   "/api/aggregator/graphql?query=%7BfindContent(brand%3A%22x%22)%7Bcontent%20__typename%7D%7D");
+    path_positive!(graphql_introspection, "/graphql?query=__schema");
+    path_positive!(graphql_type_introspect, "/graphql?query=__type(name:%22User%22)");
     path_positive!(graphiql_ide,          "/graphiql/");
     path_positive!(playground_ide,        "/playground");
     path_positive!(k8s_namespaces,        "/api/v1/namespaces");

@@ -404,8 +404,21 @@ pub fn run_all_filtered_timed(
 ) -> (Vec<Signal>, Vec<&'static str>) {
     let mut signals = Vec::new();
     let mut fired: Vec<&'static str> = Vec::new();
+    // 2026-05-20 — AI/ML short-circuit. The AI classifier is the
+    // noisiest, costliest detector (it over-fires on benign traffic
+    // and pays ~700µs/inference). A request already caught by a
+    // Base-mask signature detector doesn't need the ML verdict, so
+    // we DEFER the `ai` detector and only run it when NO Base
+    // detector matched. This both avoids AI false positives piling
+    // onto an already-decided request and skips the inference cost
+    // on the common attack path.
+    let mut ai_detector: Option<&Box<dyn Detector>> = None;
     for d in detectors {
         if !mask.is_enabled_id(d.id()) {
+            continue;
+        }
+        if d.id() == "ai" {
+            ai_detector = Some(d);
             continue;
         }
         let t0 = std::time::Instant::now();
@@ -415,6 +428,19 @@ pub fn run_all_filtered_timed(
             fired.push(d.id());
         }
         signals.extend(s);
+    }
+    // Run AI only when it's enabled in the mask AND no Base detector
+    // fired on this request.
+    if fired.is_empty() {
+        if let Some(d) = ai_detector {
+            let t0 = std::time::Instant::now();
+            let s = d.inspect(req);
+            record(d.id(), t0.elapsed());
+            if !s.is_empty() {
+                fired.push(d.id());
+            }
+            signals.extend(s);
+        }
     }
     (signals, fired)
 }
@@ -549,6 +575,119 @@ mod tests {
             peer: "127.0.0.1:1234".parse().unwrap(),
             tls: None,
             body: b,
+        }
+    }
+
+    #[test]
+    fn legit_graphql_query_is_not_recon_but_introspection_is() {
+        // 2026-05-20 FP fix — a normal GraphQL query (incl. the
+        // benign `__typename` meta-field) must NOT trip the recon
+        // detector; only introspection (`__schema` / `__type(` /
+        // IntrospectionQuery) is recon.
+        let detectors = default_detectors();
+        let m = http::Method::GET;
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::empty();
+
+        // Legit query the operator flagged — must produce NO signal.
+        let legit: http::Uri = "/r/api/aggregator/graphql?query=%7B%20findContent(%20brand%3A%20%22berries%22%20environment%3A%20%22production%22%20contentType%3A%20%22marketing_spots_pdp%22%20query%3A%20%22%7B%7B%5C%22brand%5C%22%3A%20%5C%22berries%5C%22%7D%20%7D%22%20locale%3A%20%22en-us%22%20)%20%7B%20content%20__typename%20%7D%7D".parse().unwrap();
+        let req = view(&m, &legit, &h, &b);
+        let (signals, _) =
+            run_all_filtered_timed(&detectors, DetectorMask::all_enabled(), &req, |_, _| {});
+        assert!(
+            signals.is_empty(),
+            "legit GraphQL query must not fire any detector: {:?}",
+            signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+        );
+
+        // Introspection — must still flag recon.
+        let introspect: http::Uri =
+            "/api/graphql?query=%7B__schema%7BqueryType%7Bname%7D%7D%7D".parse().unwrap();
+        let req = view(&m, &introspect, &h, &b);
+        let (signals, _) =
+            run_all_filtered_timed(&detectors, DetectorMask::all_enabled(), &req, |_, _| {});
+        assert!(
+            signals.iter().any(|s| s.tag == "recon_path"),
+            "GraphQL introspection should still trip recon: {:?}",
+            signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+        );
+    }
+
+    struct AlwaysFire(&'static str);
+    impl Detector for AlwaysFire {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn inspect(&self, _req: &RequestView<'_>) -> Vec<Signal> {
+            vec![Signal { score: 40, tag: self.0.into(), field: "test".into() }]
+        }
+    }
+
+    #[test]
+    fn ai_short_circuits_when_base_detector_fires() {
+        // 2026-05-20 — the AI detector must NOT run when a Base
+        // detector already matched; it MUST run when none did.
+        let m = http::Method::GET;
+        let (_, u, h, b) = make_req("/");
+        let req = view(&m, &u, &h, &b);
+        let mask = DetectorMask::all_enabled();
+
+        // Base detector fires → AI deferred + skipped.
+        let with_base: Vec<Box<dyn Detector>> =
+            vec![Box::new(AlwaysFire("sqli")), Box::new(AlwaysFire("ai"))];
+        let (signals, fired) =
+            run_all_filtered_timed(&with_base, mask, &req, |_, _| {});
+        assert!(fired.contains(&"sqli"));
+        assert!(!fired.contains(&"ai"), "AI ran despite a Base detector match");
+        assert!(!signals.iter().any(|s| s.tag == "ai"));
+
+        // No base detector fires → AI runs.
+        struct NeverFire;
+        impl Detector for NeverFire {
+            fn id(&self) -> &'static str { "sqli" }
+            fn inspect(&self, _req: &RequestView<'_>) -> Vec<Signal> { Vec::new() }
+        }
+        let ai_only: Vec<Box<dyn Detector>> =
+            vec![Box::new(NeverFire), Box::new(AlwaysFire("ai"))];
+        let (signals, fired) =
+            run_all_filtered_timed(&ai_only, mask, &req, |_, _| {});
+        assert!(fired.contains(&"ai"), "AI should run when no Base detector fired");
+        assert!(signals.iter().any(|s| s.tag == "ai"));
+    }
+
+    #[test]
+    fn benign_traffic_categories_produce_no_signal() {
+        // 2026-05-20 FP guard — the AppSec brief's "commonly
+        // legitimate" categories (ad-tech, analytics, encoded JSON,
+        // CDN cache-bust, tracking IDs, RTB, browser telemetry,
+        // normal catalog/search) MUST NOT trip any detector. Locks
+        // in FP-safety against future pattern changes.
+        let detectors = default_detectors();
+        let m = http::Method::GET;
+        let h = http::HeaderMap::new();
+        let b = BodyPeek::empty();
+        let benign = [
+            ("google-ads-gampad", "/gampad/ads?gdfp_req=1&output=vast&sz=640x480&iu=/1234/video&correlator=1620000000"),
+            ("ga-analytics-collect", "/collect?v=1&_v=j96&tid=UA-12345-1&cid=555&t=pageview&dl=https%3A%2F%2Fshop.example.com%2Fcatalog&dt=Catalog&z=1620000000"),
+            ("url-encoded-json", "/api/track?data=%7B%22event%22%3A%22view%22%2C%22sku%22%3A%22ABC-123%22%2C%22price%22%3A19.99%7D"),
+            ("cdn-cache-bust", "/assets/app.js?v=4.2.1&_=1620000000"),
+            ("fbclid-tracking", "/landing?utm_source=fb&utm_medium=cpc&fbclid=IwAR0abcDEF1234567890xyz"),
+            ("long-adtech-qs", "/rtb/bid?imp=1&w=300&h=250&bidfloor=0.5&dealid=xyz&crid=creative_998877&adm=%3Cdiv%3Ead%3C%2Fdiv%3E&nurl=https%3A%2F%2Fwin.example.com%2Fn"),
+            ("browser-telemetry", "/beacon?navStart=1620000000&domComplete=1620000123&fp=a1b2c3d4e5&res=1920x1080&tz=-480"),
+            ("normal-catalog", "/catalog?sort=price&dir=asc&cat=shoes&page=2"),
+            ("normal-search", "/search?q=blue%20running%20shoes%20size%2010"),
+            ("graphql-typename", "/api/graphql?query=%7Bme%7Bid%20__typename%7D%7D"),
+        ];
+        for (label, path) in benign {
+            let uri: http::Uri = path.parse().unwrap();
+            let req = view(&m, &uri, &h, &b);
+            let (signals, _) =
+                run_all_filtered_timed(&detectors, DetectorMask::all_enabled(), &req, |_, _| {});
+            assert!(
+                signals.is_empty(),
+                "false positive on benign `{label}`: {:?}",
+                signals.iter().map(|s| s.tag.as_str()).collect::<Vec<_>>(),
+            );
         }
     }
 
