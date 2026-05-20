@@ -76,7 +76,9 @@ all signals from the chain.
 > sums this request's signals and compares to the matched tier's
 > `risk_threshold` (critical 50 / high 70 / medium 80 / low 90). Clear
 > exploits score 70 (block on critical+high); definitive RCE scores 90
-> (block on every tier). The **cumulative** bucket, by contrast, adds
+> (block on every tier); operator-curated canary honeypots score 100
+> (~0 false positives — blocks even above a custom threshold). The
+> **cumulative** bucket, by contrast, adds
 > `max(signal)` per request (SEC-M003), not the sum. Values below are
 > the single-source-of-truth scores from
 > `crates/aegis-security/src/detectors/scores.rs`.
@@ -102,6 +104,7 @@ all signals from the chain.
 | Recon — scanner UA | `recon` | **50** | `scores::recon::TOOL` |
 | Recon — probe path | `recon` | **25** | `scores::recon::PATH` |
 | Brute force | `brute_force` | **50** (default) | `scores::brute_force::DEFAULT` (off by default; set per-route) |
+| **Canary honeypot** (path hit) | `canary` | **100** | `detectors::canary` — operator-curated honeypot paths (`risk.canary_paths`); ~0 FP → max confidence, single-hit block at every tier. Default OFF. |
 | **AI classifier** (verdict = attack) | `ai` | **60** | `scores::ai::AI` — runs ONLY when no Base detector matched (short-circuit), so its verdict is the sole signal |
 
 ### B. Identity / behaviour signals (configurable in YAML)
