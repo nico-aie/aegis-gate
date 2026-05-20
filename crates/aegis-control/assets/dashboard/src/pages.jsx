@@ -55,6 +55,18 @@ function eventTimestampMs(ev) {
   return NaN;
 }
 
+// Resolve a request's client IP from an audit event. The
+// `/api/audit/since` wire shape renames the Rust `client_ip`
+// field to `ip` (see aegis-core/src/audit.rs `#[serde(rename =
+// "ip")]`, F-CRITICAL-002 contract alignment), so consumers that
+// read `e.client_ip` got an empty cell. Prefer the wire field
+// `ip`; keep `client_ip` as a fallback in case a caller passes a
+// raw Rust-shaped object.
+function eventIp(ev) {
+  if (!ev || typeof ev !== 'object') return '';
+  return ev.ip || ev.client_ip || '';
+}
+
 // ============== OVERVIEW ==============
 // Color palette for OWASP categories — used to overlay a colour on
 // API-returned `name` strings (which are stable identifiers like
@@ -1856,7 +1868,7 @@ function PageAuditLog() {
                   <td className="num dim">{fmt(e)}</td>
                   <td><span className={`pill ${classPill(e.class)}`}>{e.class}</span></td>
                   <td className="mono" style={{ color: 'var(--ink)' }}>{e.action}</td>
-                  <td className="mono">{e.client_ip || '—'}</td>
+                  <td className="mono">{eventIp(e) || '—'}</td>
                   <td className="mono dim" style={{ fontSize: 11 }}>{extractResourceId(e) || '—'}</td>
                   <td className="dim">{e.reason}</td>
                   <td className="mono" style={{ fontSize: 10, color: 'var(--brand-yellow)' }}>{e.request_id}</td>
@@ -8971,7 +8983,7 @@ function PageInvestigation() {
     return rawEvents.filter(row => {
       const e = row.event || row;
       if (effectiveKind === 'ip') {
-        return (e.client_ip || '').toLowerCase() === needle;
+        return eventIp(e).toLowerCase() === needle;
       }
       if (effectiveKind === 'request_id') {
         return (e.request_id || '').toLowerCase() === needle;
@@ -9036,7 +9048,8 @@ function PageInvestigation() {
       }
       const p = f.path || e.path || '/';
       byPath[p] = (byPath[p] || 0) + 1;
-      if (e.client_ip) ips.add(e.client_ip);
+      const eip = eventIp(e);
+      if (eip) ips.add(eip);
       const ts = eventTimestampMs(e);
       if (Number.isFinite(ts)) {
         earliest = Math.min(earliest, ts);
@@ -9293,7 +9306,7 @@ function PageInvestigation() {
                             })()}
                           </td>
                           <td><window.ActionPill value={e.action || '—'} /></td>
-                          <td className="mono">{e.client_ip || '—'}</td>
+                          <td className="mono">{eventIp(e) || '—'}</td>
                           <td className="mono">{f.method || e.method || '—'}</td>
                           <td className="mono"><code style={{ fontSize: 11 }}>{(f.path || e.path || '/').slice(0, 80)}</code></td>
                           <td className="num">{f.status || e.status || '—'}</td>
@@ -9311,13 +9324,14 @@ function PageInvestigation() {
               open={!!selected}
               onClose={() => setSelected(null)}
               title={(selected && (selected.fields?.path || selected.path)) || 'Request detail'}
-              footer={selected && selected.client_ip ? (
+              footer={selected && eventIp(selected) ? (
                 <>
                   <button
                     className="btn"
                     onClick={() => {
-                      setPivot(selected.client_ip);
-                      setActivePivot(selected.client_ip);
+                      const sip = eventIp(selected);
+                      setPivot(sip);
+                      setActivePivot(sip);
                       setPivotKind('ip');
                       setSelected(null);
                     }}
@@ -9328,7 +9342,7 @@ function PageInvestigation() {
               ) : null}
             >
               {selected && <RequestDetail data={{
-                ip: selected.client_ip,
+                ip: eventIp(selected),
                 action: selected.action,
                 tier: selected.tier,
                 risk: selected.risk_score,
@@ -9466,7 +9480,7 @@ function PageInvestigation() {
                         })()}
                       </td>
                       <td><span className={`pill ${e.action === 'block' ? 'down' : e.action === 'allow' ? 'up' : 'warn'}`}>{e.action || '—'}</span></td>
-                      <td className="num">{e.client_ip || '—'}</td>
+                      <td className="num">{eventIp(e) || '—'}</td>
                       <td>{method}</td>
                       <td><code style={{ fontSize: 11 }}>{path.slice(0, 60)}</code></td>
                       <td><code style={{ fontSize: 11 }}>{ruleCell}</code></td>
