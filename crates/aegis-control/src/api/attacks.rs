@@ -303,7 +303,23 @@ impl AttacksAggregator {
             if now.duration_since(entry.when) > window_dur {
                 break;
             }
-            *counts.entry(entry.detector.clone()).or_insert(0) += 1;
+            // 2026-05-20 — count EVERY detector that fired on the
+            // event, not just the canonical first tag. Co-firing
+            // detectors (notably `ai`, usually a secondary tag like
+            // `sqli,ai`) were under-counted because we only bumped
+            // `entry.detector`. This is a detector-activity chart,
+            // not a partition, so counting each class is correct
+            // (the total may exceed the event count). Mirrors
+            // `by_detector()`: explode the array; fall back to the
+            // singular tag only for legacy array-less events, and
+            // skip the synthetic `unknown` bucket.
+            if !entry.detectors.is_empty() {
+                for d in &entry.detectors {
+                    *counts.entry(d.clone()).or_insert(0) += 1;
+                }
+            } else if entry.detector != "unknown" {
+                *counts.entry(entry.detector.clone()).or_insert(0) += 1;
+            }
         }
 
         let total: u64 = counts.values().sum();
@@ -361,7 +377,21 @@ impl AttacksAggregator {
                 last_seen: entry.ts,
             });
             slot.hits = slot.hits.saturating_add(1);
-            slot.categories.insert(entry.detector.clone());
+            // 2026-05-20 — the "Detectors" column should list EVERY
+            // detector that fired against this attacker, not just the
+            // canonical first tag. Co-firing detectors (notably `ai`,
+            // which usually lands as a SECONDARY tag like `sqli,ai`)
+            // were dropped because we inserted the singular
+            // `entry.detector`. Expand the full `entry.detectors`
+            // array; fall back to the singular tag for legacy events
+            // that carry no array.
+            if entry.detectors.is_empty() {
+                slot.categories.insert(entry.detector.clone());
+            } else {
+                for d in &entry.detectors {
+                    slot.categories.insert(d.clone());
+                }
+            }
             if entry.risk > slot.risk {
                 slot.risk = entry.risk;
             }
@@ -1051,6 +1081,32 @@ mod tests {
     fn detector_name_falls_back_to_unknown() {
         let ev = det_event(None, None);
         assert_eq!(detector_name(&ev), "unknown");
+    }
+
+    // 2026-05-20 — Top Attackers "Detectors" column must list EVERY
+    // co-firing detector, including secondary tags like `ai`
+    // (`sqli,ai`). Pre-fix only the canonical first tag was kept.
+    #[test]
+    fn top_attacker_categories_include_all_co_firing_detectors() {
+        let agg = AttacksAggregator::new();
+        let mut ev = det_event(None, Some("sqli"));
+        ev.client_ip = "203.0.113.5".into();
+        ev.fields = serde_json::json!({"detectors": ["sqli", "ai"]});
+        agg.record(&ev);
+        let mut ev2 = det_event(None, Some("xss"));
+        ev2.client_ip = "203.0.113.5".into();
+        ev2.fields = serde_json::json!({"detectors": ["xss", "ai"]});
+        agg.record(&ev2);
+
+        let top = agg.top(900, 10);
+        let row = top
+            .attackers
+            .iter()
+            .find(|a| a.identifier == "203.0.113.5")
+            .expect("attacker row present");
+        assert!(row.categories.contains(&"ai".to_string()), "ai missing: {:?}", row.categories);
+        assert!(row.categories.contains(&"sqli".to_string()), "{:?}", row.categories);
+        assert!(row.categories.contains(&"xss".to_string()), "{:?}", row.categories);
     }
 
     /// 2026-05-19 — Strike-Block and Cumulative-risk gates stamp

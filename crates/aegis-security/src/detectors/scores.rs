@@ -113,9 +113,13 @@ pub mod open_redirect {
 }
 
 pub mod ai {
-    /// AI / ML classifier verdict (Critical-RCE tier — model
-    /// confidence ≥ threshold).
-    pub const AI: u32 = 60;
+    /// AI / ML classifier verdict (model confidence ≥ threshold).
+    /// 2026-05-20 — lowered 60 → 40 so a standalone AI hit no
+    /// longer single-handedly crosses the block threshold; it now
+    /// contributes meaningful weight that must combine with another
+    /// signal (or a high model probability via the scaled path) to
+    /// block. Reduces AI-only false-positive blocks.
+    pub const AI: u32 = 40;
 }
 
 // Catalog — flat table consumed by the API.

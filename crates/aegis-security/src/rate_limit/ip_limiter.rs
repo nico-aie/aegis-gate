@@ -37,7 +37,13 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use serde::Serialize;
 
-const DEFAULT_LIMIT: u32 = 1_000;
+// 2026-05-20 — loosened 1_000 → 1_000_000 per 60s. The per-IP
+// volumetric gate is a backstop against a single flooding source,
+// not a throughput cap; a tight default penalises legit benchmark
+// traffic arriving from a small set of source IPs. Operators who
+// want a strict per-IP cap set it explicitly via the `global-ip`
+// bucket / PUT /api/rate-limit.
+const DEFAULT_LIMIT: u32 = 1_000_000;
 const DEFAULT_WINDOW: Duration = Duration::from_secs(60);
 const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
