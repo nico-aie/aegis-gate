@@ -171,21 +171,26 @@ function TopBar() {
           <span className={`led ${healthTone}`} /> {healthLabel}
         </span>
         {(() => {
-          // CQF-T10 — notifications bell wired to /api/alerts.
-          // Badge shows the count of currently-firing alerts (no
-          // ack flow exposed here; that lives on the Tracking
-          // page). Click opens the Tracking page filtered to
-          // firing alerts via a hash-state convention; if no
-          // hook is wired the click still navigates so the
-          // operator lands somewhere useful.
-          const alertsApi = window.useAlertsApi();
-          const firing = (alertsApi.data?.firing || []).length;
+          // CQF-T10 — notifications bell. 2026-05-21 — re-wired from
+          // /api/alerts to the overlay-aware /api/incidents enriched
+          // list. The old source read `tracking.ack_store`, a DIFFERENT
+          // overlay store than the Incidents page resolve (which writes
+          // to IncidentTracker via /api/incidents), so a resolved alert
+          // never cleared the badge. Counting enriched incidents with
+          // status `firing` (acked/snoozed/resolved excluded) keeps the
+          // badge in lock-step with the Incidents page. Falls back to
+          // `raw_alerts.firing` when the SLO engine isn't wired (tests).
+          const incidentsApi = window.useIncidentsApi();
+          const list = incidentsApi.data?.incidents;
+          const firing = Array.isArray(list)
+            ? list.filter(i => i.status === 'firing').length
+            : (incidentsApi.data?.raw_alerts?.firing?.length || 0);
           return (
             <button
               className="icon-btn"
               title={firing > 0 ? `${firing} firing alert${firing === 1 ? '' : 's'}` : 'No firing alerts'}
               style={{ position: 'relative' }}
-              onClick={() => { location.hash = '#/tracking'; }}
+              onClick={() => { location.hash = '#/incidents'; }}
             >
               <window.I.Bell />
               {firing > 0 && (
