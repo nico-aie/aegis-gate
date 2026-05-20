@@ -335,9 +335,9 @@ function PageOverview() {
           sparkColor="#3B82F6"
         />
         <window.StatTile
-          title="Block rate"
+          title="Block rate · since start"
           value={blockRate !== undefined ? `${blockRate.toFixed(1)}%` : '—'}
-          sub={<><span className="num">{blocksTotal.toLocaleString()}</span> blocked total</>}
+          sub={<><span className="num">{blocksTotal.toLocaleString()}</span> blocked · process-lifetime (not windowed)</>}
           icon={<window.I.Ban />}
           tone="down"
           sparkData={sparkBlocked}
@@ -9183,10 +9183,15 @@ function PageInvestigation() {
           })
           .slice()
           .sort((a, b) => {
-            const ea = a.event || a, eb = b.event || b;
-            const ta = ea.ts ? Date.parse(ea.ts) : 0;
-            const tb = eb.ts ? Date.parse(eb.ts) : 0;
-            return tb - ta;
+            // 2026-05-20 — the wire timestamp field is `ts_ms`, NOT
+            // `ts`; reading `ea.ts` gave undefined → Date.parse → NaN
+            // → both sides 0 → the "newest first" sort was a no-op,
+            // so Recent requests showed the OLDEST 200 (stale allows)
+            // and recent blocks never surfaced. Use the shared
+            // `eventTimestampMs` helper (prefers ts_ms).
+            const ta = eventTimestampMs(a.event || a);
+            const tb = eventTimestampMs(b.event || b);
+            return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0);
           });
 
         return (
