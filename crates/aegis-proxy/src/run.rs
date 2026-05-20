@@ -1065,6 +1065,42 @@ pub async fn run(
             ),
         );
         let _ = upstream_ctx.pow_issuer.set(pow_issuer);
+
+        // 2026-05-20 reset_state full-clear — late-register the
+        // cleaners that need `state` + `upstream_ctx` (not in
+        // scope inside build_interop_runtime). Mirrors the
+        // AttacksAggregator late-registration in accept.rs.
+        //   item 6: DDoS spike-state atomics (config preserved)
+        if let Some(ddos_rt) = upstream_ctx.ddos.get() {
+            let ddos_for_reset = ddos_rt.clone();
+            rt.control.register_reset_callback(std::sync::Arc::new(move || {
+                ddos_for_reset.reset();
+            }));
+        }
+        //   item 5: device→IP fingerprint tracker metadata
+        let device_tracker_for_reset = upstream_ctx.device_ip_tracker.clone();
+        rt.control.register_reset_callback(std::sync::Arc::new(move || {
+            device_tracker_for_reset.clear();
+        }));
+        //   items 2/4/6 (StateBackend half): async ephemeral wipe of
+        //   rate-limit windows + nonces + auto-block + backend risk
+        //   keys, scoped to the `g:*` prefixes (leader lease survives).
+        let state_for_reset = std::sync::Arc::clone(&state);
+        rt.control.register_async_reset_callback(std::sync::Arc::new(move || {
+            let backend = std::sync::Arc::clone(&state_for_reset);
+            Box::pin(async move {
+                match backend.reset_ephemeral().await {
+                    Ok(n) => tracing::info!(
+                        cleared = n,
+                        "reset_state: StateBackend ephemeral wipe",
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "reset_state: StateBackend ephemeral wipe failed",
+                    ),
+                }
+            })
+        }));
     }
 
     // Data-plane listeners.
@@ -1782,22 +1818,29 @@ pub(crate) fn build_interop_runtime(
         },
     );
 
-    // v2.3 §2.4 — `reset_state` MUST clear (at least):
-    //   - risk state                    ✓ (risk_tracker.reset_all)
-    //   - rate-limit counters           ✓ (ip_rate_limiter.reset_all)
-    //   - cache state                   — handled by flush_cache (no
-    //                                     content cache today; sep endpoint)
-    //   - challenge/session state       — challenges are stateless PoW
-    //                                     in this WAF; no server-side
-    //                                     session storage to clear
-    //   - temporary client metadata     ✓ (behavior tracker .clear)
-    //   - temporary enforcement state   — `ModeStore` is operator-set
-    //                                     config, NOT temporary; must
-    //                                     NOT be cleared (§2.4 says
-    //                                     long-term static config is
-    //                                     preserved)
+    // v2.5 §2.4 + 2026-05-20 committee clarification —
+    // `reset_state` MUST clear ALL of:
+    //   1. risk state                  ✓ risk.reset_all() (sync)
+    //   2. rate-limit counters         ✓ ip_rate_limiter.reset_all()
+    //                                    (in-process) + StateBackend
+    //                                    sliding-window/token-bucket
+    //                                    keys via reset_ephemeral (async)
+    //   3. cache state                 — no content cache (TierCache
+    //                                    removed); flush_cache is a
+    //                                    graceful no-op
+    //   4. challenge/session state     ✓ StateBackend nonces (g:nonce:*)
+    //                                    via reset_ephemeral (async)
+    //   5. temporary client metadata   ✓ AttacksAggregator (late-reg in
+    //                                    accept.rs) + DeviceIpTracker.clear()
+    //   6. temporary enforcement state ✓ DdosRuntime.reset() (spike/
+    //                                    baseline atomics) + StateBackend
+    //                                    auto-block (g:block:*) + backend
+    //                                    risk keys (g:risk:*) via
+    //                                    reset_ephemeral (async)
     //
-    // Audit log: append-only, NOT touched by reset.
+    // `ModeStore` (operator-set enforce/log_only) is durable config,
+    // NOT temporary — preserved per §2.4. Audit log: append-only,
+    // NOT touched by reset.
     let mut reset_callbacks: Vec<aegis_control::interop::control::ResetCallback> =
         Vec::new();
     let risk_for_reset = risk.clone();
@@ -1808,6 +1851,13 @@ pub(crate) fn build_interop_runtime(
     reset_callbacks.push(Arc::new(move || {
         limiter_for_reset.reset_all();
     }));
+    // 2026-05-20 — DDoS spike-state reset (item 6), DeviceIpTracker
+    // clear (item 5), and the async StateBackend ephemeral wipe
+    // (items 2/4/6 backend half) are LATE-REGISTERED from the
+    // caller in `run()` once `state` + `upstream_ctx` exist — same
+    // pattern as the AttacksAggregator below. See
+    // `register_reset_callback` / `register_async_reset_callback`
+    // call sites in `run.rs`.
     // 2026-05-05 — AttacksAggregator's rolling window (Top
     // Attackers / By-Detector / Bot Mix) is built later, inside
     // `DashboardServices`. accept.rs late-registers its reset
@@ -1819,7 +1869,7 @@ pub(crate) fn build_interop_runtime(
     // request path yet. When the analyzer lands in the data
     // plane, register its `.clear()` here too. Today it's a
     // documented gap — log_only-style false-positive verification
-    // doesn't depend on it, so the v2.3 contract stays satisfied.
+    // doesn't depend on it, so the v2.5 contract stays satisfied.
 
     // F-CRITICAL-003 (2026-05-17 s-tester audit): pre-fix this was a
     // `warn!` + `None` swallow that left the gateway running with no
@@ -1864,6 +1914,7 @@ pub(crate) fn build_interop_runtime(
         modes: Arc::clone(&modes),
         features,
         reset_callbacks: std::sync::Mutex::new(reset_callbacks),
+        async_reset_callbacks: std::sync::Mutex::new(Vec::new()),
         flush_callback: None,
         secret: cfg
             .interop

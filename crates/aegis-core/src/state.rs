@@ -160,6 +160,27 @@ pub trait StateBackend: Send + Sync + 'static {
     async fn put_nonce(&self, nonce: &str, ttl: Duration) -> Result<bool>;
     async fn consume_nonce(&self, nonce: &str) -> Result<bool>;
 
+    /// 2026-05-20 — clear all EPHEMERAL state for
+    /// `/__waf_control/reset_state` (committee items 2, 4, 6:
+    /// rate-limit counters, challenge nonces, temporary
+    /// enforcement state). This wipes: sliding-window /
+    /// token-bucket counters, challenge nonces, auto-block
+    /// entries, and backend-held risk keys.
+    ///
+    /// It MUST NOT touch durable operator config (the contract's
+    /// §2.4 "long-term static config is preserved"). For
+    /// backends whose only contents ARE ephemeral (the current
+    /// in-memory + Redis impls store nothing durable), this is a
+    /// full flush.
+    ///
+    /// Default is a no-op so out-of-tree backends keep compiling;
+    /// the shipped backends override it. Returns the number of
+    /// entries cleared (best-effort; backends that can't count
+    /// return 0).
+    async fn reset_ephemeral(&self) -> Result<u64> {
+        Ok(0)
+    }
+
     /// SC-T1 — backend health for the dashboard's Scaling page.
     ///
     /// Default returns [`BackendHealth::unknown`] so existing impls

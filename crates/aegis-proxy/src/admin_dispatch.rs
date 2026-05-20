@@ -787,7 +787,11 @@ pub(crate) async fn handle_interop_control_with_rt(
             }
             rt.reset_in_progress.store(true, Ordering::Release);
             let _g = ResetGuard(&rt.reset_in_progress);
-            let body = serde_json::to_string(&rt.control.reset_state())
+            // 2026-05-20 — async variant awaits the StateBackend
+            // ephemeral wipe (nonces, rate windows, auto-block,
+            // backend risk keys) so the reset is complete before
+            // the 200 lands (§2.4 atomicity).
+            let body = serde_json::to_string(&rt.control.reset_state_async().await)
                 .unwrap_or_else(|_| "{}".into());
             json_body_response(200, body, "no-store")
         }

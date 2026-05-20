@@ -216,6 +216,14 @@ pub struct ControlContext {
     /// runtime goes live; late-binders extend it before the first
     /// reset_state call lands.
     pub reset_callbacks: Mutex<Vec<ResetCallback>>,
+    /// 2026-05-20 — async `reset_state` cleaners. Sync callbacks
+    /// (above) cover in-process trackers; these cover async work
+    /// such as the `StateBackend` ephemeral wipe (rate-limit
+    /// windows, challenge nonces, auto-block, backend risk keys).
+    /// Awaited in [`ControlContext::reset_state_async`] AFTER the
+    /// sync chain, so the whole reset stays atomic from the
+    /// caller's POV.
+    pub async_reset_callbacks: Mutex<Vec<AsyncResetCallback>>,
     /// `flush_cache` callback. `None` = no cache implemented;
     /// the endpoint returns `supported: false`.
     pub flush_callback: Option<ResetCallback>,
@@ -228,6 +236,15 @@ pub struct ControlContext {
 /// Type alias for a reset callback. Wrapped in `Arc<dyn Fn>` so
 /// `ControlContext` itself is cheap to clone.
 pub type ResetCallback = Arc<dyn Fn() + Send + Sync>;
+
+/// Async reset callback — returns a boxed future run by
+/// [`ControlContext::reset_state_async`]. Used for cleaners that
+/// must `.await` (e.g. the `StateBackend` ephemeral wipe).
+pub type AsyncResetCallback = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
 
 impl ControlContext {
     /// Authenticate a request against the contract secret.
@@ -259,8 +276,13 @@ impl ControlContext {
         }
     }
 
-    /// Run every reset callback, return the response. The
+    /// Run every SYNC reset callback, return the response. The
     /// audit log is always preserved.
+    ///
+    /// Prefer [`Self::reset_state_async`] on the live request path
+    /// — it additionally awaits the async cleaners (the
+    /// `StateBackend` ephemeral wipe). This sync-only variant
+    /// stays for tests + callers without a runtime handle.
     pub fn reset_state(&self) -> ResetResponse {
         // Snapshot under the lock + run callbacks unlocked so a
         // late-registering caller doesn't deadlock if its closure
@@ -279,6 +301,47 @@ impl ControlContext {
             audit_log_preserved: true,
             ts_ms: now_ms(),
         }
+    }
+
+    /// 2026-05-20 — full reset: run the sync chain, then await
+    /// every async cleaner. Used by the live
+    /// `/__waf_control/reset_state` handler so the StateBackend
+    /// wipe (rate-limit windows, nonces, auto-block, backend risk
+    /// keys) completes BEFORE the 200 response — keeping the
+    /// reset atomic from the benchmarker's POV (§2.4). Async
+    /// cleaner failures are swallowed-with-log, same as the sync
+    /// chain: a backend hiccup must not turn a reset into a 500.
+    pub async fn reset_state_async(&self) -> ResetResponse {
+        // Sync chain first (in-process trackers).
+        let _ = self.reset_state();
+        // Then async cleaners (backend wipe).
+        let acbs: Vec<AsyncResetCallback> = {
+            let g = self
+                .async_reset_callbacks
+                .lock()
+                .expect("async_reset_callbacks poisoned");
+            g.iter().cloned().collect()
+        };
+        for cb in &acbs {
+            cb().await;
+        }
+        ResetResponse {
+            ok: true,
+            action: "reset_state",
+            audit_log_preserved: true,
+            ts_ms: now_ms(),
+        }
+    }
+
+    /// Register an async reset cleaner (e.g. the StateBackend
+    /// ephemeral wipe). Appended after construction, same pattern
+    /// as [`Self::register_reset_callback`].
+    pub fn register_async_reset_callback(&self, cb: AsyncResetCallback) {
+        let mut g = self
+            .async_reset_callbacks
+            .lock()
+            .expect("async_reset_callbacks poisoned");
+        g.push(cb);
     }
 
     /// 2026-05-05 — append a reset cleaner after the runtime is
@@ -466,6 +529,7 @@ mod tests {
             modes: Arc::new(ModeStore::new(Mode::Enforce)),
             features,
             reset_callbacks: Mutex::new(Vec::new()),
+            async_reset_callbacks: Mutex::new(Vec::new()),
             flush_callback: None,
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
         }
@@ -526,6 +590,7 @@ mod tests {
             modes: Arc::new(ModeStore::new(Mode::Enforce)),
             features,
             reset_callbacks: Mutex::new(Vec::new()),
+            async_reset_callbacks: Mutex::new(Vec::new()),
             flush_callback: None,
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
         }
@@ -637,6 +702,32 @@ mod tests {
         assert!(r.ok);
         assert!(r.audit_log_preserved);
         assert_eq!(*log.lock().unwrap(), vec!["first", "second"]);
+    }
+
+    #[tokio::test]
+    async fn reset_state_async_runs_sync_then_async() {
+        // 2026-05-20 — reset_state_async must run the sync chain
+        // (in-process trackers) AND await the async cleaners
+        // (StateBackend wipe) before returning, so the reset is
+        // atomic from the benchmarker's POV.
+        let c = ctx();
+        let log: Arc<std::sync::Mutex<Vec<&'static str>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ls = log.clone();
+        c.register_reset_callback(Arc::new(move || {
+            ls.lock().unwrap().push("sync");
+        }));
+        let la = log.clone();
+        c.register_async_reset_callback(Arc::new(move || {
+            let la = la.clone();
+            Box::pin(async move {
+                la.lock().unwrap().push("async");
+            })
+        }));
+        let r = c.reset_state_async().await;
+        assert!(r.ok);
+        assert!(r.audit_log_preserved);
+        assert_eq!(*log.lock().unwrap(), vec!["sync", "async"]);
     }
 
     #[test]
