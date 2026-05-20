@@ -44,7 +44,8 @@ use crate::admin_mutate::{
     handle_mtls_sans_put, handle_mtls_sans_test, handle_pool_delete,
     handle_ai_enabled_get, handle_ai_enabled_put, handle_response_filter_get,
     handle_response_filter_put, handle_pool_upsert,
-    handle_risk_reset, handle_risk_reset_key, handle_risk_thresholds_put, handle_route_delete,
+    handle_risk_canary_paths_put, handle_risk_reset, handle_risk_reset_key,
+    handle_risk_thresholds_put, handle_route_delete,
     handle_route_upsert, handle_rules_delete, handle_rules_post,
     handle_rules_put, handle_rules_toggle, handle_tier_put,
     handle_upstreams_config_put,
@@ -141,6 +142,14 @@ pub(crate) async fn handle_admin_request(
     // RiskTracker::set_thresholds.
     if method == hyper::Method::PUT && path == "/api/risk/thresholds" {
         return handle_risk_thresholds_put(req, services).await;
+    }
+
+    // 2026-05-20 — PUT /api/risk/canary-paths — audit-mutated;
+    // hot-applies the operator's honeypot path set via the shared
+    // CanaryPaths handle (no chain rebuild). GET is served on the
+    // admin read path (admin_get.rs).
+    if method == hyper::Method::PUT && path == "/api/risk/canary-paths" {
+        return handle_risk_canary_paths_put(req, services).await;
     }
 
     // P7 mutating endpoint: PUT /api/loadmode. Audit-mutated

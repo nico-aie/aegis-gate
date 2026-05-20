@@ -819,6 +819,23 @@ pub(crate) fn admin_router(
             json_body_response(200, body, "private, max-age=2")
         }
 
+        // 2026-05-20 — current canary honeypot path set. Mirrors the
+        // PUT body shape so a roundtrip {GET → edit → PUT} works.
+        // `wired` reflects whether the proxy boot path installed the
+        // live handle (false for test bundles → editor renders the
+        // empty default).
+        "/api/risk/canary-paths" => {
+            let paths = services.canary_paths.raw();
+            let count = paths.len();
+            let body = serde_json::json!({
+                "paths": paths,
+                "count": count,
+                "enabled": services.detector_mask.load().is_enabled_id("canary"),
+            })
+            .to_string();
+            json_body_response(200, body, "private, max-age=2")
+        }
+
         // P2: detector class mask — read returns the live mask
         // plus compliance lock-list. PUT is handled in
         // `handle_admin_request` (async — needs to read body).

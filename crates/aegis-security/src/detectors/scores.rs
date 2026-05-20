@@ -12,7 +12,7 @@
 //! Operators asked "what score does each detector emit, and how does
 //! it interact with `risk.thresholds`?" — see [`docs/operator/risk-
 //! tuning.md`](../../../../docs/operator/risk-tuning.md). Detector
-//! scores are a calibrated ladder (25 / 30 / 35 / 50 / 60 / 70 / 90).
+//! scores are a calibrated ladder (25 / 30 / 35 / 50 / 60 / 70 / 90 / 100).
 //! 2026-05-20 (Option B) — clear single-request exploits (sqli, xss,
 //! ssrf, path_traversal, cmdi, ssti, nosql, CRLF) score 70 so one hit
 //! reaches the per-request tier gate on the protective tiers
@@ -52,11 +52,12 @@ use serde::Serialize;
 // detector scores so a SINGLE high-confidence attack reaches the
 // per-request tier gate on the protective tiers (critical=50,
 // high=70). Definitive-RCE classes (Log4Shell, XXE) score 90 so
-// they block on EVERY tier including `low`. Low-severity / probing
+// they block on EVERY tier including `low`. Operator-curated canary
+// honeypots score 100 (~0 false positives). Low-severity / probing
 // signals (recon path, body oversize, open_redirect) stay moderate
 // so they only block on stricter tiers or via cumulative
 // accumulation. All values stay on the documented ladder
-// {15,20,25,30,35,40,45,50,60,70,90}.
+// {15,20,25,30,35,40,45,50,60,70,90,100}.
 
 pub mod sqli {
     pub const SQLI: u32 = 70;
@@ -332,8 +333,8 @@ pub const CATALOG: &[ScoreEntry] = &[
     ScoreEntry {
         class: "canary",
         tag: "canary",
-        score: 90,
-        note: "Hit on an operator-supplied honeypot path (`cfg.risk.canary_paths`). Auto-block tier.",
+        score: 100,
+        note: "Hit on an operator-supplied honeypot path (`cfg.risk.canary_paths`). Maximum confidence — single-hit block at every tier.",
     },
 ];
 
@@ -382,8 +383,9 @@ mod tests {
         //     scores stack with OWASP signals).
         //  - 70 — velocity-sequence higher-severity rule
         //    (login→withdrawal < 5 s).
-        //  - 90 — canary auto-block tier.
-        let allowed = [15u32, 20, 25, 30, 35, 40, 45, 50, 60, 70, 90];
+        //  - 90 — definitive-RCE tier (Log4Shell, XXE).
+        //  - 100 — canary honeypot hit (operator-curated, ~0 FP).
+        let allowed = [15u32, 20, 25, 30, 35, 40, 45, 50, 60, 70, 90, 100];
         for entry in CATALOG {
             assert!(
                 allowed.contains(&entry.score),

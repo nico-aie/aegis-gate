@@ -85,6 +85,12 @@ pub(crate) async fn admin_accept_loop(
     // `POST /api/rules/simulate` evaluates against an
     // identical chain.
     detectors: Arc<Vec<Box<dyn aegis_security::detectors::Detector>>>,
+    // 2026-05-20 — shared hot-swappable canary honeypot path set.
+    // Same `CanaryPaths` handle the data-plane `CanaryDetector`
+    // holds; stashed on `services.canary_paths` so the audit-mutated
+    // `PUT /api/risk/canary-paths` handler edits the live set with
+    // no chain rebuild or restart.
+    canary_paths: aegis_security::detectors::canary::CanaryPaths,
     // Phase-1 analytics — shared with the data plane so
     // `/api/analytics/latency` reads from the same series the
     // data plane records into.
@@ -642,6 +648,10 @@ pub(crate) async fn admin_accept_loop(
     // runs so `/api/rules/simulate` can evaluate against an
     // identical chain.
     services.detectors = Some(detectors);
+    // 2026-05-20 — share the live canary path handle so
+    // `PUT /api/risk/canary-paths` mutates the same set the
+    // data-plane CanaryDetector reads.
+    services.canary_paths = canary_paths;
     // MTLS-T7 — Allowed SAN allowlist. Seeded from
     // `cfg.tls.client_auth.allowed_sans` (empty when client-auth
     // is disabled or no SANs were configured). The store is hot-
