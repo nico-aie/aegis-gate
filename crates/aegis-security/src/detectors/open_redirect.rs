@@ -57,14 +57,20 @@
 //! can raise the score via rule engine override OR move to
 //! `enforce` from `log_only`.
 //!
-//! ## Allowlist behaviour
+//! ## Allowlist behaviour (2026-05-20 FP review)
 //!
-//! - Empty `allowed_domains` (default) = **strict mode** — flag
-//!   every external `http(s)://` URL in a redirect param.
-//! - Populated allowlist — only off-list domains flag. Entries
-//!   support a leading `*.` wildcard for subdomains
-//!   (`*.example.com` matches `foo.example.com` but not bare
-//!   `example.com`).
+//! - **High-confidence evasions** (`javascript:` / `data:` schemes,
+//!   URL-encoded scheme tricks, `@`-userinfo, backslash bypasses)
+//!   flag REGARDLESS of the allowlist — they have no legitimate use
+//!   in a redirect param.
+//! - **Ambiguous absolute / protocol-relative URLs** (`https://host`,
+//!   `//host`) flag ONLY when `allowed_domains` is configured AND the
+//!   destination host is off it. The default empty allowlist does
+//!   NOT flag bare absolute URLs — they're ubiquitous in legitimate
+//!   traffic (CDN image proxies, OAuth `redirect_uri`, share links),
+//!   and the AI classifier + the evasion set cover the unambiguous
+//!   attacks. Operators who want strict off-list blocking populate
+//!   `allowed_domains` (literal or `*.example.com` glob).
 //!
 //! Operators with legitimate redirect targets configure
 //! `cfg.detectors.open_redirect.allowed_domains` to suppress the
@@ -108,22 +114,52 @@ static REDIRECT_PARAM_NAMES: &[&str] = &[
     "domain",
 ];
 
-/// Suspicious-value regexes. Each closes one well-known bypass
-/// shape; combined coverage matches the corpus from the QA Run-5
-/// open-redirect tests.
-static REDIRECT_VALUE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+/// 2026-05-20 (FP review) — HIGH-CONFIDENCE evasion shapes that have
+/// NO legitimate use in a redirect param, so they flag regardless of
+/// the allowlist (even in the default empty-allowlist mode).
+static EVASION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        // Absolute external URL with explicit scheme.
-        r"(?i)^\s*https?://",
-        // Protocol-relative — most browsers follow `//evil.com`.
-        r"(?i)^\s*//\w",
         // JavaScript: scheme — XSS pivot via redirect.
         r"(?i)^\s*javascript\s*:",
         // data: scheme — HTML injection via redirect.
         r"(?i)^\s*data\s*:",
         // URL-encoded scheme prefix; catches `%2F%2Fevil.com`,
         // `%6A%61%76%61%73%63%72%69%70%74:` (encoded `javascript:`).
-        r"(?i)^\s*(?:%2[fF])?(?:%2[fF])?(?:https?|javascript|data)\s*(?:%3[aA]|:)",
+        r"(?i)^\s*(?:%2[fF])(?:%2[fF])?(?:https?|javascript|data)?\s*(?:%3[aA]|:)?",
+        // `@`-userinfo trick — the REAL host is after the `@`
+        // (`https://trusted.com@evil.com`). No legit redirect uses
+        // userinfo in the authority.
+        r"(?i)^\s*https?://[^/?#]*@",
+        // Backslash tricks — browsers normalise `\` → `/`, so
+        // `\/\/evil.com`, `/\evil.com`, `\\evil.com` bypass naive
+        // `//` checks. No legit use.
+        r"^\s*(?:\\|/\\|\\/)",
+        // Protocol-relative — `//evil.com`. Rarely legitimate in a
+        // redirect param (HTTPS-everywhere killed protocol-relative
+        // redirects) and a textbook open-redirect bypass, so it
+        // flags even in the default empty-allowlist mode (subject to
+        // the allowlist host-check below for `//cdn.example.com`).
+        r"(?i)^\s*//\w",
+    ]
+    .iter()
+    .map(|p| Regex::new(p).expect("evasion regex compiles"))
+    .collect()
+});
+
+/// AMBIGUOUS absolute / protocol-relative URL shapes. A bare
+/// `https://cdn.example.com/img.png` or `//host` is extremely common
+/// in legitimate traffic (CDN image proxies, OAuth `redirect_uri`,
+/// share links), so these flag ONLY when the operator has configured
+/// an `allowed_domains` allowlist AND the destination host is off it.
+/// With the default empty allowlist these do NOT fire — the WAF
+/// can't know which absolute URLs are malicious without operator
+/// context, and the AI classifier + the high-confidence evasion set
+/// above cover the unambiguous attacks.
+static ABSOLUTE_URL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        // Absolute external URL with explicit scheme. THIS is the
+        // ubiquitous-in-legit-traffic shape (CDN, OAuth) — gated.
+        r"(?i)^\s*https?://",
     ]
     .iter()
     .map(|p| Regex::new(p).expect("redirect regex compiles"))
@@ -237,18 +273,39 @@ impl Detector for OpenRedirectDetector {
             // URL-decode once; the encoded-scheme regex still
             // catches double-encoded payloads like `%252F%252Fevil`.
             let decoded = url_decode(value);
-            let suspicious = REDIRECT_VALUE_PATTERNS
+
+            // 1. High-confidence evasion (javascript:/data:/encoded-
+            //    scheme/@-userinfo/backslash) — always flag; no legit
+            //    use. Allowlist host-check still applies for shapes
+            //    that carry a parseable host (so an allowlisted host
+            //    reached via a backslash trick isn't double-judged).
+            let evasion = EVASION_PATTERNS
                 .iter()
                 .any(|re| re.is_match(value) || re.is_match(&decoded));
-            if !suspicious {
+
+            // 2. Ambiguous absolute / protocol-relative URL — flag
+            //    ONLY when an allowlist is configured and the host is
+            //    off it. Default (empty allowlist) does NOT flag a
+            //    bare `https://cdn…` (legit CDN/OAuth/share links).
+            let absolute_offlist = !self.allowed_domains.is_empty()
+                && ABSOLUTE_URL_PATTERNS
+                    .iter()
+                    .any(|re| re.is_match(value) || re.is_match(&decoded))
+                && extract_host(&decoded)
+                    .map(|h| !self.is_allowlisted(h))
+                    .unwrap_or(true);
+
+            if !evasion && !absolute_offlist {
                 continue;
             }
-            // Allowlist suppression: extract the host portion
-            // and skip if on-list. `javascript:` / `data:` values
-            // never carry a host so they always flag.
-            if let Some(host) = extract_host(&decoded) {
-                if self.is_allowlisted(host) {
-                    continue;
+            // Allowlist suppression for evasion shapes that carry a
+            // host (e.g. protocol-relative behind a backslash) — an
+            // explicitly-allowlisted destination shouldn't flag.
+            if evasion {
+                if let Some(host) = extract_host(&decoded) {
+                    if self.is_allowlisted(host) {
+                        continue;
+                    }
                 }
             }
             signals.push(Signal {
@@ -314,29 +371,71 @@ mod tests {
         };
     }
 
-    positive!(or_next_http,           "/login?next=http://evil.com");
-    positive!(or_next_https,          "/login?next=https://evil.com/path");
+    // 2026-05-20 FP review — a detector with a configured allowlist
+    // that does NOT include the test hosts, so off-list absolute
+    // URLs still flag (the operator-opted-in strict behaviour).
+    macro_rules! positive_allowlisted {
+        ($name:ident, $uri:expr) => {
+            #[test]
+            fn $name() {
+                let d = OpenRedirectDetector::new(vec!["trusted.example".into()]);
+                let (m, u, h, b) = req_with_uri($uri);
+                let req = make_view(&m, &u, &h, &b);
+                let s = d.inspect(&req);
+                assert!(
+                    s.iter().any(|s| s.tag == "open_redirect"),
+                    "expected open_redirect (off-list absolute URL) for: {}",
+                    $uri,
+                );
+            }
+        };
+    }
+
+    // Evasion shapes — flag in strict (default empty-allowlist) mode.
     positive!(or_redirect_protorel,   "/login?redirect=//evil.com");
     positive!(or_redirect_uri_js,     "/o?redirect_uri=javascript:alert(1)");
     positive!(or_redirect_uri_data,   "/o?redirect_uri=data:text/html,hi");
     positive!(or_url_encoded_slash,   "/r?next=%2F%2Fevil.com");
     positive!(or_url_encoded_js,      "/r?redirect=%6A%61%76%61%73%63%72%69%70%74:alert(1)");
-    positive!(or_param_to,            "/r?to=http://attacker.com");
-    positive!(or_param_destination,   "/r?destination=https://phisher.example");
     positive!(or_param_goto,          "/r?goto=//bad.example");
-    positive!(or_param_continue,      "/r?continue=https://x.example");
-    positive!(or_param_callback,      "/r?callback=https://attacker.example/c");
-    positive!(or_param_return,        "/r?return=https://attacker.example/back");
-    positive!(or_param_return_to,     "/r?return_to=https://x.example");
-    positive!(or_param_rurl,          "/r?rurl=https://x.example");
-    positive!(or_first_pair,          "/r?safe=ok&next=http://evil.com");
-    positive!(or_uppercase_key,       "/r?REDIRECT=https://evil.com");
-    positive!(or_with_other_params,   "/r?from=a&next=http://evil.com&utm=z");
-    // 2026-05-09 — Run-7 GAP-009b. `?dest=` is a common short-form
-    // alternative to `?destination=` (Slack, GitHub OAuth, several
-    // OpenID providers use it).
-    positive!(or_param_dest,          "/login?dest=http://evil.com");
     positive!(or_param_dest_protorel, "/login?dest=//evil.example/path");
+    positive!(or_userinfo_trick,      "/r?next=https://trusted.example@evil.com/");
+    positive!(or_backslash_trick,     "/r?next=/\\evil.com");
+
+    // Bare absolute URLs — flag only with an allowlist (off-list).
+    positive_allowlisted!(or_next_http,         "/login?next=http://evil.com");
+    positive_allowlisted!(or_next_https,        "/login?next=https://evil.com/path");
+    positive_allowlisted!(or_param_to,          "/r?to=http://attacker.com");
+    positive_allowlisted!(or_param_destination, "/r?destination=https://phisher.example");
+    positive_allowlisted!(or_param_continue,    "/r?continue=https://x.example");
+    positive_allowlisted!(or_param_callback,    "/r?callback=https://attacker.example/c");
+    positive_allowlisted!(or_param_return,      "/r?return=https://attacker.example/back");
+    positive_allowlisted!(or_param_return_to,   "/r?return_to=https://x.example");
+    positive_allowlisted!(or_param_rurl,        "/r?rurl=https://x.example");
+    positive_allowlisted!(or_first_pair,        "/r?safe=ok&next=http://evil.com");
+    positive_allowlisted!(or_uppercase_key,     "/r?REDIRECT=https://evil.com");
+    positive_allowlisted!(or_with_other_params, "/r?from=a&next=http://evil.com&utm=z");
+    positive_allowlisted!(or_param_dest,        "/login?dest=http://evil.com");
+
+    // 2026-05-20 FP review — the FP that triggered this: a bare
+    // absolute URL in a redirect param with NO allowlist (default)
+    // must NOT flag (legit CDN proxy / OAuth redirect_uri).
+    #[test]
+    fn strict_mode_does_not_flag_bare_absolute_url() {
+        let d = OpenRedirectDetector::strict();
+        for uri in [
+            "/proxy?url=https://cdn.example.com/img/hero.png",
+            "/oauth/callback?redirect_uri=https://app.example.com/done",
+            "/login?next=https://www.ourshop.com/account",
+        ] {
+            let (m, u, h, b) = req_with_uri(uri);
+            let req = make_view(&m, &u, &h, &b);
+            assert!(
+                d.inspect(&req).is_empty(),
+                "bare absolute URL must not flag in strict mode: {uri}",
+            );
+        }
+    }
 
     macro_rules! negative {
         ($name:ident, $uri:expr) => {
