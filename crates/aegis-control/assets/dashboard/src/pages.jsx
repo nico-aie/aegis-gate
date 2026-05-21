@@ -646,10 +646,13 @@ function RequestDetail({ data }) {
   const bodyPreview = typeof fields?.request_body_preview === 'string' ? fields.request_body_preview : null;
   const bodyBytes = Number.isFinite(Number(fields?.request_body_bytes)) ? Number(fields.request_body_bytes) : null;
   const bodyTruncated = fields?.request_body_truncated === true;
+  // 2026-05-21 — per-request detector score (sum of THIS request's
+  // signals), distinct from `risk` (cumulative composite-key score).
+  const reqScore = Number.isFinite(Number(fields?.request_score)) ? Number(fields.request_score) : null;
   // Render any backend-emitted scalar that isn't already covered
   // by the dedicated rows above. Stable key ordering so the
   // drawer doesn't reflow on every poll.
-  const ECHO_KEYS = ['request_headers', 'request_body_preview', 'request_body_bytes', 'request_body_truncated'];
+  const ECHO_KEYS = ['request_headers', 'request_body_preview', 'request_body_bytes', 'request_body_truncated', 'request_score'];
   const extraEntries = fields
     ? Object.entries(fields)
         .filter(([k]) => !['method', 'path', 'status', 'region', 'route_id', 'latency_ms', ...ECHO_KEYS].includes(k))
@@ -680,8 +683,14 @@ function RequestDetail({ data }) {
               : <span className="dim mono">—</span>}
           </div>
           <div>
-            <div className="dim">Risk</div>
+            <div className="dim" title="Cumulative risk accumulated for this source's composite key (IP + device + session). Drives the cumulative IP-risk gate.">IP risk (cumulative)</div>
             {risk !== null ? <window.RiskMeter value={risk} /> : <span className="dim mono">—</span>}
+          </div>
+          <div>
+            <div className="dim" title="Sum of THIS request's detector signals (capped at 100). Compared to the tier's per-request block threshold.">Request score (detectors)</div>
+            {reqScore !== null
+              ? <window.RiskMeter value={reqScore} />
+              : <span className="dim mono">{rules.length > 0 || cats.length > 0 ? '—' : '0'}</span>}
           </div>
           <div>
             <div className="dim">Tier</div>
@@ -1068,7 +1077,8 @@ function PageLiveFeed() {
                 <th>Path</th>
                 <th style={{ width: 110 }}>Region</th>
                 <th style={{ width: 70 }}>Tier</th>
-                <th style={{ width: 80 }}>Risk</th>
+                <th style={{ width: 78 }} title="Cumulative risk accumulated for this source's composite key (IP + device + session)">IP risk</th>
+                <th style={{ width: 56 }} title="Per-request detector score — sum of THIS request's signals (capped 100), compared to the tier's per-request block threshold">Req</th>
                 <th style={{ width: 80 }}>Action</th>
                 <th style={{ width: 160 }}>Rules</th>
                 <th
@@ -1118,6 +1128,11 @@ function PageLiveFeed() {
                   <td><span className="dim" style={{ fontSize: 11 }}>{e.region}</span></td>
                   <td><window.TierPill value={e.tier} /></td>
                   <td><window.RiskMeter value={e.risk} /></td>
+                  <td className="num mono" style={{ fontSize: 11 }}>
+                    {Number.isFinite(Number(e.fields?.request_score))
+                      ? Number(e.fields.request_score)
+                      : <span className="dim">{e.rules && e.rules.length ? '—' : '0'}</span>}
+                  </td>
                   <td><window.ActionPill value={e.action} /></td>
                   <td className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{e.rules.join(', ') || '—'}</td>
                   <td>
@@ -9538,8 +9553,12 @@ function PageInvestigation() {
                       <th style={{ width: 70 }}>Status</th>
                       <th
                         style={{ width: 80 }}
-                        title="Cumulative risk score for this request's RiskKey bucket ({ip, device_fp?, session?}) — decays over time. Two browsers on the same NAT'd IP each carry their own bucket score. This is NOT the score of this single request — a request can be allowed even when its bucket carries high risk if the request itself didn't trigger any detector."
-                      >Risk score</th>
+                        title="Cumulative risk score for this request's RiskKey bucket ({ip, device_fp?, session?}) — decays over time. Two browsers on the same NAT'd IP each carry their own bucket score. This is NOT the score of this single request."
+                      >IP risk</th>
+                      <th
+                        style={{ width: 60 }}
+                        title="Per-request detector score — sum of THIS request's detector signals (capped 100), compared to the tier's per-request block threshold. Blank when no detector fired."
+                      >Req</th>
                       <th>Rule</th>
                     </tr>
                   </thead>
@@ -9561,6 +9580,7 @@ function PageInvestigation() {
                           <td className="mono"><code style={{ fontSize: 11 }}>{(f.path || e.path || '/').slice(0, 80)}</code></td>
                           <td className="num">{f.status || e.status || '—'}</td>
                           <td className="num">{e.risk_score ?? '—'}</td>
+                          <td className="num">{Number.isFinite(Number(f.request_score)) ? Number(f.request_score) : '—'}</td>
                           <td className="mono"><code style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{e.rule_id || e.reason || '—'}</code></td>
                         </tr>
                       );

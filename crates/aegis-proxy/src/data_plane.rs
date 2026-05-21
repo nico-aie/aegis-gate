@@ -241,6 +241,11 @@ pub(crate) async fn handle_data_request_inner(
     // `allow` decision so the listener-side audit records
     // `fields.detectors` instead of `detectors: null`.
     let mut detected_detectors: Option<String> = None;
+    // 2026-05-21 — per-request detector score (sum of this request's
+    // signals) for the under-threshold allow path. Carried out to the
+    // listener so the audit records `fields.request_score` (distinct
+    // from the cumulative `risk_score`).
+    let mut detected_request_score: Option<u32> = None;
 
     // Resolve the effective client IP: walk X-Forwarded-For
     // backwards through the trusted-proxy CIDR list and return
@@ -870,6 +875,13 @@ pub(crate) async fn handle_data_request_inner(
                 "path": parts.uri.to_string(),
                 "method": parts.method.to_string(),
                 "detectors": tags,
+                // 2026-05-21 — per-request detector score: the sum of
+                // THIS request's signals (capped at 100). Distinct from
+                // the top-level `risk_score`, which is the cumulative
+                // composite-key score. Surfaced so the dashboard can
+                // show "this request scored N" vs "this source's
+                // accumulated risk is M".
+                "request_score": per_request_sum,
                 "strikes": post_state.strikes,
                 "load_mode": load_mode.as_str(),
                 "verbosity": verbosity_level.as_str(),
@@ -890,15 +902,12 @@ pub(crate) async fn handle_data_request_inner(
                 request_id: blake3::hash(format!("{}:{}", peer, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)).as_bytes()).to_hex().to_string(),
                 class: aegis_core::audit::AuditClass::Detection,
                 tenant_id: None,
-                // 2026-05-05 — populate the route's tier so the
-                // dashboard's Live Feed shows the real tier
-                // (critical / high / medium / low) instead of
-                // falling back to a risk-score bucket. `tier` here
-                // is the value computed at line ~381 via
-                // `classify_tier()` — combines route_override (if
-                // resolved) with path heuristics. Pre-route detector
-                // blocks see the heuristic; post-route blocks see
-                // the route's tier_override.
+                // 2026-05-05 — populate the tier so the dashboard's
+                // Live Feed shows it instead of a risk-score bucket.
+                // 2026-05-21 — the path→tier heuristic was removed:
+                // `classify_tier(None, …)` at this stage always
+                // returns the default Low tier (route resolution +
+                // `tier_override` happen later in the forward path).
                 tier: Some(tier),
                 action: "block".into(),
                 reason: reason.clone(),
@@ -967,6 +976,10 @@ pub(crate) async fn handle_data_request_inner(
             // the audit log records them (otherwise the forwarded
             // request logs as a plain allow with `detectors: null`).
             detected_detectors = Some(tags.join(","));
+            // Carry this request's detector score (sum of signals) so
+            // the audit records `fields.request_score` distinct from
+            // the cumulative `risk_score`.
+            detected_request_score = Some(per_request_sum);
         } else if detector_mode == aegis_control::interop::headers::Mode::LogOnly {
             log_only_intent = Some(block_tag);
             // Fall through — skip the 403 and the risk gate below
@@ -1027,6 +1040,9 @@ pub(crate) async fn handle_data_request_inner(
                 // match — even though the request was allowed.
                 if let Some(d) = detected_detectors.take() {
                     t = t.with_rule_id(d);
+                }
+                if let Some(rs) = detected_request_score.take() {
+                    t = t.with_detector_score(rs);
                 }
                 (resp, t)
             }

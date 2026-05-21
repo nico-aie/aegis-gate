@@ -1551,16 +1551,29 @@ pub(crate) async fn accept_loop(
                         method: None,
                         path: None,
                         mode: None,
-                        fields: serde_json::json!({
-                            "method": method.as_str(),
-                            "path": path,
-                            // Only present when classifier returns
-                            // a real bot tier — Human / Unknown
-                            // are skipped so they don't count
-                            // toward the bot-mix chart.
-                            "bot_category": bot_category,
-                            "status": resp.status().as_u16(),
-                        }),
+                        fields: {
+                            let mut f = serde_json::json!({
+                                "method": method.as_str(),
+                                "path": path,
+                                // Only present when classifier returns
+                                // a real bot tier — Human / Unknown
+                                // are skipped so they don't count
+                                // toward the bot-mix chart.
+                                "bot_category": bot_category,
+                                "status": resp.status().as_u16(),
+                            });
+                            // 2026-05-21 — per-request detector score for
+                            // a detected-but-allowed request (sum of this
+                            // request's signals), distinct from the
+                            // cumulative `risk_score`. Absent on clean
+                            // allows.
+                            if let (serde_json::Value::Object(ref mut map), Some(rs)) =
+                                (&mut f, decision.detector_score)
+                            {
+                                map.insert("request_score".to_string(), serde_json::json!(rs));
+                            }
+                            f
+                        },
                     };
                     bus.emit(event);
 
