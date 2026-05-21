@@ -2126,6 +2126,77 @@ pub(crate) async fn handle_risk_canary_paths_put(
     }
 }
 
+/// 2026-05-21 — `PUT /api/gates/bots`. Audit-mutated gate-style
+/// on/off for the bot classifier. Body: `{"enabled": true|false}`.
+/// Hot-applies by flipping the shared `AtomicBool` the data-plane
+/// listener reads (no restart). When off, no classification runs and
+/// `bot_category` is left unset.
+pub(crate) async fn handle_bots_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    use std::sync::atomic::Ordering;
+
+    let pre = mutation_preamble(&req, "bots-gate-put");
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+        ),
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        enabled: bool,
+    }
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str }) {
+        Ok(b) => b,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "expected {{\"enabled\": true|false}}: {e}"
+            )),
+        ),
+    };
+
+    let current = services.bots_enabled.load(Ordering::Relaxed);
+    let next = parsed.enabled;
+    let before = serde_json::json!({ "enabled": current });
+    let after = serde_json::json!({ "enabled": next });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/gates/bots",
+        action: "bots_gate_set",
+        reason: "operator toggled the bot classifier gate",
+    };
+    let toggle = services.bots_enabled.clone();
+    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
+        &req_ctx,
+        before,
+        after,
+        || {
+            toggle.store(next, Ordering::Relaxed);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "enabled": next,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 pub(crate) async fn handle_risk_reset(
     req: hyper::Request<hyper::body::Incoming>,
     ip_segment: &str,

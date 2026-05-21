@@ -82,6 +82,8 @@ pub struct WafConfig {
     #[serde(default)]
     pub detectors: DetectorsConfig,
     #[serde(default)]
+    pub bots: BotConfig,
+    #[serde(default)]
     pub dlp: DlpConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
@@ -2253,6 +2255,33 @@ impl Default for RiskThresholds {
             block_at: 70,
             max: 100,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bot classification gate
+// ---------------------------------------------------------------------------
+
+/// 2026-05-21 — gate-style on/off for the bot classifier. The
+/// classifier (UA + ASN based, `aegis-security/src/bots.rs`) labels
+/// requests and feeds the dashboard "Bot classification mix". It's
+/// modelled as a GATE (like DDoS / rate-limit / strike-block), not a
+/// detector, because its inputs are ambient (ASN via GeoIP, etc.).
+/// When disabled, no classification runs and `bot_category` is left
+/// unset. Hot-flippable via `PUT /api/gates/bots`. Default on.
+#[derive(Clone, Debug, Deserialize)]
+pub struct BotConfig {
+    #[serde(default = "default_bot_enabled")]
+    pub enabled: bool,
+}
+
+fn default_bot_enabled() -> bool {
+    true
+}
+
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
