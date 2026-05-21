@@ -74,9 +74,11 @@ ASN, not JA4 fingerprint matching.
 
 ### On/off gate (2026-05-21)
 
-The classifier is a **gate-style toggle** (`cfg.bots.enabled`, default
-`true`), not a detector — its inputs are ambient (ASN via GeoIP), so it
-doesn't fit the `Detector` trait. Flip it live (no restart) from
+The classifier is a **gate-style toggle** (`cfg.bots.enabled`,
+**default `false`** — opt-in, since it's observational and needs the
+GeoIP ASN DB to be useful), not a detector — its inputs are ambient
+(ASN via GeoIP), so it doesn't fit the `Detector` trait. Flip it live
+(no restart) from
 **Traffic Gates → "6. Bot classifier"** or the audit-mutated
 `PUT /api/gates/bots {"enabled": true|false}` (read-back via
 `GET /api/gates/bots`). When off, no classification runs and
