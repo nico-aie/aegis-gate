@@ -1383,10 +1383,20 @@ pub(crate) async fn accept_loop(
                     // request span from inside handle_data_request
                     // (the span is only active during that
                     // function's body, not at this call site).
-                    let risk_score = risk
-                        .snapshot(peer.ip())
-                        .map(|s| s.score)
-                        .unwrap_or(0);
+                    // 2026-05-21 — prefer the score the data plane
+                    // stamped on the decision: it was computed under
+                    // the correct composite RiskKey and is what the
+                    // X-WAF-Risk-Score header already reports. The
+                    // peer-IP snapshot below is a fallback for paths
+                    // that don't stamp one (clean allows). Without
+                    // this, a detected-but-allowed request (e.g. an AI
+                    // hit under the tier threshold) showed `rule_id=ai`
+                    // with `risk 0` — the snapshot keyed on the bare
+                    // TCP peer missed the composite-key score, and the
+                    // audit disagreed with the response header.
+                    let risk_score = decision.risk_score.unwrap_or_else(|| {
+                        risk.snapshot(peer.ip()).map(|s| s.score).unwrap_or(0)
+                    });
 
                     // CI-T11 — broadcast every request decision to
                     // the audit bus so /dashboard/sse Live Feed is
