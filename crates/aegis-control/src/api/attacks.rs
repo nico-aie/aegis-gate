@@ -188,6 +188,13 @@ struct AttackEntry {
     threat_intel_indicator: Option<String>,
     /// Bot classifier verdict from `event.fields.bot_category`.
     bot_category: Option<String>,
+    /// True when the source event was `AuditClass::Detection` (a real
+    /// attack/block). False for the bot-classified `Access` (allow)
+    /// events that are admitted solely to feed `bot_mix()`. The
+    /// attacker / detector views (`top`, `distribution`,
+    /// `by_detector`) skip non-attack entries so they stay
+    /// Detection-only, exactly as before bot-mix wiring.
+    is_attack: bool,
 }
 
 #[derive(Default)]
@@ -233,11 +240,17 @@ impl AttacksAggregator {
     /// Ingest one audit event. Non-`Detection` events are ignored —
     /// admin / access / system events don't represent attacks.
     pub fn record(&self, ev: &AuditEvent) {
-        if !matches!(ev.class, AuditClass::Detection) {
+        let bot_category = bot_category_from_fields(&ev.fields);
+        let is_attack = matches!(ev.class, AuditClass::Detection);
+        // Keep Detection (attack/block) events for the attacker +
+        // detector views. ALSO keep non-Detection events that carry a
+        // bot verdict — the classifier stamps `bot_category` on the
+        // `Access` (allow) event, so without this they'd never reach
+        // `bot_mix()`. Plain allows (no verdict) are still dropped.
+        if !is_attack && bot_category.is_none() {
             return;
         }
         let (threat_intel_feed, threat_intel_indicator) = threat_intel_from_fields(&ev.fields);
-        let bot_category = bot_category_from_fields(&ev.fields);
         // Pull every detector tag from the event's
         // fields.detectors[] array, deduped + filtered to non-
         // empty.  by_detector() iterates over this list so a
@@ -264,6 +277,7 @@ impl AttacksAggregator {
             threat_intel_feed,
             threat_intel_indicator,
             bot_category,
+            is_attack,
         };
 
         let mut state = self.inner.lock().expect("attacks mutex poisoned");
@@ -302,6 +316,12 @@ impl AttacksAggregator {
         for entry in state.events.iter().rev() {
             if now.duration_since(entry.when) > window_dur {
                 break;
+            }
+            // Bot-only Access entries (admitted for bot_mix) are not
+            // attacks — skip them so the detector distribution stays
+            // Detection-only.
+            if !entry.is_attack {
+                continue;
             }
             // 2026-05-20 — count EVERY detector that fired on the
             // event, not just the canonical first tag. Co-firing
@@ -369,6 +389,11 @@ impl AttacksAggregator {
         for entry in state.events.iter().rev() {
             if now.duration_since(entry.when) > window_dur {
                 break;
+            }
+            // Bot-only Access entries aren't attackers — keep Top
+            // Attackers Detection-only.
+            if !entry.is_attack {
+                continue;
             }
             let slot = acc.entry(entry.identifier.clone()).or_insert(Acc {
                 hits: 0,
@@ -461,6 +486,11 @@ impl AttacksAggregator {
         for entry in state.events.iter().rev() {
             if now.duration_since(entry.when) > window_dur {
                 break;
+            }
+            // Bot-only Access entries aren't attacks — keep the
+            // by-detector breakdown Detection-only.
+            if !entry.is_attack {
+                continue;
             }
             if !entry.detectors.is_empty() {
                 for class in &entry.detectors {
@@ -557,9 +587,12 @@ impl AttacksAggregator {
     }
 
     /// Bot classification mix for `/api/bots/mix` (D-M3-T3.6).
-    /// Buckets recorded events by `event.fields.bot_category`. Events
-    /// without a category contribute to the `"unknown"` bucket so the
-    /// percentages always sum to 100.
+    /// Buckets recorded events by `event.fields.bot_category`, counting
+    /// ONLY events the classifier labelled (suspect / malicious /
+    /// verified). The result is a tier breakdown of the flagged bot
+    /// signals — not a share of total traffic — because clean allows
+    /// aren't recorded and Detection events carry no verdict. Percentages
+    /// sum to 100 across the labelled events.
     pub fn bot_mix(&self, window_seconds: u32) -> BotMixResponse {
         let retention_secs = RETENTION.as_secs() as u32;
         let window = window_seconds.clamp(1, retention_secs);
@@ -573,10 +606,15 @@ impl AttacksAggregator {
             if now.duration_since(entry.when) > window_dur {
                 break;
             }
-            let key = entry
-                .bot_category
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
+            // Only count events the classifier actually labelled
+            // (suspect / malicious / verified). Detection/attack events
+            // carry no bot verdict and clean allows aren't recorded, so
+            // there is no honest "unknown" denominator here — the mix is
+            // a tier breakdown of the flagged bot signals, not a share
+            // of total traffic. (Total-traffic share = Option B, future.)
+            let Some(key) = entry.bot_category.clone() else {
+                continue;
+            };
             *counts.entry(key).or_insert(0) += 1;
             total = total.saturating_add(1);
         }
@@ -1671,7 +1709,7 @@ mod tests {
     }
 
     #[test]
-    fn bot_mix_buckets_by_category_with_unknown_fallback() {
+    fn bot_mix_counts_only_labelled_events_no_unknown_fallback() {
         let agg = AttacksAggregator::new();
         for _ in 0..4 {
             agg.record(&det_event_with_fields(
@@ -1687,20 +1725,65 @@ mod tests {
                 serde_json::json!({"bot_category": "malicious"}),
             ));
         }
-        // 3 events without bot_category → bucket as "unknown".
+        // Detection events WITHOUT a bot verdict are retained for the
+        // attack views, but must NOT show up in the bot mix — there is
+        // no synthetic "unknown" bucket (it conflated blocked attacks
+        // with bot signals). 2026-05-21 behaviour change.
         for _ in 0..3 {
             agg.record(&det_event_full("3.3.3.3", Some("sqli"), None, 80));
         }
         let r = agg.bot_mix(900);
         assert_eq!(r.window_seconds, 900);
         let total: u64 = r.categories.iter().map(|c| c.count).sum();
-        assert_eq!(total, 10);
+        assert_eq!(total, 7, "only the 4 verified + 3 malicious are counted");
+        assert!(
+            r.categories.iter().all(|c| c.name != "unknown"),
+            "no synthetic unknown bucket",
+        );
         // Sorted by count desc.
         assert_eq!(r.categories[0].name, "verified");
         assert_eq!(r.categories[0].count, 4);
-        // Percentages sum to ~100.
+        // Percentages sum to ~100 across the labelled events.
         let pct_sum: f64 = r.categories.iter().map(|c| c.pct).sum();
         assert!((pct_sum - 100.0).abs() < 0.5);
+    }
+
+    // Regression guard for the 2026-05-21 bot-mix wiring fix. The
+    // classifier stamps `bot_category` on the ALLOW (Access) event, so
+    // the aggregator must admit bot-labelled Access events into the
+    // mix — but they are not attacks, so they must stay OUT of the
+    // attacker / detector views (top / distribution / by_detector).
+    #[test]
+    fn bot_labelled_access_event_feeds_mix_only_not_attack_views() {
+        let agg = AttacksAggregator::new();
+        let mut ev = det_event_with_fields(
+            "recon_tool",
+            "9.9.9.9",
+            serde_json::json!({"bot_category": "malicious"}),
+        );
+        ev.class = AuditClass::Access;
+        ev.action = "allow".into();
+        agg.record(&ev);
+
+        // Counted in the bot mix...
+        let mix = agg.bot_mix(900);
+        assert_eq!(mix.categories.len(), 1);
+        assert_eq!(mix.categories[0].name, "malicious");
+        assert_eq!(mix.categories[0].count, 1);
+
+        // ...but absent from Top Attackers + the detector breakdowns.
+        assert!(
+            agg.top(900, 10).attackers.is_empty(),
+            "an allowed bot is not an attacker",
+        );
+        assert!(
+            agg.distribution(900).categories.is_empty(),
+            "an allowed bot must not enter the detector distribution",
+        );
+        assert!(
+            agg.by_detector(900).detectors.is_empty(),
+            "an allowed bot must not enter the by-detector breakdown",
+        );
     }
 
     #[test]
