@@ -1305,29 +1305,21 @@ function PageAttackEvents() {
             sub={totalBots > 0 ? `${totalBots.toLocaleString()} classified requests` : 'no bot signal yet'}
           />
           {/*
-            2026-05-03 fix — when every classified request lands
-            in `unknown`, the bot classifier is wired but isn't
-            producing usable signal on this profile (no JA4
-            baseline, no UA rules in dev cfg, etc.).  Showing a
-            100% "unknown" stacked bar reads as a dishonest
-            "we classified things"; instead we surface the
-            actionable empty state with a config pointer.
+            2026-05-21 — the mix is a tier breakdown of FLAGGED bots
+            only (suspect / malicious / verified). The backend no
+            longer emits a synthetic `unknown` bucket, and clean
+            browser traffic isn't counted — so an empty mix just
+            means nothing tripped a bot rule in the window. Surface
+            that honestly with a setup pointer rather than a 100%
+            "unknown" bar.
           */}
-          {botSegments.length === 0 ||
-            (botCategories.length === 1 && botCategories[0].name === 'unknown') ? (
+          {botSegments.length === 0 ? (
             <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-              {botCategories.length === 1 && botCategories[0].name === 'unknown' ? (
-                <>
-                  Bot classifier wired but every request landed in
-                  <code style={{ margin: '0 4px' }}>unknown</code>.
-                  This profile has no JA4 baseline / UA allow-list to drive
-                  classification — see{' '}
-                  <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>{' '}
-                  for the bring-up.
-                </>
-              ) : (
-                <>No bot classifications recorded in the last {win}.</>
-              )}
+              No bot signals in the last {win}. The classifier flags{' '}
+              <code>suspect</code>/<code>malicious</code> from scanner UAs,
+              missing/short UA, or cloud/hosting ASNs (needs the GeoIP ASN
+              DB loaded). Clean browser traffic isn't counted. See{' '}
+              <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>.
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -9465,38 +9457,23 @@ function PageInvestigation() {
                   title="Bot classification mix"
                   sub={botCategories.length ? `${botCategories.reduce((s, c) => s + c.count, 0).toLocaleString()} classified · last 1h` : 'no bot signal yet'}
                 />
-                {botSegments.length === 0 ||
-                  (botCategories.length === 1 && botCategories[0].name === 'unknown') ? (
+                {/* 2026-05-21 — the mix is a tier breakdown of FLAGGED
+                    bots only. Classification is UA + ASN based (NOT
+                    JA4 — there is no "JA4 baseline" mechanism). The
+                    backend no longer emits a synthetic `unknown`
+                    bucket and clean browser traffic isn't counted, so
+                    an empty mix means nothing tripped a bot rule. */}
+                {botSegments.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
-                    {botCategories.length === 1 && botCategories[0].name === 'unknown' ? (
-                      <>
-                        {/* 2026-05-21 — corrected: the classifier is
-                            UA + ASN based, NOT JA4. There is no
-                            "JA4 baseline" mechanism. Most traffic lands
-                            `unknown` because (a) the GeoIP ASN DB isn't
-                            loaded, so cloud/hosting IPs don't classify
-                            as suspect, and (b) verified/human need
-                            reverse-DNS + JS-challenge signals that
-                            aren't wired. */}
-                        Bot classifier wired, but every request landed in
-                        <code style={{ margin: '0 4px' }}>unknown</code>.
-                        Classification is <strong>UA + ASN</strong> based:
-                        scanner UAs → malicious, no/short UA or cloud/hosting
-                        ASN → suspect. Most likely the <strong>GeoIP ASN
-                        database isn't loaded</strong> (check{' '}
-                        <code>/api/geoip/status</code>) so cloud IPs stay
-                        unknown. See{' '}
-                        <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>.
-                      </>
-                    ) : (
-                      <>
-                        No bot classifications recorded yet. The classifier
-                        emits <code>suspect</code>/<code>malicious</code> from
-                        scanner UAs, no/short UA, or cloud/hosting ASNs (needs
-                        the GeoIP ASN DB) — plain browser traffic stays{' '}
-                        <code style={{ margin: '0 4px' }}>unknown</code>.
-                      </>
-                    )}
+                    No bot signals in the last hour. Classification is{' '}
+                    <strong>UA + ASN</strong> based: scanner UAs →{' '}
+                    <code>malicious</code>; no/short UA →{' '}
+                    <code>suspect</code>; cloud/hosting ASN →{' '}
+                    <code>suspect</code> (needs the <strong>GeoIP ASN
+                    database</strong> loaded — check{' '}
+                    <code>/api/geoip/status</code>). The mix counts only
+                    flagged bots; clean browser traffic isn't shown. See{' '}
+                    <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>.
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -9889,7 +9866,7 @@ function BotClassifierGateCard() {
           />
         </div>
       </div>
-      <window.GateExplain
+      <GateExplain
         rows={[
           ['How it fires', <span key="hf">Per request the listener runs a UA + ASN rule-set: scanner UAs (<code>sqlmap</code>/<code>nikto</code>/…) → <code>malicious</code>; no/short UA or a cookieless cloud/hosting ASN → <code>suspect</code>. Verdict is recorded in audit <code>fields.bot_category</code> and aggregated on the Investigation page.</span>],
           ['Setup', <span key="s">Classification of cloud/hosting traffic needs the <strong>GeoIP ASN database</strong> (<code>geoip.asn_db</code>); confirm via <code>/api/geoip/status</code>. Scanner-UA and short-UA classification work without it.</span>],
