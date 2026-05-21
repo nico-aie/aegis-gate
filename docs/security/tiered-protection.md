@@ -25,17 +25,27 @@ balancing security against performance.
 | **MEDIUM** | `/static/*`, `/assets/*`, `/public/*` | Basic rate limit, path-traversal detection, aggressive caching | Fail-open |
 | **CATCH-ALL** | `/**` | Baseline SQLi/XSS, rate limit, known-bad IP blocking, full logging | Fail-open |
 
+> The "Example routes" column is **illustrative of what an operator
+> assigns to each tier via route config** — it is NOT an automatic
+> mapping. As of 2026-05-21 the WAF has **no built-in path→tier
+> heuristic**: a request's tier comes solely from its route's
+> `tier_override`, and traffic with no override defaults to **Low**.
+> (The old hardcoded heuristic that auto-classified `/login`→critical,
+> `/api`→high, etc. was removed — it blocked traffic at stricter
+> thresholds based on paths the operator never configured, and is not
+> part of the interop contract. Mark sensitive paths explicitly via
+> `tier_override` and/or the canary honeypot detector.)
+
 ## Resolution order
 
 Tiers are resolved **after** the route table match:
 
 1. Route table (host + path) → `route_id`
 2. `route.tier_override` wins if present
-3. Else cluster-wide tier table (first-match wins)
-4. CATCH-ALL guarantees a match
+3. Else **default to Low** (no path heuristic)
 
-Patterns are pre-compiled at config load and stored in an `ArcSwap`,
-so classification is a tight loop on pre-built automata.
+Route patterns are pre-compiled at config load and stored in an
+`ArcSwap`, so route resolution is a tight loop on pre-built automata.
 
 ## Fail-close vs fail-open
 

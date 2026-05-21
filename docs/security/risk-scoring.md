@@ -145,35 +145,36 @@ Tracing one IP through three requests on a default `prod-balanced`
 config (`challenge_at: 40`, `block_at: 80`, `max: 100`,
 `decay_half_life: 5m`).
 
+> Tier note (2026-05-21): there is **no automatic path→tier
+> heuristic** anymore. Every request defaults to the **Low** tier
+> unless a route sets `tier_override`. This example assumes the
+> default (Low, per-request `risk_threshold` 80). Clear-exploit
+> detector scores are 70 (see the table above).
+
 ```
 T=0s   GET /api/users?q=1' OR '1'='1
-       ─ detector chain fires: sqli (40)
-       ─ per-request score = 40
-       ─ tier_threshold for /api routes = 70 (high tier) → ALLOW the
-         request through (40 < 70) — but the IP's CUMULATIVE risk
-         is now 40, just at the challenge boundary.
+       ─ detector chain fires: sqli (70)
+       ─ per-request score = 70
+       ─ Low tier per-request threshold = 80 → 70 < 80 → ALLOW the
+         request (detected, forwarded). The IP's CUMULATIVE risk is
+         now 70 (max(signal) per SEC-M003), past challenge_at (40).
        ─ strikes(IP) = 1
 
 T=10s  GET /search?q=<script>alert(1)</script>
-       ─ detector chain fires: xss (35)
-       ─ per-request score = 35
-       ─ tier_threshold for / catch-all = 90 (low tier) → ALLOW
-       ─ cumulative score after decay (~negligible after 10s)
-                         = 40 + 35 = 75 — past challenge_at (40),
-         next request from this IP gets a 429 challenge.
+       ─ detector chain fires: xss (70)
+       ─ per-request score = 70 → 70 < 80 → ALLOW (detected)
+       ─ cumulative score (decay negligible after 10s)
+                         = 70 + 70 = 140, saturated to max=100.
        ─ strikes(IP) = 2
 
-T=30s  GET /static/../../../etc/passwd
-       ─ detector chain fires: path_traversal (45)
-       ─ per-request score = 45 → THIS request is blocked at the
-         tier gate (45 < 90, so per-request gate doesn't fire on
-         catch-all; on /api with threshold 70, 45 < 70 still allows
-         — but the IP's cumulative score is now 75 + 45 = 120,
-         saturated to max=100).
+T=30s  GET /etc/passwd via ../../../ traversal
+       ─ detector chain fires: path_traversal (70)
+       ─ per-request score = 70 → 70 < 80 → still ALLOW per-request
+         on Low; but the IP's cumulative score is already at max=100.
        ─ Score 100 ≥ block_at (80) → access gate blocks every
          subsequent request from this IP, no matter how clean.
-       ─ strikes(IP) = 3 (still well below strikes.block_at=50, so
-         decay can still recover this IP eventually).
+       ─ strikes(IP) = 3 (still below strikes.block_at=50, so decay
+         can still recover this IP eventually).
 
 T=5m+  Score has decayed from 100 to 50 (half-life 5 min):
        ─ Above challenge_at (40) but below block_at (80) — IP gets
