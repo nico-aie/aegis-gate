@@ -7,67 +7,39 @@ use crate::rules::RuleSet;
 
 use std::sync::Arc;
 
-/// Tier classification based on route config and path heuristics.
+/// Tier classification. A per-route `tier_override` wins; otherwise
+/// traffic defaults to the most permissive tier (`Low`).
+///
+/// 2026-05-21 — the hardcoded path→tier heuristic was REMOVED. It
+/// classified `/login`/`/payments`→Critical, `/api`/`/admin`→High,
+/// etc., which blocked traffic at stricter per-request thresholds
+/// based on URL patterns the operator never configured — surprising
+/// behaviour, and NOT part of the interop contract (the contract
+/// specifies the observability headers + control endpoints, never an
+/// internal path-tiering scheme). Operators now express path
+/// sensitivity explicitly via per-route `tier_override` and the
+/// canary honeypot detector, rather than a hidden built-in map.
 pub fn classify_tier(
     route: Option<&RouteCtx>,
-    req: &RequestView<'_>,
+    _req: &RequestView<'_>,
 ) -> (Tier, FailureMode) {
-    // Route override wins.
-    if let Some(rctx) = route {
-        return (rctx.tier, rctx.failure_mode);
+    match route {
+        Some(rctx) => (rctx.tier, rctx.failure_mode),
+        None => default_tier(),
     }
-
-    // Path heuristic.
-    let path = req.uri.path();
-    let (tier, fm) = path_heuristic(path);
-    (tier, fm)
 }
 
-/// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): path-only tier
-/// classifier. The DDoS gate in the data plane runs BEFORE the
-/// full RequestView is assembled (and BEFORE route resolution),
-/// so it needs a path-only shortcut. Returns the same value as
-/// [`classify_tier`] would when route is `None`, just with a
-/// narrower input contract.
-pub fn classify_tier_from_path(path: &str) -> (Tier, FailureMode) {
-    path_heuristic(path)
+/// Path-only tier shortcut used by the DDoS gate (which runs before
+/// route resolution). Always returns the default tier now that the
+/// path heuristic is gone; kept for call-site compatibility.
+pub fn classify_tier_from_path(_path: &str) -> (Tier, FailureMode) {
+    default_tier()
 }
 
-fn path_heuristic(path: &str) -> (Tier, FailureMode) {
-    let lower = path.to_ascii_lowercase();
-
-    // Critical paths.
-    if lower.starts_with("/login")
-        || lower.starts_with("/signin")
-        || lower.starts_with("/auth")
-        || lower.starts_with("/payments")
-        || lower.starts_with("/checkout")
-        || lower.starts_with("/transfer")
-        || lower.starts_with("/2fa")
-        || lower.starts_with("/mfa")
-        || lower.starts_with("/password")
-    {
-        return (Tier::Critical, FailureMode::FailClose);
-    }
-
-    // High paths.
-    if lower.starts_with("/api")
-        || lower.starts_with("/admin")
-        || lower.starts_with("/graphql")
-        || lower.starts_with("/webhook")
-    {
-        return (Tier::High, FailureMode::FailClose);
-    }
-
-    // Medium paths.
-    if lower.starts_with("/user")
-        || lower.starts_with("/account")
-        || lower.starts_with("/profile")
-        || lower.starts_with("/settings")
-    {
-        return (Tier::Medium, FailureMode::FailOpen);
-    }
-
+/// Default tier for traffic with no route override: the most
+/// permissive tier. Operators raise sensitivity per-route
+/// (`tier_override`) or via the canary detector.
+fn default_tier() -> (Tier, FailureMode) {
     (Tier::Low, FailureMode::FailOpen)
 }
 
@@ -318,71 +290,32 @@ mod tests {
         }
     }
 
+    /// 2026-05-21 — the hardcoded path→tier heuristic was removed.
+    /// Paths that used to be auto-classified Critical/High/Medium
+    /// (`/login`, `/api`, `/admin`, `/user`, …) now default to `Low`
+    /// like everything else; sensitivity is operator-configured via
+    /// route `tier_override` + the canary detector. This guards
+    /// against the heuristic being reintroduced.
     #[test]
-    fn login_is_critical() {
-        let (m, u, h, b) = view_for_path("/login");
-        let req = make_view(&m, &u, &h, &b);
-        let (tier, fm) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::Critical);
-        assert_eq!(fm, FailureMode::FailClose);
+    fn all_paths_default_to_low_without_route_override() {
+        for p in [
+            "/login", "/payments/submit", "/auth/callback", "/api/users",
+            "/admin/dashboard", "/graphql", "/user/profile", "/settings",
+            "/static/logo.png", "/",
+        ] {
+            let (m, u, h, b) = view_for_path(p);
+            let req = make_view(&m, &u, &h, &b);
+            let (tier, fm) = classify_tier(None, &req);
+            assert_eq!(tier, Tier::Low, "path {p} must default to Low (no path heuristic)");
+            assert_eq!(fm, FailureMode::FailOpen, "default tier fails open");
+        }
     }
 
     #[test]
-    fn payments_is_critical() {
-        let (m, u, h, b) = view_for_path("/payments/submit");
-        let req = make_view(&m, &u, &h, &b);
-        let (tier, _) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::Critical);
-    }
-
-    #[test]
-    fn auth_is_critical() {
-        let (m, u, h, b) = view_for_path("/auth/callback");
-        let req = make_view(&m, &u, &h, &b);
-        let (tier, _) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::Critical);
-    }
-
-    #[test]
-    fn api_is_high() {
-        let (m, u, h, b) = view_for_path("/api/users");
-        let req = make_view(&m, &u, &h, &b);
-        let (tier, fm) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::High);
-        assert_eq!(fm, FailureMode::FailClose);
-    }
-
-    #[test]
-    fn admin_is_high() {
-        let (m, u, h, b) = view_for_path("/admin/dashboard");
-        let req = make_view(&m, &u, &h, &b);
-        let (tier, _) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::High);
-    }
-
-    #[test]
-    fn graphql_is_high() {
-        let (m, u, h, b) = view_for_path("/graphql");
-        let req = make_view(&m, &u, &h, &b);
-        let (tier, _) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::High);
-    }
-
-    #[test]
-    fn user_profile_is_medium() {
-        let (m, u, h, b) = view_for_path("/user/profile");
-        let req = make_view(&m, &u, &h, &b);
-        let (tier, fm) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::Medium);
-        assert_eq!(fm, FailureMode::FailOpen);
-    }
-
-    #[test]
-    fn settings_is_medium() {
-        let (m, u, h, b) = view_for_path("/settings");
-        let req = make_view(&m, &u, &h, &b);
-        let (tier, _) = classify_tier(None, &req);
-        assert_eq!(tier, Tier::Medium);
+    fn classify_tier_from_path_also_defaults_to_low() {
+        for p in ["/login", "/api/x", "/"] {
+            assert_eq!(classify_tier_from_path(p).0, Tier::Low);
+        }
     }
 
     #[test]
