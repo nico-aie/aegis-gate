@@ -53,7 +53,7 @@ test-fixture names and rule the team disqualified.
 
 ## Observed code path
 
-[detectors/header_injection.rs ~ line 137-148](aegis-gate/crates/aegis-security/src/detectors/header_injection.rs):
+[detectors/header_injection.rs ~ line 137-148](../../../../crates/aegis-security/src/detectors/header_injection.rs):
 
 ```rust
 const SUSPICIOUS_HOST_SUBSTRINGS: &[&str] = &[

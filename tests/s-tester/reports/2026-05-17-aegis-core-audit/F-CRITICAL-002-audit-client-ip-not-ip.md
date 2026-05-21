@@ -19,7 +19,7 @@ test_mode: source-review (spot-verified)
 
 `AuditEvent` declares the field as `client_ip`.
 
-**Spot-verified** at [audit.rs:13](aegis-gate/crates/aegis-core/src/audit.rs#L13):
+**Spot-verified** at [audit.rs:13](../../../../crates/aegis-core/src/audit.rs#L13):
 
 ```rust
 pub struct AuditEvent {

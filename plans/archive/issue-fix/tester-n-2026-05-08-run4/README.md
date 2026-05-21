@@ -1,6 +1,6 @@
 # tester-n 2026-05-08 Run-4 (security) — fix plan
 
-> **Source:** [`tests/n-tester/reports/2026-05-07-regression/QA-RUN-4-SECURITY.md`](../../../tests/n-tester/reports/2026-05-07-regression/QA-RUN-4-SECURITY.md)
+> **Source:** [`tests/n-tester/reports/2026-05-07-regression/QA-RUN-4-SECURITY.md`](../../../../tests/n-tester/reports/2026-05-07-regression/QA-RUN-4-SECURITY.md)
 > **Status:** plan, awaiting confirmation. No code changes yet.
 > **Branch target:** `develop` (operator merges to `Test/UI` for re-check after each phase)
 

@@ -22,7 +22,7 @@ test_mode: source-review (spot-verified: STRIP_HEADERS = ["server", "x-powered-b
 | Detect + block PII leak in response HEADERS (X-Debug, X-Internal-*) | ❌ Missing — only `server` + `x-powered-by` stripped |
 | Configurable 5xx body-size cap | ❌ Missing |
 
-Spot-verified at [response_filter.rs:5](aegis-gate/crates/aegis-security/src/response_filter.rs#L5):
+Spot-verified at [response_filter.rs:5](../../../../crates/aegis-security/src/response_filter.rs#L5):
 
 ```rust
 const STRIP_HEADERS: &[&str] = &["server", "x-powered-by"];
@@ -33,7 +33,7 @@ That's it. `X-Debug`, `X-Debug-*`, `X-Internal-*`, `X-AspNet-Version`,
 backend frameworks routinely leak — are passed through to the client.
 
 Body-side scanning at
-[response_filter.rs:75-86](aegis-gate/crates/aegis-security/src/response_filter.rs#L75-L86)
+[response_filter.rs:75-86](../../../../crates/aegis-security/src/response_filter.rs#L75-L86)
 detects stack traces and internal IPs but only REDACTS (replaces
 patterns inline); it never short-circuits the response with a 502
 "upstream leaked sensitive data" decision, as the spec requires

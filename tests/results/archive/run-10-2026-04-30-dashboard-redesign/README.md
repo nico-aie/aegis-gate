@@ -3,7 +3,7 @@
 Replaces the 11-page vanilla-JS dashboard with the **Aegis WAF
 Console** redesign. Everything ships embedded inside
 `aegis-control` (single binary, no separate frontend service).
-Plan: [`plans/dashboard-redesign.md`](../../../plans/dashboard-redesign.md).
+Plan: [`plans/dashboard-redesign.md`](../../../../plans/archive/dashboard-redesign.md).
 
 ## Headline
 
@@ -63,7 +63,7 @@ $ curl -X POST http://localhost:9443/api/rules \
 
 ## Hackathon WAF-FE compliance status
 
-[`Hackathon_Doc/EN_present_v2.3.md`](../../../Hackathon_Doc/EN_present_v2.3.md) §2:
+[`Hackathon_Doc/EN_present_v2.3.md`](../../../../Hackathon_Doc/EN_present_v2.3.md) §2:
 
 | Requirement | Status |
 |---|---|

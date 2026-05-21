@@ -125,7 +125,7 @@ through the etcd watcher.
 ## Configuration
 
 The authoritative schema lives in
-[`../plans/shared-contract.md`](../plans/shared-contract.md) §2.6.11
+`../plans/shared-contract.md` §2.6.11
 (`AdminConfig` + `DashboardAuthConfig`). Full field reference in
 [`dashboard-auth.md`](./dashboard-auth.md).
 

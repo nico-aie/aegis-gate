@@ -35,12 +35,12 @@ This is dangerous for two reasons:
 
 ## Observed code path
 
-[pipeline.rs:139-158](aegis-gate/crates/aegis-security/src/pipeline.rs#L139-L158) — comment block:
+[pipeline.rs:139-158](../../../../crates/aegis-security/src/pipeline.rs#L139-L158) — comment block:
 
 > *"NOTE: This is NOT the production hot path. The proxy data
 > plane bypasses this trait and inlines detectors + risk."*
 
-[pipeline.rs:159-167](aegis-gate/crates/aegis-security/src/pipeline.rs#L159-L167) — body:
+[pipeline.rs:159-167](../../../../crates/aegis-security/src/pipeline.rs#L159-L167) — body:
 
 ```rust
 fn inbound(&self, req: &Request) -> Verdict {
@@ -55,7 +55,7 @@ No call to:
 - canary path check
 - tier-aware failure mode
 
-[pipeline.rs:11-62](aegis-gate/crates/aegis-security/src/pipeline.rs#L11-L62)
+[pipeline.rs:11-62](../../../../crates/aegis-security/src/pipeline.rs#L11-L62)
 defines `classify_tier()` (CRITICAL / HIGH / MEDIUM / CATCH-ALL
 classification), but `Pipeline::inbound` never calls it. The fail-close
 vs fail-open branching the tier function returns is therefore unused

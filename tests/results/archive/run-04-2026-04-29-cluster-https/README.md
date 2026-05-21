@@ -25,7 +25,7 @@ fixes hold under load.
 | Host               | Darwin 23.1.0 arm64 (Apple Silicon laptop) |
 | Gateway binary     | `target/release/waf` built with `--features redis` |
 | HTTPS config       | [`config/waf.tls.yaml`](../../../config/waf.tls.yaml) (data plane :8443, self-signed cert in `tests/fixtures/tls/`) |
-| Cluster configs    | [`config/waf.cluster-{a,b}.yaml`](../../../config/) (Redis-backed) |
+| Cluster configs    | [`config/waf.cluster-{a,b}.yaml`](../../../../config) (Redis-backed) |
 | Real upstream      | `aegis-httpbin` container on `127.0.0.1:8081` |
 | Redis              | `aegis-redis` container on `127.0.0.1:6379` |
 | k6 version         | `grafana/k6:0.51.0` (in `aegis-k6` container) |
@@ -156,7 +156,7 @@ balancer distributes — so the numbers above prove
 
 Full analysis + three concrete options (DNS round-robin,
 HAProxy in front, `SO_REUSEPORT`) live in
-[`tests/cluster/HA-TEST-METHODOLOGY.md`](../../cluster/HA-TEST-METHODOLOGY.md).
+[`tests/cluster/HA-TEST-METHODOLOGY.md`](../../../cluster/HA-TEST-METHODOLOGY.md).
 Recommended next step: drop an `aegis-lb` HAProxy
 container into `deploy/docker-compose.dev.yml`, add
 `tests/cluster/05-single-vip-baseline.sh` +

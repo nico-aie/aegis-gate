@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## BF-01 · rDNS classification is NOT forward-confirmed despite "FCrDNS" claim in docstring
 
-**Component:** [bots.rs:84-91](aegis-gate/crates/aegis-security/src/bots.rs#L84-L91)
+**Component:** [bots.rs:84-91](../../../../crates/aegis-security/src/bots.rs#L84-L91)
 
 The module's header comment claims forward-confirmed reverse DNS
 (FCrDNS) — the correct way to identify legitimate bots. Implementation
@@ -46,7 +46,7 @@ cache becomes part of this layer.
 
 ## BF-02 · rDNS cache eviction uses `clear()` on overflow
 
-**Component:** [bots.rs:118-126](aegis-gate/crates/aegis-security/src/bots.rs#L118-L126)
+**Component:** [bots.rs:118-126](../../../../crates/aegis-security/src/bots.rs#L118-L126)
 
 When the cache hits `max_cache` capacity, the implementation calls
 `HashMap::clear()` — wiping every entry. Under DDoS with fresh IPs,
@@ -65,7 +65,7 @@ random entries on overflow).
 
 ## BF-03 · JA3/JA4 hashed with BLAKE3 instead of MD5/SHA-256 → incompatible with every external IoC feed
 
-**Component:** [fingerprint/ja3.rs:29-31](aegis-gate/crates/aegis-security/src/fingerprint/ja3.rs#L29-L31), [fingerprint/ja4.rs:96](aegis-gate/crates/aegis-security/src/fingerprint/ja4.rs#L96)
+**Component:** [fingerprint/ja3.rs:29-31](../../../../crates/aegis-security/src/fingerprint/ja3.rs#L29-L31), [fingerprint/ja4.rs:96](../../../../crates/aegis-security/src/fingerprint/ja4.rs#L96)
 
 The JA3 spec defines the fingerprint as `md5(comma-separated-fields)`.
 The JA4 spec defines it as `sha256(...)` truncated to 12 hex chars.
@@ -89,7 +89,7 @@ correct JA4.
 
 ## BF-04 · `header_order` in device-ID hash breaks stability under HTTP/2 HPACK
 
-**Component:** [fingerprint/mod.rs:10-31](aegis-gate/crates/aegis-security/src/fingerprint/mod.rs#L10-L31)
+**Component:** [fingerprint/mod.rs:10-31](../../../../crates/aegis-security/src/fingerprint/mod.rs#L10-L31)
 
 `device_id` includes the request's header order in its hash:
 

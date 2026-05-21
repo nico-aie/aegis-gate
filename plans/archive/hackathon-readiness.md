@@ -17,8 +17,8 @@
 > additional rollback targets remains future polish.
 > Track ID prefix `HACK-T<n>`. Targets the v2.3 contract requirements
 > documented in
-> [`../Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md)
-> + [`../Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](../Hackathon_Doc/EN_waf_interop_contract_v2.3.md).
+> [`../Hackathon_Doc/EN_present_v2.3.md`](../../Hackathon_Doc/EN_present_v2.3.md)
+> + [`../Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](../../Hackathon_Doc/EN_waf_interop_contract_v2.3.md).
 
 ---
 

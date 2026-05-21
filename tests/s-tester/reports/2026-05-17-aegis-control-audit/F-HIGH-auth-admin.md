@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## AA-01 · `password::generate_salt` derives from `blake3(now||counter)` not `OsRng` → defeats argon2 offline-attack resistance
 
-**Component:** [admin_auth/password.rs:25-27](aegis-gate/crates/aegis-control/src/admin_auth/password.rs#L25-L27)
+**Component:** [admin_auth/password.rs:25-27](../../../../crates/aegis-control/src/admin_auth/password.rs#L25-L27)
 
 Argon2id's offline-attack resistance depends on **unpredictable
 per-password salts**. Predictable salts let an attacker pre-compute
@@ -51,7 +51,7 @@ the offline crack cost.
 
 ## AA-02 · TOTP docstring says SHA-1 but code uses HMAC-SHA256
 
-**Component:** [admin_auth/totp.rs:1, 66](aegis-gate/crates/aegis-control/src/admin_auth/totp.rs#L1)
+**Component:** [admin_auth/totp.rs:1, 66](../../../../crates/aegis-control/src/admin_auth/totp.rs#L1)
 
 Doc comment: "HMAC-SHA1 for compatibility with standard authenticator apps".
 
@@ -84,7 +84,7 @@ default).
 
 ## AA-03 · `session::base64url_encode` writes HEX not base64
 
-**Component:** [admin_auth/session.rs:168-171](aegis-gate/crates/aegis-control/src/admin_auth/session.rs#L168-L171)
+**Component:** [admin_auth/session.rs:168-171](../../../../crates/aegis-control/src/admin_auth/session.rs#L168-L171)
 
 Function name + module docstring (line 4: "base64url(HMAC_SHA256(...))")
 say base64. The implementation writes hex via
@@ -111,7 +111,7 @@ Rename is the smaller, safer change.
 
 ## AA-04 · `password.rs` Argon2 params not pinned
 
-**Component:** [admin_auth/password.rs:8, 38](aegis-gate/crates/aegis-control/src/admin_auth/password.rs#L8)
+**Component:** [admin_auth/password.rs:8, 38](../../../../crates/aegis-control/src/admin_auth/password.rs#L8)
 
 Uses `Argon2::default()`. The `argon2` 0.5.x default is
 `m_cost = 19456 KiB, t_cost = 2, p_cost = 1` — meets OWASP 2024
@@ -145,7 +145,7 @@ Document the chosen params + the OWASP year they map to in a code comment.
 
 ## AA-05 · `audit/sinks/syslog.rs` drops audit data on slow remote, no metric
 
-**Component:** [audit/sinks/syslog.rs:485](aegis-gate/crates/aegis-control/src/audit/sinks/syslog.rs#L485)
+**Component:** [audit/sinks/syslog.rs:485](../../../../crates/aegis-control/src/audit/sinks/syslog.rs#L485)
 
 On send failure the forwarder `sleep(100ms)`. Under sustained outage
 to a remote syslog peer, the bus emits at full rate but the
@@ -168,7 +168,7 @@ And consider an alert (SLO) when this counter rises.
 
 ## AA-06 · interop `control.rs::secret` stored as plain `String`, not zeroized
 
-**Component:** [interop/control.rs:226](aegis-gate/crates/aegis-control/src/interop/control.rs#L226)
+**Component:** [interop/control.rs:226](../../../../crates/aegis-control/src/interop/control.rs#L226)
 
 The `X-Benchmark-Secret` value is stored as a plain `String`. On
 process memory dump (`gcore`, container debugger, OOM core file)

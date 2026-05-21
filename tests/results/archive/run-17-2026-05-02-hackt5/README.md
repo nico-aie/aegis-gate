@@ -2,7 +2,7 @@
 
 End-to-end verification after **HACK-T5** (Tier-C bonus:
 Syslog/CEF audit forwarder) — final slice of
-[`plans/hackathon-readiness.md`](../../../plans/hackathon-readiness.md).
+[`plans/hackathon-readiness.md`](../../../../plans/archive/hackathon-readiness.md).
 
 ## Headline
 

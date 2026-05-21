@@ -31,7 +31,7 @@ rate limit on EVERY request because each new IP gets a fresh bucket.
 
 ## Observed code path
 
-[rate_limit/ip_limiter.rs:77-90](aegis-gate/crates/aegis-security/src/rate_limit/ip_limiter.rs#L77-L90):
+[rate_limit/ip_limiter.rs:77-90](../../../../crates/aegis-security/src/rate_limit/ip_limiter.rs#L77-L90):
 
 ```rust
 pub struct IpRateLimiter {
@@ -41,7 +41,7 @@ pub struct IpRateLimiter {
 }
 ```
 
-[rate_limit/ip_limiter.rs:123](aegis-gate/crates/aegis-security/src/rate_limit/ip_limiter.rs#L123) (paraphrased):
+[rate_limit/ip_limiter.rs:123](../../../../crates/aegis-security/src/rate_limit/ip_limiter.rs#L123) (paraphrased):
 
 ```rust
 pub fn consume(&self, ip: IpAddr) -> Decision {
@@ -51,7 +51,7 @@ pub fn consume(&self, ip: IpAddr) -> Decision {
 ```
 
 The underlying `sliding::check(state, key, ...)` at
-[sliding.rs:18](aegis-gate/crates/aegis-security/src/rate_limit/sliding.rs#L18) takes a generic `&str` key — so the
+[sliding.rs:18](../../../../crates/aegis-security/src/rate_limit/sliding.rs#L18) takes a generic `&str` key — so the
 infrastructure supports session-keyed rate limiting. The bug is that
 no caller wires it that way; every call site passes an IP-derived
 string.

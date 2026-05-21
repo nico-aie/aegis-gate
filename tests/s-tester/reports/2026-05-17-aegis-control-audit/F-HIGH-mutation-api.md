@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## MA-01 · `validate_rule_body` is a stub (accepts "this is not a rule")
 
-**Component:** [api/rules.rs:97-130](aegis-gate/crates/aegis-control/src/api/rules.rs#L97-L130)
+**Component:** [api/rules.rs:97-130](../../../../crates/aegis-control/src/api/rules.rs#L97-L130)
 
 The doc comment line 96 admits: *"Toy validator. Real grammar lives in `aegis-security`."* It checks empty-body + size + a TODO marker
 sentinel. The actual rule linter from `aegis_security::rules` is NOT
@@ -35,7 +35,7 @@ actually fire.
 
 ## MA-02 · `validate_pool` no SSRF cap on operator-supplied upstream members
 
-**Component:** [api/upstreams_config.rs:252-280](aegis-gate/crates/aegis-control/src/api/upstreams_config.rs#L252-L280)
+**Component:** [api/upstreams_config.rs:252-280](../../../../crates/aegis-control/src/api/upstreams_config.rs#L252-L280)
 
 `validate_pool` accepts `members: Vec<Member>` with no:
 - Upper bound on `len()` (operator can paste 100k members)
@@ -72,7 +72,7 @@ Operator can opt-in to internal IPs via `cfg.upstreams.allow_internal_addresses:
 
 ## MA-03 · `blacklist::bulk_insert` no cap, N mutex re-locks
 
-**Component:** [api/blacklist.rs:354-402](aegis-gate/crates/aegis-control/src/api/blacklist.rs#L354-L402)
+**Component:** [api/blacklist.rs:354-402](../../../../crates/aegis-control/src/api/blacklist.rs#L354-L402)
 
 `bulk_insert` re-locks the underlying mutex once per entry inside a
 loop with no upper bound on N. An operator paste of 10M lines is
@@ -90,7 +90,7 @@ DoS vector on `/api/blacklist`.
 
 ## MA-04 · `simulator` shares LIVE detector mask + no body cap
 
-**Component:** [api/simulator.rs:64, 222-249](aegis-gate/crates/aegis-control/src/api/simulator.rs#L222-L249)
+**Component:** [api/simulator.rs:64, 222-249](../../../../crates/aegis-control/src/api/simulator.rs#L222-L249)
 
 Doc at lines 1-9 claims "no side effects". True for risk store, but
 `simulate()` calls `mask.resolve(...)` against the LIVE
@@ -120,7 +120,7 @@ mid-simulation don't affect it.
 
 ## MA-05 · `rollback::apply_detector_mask_rollback` skips compliance clamp
 
-**Component:** [api/rollback.rs:206-208, 638](aegis-gate/crates/aegis-control/src/api/rollback.rs#L206)
+**Component:** [api/rollback.rs:206-208, 638](../../../../crates/aegis-control/src/api/rollback.rs#L206)
 
 `apply_detector_mask_rollback` calls `mask.store_state` UNCONDITIONALLY,
 including with a `before` field that produces a non-compliant mask
@@ -150,7 +150,7 @@ mask.store_state(clamped);
 
 ## MA-06 · `mtls_mode` PUT sets `requires_restart: true` instead of hot-swapping
 
-**Component:** [api/mtls_mode.rs:120-126](aegis-gate/crates/aegis-control/src/api/mtls_mode.rs#L120-L126)
+**Component:** [api/mtls_mode.rs:120-126](../../../../crates/aegis-control/src/api/mtls_mode.rs#L120-L126)
 
 `render_mode_response` sets `requires_restart: true` whenever the
 override differs from configured. The store updates an ArcSwap but
@@ -171,7 +171,7 @@ just sets the bool — the UI needs to surface it).
 
 ## MA-07 · `mtls_ca_bundle` no upper PEM size cap, no parser fuel limit
 
-**Component:** [api/mtls_ca_bundle.rs:107-146](aegis-gate/crates/aegis-control/src/api/mtls_ca_bundle.rs#L107-L146)
+**Component:** [api/mtls_ca_bundle.rs:107-146](../../../../crates/aegis-control/src/api/mtls_ca_bundle.rs#L107-L146)
 
 `parse_and_preview` iterates `rustls_pemfile::certs` until
 exhaustion, calling SHA-256 on every cert block. 1 GB of

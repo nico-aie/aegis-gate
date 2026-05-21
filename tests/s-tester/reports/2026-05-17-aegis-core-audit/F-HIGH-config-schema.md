@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## CS-01 · ComplianceProfile fields inert — `validate_tls_hardening` reads `tls.*` not `compliance.*`
 
-**Component:** [config.rs:2739-2749](aegis-gate/crates/aegis-core/src/config.rs#L2739-L2749) + [config.rs:574](aegis-gate/crates/aegis-core/src/config.rs#L574)
+**Component:** [config.rs:2739-2749](../../../../crates/aegis-core/src/config.rs#L2739-L2749) + [config.rs:574](../../../../crates/aegis-core/src/config.rs#L574)
 
 `ComplianceProfile.min_tls_version`, `disallow_algorithms`,
 `pii_pseudonymize` exist as fields but `validate_tls_hardening`
@@ -33,7 +33,7 @@ Wire `compliance.pii_pseudonymize` into `audit.pseudonymize_ip`.
 
 ## CS-02 · No `VelocitySequenceRule` type for §5.2 #10 transaction velocity
 
-**Component:** [config.rs:1804-1815](aegis-gate/crates/aegis-core/src/config.rs#L1804-L1815) + no sequence type anywhere
+**Component:** [config.rs:1804-1815](../../../../crates/aegis-core/src/config.rs#L1804-L1815) + no sequence type anywhere
 
 §5.2 #10 (Login→OTP→Deposit window N, withdrawal-after-deposit
 window M) has no schema representation. `RateLimitRule.window` is a
@@ -65,7 +65,7 @@ sequence engine missing) starts here.
 
 ## CS-03 · No `BehavioralConfig` schema for §5.2 #09 signal thresholds
 
-**Component:** [config.rs:2014-2068](aegis-gate/crates/aegis-core/src/config.rs#L2014-L2068)
+**Component:** [config.rs:2014-2068](../../../../crates/aegis-core/src/config.rs#L2014-L2068)
 
 §5.2 #09 names 4 behavioral signals (inter-request <50ms, zero-depth
 session, missing Referer on sensitive routes, timing variance). No
@@ -87,7 +87,7 @@ pub struct BehavioralConfig {
 
 ## CS-04 · No body-decompression cap
 
-**Component:** [config.rs:1467-1513](aegis-gate/crates/aegis-core/src/config.rs#L1467-L1513) + [config.rs:2256](aegis-gate/crates/aegis-core/src/config.rs#L2256)
+**Component:** [config.rs:1467-1513](../../../../crates/aegis-core/src/config.rs#L1467-L1513) + [config.rs:2256](../../../../crates/aegis-core/src/config.rs#L2256)
 
 §5.3 names "decompression bomb" as a Body Abuse vector. `DlpConfig.max_scan_bytes` (line 2256) and `QuotaConfig.client_max_body_size`
 exist but cap RAW body size, not DECOMPRESSED size.
@@ -130,7 +130,7 @@ Add to `WafConfig` as `pub response_filter: ResponseFilterConfig`.
 
 ## CS-06 · GeoIpConfig lacks ASN-classification feed paths
 
-**Component:** [config.rs:215-222](aegis-gate/crates/aegis-core/src/config.rs#L215-L222)
+**Component:** [config.rs:215-222](../../../../crates/aegis-core/src/config.rs#L215-L222)
 
 §5.2 #05 requires Tor exit + datacenter ASN classification.
 `GeoIpConfig` only carries MaxMind country+ASN DBs; the categorization
@@ -149,7 +149,7 @@ pub refresh_interval: Duration,             // default 1h
 
 ## CS-07 · mTLS allow-list is global only, not per-route
 
-**Component:** [config.rs:1523-1551](aegis-gate/crates/aegis-core/src/config.rs#L1523-L1551) + [config.rs:745](aegis-gate/crates/aegis-core/src/config.rs#L745)
+**Component:** [config.rs:1523-1551](../../../../crates/aegis-core/src/config.rs#L1523-L1551) + [config.rs:745](../../../../crates/aegis-core/src/config.rs#L745)
 
 `tls.client_auth.allowed_sans` is global. `RouteConfig.auth_required:
 Vec<String>` carries only kind labels (`mtls`/`spiffe`), not specific
@@ -163,7 +163,7 @@ just "any mTLS cert".
 
 ## CS-08 · No `schema_version` field on WafConfig
 
-**Component:** [config.rs:1845-1862](aegis-gate/crates/aegis-core/src/config.rs#L1845-L1862)
+**Component:** [config.rs:1845-1862](../../../../crates/aegis-core/src/config.rs#L1845-L1862)
 
 `AuditEvent.schema_version` exists (audit.rs:5) but `WafConfig` itself
 has no version field. §5.9 GitOps + config versioning requires this;
@@ -197,7 +197,7 @@ if self.schema_version != EXPECTED_SCHEMA_VERSION {
 
 ## CS-09 · Secret-typed fields are plain String with `#[derive(Debug)]` parent
 
-**Component:** [config.rs:166-168](aegis-gate/crates/aegis-core/src/config.rs#L166-L168) + [config.rs:2602-2605](aegis-gate/crates/aegis-core/src/config.rs#L2602-L2605) + [config.rs:2469](aegis-gate/crates/aegis-core/src/config.rs#L2469) + [config.rs:2287](aegis-gate/crates/aegis-core/src/config.rs#L2287) + [config.rs:2545](aegis-gate/crates/aegis-core/src/config.rs#L2545)
+**Component:** [config.rs:166-168](../../../../crates/aegis-core/src/config.rs#L166-L168) + [config.rs:2602-2605](../../../../crates/aegis-core/src/config.rs#L2602-L2605) + [config.rs:2469](../../../../crates/aegis-core/src/config.rs#L2469) + [config.rs:2287](../../../../crates/aegis-core/src/config.rs#L2287) + [config.rs:2545](../../../../crates/aegis-core/src/config.rs#L2545)
 
 `InteropConfig.control_secret: Option<String>` — plain String.
 Parent struct has `#[derive(Debug)]`. Any `dbg!()` / panic / trace

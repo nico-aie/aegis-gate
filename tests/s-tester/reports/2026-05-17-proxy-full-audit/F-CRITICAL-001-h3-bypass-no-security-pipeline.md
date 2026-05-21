@@ -31,7 +31,7 @@ In a benchmark phase where the OC harness uses H3, **every test case
 scores `passed` (attack reached upstream)**, every response is a §5
 contract failure, and every audit-correlation step fails.
 
-Spot-verified by reading [listener/http3.rs:261](aegis-gate/crates/aegis-proxy/src/listener/http3.rs#L261):
+Spot-verified by reading [listener/http3.rs:261](../../../../crates/aegis-proxy/src/listener/http3.rs#L261):
 
 ```rust
 let resp = match crate::proxy::handle_request(hyper_req, ctx).await {
@@ -77,7 +77,7 @@ while let Some((req, mut stream)) = h3_conn.accept().await? {
 ```
 
 The HTTP/1.1+/2 listener takes the correct path
-([accept.rs:1129](aegis-gate/crates/aegis-proxy/src/accept.rs#L1129)):
+([accept.rs:1129](../../../../crates/aegis-proxy/src/accept.rs#L1129)):
 
 ```rust
 let (resp, decision) = handle_data_request(

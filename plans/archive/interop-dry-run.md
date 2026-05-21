@@ -2,7 +2,7 @@
 
 > **Status:** Closed — DR-T1..T7 shipped in run-08 (27/27 contract
 > checks green, ~30 µs p95 overhead at 4 k RPS, 100 % success in
-> both modes). Reference only. See [`README.md`](./README.md).
+> both modes). Reference only. See [`README.md`](../README.md).
 
 Round-2 gate verification before the OC's automated benchmarker
 sees us. The goal is to catch contract-shape bugs (wrong header
@@ -22,8 +22,8 @@ under our own control rather than burning a real benchmark slot.
 | **DR-T7** | run-08 README + summary | 30 min | Per-track pass/fail + perf delta table vs run-07 |
 
 **Total: ~4.5 hr.** Outputs land in
-[`tests/interop/`](../tests/interop/) (the scripts) and
-[`tests/results/run-08-2026-04-30-interop/`](../tests/results/run-08-2026-04-30-interop/)
+[`tests/interop/`](../../tests/interop) (the scripts) and
+[`tests/results/run-08-2026-04-30-interop/`](../../tests/results/archive/run-08-2026-04-30-interop)
 (the proof).
 
 ## Risks

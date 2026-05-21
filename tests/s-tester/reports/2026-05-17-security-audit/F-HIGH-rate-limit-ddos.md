@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## RD-01 · `bucket.rs` delegates to in-memory backend whose token-bucket is broken (cf. F-CRITICAL-007 from proxy audit)
 
-**Component:** [rate_limit/bucket.rs:9-16](aegis-gate/crates/aegis-security/src/rate_limit/bucket.rs#L9-L16)
+**Component:** [rate_limit/bucket.rs:9-16](../../../../crates/aegis-security/src/rate_limit/bucket.rs#L9-L16)
 
 The `take` API forwards to `state.token_bucket()`. The proxy-audit
 finding F-CRITICAL-007 reports that the in-memory `StateBackend`'s
@@ -35,7 +35,7 @@ using `DashMap` like `ip_limiter.rs` does for sliding-log.
 
 ## RD-02 · `ip_limiter.rs` sweep capped at one run per 60 s — under DDoS, allows millions of map entries before reclaim
 
-**Component:** [rate_limit/ip_limiter.rs:177-199](aegis-gate/crates/aegis-security/src/rate_limit/ip_limiter.rs#L177-L199)
+**Component:** [rate_limit/ip_limiter.rs:177-199](../../../../crates/aegis-security/src/rate_limit/ip_limiter.rs#L177-L199)
 
 `IDLE_SWEEP_INTERVAL = 60s`, hardcoded. Under sustained 100k unique-IP
 DDoS, 60 s of growth = 6 million entries before reclaim. Each entry
@@ -57,7 +57,7 @@ Plus `last_seen` timestamp eviction (drop entries idle > 5 min).
 
 ## RD-03 · `ip_limiter.rs::consume` holds DashMap write guard across O(N) drain loop
 
-**Component:** [rate_limit/ip_limiter.rs:131](aegis-gate/crates/aegis-security/src/rate_limit/ip_limiter.rs#L131)
+**Component:** [rate_limit/ip_limiter.rs:131](../../../../crates/aegis-security/src/rate_limit/ip_limiter.rs#L131)
 
 `DashMap::entry(ip)` returns a write guard held for the entire body,
 including the `while pop_front` loop that drops expired timestamps.
@@ -84,7 +84,7 @@ cap-trim happen on push.
 
 ## RD-04 · `ddos.rs::tick_rps` races `check` via `swap(0)`
 
-**Component:** [ddos.rs:256-271](aegis-gate/crates/aegis-security/src/ddos.rs#L256-L271)
+**Component:** [ddos.rs:256-271](../../../../crates/aegis-security/src/ddos.rs#L256-L271)
 
 ```rust
 let count = self.counter.swap(0, Ordering::Relaxed);
@@ -105,7 +105,7 @@ zeroed mid-second.
 
 ## RD-05 · `auto_block` fires in `observe_only` mode
 
-**Component:** [ddos.rs:233-234](aegis-gate/crates/aegis-security/src/ddos.rs#L233-L234)
+**Component:** [ddos.rs:233-234](../../../../crates/aegis-security/src/ddos.rs#L233-L234)
 
 On breach, `state.auto_block(ip)` is called unconditionally. The
 `observe_only` check happens DOWNSTREAM (whether to deny the

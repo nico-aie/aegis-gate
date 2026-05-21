@@ -35,7 +35,7 @@ report-uri  /api/csp/report;
 ```
 
 `'unsafe-inline'` for styles is a Chart.js requirement (see
-[`assets.md`](assets.md)). All other directives are tight.
+`assets.md`). All other directives are tight.
 
 We log CSP violations to the audit chain (class `system`, action
 `csp_violation`) so any drift in third-party assets surfaces fast.
@@ -87,7 +87,7 @@ file digest, so a stealth bytes-edit fails CI.
 ## Supply chain
 
 - Single bundled JS dependency (Chart.js). Update procedure
-  documented in [`assets.md`](assets.md) requires GPG verification
+  documented in `assets.md` requires GPG verification
   + `cargo audit` clean before merge.
 - Zero npm. No `node_modules`. The repo has no `package.json`.
 - Embedded fonts: none. We use the system stack.

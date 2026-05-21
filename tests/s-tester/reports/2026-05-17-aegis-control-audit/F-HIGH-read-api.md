@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## RA-01 · Audit ring cap 10k → search for events older than ~2 min fails
 
-**Component:** [api/audit.rs:33](aegis-gate/crates/aegis-control/src/api/audit.rs#L33)
+**Component:** [api/audit.rs:33](../../../../crates/aegis-control/src/api/audit.rs#L33)
 
 Ring buffer cap is 10,000 entries. At 100 RPS, ring fills every
 ~100 s — older events are dropped. The on-disk audit file (`jsonl.rs`)
@@ -33,7 +33,7 @@ in a sidecar SQLite for sub-second lookups.
 
 ## RA-02 · SSE event frames emit no `id:` line → Last-Event-ID reconnect broken
 
-**Component:** [dashboard/sse.rs:4-7](aegis-gate/crates/aegis-control/src/dashboard/sse.rs#L4-L7) · [admin_sse.rs:182](aegis-gate/crates/aegis-proxy/src/admin_sse.rs#L182)
+**Component:** [dashboard/sse.rs:4-7](../../../../crates/aegis-control/src/dashboard/sse.rs#L4-L7) · [admin_sse.rs:182](../../../../crates/aegis-proxy/src/admin_sse.rs#L182)
 
 SSE protocol supports `Last-Event-ID` reconnect: client retries with
 header `Last-Event-ID: <last_seq>`, server replays from that point.
@@ -49,7 +49,7 @@ before joining the live stream.
 
 ## RA-03 · `attacks::top` keyed by IP only → CGNAT collapse
 
-**Component:** [api/attacks.rs:331-360, 540-552](aegis-gate/crates/aegis-control/src/api/attacks.rs#L331)
+**Component:** [api/attacks.rs:331-360, 540-552](../../../../crates/aegis-control/src/api/attacks.rs#L331)
 
 `attacker_identifier()` falls back to `fp:<ja4>` only for private
 IPs. For public IPs, the key is IP-only. Two devices behind one
@@ -66,7 +66,7 @@ the public-IP path the same way the private-IP path is.
 
 ## RA-04 · `stats::record` cutoff uses event_ts, not now → clock-skewed event wipes timeseries
 
-**Component:** [api/stats.rs:177-193](aegis-gate/crates/aegis-control/src/api/stats.rs#L177-L193)
+**Component:** [api/stats.rs:177-193](../../../../crates/aegis-control/src/api/stats.rs#L177-L193)
 
 `record()` computes `cutoff = event_sec - TIMESERIES_RETENTION_SECS`
 then prunes buckets older than cutoff. A single audit event with
@@ -86,7 +86,7 @@ the timeseries chart goes empty.
 
 ## RA-05 · `stats::StatsHandler::render` upstream_provider fires outside cache slot
 
-**Component:** [api/stats.rs:316-380](aegis-gate/crates/aegis-control/src/api/stats.rs#L316)
+**Component:** [api/stats.rs:316-380](../../../../crates/aegis-control/src/api/stats.rs#L316)
 
 The 2 s upstream-summary cache calls `upstream_provider()` on every
 miss, but the cache slot is acquired AFTER the provider runs.
@@ -100,7 +100,7 @@ slot. Standard "double-checked lock" pattern.
 
 ## RA-06 · `incidents::alert_id` collides on same-second fires
 
-**Component:** [api/incidents.rs:81-83](aegis-gate/crates/aegis-control/src/api/incidents.rs#L81-L83)
+**Component:** [api/incidents.rs:81-83](../../../../crates/aegis-control/src/api/incidents.rs#L81-L83)
 
 `alert_id` is built from `fired_at.timestamp()` (epoch seconds).
 Two alerts on the same `(sli, window_hours)` firing within the same
@@ -114,7 +114,7 @@ monotonic salt.
 
 ## RA-07 · `/api/admin/sessions` leaks every active session's IP + User-Agent
 
-**Component:** [api/admin.rs:90-97](aegis-gate/crates/aegis-control/src/api/admin.rs#L90-L97) + [api/admin.rs:136-141](aegis-gate/crates/aegis-control/src/api/admin.rs#L136-L141)
+**Component:** [api/admin.rs:90-97](../../../../crates/aegis-control/src/api/admin.rs#L90-L97) + [api/admin.rs:136-141](../../../../crates/aegis-control/src/api/admin.rs#L136-L141)
 
 `SessionInfo` carries `ip` + `user_agent`. The list endpoint returns
 every session including those fields to any caller. With an attacker
@@ -138,7 +138,7 @@ Or RBAC-gate the endpoint (only "audit-admin" role sees full data).
 
 ## RA-08 · `api/audit.rs::route_stats` + `attacks::record` mutex contention on hot path
 
-**Component:** [api/audit.rs:283-347](aegis-gate/crates/aegis-control/src/api/audit.rs#L283-L347) · [api/attacks.rs:202-247](aegis-gate/crates/aegis-control/src/api/attacks.rs#L202-L247)
+**Component:** [api/audit.rs:283-347](../../../../crates/aegis-control/src/api/audit.rs#L283-L347) · [api/attacks.rs:202-247](../../../../crates/aegis-control/src/api/attacks.rs#L202-L247)
 
 Both functions walk/append under `Mutex<...>` on every audit event.
 The per-call HashMap rebuild in `route_stats` is O(ring) per HTTP

@@ -6,7 +6,7 @@
 
 > **DEFERRED.** This feature is out of scope for v1. Dashboard and
 > admin API access in v1 is protected by local auth — see
-> [`../dashboard-auth.md`](../dashboard-auth.md) (argon2id password,
+> [`../dashboard-auth.md`](../control-plane/dashboard-auth.md) (argon2id password,
 > signed session token, CSRF, login rate-limit, IP allowlist, optional
 > TOTP). This document is retained as design reference for when the
 > enterprise OIDC/RBAC work is picked up, but nothing in v1 depends
@@ -18,7 +18,7 @@
 
 > **Enterprise addendum.** Control-plane access (dashboard + admin API)
 > is gated by OIDC SSO and role-based access control. Distinct from
-> data-plane auth ([`../external-auth.md`](../external-auth.md)).
+> data-plane auth ([`../external-auth.md`](../security/external-auth.md)).
 
 ## Purpose
 

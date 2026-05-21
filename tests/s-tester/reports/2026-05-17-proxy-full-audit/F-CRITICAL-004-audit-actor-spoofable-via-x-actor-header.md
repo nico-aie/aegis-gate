@@ -26,7 +26,7 @@ change goes through the audit chain with attribution. v2.3 §6 lists
 audit log as "evidence cho BTC-side correlation". Both rely on
 `actor` being trustworthy.
 
-**Spot-verified** at [admin_mutate.rs:1420-1425](aegis-gate/crates/aegis-proxy/src/admin_mutate.rs#L1420-L1425) (`handle_loadmode_put`):
+**Spot-verified** at [admin_mutate.rs:1420-1425](../../../../crates/aegis-proxy/src/admin_mutate.rs#L1420-L1425) (`handle_loadmode_put`):
 
 ```rust
 let actor = req

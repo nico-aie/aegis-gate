@@ -17,4 +17,4 @@ Start here if you have a binary and need to make it do something.
 | [profiles.md](./profiles.md) | Pick the right `config/profiles/*.yaml` — empirical comparison + per-knob trade-off table |
 
 For testing the running system end-to-end, see
-[`../../tests/TESTING.md`](../../tests/TESTING.md).
+[`../../tests/TESTING.md`](../../tests/README.md).

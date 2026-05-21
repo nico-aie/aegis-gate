@@ -43,7 +43,7 @@ table — keep them in sync.
 
 | Doc | Status | Notes / module path |
 |---|---|---|
-| [`reverse-proxy.md`](../docs/data-plane/reverse-proxy.md) | **Implemented** | `aegis-proxy/src/{lib,proxy,supervisor}.rs`. Multi-protocol upstream complete 2026-05-03 (HTTP/HTTPS/H2c/gRPC/CONNECT-tunneling-via-`scheme:tcp`); see plan [`tcp-forwarder-phase-4.md`](./tcp-forwarder-phase-4.md). |
+| [`reverse-proxy.md`](../docs/data-plane/reverse-proxy.md) | **Implemented** | `aegis-proxy/src/{lib,proxy,supervisor}.rs`. Multi-protocol upstream complete 2026-05-03 (HTTP/HTTPS/H2c/gRPC/CONNECT-tunneling-via-`scheme:tcp`); see plan [`tcp-forwarder-phase-4.md`](./archive/tcp-forwarder-phase-4.md). |
 | [`routing-ingress.md`](../docs/data-plane/routing-ingress.md) | **Implemented** | `aegis-proxy/src/route/{host,path,mod}.rs`. |
 | [`upstream-pools.md`](../docs/data-plane/upstream-pools.md) | **Implemented** | `aegis-proxy/src/upstream/{lb,health,circuit,tls,mod}.rs`. 5 LB strategies, health checks, circuit breaker. |
 | [`traffic-management.md`](../docs/data-plane/traffic-management.md) | **Implemented** | `aegis-proxy/src/traffic.rs` — canary, steering, shadow mirror, retries. |
@@ -63,7 +63,7 @@ table — keep them in sync.
 | [`rule-engine.md`](../docs/security/rule-engine.md) | **Implemented** | `aegis-security/src/rules/{ast,eval,parser,linter,mod}.rs`. |
 | [`tiered-protection.md`](../docs/security/tiered-protection.md) | **Implemented** | `aegis-core/src/tier.rs` + per-tier detector mask overrides (P2/P3). |
 | [`rate-limiting.md`](../docs/security/rate-limiting.md) | **Implemented** | `rate_limit/{bucket,sliding,ip_limiter,mod}.rs`. |
-| [`ddos-protection.md`](../docs/security/ddos-protection.md) | ✅ **Implemented (v1 single-node)** | `DdosRuntime` instantiated in `aegis-proxy/src/run.rs` from `cfg.ddos`, called early in `data_plane.rs`, emits `ddos_blocked` (enforce) or `ddos_observed` (observe-only) audit events on burst-exceed. Default `cfg.ddos.observe_only = false` — secure by default. Spike-detection ticker runs once/sec. Returns HTTP 403 + `X-WAF-Action: block` per contract §3.1 (volumetric abuse). Cluster-wide spike-mode broadcast deferred behind ha-clustering; dashboard panel + Prometheus counters queued as a follow-up. Plan: [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](./issue-fix/internal-audit-2026-05-09-ddos/). |
+| [`ddos-protection.md`](../docs/security/ddos-protection.md) | ✅ **Implemented (v1 single-node)** | `DdosRuntime` instantiated in `aegis-proxy/src/run.rs` from `cfg.ddos`, called early in `data_plane.rs`, emits `ddos_blocked` (enforce) or `ddos_observed` (observe-only) audit events on burst-exceed. Default `cfg.ddos.observe_only = false` — secure by default. Spike-detection ticker runs once/sec. Returns HTTP 403 + `X-WAF-Action: block` per contract §3.1 (volumetric abuse). Cluster-wide spike-mode broadcast deferred behind ha-clustering; dashboard panel + Prometheus counters queued as a follow-up. Plan: [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](./archive/issue-fix/internal-audit-2026-05-09-ddos). |
 | [`ip-reputation.md`](../docs/security/ip-reputation.md) | **Partial** | `ip_rep/{asn,xff,mod}.rs` — XFF validation + ASN matching. **No live threat-intel feed fetcher** — Phase B **B3-T2**. |
 | [`geoip-filtering.md`](../docs/security/geoip-filtering.md) | **Implemented** | `geoip/{mod,reader}.rs` (gated by `aegis-security/geoip`) + rule-engine `country` / `asn` conditions with hot-reload. |
 | [`device-fingerprinting.md`](../docs/security/device-fingerprinting.md) | **Implemented** | `fingerprint/{ja3,ja4,h2,mod}.rs`. |
@@ -105,7 +105,7 @@ table — keep them in sync.
 | [`config-hot-reload.md`](../docs/control-plane/config-hot-reload.md) | **Implemented** | `gitops::dry_run_validate` + `secrets.rs` resolver + reload signal. |
 | [`gitops-change-management.md`](../docs/control-plane/gitops-change-management.md) | **Partial** | `GitClient` trait + signature verify + dry-run + `GitOpsLoader`. **No concrete git poll-and-pull driver** — Phase B **B3-T1**. |
 | [`secrets-management.md`](../docs/control-plane/secrets-management.md) | **Implemented** (cloud quartet) | B2-T1..T4 closed: `env` + `file` (sync) + feature-gated `vault` / `aws` / `gcp` / `azure` resolvers. **HSM** still returns `NotImplemented` — B6-T4. |
-| [`zero-downtime-ops.md`](../docs/control-plane/zero-downtime-ops.md) | **Partial** | `supervisor.rs` + `hotbin.rs` + drain. **B6-T5 fd-pass library shipped 2026-05-03** (FDP-T1..T6: `adopt_inherited_listeners` / `spawn_successor` / `bridge_tunnel` / `InFlightCounter` / `perform_handover` / `ReadinessPipe` / SIGUSR2 listener / systemd `LISTEN_FDS` compat — 26 new tests). One gap: accept-loop drain refactor that lets SIGUSR2 actually invoke `perform_handover` — see [`binary-handover-fd-pass.md`](./binary-handover-fd-pass.md) §11. |
+| [`zero-downtime-ops.md`](../docs/control-plane/zero-downtime-ops.md) | **Partial** | `supervisor.rs` + `hotbin.rs` + drain. **B6-T5 fd-pass library shipped 2026-05-03** (FDP-T1..T6: `adopt_inherited_listeners` / `spawn_successor` / `bridge_tunnel` / `InFlightCounter` / `perform_handover` / `ReadinessPipe` / SIGUSR2 listener / systemd `LISTEN_FDS` compat — 26 new tests). One gap: accept-loop drain refactor that lets SIGUSR2 actually invoke `perform_handover` — see [`binary-handover-fd-pass.md`](./archive/binary-handover-fd-pass.md) §11. |
 | [`enterprise/`](../docs/control-plane/enterprise/) | **Implemented** | D-M1..D-M6 closed; SPA bundled into the binary, served from `/dashboard/`. Dashboard-redesign track is queued behind Phase B. |
 
 ## 6. Observability
@@ -138,7 +138,7 @@ table — keep them in sync.
 ## Phase B mapping
 
 Every **Partial** / **Designed-only** row above maps to a Phase B
-task in [`phase-b/README.md`](./phase-b/README.md). Closing a Phase
+task in [`phase-b/README.md`](./archive/phase-b-2026/README.md). Closing a Phase
 B milestone graduates the corresponding rows here to **Implemented**
 in lockstep — keep the table and the milestone status in sync.
 

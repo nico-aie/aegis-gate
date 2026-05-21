@@ -52,7 +52,7 @@ member.inflight.fetch_sub(1, Ordering::Relaxed);    // ← skipped on cancel/pan
 match result { ... }
 ```
 
-Same pattern appears in [data_plane.rs:1392-1402](aegis-gate/crates/aegis-proxy/src/data_plane.rs#L1392-L1402) at the equivalent
+Same pattern appears in [data_plane.rs:1392-1402](../../../../crates/aegis-proxy/src/data_plane.rs#L1392-L1402) at the equivalent
 forward call site.
 
 Tokio cancellation happens naturally on:

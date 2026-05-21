@@ -19,7 +19,7 @@ test_mode: source-review (spot-verified)
 
 `AuditEvent.action` is declared as `String`:
 
-**Spot-verified** at [audit.rs:11](aegis-gate/crates/aegis-core/src/audit.rs#L11):
+**Spot-verified** at [audit.rs:11](../../../../crates/aegis-core/src/audit.rs#L11):
 
 ```rust
 pub struct AuditEvent {

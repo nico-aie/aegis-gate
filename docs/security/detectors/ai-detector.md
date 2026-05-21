@@ -6,12 +6,12 @@
 > mask as every other class.
 >
 > See the design rationale in
-> [`../../../plans/ai-detector.md`](../../../plans/ai-detector.md)
+> [`../../../plans/ai-detector.md`](../../../plans/archive/ai-detector.md)
 > and the latest perf + p99 comparison report at
 > [`../../../tests/results/run-ai-compare-2026-05-13-175615/REPORT.md`](../../../tests/results/run-ai-compare-2026-05-13-175615/REPORT.md)
 > (expanded 3 227-case corpus, 24 000 reqs / case).
 > Prior runs are preserved for reference:
-> - [`run-ai-compare-2026-05-13-172226`](../../../tests/results/run-ai-compare-2026-05-13-172226/REPORT.md) — new model, smaller 25-case corpus
+> - [`run-ai-compare-2026-05-13-172226`](../../../tests/results/run-ai-compare-2026-05-13-175615/REPORT.md) — new model, smaller 25-case corpus
 > - [`run-ai-compare-2026-05-03`](../../../tests/results/run-ai-compare-2026-05-03/REPORT.md) — old 11-class model
 
 ## Purpose
@@ -310,12 +310,12 @@ report is calibrated against.
 
 ## References
 
-- Plan + design rationale — [`plans/ai-detector.md`](../../../plans/ai-detector.md)
-- Dataset + training notes — [`data/ai_model/WAF_DATASET_REPORT_VI.md`](../../../data/ai_model/WAF_DATASET_REPORT_VI.md)
+- Plan + design rationale — [`plans/ai-detector.md`](../../../plans/archive/ai-detector.md)
+- Dataset + training notes — `data/ai_model/WAF_DATASET_REPORT_VI.md`
 - **Perf + p99 report (current — expanded corpus)** — [`tests/results/run-ai-compare-2026-05-13-175615/`](../../../tests/results/run-ai-compare-2026-05-13-175615/)
   (re-run with `bash tests/perf/ai-compare.sh`; corpus is
   regenerated from `tests/perf/gen-ai-corpus.py` on demand)
-- Perf + p99 report (new model, small corpus) — [`tests/results/run-ai-compare-2026-05-13-172226/`](../../../tests/results/run-ai-compare-2026-05-13-172226/)
+- Perf + p99 report (new model, small corpus) — [`tests/results/run-ai-compare-2026-05-13-172226/`](../../../tests/results/run-ai-compare-2026-05-13-175615/)
 - Perf + p99 report (old 11-class model) — [`tests/results/run-ai-compare-2026-05-03/`](../../../tests/results/run-ai-compare-2026-05-03/)
 - Detector chain semantics — [`./README.md`](./README.md)
 - Tier mask — [`../tiered-protection.md`](../tiered-protection.md)

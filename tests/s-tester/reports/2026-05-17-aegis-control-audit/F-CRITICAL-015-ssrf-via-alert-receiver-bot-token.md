@@ -16,7 +16,7 @@ test_mode: source-review
 VipTalk alert dispatch constructs the request URL by `format!`-ing
 the operator-supplied `bot_token` into the URL path:
 
-[slo/dispatch.rs:138-142](aegis-gate/crates/aegis-control/src/slo/dispatch.rs#L138-L142):
+[slo/dispatch.rs:138-142](../../../../crates/aegis-control/src/slo/dispatch.rs#L138-L142):
 
 ```rust
 let url = format!("{api_base}/v1/bot/{bot_token}/sendMessage");
@@ -25,7 +25,7 @@ let url = format!("{api_base}/v1/bot/{bot_token}/sendMessage");
 The `api_base` comes from env (limited operator-control risk); the
 `bot_token` flows from `PUT /api/alert-receivers` operator input
 and is NOT URL-encoded or character-restricted. Receiver validation
-([alert_receivers.rs:244-272](aegis-gate/crates/aegis-control/src/api/alert_receivers.rs#L244-L272))
+([alert_receivers.rs:244-272](../../../../crates/aegis-control/src/api/alert_receivers.rs#L244-L272))
 checks `kind` and that fields are non-empty, but doesn't constrain
 the `bot_token` character set.
 
@@ -60,7 +60,7 @@ production data.
 
 ## Observed code path
 
-[slo/dispatch.rs:136-166](aegis-gate/crates/aegis-control/src/slo/dispatch.rs#L136-L166):
+[slo/dispatch.rs:136-166](../../../../crates/aegis-control/src/slo/dispatch.rs#L136-L166):
 
 ```rust
 async fn dispatch_viptalk(receiver: &Receiver, alert: &SloAlert) -> Result<()> {
@@ -74,7 +74,7 @@ async fn dispatch_viptalk(receiver: &Receiver, alert: &SloAlert) -> Result<()> {
 }
 ```
 
-[api/alert_receivers.rs:244-272](aegis-gate/crates/aegis-control/src/api/alert_receivers.rs#L244-L272) — `validate_kind`:
+[api/alert_receivers.rs:244-272](../../../../crates/aegis-control/src/api/alert_receivers.rs#L244-L272) — `validate_kind`:
 
 ```rust
 fn validate_kind(kind: &str, fields: &serde_json::Value) -> Result<()> {

@@ -1,16 +1,16 @@
 # Benchmark Mode — Task Plan
 
-> **Status:** Folded — Benchmark mode (B-T1..B-T6) folded into Phase B as **B5-T2** — see [`phase-b/README.md`](./phase-b/README.md#b5--protocols--benchmark).
+> **Status:** Folded — Benchmark mode (B-T1..B-T6) folded into Phase B as **B5-T2** — see [`phase-b/README.md`](./phase-b-2026/README.md#b5--protocols--benchmark).
 >
-> See [`README.md`](./README.md) for the track status board.
+> See [`README.md`](../README.md) for the track status board.
 
 > **Read first:**
-> 1. [`../Requirement.md`](../Requirement.md) §3 (perf targets), §34
+> 1. [`../Requirement.md`](../../Requirement.md) §3 (perf targets), §34
 >    (benchmark mode)
-> 2. [`../Architecture.md`](../Architecture.md) §5 (pipeline), §28.5
+> 2. [`../Architecture.md`](../../Architecture.md) §5 (pipeline), §28.5
 >    (benchmark mode)
-> 3. [`../docs/operator/benchmark-mode.md`](../docs/operator/benchmark-mode.md) — design spec
-> 4. [`./plan.md`](./plan.md) — assistant guide
+> 3. [`../docs/operator/benchmark-mode.md`](../../docs/operator/benchmark-mode.md) — design spec
+> 4. [`./plan.md`](../plan.md) — assistant guide
 > 5. The cross-crate types referenced below live in `aegis-core`
 >    (`config::benchmark`, `types::benchmark`); see B-T1.x.
 
@@ -151,10 +151,10 @@ B-T6.5 / B-T6.6 close the track.
 
 ## Cross-references
 
-- Design spec — [`../docs/operator/benchmark-mode.md`](../docs/operator/benchmark-mode.md)
-- Performance target — [`../Requirement.md`](../Requirement.md) §3
-- Pipeline — [`../Architecture.md`](../Architecture.md) §5
-- API — [`../docs/control-plane/enterprise/api.md`](../docs/control-plane/enterprise/api.md)
+- Design spec — [`../docs/operator/benchmark-mode.md`](../../docs/operator/benchmark-mode.md)
+- Performance target — [`../Requirement.md`](../../Requirement.md) §3
+- Pipeline — [`../Architecture.md`](../../Architecture.md) §5
+- API — [`../docs/control-plane/enterprise/api.md`](../../docs/control-plane/enterprise/api.md)
   §benchmark
 - Dashboard panels —
   [`../docs/control-plane/enterprise/pages/tracking.md`](../docs/control-plane/enterprise/pages/tracking.md)

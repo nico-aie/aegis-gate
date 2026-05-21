@@ -2,7 +2,7 @@
 
 > **Status:** Closed — D-M1 shipped.
 >
-> See [`README.md`](../README.md) for the track status board.
+> See [`README.md`](../../README.md) for the track status board.
 
 **Goal.** Replace the embedded single-file dashboard with a real SPA
 shell: sidebar nav, top bar, status bar, client-side router,
@@ -47,7 +47,7 @@ crates/aegis-control/src/dashboard/legacy.rs   ← keeps DASHBOARD_HTML_V1
   from `legacy.rs`.
 - `crates/aegis-control/src/server.rs` — registers the new
   asset route + sets the security headers from
-  [`docs/control-plane/enterprise/security.md`](../../docs/control-plane/enterprise/security.md).
+  [`docs/control-plane/enterprise/security.md`](../../../docs/control-plane/enterprise/security.md).
 - `crates/aegis-control/Cargo.toml` — **no new deps**. Confirm
   `mime_guess` (or equivalent already present) is available
   for content-type lookup; if not, hand-roll a small extension
@@ -120,7 +120,7 @@ crates/aegis-control/src/dashboard/legacy.rs   ← keeps DASHBOARD_HTML_V1
 ### D-M1-T1.5 Security headers
 
 - File: `src/server.rs`
-- Add the headers from [`docs/control-plane/enterprise/security.md`](../../docs/control-plane/enterprise/security.md)
+- Add the headers from [`docs/control-plane/enterprise/security.md`](../../../docs/control-plane/enterprise/security.md)
   to every `/dashboard/*` response. Place behind a small tower
   middleware so it's reused.
 - Test: integration test fetches `/dashboard/` and asserts:

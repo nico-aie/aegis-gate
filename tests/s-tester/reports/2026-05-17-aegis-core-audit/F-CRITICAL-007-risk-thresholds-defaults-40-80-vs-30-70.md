@@ -19,7 +19,7 @@ Official rules §5.5:
 
 Spec values: **challenge_at = 30, block_at = 70**.
 
-**Spot-verified** at [config.rs:1990-2008](aegis-gate/crates/aegis-core/src/config.rs#L1990-L2008):
+**Spot-verified** at [config.rs:1990-2008](../../../../crates/aegis-core/src/config.rs#L1990-L2008):
 
 ```rust
 fn default_challenge_at() -> u32 { 40 }

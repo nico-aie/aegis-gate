@@ -170,7 +170,7 @@ Cross-link these as separate PRs if/when prioritised.
 
 ## Cross-refs
 
-- [`docs/control-plane/dashboard.md`](../../../docs/control-plane/dashboard.md) — page-by-page surface map
-- [`crates/aegis-control/src/api/detectors.rs:99`](../../../crates/aegis-control/src/api/detectors.rs) — `COMPLIANCE_PINNED` source-of-truth
-- [`crates/aegis-control/assets/dashboard/src/pages.jsx`](../../../crates/aegis-control/assets/dashboard/src/pages.jsx) — Page* components
-- [`docs/operator/traffic-gates.md`](../../../docs/operator/traffic-gates.md) — recently-added operator guide for the Traffic Gates page
+- [`docs/control-plane/dashboard.md`](../../../../docs/control-plane/dashboard.md) — page-by-page surface map
+- [`crates/aegis-control/src/api/detectors.rs:99`](../../../../crates/aegis-control/src/api/detectors.rs) — `COMPLIANCE_PINNED` source-of-truth
+- [`crates/aegis-control/assets/dashboard/src/pages.jsx`](../../../../crates/aegis-control/assets/dashboard/src/pages.jsx) — Page* components
+- [`docs/operator/traffic-gates.md`](../../../../docs/operator/traffic-gates.md) — recently-added operator guide for the Traffic Gates page

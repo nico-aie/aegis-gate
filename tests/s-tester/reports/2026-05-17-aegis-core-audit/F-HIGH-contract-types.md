@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## CT-01 · `decision.rs::Action` has no Serialize / Display impl
 
-**Component:** [decision.rs](aegis-gate/crates/aegis-core/src/decision.rs) (whole file)
+**Component:** [decision.rs](../../../../crates/aegis-core/src/decision.rs) (whole file)
 
 The enum doesn't derive Serialize and has no Display. Every consumer
 hand-rolls a stringifier — and `aegis-control/src/interop/headers.rs:50`
@@ -28,7 +28,7 @@ inevitable.
 
 ## CT-02 · `tier.rs` has no `classify_path` — policy logic lives in aegis-security
 
-**Component:** [tier.rs](aegis-gate/crates/aegis-core/src/tier.rs) + `aegis-security/src/pipeline.rs:11`
+**Component:** [tier.rs](../../../../crates/aegis-core/src/tier.rs) + `aegis-security/src/pipeline.rs:11`
 
 `Tier` is a pure data type in this crate. The §4 path-classification
 logic (`/login | /otp | /deposit | /withdrawal` → Critical, etc.)
@@ -51,7 +51,7 @@ lives in `aegis-security/src/pipeline.rs:11`. This means:
 
 ## CT-03 · `risk.rs::RiskKey` has no constructor — enables F-CRITICAL-001 (security audit)
 
-**Component:** [risk.rs:1-9](aegis-gate/crates/aegis-core/src/risk.rs#L1-L9)
+**Component:** [risk.rs:1-9](../../../../crates/aegis-core/src/risk.rs#L1-L9)
 
 The struct is correctly shaped (4 axes: ip + device_fp + session +
 tenant_id, derives `Hash + Eq + Clone`). But all fields are pub
@@ -94,7 +94,7 @@ Plus `#[non_exhaustive]` on the struct.
 
 ## CT-04 · `context.rs::RequestCtx` missing `device_fp` + `session_id` fields
 
-**Component:** [context.rs:6-13](aegis-gate/crates/aegis-core/src/context.rs#L6-L13)
+**Component:** [context.rs:6-13](../../../../crates/aegis-core/src/context.rs#L6-L13)
 
 `RequestCtx` carries `request_id`, `client.ip`, `tls_fingerprint`,
 `h2_fingerprint`, `user_agent`, `tenant_id`, `trace_id`, free-form
@@ -128,7 +128,7 @@ typed source on RequestCtx.
 
 ## CT-05 · `context.rs::RequestCtx` missing `tier: Option<Tier>` field
 
-**Component:** [context.rs:6-13](aegis-gate/crates/aegis-core/src/context.rs#L6-L13)
+**Component:** [context.rs:6-13](../../../../crates/aegis-core/src/context.rs#L6-L13)
 
 Tier lives on `RouteCtx` (line 38). For tier-aware fail-mode in error
 paths where no route matched (e.g. accept-stage failures, parse
@@ -143,7 +143,7 @@ conservative (fail-close).
 
 ## CT-06 · `audit.rs::client_ip: String` instead of `IpAddr`
 
-**Component:** [audit.rs:13](aegis-gate/crates/aegis-core/src/audit.rs#L13)
+**Component:** [audit.rs:13](../../../../crates/aegis-core/src/audit.rs#L13)
 
 Stringly-typed IP defers normalization to every populator. F-CRITICAL-004
 (audit `path` strips query, proxy audit) shares the same pattern —

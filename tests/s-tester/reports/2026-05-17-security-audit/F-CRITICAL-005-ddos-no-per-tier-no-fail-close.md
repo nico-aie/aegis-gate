@@ -37,7 +37,7 @@ Shipped `ddos.rs`:
 
 ## Observed code path
 
-[ddos.rs:7-33](aegis-gate/crates/aegis-security/src/ddos.rs#L7-L33) — `DdosConfig`:
+[ddos.rs:7-33](../../../../crates/aegis-security/src/ddos.rs#L7-L33) — `DdosConfig`:
 
 ```rust
 pub struct DdosConfig {
@@ -51,7 +51,7 @@ pub struct DdosConfig {
 }
 ```
 
-[ddos.rs:209-253](aegis-gate/crates/aegis-security/src/ddos.rs#L209-L253) — `check`:
+[ddos.rs:209-253](../../../../crates/aegis-security/src/ddos.rs#L209-L253) — `check`:
 
 ```rust
 pub fn check(&self, ip: IpAddr) -> Decision {
@@ -141,7 +141,7 @@ ddos:
 
 ### Gate auto_block on observe_only
 
-Spot-verified: [ddos.rs:233-234](aegis-gate/crates/aegis-security/src/ddos.rs#L233-L234) calls
+Spot-verified: [ddos.rs:233-234](../../../../crates/aegis-security/src/ddos.rs#L233-L234) calls
 `auto_block(ip)` unconditionally even when `observe_only=true`.
 Side-effects during observation defeat the purpose of an observation
 mode.

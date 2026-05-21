@@ -1,7 +1,7 @@
 # `tests/sweeps/` — Multi-tester AI-assistant sweep workflow
 
 > Operator guide for SWEEP-T track. The design rationale lives in
-> [`plans/ai-assistant-testing-kickoff.md`](../../plans/ai-assistant-testing-kickoff.md);
+> [`plans/ai-assistant-testing-kickoff.md`](../../plans/archive/ai-assistant-testing-kickoff.md);
 > this file is the day-of running order.
 
 ## Layout
@@ -77,7 +77,7 @@ durable history.
 ## Schema reminder
 
 Every `findings.jsonl` row must have these fields. See
-[`plans/ai-assistant-testing-kickoff.md`](../../plans/ai-assistant-testing-kickoff.md)
+[`plans/ai-assistant-testing-kickoff.md`](../../plans/archive/ai-assistant-testing-kickoff.md)
 §3 for the full description.
 
 | Field | Type | Required |

@@ -45,7 +45,7 @@ data-plane consumer uses `RiskTracker`, not `RiskEngine`.
 
 ## Observed code path
 
-[risk/tracker.rs:74](aegis-gate/crates/aegis-security/src/risk/tracker.rs#L74):
+[risk/tracker.rs:74](../../../../crates/aegis-security/src/risk/tracker.rs#L74):
 
 ```rust
 pub struct RiskTracker {

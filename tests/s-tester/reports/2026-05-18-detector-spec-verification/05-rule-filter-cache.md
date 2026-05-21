@@ -116,7 +116,7 @@ spec_ref: §5.2 #07 + §5.4 + §5.7 + §5.8
 
 - ❌ Không có `crates/aegis-control/src/api/cache.rs` (grep: 0 hit).
 - ❌ Không có `GET /api/cache` hay `PUT /api/cache` endpoint.
-- ✅ `POST /__waf_control/flush_cache` tồn tại tại [interop/control.rs:157-164](../../../../crates/aegis-core/src/interop/control.rs#L157) — nhưng response `FlushCacheResponse { ok, action, supported, ts_ms }` return `supported: false` nếu không có callback wired (line 321-322).
+- ✅ `POST /__waf_control/flush_cache` tồn tại tại [interop/control.rs:157-164](../../../../crates/aegis-control/src/interop/control.rs#L157) — nhưng response `FlushCacheResponse { ok, action, supported, ts_ms }` return `supported: false` nếu không có callback wired (line 321-322).
 
 ### C) Hot-reload — N/A (không có config endpoint).
 

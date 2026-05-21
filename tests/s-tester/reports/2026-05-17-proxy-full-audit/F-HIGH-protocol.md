@@ -19,7 +19,7 @@ CRITICAL.
 
 ## P-01 · H2 rapid-reset detector window never advances — CVE-2023-44487 mitigation non-functional after first window
 
-**Component:** [proto/h2.rs:47-58](aegis-gate/crates/aegis-proxy/src/proto/h2.rs#L47-L58)
+**Component:** [proto/h2.rs:47-58](../../../../crates/aegis-proxy/src/proto/h2.rs#L47-L58)
 
 `ResetTracker::record_reset` initializes `window_start` once at
 construction and never advances it. The intended logic ("reset the
@@ -48,7 +48,7 @@ fires:
 
 ## P-02 · WS upstream `read_response_head` has no read deadline → slowloris on upstream side
 
-**Component:** [proto/ws_forward.rs:129-155](aegis-gate/crates/aegis-proxy/src/proto/ws_forward.rs#L129-L155)
+**Component:** [proto/ws_forward.rs:129-155](../../../../crates/aegis-proxy/src/proto/ws_forward.rs#L129-L155)
 
 The function takes a `connect_timeout` parameter that gates the TCP
 connect, but the subsequent header-read loop (`stream.read_buf`) has
@@ -74,7 +74,7 @@ hours per connection.
 
 ## P-03 · CONNECT tunnel has no idle timeout on `copy_bidirectional`
 
-**Component:** [tcp_tunnel.rs:425](aegis-gate/crates/aegis-proxy/src/tcp_tunnel.rs#L425)
+**Component:** [tcp_tunnel.rs:425](../../../../crates/aegis-proxy/src/tcp_tunnel.rs#L425)
 
 `tokio::io::copy_bidirectional` runs until both halves close. A
 CONNECT tunnel to a slow-drip destination (`1 byte/hour`) sits
@@ -103,7 +103,7 @@ loop {
 
 ## P-04 · H2 / H3 Host fallback to literal `"localhost"` masks routing failures
 
-**Component:** [proxy.rs:221-225](aegis-gate/crates/aegis-proxy/src/proxy.rs#L221-L225)
+**Component:** [proxy.rs:221-225](../../../../crates/aegis-proxy/src/proxy.rs#L221-L225)
 
 For HTTP/2 + HTTP/3 requests, the canonical host lives in the URI
 `:authority` pseudo-header, not in a `Host:` header. The proxy reads
@@ -133,7 +133,7 @@ delivers traffic to the wrong upstream (or 404s).
 
 ## P-05 · H3 request body buffered unbounded into `BytesMut`
 
-**Component:** [listener/http3.rs:241-256](aegis-gate/crates/aegis-proxy/src/listener/http3.rs#L241-L256)
+**Component:** [listener/http3.rs:241-256](../../../../crates/aegis-proxy/src/listener/http3.rs#L241-L256)
 
 The h3 `recv_data` loop calls `body.extend_from_slice(chunk.chunk())`
 with no size cap. Quinn's per-stream `stream_receive_window` defaults
@@ -150,7 +150,7 @@ is also landed (since the H3 path may be remediated independently).
 
 ## P-06 · QUIC transport limits mostly unset
 
-**Component:** [listener/http3.rs:140-155](aegis-gate/crates/aegis-proxy/src/listener/http3.rs#L140-L155)
+**Component:** [listener/http3.rs:140-155](../../../../crates/aegis-proxy/src/listener/http3.rs#L140-L155)
 
 Only `max_concurrent_bidi_streams` + `max_idle_timeout` are set on
 the `quinn::TransportConfig`. NOT set:

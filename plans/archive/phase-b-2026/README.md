@@ -2,10 +2,10 @@
 
 > **Status:** Active — Production-readiness — six milestones (B1..B6) closing every Partial / Designed-only doc banner. Runs **before** dashboard redesign.
 >
-> See [`README.md`](../README.md) for the track status board.
+> See [`README.md`](../../README.md) for the track status board.
 
 **Goal.** Close every "Partial" / "Designed only" row in
-[`plans/plan.md` § 1](../plan.md#1-doc-by-doc-implementation-status).
+[`plans/plan.md` § 1](../../plan.md#1-doc-by-doc-implementation-status).
 The current scope (P1–P8 + F-T1..F-T10 + dashboard track D-M1..D-M6)
 is closed; this track turns the remaining stubs into shipped
 features so Aegis-Gate can be deployed multi-node, behind real
@@ -32,7 +32,7 @@ mostly independent and can be parallelised.
 ### B1 — HA & multi-node (unblocks everything else) — ✅ CLOSED 2026-04-29
 
 All six sub-tasks shipped:
-[`docs/operations/ha-clustering.md`](../../docs/operations/ha-clustering.md)
+[`docs/operations/ha-clustering.md`](../../../docs/operations/ha-clustering.md)
 flipped Partial → Implemented; `aegis-bin` wires single-node
 in-memory **or** Redis primary + in-memory fallback from
 config; ACME issuance is gated on a Redis-backed leader lease;
@@ -50,7 +50,7 @@ heal.
 | **B1-T6** Partition-safe merge | `max(local_fallback, remote)` reconciliation for rate-limit counters when a partition heals. Block lists are strictly additive. New `aegis-proxy/src/state/reconcile.rs`. |
 
 **Doc updates on close:** flip
-[`docs/operations/ha-clustering.md`](../../docs/operations/ha-clustering.md)
+[`docs/operations/ha-clustering.md`](../../../docs/operations/ha-clustering.md)
 banner from **Partial** to **Implemented**; remove the corresponding
 carry-over from `Implement-Progress.md`.
 
@@ -61,9 +61,9 @@ carry-over from `Implement-Progress.md`.
 All seven sub-tasks shipped: cloud-secrets quartet (vault,
 aws, gcp, azure) + the three production service registries
 (consul, etcd, k8s).
-[`docs/control-plane/secrets-management.md`](../../docs/control-plane/secrets-management.md)
+[`docs/control-plane/secrets-management.md`](../../../docs/control-plane/secrets-management.md)
 and
-[`docs/data-plane/service-discovery.md`](../../docs/data-plane/service-discovery.md)
+[`docs/data-plane/service-discovery.md`](../../../docs/data-plane/service-discovery.md)
 both flipped Partial → Implemented; HSM (B6-T4) and DNS SRV
 remain on the deferred list.
 
@@ -83,9 +83,9 @@ discovery. The trait surface exists; concrete drivers do not.
 | **B2-T7** Kubernetes service discovery | `aegis-proxy/src/sd/k8s.rs`. EndpointSlice watch via `kube-rs`. Works in-cluster. |
 
 **Doc updates on close:** flip
-[`docs/control-plane/secrets-management.md`](../../docs/control-plane/secrets-management.md)
+[`docs/control-plane/secrets-management.md`](../../../docs/control-plane/secrets-management.md)
 and
-[`docs/data-plane/service-discovery.md`](../../docs/data-plane/service-discovery.md)
+[`docs/data-plane/service-discovery.md`](../../../docs/data-plane/service-discovery.md)
 banners from **Partial** to **Implemented**.
 
 #### Side-quest landed during B2: VipTalk default alert routing
@@ -98,7 +98,7 @@ seeds a single VipTalk receiver pointed at the project's
 dev/UAT bot; operators override via
 `AEGIS_VIPTALK_BOT_TOKEN` / `AEGIS_VIPTALK_ROOM_IDS` /
 `AEGIS_VIPTALK_API_BASE` env vars. Doc:
-[`docs/observability/slo-sli-alerting.md`](../../docs/observability/slo-sli-alerting.md)
+[`docs/observability/slo-sli-alerting.md`](../../../docs/observability/slo-sli-alerting.md)
 §"Alert routing".
 
 ---
@@ -115,11 +115,11 @@ All four sub-tasks shipped:
 | **B3-T4** Concrete ICAP TCP client | `content/icap/{codec,tcp}.rs` — RFC 3507 REQMOD/RESPMOD TCP client; pure framing helpers; decision table for 5 vendor infection-header forms; configurable timeout + fail-open default. +35 tests. |
 
 **Doc updates on close:**
-[`threat-intelligence.md`](../../docs/security/threat-intelligence.md),
-[`geoip-filtering.md`](../../docs/security/geoip-filtering.md),
-and [`content-scanning.md`](../../docs/security/content-scanning.md)
+[`threat-intelligence.md`](../../../docs/security/threat-intelligence.md),
+[`geoip-filtering.md`](../../../docs/security/geoip-filtering.md),
+and [`content-scanning.md`](../../../docs/security/content-scanning.md)
 all flipped Partial → Implemented.
-[`gitops-change-management.md`](../../docs/control-plane/gitops-change-management.md)
+[`gitops-change-management.md`](../../../docs/control-plane/gitops-change-management.md)
 banner stays Partial until the boot-site lease-gate wrap lands —
 the driver itself ships, but multi-node deployments need
 `spawn_with_lease("leader:gitops", …)` at `aegis-bin` /
@@ -139,7 +139,7 @@ All four sub-tasks shipped:
 | **B4-T4** Full SSE streaming on `/dashboard/sse` | `admin_sse::sse_response` returns `UnsyncBoxBody<Bytes, Infallible>` driven by a `BroadcastStream` merged with an idle heartbeat tick; preamble + per-event `data:` frames + 15s heartbeat + lag handling. +8 tests. |
 
 **Doc updates on close:**
-[`dr-backup.md`](../../docs/operations/dr-backup.md) flipped
+[`dr-backup.md`](../../../docs/operations/dr-backup.md) flipped
 Partial → Implemented for the config/rules surface (B4-T1 +
 B4-T2). Upstream-proxy + SSE carry-overs removed.
 
@@ -155,8 +155,8 @@ Both sub-tasks shipped:
 | **B5-T2** Benchmark mode (core slice) | `aegis-proxy::benchmark` ships `BenchmarkConfig` + `StageTimings` + `X-Aegis-*` header serialiser, wired into `proxy::handle_request` with per-request total + route + upstream timings, plus tier + decision. IP allowlist / HMAC tokens / per-detector timing / dashboard panel deferred to follow-ups. +21 unit + 2 proxy end-to-end tests. |
 
 **Doc updates on close:**
-[`protocols.md`](../../docs/architecture/protocols.md) and
-[`benchmark-mode.md`](../../docs/operator/benchmark-mode.md)
+[`protocols.md`](../../../docs/architecture/protocols.md) and
+[`benchmark-mode.md`](../../../docs/operator/benchmark-mode.md)
 both flipped Designed/Partial → Implemented.
 
 **Carry-over:** auto-stamping `Alt-Svc` on every TLS
@@ -181,7 +181,7 @@ above is a code change, this is mostly YAML + workflows.
 | **B6-T5** Binary-handover via fd-passing | FDP-T1..T6 shipped — library primitives + boot-path wiring (adopt-or-bind, spawn_successor, perform_handover, ReadinessPipe, SIGUSR2 listener). One gap: the accept-loop drain refactor that lets SIGUSR2 actually invoke `perform_handover`. See [`plans/binary-handover-fd-pass.md`](../binary-handover-fd-pass.md). |
 
 **Doc updates on close:** flip
-[`zero-downtime-ops.md`](../../docs/control-plane/zero-downtime-ops.md)
+[`zero-downtime-ops.md`](../../../docs/control-plane/zero-downtime-ops.md)
 banner; close the production-packaging carry-over.
 
 ---
@@ -211,8 +211,8 @@ When all six milestones close, this track is done and the
 ## Out of scope
 
 Multi-tenancy and RBAC/SSO remain
-[Deferred](../../docs/future/) — they have their own design docs and
+[Deferred](../../../docs/future) — they have their own design docs and
 will not be picked up as part of Phase B unless an explicit
 candidate is opened in
-[`docs/future/advanced-features.md`](../../docs/future/advanced-features.md)
+[`docs/future/advanced-features.md`](../../../docs/future/advanced-features.md)
 with a customer / compliance trigger attached.

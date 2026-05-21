@@ -500,7 +500,7 @@ under `audit.sinks` — supported formats:
 | ECS | Elastic Common Schema for Elastic / OpenSearch |
 | Kafka | event streaming |
 
-Spec: [`docs/observability/siem-export.md`](../observability/siem-export.md).
+Spec: [`docs/observability/siem-log-forwarding.md`](../observability/siem-log-forwarding.md).
 Eight sinks ship; configure as many as you want — every audit
 event broadcasts to all configured sinks.
 
@@ -577,7 +577,7 @@ curl --cookie cookies.txt \
 # 3. Independent verifier compares ./waf_audit.log roots vs witness.
 ```
 
-Witness export shape: [`docs/observability/audit-witness.md`](../observability/audit-witness.md).
+Witness export shape: [`docs/observability/audit-logging.md`](../observability/audit-logging.md).
 
 ---
 

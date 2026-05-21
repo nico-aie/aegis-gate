@@ -12,8 +12,8 @@ licensing — fintech, healthcare, public sector. Single-binary,
 distroless image, hot-reloadable config, audit-chained mutations,
 SOC-first dashboard.
 
-> **For AI assistants** — read `Implement-Progress.md` and
-> `plans/plan.md` before writing any code.
+> **For AI assistants** — start with [`AGENTS.md`](./AGENTS.md), then
+> `Implement-Progress.md` and `plans/plan.md` before writing any code.
 
 ---
 
@@ -91,9 +91,8 @@ SOC-first dashboard.
   [`Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](Hackathon_Doc/EN_waf_interop_contract_v2.3.md)
   §3.1 (volumetric abuse). Cluster-wide spike-mode broadcast
   across nodes deferred behind ha-clustering. Audit + plan:
-  [`docs/security/ddos-protection.md`](docs/security/ddos-protection.md),
-  [`reports/findings/2026-05-09-internal-audit-ddos/`](reports/findings/2026-05-09-internal-audit-ddos/),
-  [`plans/issue-fix/internal-audit-2026-05-09-ddos/`](plans/issue-fix/internal-audit-2026-05-09-ddos/).
+  [`docs/security/ddos-protection.md`](docs/security/ddos-protection.md)
+  and [`plans/archive/issue-fix/internal-audit-2026-05-09-ddos/`](./plans/archive/issue-fix/internal-audit-2026-05-09-ddos).
 
 ### Control plane (admin / dashboard)
 - **Aegis WAF Console** — pre-compiled React 18 SPA at

@@ -17,7 +17,7 @@ Official rules §5.5:
 
 > *Canary Endpoint / Honeypot: deploy decoy paths (/admin-test, /api-debug). Bất kỳ request nào hit = auto set risk score = MAX, block IP ngay.*
 
-**Spot-verified** at [config.rs:1844-1862](aegis-gate/crates/aegis-core/src/config.rs#L1844-L1862):
+**Spot-verified** at [config.rs:1844-1862](../../../../crates/aegis-core/src/config.rs#L1844-L1862):
 
 `RiskConfig` has `thresholds`, `decay`, `strikes`, etc. — but no
 field for the canary path list. Operators cannot configure honeypot

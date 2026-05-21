@@ -168,7 +168,7 @@ by `AEGIS_LB_TESTS=1`).
 1. Decide which plane it belongs to and update the table above.
 2. Add it to `docker-compose.dev.yml` (W1–W3 services only) or
    `docker-compose.test.yml` (test-only tooling).
-3. Add a row to [`../docs/dependencies.md`](../docs/dependencies.md).
+3. Add a row to [`../docs/dependencies.md`](./dependencies.md).
 4. If it changes Prometheus targets, set the right `plane` label
    in `prometheus/prometheus.yml`.
 5. Make sure the WAF still boots when the service is absent —

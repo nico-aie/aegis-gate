@@ -17,7 +17,7 @@ Official rules §5.2 #03:
 
 > *DDoS Protection: Burst detection + auto block + configurable threshold **per route tier**. Fail-close mode cho CRITICAL tier, fail-open cho MEDIUM/CATCH-ALL tier.*
 
-**Spot-verified** at [config.rs:2164-2202](aegis-gate/crates/aegis-core/src/config.rs#L2164-L2202):
+**Spot-verified** at [config.rs:2164-2202](../../../../crates/aegis-core/src/config.rs#L2164-L2202):
 
 ```rust
 pub struct DdosConfig {

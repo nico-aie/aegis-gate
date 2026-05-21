@@ -20,7 +20,7 @@ mutates `cfg.compliance.min_tls_version`,
 `retention_days`, etc. But:
 
 **Half 1: Detector mask pinning is a no-op.**
-Spot-verified at [api/detectors.rs:113](aegis-gate/crates/aegis-control/src/api/detectors.rs#L113):
+Spot-verified at [api/detectors.rs:113](../../../../crates/aegis-control/src/api/detectors.rs#L113):
 
 ```rust
 const COMPLIANCE_PINNED: &[DetectorClass] = &[];
@@ -51,7 +51,7 @@ version cfg.tls.min_protocol_version was originally set to.
 
 ## Observed code path
 
-[api/detectors.rs:113-145](aegis-gate/crates/aegis-control/src/api/detectors.rs#L113-L145):
+[api/detectors.rs:113-145](../../../../crates/aegis-control/src/api/detectors.rs#L113-L145):
 
 ```rust
 const COMPLIANCE_PINNED: &[DetectorClass] = &[];   // empty!

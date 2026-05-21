@@ -35,7 +35,7 @@ is never invoked.
 
 ## Observed code path
 
-[audit/witness.rs:18](aegis-gate/crates/aegis-control/src/audit/witness.rs#L18):
+[audit/witness.rs:18](../../../../crates/aegis-control/src/audit/witness.rs#L18):
 
 ```rust
 pub fn sign_chain_head(head_hash: &str, key: &[u8; 32], node_id: &str, entry_count: u64) -> WitnessRecord {

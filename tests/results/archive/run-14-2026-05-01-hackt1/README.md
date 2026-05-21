@@ -2,7 +2,7 @@
 
 End-to-end verification after **HACK-T1** (retire dashboard
 mock data) — the first slice of the
-[`plans/hackathon-readiness.md`](../../../plans/hackathon-readiness.md)
+[`plans/hackathon-readiness.md`](../../../../plans/archive/hackathon-readiness.md)
 track. Removes the Round-1 elimination risk identified in
 the v2.3 hackathon docs (§2.2 — Dashboard mock-data penalty).
 

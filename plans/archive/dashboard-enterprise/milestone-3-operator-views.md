@@ -2,7 +2,7 @@
 
 > **Status:** Closed — D-M3 shipped.
 >
-> See [`README.md`](../README.md) for the track status board.
+> See [`README.md`](../../README.md) for the track status board.
 
 **Goal.** Live Feed, Attack Events, Audit Log, and Analytics pages
 fully wired to backing data.
@@ -118,7 +118,7 @@ fully wired to backing data.
 
 - File: `src/api/analytics.rs`
 - `expr` parameter is **not** raw PromQL — it's a key from a
-  fixed allow-list (see [`api.md` §allow-list](../../docs/control-plane/enterprise/api.md#analytics)).
+  fixed allow-list (see [`api.md` §allow-list](../../../docs/control-plane/enterprise/api.md#analytics)).
 - Resolves the key to PromQL, calls the local prometheus
   registry's text encoder for instantaneous queries, or — for
   range queries — buckets the metrics on the fly from the

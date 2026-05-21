@@ -133,6 +133,6 @@ docker rm -f aegis-cluster-redis 2>/dev/null || true
 ## Reference
 
 - [`docs/operations/ha-clustering.md`](../../docs/operations/ha-clustering.md)
-- [`plans/phase-b/README.md` § B1](../../plans/phase-b/README.md#b1--ha--multi-node-unblocks-everything-else)
+- [`plans/phase-b/README.md` § B1](../../plans/archive/phase-b-2026/README.md#b1--ha--multi-node-unblocks-everything-else)
 - [`Implement-Progress.md`](../../Implement-Progress.md) — current
   Phase B status board.

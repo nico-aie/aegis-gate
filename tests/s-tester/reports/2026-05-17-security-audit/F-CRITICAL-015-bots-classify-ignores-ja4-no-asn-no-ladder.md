@@ -14,7 +14,7 @@ test_mode: source-review
 ## Summary
 
 `BotSignals` (the input to `bots.rs::classify`) carries
-`ja4_fingerprint: Option<String>` at [bots.rs:17](aegis-gate/crates/aegis-security/src/bots.rs#L17), but
+`ja4_fingerprint: Option<String>` at [bots.rs:17](../../../../crates/aegis-security/src/bots.rs#L17), but
 `classify()` NEVER reads the field. The fingerprint is computed
 upstream, passed in, and discarded.
 
@@ -46,7 +46,7 @@ That misses every signal the official rules require:
 
 ## Observed code path
 
-[bots.rs:17](aegis-gate/crates/aegis-security/src/bots.rs#L17):
+[bots.rs:17](../../../../crates/aegis-security/src/bots.rs#L17):
 
 ```rust
 pub struct BotSignals {
@@ -60,7 +60,7 @@ pub struct BotSignals {
 }
 ```
 
-[bots.rs:73-91](aegis-gate/crates/aegis-security/src/bots.rs#L73-L91) — `classify()`:
+[bots.rs:73-91](../../../../crates/aegis-security/src/bots.rs#L73-L91) — `classify()`:
 
 ```rust
 pub fn classify(signals: &BotSignals) -> BotClass {
