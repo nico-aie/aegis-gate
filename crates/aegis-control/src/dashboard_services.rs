@@ -603,10 +603,11 @@ impl DashboardServices {
                 // from `cfg.risk.canary_paths`.
                 canary_paths:
                     aegis_security::detectors::canary::CanaryPaths::default(),
-                // 2026-05-21 — default-on; the proxy boot path
-                // overrides with the shared ProxyContext handle.
+                // 2026-05-21 — default-off (matches cfg.bots.enabled);
+                // the proxy boot path overrides with the shared
+                // ProxyContext handle seeded from config.
                 bots_enabled: std::sync::Arc::new(
-                    std::sync::atomic::AtomicBool::new(true),
+                    std::sync::atomic::AtomicBool::new(false),
                 ),
                 // MTLS-T7 — wired by the proxy boot path. Until then
                 // identity extraction skips the allowlist gate.

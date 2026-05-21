@@ -2268,7 +2268,14 @@ impl Default for RiskThresholds {
 /// modelled as a GATE (like DDoS / rate-limit / strike-block), not a
 /// detector, because its inputs are ambient (ASN via GeoIP, etc.).
 /// When disabled, no classification runs and `bot_category` is left
-/// unset. Hot-flippable via `PUT /api/gates/bots`. Default on.
+/// unset. Hot-flippable via `PUT /api/gates/bots`.
+///
+/// **Default OFF** — the classifier is observational today (it labels
+/// + feeds the mix; it does not block/challenge by class) and only
+/// produces useful (non-`unknown`) output once the GeoIP ASN DB is
+/// loaded. Operators opt in via `cfg.bots.enabled: true` or the
+/// Traffic Gates toggle, so a default deployment doesn't spend the
+/// per-request classification cost for a surface it isn't using.
 #[derive(Clone, Debug, Deserialize)]
 pub struct BotConfig {
     #[serde(default = "default_bot_enabled")]
@@ -2276,12 +2283,12 @@ pub struct BotConfig {
 }
 
 fn default_bot_enabled() -> bool {
-    true
+    false
 }
 
 impl Default for BotConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self { enabled: false }
     }
 }
 

@@ -9840,9 +9840,9 @@ function PageTrafficGates() {
 // (like DDoS / Strike-Block), not a detector.
 function BotClassifierGateCard() {
   const api = window.useApi
-    ? window.useApi('/api/gates/bots', { intervalMs: 10000, fallback: { enabled: true } })
-    : { data: { enabled: true } };
-  const enabled = api.data?.enabled !== false;
+    ? window.useApi('/api/gates/bots', { intervalMs: 10000, fallback: { enabled: false } })
+    : { data: { enabled: false } };
+  const enabled = api.data?.enabled === true;
   const [busy, setBusy] = useStateP(false);
 
   async function toggle() {
