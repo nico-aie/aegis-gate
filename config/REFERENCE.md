@@ -24,6 +24,7 @@ routes:      [ … ]   # path → upstream
 upstreams:   { … }   # backend pools
 detectors:   { … }   # OWASP + Phase F detector toggles + per-tier mask
 ai:          { … }   # ONNX classifier
+bots:        { … }   # bot classifier gate (UA+ASN; observational; default off)
 risk:        { … }   # cumulative-score + strike thresholds
 load_mode:   { … }   # auto-degradation triggers
 load_shedder:{ … }   # adaptive concurrency
@@ -237,6 +238,36 @@ ai:
 ```
 
 Hot-flippable via `PUT /api/ai/enabled` (audit-mutated).
+
+---
+
+## `bots`
+
+Gate-style on/off for the bot classifier (UA + ASN based,
+`aegis-security/src/bots.rs`). Labels each request `human /
+verified / suspect / malicious` and feeds the dashboard
+Investigation → "Bot classification mix" + the audit
+`fields.bot_category`.
+
+```yaml
+bots:
+  enabled: false   # default; opt-in
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | When off, no classification runs and `bot_category` is left unset. Omitting the block = `false`. |
+
+Notes:
+- **Observational today** — it does NOT block/challenge by class, nor
+  contribute to the risk score; it only labels + feeds the mix/audit.
+- Classifying cloud/hosting traffic needs the GeoIP ASN DB
+  (`geoip.asn_db`); scanner-UA + short-UA classification work without
+  it. The `verified` (good-bot) and `human` buckets are not wired yet
+  (reverse-DNS / JS-challenge-pass).
+- Hot-flippable via `PUT /api/gates/bots` (audit-mutated) or the
+  Traffic Gates → "6. Bot classifier" toggle. See
+  [`../docs/security/bot-management.md`](../docs/security/bot-management.md).
 
 ---
 

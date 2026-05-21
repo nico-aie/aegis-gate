@@ -72,6 +72,11 @@ context from scattered comments.
 - [`rule-non-block-actions.md`](./future/rule-non-block-actions.md) —
   rule actions beyond block/log (challenge, tarpit, mirror).
   **Drafted, not started.**
+- [`bot-classifier-enforcement.md`](./future/bot-classifier-enforcement.md) —
+  bot classifier ships observational + opt-in (UA+ASN → mix/audit).
+  Plan to wire the dead buckets (reverse-DNS → `verified`, JS-pass →
+  `human`) and add per-class enforcement (`action_mapping`). JA4
+  baseline explicitly out of scope. **Drafted 2026-05-21, not started.**
 - [`unwired-stubs-catalog.md`](./future/unwired-stubs-catalog.md) —
   running catalogue of types / traits the rule engine declares
   but doesn't yet evaluate.

@@ -78,6 +78,18 @@ state:
     timeout: "100ms"
 
 # ---------------------------------------------------------------------------
+# Bot classifier (gate-style, observational) — DEFAULT OFF
+# ---------------------------------------------------------------------------
+# Labels each request human / verified / suspect / malicious from UA + ASN
+# signals → Investigation "Bot classification mix" + audit `bot_category`.
+# Observational only (no per-class block/challenge yet). Needs the GeoIP
+# ASN DB to classify cloud/hosting traffic. Flip to `true` once the ASN DB
+# is wired and you want the SOC bot-mix view; or toggle live via Traffic
+# Gates → "6. Bot classifier".
+bots:
+  enabled: false
+
+# ---------------------------------------------------------------------------
 # Risk scoring — balanced thresholds.
 #   challenge_at: 40  → suspicious requests get a JS challenge (RPS-tier
 #                       enforcement, not a hard block)
