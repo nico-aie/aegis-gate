@@ -2,7 +2,7 @@
 
 > **Status:** Closed — D-M5 shipped.
 >
-> See [`README.md`](../README.md) for the track status board.
+> See [`README.md`](../../README.md) for the track status board.
 
 **Goal.** Single Tracking page surfacing the live operational state
 that doesn't fit the operator or config buckets: SLO burn rate,

@@ -21,7 +21,7 @@ The spec is explicit: **per-tier configurability** required, NOT
 hardcoded.
 
 Today:
-- `RouteConfig.failure_mode` ([config.rs:725-729](aegis-gate/crates/aegis-core/src/config.rs#L725-L729))
+- `RouteConfig.failure_mode` ([config.rs:725-729](../../../../crates/aegis-core/src/config.rs#L725-L729))
   is **per-route only** — operators set it route by route, not by
   tier class.
 - The only tier→failure-mode mapping is hardcoded in

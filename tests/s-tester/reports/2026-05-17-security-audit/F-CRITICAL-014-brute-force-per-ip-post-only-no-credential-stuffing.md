@@ -40,8 +40,8 @@ Three distinct attack shapes, each requiring a different key:
 Shipped `brute_force.rs` implements ONLY per-IP timestamp-list
 counting, and ONLY for POST requests:
 
-- [brute_force.rs:39](aegis-gate/crates/aegis-security/src/detectors/brute_force.rs#L39) — `Mutex<HashMap<IpAddr, Vec<Instant>>>` — IP-only.
-- [brute_force.rs:91](aegis-gate/crates/aegis-security/src/detectors/brute_force.rs#L91) — method filter is `POST` only.
+- [brute_force.rs:39](../../../../crates/aegis-security/src/detectors/brute_force.rs#L39) — `Mutex<HashMap<IpAddr, Vec<Instant>>>` — IP-only.
+- [brute_force.rs:91](../../../../crates/aegis-security/src/detectors/brute_force.rs#L91) — method filter is `POST` only.
 - No username parsing from body.
 - No password-spraying axis (distinct usernames per IP).
 - No credential-stuffing detection (distributed via fingerprint).

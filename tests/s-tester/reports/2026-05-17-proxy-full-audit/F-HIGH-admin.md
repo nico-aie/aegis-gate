@@ -17,7 +17,7 @@ Each item compounds with the CRITICAL findings (F-CRITICAL-002 / 003 / 004 / 005
 
 ## A-01 · Mutation handlers have no request-body size limit
 
-**Component:** every handler in [admin_mutate.rs](aegis-gate/crates/aegis-proxy/src/admin_mutate.rs) (3546 lines, ~35 handlers)
+**Component:** every handler in [admin_mutate.rs](../../../../crates/aegis-proxy/src/admin_mutate.rs) (3546 lines, ~35 handlers)
 
 `req.into_body().collect().await` reads the whole body to memory
 with no cap. Representative handlers:
@@ -43,7 +43,7 @@ let bytes = body.collect().await.map_err(|_| MutationError::BodyTooLarge)?.to_by
 
 ## A-02 · TOTP code uses HMAC-SHA256 while the provisioning URI claims SHA1
 
-**Component:** [admin_auth/totp.rs:1-7, 32, 66](aegis-gate/crates/aegis-control/src/admin_auth/totp.rs#L1-L7)
+**Component:** [admin_auth/totp.rs:1-7, 32, 66](../../../../crates/aegis-control/src/admin_auth/totp.rs#L1-L7)
 
 The module doc says "HMAC-SHA1 for compatibility with standard
 authenticator apps" but the code uses `Hmac<Sha256>`. The
@@ -77,7 +77,7 @@ SHA1 is the default).
 
 ## A-03 · TOTP has no replay protection — used codes valid for the entire 30 s window
 
-**Component:** [admin_auth/totp.rs:50-61](aegis-gate/crates/aegis-control/src/admin_auth/totp.rs#L50-L61)
+**Component:** [admin_auth/totp.rs:50-61](../../../../crates/aegis-control/src/admin_auth/totp.rs#L50-L61)
 
 `verify(secret, code, now)` recomputes the expected code at
 `now / 30`, `(now-30) / 30`, `(now+30) / 30` (±1 step tolerance per
@@ -115,7 +115,7 @@ Call `try_consume` inside `verify` after the HMAC check passes.
 
 ## A-04 · SSE Live Feed has no authentication; broadcast subscribers unbounded
 
-**Component:** [admin_sse.rs:62-78](aegis-gate/crates/aegis-proxy/src/admin_sse.rs#L62-L78)
+**Component:** [admin_sse.rs:62-78](../../../../crates/aegis-proxy/src/admin_sse.rs#L62-L78)
 
 `sse_response` is constructed unconditionally — the listener
 (`accept.rs:886-893`) routes `GET /dashboard/sse` to it before any
@@ -149,7 +149,7 @@ long-lived response — headers ship once at start).
 
 ## A-05 · Session store hard-coded TTL ignores config; unbounded HashMap; no background cleanup
 
-**Component:** [admin_auth/session.rs:30, 168-171](aegis-gate/crates/aegis-control/src/admin_auth/session.rs#L30)
+**Component:** [admin_auth/session.rs:30, 168-171](../../../../crates/aegis-control/src/admin_auth/session.rs#L30)
 
 `SessionStore` is constructed with hard-coded `idle_ttl = 30m,
 absolute_ttl = 8h`; `cfg.admin.dashboard_auth` values are ignored.
@@ -179,7 +179,7 @@ Either rename to `hex_encode` or fix to produce real base64url.
 
 ## A-06 · Argon2 `dummy_verify` uses `hash_password` (different timing profile) instead of `verify_password` against a constant dummy hash
 
-**Component:** [admin_auth/password.rs:10, 38-47](aegis-gate/crates/aegis-control/src/admin_auth/password.rs#L10)
+**Component:** [admin_auth/password.rs:10, 38-47](../../../../crates/aegis-control/src/admin_auth/password.rs#L10)
 
 To equalize timing between "user exists" and "user missing", the
 login path calls `dummy_verify` when the user isn't found. The
@@ -233,7 +233,7 @@ let argon2 = Argon2::new(
 
 ## A-07 · Login rate-limit tracker maps are unbounded → memory DoS via IP rotation
 
-**Component:** [admin_auth/rate_limit.rs:114, 141, 145](aegis-gate/crates/aegis-control/src/admin_auth/rate_limit.rs#L114)
+**Component:** [admin_auth/rate_limit.rs:114, 141, 145](../../../../crates/aegis-control/src/admin_auth/rate_limit.rs#L114)
 
 `LoginRateLimiter` keeps `ip_trackers` and `user_trackers` as
 `HashMap<String, ...>` and inserts on every login attempt via

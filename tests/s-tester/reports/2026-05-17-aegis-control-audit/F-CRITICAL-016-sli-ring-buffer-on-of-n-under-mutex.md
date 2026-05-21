@@ -13,7 +13,7 @@ test_mode: source-review
 
 ## Summary
 
-[slo.rs:216-221](aegis-gate/crates/aegis-control/src/slo.rs#L216-L221):
+[slo.rs:216-221](../../../../crates/aegis-control/src/slo.rs#L216-L221):
 
 ```rust
 fn push(&mut self, sample: SliSample) {
@@ -28,7 +28,7 @@ fn push(&mut self, sample: SliSample) {
 forward by one. With `capacity = 10_000`, every push past capacity
 shifts ~10k elements.
 
-[slo.rs:262](aegis-gate/crates/aegis-control/src/slo.rs#L262): the
+[slo.rs:262](../../../../crates/aegis-control/src/slo.rs#L262): the
 buffer is held inside a `std::sync::Mutex<SliRingBuffer>`. **Every
 audit event** (i.e. every request) calls `push` under this lock.
 
@@ -42,7 +42,7 @@ req/s baseline". This single bug torpedoes both.
 
 ## Observed code path
 
-[slo.rs:206-221](aegis-gate/crates/aegis-control/src/slo.rs#L206-L221):
+[slo.rs:206-221](../../../../crates/aegis-control/src/slo.rs#L206-L221):
 
 ```rust
 pub struct SliRingBuffer {
@@ -60,7 +60,7 @@ impl SliRingBuffer {
 }
 ```
 
-[slo.rs:247-262](aegis-gate/crates/aegis-control/src/slo.rs#L247-L262):
+[slo.rs:247-262](../../../../crates/aegis-control/src/slo.rs#L247-L262):
 
 ```rust
 pub struct SloEngine {
@@ -82,7 +82,7 @@ audit event takes this lock.
 - **CPU usage** — pure waste; could be O(1) with the right data
   structure.
 
-Additionally, [slo.rs:247](aegis-gate/crates/aegis-control/src/slo.rs#L247) — `fired_history: Mutex<Vec<SloAlert>>`
+Additionally, [slo.rs:247](../../../../crates/aegis-control/src/slo.rs#L247) — `fired_history: Mutex<Vec<SloAlert>>`
 is **never trimmed**. Long-running process accumulates alerts
 forever. Latent memory leak (filed as M-? in F-HIGH-slo-metrics
 bundle).

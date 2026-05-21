@@ -1,7 +1,7 @@
 # Rule engine — non-Block actions in the data-plane evaluator
 
 > **Status:** Drafted 2026-05-17. Tracks the deferred portion of
-> [F-CRITICAL-001](../issue-fix/2026-05-17-control-core-security-audits/README.md)
+> [F-CRITICAL-001](../archive/issue-fix/2026-05-17-control-core-security-audits/README.md)
 > — the dashboard-rule-CRUD → live-engine bridge.
 >
 > Commit `c760d8f` landed the bridge + the **`Block { status }`**

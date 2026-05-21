@@ -124,7 +124,7 @@ contract gap.
 
 The CRITICAL slot is therefore re-allocated to **the smuggling
 risk that DOES land**: the WAF's request-side serialization at
-[ws_forward.rs:107-112](aegis-gate/crates/aegis-proxy/src/proto/ws_forward.rs#L107-L112) that builds the upgrade request to the
+[ws_forward.rs:107-112](../../../../crates/aegis-proxy/src/proto/ws_forward.rs#L107-L112) that builds the upgrade request to the
 upstream writes header values from `HeaderMap` verbatim. `HeaderMap`
 values constructed by hyper are guaranteed to be free of CRLF, BUT
 **operator-injected header policy values via

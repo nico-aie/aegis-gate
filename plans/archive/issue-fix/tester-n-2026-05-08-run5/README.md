@@ -1,8 +1,8 @@
 # tester-n 2026-05-08 Run-5 (security & load) — improvement plan
 
 > **Sources:**
-> - [`tests/n-tester/reports/2026-05-08-run5/QA-RUN-5-SECURITY-LOAD.md`](../../../tests/n-tester/reports/2026-05-08-run5/QA-RUN-5-SECURITY-LOAD.md)
-> - [`tests/n-tester/reports/2026-05-08-run5/QA-RUN-5-SECURITY-LOAD-v2.md`](../../../tests/n-tester/reports/2026-05-08-run5/QA-RUN-5-SECURITY-LOAD-v2.md) (v3 dataset extension)
+> - [`tests/n-tester/reports/2026-05-08-run5/QA-RUN-5-SECURITY-LOAD.md`](../../../../tests/n-tester/reports/2026-05-08-run5/QA-RUN-5-SECURITY-LOAD.md)
+> - [`tests/n-tester/reports/2026-05-08-run5/QA-RUN-5-SECURITY-LOAD-v2.md`](../../../../tests/n-tester/reports/2026-05-08-run5/QA-RUN-5-SECURITY-LOAD-v2.md) (v3 dataset extension)
 >
 > **Status:** plan, approved. Implementation in progress.
 > **Branch target:** `develop` (operator merges to `Test/UI` for re-check after each phase)

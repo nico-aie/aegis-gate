@@ -199,7 +199,7 @@ Splitting also keeps the doc-status update honest: after Phase 1 the doc moves t
 ## Cross-refs
 
 - [`reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md`](../../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md) — bug report
-- [`docs/security/ddos-protection.md`](../../../docs/security/ddos-protection.md) — doc with the (now-corrected) status field
-- [`crates/aegis-security/src/ddos.rs`](../../../crates/aegis-security/src/ddos.rs) — existing detector logic to wire
-- [`docs/operator/risk-tuning.md`](../../../docs/operator/risk-tuning.md) — adjacent doc explaining the risk-strikes auto-block (one of the partial backstops today)
-- [`docs/data-plane/adaptive-load-shedding.md`](../../../docs/data-plane/adaptive-load-shedding.md) — actually-implemented feature DDoS should integrate with
+- [`docs/security/ddos-protection.md`](../../../../docs/security/ddos-protection.md) — doc with the (now-corrected) status field
+- [`crates/aegis-security/src/ddos.rs`](../../../../crates/aegis-security/src/ddos.rs) — existing detector logic to wire
+- [`docs/operator/risk-tuning.md`](../../../../docs/operator/risk-tuning.md) — adjacent doc explaining the risk-strikes auto-block (one of the partial backstops today)
+- [`docs/data-plane/adaptive-load-shedding.md`](../../../../docs/data-plane/adaptive-load-shedding.md) — actually-implemented feature DDoS should integrate with

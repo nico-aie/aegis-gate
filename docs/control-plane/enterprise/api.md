@@ -214,7 +214,7 @@ three-layer reading lives in
 
 ### Benchmark mode
 
-> Full design — [`../benchmark-mode.md`](../benchmark-mode.md).
+> Full design — [`../benchmark-mode.md`](../../operator/benchmark-mode.md).
 
 ```
 GET  /api/benchmark/status
@@ -292,7 +292,7 @@ fixed allow-list:
 
 Any other `expr` returns 400. The `bench_*` queries return zero
 samples when `benchmark.mode == disabled`, by design — see
-[`../benchmark-mode.md`](../benchmark-mode.md).
+[`../benchmark-mode.md`](../../operator/benchmark-mode.md).
 
 ### Security toggles (P1–P8 of the security-toggle plan)
 

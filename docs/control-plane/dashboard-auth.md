@@ -267,7 +267,7 @@ See [`cli.md`](../operator/cli.md) for the full CLI reference.
 ## Configuration (authoritative schema)
 
 See `DashboardAuthConfig` in
-[`../plans/shared-contract.md`](../plans/shared-contract.md) §2.6.11.
+`../plans/shared-contract.md` §2.6.11.
 
 ```yaml
 admin:

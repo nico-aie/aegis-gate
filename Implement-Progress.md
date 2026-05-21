@@ -247,17 +247,17 @@ Order is execution priority — earlier rows run first.
 
 | # | Track | Plan | State |
 |---|---|---|---|
-| 1 | **Phase B — production-packaging (B6)** | [`plans/phase-b/README.md`](./plans/phase-b/README.md) | **active**; B1..B5 closed; B6-T1 in flight |
-| 2 | **Console config pages (CC-T*)** — upstreams editor + alert-channel mgmt | [`plans/console-config-pages.md`](./plans/console-config-pages.md) | **plan-only — awaiting confirmation**. CC-T1 (upstreams CRUD) → CC-T2 (alert receivers in Tracking page) → CC-T3 (i18n / OpenAPI / docs) |
-| 3 | Scaling configuration (SC-T*) — three-layer worker/cluster/state surface | [`plans/scaling-config.md`](./plans/scaling-config.md) | **parked plan — awaiting confirmation**. Surfaces existing L1/L2/L3 model in Console; adds `/api/state` health endpoint |
-| — | Dashboard redesign (DD-T0..T8) | [`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md) | closed in run-10 |
-| — | Console API integration (CI-T1..T8) | [`plans/console-api-integration.md`](./plans/console-api-integration.md) | closed |
-| — | HA cluster (HA-T1..T5) | [`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md) | closed in run-05 |
-| — | Interop contract (IT-T1..T6) | [`plans/interop-contract.md`](./plans/interop-contract.md) | closed |
-| — | Interop dry-run (DR-T1..T7) | [`plans/interop-dry-run.md`](./plans/interop-dry-run.md) | closed in run-08 |
-| — | Post-run-08 (AF-T1, HP-T1, TLS-T1) | [`plans/post-run-08.md`](./plans/post-run-08.md) | closed |
-| — | Benchmark mode (B-T1..B-T6) | [`plans/benchmark-mode.md`](./plans/benchmark-mode.md) | folded into Phase B as B5-T2 |
-| — | Security toggles (P1..P8) + post-k6 (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/post-k6-followup.md) | closed |
+| 1 | **Phase B — production-packaging (B6)** | [`plans/phase-b/README.md`](./plans/archive/phase-b-2026/README.md) | **active**; B1..B5 closed; B6-T1 in flight |
+| 2 | **Console config pages (CC-T*)** — upstreams editor + alert-channel mgmt | [`plans/console-config-pages.md`](./plans/archive/console-config-pages.md) | **plan-only — awaiting confirmation**. CC-T1 (upstreams CRUD) → CC-T2 (alert receivers in Tracking page) → CC-T3 (i18n / OpenAPI / docs) |
+| 3 | Scaling configuration (SC-T*) — three-layer worker/cluster/state surface | [`plans/scaling-config.md`](./plans/archive/scaling-config.md) | **parked plan — awaiting confirmation**. Surfaces existing L1/L2/L3 model in Console; adds `/api/state` health endpoint |
+| — | Dashboard redesign (DD-T0..T8) | [`plans/dashboard-redesign.md`](./plans/archive/dashboard-redesign.md) | closed in run-10 |
+| — | Console API integration (CI-T1..T8) | [`plans/console-api-integration.md`](./plans/archive/console-api-integration.md) | closed |
+| — | HA cluster (HA-T1..T5) | [`plans/cluster-ingress-lb.md`](./plans/archive/cluster-ingress-lb.md) | closed in run-05 |
+| — | Interop contract (IT-T1..T6) | [`plans/interop-contract.md`](./plans/archive/interop-contract.md) | closed |
+| — | Interop dry-run (DR-T1..T7) | [`plans/interop-dry-run.md`](./plans/archive/interop-dry-run.md) | closed in run-08 |
+| — | Post-run-08 (AF-T1, HP-T1, TLS-T1) | [`plans/post-run-08.md`](./plans/archive/post-run-08.md) | closed |
+| — | Benchmark mode (B-T1..B-T6) | [`plans/benchmark-mode.md`](./plans/archive/benchmark-mode.md) | folded into Phase B as B5-T2 |
+| — | Security toggles (P1..P8) + post-k6 (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/archive/post-k6-followup.md) | closed |
 | — | Enterprise dashboard (D-M1..D-M6) | [`plans/archive/dashboard-enterprise/`](./plans/archive/dashboard-enterprise/) | closed — superseded by DD-T0..T8 |
 | — | Phase B intake | [`docs/future/advanced-features.md`](./docs/future/advanced-features.md) | open — for items NOT covered by `plans/phase-b/` |
 
@@ -268,7 +268,7 @@ Order is execution priority — earlier rows run first.
 Durable list of things that work but aren't fully shipped. Each row
 is grouped under the Phase B milestone that closes it, so when a
 milestone ships you can see exactly which lines to delete. See
-[`plans/phase-b/README.md`](./plans/phase-b/README.md) for the task
+[`plans/phase-b/README.md`](./plans/archive/phase-b-2026/README.md) for the task
 breakdown.
 
 **Access-list runtime enforcement** ✅ **CLOSED** 2026-05-03 PM
@@ -369,7 +369,7 @@ per-detector timing + dashboard panel.
 exposed five real gaps the milestones above didn't catch):
 
 *Single-node perf re-run
-([`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md))*
+([`tests/results/README-2026-04-29.md`](./tests/results/archive/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md))*
 - ✅ **Data-plane Allow forwarding shipped** (carry-over A,
   closed 2026-04-29). `lib.rs::handle_data_request` now
   resolves the route + member through a `ProxyContext`
@@ -391,7 +391,7 @@ exposed five real gaps the milestones above didn't catch):
   `tests/results/rate-limit-2026-04-29-fixed.log`).
 
 *Cluster + HTTPS re-run
-([`tests/results/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md`](./tests/results/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md))*
+([`tests/results/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md`](./tests/results/archive/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md))*
 - ✅ **Leader-state admin endpoint shipped** (carry-over 3,
   closed 2026-04-29). New `LeaderView` shared cell +
   background polling task that reads
@@ -423,7 +423,7 @@ exposed five real gaps the milestones above didn't catch):
   request p95 1.03 ms).
 - ✅ **Carry-over 6 closed 2026-04-30** — HA perf test now
   routes through a single VIP. Plan
-  [`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md)
+  [`plans/cluster-ingress-lb.md`](./plans/archive/cluster-ingress-lb.md)
   fully landed: HA-T1 (HAProxy reference deploy in
   `deploy/haproxy/haproxy.cfg` + `aegis-lb` compose service),
   HA-T2 (`tests/cluster/05-single-vip-baseline.sh` +
@@ -455,13 +455,13 @@ When a milestone closes, delete the rows above it and append a
 Order is execution priority — earlier phases run first.
 
 1. **Phase B — production-readiness (active).**
-   [`plans/phase-b/README.md`](./plans/phase-b/README.md).
+   [`plans/phase-b/README.md`](./plans/archive/phase-b-2026/README.md).
    Six milestones (B1..B6) that close every Partial /
    Designed-only banner currently in `docs/`. Each milestone close
    removes the matching block of carry-overs above and flips the
    matching `> **Status:**` banners.
 2. **Dashboard redesign (closed).**
-   [`plans/dashboard-redesign.md`](./plans/dashboard-redesign.md).
+   [`plans/dashboard-redesign.md`](./plans/archive/dashboard-redesign.md).
    Aegis WAF Console shipped in run-10 (DD-T0..T8). Per-page
    screenshot regression (DD-T4) is the only follow-up.
    Implementation notes live under

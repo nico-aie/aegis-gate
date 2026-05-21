@@ -14,7 +14,7 @@ finish a task. The companion files split clean responsibilities:
 |---|---|
 | [`README.md`](./README.md) | Status board — which track is active, queued, or closed |
 | [`implementation-matrix.md`](./implementation-matrix.md) | Per-doc status (Implemented / Partial / Designed-only / Deferred) |
-| [`phase-b/README.md`](./phase-b/README.md) | The active milestone breakdown (B1..B6) |
+| [`archive/phase-b-2026/README.md`](./archive/phase-b-2026/README.md) | Shipped milestone breakdown (B1..B6) — closed reference |
 | `plan.md` (this file) | The rules — session startup, prompt template, progress-file protocol, mental model |
 
 ---
@@ -31,9 +31,11 @@ Before implementing anything, load context in this exact order:
    track is **Active**).
 4. [`plans/plan.md`](./plan.md) — this assistant guide (rules +
    protocol).
-5. The active track's plan file:
-   - **Phase B (active):** [`plans/phase-b/README.md`](./phase-b/README.md) — only B6 packaging remains
-   - Closed reference: [`plans/dashboard-redesign.md`](./dashboard-redesign.md) (DD-T0..T8 — Aegis WAF Console)
+5. The active track's plan file (if any):
+   - **No active top-level track.** Phase B (B1..B6) shipped and is
+     archived at [`plans/archive/phase-b-2026/`](./archive/phase-b-2026/README.md);
+     pick the next track from [`future/`](./README.md) per the status board.
+   - Closed reference: [`plans/archive/dashboard-redesign.md`](./archive/dashboard-redesign.md) (DD-T0..T8 — Aegis WAF Console)
 6. (When relevant) the matching doc under `docs/<category>/...`
    that the task touches — its `> **Status:**` banner is the fast
    read on what already works.
@@ -54,14 +56,15 @@ Context files to read first (in order):
 2. Implement-Progress.md
 3. plans/README.md (status board — confirm active track)
 4. plans/plan.md (this assistant guide)
-5. Active track's plan file:
-   - Phase B (active):       plans/phase-b/README.md
-   - Dashboard redesign:     plans/dashboard-redesign.md (closed reference)
+5. Active track's plan file (if any):
+   - No active top-level track — Phase B shipped (plans/archive/phase-b-2026/).
+     Pick the next track from plans/README.md → future/.
+   - Closed reference:        plans/archive/dashboard-redesign.md
                              + docs/control-plane/enterprise/README.md (design spec)
 6. Per-doc status:           plans/implementation-matrix.md
 
 Task:
-<copy NEXT TASK from Implement-Progress.md, e.g. "B1-T1 Real Redis backend">
+<copy NEXT TASK from Implement-Progress.md>
 
 Target crate:
 <aegis-proxy | aegis-security | aegis-control | aegis-core | aegis-bin>
@@ -196,14 +199,13 @@ trust this section if it disagrees with the README status board.
 
 | # | Track | Plan root | Task ID prefix | State |
 |---|---|---|---|---|
-| 1 | **Phase B — production-readiness** | [`phase-b/`](./phase-b/README.md) | `B<n>-T<x>` | **active** |
-| 2 | Dashboard redesign | [`dashboard-redesign/`](./dashboard-redesign/README.md) | `R-M<n>-T<x>` | queued |
+| — | Phase B — production-readiness | [`archive/phase-b-2026/`](./archive/phase-b-2026/README.md) | `B<n>-T<x>` | closed |
+| — | Dashboard redesign | [`archive/dashboard-redesign.md`](./archive/dashboard-redesign.md) | `R-M<n>-T<x>` / `DD-T<x>` | closed |
 | — | All M{n} / D-M{n} / P / F-T tracks | — | various | closed |
 
-**Why Phase B before dashboard redesign.** Operators can run a
-single-node WAF today but cannot deploy multi-node, plug in Vault,
-fetch a STIX feed, or block by country. Phase B closes those gaps
-— higher impact than a dashboard refresh.
+**No active top-level track.** Phase B (multi-node, Vault, STIX,
+country-block) and the dashboard redesign both shipped. Pick the
+next track from [`README.md`](./README.md)'s `future/` section.
 
 ---
 

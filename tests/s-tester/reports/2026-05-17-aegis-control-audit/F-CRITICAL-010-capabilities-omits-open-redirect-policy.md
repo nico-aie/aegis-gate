@@ -57,7 +57,7 @@ the omission in `run.rs:1641` is unintentional drift.
 
 ## Observed code path
 
-[aegis-proxy/src/run.rs:1629-1642](aegis-gate/crates/aegis-proxy/src/run.rs#L1629-L1642):
+[aegis-proxy/src/run.rs:1629-1642](../../../../crates/aegis-proxy/src/run.rs#L1629-L1642):
 
 ```rust
 let rules_engine_caps = CapabilityFeature {
@@ -80,7 +80,7 @@ let rules_engine_caps = CapabilityFeature {
 };
 ```
 
-[interop/rule_map.rs:55](aegis-gate/crates/aegis-control/src/interop/rule_map.rs#L55):
+[interop/rule_map.rs:55](../../../../crates/aegis-control/src/interop/rule_map.rs#L55):
 
 ```rust
 "open_redirect" | "openredir" => Some(("rules_engine", "open_redirect")),

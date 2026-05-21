@@ -31,7 +31,7 @@ perf re-measure). Updated each time the snapshot in
     (gateway returns 403/strike instead — see
     carry-overs).
   - Logs: `tests/results/*-2026-04-29.log`. Comparison:
-    [`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md).
+    [`tests/results/README-2026-04-29.md`](../../tests/results/archive/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md).
 - `cargo test -p aegis-bin --bin waf -- snapshot` → **25
   passed** (15 from B4-T1 + 10 from B4-T2).
 - `cargo test -p aegis-security --lib content::icap::` →

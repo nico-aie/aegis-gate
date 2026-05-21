@@ -7,7 +7,7 @@
 > receivers) also shipped on top of this. Reference only; do not
 > start new work here.
 >
-> See [`README.md`](./README.md) for the live status board.
+> See [`README.md`](../README.md) for the live status board.
 
 ---
 
@@ -217,7 +217,7 @@ Each task closes when:
 ## Out of scope
 
 - **Multi-tenant filters** (per-tenant rule sets, per-tenant audit
-  chains) — deferred under [`docs/future/rbac-sso.md`](../docs/future/rbac-sso.md).
+  chains) — deferred under [`docs/future/rbac-sso.md`](../../docs/future/rbac-sso.md).
 - **WebSocket real-time push** beyond the existing SSE — current
   SSE bus carries everything the dashboard needs.
 - **Settings full RBAC** — the Settings page assumes the single

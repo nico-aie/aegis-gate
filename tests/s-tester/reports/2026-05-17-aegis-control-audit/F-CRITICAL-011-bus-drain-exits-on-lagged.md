@@ -15,7 +15,7 @@ test_mode: source-review (spot-verified)
 
 The dashboard's central drain task subscribes to the audit bus and
 distributes events into the audit ring, stats aggregator, and
-attacks aggregator. **Spot-verified** at [dashboard_services.rs:428](aegis-gate/crates/aegis-control/src/dashboard_services.rs#L428):
+attacks aggregator. **Spot-verified** at [dashboard_services.rs:428](../../../../crates/aegis-control/src/dashboard_services.rs#L428):
 
 ```rust
 while let Ok(ev) = rx.recv().await {

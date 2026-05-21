@@ -2,7 +2,7 @@
 
 > **Status:** Queued — supporting — Design tokens, fonts, motion, spacing for the dashboard-redesign track.
 >
-> See [`README.md`](../README.md) for the track status board.
+> See [`README.md`](../../README.md) for the track status board.
 
 > **Purpose.** One canonical token set, typography pairing,
 > spacing scale, motion grammar, and theme rules. The Claude

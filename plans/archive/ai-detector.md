@@ -2,10 +2,10 @@
 
 > **Status:** **shipped 2026-05-03** — all 9 slices (T1..T9) live.
 > Per-detector reference page at
-> [`docs/security/detectors/ai-detector.md`](../docs/security/detectors/ai-detector.md).
+> [`docs/security/detectors/ai-detector.md`](../../docs/security/detectors/ai-detector.md).
 > Side-by-side perf + detection comparison (with p99 vs 5 ms
 > target) at
-> [`tests/results/run-ai-compare-2026-05-03/REPORT.md`](../tests/results/run-ai-compare-2026-05-03/REPORT.md).
+> [`tests/results/run-ai-compare-2026-05-03/REPORT.md`](../../tests/results/run-ai-compare-2026-05-03/REPORT.md).
 >
 > Built on the dataset + model documented at
 > [`data/ai_model/WAF_DATASET_REPORT_VI.md`](../data/ai_model/WAF_DATASET_REPORT_VI.md):

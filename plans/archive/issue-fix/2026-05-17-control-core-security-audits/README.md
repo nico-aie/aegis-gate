@@ -233,7 +233,7 @@ For each module: decide to wire OR delete. The README claims feature support, so
 | B — smallest CRITICALs | DONE | 1 bundle commit `7b48800` (6 fixes), plus targeted `6ec69ec`/`3c47141`/`64cd728`/`0959c3e` |
 | C.1 — audit wire shape | DONE | `63bada1` — serde rename/serialize_with for `ts_ms`/`ip`/`risk_score` clamp. No construction sweep needed. |
 | C.2 — audit new fields | DONE (method/path/mode) | `method`/`path`/`mode` added in `4107ef8` — 73-site sweep + `with_request_info` builder. `action: String → enum` still deferred (cross-crate refactor). |
-| D — Round-1 dashboard | DONE (Block path) | F-CRITICAL-003 (`/healthz`) DONE in `6ec69ec`. F-CRITICAL-001 (rule CRUD live rebuild) DONE in `c760d8f` + UI polish in `6c6e997` — `Block` action terminally enforced in data plane; other 5 §3 actions tracked in [`plans/future/rule-non-block-actions.md`](../../future/rule-non-block-actions.md). F-CRITICAL-002 (compliance) MOOT (compliance removed in `a647b60` per Hackathon contract). |
+| D — Round-1 dashboard | DONE (Block path) | F-CRITICAL-003 (`/healthz`) DONE in `6ec69ec`. F-CRITICAL-001 (rule CRUD live rebuild) DONE in `c760d8f` + UI polish in `6c6e997` — `Block` action terminally enforced in data plane; other 5 §3 actions tracked in [`plans/future/rule-non-block-actions.md`](../../../future/rule-non-block-actions.md). F-CRITICAL-002 (compliance) MOOT (compliance removed in `a647b60` per Hackathon contract). |
 | E — security composite keys | DONE (storage layer) | `01c053c` RiskTracker + `5936257` IpRateLimiter migrated to `DashMap<RiskKey, …>`. IP-only API kept bit-compat; new `*_with_key` methods take the full composite. Data-plane composite-key extraction (build the RiskKey from RequestView) is the next slice — schema is ready. |
 | F — security depth features | DONE | 4 commits: `966f831` (canary detector), `ffe11c0` (behavior signals — 4× §5.2), `44ebdcc` (velocity sequence engine — login/otp → deposit/withdrawal), `755e9b2` (response filter §5.7 — header strip + IPv6 + JSON mask helper). |
 | G — core schema fields | DONE | 2 commits: `678baa2` (DDoS tier_overrides + fail_mode_by_tier + canary_paths), `4d91eeb` (RlScope/RlKey + DetectorsConfig per_tier). All `#[serde(default)]` — no breaking changes. |
@@ -252,11 +252,11 @@ tracked outside this plan:
    `RequestView → RiskKey { ip, device_fp: <ja4+ua hash>, session:
    <cookie>, tenant_id: <route> }` and switching the call sites
    to `*_with_key` is a separate commit. Tracked in
-   [`plans/future/risk-composite-key-data-plane.md`](../../future/risk-composite-key-data-plane.md)
+   [`plans/future/risk-composite-key-data-plane.md`](../../../future/risk-composite-key-data-plane.md)
    — covers the data-plane key-builder, the additive
    `RiskSnapshot` fields, and the dashboard Top Attackers table
    extension that surfaces the new axes.
-3. [`plans/future/rule-non-block-actions.md`](../../future/rule-non-block-actions.md)
+3. [`plans/future/rule-non-block-actions.md`](../../../future/rule-non-block-actions.md)
    — wire the 5 non-Block rule actions (Allow, Challenge,
    RateLimited, LogOnly, +1) for scoring depth.
 

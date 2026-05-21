@@ -2,8 +2,8 @@
 
 > **Status:** Closed — DD-T0..T8 shipped in run-10. Reference only.
 >
-> See [`README.md`](./README.md) for the track status board and
-> [`../tests/results/run-10-2026-04-30-dashboard-redesign/README.md`](../tests/results/run-10-2026-04-30-dashboard-redesign/README.md)
+> See [`README.md`](../README.md) for the track status board and
+> [`../tests/results/run-10-2026-04-30-dashboard-redesign/README.md`](../README.md)
 > for the closing run.
 
 Replaces the existing 11-page vanilla-JS SPA at
@@ -88,7 +88,7 @@ The redesign deliberately **excludes**:
 
 ## Hackathon WAF-FE compliance
 
-[`Hackathon_Doc/EN_present_v2.3.md`](../Hackathon_Doc/EN_present_v2.3.md)
+[`Hackathon_Doc/EN_present_v2.3.md`](../../Hackathon_Doc/EN_present_v2.3.md)
 §2 acceptance bar:
 
 | Requirement | How we meet it | Track |

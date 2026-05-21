@@ -190,7 +190,7 @@ route's `total_deadline` here.
   aegis-proxy/redis`) — **2,234 passed** parallel (was 2,228;
   +4 config tests + +2 forward.rs pool reuse tests).
 - **Clippy** — clean.
-- **Live perf** ([run-07](./tests/results/run-07-2026-04-30-upstream-pool/README.md)):
+- **Live perf** ([run-07](../README.md)):
   - **1 000 RPS offered**: pooled holds 999.9 RPS / 100 % /
     sub-1 ms p95. Unpooled 525.8 RPS / 96.31 % / 3 ms p95.
   - **2 000 RPS offered**: pooled 1 999.8 RPS / 100 % /
@@ -319,7 +319,7 @@ if profiling proves crash-isolation between workers is needed.
 ## Earlier Last Completed (HA-T5)
 
 **Task:** **HA-T5 — LB-friendly readiness semantics.** Closes
-the [`plans/cluster-ingress-lb.md`](./plans/cluster-ingress-lb.md)
+the [`plans/cluster-ingress-lb.md`](../../plans/archive/cluster-ingress-lb.md)
 HA track and carry-over 6 alongside HA-T1..HA-T4.
 
 **Outcome.** The proxy now drains gracefully on operator
@@ -566,9 +566,9 @@ at it. Same end-to-end shape, no stub asserts.
 - **Live k6**: 20 VUs × 10 s against the same chain →
   31 491 RPS, allow-path median 504 µs, full-hop p95
   3.66 ms. Log:
-  [`tests/results/baseline-allow-forwarded-2026-04-29.log`](./tests/results/baseline-allow-forwarded-2026-04-29.log).
+  [`tests/results/baseline-allow-forwarded-2026-04-29.log`](../../tests/results/archive/run-03-2026-04-29-carryovers/baseline-allow-forwarded-2026-04-29.log).
   The README at
-  [`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md)
+  [`tests/results/README-2026-04-29.md`](../../tests/results/archive/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md)
   documents the closure.
 
 ---
@@ -582,7 +582,7 @@ the next rotation absorbs it.
 **Task:** **B5-T2 — benchmark mode (core slice). Closes
 milestone B5.** Followed by a fresh whole-system perf run
 (documented in
-[`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md))
+[`tests/results/README-2026-04-29.md`](../../tests/results/archive/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md))
 that exposed two real carry-overs.
 
 **Outcome (B5-T2).** `aegis-proxy::benchmark` ships
@@ -599,7 +599,7 @@ the master switch is off, the data plane pays one
 work.
 
 **Decision recap (core slice, not the full plan).**
-[`plans/benchmark-mode.md`](./plans/benchmark-mode.md)
+[`plans/benchmark-mode.md`](../../plans/archive/benchmark-mode.md)
 specs B-T1..B-T6 (IP allowlist, HMAC-token gating,
 per-detector timing, dashboard panel, criterion bench
 gate). Today's slice ships the data-plane plumbing —
@@ -677,7 +677,7 @@ docker `aegis-k6` container. Logs saved to
 `tests/results/*-2026-04-29.log` (the 2026-04-28 logs
 are preserved unchanged for comparison). Headline
 deltas in
-[`tests/results/README-2026-04-29.md`](./tests/results/README-2026-04-29.md):
+[`tests/results/README-2026-04-29.md`](../../tests/results/archive/run-03-2026-04-29-carryovers/cluster/README-2026-04-29.md):
 
 | Metric (baseline 200 VUs / 15 s) | 2026-04-28 | 2026-04-29 | Direction |
 |---|---|---|---|

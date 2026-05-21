@@ -25,7 +25,7 @@ test_mode: source-review
 Each tier has a DISTINCT detector pipeline. CRITICAL runs ALL
 detectors; CATCH-ALL runs only the baseline pair.
 
-**Spot-verified** at [config.rs:2014-2068](aegis-gate/crates/aegis-core/src/config.rs#L2014-L2068):
+**Spot-verified** at [config.rs:2014-2068](../../../../crates/aegis-core/src/config.rs#L2014-L2068):
 
 `DetectorsConfig` is a single global `DetectorToggle` struct. No
 `per_tier: HashMap<Tier, DetectorsConfig>` field exists.

@@ -17,7 +17,7 @@ Official rules §5.4 mandates 6 rule scopes:
 
 > *Rule scope: global (toàn website), per-tier (CRITICAL/HIGH/MEDIUM/CATCH-ALL), per-route-pattern, per-IP, per-user-session, per-device-fingerprint*
 
-**Spot-verified** at [config.rs:1818-1838](aegis-gate/crates/aegis-core/src/config.rs#L1818-L1838):
+**Spot-verified** at [config.rs:1818-1838](../../../../crates/aegis-core/src/config.rs#L1818-L1838):
 
 ```rust
 #[serde(rename_all = "snake_case", tag = "scope")]

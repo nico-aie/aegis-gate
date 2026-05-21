@@ -197,13 +197,13 @@ Concrete plan:
    `httpchk inter` and overall `allow_success` stays
    above the SLO.
 4. Update
-   [`run-04-2026-04-29-cluster-https/README.md`](../results/run-04-2026-04-29-cluster-https/README.md)
+   [`run-04-2026-04-29-cluster-https/README.md`](../README.md)
    with a follow-up run-05 once the LB-fronted topology
    is wired.
 
 ## Pointers
 
-- [`plans/cluster-ingress-lb.md`](../../plans/cluster-ingress-lb.md)
+- [`plans/cluster-ingress-lb.md`](../../plans/archive/cluster-ingress-lb.md)
   — the implementation plan that lands HA-T1..HA-T5 (HAProxy
   reference deploy + single-VIP load test + stable
   `node.id` + `peers[]` membership + LB-friendly readiness
@@ -215,6 +215,6 @@ Concrete plan:
   ticks off as plan items land.
 - [`tests/cluster/README.md`](./README.md) — the per-script
   contracts the current harness exercises.
-- [`tests/results/run-04-2026-04-29-cluster-https/README.md`](../results/run-04-2026-04-29-cluster-https/README.md)
+- [`tests/results/run-04-2026-04-29-cluster-https/README.md`](../README.md)
   — the run that exposed this gap (passes the smoke contract
   but doesn't model production traffic).

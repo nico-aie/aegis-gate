@@ -18,7 +18,7 @@ gap.
 
 ## RD-01 · `dlp/fpe.rs` is a STUB: "XORs with key bytes mod 10"
 
-**Component:** [dlp/fpe.rs:52, 74-89](aegis-gate/crates/aegis-security/src/dlp/fpe.rs#L52)
+**Component:** [dlp/fpe.rs:52, 74-89](../../../../crates/aegis-security/src/dlp/fpe.rs#L52)
 
 File header line 1: *"Format-Preserving Encryption stub (AES-FF1).
 In production, use a proper FF1 crate."*
@@ -58,7 +58,7 @@ Document the dep choice (license, crate freshness).
 
 ## RD-02 · Internal-IP regex covers IPv4 only; misses IPv6 `::1`, `fc00::/7`, `fe80::/10`
 
-**Component:** [response_filter.rs:68-72](aegis-gate/crates/aegis-security/src/response_filter.rs#L68-L72)
+**Component:** [response_filter.rs:68-72](../../../../crates/aegis-security/src/response_filter.rs#L68-L72)
 
 The current regex matches IPv4 RFC1918 / 169.254 / 127.0.0.0/8. §5.7's
 "internal IP" framing is family-agnostic. Modern backends frequently
@@ -80,7 +80,7 @@ const IPV6_INTERNAL_PATTERNS: &[&str] = &[
 
 ## RD-03 · DLP has no field-aware JSON masking — `card_number` field config silently ignored
 
-**Component:** [dlp/mod.rs:153-159](aegis-gate/crates/aegis-security/src/dlp/mod.rs#L153-L159)
+**Component:** [dlp/mod.rs:153-159](../../../../crates/aegis-security/src/dlp/mod.rs#L153-L159)
 
 §5.7 specifies "Mask/redact sensitive fields trong response JSON
 (configurable field list: card_number, bank_account, ...)". Current
@@ -101,7 +101,7 @@ masking the value.
 
 ## RD-04 · `response_filter::inject_security_headers` `.parse().unwrap()` × 5 on header values
 
-**Component:** [response_filter.rs:31-45](aegis-gate/crates/aegis-security/src/response_filter.rs#L31-L45)
+**Component:** [response_filter.rs:31-45](../../../../crates/aegis-security/src/response_filter.rs#L31-L45)
 
 Five `HeaderValue` constructions use `.parse().unwrap()` on the
 configured CSP / HSTS / Permissions-Policy / etc. values. Today
@@ -124,7 +124,7 @@ on error (with a warn log).
 
 ## RD-05 · `content::is_allowed(Unknown, allowed)` returns `true` unconditionally
 
-**Component:** [content/mod.rs:46-48](aegis-gate/crates/aegis-security/src/content/mod.rs#L46-L48)
+**Component:** [content/mod.rs:46-48](../../../../crates/aegis-security/src/content/mod.rs#L46-L48)
 
 Test at line 126: `is_allowed_unknown_default` explicitly asserts
 that an `Unknown` content type passes through. For an allowlist-

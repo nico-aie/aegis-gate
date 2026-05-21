@@ -12,8 +12,8 @@
 > ha-clustering work — single-node nodes coordinate via the shared
 > `StateBackend::auto_block` keyspace.
 >
-> Audit trail: original stub-finding [`BUG-DDOS-STUB`](../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md);
-> wire-up plan [`internal-audit-2026-05-09-ddos/`](../../plans/issue-fix/internal-audit-2026-05-09-ddos/).
+> Audit trail: original stub-finding [`BUG-DDOS-STUB`](../../plans/archive/issue-fix/internal-audit-2026-05-09-ddos/);
+> wire-up plan [`internal-audit-2026-05-09-ddos/`](../../plans/archive/issue-fix/internal-audit-2026-05-09-ddos).
 
 > **Operator surface:** the dashboard's **Traffic Gates** page
 > (Policy menu) shows the live DDoS telemetry — `current_rps`,

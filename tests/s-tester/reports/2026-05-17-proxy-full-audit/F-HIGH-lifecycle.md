@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## L-01 · `HotReloader::state` field defined but never read or transitioned
 
-**Component:** [hotbin.rs:25, 680](aegis-gate/crates/aegis-proxy/src/hotbin.rs#L25) · [run.rs:1376-1402](aegis-gate/crates/aegis-proxy/src/run.rs#L1376-L1402)
+**Component:** [hotbin.rs:25, 680](../../../../crates/aegis-proxy/src/hotbin.rs#L25) · [run.rs:1376-1402](../../../../crates/aegis-proxy/src/run.rs#L1376-L1402)
 
 The `ReloadState { Idle, Pending, Draining, RolledBack }` enum is
 defined and stored on `HotReloader::state` but no code transitions
@@ -41,7 +41,7 @@ SIGUSR2 mid-handover is silently dropped without queueing.
 
 ## L-02 · `ReadinessPipe::new` opens pipe with non-atomic CLOEXEC set → fd leak race
 
-**Component:** [hotbin.rs:319-356](aegis-gate/crates/aegis-proxy/src/hotbin.rs#L319-L356)
+**Component:** [hotbin.rs:319-356](../../../../crates/aegis-proxy/src/hotbin.rs#L319-L356)
 
 `ReadinessPipe::new` calls `unsafe pipe()` then sets
 `O_NONBLOCK | FD_CLOEXEC` via separate `fcntl` calls. Between
@@ -68,7 +68,7 @@ if ret != 0 { return Err(...); }
 
 ## L-03 · `std::env::remove_var` race during boot on Rust 2024 = UB
 
-**Component:** [hotbin.rs:419-451](aegis-gate/crates/aegis-proxy/src/hotbin.rs#L419-L451)
+**Component:** [hotbin.rs:419-451](../../../../crates/aegis-proxy/src/hotbin.rs#L419-L451)
 
 `signal_readiness_to_parent` calls `unsafe std::env::remove_var`
 during the hot-restart path. The doc comment dismisses the race as
@@ -92,7 +92,7 @@ purely cosmetic (avoids re-inheriting the env in a future fork).
 
 ## L-04 · LoadShedder gradient algorithm is fundamentally broken: limit only decreases
 
-**Component:** [shed.rs:38-76](aegis-gate/crates/aegis-proxy/src/shed.rs#L38-L76)
+**Component:** [shed.rs:38-76](../../../../crates/aegis-proxy/src/shed.rs#L38-L76)
 
 `record_rtt` computes `gradient = rtt_min / rtt_now` (always ≤ 1
 because `rtt_min` is the minimum by construction) and does

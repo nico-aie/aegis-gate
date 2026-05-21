@@ -24,7 +24,7 @@ test_mode: source-review (spot-verified)
 | `timeout` | Upstream non-response |
 | `circuit_breaker` | Upstream unhealthy, refuse |
 
-**Spot-verified** at [decision.rs:10-15](aegis-gate/crates/aegis-core/src/decision.rs#L10-L15):
+**Spot-verified** at [decision.rs:10-15](../../../../crates/aegis-core/src/decision.rs#L10-L15):
 
 ```rust
 pub enum Action {

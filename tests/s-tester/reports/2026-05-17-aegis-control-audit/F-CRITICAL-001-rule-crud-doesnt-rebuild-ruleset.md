@@ -39,7 +39,7 @@ Round-1 is Pass/Fail. This bug alone is enough to fail.
 
 ## Observed code path
 
-**Spot-verified** at [admin_mutate.rs:1600,1680,1746,1803](aegis-gate/crates/aegis-proxy/src/admin_mutate.rs#L1600):
+**Spot-verified** at [admin_mutate.rs:1600,1680,1746,1803](../../../../crates/aegis-proxy/src/admin_mutate.rs#L1600):
 
 ```rust
 // handle_rules_post:

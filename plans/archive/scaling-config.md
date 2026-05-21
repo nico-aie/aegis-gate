@@ -132,7 +132,7 @@ threads, CPU affinity) is restart-only — see the
 - ✅ Background sampler ticks every 5 s; gauges read 0 without
   the cfg flag, populate live numbers with it.
 - ✅ Tradeoff documented in
-  [`docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md#runtime-metrics-prometheus).
+  [`docs/operations/runtime-tuning.md`](../../docs/operations/runtime-tuning.md#runtime-metrics-prometheus).
 - Out of scope: L1-card "Runtime metrics" mini-strip on the
   Scaling page is deferred — the dashboard already has the
   underlying `/api/runtime` data; the `aegis_runtime_*` gauges

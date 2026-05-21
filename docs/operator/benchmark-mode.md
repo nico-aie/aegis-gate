@@ -12,13 +12,13 @@
 > downstream proxies. **Deferred to follow-ups:** IP
 > allowlist + HMAC token gating, per-detector timing,
 > dashboard panel — see
-> [`../../plans/benchmark-mode.md`](../../plans/benchmark-mode.md)
+> [`../../plans/benchmark-mode.md`](../../plans/archive/benchmark-mode.md)
 > for the full plan.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
 > **Status.** Design complete; implementation tracked in
-> [`../plans/benchmark-mode.md`](../plans/benchmark-mode.md) (task ID
+> [`../plans/benchmark-mode.md`](../../plans/archive/benchmark-mode.md) (task ID
 > prefix `B-`). Disabled by default in every environment.
 
 > **TL;DR.** A gated, opt-in operating mode that exposes per-request
@@ -300,7 +300,7 @@ live page list is in
 - Top-N expensive rules (only when `expose_rule_ids: true`).
 - Time-series WAF overhead vs RPS (dual-axis line).
 - "Benchmark mode is currently disabled — enable from the
-  [Tracking](/dashboard/tracking) page" banner when off.
+  [Tracking](../../tests/results/run-cqa-round3-20260502/screenshots/tracking) page" banner when off.
 
 ## Tests
 
@@ -343,9 +343,9 @@ them from scratch.
 
 ## Cross-references
 
-- Plan — [`../plans/benchmark-mode.md`](../plans/benchmark-mode.md)
-- Performance target — [`../Requirement.md`](../Requirement.md) §3
-- Pipeline — [`../Architecture.md`](../Architecture.md) §5
+- Plan — [`../plans/benchmark-mode.md`](../../plans/archive/benchmark-mode.md)
+- Performance target — [`../Requirement.md`](../../Requirement.md) §3
+- Pipeline — [`../Architecture.md`](../../Architecture.md) §5
 - Observability surface — [`observability-prometheus-otel.md`](../observability/prometheus-otel.md)
 - Dashboard panels — Performance + Analytics pages
   (page inventory at [`control-plane/enterprise/`](../control-plane/enterprise/))

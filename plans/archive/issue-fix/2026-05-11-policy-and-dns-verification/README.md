@@ -259,7 +259,7 @@ work + design discussion.
   deployments will see partial per-node views on each
   dashboard. The hybrid local + periodic-flush design is
   captured in
-  [`plans/future/multi-node-metrics-aggregation.md`](../../future/multi-node-metrics-aggregation.md)
+  [`plans/future/multi-node-metrics-aggregation.md`](../../../future/multi-node-metrics-aggregation.md)
   so the next sprint has a starting point. Single-node
   deployments (the current hackathon shape) are unaffected.
 
@@ -294,7 +294,7 @@ independent; pick any order. PR-UX-A waits on scope agreement.
 **Total verified-bug effort (Phases 0.2 + 1 + 2):** ~8.5h.
 With Phase 3a + 3b: ~21.5h. Multi-node aggregation for the P4
 + P5 counters is captured separately at
-[`plans/future/multi-node-metrics-aggregation.md`](../../future/multi-node-metrics-aggregation.md)
+[`plans/future/multi-node-metrics-aggregation.md`](../../../future/multi-node-metrics-aggregation.md)
 (~9h, separate sprint).
 
 ## Decisions to lock in before starting

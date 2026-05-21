@@ -1,6 +1,6 @@
 # QA Run-6 fix plan (2026-05-09)
 
-> **Source:** [`tests/n-tester/reports/2026-05-09-run6/QA-RUN-6-FINAL.md`](../../../tests/n-tester/reports/2026-05-09-run6/QA-RUN-6-FINAL.md)
+> **Source:** [`tests/n-tester/reports/2026-05-09-run6/QA-RUN-6-FINAL.md`](../../../../tests/n-tester/reports/2026-05-09-run6/QA-RUN-6-FINAL.md)
 >
 > **Branch:** all changes target `develop`. Operator merges to Test/UI for re-check.
 >
@@ -48,7 +48,7 @@ Every score below sits on the **calibrated 5-tier ladder** from Run-5. Don't int
 | Phishing / info disclosure | **30** | Indirect compromise; signal accumulation is the point. |
 | Probe / canary | **25** | Single hit is information-only; rate matters more than score. |
 
-The interaction with `risk.thresholds.challenge_at` (40) and `block_at` (80) is what makes the ladder meaningful — see [`docs/operator/risk-tuning.md`](../../../docs/operator/risk-tuning.md) for the full rationale.
+The interaction with `risk.thresholds.challenge_at` (40) and `block_at` (80) is what makes the ladder meaningful — see [`docs/operator/risk-tuning.md`](../../../../docs/operator/risk-tuning.md) for the full rationale.
 
 ---
 
@@ -113,6 +113,6 @@ After all three phases: re-run the QA harness on `develop`. Expect detection rat
 ## Cross-refs
 
 - [Run-5 plan + score-tier framework](../tester-n-2026-05-08-run5/README.md)
-- [`docs/operator/risk-tuning.md`](../../../docs/operator/risk-tuning.md) — operator action map for tuning posture
-- [`docs/security/security-engine.md`](../../../docs/security/security-engine.md) — pipeline + risk-weight ladder
-- [`crates/aegis-security/src/detectors/scores.rs`](../../../crates/aegis-security/src/detectors/scores.rs) — single source of truth for every detector score
+- [`docs/operator/risk-tuning.md`](../../../../docs/operator/risk-tuning.md) — operator action map for tuning posture
+- [`docs/security/security-engine.md`](../../../../docs/security/security-engine.md) — pipeline + risk-weight ladder
+- [`crates/aegis-security/src/detectors/scores.rs`](../../../../crates/aegis-security/src/detectors/scores.rs) — single source of truth for every detector score

@@ -33,14 +33,14 @@ their own machine and the WAF accepts the mutation.
 
 **Spot-verified**:
 
-1. [accept.rs:875-901](aegis-gate/crates/aegis-proxy/src/accept.rs#L875-L901) — admin `service_fn` calls `handle_admin_request(req, peer, ...)` directly. No `auth_sessions.validate(session_cookie)` call. No IP-allow-list check.
-2. [admin_dispatch.rs:60-101](aegis-gate/crates/aegis-proxy/src/admin_dispatch.rs#L60-L101) — dispatcher routes by method+path, no auth call.
-3. [admin_mutate.rs:1402-1475](aegis-gate/crates/aegis-proxy/src/admin_mutate.rs#L1402-L1475) (representative `handle_loadmode_put`) — reads only CSRF cookie/header + `X-Actor`. Session cookie is NOT read.
-4. [api/mutation.rs:200](aegis-gate/crates/aegis-control/src/api/mutation.rs#L200) — `MutationRequest.apply()` calls `csrf_validate(req.csrf_cookie, req.csrf_header)` and otherwise trusts the request. Line 97 comment says "the proxy admin listener fills these in once it has authenticated the [user]" — but per (1) the listener does NOT authenticate.
+1. [accept.rs:875-901](../../../../crates/aegis-proxy/src/accept.rs#L875-L901) — admin `service_fn` calls `handle_admin_request(req, peer, ...)` directly. No `auth_sessions.validate(session_cookie)` call. No IP-allow-list check.
+2. [admin_dispatch.rs:60-101](../../../../crates/aegis-proxy/src/admin_dispatch.rs#L60-L101) — dispatcher routes by method+path, no auth call.
+3. [admin_mutate.rs:1402-1475](../../../../crates/aegis-proxy/src/admin_mutate.rs#L1402-L1475) (representative `handle_loadmode_put`) — reads only CSRF cookie/header + `X-Actor`. Session cookie is NOT read.
+4. [api/mutation.rs:200](../../../../crates/aegis-control/src/api/mutation.rs#L200) — `MutationRequest.apply()` calls `csrf_validate(req.csrf_cookie, req.csrf_header)` and otherwise trusts the request. Line 97 comment says "the proxy admin listener fills these in once it has authenticated the [user]" — but per (1) the listener does NOT authenticate.
 
 ## Endpoints reachable without authentication
 
-Every entry in [admin_dispatch.rs:60-422](aegis-gate/crates/aegis-proxy/src/admin_dispatch.rs#L60-L422) is open
+Every entry in [admin_dispatch.rs:60-422](../../../../crates/aegis-proxy/src/admin_dispatch.rs#L60-L422) is open
 except `/admin/drain` (which has its own `AEGIS_DRAIN_TOKEN` check —
 see F-HIGH-admin for a separate timing issue there). Examples:
 
@@ -56,8 +56,8 @@ see F-HIGH-admin for a separate timing issue there). Examples:
 | `GET /api/admin/sessions`, `/api/audit/since`, `/metrics`, `/api/config` | Read all admin state, sessions, audit chain, config | Anyone |
 
 The CSRF cookie is generated and shipped on the login PAGE
-([admin_dispatch.rs:79-84](aegis-gate/crates/aegis-proxy/src/admin_dispatch.rs#L79-L84) — `GET /admin/login` and `/admin/login.js` are
-unauthenticated). Per [csrf.rs:7-17](aegis-gate/crates/aegis-control/src/admin_auth/csrf.rs#L7-L17) the cookie value is just
+([admin_dispatch.rs:79-84](../../../../crates/aegis-proxy/src/admin_dispatch.rs#L79-L84) — `GET /admin/login` and `/admin/login.js` are
+unauthenticated). Per [csrf.rs:7-17](../../../../crates/aegis-control/src/admin_auth/csrf.rs#L7-L17) the cookie value is just
 `blake3(clock_nanos+counter)[..32]` — but the attacker doesn't even
 need to forge that: they can:
 

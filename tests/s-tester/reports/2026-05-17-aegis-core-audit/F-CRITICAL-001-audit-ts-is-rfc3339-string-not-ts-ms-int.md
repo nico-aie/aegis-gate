@@ -20,7 +20,7 @@ test_mode: source-review (spot-verified)
 `AuditEvent` declares the field with both the wrong NAME and the
 wrong TYPE.
 
-**Spot-verified** at [audit.rs:6](aegis-gate/crates/aegis-core/src/audit.rs#L6):
+**Spot-verified** at [audit.rs:6](../../../../crates/aegis-core/src/audit.rs#L6):
 
 ```rust
 pub struct AuditEvent {

@@ -19,7 +19,7 @@ behavior diverges from documented expectations.
 
 ## C-01 · AI detector has no `observe | enforce` mode despite README claim
 
-**Component:** [detectors/ai/mod.rs:84-117](aegis-gate/crates/aegis-security/src/detectors/ai/mod.rs#L84-L117)
+**Component:** [detectors/ai/mod.rs:84-117](../../../../crates/aegis-security/src/detectors/ai/mod.rs#L84-L117)
 
 The README explicitly advertises:
 
@@ -87,7 +87,7 @@ Update README to describe the mode semantics precisely.
 
 ## C-02 · AI confidence extraction `.unwrap_or(1.0)` bypasses the `confidence_threshold` for legacy sklearn shape models
 
-**Component:** [detectors/ai/model.rs:126, 163-176](aegis-gate/crates/aegis-security/src/detectors/ai/model.rs#L126)
+**Component:** [detectors/ai/model.rs:126, 163-176](../../../../crates/aegis-security/src/detectors/ai/model.rs#L126)
 
 `extract_confidence()` returns `None` when the model emits the
 legacy sklearn `Sequence<Map<i64, f32>>` output shape. The caller
@@ -126,7 +126,7 @@ if probe_legacy_shape(&model) {
 
 ## C-03 · Scoring ladder ceiling (60) doesn't reach default block threshold (80) → no single regex detector blocks alone
 
-**Component:** [detectors/scores.rs](aegis-gate/crates/aegis-security/src/detectors/scores.rs) · [aegis-core/src/config.rs:1990-1995](aegis-gate/crates/aegis-core/src/config.rs#L1990-L1995)
+**Component:** [detectors/scores.rs](../../../../crates/aegis-security/src/detectors/scores.rs) · [aegis-core/src/config.rs:1990-1995](../../../../crates/aegis-core/src/config.rs#L1990-L1995)
 
 Per-detector deltas (representative):
 

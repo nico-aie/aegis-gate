@@ -3,7 +3,7 @@
 > **Second 15-minute Round-1 stress test**, after shipping the
 > body-collect fix + mass-assignment / XXE / brute-force
 > detectors. Compared against the original
-> [`run-perf-15min-2026-05-02/`](../run-perf-15min-2026-05-02/) baseline.
+> [`run-perf-15min-2026-05-02/`](../archive/run-perf-15min-2026-05-02) baseline.
 
 ## Headline
 

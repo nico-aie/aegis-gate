@@ -47,7 +47,7 @@ In isolation this is a HIGH-severity entropy bug; combined with
 F-CRITICAL-002 (no session check) it becomes CRITICAL because the
 "double-submit" pattern presumes session auth in front.
 
-**Spot-verified** at [admin_auth/csrf.rs:6-17](aegis-gate/crates/aegis-control/src/admin_auth/csrf.rs#L6-L17):
+**Spot-verified** at [admin_auth/csrf.rs:6-17](../../../../crates/aegis-control/src/admin_auth/csrf.rs#L6-L17):
 
 ```rust
 pub fn generate_token() -> String {
@@ -63,7 +63,7 @@ pub fn generate_token() -> String {
 }
 ```
 
-And at [admin_auth/csrf.rs:19-34](aegis-gate/crates/aegis-control/src/admin_auth/csrf.rs#L19-L34) (`validate`): only `constant_time_eq(cookie, header)` —
+And at [admin_auth/csrf.rs:19-34](../../../../crates/aegis-control/src/admin_auth/csrf.rs#L19-L34) (`validate`): only `constant_time_eq(cookie, header)` —
 no signature verification, no session linkage.
 
 The same pattern is used in:

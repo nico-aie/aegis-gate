@@ -22,10 +22,10 @@ runtime.
 
 | Module | Lines | Advertised as | Actually used? |
 |---|---|---|---|
-| [shed.rs](aegis-gate/crates/aegis-proxy/src/shed.rs) | 262 | "Graceful degradation under load" (Round 3) | ❌ Zero callers |
-| [quota.rs](aegis-gate/crates/aegis-proxy/src/quota.rs) | 171 | `client_max_body_size`, `max_uri_length`, `max_header_size` from config | ❌ Zero callers |
-| [dr.rs](aegis-gate/crates/aegis-proxy/src/dr.rs) | 170 | DR / snapshot / restore | ❌ Not used by `waf snapshot` CLI either |
-| [traffic.rs](aegis-gate/crates/aegis-proxy/src/traffic.rs) | 326 | Canary / shadow / mirror traffic, retry-budget | ❌ Zero callers |
+| [shed.rs](../../../../crates/aegis-proxy/src/shed.rs) | 262 | "Graceful degradation under load" (Round 3) | ❌ Zero callers |
+| [quota.rs](../../../../crates/aegis-proxy/src/quota.rs) | 171 | `client_max_body_size`, `max_uri_length`, `max_header_size` from config | ❌ Zero callers |
+| [dr.rs](../../../../crates/aegis-proxy/src/dr.rs) | 170 | DR / snapshot / restore | ❌ Not used by `waf snapshot` CLI either |
+| [traffic.rs](../../../../crates/aegis-proxy/src/traffic.rs) | 326 | Canary / shadow / mirror traffic, retry-budget | ❌ Zero callers |
 
 **Verified** with grep across `crates/`:
 
@@ -81,7 +81,7 @@ The actual code (`dr.rs:36-93`) writes `[u32 LE meta_len][meta_json][config_byte
 signature, no compression.
 
 The CLI sub-commands `waf snapshot` and `waf restore`
-([aegis-bin/src/snapshot.rs](aegis-gate/crates/aegis-bin/src/snapshot.rs)) do NOT import `aegis_proxy::dr`. They
+([aegis-bin/src/snapshot.rs](../../../../crates/aegis-bin/src/snapshot.rs)) do NOT import `aegis_proxy::dr`. They
 have their own implementation entirely. So the `dr` module is
 double-dead: nobody calls it, and a separate parallel implementation
 exists for the same feature.

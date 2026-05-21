@@ -27,7 +27,7 @@ detector mapping.
 
 ## C-02 · `reset_state` covers 4 of 6 enumerated state classes (BehavioralAnalyzer + temp client metadata not wired)
 
-**Component:** [aegis-proxy/src/run.rs:1678-1699](aegis-gate/crates/aegis-proxy/src/run.rs#L1678-L1699)
+**Component:** [aegis-proxy/src/run.rs:1678-1699](../../../../crates/aegis-proxy/src/run.rs#L1678-L1699)
 
 §2.4 enumerates 6 state classes that `reset_state` must clear:
 
@@ -55,7 +55,7 @@ mostly unimplemented anyway).
 
 ## C-03 · `audit_log_preserved: true` hardcoded in reset_state response
 
-**Component:** [interop/control.rs:279](aegis-gate/crates/aegis-control/src/interop/control.rs#L279)
+**Component:** [interop/control.rs:279](../../../../crates/aegis-control/src/interop/control.rs#L279)
 
 The reset_state response includes `audit_log_preserved: true`. The
 value is hardcoded — not derived from any actual check that the
@@ -78,7 +78,7 @@ runtime check protects against future regressions.
 
 ## C-04 · README "8 SIEM sink formats" — 8 formatters exist, only 2 actually transmit
 
-**Component:** [audit/sinks/mod.rs:1-8](aegis-gate/crates/aegis-control/src/audit/sinks/mod.rs#L1-L8)
+**Component:** [audit/sinks/mod.rs:1-8](../../../../crates/aegis-control/src/audit/sinks/mod.rs#L1-L8)
 
 README claims the WAF ships with 8 SIEM sink formats. The module
 declares 8 formatters: `jsonl`, `syslog`, `cef`, `ecs`, `kafka`,
