@@ -1920,6 +1920,7 @@ pub(crate) async fn handle_risk_thresholds_put(
 
     #[derive(serde::Deserialize)]
     struct Body {
+        enabled: Option<bool>,
         challenge_at: Option<u32>,
         block_at: Option<u32>,
         max: Option<u32>,
@@ -1933,6 +1934,10 @@ pub(crate) async fn handle_risk_thresholds_put(
 
     let current = services.risk.thresholds();
     let next = aegis_core::config::RiskThresholds {
+        // 2026-05-21 — cumulative-gate master toggle. Numeric
+        // thresholds stay valid even when disabled (so re-enabling is
+        // a one-flag change), so we keep the ordering checks below.
+        enabled:      parsed.enabled.unwrap_or(current.enabled),
         challenge_at: parsed.challenge_at.unwrap_or(current.challenge_at),
         block_at:     parsed.block_at.unwrap_or(current.block_at),
         max:          parsed.max.unwrap_or(current.max),
@@ -1955,11 +1960,13 @@ pub(crate) async fn handle_risk_thresholds_put(
     }
 
     let before = serde_json::json!({
+        "enabled":      current.enabled,
         "challenge_at": current.challenge_at,
         "block_at":     current.block_at,
         "max":          current.max,
     });
     let after = serde_json::json!({
+        "enabled":      next.enabled,
         "challenge_at": next.challenge_at,
         "block_at":     next.block_at,
         "max":          next.max,
@@ -1990,6 +1997,7 @@ pub(crate) async fn handle_risk_thresholds_put(
             200,
             &serde_json::json!({
                 "ok": true,
+                "enabled":      next.enabled,
                 "challenge_at": next.challenge_at,
                 "block_at":     next.block_at,
                 "max":          next.max,

@@ -339,6 +339,12 @@ impl RiskTracker {
             return RiskLevel::Block;
         }
         let t = self.inner.thresholds.load();
+        // 2026-05-21 — cumulative-gate master toggle. When off, the
+        // accumulated score never gates traffic (it's still recorded
+        // for forensics). Strike-block above is a separate gate.
+        if !t.enabled {
+            return RiskLevel::Allow;
+        }
         if state.score >= t.block_at {
             RiskLevel::Block
         } else if state.score >= t.challenge_at {
@@ -372,6 +378,11 @@ impl RiskTracker {
     ) -> RiskLevel {
         if self.is_strike_blocked_for_key(key) {
             return RiskLevel::Block;
+        }
+        // 2026-05-21 — cumulative-gate master toggle (global config),
+        // honored even when per-tier cumulative thresholds are passed.
+        if !self.inner.thresholds.load().enabled {
+            return RiskLevel::Allow;
         }
         let Some(state) = self.snapshot_with_key(key) else {
             return RiskLevel::Allow;
@@ -936,6 +947,45 @@ mod tests {
     fn level_with_returns_allow_for_unknown_ip() {
         let t = RiskTracker::new(&cfg());
         assert_eq!(t.level_with(ip("8.8.8.8"), 40, 80), RiskLevel::Allow);
+    }
+
+    /// 2026-05-21 — cumulative-gate master toggle. When disabled, an
+    /// over-block score never gates (neither `level` nor the per-tier
+    /// `level_with`), but the score is still recorded and strike-block
+    /// (a separate gate) still fires.
+    #[test]
+    fn disabled_cumulative_gate_never_blocks_on_score() {
+        let t = RiskTracker::new(&cfg_strikes_disabled());
+        let target = ip("10.0.0.77");
+        t.record_malicious(target, 90); // well over default block_at=70
+        assert_eq!(t.level(target), RiskLevel::Block, "enabled gate blocks at 90");
+
+        let mut th = t.thresholds();
+        th.enabled = false;
+        t.set_thresholds(th);
+        assert_eq!(t.level(target), RiskLevel::Allow, "disabled gate never blocks (level)");
+        assert_eq!(
+            t.level_with(target, 30, 70),
+            RiskLevel::Allow,
+            "disabled gate never blocks (per-tier level_with)",
+        );
+        // Score is still recorded for forensics.
+        assert_eq!(t.snapshot(target).unwrap().score, 90);
+    }
+
+    #[test]
+    fn disabled_cumulative_gate_still_honors_strike_block() {
+        let t = RiskTracker::new(&cfg()); // strikes enabled, block_at=5
+        let target = ip("10.0.0.78");
+        for _ in 0..5 {
+            t.record_malicious(target, 1);
+        }
+        let mut th = t.thresholds();
+        th.enabled = false;
+        t.set_thresholds(th);
+        // Cumulative gate off, but the strike-block gate is separate.
+        assert!(t.is_strike_blocked(target));
+        assert_eq!(t.level(target), RiskLevel::Block, "strike-block overrides the disabled cumulative gate");
     }
 
     #[test]

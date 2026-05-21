@@ -1157,7 +1157,7 @@ async function rulesToggle(id) {
 function useRiskThresholdsApi() {
   return useApi('/api/risk/thresholds', {
     intervalMs: 5000,
-    fallback: { challenge_at: 40, block_at: 80, max: 100 },
+    fallback: { enabled: true, challenge_at: 40, block_at: 80, max: 100 },
   });
 }
 async function settingsRiskThresholdsPut(body) {

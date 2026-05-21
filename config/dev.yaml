@@ -181,27 +181,23 @@ risk:
     repeat_offender: 15
   decay_half_life: "5m"
   thresholds:
-    # NEW-5 (2026-05-08) — challenge tier is INTENTIONALLY
-    # DISABLED in dev. The values below sit far above max=100 so
-    # `level()` always returns Allow (or Block, if we ever set
-    # block_at <= max — also impossible here). Detector-driven
-    # blocks still fire independently of these thresholds —
-    # they don't go through `level()`.
+    # 2026-05-21 — the cumulative IP-risk gate is DISABLED in dev via
+    # the `enabled` toggle (replaces the old "set challenge_at/block_at
+    # above max" hack). With `enabled: false`, accumulated per-bucket
+    # score never challenges or blocks; detector signals are still
+    # recorded (Top Attackers keeps climbing), and per-request detector
+    # blocks fire independently of this gate.
     #
-    # Why disabled in dev: dev runs with shared-IP traffic (one
-    # source IP for many k6 VUs), so a low challenge_at would
-    # cause legit-user VUs to share strikes with attacker VUs
-    # and trigger spurious 429s. Production uses challenge_at=40
-    # / block_at=80 / max=100 (see config/profiles/prod-balanced.yaml).
-    #
-    # To enable the challenge tier in dev, set BOTH challenge_at
-    # and block_at to sane pairs (e.g. challenge_at=40,
-    # block_at=80) and either restart the WAF or PUT
-    # /api/risk/thresholds via the dashboard's
-    # Settings → "Cumulative IP risk thresholds" card. Hot-reload
-    # of thresholds via config-file edit also works post-NEW-1.
-    challenge_at: 99998       # disabled — challenge tier not used in dev
-    block_at:     99999       # disabled — score-based block not used in dev
+    # Why off in dev: dev runs shared-IP traffic (one source IP for
+    # many k6 VUs), so a low cumulative threshold would let attacker
+    # VUs tar legit VUs sharing the IP and trigger spurious 429/403s.
+    # The numeric thresholds below stay SANE (40/80) so flipping
+    # `enabled: true` (here, or via the dashboard Traffic Gates toggle,
+    # or PUT /api/risk/thresholds) immediately gives a working gate.
+    # Production ships enabled (see config/profiles/prod-balanced.yaml).
+    enabled:      false
+    challenge_at: 40
+    block_at:     80
     max:          100
   trust_recovery:
     per_hour: 30

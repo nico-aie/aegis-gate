@@ -2202,12 +2202,26 @@ impl Default for RiskWeights {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct RiskThresholds {
+    /// 2026-05-21 — master on/off for the cumulative IP-risk gate.
+    /// When `false`, accumulated per-key score never produces a
+    /// challenge or block (the data plane + `/api/risk` LEVEL treat
+    /// every bucket as Allow); detector signals are still RECORDED so
+    /// Top Attackers / forensics keep climbing, and strike-block (its
+    /// own gate) is unaffected. Replaces the old "set block_at to a
+    /// huge number" hack — a real toggle disables BOTH the challenge
+    /// and block paths and is self-documenting. Default `true`.
+    #[serde(default = "default_risk_gate_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_challenge_at")]
     pub challenge_at: u32,
     #[serde(default = "default_block_at")]
     pub block_at: u32,
     #[serde(default = "default_risk_max")]
     pub max: u32,
+}
+
+fn default_risk_gate_enabled() -> bool {
+    true
 }
 
 fn default_challenge_at() -> u32 {
@@ -2234,6 +2248,7 @@ impl Default for RiskThresholds {
         // so a `RiskTracker` built from default config silently
         // disagreed with the spec'd thresholds. Now both agree.
         Self {
+            enabled: true,
             challenge_at: 30,
             block_at: 70,
             max: 100,

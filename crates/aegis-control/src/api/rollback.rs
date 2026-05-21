@@ -415,6 +415,10 @@ fn apply_risk_thresholds_rollback(
         .unwrap_or(100); // legacy audits before max was stamped
 
     let target = aegis_core::config::RiskThresholds {
+        // 2026-05-21 — rollback restores the numeric thresholds; leave
+        // the gate enabled (the toggle isn't part of the threshold
+        // rollback shape). Operators flip it via PUT /api/risk/thresholds.
+        enabled: true,
         challenge_at,
         block_at,
         max,
@@ -1052,6 +1056,7 @@ mod tests {
             weights: aegis_core::config::RiskWeights::default(),
             decay_half_life: std::time::Duration::from_secs(300),
             thresholds: aegis_core::config::RiskThresholds {
+                enabled: true,
                 challenge_at: 30, block_at: 60, max: 100,
             },
             trust_recovery: None,
