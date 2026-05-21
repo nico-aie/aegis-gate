@@ -9470,26 +9470,31 @@ function PageInvestigation() {
                   <div style={{ padding: 16, fontSize: 12, color: 'var(--ink-dim)', textAlign: 'center' }}>
                     {botCategories.length === 1 && botCategories[0].name === 'unknown' ? (
                       <>
-                        {/* LOW-SO-04 (2026-05-12) — empty state was
-                            "no bot signal yet" even on busy WAFs.
-                            The classifier only emits non-`unknown`
-                            categories when a JA4 baseline is loaded
-                            AND the request fingerprint matches one
-                            of the configured profiles.  Bare UA
-                            strings (curl, Googlebot, Firefox) by
-                            themselves don't suffice. */}
-                        Bot classifier wired but every request landed in
+                        {/* 2026-05-21 — corrected: the classifier is
+                            UA + ASN based, NOT JA4. There is no
+                            "JA4 baseline" mechanism. Most traffic lands
+                            `unknown` because (a) the GeoIP ASN DB isn't
+                            loaded, so cloud/hosting IPs don't classify
+                            as suspect, and (b) verified/human need
+                            reverse-DNS + JS-challenge signals that
+                            aren't wired. */}
+                        Bot classifier wired, but every request landed in
                         <code style={{ margin: '0 4px' }}>unknown</code>.
-                        This profile has no JA4 baseline loaded — see{' '}
+                        Classification is <strong>UA + ASN</strong> based:
+                        scanner UAs → malicious, no/short UA or cloud/hosting
+                        ASN → suspect. Most likely the <strong>GeoIP ASN
+                        database isn't loaded</strong> (check{' '}
+                        <code>/api/geoip/status</code>) so cloud IPs stay
+                        unknown. See{' '}
                         <a href="#/help" style={{ color: 'var(--accent)' }}>Help → Bot classifier setup</a>.
                       </>
                     ) : (
                       <>
-                        No bot classifications recorded yet. The
-                        classifier emits when JA4 fingerprints match
-                        a configured profile — UA-only traffic
-                        without a fingerprint baseline stays in the
-                        <code style={{ margin: '0 4px' }}>unknown</code> bucket.
+                        No bot classifications recorded yet. The classifier
+                        emits <code>suspect</code>/<code>malicious</code> from
+                        scanner UAs, no/short UA, or cloud/hosting ASNs (needs
+                        the GeoIP ASN DB) — plain browser traffic stays{' '}
+                        <code style={{ margin: '0 4px' }}>unknown</code>.
                       </>
                     )}
                   </div>
