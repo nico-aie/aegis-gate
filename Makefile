@@ -46,6 +46,16 @@ CARGO ?= cargo
 # FEATURES="redis" for slim builds.
 FEATURES        ?= redis geoip alerts ai
 
+# Feature set actually passed to cargo. Defaults to $(FEATURES); the
+# benchmark-binary targets (`bench-dev`, `stage`) override it via a
+# target-specific assignment to FORCE `geoip` on even if someone built
+# slim with FEATURES="redis" — the bot classifier, GeoIP geo map, and
+# country/ASN access-lists all silently degrade to "unknown" without
+# it, which has bitten staging benchmark runs. Uses a distinct var so
+# a command-line FEATURES= override still composes with the geoip
+# guarantee instead of clobbering it.
+EFFECTIVE_FEATURES ?= $(FEATURES)
+
 # Default config to run against. The prod-balanced profile is the
 # recommended starting point for production deployments — full detector
 # mask, balanced risk thresholds, Redis state, 7-day audit retention.
@@ -128,7 +138,13 @@ $(DASHBOARD_BUNDLE): $(DASHBOARD_SRCS) $(DASHBOARD_DIR)/build.sh
 	@bash $(DASHBOARD_DIR)/build.sh
 
 build: $(DASHBOARD_BUNDLE) ## cargo build --release with $(FEATURES) — rebundles dashboard if JSX is newer
-	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES)"
+	@$(CARGO) build -p aegis-bin --release --features "$(EFFECTIVE_FEATURES)"
+
+# Benchmark-binary targets always compile `geoip` in (see
+# EFFECTIVE_FEATURES note above). `$(sort ...)` dedupes, so this is a
+# no-op when geoip is already present (the default). Target-specific
+# vars propagate to the `build` prerequisite.
+bench-dev stage: EFFECTIVE_FEATURES := $(sort $(FEATURES) geoip)
 
 stage: build ## v2.3 §8 binary contract — drop `./waf` + `./waf.yaml` in cwd (FORCE=1 to refresh, KEEP=1 to acknowledge drift)
 	@ln -sf target/release/waf ./waf
