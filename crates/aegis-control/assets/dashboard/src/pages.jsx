@@ -9804,8 +9804,8 @@ function PageTrafficGates() {
           <h1 className="page-title">Traffic Gates</h1>
           <p className="page-subtitle">
             Five per-flow controls that fire <strong>before</strong> the detector chain — four binary
-            block-or-pass gates plus the cumulative IP-risk threshold tuner. Each card carries its
-            own "how does it work" explanation. See
+            block-or-pass gates plus the cumulative IP-risk threshold tuner — and an observational
+            bot classifier. Each card carries its own "how does it work" explanation. See
             {' '}
             <a href="#/detectors" style={{ color: 'var(--accent)' }}>Detectors &amp; Tiers</a>
             {' '}for the signal-emitting pipeline that runs after these gates pass.
@@ -9820,6 +9820,7 @@ function PageTrafficGates() {
       <CumulativeIpRiskCard />
       <RateLimitGateCard />
       <DdosGateCard />
+      <BotClassifierGateCard />
       {/* 2026-05-19 — per-bucket scores moved to the Top Attackers
           page as a "Composite RiskKey view" toggle so operators
           have one mental model for "who's worth investigating". */}
@@ -9829,6 +9830,74 @@ function PageTrafficGates() {
         <a href="#/top-attackers?view=riskkey" style={{ color: 'var(--accent)', fontWeight: 600 }}>Top Attackers → Composite RiskKey view</a>
       </div>
     </>
+  );
+}
+
+// 2026-05-21 — bot-classifier gate. On/off toggle for the UA+ASN
+// bot classifier (observational — feeds Investigation → "Bot
+// classification mix" + audit `bot_category`). Audit-mutated
+// PUT /api/gates/bots; hot-applied (no restart). Modelled as a gate
+// (like DDoS / Strike-Block), not a detector.
+function BotClassifierGateCard() {
+  const api = window.useApi
+    ? window.useApi('/api/gates/bots', { intervalMs: 10000, fallback: { enabled: true } })
+    : { data: { enabled: true } };
+  const enabled = api.data?.enabled !== false;
+  const [busy, setBusy] = useStateP(false);
+
+  async function toggle() {
+    if (busy) return;
+    setBusy(true);
+    const next = !enabled;
+    try {
+      const r = await window.csrfMutate('/api/gates/bots', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (r && r.ok) {
+        window.aegisToast(`Bot classifier ${next ? 'enabled' : 'disabled'}`, 'ok');
+        api.reload && api.reload();
+      } else {
+        const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
+        window.aegisToast(`Bot gate toggle failed: ${msg}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Bot gate error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <window.SectionHeader
+          title="6. Bot classifier"
+          sub="Labels each request human / verified / suspect / malicious from UA + ASN signals (feeds Investigation → Bot classification mix). Observational — it does not block by class. Needs the GeoIP ASN DB to classify cloud/hosting traffic."
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <span className={`pill ${enabled ? 'ok' : 'warn'}`} style={{ fontSize: 10 }}>
+            {enabled ? 'ON' : 'OFF'}
+          </span>
+          <div
+            className={`toggle ${enabled ? 'on' : ''}`}
+            onClick={busy ? undefined : toggle}
+            title={enabled
+              ? 'Bot classifier is ON — requests are labelled and the mix populates. Click to disable.'
+              : 'Bot classifier is OFF — no classification runs; bot_category stays unset. Click to enable.'}
+            style={{ cursor: busy ? 'wait' : 'pointer' }}
+          />
+        </div>
+      </div>
+      <window.GateExplain
+        rows={[
+          ['How it fires', <span key="hf">Per request the listener runs a UA + ASN rule-set: scanner UAs (<code>sqlmap</code>/<code>nikto</code>/…) → <code>malicious</code>; no/short UA or a cookieless cloud/hosting ASN → <code>suspect</code>. Verdict is recorded in audit <code>fields.bot_category</code> and aggregated on the Investigation page.</span>],
+          ['Setup', <span key="s">Classification of cloud/hosting traffic needs the <strong>GeoIP ASN database</strong> (<code>geoip.asn_db</code>); confirm via <code>/api/geoip/status</code>. Scanner-UA and short-UA classification work without it.</span>],
+          ['Observational', <span key="o">Today it only labels + feeds the mix — it does <strong>not</strong> run a per-class block/challenge. <code>verified</code> (good bots) and <code>human</code> require reverse-DNS / JS-challenge signals that aren\'t wired yet.</span>],
+          ['Tunable', <span key="t">Toggle above. Audit-mutated <code>PUT /api/gates/bots</code>; hot-applied on the next request. See Help → "Bot classification (setup)".</span>],
+        ]}
+      />
+    </div>
   );
 }
 

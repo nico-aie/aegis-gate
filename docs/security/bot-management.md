@@ -72,6 +72,17 @@ There is **no "JA4 baseline" to load** — the dashboard message that
 said so was incorrect (corrected 2026-05-21). Classification is UA +
 ASN, not JA4 fingerprint matching.
 
+### On/off gate (2026-05-21)
+
+The classifier is a **gate-style toggle** (`cfg.bots.enabled`, default
+`true`), not a detector — its inputs are ambient (ASN via GeoIP), so it
+doesn't fit the `Detector` trait. Flip it live (no restart) from
+**Traffic Gates → "6. Bot classifier"** or the audit-mutated
+`PUT /api/gates/bots {"enabled": true|false}` (read-back via
+`GET /api/gates/bots`). When off, no classification runs and
+`bot_category` is left unset. Strike-block, DDoS, rate-limit, and the
+cumulative-risk gate are the other gate-style toggles.
+
 ## Known limitations (not wired today)
 
 - **`verified` (good bots) never fires** — reverse-DNS lookups aren't
@@ -97,9 +108,10 @@ current build:
 - Forward-confirmed reverse-DNS good-bot verification.
 - Threat-intel (STIX `bot` indicator) labels.
 - A model-backed classifier (feature-gated).
-- An `enabled` toggle + per-class action mapping
-  (`known_bad: block`, `likely_bot: challenge`, `good_bot:
-  allow_rate_limited`).
+- A per-class **action mapping** (`known_bad: block`, `likely_bot:
+  challenge`, `good_bot: allow_rate_limited`) so the classifier
+  enforces rather than just labelling. (The `enabled` on/off gate
+  itself shipped 2026-05-21 — see above.)
 
 ```yaml
 # PLANNED shape — does not exist in config today.
