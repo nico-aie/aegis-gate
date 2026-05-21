@@ -256,10 +256,21 @@ function PageOverview() {
   // landing page. Pre-fix the only signal was a small bell-icon
   // badge in the top nav; SOC analysts during an incident would
   // open the dashboard, see all-green KPIs, and miss the breach.
-  const overviewAlerts = window.useAlertsApi
-    ? window.useAlertsApi()
+  // 2026-05-21 — driven by the overlay-aware /api/incidents enriched
+  // list (status `firing` only), same source as the bell + Active
+  // alerts panel, so an ack/snooze/resolve on the Incidents page
+  // clears this banner too. The old /api/alerts source read a
+  // separate legacy store (tracking.ack_store) that resolve never
+  // touched, so resolved alerts lingered here. Falls back to
+  // raw_alerts when the SLO engine isn't wired (tests).
+  const overviewAlerts = window.useIncidentsApi
+    ? window.useIncidentsApi()
     : { data: null };
-  const firingAlerts = overviewAlerts.data?.firing || [];
+  const firingAlerts = (
+    Array.isArray(overviewAlerts.data?.incidents)
+      ? overviewAlerts.data.incidents.filter(i => i.status === 'firing')
+      : (overviewAlerts.data?.raw_alerts?.firing || [])
+  ).map(i => ({ ...i, name: i.name || (i.sli ? `${i.sli}-${i.window_hours}h` : i.id) }));
 
   return (
     <>
