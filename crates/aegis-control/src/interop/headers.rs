@@ -136,26 +136,41 @@ pub struct DecisionTag {
     /// `None` and the stamper falls back to a snapshot lookup
     /// (which works for direct-connect clients).
     pub risk_score: Option<u32>,
+    /// 2026-05-21 — per-request detector score: the sum of THIS
+    /// request's detector signals (capped at 100). Distinct from
+    /// `risk_score`, which is the cumulative composite-key score.
+    /// Carried on detected-but-allowed decisions so the listener
+    /// audit can record `fields.request_score` — letting the dashboard
+    /// show "this request scored N" alongside "this source's
+    /// accumulated risk is M". Not stamped on a response header.
+    pub detector_score: Option<u32>,
 }
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None }
+        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
+    }
+
+    /// Attach the per-request detector score (sum of this request's
+    /// signals). See [`Self::detector_score`].
+    pub fn with_detector_score(mut self, score: u32) -> Self {
+        self.detector_score = Some(score);
+        self
     }
 
     /// 2026-05-21 — attach a rule_id to an existing tag. Used by the
