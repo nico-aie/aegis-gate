@@ -279,11 +279,21 @@ impl BotClassifier {
         // `LADDER_LIKELY_BOT_THRESHOLD` (50) escalates an
         // otherwise-Unknown verdict to LikelyBot. Real browsers
         // typically accumulate 0-20; bots from hosting ASNs
-        // without cookies / JS-pass accumulate 60-80.
+        // without cookies / JS-pass accumulate 50-80.
+        //
+        // 2026-05-21 — Hosting bumped 30 → 35 so a cookieless
+        // request from a cloud/hosting ASN (AWS / GCP / Azure /
+        // Cloudflare / OVH / Hetzner / DO / …) reaches the bar
+        // (35 + 15 no-cookies = 50) and classifies as LikelyBot.
+        // Pre-fix it summed to 45 and stayed Unknown, so with the
+        // GeoIP ASN DB loaded the bot-mix card was still all-unknown
+        // for cloud traffic. A hosting client WITH cookies (session
+        // continuity → likely a real user behind a proxy) stays at
+        // 35 < 50 → Unknown, which is the intended distinction.
         let mut score: u32 = 0;
         match signals.asn_classification {
             AsnClassification::Datacenter => score += 40,
-            AsnClassification::Hosting => score += 30,
+            AsnClassification::Hosting => score += 35,
             AsnClassification::Residential | AsnClassification::Mobile => {}
             AsnClassification::Unknown => {}
         }
@@ -613,8 +623,25 @@ mod tests {
             ..Default::default()
         };
         let c = BotClassifier::default();
-        // 30 (Hosting) + 0 (cookies present) = 30 < 50. Unknown.
+        // 35 (Hosting) + 0 (cookies present) = 35 < 50. Unknown.
         assert_eq!(c.classify(&sig), BotTier::Unknown);
+    }
+
+    /// 2026-05-21 — a cookieless request from a hosting/cloud ASN now
+    /// crosses the ladder (35 + 15 = 50) → LikelyBot. This is what
+    /// makes the bot-mix card populate for cloud traffic once the
+    /// GeoIP ASN DB is loaded.
+    #[test]
+    fn hosting_asn_no_cookies_escalates_to_likely_bot() {
+        let sig = BotSignals {
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into()),
+            asn: Some(16509), // AWS
+            asn_classification: AsnClassification::Hosting,
+            has_cookies: false,
+            ..Default::default()
+        };
+        let c = BotClassifier::default();
+        assert_eq!(c.classify(&sig), BotTier::LikelyBot);
     }
 
     /// JS challenge pass on a hosting-ASN connection overrides
@@ -737,10 +764,11 @@ mod tests {
         assert_eq!(c.classify(&sig), BotTier::LikelyBot);
     }
 
-    /// Counter-test: a Hosting-class ASN with no cookies sits at
-    /// 30 + 15 = 45, BELOW the 50 threshold — Unknown. Real users
-    /// behind a workplace proxy on AWS shouldn't be auto-blocked
-    /// at the bot tier.
+    /// A Hosting-class ASN with no cookies classifies LikelyBot
+    /// (2026-05-21 calibration: 35 + 15 = 50 ≥ 50) but is NOT
+    /// `KnownBad` — i.e. it surfaces as `suspect`/challenge, never an
+    /// outright block. Real users behind a workplace proxy on AWS get
+    /// challenged, not auto-blocked, at the bot tier.
     #[test]
     fn classify_via_hosting_asn_alone_does_not_block() {
         let asn = 16509; // AWS
@@ -753,7 +781,8 @@ mod tests {
             ..Default::default()
         };
         let c = BotClassifier::default();
-        // 30 + 15 = 45 < 50 → Unknown (needs another signal to escalate).
-        assert_eq!(c.classify(&sig), BotTier::Unknown);
+        let verdict = c.classify(&sig);
+        assert_eq!(verdict, BotTier::LikelyBot, "cookieless hosting ASN → suspect");
+        assert_ne!(verdict, BotTier::KnownBad, "must not be an outright block");
     }
 }
