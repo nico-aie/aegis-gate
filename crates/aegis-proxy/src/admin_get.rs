@@ -811,6 +811,7 @@ pub(crate) fn admin_router(
         "/api/risk/thresholds" => {
             let t = services.risk.thresholds();
             let body = serde_json::json!({
+                "enabled":      t.enabled,
                 "challenge_at": t.challenge_at,
                 "block_at":     t.block_at,
                 "max":          t.max,

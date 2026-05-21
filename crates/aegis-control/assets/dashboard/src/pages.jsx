@@ -10161,6 +10161,10 @@ function CumulativeIpRiskCard() {
   const [allow, setAllow] = useStateP(0);
   const [challenge, setChallenge] = useStateP(0);
   const [riskBusy, setRiskBusy] = useStateP(false);
+  // 2026-05-21 — master on/off for the whole cumulative gate.
+  // Defaults to enabled until the API answers (the live value syncs in
+  // the effect below). When off, accumulated score never gates traffic.
+  const gateEnabled = riskApi.data?.enabled !== false;
 
   // Sync local sliders with whatever the live API reports —
   // first load, hot-reload, or another operator's PUT.
@@ -10172,18 +10176,13 @@ function CumulativeIpRiskCard() {
     if (Number.isFinite(ba)) setChallenge(Math.max(0, ba - 1));
   }, [riskApi.data?.challenge_at, riskApi.data?.block_at]);
 
-  async function saveRiskThresholds() {
+  async function putThresholds(body, okMsg) {
     if (riskBusy) return;
     setRiskBusy(true);
     try {
-      const body = {
-        challenge_at: allow + 1,
-        block_at: challenge + 1,
-        max: Number(riskApi.data?.max) || 100,
-      };
       const r = await window.settingsRiskThresholdsPut(body);
       if (r && r.ok) {
-        window.aegisToast(`Risk thresholds → challenge ≥ ${body.challenge_at} · block ≥ ${body.block_at}`, 'ok');
+        window.aegisToast(okMsg, 'ok');
         riskApi.reload && riskApi.reload();
       } else {
         const msg = (r && (r.message || r.error || r.reason)) || 'unknown error';
@@ -10196,17 +10195,56 @@ function CumulativeIpRiskCard() {
     }
   }
 
+  // Flip the gate on/off without touching the numeric thresholds —
+  // the backend merges unspecified fields from the current config.
+  async function toggleGate() {
+    const next = !gateEnabled;
+    await putThresholds({ enabled: next }, `Cumulative IP risk gate ${next ? 'ENABLED' : 'DISABLED'}`);
+  }
+
+  async function saveRiskThresholds() {
+    await putThresholds(
+      {
+        enabled: gateEnabled,
+        challenge_at: allow + 1,
+        block_at: challenge + 1,
+        max: Number(riskApi.data?.max) || 100,
+      },
+      `Risk thresholds → challenge ≥ ${allow + 1} · block ≥ ${challenge + 1}`,
+    );
+  }
+
   return (
     <div id="cum-ip-risk-card" className="card" style={{ marginBottom: 12 }}>
-      <window.SectionHeader
-        title="3. Cumulative IP risk thresholds"
-        sub="Per-RiskKey-bucket decaying score — challenge then block, recovers when score decays. Buckets are keyed by {ip, device_fp?, session?}; thresholds below are tracker-wide and apply to every bucket."
-      />
-      <div style={{ padding: 16 }}>
+      <div className="card-head" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <window.SectionHeader
+          title="3. Cumulative IP risk thresholds"
+          sub="Per-RiskKey-bucket decaying score — challenge then block, recovers when score decays. Buckets are keyed by {ip, device_fp?, session?}; thresholds below are tracker-wide and apply to every bucket."
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <span className={`pill ${gateEnabled ? 'ok' : 'warn'}`} style={{ fontSize: 10 }}>
+            {gateEnabled ? 'ON' : 'OFF'}
+          </span>
+          <div
+            className={`toggle ${gateEnabled ? 'on' : ''}`}
+            onClick={riskBusy ? undefined : toggleGate}
+            title={gateEnabled
+              ? 'Cumulative IP-risk gate is ON — accumulated bucket score can challenge/block. Click to disable.'
+              : 'Cumulative IP-risk gate is OFF — accumulated score never gates traffic (still recorded for forensics). Click to enable.'}
+            style={{ cursor: riskBusy ? 'wait' : 'pointer' }}
+          />
+        </div>
+      </div>
+      <div style={{ padding: 16, opacity: gateEnabled ? 1 : 0.55 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           <span className={`pill ${riskApi.error ? 'warn' : 'ok'}`} style={{ fontSize: 11 }}>
             {riskApi.error ? 'fetch failed' : 'live'}
           </span>
+          {!gateEnabled && (
+            <span className="pill warn" style={{ fontSize: 11 }}>
+              gate disabled — thresholds below are inert until re-enabled
+            </span>
+          )}
           {riskApi.data && (
             <span style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
               currently: challenge ≥ <strong>{riskApi.data.challenge_at}</strong> · block ≥ <strong>{riskApi.data.block_at}</strong>

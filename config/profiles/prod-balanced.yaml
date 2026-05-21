@@ -95,6 +95,11 @@ risk:
     repeat_offender: 15
   decay_half_life: "5m"
   thresholds:
+    # 2026-05-21 — cumulative IP-risk gate ON in prod. Flip to false
+    # (here or via the Traffic Gates toggle / PUT /api/risk/thresholds)
+    # to disable score-based challenge+block without touching the
+    # numeric thresholds.
+    enabled:      true
     challenge_at: 40
     block_at:     80
   strikes:
