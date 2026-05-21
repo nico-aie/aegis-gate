@@ -172,6 +172,13 @@ pub struct ProxyContext {
     /// `aegis_security::fingerprint::DeviceIpTracker::with_tuning`.
     pub device_ip_tracker:
         Arc<aegis_security::fingerprint::DeviceIpTracker>,
+    /// 2026-05-21 — gate-style on/off for the bot classifier
+    /// (`cfg.bots.enabled`). The listener reads this before
+    /// classifying; `false` skips classification and leaves
+    /// `bot_category` unset. Shared `Arc` — `DashboardServices`
+    /// holds a clone that the audit-mutated `PUT /api/gates/bots`
+    /// flips, so the toggle hot-applies with no restart.
+    pub bots_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ProxyContext {
@@ -227,6 +234,9 @@ impl ProxyContext {
             device_ip_tracker: Arc::new(
                 aegis_security::fingerprint::DeviceIpTracker::new(),
             ),
+            bots_enabled: Arc::new(std::sync::atomic::AtomicBool::new(
+                cfg.bots.enabled,
+            )),
         })
     }
 

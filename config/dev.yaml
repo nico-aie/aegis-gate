@@ -169,6 +169,19 @@ ai:
   confidence_threshold: 0.85
 
 # ---------------------------------------------------------------------------
+# Bot classifier (gate-style, observational) — DEFAULT OFF
+# ---------------------------------------------------------------------------
+# Labels each request human / verified / suspect / malicious from UA + ASN
+# signals and feeds Investigation → "Bot classification mix" + the audit
+# `bot_category`. OBSERVATIONAL only today (no per-class block/challenge).
+# Needs the GeoIP ASN DB (geoip.asn_db) to classify cloud/hosting traffic;
+# scanner-UA + short-UA classification works without it. Opt in here or via
+# Traffic Gates → "6. Bot classifier" (audit-mutated PUT /api/gates/bots).
+# Omitting this block entirely is equivalent to `enabled: false`.
+bots:
+  enabled: false
+
+# ---------------------------------------------------------------------------
 # Risk scoring — tuned for the P6 k6 scenario (`risk-strikes.js`)
 # ---------------------------------------------------------------------------
 risk:

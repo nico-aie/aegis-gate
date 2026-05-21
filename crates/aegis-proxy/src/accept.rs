@@ -652,6 +652,10 @@ pub(crate) async fn admin_accept_loop(
     // `PUT /api/risk/canary-paths` mutates the same set the
     // data-plane CanaryDetector reads.
     services.canary_paths = canary_paths;
+    // 2026-05-21 — share the bot-classifier gate toggle so
+    // `PUT /api/gates/bots` flips the same flag the data-plane
+    // listener reads from `ProxyContext.bots_enabled`.
+    services.bots_enabled = upstream_ctx.bots_enabled.clone();
     // MTLS-T7 — Allowed SAN allowlist. Seeded from
     // `cfg.tls.client_auth.allowed_sans` (empty when client-auth
     // is disabled or no SANs were configured). The store is hot-
@@ -1510,14 +1514,26 @@ pub(crate) async fn accept_loop(
                         asn: peer_asn,
                         asn_classification: asn_class,
                     };
-                    let bot_category = match aegis_security::bots::BotClassifier::default()
-                        .classify(&bot_signals)
+                    // 2026-05-21 — gate-style toggle. When the bot
+                    // classifier is disabled (PUT /api/gates/bots →
+                    // upstream_ctx.bots_enabled = false), skip
+                    // classification entirely and leave bot_category
+                    // unset.
+                    let bot_category = if upstream_ctx
+                        .bots_enabled
+                        .load(std::sync::atomic::Ordering::Relaxed)
                     {
-                        aegis_security::bots::BotTier::GoodBot   => Some("verified"),
-                        aegis_security::bots::BotTier::LikelyBot => Some("suspect"),
-                        aegis_security::bots::BotTier::KnownBad  => Some("malicious"),
-                        // Human + Unknown do not count toward bot-mix.
-                        _ => None,
+                        match aegis_security::bots::BotClassifier::default()
+                            .classify(&bot_signals)
+                        {
+                            aegis_security::bots::BotTier::GoodBot   => Some("verified"),
+                            aegis_security::bots::BotTier::LikelyBot => Some("suspect"),
+                            aegis_security::bots::BotTier::KnownBad  => Some("malicious"),
+                            // Human + Unknown do not count toward bot-mix.
+                            _ => None,
+                        }
+                    } else {
+                        None
                     };
                     let event = aegis_core::audit::AuditEvent {
                         schema_version: 1,

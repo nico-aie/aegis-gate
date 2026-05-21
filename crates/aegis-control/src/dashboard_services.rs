@@ -270,6 +270,13 @@ pub struct DashboardServices {
     /// seeded from `cfg.risk.canary_paths`. Test bundles keep the
     /// empty default — `GET /api/risk/canary-paths` returns `[]`.
     pub canary_paths: aegis_security::detectors::canary::CanaryPaths,
+    /// 2026-05-21 — gate-style on/off for the bot classifier. Same
+    /// `Arc<AtomicBool>` the data-plane listener reads via
+    /// `ProxyContext.bots_enabled`; the audit-mutated
+    /// `PUT /api/gates/bots` flips it. Defaults to a fresh `true` Arc
+    /// in `spawn_*`; the proxy boot path (`accept.rs`) overrides it
+    /// with the shared handle.
+    pub bots_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// MTLS-T7 — live, mutable allowed-SAN list. The boot path
     /// seeds it from `cfg.tls.client_auth.allowed_sans`; the
     /// audit-mutated `PUT/DELETE /api/mtls/sans` handlers update
@@ -596,6 +603,12 @@ impl DashboardServices {
                 // from `cfg.risk.canary_paths`.
                 canary_paths:
                     aegis_security::detectors::canary::CanaryPaths::default(),
+                // 2026-05-21 — default-off (matches cfg.bots.enabled);
+                // the proxy boot path overrides with the shared
+                // ProxyContext handle seeded from config.
+                bots_enabled: std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                ),
                 // MTLS-T7 — wired by the proxy boot path. Until then
                 // identity extraction skips the allowlist gate.
                 allowed_sans: None,
