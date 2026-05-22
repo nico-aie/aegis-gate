@@ -51,6 +51,15 @@ pub struct DdosView {
     pub current_rps: u64,
     pub baseline_rps: u64,
     pub spike_active: bool,
+    /// 2026-05-22 — interop mode resolved for the `ddos` feature
+    /// (`set_profile`). `"enforce"` or `"log_only"`. This is
+    /// INDEPENDENT of `config.observe_only`: either one suppresses
+    /// the 503 (the data plane honors both — see
+    /// `aegis-proxy::data_plane`). The dashboard shows the gate as
+    /// observe/log_only when `config.observe_only` is true OR this is
+    /// `"log_only"`, so a global `set_profile log_only` is no longer
+    /// mislabeled as "enforcing".
+    pub effective_mode: String,
 }
 
 /// Wire-shape mirror of `aegis_security::ddos::DdosConfig`.
@@ -90,6 +99,8 @@ impl DdosView {
                 current_rps: r.current_rps(),
                 baseline_rps: r.baseline_rps(),
                 spike_active: r.is_spike_active(),
+                // Default; `render_get` overlays the live interop mode.
+                effective_mode: "enforce".into(),
             },
             None => Self {
                 enabled: false,
@@ -105,6 +116,7 @@ impl DdosView {
                 current_rps: 0,
                 baseline_rps: 0,
                 spike_active: false,
+                effective_mode: "enforce".into(),
             },
         }
     }
@@ -175,8 +187,13 @@ impl DdosPutBody {
 /// atomic load per telemetry field). Caller plumbs the response
 /// into the standard `json_body_response(200, ..., "private,
 /// max-age=2")` shape.
-pub fn render_get(runtime: Option<&Arc<DdosRuntime>>) -> String {
-    let view = DdosView::from_runtime(runtime);
+/// `effective_mode` is the interop mode resolved for the `ddos`
+/// feature (`"enforce"` / `"log_only"`); the caller resolves it from
+/// the live `ModeStore` so a `set_profile log_only` is reflected in
+/// the gate view, not just the config-level `observe_only` flag.
+pub fn render_get(runtime: Option<&Arc<DdosRuntime>>, effective_mode: &str) -> String {
+    let mut view = DdosView::from_runtime(runtime);
+    view.effective_mode = effective_mode.to_string();
     serde_json::to_string(&view).unwrap_or_else(|_| String::from("{}"))
 }
 
@@ -332,7 +349,7 @@ mod tests {
 
     #[test]
     fn render_returns_disabled_shape_when_runtime_absent() {
-        let body = render_get(None);
+        let body = render_get(None, "enforce");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["enabled"], false);
         // 2026-05-09 — config is now nested so the dashboard can
@@ -343,6 +360,18 @@ mod tests {
         assert_eq!(v["current_rps"], 0);
         assert_eq!(v["baseline_rps"], 0);
         assert_eq!(v["spike_active"], false);
+        assert_eq!(v["effective_mode"], "enforce");
+    }
+
+    #[test]
+    fn render_reflects_log_only_interop_mode() {
+        // 2026-05-22 — a `set_profile log_only` on the ddos feature must
+        // surface in the gate view so the dashboard stops mislabeling it
+        // as "enforcing". effective_mode is independent of the config
+        // observe_only flag.
+        let body = render_get(None, "log_only");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["effective_mode"], "log_only");
     }
 
     #[test]
@@ -427,7 +456,7 @@ mod tests {
             },
             Arc::new(DummyState),
         ));
-        let body = render_get(Some(&runtime));
+        let body = render_get(Some(&runtime), "enforce");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["enabled"], true);
         assert_eq!(v["config"]["enabled"], true);
