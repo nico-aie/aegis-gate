@@ -26,14 +26,31 @@ require curl
 # short burst. Boot against a copy with a tiny limit so a 6-request burst
 # crosses the gate. Everything else (detectors, routes, upstream, interop)
 # stays identical to dev.
-RL_CFG="$(mktemp -t waf-dt6.XXXXXX).yaml"
-sed 's/limit: 1000000/limit: 4/' "$REPO/config/dev.yaml" > "$RL_CFG"
+# This test exercises the MODE gating of the block / rate_limit / ddos gates.
+# Two config transforms make it deterministic + self-contained:
+#   - `in_memory` state backend: `reset_state` is SYNCHRONOUS (the redis
+#     backend clears counters async, which races the burst — the clear lands
+#     mid-burst and the counter never reaches the limit). It also drops the
+#     redis dependency and cross-run key contamination (rate-limit keys are
+#     per-IP, shared by every 127.0.0.1 caller regardless of WAF port).
+#   - risk gate OFF: it's per-IP stateful and would interfere across the
+#     multi-request cells (all share 127.0.0.1). `risk_gate_off` flips the
+#     6-space-aligned `enabled:` line that belongs to risk.thresholds.
+in_memory='s/backend: redis/backend: in_memory/'
+risk_gate_off='s/enabled:      true/enabled:      false/'
+
+RL_CFG="$(mktemp -t waf-dt6-rl.XXXXXX).yaml"
+sed -e 's/limit: 1000000/limit: 4/' -e "$in_memory" -e "$risk_gate_off" "$REPO/config/dev.yaml" > "$RL_CFG"
+# DDoS runs BEFORE rate-limit, so the ddos cell needs its own config with a
+# tiny per_ip_limit (and rate-limit left high) to isolate the ddos gate.
+DDOS_CFG="$(mktemp -t waf-dt6-ddos.XXXXXX).yaml"
+sed -E -e 's/per_ip_limit: [0-9]+/per_ip_limit: 4/' -e "$in_memory" -e "$risk_gate_off" "$REPO/config/dev.yaml" > "$DDOS_CFG"
 CONFIG="$RL_CFG"
 
 cleanup6() {
   stop_waf
   pkill -9 -f 'target/release/waf' 2>/dev/null || true
-  rm -f "$RL_CFG"
+  rm -f "$RL_CFG" "$DDOS_CFG"
 }
 trap cleanup6 EXIT
 
@@ -113,7 +130,32 @@ for n in 1 2 3 4 5 6; do probe "$DATA/rl-probe?n=$n"; done
 [[ "$P_MODE" == "log_only" ]]     || fail "rate_limit/log_only: X-WAF-Mode=$P_MODE (expected log_only)"
 ok "rate_limit/log_only: status=$P_STATUS (forwarded) + action=rate_limit + mode=log_only"
 
-# Restore enforce so the gateway is left in a secure-by-default state.
+# ─────────────────── DDoS (re-boot with a tiny per_ip_limit) ───────────────
+# DDoS is a set_profile feature (2026-05-22): global/feature log_only must
+# forward the would-be-block upstream while reporting the intended action.
+set_mode enforce
+stop_waf
+CONFIG="$DDOS_CFG"
+start_waf
+
+reset_state
+set_mode enforce
+for n in 1 2 3 4 5 6 7 8; do probe "$DATA/ddos-probe?n=$n"; done   # per_ip_limit=4 → burst trips ddos
+[[ "$P_STATUS" == "403" || "$P_STATUS" == "503" ]] || fail "ddos/enforce: expected 403/503 after burst, got $P_STATUS"
+[[ "$P_ACTION" == "block" ]]   || fail "ddos/enforce: X-WAF-Action=$P_ACTION (expected block)"
+[[ "$P_MODE" == "enforce" ]]   || fail "ddos/enforce: X-WAF-Mode=$P_MODE (expected enforce)"
+[[ "$P_RULE" == "ddos" ]]      || fail "ddos/enforce: X-WAF-Rule-Id=$P_RULE (expected ddos)"
+ok "ddos/enforce: $P_STATUS + action=block + mode=enforce + rule=ddos"
+
+reset_state
+set_mode log_only
+for n in 1 2 3 4 5 6 7 8; do probe "$DATA/ddos-probe?n=$n"; done
+[[ "$P_STATUS" != "403" && "$P_STATUS" != "503" ]] || fail "ddos/log_only: still enforced ($P_STATUS) — must forward upstream"
+[[ "$P_ACTION" == "block" ]]   || fail "ddos/log_only: X-WAF-Action=$P_ACTION (expected intended block)"
+[[ "$P_MODE" == "log_only" ]]  || fail "ddos/log_only: X-WAF-Mode=$P_MODE (expected log_only)"
+[[ "$P_RULE" == "ddos" ]]      || fail "ddos/log_only: X-WAF-Rule-Id=$P_RULE (expected ddos)"
+ok "ddos/log_only: status=$P_STATUS (forwarded) + action=block + mode=log_only + rule=ddos"
+
 set_mode enforce
 
-ok "DR-T6 mode enforcement: 4/4 cells green (block + rate_limit × enforce/log_only)"
+ok "DR-T6 mode enforcement: 6/6 cells green (block + rate_limit + ddos × enforce/log_only)"

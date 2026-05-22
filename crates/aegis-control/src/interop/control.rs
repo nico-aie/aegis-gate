@@ -591,6 +591,14 @@ mod tests {
                 policies: vec!["score".into(), "strikes".into()],
             },
         );
+        features.insert(
+            "ddos".into(),
+            CapabilityFeature {
+                supported: true,
+                toggleable: true,
+                policies: vec!["per_ip".into()],
+            },
+        );
         ControlContext {
             modes: Arc::new(ModeStore::new(Mode::Enforce)),
             features,

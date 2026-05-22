@@ -1838,6 +1838,18 @@ pub(crate) fn build_interop_runtime(
             policies: vec!["score".into(), "strikes".into()],
         },
     );
+    // 2026-05-22 — DDoS per-IP burst gate exposed as a set_profile
+    // feature so `log_only` covers it like the others. It also keeps
+    // its own `ddos.observe_only` config flag (shadow at the config
+    // level); the interop mode is checked in the data-plane DDoS branch.
+    features.insert(
+        "ddos".into(),
+        CapabilityFeature {
+            supported: true,
+            toggleable: true,
+            policies: vec!["per_ip".into()],
+        },
+    );
 
     // v2.5 §2.4 + 2026-05-20 committee clarification —
     // `reset_state` MUST clear ALL of:
