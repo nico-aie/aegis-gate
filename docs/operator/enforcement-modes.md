@@ -56,8 +56,12 @@ override.
 
 All three are admin-plane, audit-mutated, and CSRF-gated:
 
-- **Dashboard:** the **Settings** page — the *Policy posture* card shows
-  the current mode (`ENFORCE` / `LOG_ONLY`) and the toggle flips it.
+- **Dashboard:** **Settings → "Shadow Mode (Dry-Run)"** toggle flips the
+  global mode `enforce` ↔ `log_only`. It's hot-applied (waits for the config
+  version to bump, then toasts the apply latency), CSRF-gated, and
+  audit-chained — `log_only` also raises a "Shadow mode is ON — no traffic
+  is being blocked" banner. The *Policy posture* status chip shown across the
+  dashboard is **read-only**: it displays the current mode and links here.
 - **API:** `PUT /api/mode` with `{"mode":"enforce"}` or `{"mode":"log_only"}`
   (`"shadow"` is accepted as an alias for `log_only`).
 - **Read:** `GET /api/mode` → `{"mode":"enforce"}`.
