@@ -1214,7 +1214,33 @@ pub(crate) async fn handle_data_request_inner(
                     Some(s) => DecisionTag::challenge("risk-challenge").with_tier(tier).with_risk_score(s),
                     None    => DecisionTag::challenge("risk-challenge").with_tier(tier),
                 };
-                (resp, tag)
+                // Contract §2.7 — honor `set_profile mode=log_only` on
+                // `risk_engine.score` for the CHALLENGE action too (not
+                // just block). In log_only the WAF MUST report the
+                // intended `X-WAF-Action: challenge` + `X-WAF-Mode:
+                // log_only` but MUST NOT apply enforcement — so we
+                // stash the intent and forward upstream instead of
+                // issuing the 429 PoW. Mirrors the Block arm above.
+                let rc_mode = interop_modes
+                    .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-challenge")))
+                    .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                if rc_mode == aegis_control::interop::headers::Mode::LogOnly {
+                    log_only_intent = Some(tag);
+                    forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        upstream_ctx,
+                        identity,
+                        route_latency_hist,
+                        route_activity,
+                        request_start,
+                        peer_ip,
+                        bus,
+                    )
+                    .await
+                } else {
+                    (resp, tag)
+                }
             }
             aegis_security::risk::RiskLevel::Allow => {
                 // Forward the request to a real upstream member via
