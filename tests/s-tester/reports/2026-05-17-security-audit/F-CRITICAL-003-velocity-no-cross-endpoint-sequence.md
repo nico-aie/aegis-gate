@@ -38,7 +38,7 @@ per-rule sliding-window counter** keyed on a caller-supplied
 
 ## Observed code path
 
-[velocity.rs](aegis-gate/crates/aegis-security/src/velocity.rs) entire file: just a generic counter.
+[velocity.rs](../../../../crates/aegis-security/src/velocity.rs) entire file: just a generic counter.
 Representative signature:
 
 ```rust

@@ -4,7 +4,7 @@
 > data-plane swap has landed (`build_risk_key` + `*_with_key`
 > production call sites); see "Where we actually stand" below.
 > Tracks the remaining half of
-> [security F-CRITICAL-001 + 002](../issue-fix/2026-05-17-control-core-security-audits/README.md#phase-e--security-architecture-composite-keys--algorithm-correctness)
+> [security F-CRITICAL-001 + 002](../archive/issue-fix/2026-05-17-control-core-security-audits/README.md#phase-e--security-architecture-composite-keys--algorithm-correctness)
 > — Phase E.
 >
 > Commits `01c053c` (RiskTracker) + `5936257` (IpRateLimiter)

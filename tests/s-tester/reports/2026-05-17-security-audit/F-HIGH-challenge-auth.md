@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## CA-01 · `ChallengeTokens::generate_nonce()` deterministic from `(ip, device, session, ts_ms)`
 
-**Component:** [challenge/token.rs:23-30, 98-102](aegis-gate/crates/aegis-security/src/challenge/token.rs#L98-L102)
+**Component:** [challenge/token.rs:23-30, 98-102](../../../../crates/aegis-security/src/challenge/token.rs#L98-L102)
 
 Nonce is `blake3(ip || device_fp || session || timestamp_ms)`. An
 attacker observing one request can predict the nonce for the next
@@ -35,7 +35,7 @@ with `rand::rngs::OsRng.fill_bytes(&mut [u8; 16])`.
 
 ## CA-02 · `auth/jwt::validate` doesn't verify the signature
 
-**Component:** [auth/jwt.rs:54-106](aegis-gate/crates/aegis-security/src/auth/jwt.rs#L54-L106)
+**Component:** [auth/jwt.rs:54-106](../../../../crates/aegis-security/src/auth/jwt.rs#L54-L106)
 
 The function is named `validate` and returns `Ok(claims)` after only
 base64-decoding the payload. No HMAC/RSA signature verification.
@@ -69,7 +69,7 @@ RSA, etc.).
 
 ## CA-03 · `auth/jwt` custom base64 decoder can panic on malformed input
 
-**Component:** [auth/jwt.rs:108-147](aegis-gate/crates/aegis-security/src/auth/jwt.rs#L108-L147)
+**Component:** [auth/jwt.rs:108-147](../../../../crates/aegis-security/src/auth/jwt.rs#L108-L147)
 
 `chars[i+1]` and `chars[i+2]/[i+3]` indexing without bounds check
 before the padding-aware logic. A token where the payload length
@@ -85,7 +85,7 @@ in workspace via several deps).
 
 ## CA-04 · API-key compare uses `HashMap::get` (not constant-time)
 
-**Component:** [api_security/api_keys.rs:67-69](aegis-gate/crates/aegis-security/src/api_security/api_keys.rs#L67-L69)
+**Component:** [api_security/api_keys.rs:67-69](../../../../crates/aegis-security/src/api_security/api_keys.rs#L67-L69)
 
 ```rust
 let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
@@ -112,7 +112,7 @@ found.into()
 
 ## CA-05 · `hmac_sign::verify()` has no timestamp / replay protection
 
-**Component:** [api_security/hmac_sign.rs:1-65](aegis-gate/crates/aegis-security/src/api_security/hmac_sign.rs#L1-L65)
+**Component:** [api_security/hmac_sign.rs:1-65](../../../../crates/aegis-security/src/api_security/hmac_sign.rs#L1-L65)
 
 `HmacConfig.clock_skew_s` field exists but is never consulted in
 `verify()`. A captured signed request is replayable indefinitely.
@@ -129,7 +129,7 @@ timestamp drift bound? Replay protection?" — both missing.
 
 ## CA-06 · `captcha.rs::verify()` returns `Ok(true)` for all three providers
 
-**Component:** [challenge/captcha.rs:1-18](aegis-gate/crates/aegis-security/src/challenge/captcha.rs#L1-L18)
+**Component:** [challenge/captcha.rs:1-18](../../../../crates/aegis-security/src/challenge/captcha.rs#L1-L18)
 
 The CAPTCHA module is a stub: `verify()` always returns `Ok(true)`
 regardless of input. The doc header acknowledges it's stubbed.

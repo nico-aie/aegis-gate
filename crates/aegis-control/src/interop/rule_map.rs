@@ -76,6 +76,9 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "risk-strikes" => ("risk_engine", "strikes"),
         "risk-score" | "risk-challenge" => ("risk_engine", "score"),
 
+        // ---- ddos ----
+        "ddos" => ("ddos", "per_ip"),
+
         // System-level signals (body-too-large, mtls_required,
         // websocket_*, unmatched_route, …) — not toggleable by
         // policy, always enforce.
@@ -88,7 +91,15 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
 /// `Mode::Enforce` — operators can't disable engine-level safety
 /// gates via the contract's `set_profile`.
 pub fn mode_for_rule(modes: &ModeStore, rule_id: Option<&str>) -> Mode {
-    let Some(id) = rule_id else { return Mode::Enforce };
+    // No policy fired (e.g. a clean `allow`) → reflect the ambient
+    // default mode, so a global `set_profile {scope:all, mode:log_only}`
+    // is visible as `X-WAF-Mode: log_only` on EVERY response, not just
+    // the policy-blocked ones. Pre-fix this hardcoded `Enforce`, so a
+    // benign response contradicted the operator's global log_only toggle.
+    let Some(id) = rule_id else { return modes.current().default };
+    // A rule_id that maps to no toggleable feature is an engine-level
+    // safety gate — operators can't log_only it via set_profile, so it
+    // stays `Enforce` regardless of the default.
     let Some((feat, pol)) = rule_to_feature(id) else {
         return Mode::Enforce;
     };
@@ -266,6 +277,17 @@ mod tests {
     }
 
     #[test]
+    fn ddos_rule_id_routes_to_ddos_feature() {
+        assert_eq!(rule_to_feature("ddos"), Some(("ddos", "per_ip")));
+        // log_only on the ddos feature resolves for the ddos rule_id.
+        let store = ModeStore::new(Mode::Enforce);
+        store.set_feature("ddos", Mode::LogOnly);
+        assert_eq!(mode_for_rule(&store, Some("ddos")), Mode::LogOnly);
+        // other features unaffected.
+        assert_eq!(mode_for_rule(&store, Some("sqli")), Mode::Enforce);
+    }
+
+    #[test]
     fn risk_score_vs_strikes() {
         assert_eq!(
             rule_to_feature("risk-strikes"),
@@ -290,12 +312,19 @@ mod tests {
     }
 
     #[test]
-    fn mode_for_rule_defaults_to_enforce_for_unknown() {
+    fn mode_for_rule_unmapped_stays_enforce_but_none_follows_default() {
         let store = ModeStore::new(Mode::LogOnly);
-        // Unknown rule_id — system-level, ignores the LogOnly default.
+        // Unknown/system rule_id — engine-level safety gate; ignores the
+        // LogOnly default (operators can't log_only it via set_profile).
         assert_eq!(mode_for_rule(&store, Some("body-too-large")), Mode::Enforce);
-        // None rule_id (allow / no specific rule) — also Enforce.
-        assert_eq!(mode_for_rule(&store, None), Mode::Enforce);
+        // None rule_id (a clean `allow`, no policy fired) — reflects the
+        // ambient default, so a global `set_profile {scope:all,
+        // mode:log_only}` is visible as log_only on EVERY response (DR-T3),
+        // not contradicted by benign traffic.
+        assert_eq!(mode_for_rule(&store, None), Mode::LogOnly);
+        // With an enforce default, None → enforce.
+        let store_enforce = ModeStore::new(Mode::Enforce);
+        assert_eq!(mode_for_rule(&store_enforce, None), Mode::Enforce);
     }
 
     #[test]

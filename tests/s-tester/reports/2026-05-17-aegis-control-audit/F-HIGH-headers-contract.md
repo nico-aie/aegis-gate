@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## H-01 · `X-WAF-Request-Id` is 64-char blake3 hex, NOT UUID v4
 
-**Component:** [accept.rs:1235-1243](aegis-gate/crates/aegis-proxy/src/accept.rs#L1235) · [interop/headers.rs:225](aegis-gate/crates/aegis-control/src/interop/headers.rs#L225)
+**Component:** [accept.rs:1235-1243](../../../../crates/aegis-proxy/src/accept.rs#L1235) · [interop/headers.rs:225](../../../../crates/aegis-control/src/interop/headers.rs#L225)
 
 §5.1 specifies `X-WAF-Request-Id` as **"UUID v4 string"**, format
 example `550e8400-e29b-41d4-a716-446655440000` (36 chars,
@@ -42,7 +42,7 @@ this is about shape).
 
 ## H-02 · `X-WAF-Rule-Id` uses underscores, not hyphens
 
-**Component:** rule_id literals scattered in [data_plane.rs](aegis-gate/crates/aegis-proxy/src/data_plane.rs) (~12 sites)
+**Component:** rule_id literals scattered in [data_plane.rs](../../../../crates/aegis-proxy/src/data_plane.rs) (~12 sites)
 
 §5.1 specifies `X-WAF-Rule-Id` as `"Alphanumeric + hyphens, e.g.
 rule-001"`. Strict regex: `^([A-Za-z0-9-]+|none)$`.
@@ -82,14 +82,14 @@ it catches every future drift automatically.
 
 ## H-03 · `X-WAF-Risk-Score` no `.min(100)` clamp; operator-config `risk.max > 100` leaks
 
-**Component:** [interop/headers.rs:222-237](aegis-gate/crates/aegis-control/src/interop/headers.rs#L222-L237)
+**Component:** [interop/headers.rs:222-237](../../../../crates/aegis-control/src/interop/headers.rs#L222-L237)
 
 §5.1 specifies `X-WAF-Risk-Score` as `"Plain integer, no whitespace.
 e.g. 42"` with range `"integer 0–100"`.
 
 Aegis writes `self.risk_score.to_string()` with no clamp.
 `RiskThresholds::max` is operator-configurable
-([aegis-core/src/config.rs:1986](aegis-gate/crates/aegis-core/src/config.rs#L1986));
+([aegis-core/src/config.rs:1986](../../../../crates/aegis-core/src/config.rs#L1986));
 default 100 but ANY value accepted. With operator config
 `risk.max: 200`, the header emits `X-WAF-Risk-Score: 145`.
 

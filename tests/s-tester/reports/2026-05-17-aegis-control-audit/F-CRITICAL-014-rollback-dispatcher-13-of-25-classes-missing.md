@@ -13,7 +13,7 @@ test_mode: source-review
 
 ## Summary
 
-`ROLLBACKABLE_ACTIONS` at [api/rollback.rs:57-79](aegis-gate/crates/aegis-control/src/api/rollback.rs#L57-L79)
+`ROLLBACKABLE_ACTIONS` at [api/rollback.rs:57-79](../../../../crates/aegis-control/src/api/rollback.rs#L57-L79)
 allowlists the audit-action labels that the rollback endpoint can
 undo. The actual set of mutation labels the WAF emits is ~25. The
 allowlist covers ~12. The missing 13+:
@@ -39,13 +39,13 @@ The dashboard's history view promises a rollback path that the API
 silently refuses for the bulk of mutation classes. Operators
 discover this only when something goes wrong.
 
-Compounding: `lookup_event` at [api/rollback.rs:799-812](aegis-gate/crates/aegis-control/src/api/rollback.rs#L799-L812)
+Compounding: `lookup_event` at [api/rollback.rs:799-812](../../../../crates/aegis-control/src/api/rollback.rs#L799-L812)
 pulls the entire 10k audit ring and linear-scans for each rollback
 call. Acceptable today but Performance-rubric-relevant at scale.
 
 ## Observed code path
 
-[api/rollback.rs:57-79](aegis-gate/crates/aegis-control/src/api/rollback.rs#L57-L79):
+[api/rollback.rs:57-79](../../../../crates/aegis-control/src/api/rollback.rs#L57-L79):
 
 ```rust
 pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
@@ -63,7 +63,7 @@ pub const ROLLBACKABLE_ACTIONS: &[&str] = &[
 ];
 ```
 
-[api/rollback.rs:177-218](aegis-gate/crates/aegis-control/src/api/rollback.rs#L177-L218) — dispatcher:
+[api/rollback.rs:177-218](../../../../crates/aegis-control/src/api/rollback.rs#L177-L218) — dispatcher:
 
 ```rust
 fn lookup_action(event: &AuditEvent) -> Result<RollbackKind> {

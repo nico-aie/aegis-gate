@@ -39,7 +39,7 @@ All three components of scenario 05 are uncovered.
 
 ## Observed code path
 
-[behavior.rs:49-144](aegis-gate/crates/aegis-security/src/behavior.rs#L49-L144) — main analysis loop. Key issues:
+[behavior.rs:49-144](../../../../crates/aegis-security/src/behavior.rs#L49-L144) — main analysis loop. Key issues:
 
 1. **`observe()` signature** has no `referer` parameter:
 
@@ -68,10 +68,10 @@ All three components of scenario 05 are uncovered.
 4. **Bonus bugs in scope**:
    - `paths: Vec<String>` is unbounded per session (grows forever
      until LRU evicts the whole session).
-   - "Oldest" eviction at [behavior.rs:60-65](aegis-gate/crates/aegis-security/src/behavior.rs#L60-L65)
+   - "Oldest" eviction at [behavior.rs:60-65](../../../../crates/aegis-security/src/behavior.rs#L60-L65)
      uses `map.keys().next()` (random HashMap iteration order, not
      LRU) — can evict the active attacker's session.
-   - [behavior.rs:71](aegis-gate/crates/aegis-security/src/behavior.rs#L71)
+   - [behavior.rs:71](../../../../crates/aegis-security/src/behavior.rs#L71)
      `now - Duration::from_secs(self.window_s)` panics if `Instant::now()`
      hasn't advanced `window_s` since process start (cold boot).
    - Global `Mutex<HashMap>` on the request hot path — serializes

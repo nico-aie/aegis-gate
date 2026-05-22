@@ -6,9 +6,9 @@
 > by the redesign delivered in run-10 (DD-T0..T8). The redesign drops
 > the milestone-paced vanilla-JS shell and ships a pre-compiled React
 > 18 single bundle (`crates/aegis-control/assets/dashboard/app.js`).
-> See [`../../dashboard-redesign.md`](../../dashboard-redesign.md) for
+> See [`../../dashboard-redesign.md`](../dashboard-redesign.md) for
 > the active plan and
-> [`../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md`](../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md)
+> [`../../../tests/results/run-10-2026-04-30-dashboard-redesign/README.md`](../../README.md)
 > for the closing run.
 >
 > This file is kept for historical reference only. Path is
@@ -19,7 +19,7 @@
 > 1. [`../../../README.md`](../../../README.md)
 > 2. [`../../../Implement-Progress.md`](../../../Implement-Progress.md)
 > 3. [`../../plan.md`](../../plan.md) — assistant guide
-> 4. [`../../control.md`](../../control.md) — current control-plane plan
+> 4. [`../../control.md`](../control.md) — current control-plane plan
 > 5. [`../../../docs/control-plane/enterprise/README.md`](../../../docs/control-plane/enterprise/README.md)
 >    — original design spec; the redesign supersedes the shell layer
 >    but the page-level behaviour spec still applies.
@@ -80,16 +80,16 @@ value from M2 onward.
 
 ## Cross-references
 
-- Design spec — [`docs/control-plane/enterprise/`](../../docs/control-plane/enterprise/)
-- Existing dashboard contract — [`docs/control-plane/dashboard.md`](../../docs/control-plane/dashboard.md)
-- Auth flow (unchanged) — [`docs/control-plane/dashboard-auth.md`](../../docs/control-plane/dashboard-auth.md)
-- Audit chain — [`docs/observability/audit-logging.md`](../../docs/observability/audit-logging.md)
-- SLO / SLI — [`docs/observability/slo-sli-alerting.md`](../../docs/observability/slo-sli-alerting.md)
-- Observability — [`docs/observability/prometheus-otel.md`](../../docs/observability/prometheus-otel.md)
+- Design spec — [`docs/control-plane/enterprise/`](../../../docs/control-plane/enterprise)
+- Existing dashboard contract — [`docs/control-plane/dashboard.md`](../../../docs/control-plane/dashboard.md)
+- Auth flow (unchanged) — [`docs/control-plane/dashboard-auth.md`](../../../docs/control-plane/dashboard-auth.md)
+- Audit chain — [`docs/observability/audit-logging.md`](../../../docs/observability/audit-logging.md)
+- SLO / SLI — [`docs/observability/slo-sli-alerting.md`](../../../docs/observability/slo-sli-alerting.md)
+- Observability — [`docs/observability/prometheus-otel.md`](../../../docs/observability/prometheus-otel.md)
 
 ## Progress protocol
 
-Per [`../plan.md`](../plan.md) §0.3, after each task:
+Per [`../plan.md`](../../plan.md) §0.3, after each task:
 
 1. Overwrite `Implement-Progress.md` (never append).
 2. Move the task into the Completed Tasks Log.

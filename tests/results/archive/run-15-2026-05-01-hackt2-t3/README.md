@@ -3,7 +3,7 @@
 End-to-end verification after **HACK-T2** (v2.3 contract
 regression CI gate) + **HACK-T3** (Tier-A bonus: rule
 simulator) — slices 2 + 3 of the
-[`plans/hackathon-readiness.md`](../../../plans/hackathon-readiness.md)
+[`plans/hackathon-readiness.md`](../../../../plans/archive/hackathon-readiness.md)
 track.
 
 ## Headline

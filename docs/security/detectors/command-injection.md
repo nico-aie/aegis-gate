@@ -4,7 +4,7 @@
 >
 > **Landed:** 2026-05-08 (QA Run-4 SEC-M002 follow-up).
 >
-> See [`../../../plans/issue-fix/tester-n-2026-05-08-run4/PHASE-02-medium.md`](../../../plans/issue-fix/tester-n-2026-05-08-run4/PHASE-02-medium.md) for the design.
+> See [`../../../plans/issue-fix/tester-n-2026-05-08-run4/PHASE-02-medium.md`](../../../plans/archive/issue-fix/tester-n-2026-05-08-run4/PHASE-02-medium.md) for the design.
 
 ## Purpose
 

@@ -53,7 +53,7 @@ Operators today cannot write a rule like:
 
 ## Observed code path
 
-[rules/ast.rs:20-24](aegis-gate/crates/aegis-security/src/rules/ast.rs#L20-L24):
+[rules/ast.rs:20-24](../../../../crates/aegis-security/src/rules/ast.rs#L20-L24):
 
 ```rust
 pub enum Scope {
@@ -62,7 +62,7 @@ pub enum Scope {
 }
 ```
 
-[rules/eval.rs:138-145](aegis-gate/crates/aegis-security/src/rules/eval.rs#L138-L145) — evaluation:
+[rules/eval.rs:138-145](../../../../crates/aegis-security/src/rules/eval.rs#L138-L145) — evaluation:
 
 ```rust
 fn matches_scope(rule: &Rule, ctx: &EvalContext) -> bool {

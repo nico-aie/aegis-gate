@@ -7,8 +7,8 @@
 
 ## Sources
 
-- **Primary:** [`tests/ml-model/2026-05-18/RULES_BINARY_EVAL_REPORT.md`](../../../tests/ml-model/2026-05-18/RULES_BINARY_EVAL_REPORT.md) — 227,055-sample regex-only eval (AI disabled, no scoring). Headline: 63.9% recall, 5.9% FPR.
-- **Cross-reference:** [`tests/results/run-juice-shop-eval-2026-05-18-152455/README.md`](../../../tests/results/run-juice-shop-eval-2026-05-18-152455/README.md) — 45-request manual eval against OWASP Juice Shop v20. 100% inject coverage on hand-picked payloads, 0% FP, 45/45 audit correlation.
+- **Primary:** [`tests/ml-model/2026-05-18/RULES_BINARY_EVAL_REPORT.md`](../../../../tests/ml-model/2026-05-18/RULES_BINARY_EVAL_REPORT.md) — 227,055-sample regex-only eval (AI disabled, no scoring). Headline: 63.9% recall, 5.9% FPR.
+- **Cross-reference:** [`tests/results/run-juice-shop-eval-2026-05-18-152455/README.md`](../../../../tests/results/run-juice-shop-eval-2026-05-18-152455/README.md) — 45-request manual eval against OWASP Juice Shop v20. 100% inject coverage on hand-picked payloads, 0% FP, 45/45 audit correlation.
 
 ## Headline findings
 
@@ -61,7 +61,7 @@
 **Goal.** Close the largest single recall gap by extending the
 detector decoder beyond single-pass URL-decode.
 
-**Where the gap is.** [`crates/aegis-security/src/detectors/mod.rs:160`](../../../crates/aegis-security/src/detectors/mod.rs)
+**Where the gap is.** [`crates/aegis-security/src/detectors/mod.rs:160`](../../../../crates/aegis-security/src/detectors/mod.rs)
 defines `url_decode` as single-pass. The path/sqli/xss/cmd detectors
 each call it once and `check(raw)` + `check(decoded)`. That misses:
 
@@ -135,7 +135,7 @@ each call it once and `check(raw)` + `check(decoded)`. That misses:
 **Goal.** Lift `Manipulation` recall from 59 % to ~80 % by
 detecting privilege-escalation attempts beyond JSON bodies.
 
-**Where the gap is.** [`crates/aegis-security/src/detectors/body_abuse.rs:82`](../../../crates/aegis-security/src/detectors/body_abuse.rs):
+**Where the gap is.** [`crates/aegis-security/src/detectors/body_abuse.rs:82`](../../../../crates/aegis-security/src/detectors/body_abuse.rs):
 
 ```rust
 if trimmed.starts_with('{') || trimmed.starts_with('[') {
@@ -211,7 +211,7 @@ content-regex ceiling, by adding a non-regex detector that
 inspects actual wire headers and rejects ambiguous parsing.
 
 **Where the gap is.** No such detector exists.
-[`crates/aegis-security/src/detectors/header_injection.rs:21`](../../../crates/aegis-security/src/detectors/header_injection.rs)
+[`crates/aegis-security/src/detectors/header_injection.rs:21`](../../../../crates/aegis-security/src/detectors/header_injection.rs)
 has a pattern for `Transfer-Encoding:` but it scans *URL queries
 and header VALUES* looking for that string as a payload (the
 response-splitting attack), not the actual `Transfer-Encoding`

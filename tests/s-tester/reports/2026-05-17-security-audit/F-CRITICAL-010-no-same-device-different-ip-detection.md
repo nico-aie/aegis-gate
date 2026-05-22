@@ -38,7 +38,7 @@ zero-risk bucket.
 
 ## Observed code path
 
-[fingerprint/mod.rs:10-31](aegis-gate/crates/aegis-security/src/fingerprint/mod.rs#L10-L31) — `device_id()`:
+[fingerprint/mod.rs:10-31](../../../../crates/aegis-security/src/fingerprint/mod.rs#L10-L31) — `device_id()`:
 
 ```rust
 pub fn device_id(
@@ -58,7 +58,7 @@ The output is a 128-bit device hash. There is no `device_seen_with_ip(device, ip
 "rotation detected" signal.
 
 `bots.rs::BotSignals` carries a `ja4_fingerprint` field
-([bots.rs:17](aegis-gate/crates/aegis-security/src/bots.rs#L17)) but the classifier never reads it (cf.
+([bots.rs:17](../../../../crates/aegis-security/src/bots.rs#L17)) but the classifier never reads it (cf.
 F-CRITICAL-015).
 
 ## Impact

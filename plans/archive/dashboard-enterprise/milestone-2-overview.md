@@ -2,7 +2,7 @@
 
 > **Status:** Closed — D-M2 shipped.
 >
-> See [`README.md`](../README.md) for the track status board.
+> See [`README.md`](../../README.md) for the track status board.
 
 **Goal.** Wire the Overview page to real data: 4 stat tiles,
 realtime traffic line chart, attack-distribution donut, top
@@ -13,7 +13,7 @@ attacker IPs table.
 
 **Reference.**
 [`docs/control-plane/enterprise/pages/overview.md`](../../docs/control-plane/enterprise/pages/overview.md),
-[`docs/control-plane/enterprise/api.md`](../../docs/control-plane/enterprise/api.md).
+[`docs/control-plane/enterprise/api.md`](../../../docs/control-plane/enterprise/api.md).
 
 ---
 
@@ -131,7 +131,7 @@ All endpoints are read-only. All return `application/json` with
   in [`docs/control-plane/enterprise/components.md`](../../docs/control-plane/enterprise/components.md).
 - Pull Chart.js from `/dashboard/assets/chart.umd.min.js` (vendored).
 - SRI hash assertion test as described in
-  [`docs/control-plane/enterprise/security.md`](../../docs/control-plane/enterprise/security.md).
+  [`docs/control-plane/enterprise/security.md`](../../../docs/control-plane/enterprise/security.md).
 
 ## Exit gate
 

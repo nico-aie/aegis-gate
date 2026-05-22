@@ -49,7 +49,7 @@ contract unless the operator explicitly overrides.
 
 ## Observed code path
 
-[risk/mod.rs:78-84](aegis-gate/crates/aegis-security/src/risk/mod.rs#L78-L84):
+[risk/mod.rs:78-84](../../../../crates/aegis-security/src/risk/mod.rs#L78-L84):
 
 ```rust
 pub fn classify(score: u32) -> RiskLevel {
@@ -62,7 +62,7 @@ pub fn classify(score: u32) -> RiskLevel {
 Hardcoded; does not read `RiskThresholds` even though it exists in
 config.
 
-[aegis-core/src/config.rs:1990-1995](aegis-gate/crates/aegis-core/src/config.rs#L1990-L1995) — `RiskThresholds::default`:
+[aegis-core/src/config.rs:1990-1995](../../../../crates/aegis-core/src/config.rs#L1990-L1995) — `RiskThresholds::default`:
 
 ```rust
 RiskThresholds {
@@ -72,7 +72,7 @@ RiskThresholds {
 }
 ```
 
-[risk/tracker.rs:198-213](aegis-gate/crates/aegis-security/src/risk/tracker.rs#L198-L213) — `RiskTracker::level` reads from
+[risk/tracker.rs:198-213](../../../../crates/aegis-security/src/risk/tracker.rs#L198-L213) — `RiskTracker::level` reads from
 configurable thresholds via `self.thresholds.load()` and respects
 them correctly.
 

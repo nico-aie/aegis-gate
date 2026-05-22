@@ -19,7 +19,7 @@ behavior diverges from the v2.3 contract's semantic expectations.
 
 ## C-01 · WS "no healthy upstream member" returns `block` instead of `circuit_breaker`
 
-**Component:** [data_plane.rs:1086-1117](aegis-gate/crates/aegis-proxy/src/data_plane.rs#L1086-L1117) (WS error path)
+**Component:** [data_plane.rs:1086-1117](../../../../crates/aegis-proxy/src/data_plane.rs#L1086-L1117) (WS error path)
 
 When a WebSocket request matches a route whose upstream pool has no
 healthy member, the WAF returns a 503 with
@@ -63,7 +63,7 @@ exist and wire it to `X-WAF-Action: circuit_breaker`.
 
 ## C-02 · CONNECT tunnel returns 200 BEFORE attempting upstream connect — never surfaces `timeout` / `circuit_breaker`
 
-**Component:** [tcp_tunnel.rs:386-407](aegis-gate/crates/aegis-proxy/src/tcp_tunnel.rs#L386-L407) + [data_plane.rs:1742-1745](aegis-gate/crates/aegis-proxy/src/data_plane.rs#L1742-L1745)
+**Component:** [tcp_tunnel.rs:386-407](../../../../crates/aegis-proxy/src/tcp_tunnel.rs#L386-L407) + [data_plane.rs:1742-1745](../../../../crates/aegis-proxy/src/data_plane.rs#L1742-L1745)
 
 The CONNECT handler returns `200 OK` to the client at
 `data_plane.rs:1742` (initiating the HTTP/1.1 upgrade to raw TCP),
@@ -113,7 +113,7 @@ setup but recovers contract-compliant action attribution.
 
 ## C-03 · `cfg.upstreams` is silently skipped on file/etcd hot-reload — README's "edit YAML, no restart" claim is false
 
-**Component:** [config_source/reload.rs:258-260](aegis-gate/crates/aegis-proxy/src/config_source/reload.rs#L258-L260)
+**Component:** [config_source/reload.rs:258-260](../../../../crates/aegis-proxy/src/config_source/reload.rs#L258-L260)
 
 The README and Architecture docs claim 6 hot-reloadable surfaces:
 `routes, detectors, rate_limit, tls.certificates, compliance.modes,
@@ -145,7 +145,7 @@ which surfaces actually reload.
 
 ## C-04 (bonus, lower-priority) · Admin listener responses lack 6 §5 headers
 
-**Component:** [accept.rs:875-901](aegis-gate/crates/aegis-proxy/src/accept.rs#L875-L901)
+**Component:** [accept.rs:875-901](../../../../crates/aegis-proxy/src/accept.rs#L875-L901)
 
 Every response from the admin listener (`handle_admin_request`,
 `admin_sse::sse_response`) is returned to the client without going

@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## SM-01 · `fired_history: Mutex<Vec<SloAlert>>` never trimmed
 
-**Component:** [slo.rs:247](aegis-gate/crates/aegis-control/src/slo.rs#L247)
+**Component:** [slo.rs:247](../../../../crates/aegis-control/src/slo.rs#L247)
 
 Long-running process accumulates alerts forever; alerts are never
 GC'd. Latent memory leak.
@@ -33,7 +33,7 @@ if self.fired_history.lock().len() > MAX_FIRED_HISTORY {
 
 ## SM-02 · `metrics/request_duration::BUCKETS_MS` only 1 bucket ≤1ms
 
-**Component:** [metrics/request_duration.rs:41-44](aegis-gate/crates/aegis-control/src/metrics/request_duration.rs#L41-L44)
+**Component:** [metrics/request_duration.rs:41-44](../../../../crates/aegis-control/src/metrics/request_duration.rs#L41-L44)
 
 Bucket boundaries: `[0.05, 0.1, 0.25, 0.5, 1.0, ...]`. Only 5
 sub-1ms buckets, and only 1 between 1 ms and 5 ms (the contract
@@ -54,7 +54,7 @@ intermediate buckets:
 
 ## SM-03 · `/healthz/live` returns 503 on draining → k8s SIGKILLs mid-drain
 
-**Component:** [health.rs:46-52](aegis-gate/crates/aegis-control/src/health.rs#L46-L52)
+**Component:** [health.rs:46-52](../../../../crates/aegis-control/src/health.rs#L46-L52)
 
 `/healthz/live` returns `(503, "draining")` when `signal.is_live()`
 is false. k8s liveness probes treat 503 as "restart me" — but
@@ -88,7 +88,7 @@ Per k8s convention:
 
 ## SM-04 · `route_activity` over-counts after idle gaps
 
-**Component:** [metrics/route_activity.rs:104-118](aegis-gate/crates/aegis-control/src/metrics/route_activity.rs#L104-L118)
+**Component:** [metrics/route_activity.rs:104-118](../../../../crates/aegis-control/src/metrics/route_activity.rs#L104-L118)
 
 Lazy bucket reset is incorrect across non-adjacent writes. Walk-through:
 
@@ -109,7 +109,7 @@ window as zero on each push).
 
 ## SM-05 · `tiers.rs::pipeline` + `block_threshold` are "descriptive metadata only" — §4 per-tier rate-limit + per-tier detector NOT enforced
 
-**Component:** [api/tiers.rs:30-43, 68-76](aegis-gate/crates/aegis-control/src/api/tiers.rs#L30-L43)
+**Component:** [api/tiers.rs:30-43, 68-76](../../../../crates/aegis-control/src/api/tiers.rs#L30-L43)
 
 The doc comment is explicit: `Tier::pipeline` and `Tier::block_threshold`
 are "descriptive metadata only". The data plane ignores them; the
@@ -130,7 +130,7 @@ instead of the global mask.
 
 ## SM-06 · SLO dispatch ignores `summary.skipped_feature_off` — receivers built without `--features alerts` go silent
 
-**Component:** [accept.rs:798-816](aegis-gate/crates/aegis-proxy/src/accept.rs#L798-L816)
+**Component:** [accept.rs:798-816](../../../../crates/aegis-proxy/src/accept.rs#L798-L816)
 
 The SLO dispatch loop iterates `summary.delivered`, `summary.external`,
 `summary.failed` but doesn't read `summary.skipped_feature_off`.
@@ -156,7 +156,7 @@ response.
 
 ## SM-07 · `DashboardServices` is a 50+ field Arc<struct> — no path to swap whole bundle on reload
 
-**Component:** [dashboard_services.rs:53-268](aegis-gate/crates/aegis-control/src/dashboard_services.rs#L53-L268)
+**Component:** [dashboard_services.rs:53-268](../../../../crates/aegis-control/src/dashboard_services.rs#L53-L268)
 
 `DashboardServices` is constructed once and shared via `Arc`.
 Hot-reload mutates ~10 fields via per-field `ArcSwap`, but the bundle

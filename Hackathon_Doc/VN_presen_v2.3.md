@@ -1,6 +1,6 @@
 # WAF Hackathon 2026 — Candidate Briefing
 
-> Tài liệu này là bản tóm tắt dành cho các đội tham gia. Nội dung chi tiết và ràng buộc kỹ thuật nằm trong [`final_docs/VN_waf_interop_contract_v2.3.md`](final_docs/VN_waf_interop_contract_v2.3.md) và API public nằm trong [`final_docs/openapi.public.yaml`](final_docs/openapi.public.yaml).
+> Tài liệu này là bản tóm tắt dành cho các đội tham gia. Nội dung chi tiết và ràng buộc kỹ thuật nằm trong [`final_docs/VN_waf_interop_contract_v2.3.md`](./VN_waf_interop_contract_v2.3.md) và API public nằm trong [`final_docs/openapi.public.yaml`](./openapi.public.yaml).
 
 ---
 
@@ -133,8 +133,8 @@ File hướng dẫn không cần tiết lộ source code nội bộ, nhưng ph�
 
 | File | Mục đích |
 |------|----------|
-| [`final_docs/VN_waf_interop_contract_v2.3.md`](final_docs/VN_waf_interop_contract_v2.3.md) | Quy định WAF phải expose control endpoints, headers, audit log, decision classes và startup contract như thế nào. |
-| [`final_docs/openapi.public.yaml`](final_docs/openapi.public.yaml) | Public API contract của upstream target application. Có thể import vào Postman/Swagger/Insomnia để hiểu endpoint, method, auth, parameters và response schema. |
+| [`final_docs/VN_waf_interop_contract_v2.3.md`](./VN_waf_interop_contract_v2.3.md) | Quy định WAF phải expose control endpoints, headers, audit log, decision classes và startup contract như thế nào. |
+| [`final_docs/openapi.public.yaml`](./openapi.public.yaml) | Public API contract của upstream target application. Có thể import vào Postman/Swagger/Insomnia để hiểu endpoint, method, auth, parameters và response schema. |
 
 Các đội không cần biết source code upstream. Upstream được xem như một black-box service có domain và OpenAPI public.
 

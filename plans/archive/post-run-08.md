@@ -3,7 +3,7 @@
 > **Status:** Closed — AF-T1, HP-T1, TLS-T1 all shipped before
 > the dashboard redesign track. Reference only.
 >
-> See [`README.md`](./README.md) for the track status board.
+> See [`README.md`](../README.md) for the track status board.
 
 After run-08 closed the Round-2 self-gate, three small items
 remained before pivoting to the dashboard redesign track. None

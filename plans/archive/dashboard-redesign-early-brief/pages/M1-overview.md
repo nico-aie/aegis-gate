@@ -2,7 +2,7 @@
 
 > **Status:** Queued — M1 — Overview page redesign brief.
 >
-> See [`README.md`](../../README.md) for the track status board.
+> See [`README.md`](../../../README.md) for the track status board.
 
 > **Status.** seed
 >

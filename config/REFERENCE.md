@@ -8,9 +8,10 @@ authoritative per-field doc-comments live on the Rust structs in
 
 > **Picking which file to start from:** see
 > [`README.md`](./README.md) for the profile decision tree.
-> **Hot-reloadable vs restart-only:** most fields hot-reload via
-> the config-watcher; restart-only knobs are flagged in each
-> section.
+> **Hot-reloadable vs restart-only:** see the
+> [Hot-reload vs restart](#hot-reload-vs-restart) matrix below for
+> which fields apply on file-save, which need the UI/API, and which
+> need a restart.
 
 ---
 
@@ -41,6 +42,36 @@ interop:     { … }   # control-plane contract
 logging:     { … }   # verbosity
 proxy:       { … }   # global body cap
 ```
+
+---
+
+## Hot-reload vs restart
+
+A config-watcher (`notify`, ~100 ms debounce) watches the running
+`waf.yaml` and applies a change in well under the **≤ 10 s** Round-1
+target — **no restart**, audit-logged as `config_reload` plus a
+per-subsystem event. But not every field is re-derived live. There
+are three tiers:
+
+| Tier | Fields | How |
+|------|--------|-----|
+| **Live on file-save** (watcher re-derives + atomic-swaps) | `detectors` (class enables), `routes`, `risk.thresholds` (incl. `enabled`), `rate_limit.buckets`, `tls.certificates`, `tls.client_auth` | edit `waf.yaml` → save → effect. Per-IP risk/rate state is preserved across the swap. Bad routes/certs keep the live value + emit `*_reload_failed`. |
+| **Live via UI / API only** (runtime atomic; file-save updates the snapshot but **not** live behaviour) | `bots.enabled`, `ddos.*` (gate toggles) | flip via Traffic Gates → `PUT /api/gates/bots` \| `/api/gates/ddos`. Editing the file changes what `/api/config` reports but does **not** re-arm the gate until restart. |
+| **Restart-only** (bound / initialised at boot) | `listeners.*` binds, `admin.bind`, `node`, `runtime` (workers / CPU pin), `state.backend` + Redis URLs, `interop.*` | stop + re-run the binary. |
+
+`upstreams` is special: file edits are **not** auto-applied (you get
+an `upstreams_reload_skipped` warning); change pools live via the
+audit-mutated `PUT /api/upstreams`, or restart.
+
+**Two operator gotchas:**
+
+1. **Dashboard toggles are not written back to `waf.yaml`.** They are
+   audit-mutated in memory only, so a restart reverts them to the file
+   value. To persist a UI change, also edit the file.
+2. **Rule/policy hot-reload (the Round-1 requirement) runs through the
+   UI Save path**, which applies in-process immediately with a visible
+   confirmation — independent of the file-watcher. The file-watcher is
+   an additional convenience, not the scored path.
 
 ---
 

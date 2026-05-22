@@ -1,9 +1,9 @@
 # l-tester cross-check + DDoS audit — unified fix plan (2026-05-09)
 
 > **Sources:**
-> - [`tests/l-tester/reports/2026-05-09-run1/LT-RUN-1-CONTRACT-COMPLIANCE.md`](../../../tests/l-tester/reports/2026-05-09-run1/LT-RUN-1-CONTRACT-COMPLIANCE.md) — 108/108 PASS
-> - [`tests/l-tester/reports/2026-05-09-run2/LT-RUN-2-BUG-HUNTER.md`](../../../tests/l-tester/reports/2026-05-09-run2/LT-RUN-2-BUG-HUNTER.md) — 149/149 PASS (against mock v2)
-> - [`tests/l-tester/reports/2026-05-09-run3/LT-RUN-3-HACKER-BYPASS.md`](../../../tests/l-tester/reports/2026-05-09-run3/LT-RUN-3-HACKER-BYPASS.md) — 17 confirmed bypasses (against unpatched mock v2)
+> - [`tests/l-tester/reports/2026-05-09-run1/LT-RUN-1-CONTRACT-COMPLIANCE.md`](../../../../tests/l-tester/reports/2026-05-09-run1/LT-RUN-1-CONTRACT-COMPLIANCE.md) — 108/108 PASS
+> - [`tests/l-tester/reports/2026-05-09-run2/LT-RUN-2-BUG-HUNTER.md`](../../../../tests/l-tester/reports/2026-05-09-run2/LT-RUN-2-BUG-HUNTER.md) — 149/149 PASS (against mock v2)
+> - [`tests/l-tester/reports/2026-05-09-run3/LT-RUN-3-HACKER-BYPASS.md`](../../../../tests/l-tester/reports/2026-05-09-run3/LT-RUN-3-HACKER-BYPASS.md) — 17 confirmed bypasses (against unpatched mock v2)
 > - [`reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md`](../../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md) — DDoS module is dead code
 >
 > **Branch:** all changes target `develop`.
@@ -185,16 +185,16 @@ Two phases (Phase 1 observe-only telemetry; Phase 2 enforce + 503). Phase 1 shou
 - **Run-1 contract pass — no work.** All 108 contract assertions green against the Rust WAF.
 - **Run-2 mock-vs-Rust bugs (BUG-01 through BUG-09).** Reading those root-cause sections confirms the Rust WAF was already correct; the mock was the regression. No Rust fix needed.
 - **Run-3 BYPASS-01, -02, -03a–e, -03g, -05, -06, -07.** Cross-check shows Rust catches them. Phase 2 pins this with regression tests but no detector code change.
-- **The bare `/metrics` recon trade-off.** Documented in [`recon.md`](../../../docs/security/detectors/recon.md) since Run-6 — operator-hosted Prometheus endpoint, not a missed gap.
+- **The bare `/metrics` recon trade-off.** Documented in [`recon.md`](../../../../docs/security/detectors/recon.md) since Run-6 — operator-hosted Prometheus endpoint, not a missed gap.
 - **Loopback alias source-IP test (Run-1 §10 SKIP).** Infrastructure-bound test; out of scope for the Rust binary.
 
 ---
 
 ## Cross-refs
 
-- [`tests/l-tester/`](../../../tests/l-tester/) — l-tester source (the mock + test scripts)
-- [`crates/aegis-security/src/detectors/ssrf.rs`](../../../crates/aegis-security/src/detectors/ssrf.rs) — SSRF patterns to extend in Phase 1
-- [`crates/aegis-security/src/detectors/template_injection.rs`](../../../crates/aegis-security/src/detectors/template_injection.rs) — SSTI patterns (regression-pin only)
-- [`crates/aegis-proxy/src/data_plane.rs`](../../../crates/aegis-proxy/src/data_plane.rs) — body inspection wiring (BYPASS-02 evidence)
+- [`tests/l-tester/`](../../../../tests/l-tester) — l-tester source (the mock + test scripts)
+- [`crates/aegis-security/src/detectors/ssrf.rs`](../../../../crates/aegis-security/src/detectors/ssrf.rs) — SSRF patterns to extend in Phase 1
+- [`crates/aegis-security/src/detectors/template_injection.rs`](../../../../crates/aegis-security/src/detectors/template_injection.rs) — SSTI patterns (regression-pin only)
+- [`crates/aegis-proxy/src/data_plane.rs`](../../../../crates/aegis-proxy/src/data_plane.rs) — body inspection wiring (BYPASS-02 evidence)
 - [DDoS wire-up plan](../internal-audit-2026-05-09-ddos/README.md) — separate but parallel track
-- [Operator risk-tuning guide](../../../docs/operator/risk-tuning.md) — for the "I want bare `/metrics` flagged" trade-off
+- [Operator risk-tuning guide](../../../../docs/operator/risk-tuning.md) — for the "I want bare `/metrics` flagged" trade-off

@@ -34,14 +34,14 @@ for TLS-client fingerprinting) is precise about two things:
 Shipped `fingerprint/ja4.rs`:
 
 - Sorts ciphers + extensions unconditionally
-  ([ja4.rs:57-60](aegis-gate/crates/aegis-security/src/fingerprint/ja4.rs#L57-L60)).
+  ([ja4.rs:57-60](../../../../crates/aegis-security/src/fingerprint/ja4.rs#L57-L60)).
 - Has ZERO mention of GREASE / `0x?A?A` / `0x_A_A` anywhere in the
   file. **Spot-verified** with `grep -n 'grease\|GREASE\|0x[0-9a-f]*[Aa]'`.
 - Uses BLAKE3 instead of SHA-256 (the JA4 spec uses SHA-256
   truncated to 12 chars) — see F-HIGH-bots-fingerprint for that
   separate IoC-compatibility issue.
 
-Spot-verified at [ja4.rs:10-11](aegis-gate/crates/aegis-security/src/fingerprint/ja4.rs#L10-L11)
+Spot-verified at [ja4.rs:10-11](../../../../crates/aegis-security/src/fingerprint/ja4.rs#L10-L11)
 (docstring): *"cipher_hash: truncated blake3 of sorted cipher list /
 ext_hash: truncated blake3 of sorted extension list"*. The author
 KNEW they were sorting; the comment is honest about deviating from
@@ -49,7 +49,7 @@ spec.
 
 ## Observed code path
 
-[ja4.rs:55-71](aegis-gate/crates/aegis-security/src/fingerprint/ja4.rs#L55-L71):
+[ja4.rs:55-71](../../../../crates/aegis-security/src/fingerprint/ja4.rs#L55-L71):
 
 ```rust
 let mut sorted_ciphers: Vec<u16> = cipher_suites.to_vec();

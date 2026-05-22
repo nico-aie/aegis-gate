@@ -2,7 +2,7 @@
 
 Everything in the request path: listening, routing, upstream
 selection, TLS, traffic management. Owner: **M1** —
-[`../../plans/member-1-proxy-core.md`](../../plans/member-1-proxy-core.md).
+[`plans/archive/proxy.md`](../../plans/archive/proxy.md).
 
 ## Request flow (suggested reading order)
 

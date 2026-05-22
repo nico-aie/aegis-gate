@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## DT-01 · `secrets.rs::Secret` exposes raw bytes; no constant-time compare API
 
-**Component:** [secrets.rs:11-14](aegis-gate/crates/aegis-core/src/secrets.rs#L11-L14)
+**Component:** [secrets.rs:11-14](../../../../crates/aegis-core/src/secrets.rs#L11-L14)
 
 `Secret::as_bytes` exposes raw bytes; callers must use raw `==` for
 token/HMAC compare → timing-side-channel exploitable for admin
@@ -40,7 +40,7 @@ serde derive from leaking.
 
 ## DT-02 · `cache.rs::CacheKey` derives NOTHING
 
-**Component:** [cache.rs:1-12](aegis-gate/crates/aegis-core/src/cache.rs#L1-L12)
+**Component:** [cache.rs:1-12](../../../../crates/aegis-core/src/cache.rs#L1-L12)
 
 `CacheKey` derives no `Hash`, `Eq`, `PartialEq`, `Clone`, `Debug` —
 the type **literally cannot be used as a HashMap key**, despite the
@@ -69,7 +69,7 @@ pub enum CacheDecision {
 
 ## DT-03 · `cache.rs::CacheKey.vary_headers: Vec<(String, String)>` is case-sensitive
 
-**Component:** [cache.rs:5](aegis-gate/crates/aegis-core/src/cache.rs#L5)
+**Component:** [cache.rs:5](../../../../crates/aegis-core/src/cache.rs#L5)
 
 HTTP header names are case-insensitive (RFC 9110 §5.1). A request
 with `Accept` vs `accept` hashes to different cache slots →
@@ -92,7 +92,7 @@ pub fn new(method: ..., vary_headers: Vec<(String, String)>) -> Self {
 
 ## DT-04 · `verbosity.rs::Trace` level has no body-redaction contract
 
-**Component:** [verbosity.rs:31-39](aegis-gate/crates/aegis-core/src/verbosity.rs#L31-L39)
+**Component:** [verbosity.rs:31-39](../../../../crates/aegis-core/src/verbosity.rs#L31-L39)
 
 Doc says Trace is "noisiest, short-lived debugging only" but no
 type-level guarantee that an emitter at Trace won't include request
@@ -135,7 +135,7 @@ Remove the unaudited `set()` method (or make it pub(crate)).
 
 ## DT-05 · `cluster.rs::ClusterMembership`, `NodeInfo`, `Lease` are dead code
 
-**Component:** [cluster.rs:25-48](aegis-gate/crates/aegis-core/src/cluster.rs#L25-L48)
+**Component:** [cluster.rs:25-48](../../../../crates/aegis-core/src/cluster.rs#L25-L48)
 
 Zero `impl` and zero `dyn` consumers in the entire workspace.
 `NodeInfo` is only constructed in `cluster.rs`'s own tests. The active
@@ -156,7 +156,7 @@ force construction through `new()` with validation.
 
 ## DT-06 · `error.rs::WafError` is too coarse — ~50% of error sites use `Other`/`Config`
 
-**Component:** [error.rs:1-13](aegis-gate/crates/aegis-core/src/error.rs#L1-L13)
+**Component:** [error.rs:1-13](../../../../crates/aegis-core/src/error.rs#L1-L13)
 
 110 `WafError::Other` / `WafError::Config` call sites in the
 workspace vs ~230 total `.map_err` sites — half the error wrapping
@@ -216,7 +216,7 @@ Apply at every `format!` site that interpolates request-derived data.
 
 ## DT-07 · `tcp_destination.rs` env-var read on hot path + missing IPv4-mapped IPv6 + CGNAT rejection
 
-**Component:** [tcp_destination.rs:110-116, 199-204](aegis-gate/crates/aegis-core/src/tcp_destination.rs#L110-L116) + [tcp_destination.rs:167-186](aegis-gate/crates/aegis-core/src/tcp_destination.rs#L167-L186)
+**Component:** [tcp_destination.rs:110-116, 199-204](../../../../crates/aegis-core/src/tcp_destination.rs#L110-L116) + [tcp_destination.rs:167-186](../../../../crates/aegis-core/src/tcp_destination.rs#L167-L186)
 
 Two issues:
 

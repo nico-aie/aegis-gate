@@ -24,7 +24,7 @@ After the initial `burst` tokens are consumed, every subsequent
 request is denied — forever, for that key, until the WAF restarts or
 state is reset.
 
-**Spot-verified** at [state/in_memory.rs:286-292](aegis-gate/crates/aegis-proxy/src/state/in_memory.rs#L286-L292):
+**Spot-verified** at [state/in_memory.rs:286-292](../../../../crates/aegis-proxy/src/state/in_memory.rs#L286-L292):
 
 ```rust
 fn decode_bucket(data: &[u8]) -> (f64, Instant) {

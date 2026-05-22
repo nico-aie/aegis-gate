@@ -68,7 +68,7 @@ TCP destination from the request's authority. Reuses the same
 `hyper::upgrade::on` + `tokio::io::copy_bidirectional` primitive
 the WebSocket adapter uses; no parallel listener path.
 
-See [`plans/tcp-forwarder-phase-4.md`](../../plans/tcp-forwarder-phase-4.md)
+See [`plans/tcp-forwarder-phase-4.md`](../../plans/archive/tcp-forwarder-phase-4.md)
 for the full design — lifecycle, security gates, audit shape,
 test matrix.
 

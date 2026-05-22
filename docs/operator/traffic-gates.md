@@ -35,7 +35,7 @@ The four request-flow gates are different:
   flooding source can't burn CPU on regex matchers.
 
 Conflating the two has bitten operators before — see the
-[BUG-DDOS-STUB internal audit](../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md)
+[BUG-DDOS-STUB internal audit](../../plans/archive/issue-fix/internal-audit-2026-05-09-ddos/)
 for the docs-vs-code drift caused by treating DDoS as a detector.
 
 ## The four gates (firing order)

@@ -16,7 +16,7 @@ test_mode: source-review (spot-verified)
 §6 specifies `risk_score` as "integer 0–100" — implied always present
 (no "optional" qualifier).
 
-**Spot-verified** at [audit.rs:16](aegis-gate/crates/aegis-core/src/audit.rs#L16):
+**Spot-verified** at [audit.rs:16](../../../../crates/aegis-core/src/audit.rs#L16):
 
 ```rust
 pub risk_score: Option<u32>,

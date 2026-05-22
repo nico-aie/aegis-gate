@@ -17,7 +17,7 @@ Three compound bugs in the audit-on-disk path:
 
 ### Bug 1 — No fsync
 
-[jsonl.rs:193-265](aegis-gate/crates/aegis-control/src/audit/sinks/jsonl.rs#L193-L265) calls `BufWriter::flush()` only. That drains the user-space
+[jsonl.rs:193-265](../../../../crates/aegis-control/src/audit/sinks/jsonl.rs#L193-L265) calls `BufWriter::flush()` only. That drains the user-space
 buffer into the kernel, NOT to disk. Power loss / OOM-kill loses up
 to `max_batch = 100` events. README claims "tamper-evident audit log"
 — operators reasonably assume durability that isn't there.
@@ -27,7 +27,7 @@ to `max_batch = 100` events. README claims "tamper-evident audit log"
 The in-process `ChainWriter` at `audit/chain.rs:39` stores `ChainEntry`
 (with `prev_hash` field linking to previous entry). But the jsonl
 sink serializes plain `AuditEvent`s with NO `prev_hash` field
-([jsonl.rs:262-264](aegis-gate/crates/aegis-control/src/audit/sinks/jsonl.rs#L262-L264)).
+([jsonl.rs:262-264](../../../../crates/aegis-control/src/audit/sinks/jsonl.rs#L262-L264)).
 
 The verifier (`verify.rs:34`) deserializes each line as `ChainEntry`
 and links via `prev_hash`. So:
@@ -39,7 +39,7 @@ The hash-chain integrity story breaks at the persistence layer.
 
 ### Bug 3 — Cross-day chain linkage broken
 
-[verify.rs:25](aegis-gate/crates/aegis-control/src/audit/verify.rs#L25) starts every file at `genesis_hash()`. Daily rotation
+[verify.rs:25](../../../../crates/aegis-control/src/audit/verify.rs#L25) starts every file at `genesis_hash()`. Daily rotation
 creates a fresh file at midnight; the new file's first entry's
 `prev_hash` should link to the LAST entry of the previous file —
 but doesn't.
@@ -50,7 +50,7 @@ individually verify clean (each restarts at genesis) → no detection.
 
 ## Observed code path
 
-[jsonl.rs:262-264](aegis-gate/crates/aegis-control/src/audit/sinks/jsonl.rs#L262-L264):
+[jsonl.rs:262-264](../../../../crates/aegis-control/src/audit/sinks/jsonl.rs#L262-L264):
 
 ```rust
 writer.write_all(line.as_bytes())?;
@@ -59,7 +59,7 @@ writer.write_all(b"\n")?;
 // `line` is plain AuditEvent JSON, no prev_hash field.
 ```
 
-[verify.rs:25,34](aegis-gate/crates/aegis-control/src/audit/verify.rs#L25):
+[verify.rs:25,34](../../../../crates/aegis-control/src/audit/verify.rs#L25):
 
 ```rust
 let mut prev_hash = genesis_hash();   // always starts at genesis
@@ -132,7 +132,7 @@ across file boundaries.
 
 ### Combine writes
 
-[jsonl.rs:262-264](aegis-gate/crates/aegis-control/src/audit/sinks/jsonl.rs#L262-L264) does two `write_all` calls (line + `\n`). Not atomic — a torn write leaves a half-line. Combine:
+[jsonl.rs:262-264](../../../../crates/aegis-control/src/audit/sinks/jsonl.rs#L262-L264) does two `write_all` calls (line + `\n`). Not atomic — a torn write leaves a half-line. Combine:
 
 ```rust
 let mut buf = line.into_bytes();

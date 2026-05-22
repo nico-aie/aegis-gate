@@ -1,12 +1,12 @@
 # External Interop Contract — Implementation Status
 
 > **Status:** Closed — IT-T1..T6 shipped (run-08 self-gate green).
-> Reference only. See [`README.md`](./README.md) for the track
+> Reference only. See [`README.md`](../README.md) for the track
 > status board.
 
 This plan tracks Aegis-Gate's compliance with the WAF Interop
 Contract v2.3
-([`Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](../Hackathon_Doc/EN_waf_interop_contract_v2.3.md)).
+([`Hackathon_Doc/EN_waf_interop_contract_v2.3.md`](../../Hackathon_Doc/EN_waf_interop_contract_v2.3.md)).
 The contract is a generic external-tooling protocol — benchmark
 harnesses, SIEMs, and operations dashboards all benefit from it,
 not just the OC's automated benchmarker. We treat the surface as

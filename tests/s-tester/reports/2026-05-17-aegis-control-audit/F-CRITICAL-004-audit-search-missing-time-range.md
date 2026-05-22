@@ -21,7 +21,7 @@ Round-1 official rules:
 Four dimensions specified. `AuditFilter` in `api/audit.rs` only
 carries three:
 
-[api/audit.rs:96-104](aegis-gate/crates/aegis-control/src/api/audit.rs#L96-L104):
+[api/audit.rs:96-104](../../../../crates/aegis-control/src/api/audit.rs#L96-L104):
 
 ```rust
 pub struct AuditFilter {
@@ -32,7 +32,7 @@ pub struct AuditFilter {
 }
 ```
 
-And the matcher [api/audit.rs:109-146](aegis-gate/crates/aegis-control/src/api/audit.rs#L109-L146):
+And the matcher [api/audit.rs:109-146](../../../../crates/aegis-control/src/api/audit.rs#L109-L146):
 
 ```rust
 pub fn matches(&self, ev: &AuditEvent) -> bool {

@@ -19,7 +19,7 @@ called from `aegis-proxy/src/admin_dispatch.rs:1086` inside
 `stamp_interop_response` — which itself runs on the tokio async path
 for EVERY data-plane request.
 
-Per [interop/audit.rs:86-95](aegis-gate/crates/aegis-control/src/interop/audit.rs#L86-L95):
+Per [interop/audit.rs:86-95](../../../../crates/aegis-control/src/interop/audit.rs#L86-L95):
 
 ```rust
 pub fn append(&self, entry: &MinimalAuditEntry) -> io::Result<()> {

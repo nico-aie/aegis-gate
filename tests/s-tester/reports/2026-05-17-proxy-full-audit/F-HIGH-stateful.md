@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## S-01 · Upstream HTTPS client uses webpki roots only — private/internal CAs unsupported despite README claim
 
-**Component:** [upstream/forward.rs:273-285](aegis-gate/crates/aegis-proxy/src/upstream/forward.rs#L273-L285)
+**Component:** [upstream/forward.rs:273-285](../../../../crates/aegis-proxy/src/upstream/forward.rs#L273-L285)
 
 The pooled `Client` cache builds rustls `ClientConfig` with
 `with_webpki_roots()` only. The dedicated
@@ -35,7 +35,7 @@ identity, ALPN, SNI override) actually take effect.
 
 ## S-02 · Service-discovery watchers (k8s / etcd / consul) exit permanently on 401/403
 
-**Component:** [sd/k8s.rs:169-170](aegis-gate/crates/aegis-proxy/src/sd/k8s.rs#L169-L170) · [sd/etcd.rs:175-176](aegis-gate/crates/aegis-proxy/src/sd/etcd.rs#L175-L176) · [sd/consul.rs:140-143](aegis-gate/crates/aegis-proxy/src/sd/consul.rs#L140-L143) · [config_source/etcd_source.rs:506-508](aegis-gate/crates/aegis-proxy/src/config_source/etcd_source.rs#L506-L508)
+**Component:** [sd/k8s.rs:169-170](../../../../crates/aegis-proxy/src/sd/k8s.rs#L169-L170) · [sd/etcd.rs:175-176](../../../../crates/aegis-proxy/src/sd/etcd.rs#L175-L176) · [sd/consul.rs:140-143](../../../../crates/aegis-proxy/src/sd/consul.rs#L140-L143) · [config_source/etcd_source.rs:506-508](../../../../crates/aegis-proxy/src/config_source/etcd_source.rs#L506-L508)
 
 On any 401 / 403 response from the discovery backend, the watcher
 task returns `Err(...)` and the spawned task exits permanently.
@@ -61,7 +61,7 @@ projected token is picked up.
 
 ## S-03 · ACME renewal has no rate-limit backoff — Let's Encrypt 429 → tight retry storm
 
-**Component:** [acme.rs:347-370](aegis-gate/crates/aegis-proxy/src/acme.rs#L347-L370) + [acme_instant.rs](aegis-gate/crates/aegis-proxy/src/acme_instant.rs)
+**Component:** [acme.rs:347-370](../../../../crates/aegis-proxy/src/acme.rs#L347-L370) + [acme_instant.rs](../../../../crates/aegis-proxy/src/acme_instant.rs)
 
 The renewal scheduler calls `manager.issue()` and logs failures with
 "will retry next cycle". Cycle minimum is 60 s. Let's Encrypt has
@@ -78,7 +78,7 @@ exponential backoff starting at `Retry-After` (if present) or
 ~30 min. Persist the backoff state to disk so a restart doesn't
 reset it.
 
-Also: [acme.rs:317-326](aegis-gate/crates/aegis-proxy/src/acme.rs#L317-L326) `needs_renewal` returns `true` on parse
+Also: [acme.rs:317-326](../../../../crates/aegis-proxy/src/acme.rs#L317-L326) `needs_renewal` returns `true` on parse
 failure (fail-open over-renew). Combined with the rate-limit issue,
 a corrupted cert at `cert_dir` triggers continuous re-issuance.
 
@@ -86,7 +86,7 @@ a corrupted cert at `cert_dir` triggers continuous re-issuance.
 
 ## S-04 · OCSP stapling module is a shell — no fetcher, no background task
 
-**Component:** [ocsp.rs](aegis-gate/crates/aegis-proxy/src/ocsp.rs)
+**Component:** [ocsp.rs](../../../../crates/aegis-proxy/src/ocsp.rs)
 
 The module declares `OcspResponse`, `OcspCache`, `needs_refresh()`
 predicate — but ships NO fetcher and NO background task. Nothing
@@ -103,7 +103,7 @@ delete the module and update README.
 
 ## S-05 · `forward.rs` body collection has no timeout — slow-drip upstream body hangs forever
 
-**Component:** [upstream/forward.rs:490-516](aegis-gate/crates/aegis-proxy/src/upstream/forward.rs#L490-L516)
+**Component:** [upstream/forward.rs:490-516](../../../../crates/aegis-proxy/src/upstream/forward.rs#L490-L516)
 
 `tokio::time::timeout(30s, client.request(fwd_req))` only wraps
 the request future, which resolves once response HEADERS are
@@ -131,7 +131,7 @@ Map the timeout to `X-WAF-Action: timeout` per §3.
 
 ## S-06 · In-memory state has no max-entries cap; risk scores never expire
 
-**Component:** [state/in_memory.rs:26-47, 195-212](aegis-gate/crates/aegis-proxy/src/state/in_memory.rs#L26-L47)
+**Component:** [state/in_memory.rs:26-47, 195-212](../../../../crates/aegis-proxy/src/state/in_memory.rs#L26-L47)
 
 The in-memory backend stores risk scores with `expires_at: None`,
 so the reaper at line 44 never evicts them. There's also no
@@ -156,7 +156,7 @@ criterion if the benchmark runs that long.
 
 ## S-07 · Vault re-authenticates on every secret resolve — no token renewal loop
 
-**Component:** [secrets/vault.rs:38-41, 128-138](aegis-gate/crates/aegis-proxy/src/secrets/vault.rs#L38-L41)
+**Component:** [secrets/vault.rs:38-41, 128-138](../../../../crates/aegis-proxy/src/secrets/vault.rs#L38-L41)
 
 `resolve_secret_async` does a full Vault login (AppRole / token /
 whatever) per call. A hot-reload pass through `expand_secrets_async`

@@ -4,7 +4,7 @@
 >
 > **Landed:** 2026-05-08 (QA Run-5 GAP-007 follow-up).
 >
-> See [`../../../plans/issue-fix/tester-n-2026-05-08-run5/PHASE-01-high.md`](../../../plans/issue-fix/tester-n-2026-05-08-run5/PHASE-01-high.md) for the design.
+> See [`../../../plans/issue-fix/tester-n-2026-05-08-run5/PHASE-01-high.md`](../../../plans/archive/issue-fix/tester-n-2026-05-08-run5/PHASE-01-high.md) for the design.
 
 ## Purpose
 

@@ -1,7 +1,7 @@
 # Run 05 — 2026-04-30 — HA implementation (HA-T1..HA-T5)
 
 Live perf re-run captured **after** the full
-[`plans/cluster-ingress-lb.md`](../../../plans/cluster-ingress-lb.md)
+[`plans/cluster-ingress-lb.md`](../../../../plans/archive/cluster-ingress-lb.md)
 HA track landed. Closes carry-over 6 (HA test methodology gap)
 and proves the new LB-fronted topology works end-to-end with
 graceful drain.
@@ -37,7 +37,7 @@ above:
 | Date (UTC)         | 2026-04-30T05:47Z |
 | Host               | Darwin 23.1.0 arm64 (Apple Silicon laptop) |
 | Gateway binary     | `target/release/waf` built with `--features redis` |
-| Cluster configs    | [`config/waf.cluster-{a,b}.yaml`](../../../config/) (Redis-backed, `node.id: waf-a`/`waf-b`) |
+| Cluster configs    | [`config/waf.cluster-{a,b}.yaml`](../../../../config) (Redis-backed, `node.id: waf-a`/`waf-b`) |
 | HTTPS config       | [`config/waf.tls.yaml`](../../../config/waf.tls.yaml) (data plane :8443, ALPN `http/1.1`) |
 | Real upstream      | `aegis-httpbin` container on `127.0.0.1:8081` |
 | Redis              | `aegis-redis` container on `127.0.0.1:6379` |

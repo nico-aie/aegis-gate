@@ -15,7 +15,7 @@ test_mode: source-review
 
 ## R-01 · Regex recompiled on every request
 
-**Component:** [rules/eval.rs:354-356](aegis-gate/crates/aegis-security/src/rules/eval.rs#L354-L356)
+**Component:** [rules/eval.rs:354-356](../../../../crates/aegis-security/src/rules/eval.rs#L354-L356)
 
 `matches_op` calls `regex::Regex::new(pattern)` per match per
 request. For a 1000-rule policy with N regex match-ops, that's
@@ -38,7 +38,7 @@ Lazy-init on first eval; cache for subsequent calls.
 
 ## R-02 · Rule list re-sorted by priority on every request
 
-**Component:** [rules/eval.rs:130-131](aegis-gate/crates/aegis-security/src/rules/eval.rs#L130-L131)
+**Component:** [rules/eval.rs:130-131](../../../../crates/aegis-security/src/rules/eval.rs#L130-L131)
 
 ```rust
 let mut sorted = self.rules.clone();
@@ -55,7 +55,7 @@ Eval iterates the pre-sorted vec.
 
 ## R-03 · Linter HARD-REJECTS rules using `RuleAction::RateLimit` despite it being wired
 
-**Component:** [rules/linter.rs:85-95](aegis-gate/crates/aegis-security/src/rules/linter.rs#L85-L95)
+**Component:** [rules/linter.rs:85-95](../../../../crates/aegis-security/src/rules/linter.rs#L85-L95)
 
 The linter contains:
 
@@ -66,7 +66,7 @@ if let RuleAction::RateLimit { .. } = &rule.action {
 ```
 
 The comment claims rate-limit "is not wired" — but
-[eval.rs:181-228](aegis-gate/crates/aegis-security/src/rules/eval.rs#L181-L228) clearly
+[eval.rs:181-228](../../../../crates/aegis-security/src/rules/eval.rs#L181-L228) clearly
 wires it via `EvalContext::rate_limit`, with tests passing. Stale
 lint rejects every rule file that uses the spec-required
 `rate-limit` action. Operators who write a policy per §5.4 can't
@@ -79,7 +79,7 @@ action IS wired.
 
 ## R-04 · Cookie value truncated at `=` (use `splitn(2, '=')`)
 
-**Component:** [rules/eval.rs:298-302](aegis-gate/crates/aegis-security/src/rules/eval.rs#L298-L302)
+**Component:** [rules/eval.rs:298-302](../../../../crates/aegis-security/src/rules/eval.rs#L298-L302)
 
 ```rust
 let (name, value) = pair.split_once('=').unwrap_or(("", ""));
@@ -102,7 +102,7 @@ let (name, value) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
 
 ## R-05 · `BodyMatches` runs on a `peek(8192)` window
 
-**Component:** [rules/eval.rs:294-296](aegis-gate/crates/aegis-security/src/rules/eval.rs#L294-L296)
+**Component:** [rules/eval.rs:294-296](../../../../crates/aegis-security/src/rules/eval.rs#L294-L296)
 
 Rule body match peeks first 8 KiB. Attacker can hide payload bytes
 after the 8 KiB cutoff. Acceptable for performance, but combined
@@ -117,7 +117,7 @@ Document the trade-off.
 
 ## R-06 · YAML parser has no document-size bound
 
-**Component:** [rules/parser.rs:7](aegis-gate/crates/aegis-security/src/rules/parser.rs#L7)
+**Component:** [rules/parser.rs:7](../../../../crates/aegis-security/src/rules/parser.rs#L7)
 
 `serde_yaml::from_str(yaml)` is called with no size or depth bound.
 A malicious uploaded YAML file (e.g. via the hot-reload endpoint —

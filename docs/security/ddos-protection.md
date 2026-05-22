@@ -12,8 +12,8 @@
 > ha-clustering work — single-node nodes coordinate via the shared
 > `StateBackend::auto_block` keyspace.
 >
-> Audit trail: original stub-finding [`BUG-DDOS-STUB`](../../reports/findings/2026-05-09-internal-audit-ddos/BUG-DDOS-STUB.md);
-> wire-up plan [`internal-audit-2026-05-09-ddos/`](../../plans/issue-fix/internal-audit-2026-05-09-ddos/).
+> Audit trail: original stub-finding [`BUG-DDOS-STUB`](../../plans/archive/issue-fix/internal-audit-2026-05-09-ddos/);
+> wire-up plan [`internal-audit-2026-05-09-ddos/`](../../plans/archive/issue-fix/internal-audit-2026-05-09-ddos).
 
 > **Operator surface:** the dashboard's **Traffic Gates** page
 > (Policy menu) shows the live DDoS telemetry — `current_rps`,
@@ -108,8 +108,20 @@ DDoS sweeper needed).
 |---|---|---|---|---|
 | Per-IP burst auto-block (`enforce`) | **403** | `block` | `enforce` | `ddos_blocked` |
 | Already in cluster auto-block list (`enforce`) | **403** | `block` | `enforce` | `ddos_blocked` |
-| Burst-exceed in observe-only mode | upstream HTTP status (typically 200) | upstream-derived | `enforce` | `ddos_observed` |
+| Per-IP burst in **`log_only`** mode (set_profile) | upstream HTTP status (typically 200) | `block` (intended) | `log_only` | `ddos_blocked` |
+| Burst-exceed in **`observe_only`** mode (config flag) | upstream HTTP status (typically 200) | upstream-derived | `enforce` | `ddos_observed` |
 | Backend error during check | upstream HTTP status (fail-open) | upstream-derived | `enforce` | (none — debug log only) |
+
+> **Two ways to run DDoS without blocking** (2026-05-22): the config
+> flag `observe_only: true` (DDoS-specific shadow), and the interop
+> `set_profile` mode `log_only` on the `ddos` feature (covers DDoS the
+> same way it covers the other gates). The difference: `log_only` reports
+> the **intended** `block` action + `X-WAF-Mode: log_only` (so the
+> committee sees a faithful "would have blocked" signal), while
+> `observe_only` reports the upstream-derived action. Either one forwards
+> the request upstream. `enforce` requires BOTH (mode `enforce` AND
+> `observe_only: false`) — if either says don't-enforce, the request is
+> forwarded.
 
 Per-contract mapping ([§3.1](../../Hackathon_Doc/EN_waf_interop_contract_v2.3.md#31-threat-category-to-action-semantics)
 "Volumetric abuse from single source"):
@@ -149,7 +161,7 @@ ddos:
 | Knob | Default | When to tune |
 |---|---:|---|
 | `enabled` | `true` | Set `false` for benchmark / synthetic-load runs that need raw throughput without the gate. |
-| `observe_only` | `false` (enforce) | Set `true` for shadow-mode validation (CDN-fronted traffic where high RPS-per-IP is normal; you want to see the audit signal before flipping enforce on). |
+| `observe_only` | `false` (enforce) | Set `true` for config-level shadow mode (CDN-fronted traffic where high RPS-per-IP is normal; you want to see the audit signal before flipping enforce on). Distinct from the interop `set_profile log_only` mode, which can also shadow the `ddos` feature at runtime without a config edit — see "Response behaviour" above and [enforcement-modes.md](../operator/enforcement-modes.md). |
 | `per_ip_limit` / `per_ip_window_s` | 1000 / 10 s | Defaults are deliberately generous (≈100 req/s sustained). Drop to 100 / 60 s for stricter posture; raise for high-volume internal APIs. |
 | `block_ttl_s` | 300 (5 min) | Lower for a more forgiving block; raise for stricter quarantine. |
 | `spike_multiplier` | 3.0 | Lower (2.0) for earlier spike trigger; raise (5.0) for noisier baselines. |

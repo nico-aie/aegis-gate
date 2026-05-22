@@ -13,14 +13,14 @@ test_mode: source-review (spot-verified)
 
 ## Summary
 
-**Spot-verified** at [slo.rs:164-167](aegis-gate/crates/aegis-control/src/slo.rs#L164-L167):
+**Spot-verified** at [slo.rs:164-167](../../../../crates/aegis-control/src/slo.rs#L164-L167):
 
 ```rust
 pub const DEFAULT_VIPTALK_BOT_TOKEN: &str =
     "xxx-dev-uat-bot-team-bot-token-xxx";
 ```
 
-[slo.rs:182-197](aegis-gate/crates/aegis-control/src/slo.rs#L182-L197) uses it as a fallback for `default_receivers()`:
+[slo.rs:182-197](../../../../crates/aegis-control/src/slo.rs#L182-L197) uses it as a fallback for `default_receivers()`:
 
 ```rust
 let bot_token = std::env::var("AEGIS_VIPTALK_BOT_TOKEN")

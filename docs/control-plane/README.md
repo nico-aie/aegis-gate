@@ -3,7 +3,7 @@
 The admin surface: dashboard, admin API, hot-reload, secrets, and the
 audit/observability machinery that makes operator actions traceable.
 Owner: **M3** —
-[`../../plans/member-3-control-plane.md`](../../plans/member-3-control-plane.md).
+[`plans/archive/control.md`](../../plans/archive/control.md).
 
 ## Core docs
 
@@ -24,6 +24,6 @@ layouts, accessibility, security, and the REST/SSE contract the SPA
 consumes from the admin listener.
 
 The dashboard redesign closed in run-10 — see
-[`../../plans/dashboard-redesign.md`](../../plans/dashboard-redesign.md)
+[`../../plans/dashboard-redesign.md`](../../plans/archive/dashboard-redesign.md)
 for the DD-T0..T8 plan and [`enterprise/`](./enterprise/) for the
 implemented design spec.

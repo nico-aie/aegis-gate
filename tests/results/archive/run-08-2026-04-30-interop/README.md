@@ -2,7 +2,7 @@
 
 Self-driven Round-2 gate verification before the OC's automated
 benchmarker sees us. Tracks DR-T1..DR-T7 of
-[`plans/interop-dry-run.md`](../../../plans/interop-dry-run.md).
+[`plans/interop-dry-run.md`](../../../../plans/archive/interop-dry-run.md).
 
 ## Headline
 
@@ -25,7 +25,7 @@ benchmarker sees us. Tracks DR-T1..DR-T7 of
 | **DR-T7** | run-08 README + summary | ✅ | This document |
 
 Scripts live in
-[`tests/interop/`](../../interop/). `run-all.sh` runs DR-T1..T5
+[`tests/interop/`](../../../interop). `run-all.sh` runs DR-T1..T5
 in sequence; `run-perf.sh` (this directory) runs DR-T6.
 
 ## Run context

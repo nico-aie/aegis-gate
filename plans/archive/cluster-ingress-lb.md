@@ -2,12 +2,12 @@
 
 > **Status:** Closed — HA-T1..T5 shipped in run-05. Reference only.
 >
-> See [`README.md`](./README.md) for the track status board.
+> See [`README.md`](../README.md) for the track status board.
 >
 > **Original scope.** Tracked carry-over 6 (HA test methodology
 > gap surfaced 2026-04-29) plus the rest of the HA roadmap
 > from
-> [`docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
+> [`docs/operations/ha-clustering.md`](../../docs/operations/ha-clustering.md).
 >
 > **Why this exists.** Today's cluster perf test fires k6 at
 > each WAF node on its own port. Production deploys put a

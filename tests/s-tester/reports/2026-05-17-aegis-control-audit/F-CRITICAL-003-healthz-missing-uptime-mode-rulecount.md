@@ -21,7 +21,7 @@ Round-1 official rules (WAF-FE section):
 Three fields named explicitly. None of them appear in any `/healthz`
 response.
 
-Spot-verified at [health.rs:13-19](aegis-gate/crates/aegis-control/src/health.rs#L13-L19): `HealthChecks` carries:
+Spot-verified at [health.rs:13-19](../../../../crates/aegis-control/src/health.rs#L13-L19): `HealthChecks` carries:
 
 - `config_loaded: bool`
 - `state_backend_up: bool`
@@ -42,7 +42,7 @@ hitting `/healthz` per spec sees only the boolean blob and marks
 
 ## Observed code path
 
-[health.rs:13-19](aegis-gate/crates/aegis-control/src/health.rs#L13-L19):
+[health.rs:13-19](../../../../crates/aegis-control/src/health.rs#L13-L19):
 
 ```rust
 pub struct HealthChecks {
@@ -54,7 +54,7 @@ pub struct HealthChecks {
 }
 ```
 
-[health.rs:55-72](aegis-gate/crates/aegis-control/src/health.rs#L55-L72) — `render_health` builds the response from these
+[health.rs:55-72](../../../../crates/aegis-control/src/health.rs#L55-L72) — `render_health` builds the response from these
 booleans only. No `uptime_seconds` / `mode` / `active_rule_count`
 fields, no method on `DashboardServices` to fetch them.
 

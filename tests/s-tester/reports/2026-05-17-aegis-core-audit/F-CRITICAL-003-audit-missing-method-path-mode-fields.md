@@ -21,7 +21,7 @@ and is **completely missing**:
 - `path` — request path INCLUDING query string
 - `mode` — `enforce` or `log_only` (which mode the policy was in)
 
-**Spot-verified** at [audit.rs:4-18](aegis-gate/crates/aegis-core/src/audit.rs#L4-L18):
+**Spot-verified** at [audit.rs:4-18](../../../../crates/aegis-core/src/audit.rs#L4-L18):
 
 ```rust
 pub struct AuditEvent {

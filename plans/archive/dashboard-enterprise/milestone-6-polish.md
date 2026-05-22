@@ -2,7 +2,7 @@
 
 > **Status:** Closed — D-M6 shipped.
 >
-> See [`README.md`](../README.md) for the track status board.
+> See [`README.md`](../../README.md) for the track status board.
 
 **Goal.** Tighten everything: accessibility audit, security
 headers verified end-to-end, perf budget enforced in CI, doc
@@ -15,7 +15,7 @@ small touch to `docs/`.
 
 **References.**
 - [`docs/control-plane/enterprise/accessibility.md`](../../docs/control-plane/enterprise/accessibility.md)
-- [`docs/control-plane/enterprise/security.md`](../../docs/control-plane/enterprise/security.md)
+- [`docs/control-plane/enterprise/security.md`](../../../docs/control-plane/enterprise/security.md)
 - [`docs/control-plane/enterprise/assets.md`](../../docs/control-plane/enterprise/assets.md)
 
 ---
@@ -43,7 +43,7 @@ small touch to `docs/`.
 
 - New test: `tests/dashboard/headers.rs` — fetches one URL per
   surface (asset, page route, API endpoint, SSE stream) and
-  asserts every header in [`security.md`](../../docs/control-plane/enterprise/security.md)
+  asserts every header in [`security.md`](../../../docs/control-plane/enterprise/security.md)
   §"Headers (full set)".
 
 ### D-M6-T6.4 XSS regression
@@ -92,7 +92,7 @@ small touch to `docs/`.
 
 ### D-M6-T6.10 Final progress overwrite
 
-- Overwrite `Implement-Progress.md` per [`../plan.md`](../plan.md) §0.3 with:
+- Overwrite `Implement-Progress.md` per [`../plan.md`](../../plan.md) §0.3 with:
   - The full Completed Tasks Log appended with all D-M1..D-M6 tasks.
   - `## Next Task` reset to the next non-dashboard remaining
     item (e.g. "Production Dockerfile + Helm chart" from the

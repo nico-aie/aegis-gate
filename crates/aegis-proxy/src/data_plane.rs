@@ -438,26 +438,38 @@ pub(crate) async fn handle_data_request_inner(
                     bus.emit(ev);
                 }
                 if outcome.should_enforce() {
-                    // Phase 2 path — never reached while Phase 1
-                    // ships with default `observe_only: true`. The
-                    // 503 response shape mirrors the strike-block
-                    // path above so operators get a consistent
-                    // block envelope regardless of which gate
-                    // tripped.
-                    let resp = blocked_response(
-                        peer,
-                        outcome.reason.as_deref().unwrap_or("ddos: blocked"),
-                        Some("ddos".into()),
-                        None,
-                        req.uri(),
-                        req.method(),
-                        bus,
-                    );
-                    return (resp, DecisionTag::block("ddos"));
+                    // 2026-05-22 — honor `set_profile mode=log_only` on the
+                    // `ddos` feature (in addition to the config-level
+                    // `ddos.observe_only` flag). In log_only, report the
+                    // intended block but forward upstream — the audit event
+                    // above already recorded the intent; the response stamper
+                    // emits X-WAF-Action: block + X-WAF-Mode: log_only.
+                    let ddos_mode = interop_modes
+                        .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("ddos")))
+                        .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                    if ddos_mode == aegis_control::interop::headers::Mode::LogOnly {
+                        log_only_intent = Some(DecisionTag::block("ddos"));
+                        // fall through to detectors + upstream
+                    } else {
+                        // Enforce — 503. The response shape mirrors the
+                        // strike-block path above so operators get a
+                        // consistent block envelope regardless of which
+                        // gate tripped.
+                        let resp = blocked_response(
+                            peer,
+                            outcome.reason.as_deref().unwrap_or("ddos: blocked"),
+                            Some("ddos".into()),
+                            None,
+                            req.uri(),
+                            req.method(),
+                            bus,
+                        );
+                        return (resp, DecisionTag::block("ddos"));
+                    }
                 }
-                // observe_only — fall through; the request still
-                // proceeds to detectors + upstream as if nothing
-                // happened. The audit event records the intent.
+                // observe_only OR log_only-forward — fall through; the
+                // request still proceeds to detectors + upstream. The
+                // audit event above records the intent either way.
             }
             Ok(_) => {} // not blocked, no signal
             Err(e) => {
@@ -1214,7 +1226,33 @@ pub(crate) async fn handle_data_request_inner(
                     Some(s) => DecisionTag::challenge("risk-challenge").with_tier(tier).with_risk_score(s),
                     None    => DecisionTag::challenge("risk-challenge").with_tier(tier),
                 };
-                (resp, tag)
+                // Contract §2.7 — honor `set_profile mode=log_only` on
+                // `risk_engine.score` for the CHALLENGE action too (not
+                // just block). In log_only the WAF MUST report the
+                // intended `X-WAF-Action: challenge` + `X-WAF-Mode:
+                // log_only` but MUST NOT apply enforcement — so we
+                // stash the intent and forward upstream instead of
+                // issuing the 429 PoW. Mirrors the Block arm above.
+                let rc_mode = interop_modes
+                    .map(|m| aegis_control::interop::rule_map::mode_for_rule(m, Some("risk-challenge")))
+                    .unwrap_or(aegis_control::interop::headers::Mode::Enforce);
+                if rc_mode == aegis_control::interop::headers::Mode::LogOnly {
+                    log_only_intent = Some(tag);
+                    forward_allow_to_upstream(
+                        parts,
+                        body_bytes,
+                        upstream_ctx,
+                        identity,
+                        route_latency_hist,
+                        route_activity,
+                        request_start,
+                        peer_ip,
+                        bus,
+                    )
+                    .await
+                } else {
+                    (resp, tag)
+                }
             }
             aegis_security::risk::RiskLevel::Allow => {
                 // Forward the request to a real upstream member via

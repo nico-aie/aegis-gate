@@ -25,9 +25,9 @@ Shipped code does NEITHER:
 
 - There is no path-list of canary endpoints; the only canary signal
   is a hardcoded tag match `Signal::tag == "recon_path"`
-  ([risk/mod.rs:24-27](aegis-gate/crates/aegis-security/src/risk/mod.rs#L24-L27)).
+  ([risk/mod.rs:24-27](../../../../crates/aegis-security/src/risk/mod.rs#L24-L27)).
 - When that tag matches, the code sets `score = max_score`
-  ([risk/mod.rs:60-65](aegis-gate/crates/aegis-security/src/risk/mod.rs#L60-L65))
+  ([risk/mod.rs:60-65](../../../../crates/aegis-security/src/risk/mod.rs#L60-L65))
   but does NOT call `state.auto_block(ip, ttl)`. So subsequent
   requests from the same IP are NOT blocked at the gate — they're
   only re-evaluated through the normal pipeline.
@@ -46,7 +46,7 @@ canary-endpoint + recon behavior. The current implementation will:
 
 ## Observed code path
 
-[risk/mod.rs:24-27](aegis-gate/crates/aegis-security/src/risk/mod.rs#L24-L27):
+[risk/mod.rs:24-27](../../../../crates/aegis-security/src/risk/mod.rs#L24-L27):
 
 ```rust
 fn is_canary(signal: &Signal) -> bool {
@@ -54,7 +54,7 @@ fn is_canary(signal: &Signal) -> bool {
 }
 ```
 
-[risk/mod.rs:60-65](aegis-gate/crates/aegis-security/src/risk/mod.rs#L60-L65):
+[risk/mod.rs:60-65](../../../../crates/aegis-security/src/risk/mod.rs#L60-L65):
 
 ```rust
 if signals.iter().any(is_canary) {

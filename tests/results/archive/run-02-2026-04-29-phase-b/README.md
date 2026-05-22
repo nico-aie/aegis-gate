@@ -16,7 +16,7 @@ fixed**: the data-plane Allow branch calls
 
 A second run with WAF in front of the local `aegis-httpbin`
 container (real TCP upstream) — log
-[`baseline-allow-forwarded-2026-04-29.log`](./baseline-allow-forwarded-2026-04-29.log):
+[`baseline-allow-forwarded-2026-04-29.log`](../run-03-2026-04-29-carryovers/baseline-allow-forwarded-2026-04-29.log):
 
 | Metric (20 VUs / 10 s, target = httpbin via WAF) | Stub path | Real upstream forward |
 |---|---|---|
@@ -34,7 +34,7 @@ not a regression.
 
 Carry-over A is therefore promoted from **"open"** to
 **"closed"** in
-[`Implement-Progress.md`](../../Implement-Progress.md). The
+[`Implement-Progress.md`](../../../../Implement-Progress.md). The
 remaining four carry-overs (rate-limit response code; leader
 state admin endpoint; per-node rate-limit bucket; data-plane
 TLS loader) stay open.
@@ -73,7 +73,7 @@ Documented [`BURST_RPS × BURST_SECS` must exceed the configured
 limiter budget] in the script's docblock so future operators
 don't repeat the calibration mistake.
 
-**Re-run results** ([`rate-limit-2026-04-29-fixed.log`](./rate-limit-2026-04-29-fixed.log)):
+**Re-run results** ([`rate-limit-2026-04-29-fixed.log`](../run-03-2026-04-29-carryovers/rate-limit-2026-04-29-fixed.log)):
 
 | Metric | Result |
 |---|---|

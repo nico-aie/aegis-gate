@@ -1,6 +1,6 @@
 # WAF Hackathon 2026 — Candidate Briefing
 
-> This document is a summary for participating teams. Detailed technical requirements and constraints are defined in [`./EN_waf_interop_contract_v2.3.md`](final_docs/EN_waf_interop_contract_v2.3.md), and the public API specification is available in [`./openapi.public.yaml`](final_docs/openapi.public.yaml).
+> This document is a summary for participating teams. Detailed technical requirements and constraints are defined in [`./EN_waf_interop_contract_v2.3.md`](./EN_waf_interop_contract_v2.3.md), and the public API specification is available in [`./openapi.public.yaml`](./openapi.public.yaml).
 
 ---
 
@@ -133,8 +133,8 @@ The guide file does not need to disclose internal source code, but it must be cl
 
 | File | Purpose |
 |------|---------|
-| [`final_docs/EN_waf_interop_contract_v2.3.md`](final_docs/EN_waf_interop_contract_v2.3.md) | Defines how the WAF must expose control endpoints, headers, audit logs, decision classes, and the startup contract. |
-| [`final_docs/openapi.public.yaml`](final_docs/openapi.public.yaml) | Public API contract of the upstream target application. It can be imported into Postman/Swagger/Insomnia to understand endpoints, methods, authentication, parameters, and response schemas. |
+| [`final_docs/EN_waf_interop_contract_v2.3.md`](./EN_waf_interop_contract_v2.3.md) | Defines how the WAF must expose control endpoints, headers, audit logs, decision classes, and the startup contract. |
+| [`final_docs/openapi.public.yaml`](./openapi.public.yaml) | Public API contract of the upstream target application. It can be imported into Postman/Swagger/Insomnia to understand endpoints, methods, authentication, parameters, and response schemas. |
 
 Teams do not need to know the upstream source code. The upstream should be treated as a black-box service with a domain and a public OpenAPI specification.
 

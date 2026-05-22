@@ -123,7 +123,8 @@ before aborting listeners.
 
 > **SUPERSEDED.** The single-crate layout below is a conceptual map
 > only. The authoritative workspace structure is the 5-crate split
-> defined in [`plans/shared-contract.md` §1](plans/shared-contract.md):
+> in §2 (Module Layout) below — historically tracked in the
+> now-retired `plans/shared-contract.md` §1:
 > `aegis-core`, `aegis-proxy` (M1), `aegis-security` (M2),
 > `aegis-control` (M3), `aegis-bin`. The module names below map onto
 > those crates as: `tls/proto/route/upstream/state/sd/secrets/shed/dr`
@@ -539,7 +540,7 @@ a single idle-conn pool. Per-pool knobs:
 
 Measured 15× throughput lift (525 → 7 964 RPS at 100 % success
 on a 12-core laptop) — see
-[`tests/results/run-07-2026-04-30-upstream-pool/`](./tests/results/run-07-2026-04-30-upstream-pool/README.md).
+[`tests/results/run-07-2026-04-30-upstream-pool/`](./tests/results/archive/run-07-2026-04-30-upstream-pool/README.md).
 HTTPS upstreams still go through the older `upstream::tls.rs`
 code path; wiring them through the pooled `Client` is a follow-up.
 
@@ -640,8 +641,9 @@ pub enum AuthConfig {
 
 ## 12. State Backend
 
-The authoritative trait definition lives in
-[`plans/shared-contract.md` §3.2](plans/shared-contract.md). The
+The authoritative trait definition lives in the crate source
+(`aegis-core`); it was historically sketched in the now-retired
+`plans/shared-contract.md` §3.2. The
 sketch below is illustrative; **do not implement against this snippet**
 — follow the contract.
 
@@ -686,8 +688,8 @@ GitOps pull, audit witness export) acquire a lease key in the backend.
 Out of scope for v1. The v1 WAF runs single-tenant: one config,
 one dashboard, one audit stream, one compliance profile. `tenant_id`
 on `RequestCtx` / `RouteCtx` is reserved (always `None`) and the
-tenant governor is not implemented. See
-[`docs/future/multi-tenancy.md`](docs/future/multi-tenancy.md).
+tenant governor is not implemented. See the deferred-features index
+[`docs/future/`](docs/future/README.md).
 
 ---
 
@@ -1005,7 +1007,7 @@ members enter `probing` before joining the LB ring; removed members drain.
 ## 28.5 Benchmark Mode
 
 > Full design — [`docs/operator/benchmark-mode.md`](docs/operator/benchmark-mode.md).
-> Plan — [`plans/benchmark-mode.md`](plans/benchmark-mode.md).
+> Plan — [`plans/benchmark-mode.md`](./plans/archive/benchmark-mode.md).
 
 A request-scoped `BenchmarkContext` is allocated **only** when a
 request passes the two-factor benchmark gate (source-IP allowlist +

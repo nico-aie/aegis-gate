@@ -1,6 +1,6 @@
 # tester-n 2026-05-07 regression rerun — fix plan
 
-> **Source:** [`tests/n-tester/reports/2026-05-07-regression/QA-RUN-2-SUMMARY.md`](../../../tests/n-tester/reports/2026-05-07-regression/QA-RUN-2-SUMMARY.md)
+> **Source:** [`tests/n-tester/reports/2026-05-07-regression/QA-RUN-2-SUMMARY.md`](../../../../tests/n-tester/reports/2026-05-07-regression/QA-RUN-2-SUMMARY.md)
 > **Status:** plan, awaiting confirmation. No code changes yet.
 > **Branch target:** `develop` (operator merges to `Test/UI` for re-check after each phase)
 

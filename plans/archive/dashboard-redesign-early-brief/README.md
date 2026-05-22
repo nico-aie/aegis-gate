@@ -6,9 +6,9 @@
 > the early planning artefact for a Claude Design–driven dashboard
 > redesign. It was replaced before execution by the simpler
 > DD-T0..T8 plan that actually shipped — see
-> [`../../dashboard-redesign.md`](../../dashboard-redesign.md) and
+> [`../../dashboard-redesign.md`](../dashboard-redesign.md) and
 > the closing run-10 README under
-> [`../../../tests/results/run-10-2026-04-30-dashboard-redesign/`](../../../tests/results/run-10-2026-04-30-dashboard-redesign/).
+> [`../../../tests/results/run-10-2026-04-30-dashboard-redesign/`](../../../tests/results/archive/run-10-2026-04-30-dashboard-redesign).
 >
 > Kept here for historical reference only. Do not link to this
 > tree from new work.
@@ -17,9 +17,9 @@
 
 | Input | Where | Status |
 |---|---|---|
-| Design contract per page | [`docs/control-plane/enterprise/pages/*.md`](../../docs/control-plane/enterprise/pages/) | done |
-| API contract | [`docs/control-plane/enterprise/api.md`](../../docs/control-plane/enterprise/api.md) | done |
-| Layout / theme / a11y / components doc bundle | [`docs/control-plane/enterprise/{layout,theme,accessibility,components}.md`](../../docs/control-plane/enterprise/) | done — but theme + components need a refresh under M0 |
+| Design contract per page | [`docs/control-plane/enterprise/pages/*.md`](./pages) | done |
+| API contract | [`docs/control-plane/enterprise/api.md`](../../../docs/control-plane/enterprise/api.md) | done |
+| Layout / theme / a11y / components doc bundle | [`docs/control-plane/enterprise/{layout,theme,accessibility,components}.md`](../../../docs/control-plane/enterprise) | done — but theme + components need a refresh under M0 |
 | Admin login HTTP route | F-T1 in `post-k6-followup.md` | **pending — blocks ship** |
 | Asset embedder + bundle-size budget | `crates/aegis-control/src/dashboard/assets.rs` + `tests/dashboard_polish.rs` | done; budget is 700 KB raw |
 

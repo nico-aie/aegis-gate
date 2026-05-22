@@ -20,7 +20,7 @@ or are split awkwardly.
 
 ## C-01 · `health.rs::ReadinessSignal` doesn't expose uptime / mode / active_rule_count
 
-**Component:** [health.rs:1-37](aegis-gate/crates/aegis-core/src/health.rs#L1-L37)
+**Component:** [health.rs:1-37](../../../../crates/aegis-core/src/health.rs#L1-L37)
 
 Round-1 mandate (per F-CRITICAL-003 in control audit):
 
@@ -63,7 +63,7 @@ forking time-source.
 
 ## C-02 · `state.rs::token_bucket` returns bare `bool` — no `retry_after`
 
-**Component:** [state.rs:147-152](aegis-gate/crates/aegis-core/src/state.rs#L147-L152)
+**Component:** [state.rs:147-152](../../../../crates/aegis-core/src/state.rs#L147-L152)
 
 ```rust
 async fn token_bucket(&self, key: &str, rate_per_s: u32, burst: u32) -> Result<bool>;
@@ -94,7 +94,7 @@ async fn token_bucket(&self, key: &str, rate: u32, burst: u32) -> Result<TokenBu
 
 ## C-03 · `tcp_destination::is_internal_address` is correct + reusable, but `aegis-control::validate_pool` doesn't call it
 
-**Component:** [tcp_destination.rs:167-186](aegis-gate/crates/aegis-core/src/tcp_destination.rs#L167-L186) (correct) vs `aegis-control/src/api/upstreams_config.rs:252-280` (broken)
+**Component:** [tcp_destination.rs:167-186](../../../../crates/aegis-core/src/tcp_destination.rs#L167-L186) (correct) vs `aegis-control/src/api/upstreams_config.rs:252-280` (broken)
 
 The aegis-core internal-IP check IS correct (rejects RFC1918,
 link-local, etc.). The `validate_pool` function in aegis-control
@@ -129,7 +129,7 @@ aegis-control delegate.
 
 ## C-04 · `ChainEntry` (audit-chain wrapper) lives in aegis-control, but `AuditEvent` in aegis-core has no chain context
 
-**Component:** [audit.rs:4-18](aegis-gate/crates/aegis-core/src/audit.rs#L4-L18) (aegis-core) vs `aegis-control/src/audit/chain.rs:31` (aegis-control)
+**Component:** [audit.rs:4-18](../../../../crates/aegis-core/src/audit.rs#L4-L18) (aegis-core) vs `aegis-control/src/audit/chain.rs:31` (aegis-control)
 
 `AuditEvent` (aegis-core) is the canonical event shape. `ChainEntry`
 (aegis-control) wraps it with `prev_hash`, `entry_hash` for the

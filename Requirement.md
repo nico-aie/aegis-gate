@@ -575,8 +575,8 @@ stream, one set of metrics, one compliance profile, one rule
 namespace. All references to `tenant_id` in the request context
 are reserved for future use and always `None` in v1.
 
-See [`docs/future/multi-tenancy.md`](docs/future/multi-tenancy.md)
-for the original design and the future re-introduction plan.
+See the deferred-features index [`docs/future/`](docs/future/README.md)
+for the future re-introduction plan.
 
 ---
 
@@ -810,7 +810,7 @@ in every environment.**
   audit-logged toggle path as the dashboard.
 
 Full design — [`docs/operator/benchmark-mode.md`](docs/operator/benchmark-mode.md).
-Plan — [`plans/benchmark-mode.md`](plans/benchmark-mode.md) (task
+Plan — [`plans/benchmark-mode.md`](./plans/archive/benchmark-mode.md) (task
 ID prefix `B-`).
 
 ---
