@@ -204,4 +204,5 @@ behavior given the contract's per-instance scope.
 - [`docs/architecture/scaling-model.md`](./scaling-model.md) — three-layer scaling model (CPU / nodes / shared state)
 - [`docs/operations/dr-backup.md`](../operations/dr-backup.md) — disaster recovery and snapshot policy
 - [`docs/operations/data-residency-retention.md`](../operations/data-residency-retention.md) — audit retention policy
+- [`docs/operator/enforcement-modes.md`](../operator/enforcement-modes.md) — how the committee (`set_profile`) and operators toggle `enforce` / `log_only`, scope rules, and `X-WAF-Mode` verification
 - [`Architecture.md`](../../Architecture.md) §"State & persistence" — the system-shape view
