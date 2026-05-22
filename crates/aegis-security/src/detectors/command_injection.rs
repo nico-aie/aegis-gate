@@ -70,12 +70,18 @@ static LOG4SHELL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 
 static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        // Subshell forms: $(cmd), `cmd`, ${cmd}.
+        // Command-substitution forms: $(cmd), `cmd`.
         // Conservative — require non-empty content to skip lone
         // `$()` strings that occasionally appear in templates.
+        // 2026-05-22 (legit-dataset FP fix) — the bare `${VAR}` pattern
+        // was REMOVED: `${...}` is shell VARIABLE EXPANSION, not command
+        // execution, and collided with ubiquitous ad-tech / template
+        // macros (`${UUID}`, `${AUCTION_PRICE}`, `${user.name}`) — the
+        // single biggest cmdi false positive on real traffic. Log4Shell
+        // `${jndi:…}` is matched separately in LOG4SHELL_PATTERNS;
+        // SSTI `${…}` shapes belong to the template_injection detector.
         r"(?i)\$\([^)]+\)",
         r"(?i)`[^`]+`",
-        r"(?i)\$\{[A-Za-z_][^}]+\}",
         // Pipe-to-shell-cmd: `| whoami`, `| nc -e ...`. The
         // shell-builtin list catches the OWASP cmdi sample set
         // and stays narrow enough to skip bare pipes in regex /
@@ -83,12 +89,19 @@ static CMDI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // `timeout` added 2026-05-09 (Run-6 GAP-013) for blind-RCE
         // detection — `;sleep+5;` is the canonical primitive when
         // the attacker has no output channel.
-        r"(?i)\|\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b)\b",
+        // 2026-05-22 (legit-dataset FP fix) — the trailing boundary was
+        // `\b`, which let `;cat=…`, `;id=…`, `;ls=…` match (the shell
+        // command name collides with a query param name, e.g.
+        // DoubleClick floodlight `/activity;…;cat=…`). The boundary now
+        // requires a real shell-arg context — whitespace, `/`, `$` (IFS
+        // evasion), end, or another shell separator — and explicitly NOT
+        // `=` (param) or a word char (`category`).
+        r"(?i)\|\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b)(?:[\s/;|&$]|$)",
         // Semicolon-shell-cmd: `; whoami`, `; rm -rf /tmp`,
         // `; sleep 5` (blind-RCE primitive — GAP-013).
-        r"(?i);\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b)\b",
+        r"(?i);\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|nc\.exe|sleep\b|timeout\b)(?:[\s/;|&$]|$)",
         // Logical-AND / logical-OR command chaining.
-        r"(?i)(?:&&|\|\|)\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|sleep\b|timeout\b)\b",
+        r"(?i)(?:&&|\|\|)\s*(?:whoami|id|uname|cat|ls|nc\b|ncat|netcat|curl|wget|sh\b|bash|zsh|ksh|dash|cmd\.exe|powershell|python|perl|ruby|php|nslookup|ping|rm\b|mv\b|chmod|chown|sleep\b|timeout\b)(?:[\s/;|&$]|$)",
         // /bin/{sh,bash,zsh,ksh,dash} direct invocation.
         r"(?i)/bin/(?:sh|bash|zsh|ksh|dash)\b",
         // Classic exfil shape — `cat /etc/passwd`. (Distinct
@@ -271,7 +284,10 @@ mod tests {
 
     // --- Subshell shapes ---
     positive!(cmdi_backtick,             "/exec?x=`whoami`");
-    positive!(cmdi_brace_subshell,       "/exec?x=${PATH}");
+    // 2026-05-22 — bare `${VAR}` is variable expansion, not command
+    // execution; it must NOT flag as cmdi (it collides with ad-tech /
+    // template macros). Real Log4Shell `${jndi:…}` still fires (below).
+    negative!(cmdi_brace_var_not_exec,   "/exec?x=${PATH}");
     positive!(cmdi_subshell_url_encoded, "/run?x=%24%28id%29");
     positive!(cmdi_backtick_url_encoded, "/run?x=%60whoami%60");
 
@@ -327,13 +343,22 @@ mod tests {
     negative!(clean_msg_sleep_word,      "/post?msg=I+will+sleep+tonight");
     negative!(clean_sleep_filename,      "/files/sleep_research.pdf");
 
-    // Edge — `${user.name}` template var. Brace-subshell pattern
-    // requires a leading [A-Za-z_], so `${user.name}` matches.
-    // Document this is acceptable: legit-looking template vars
-    // are rare in URL query strings (they belong in templates,
-    // not user input). Operators using template-style variables
-    // in URLs can disable this class via /api/detectors.
-    positive!(cmdi_brace_var_user_dot,   "/api?v=${user.name}");
+    // 2026-05-22 (legit-dataset FP fix) — `${user.name}` is a template
+    // variable, not command execution, and `${UUID}` / `${AUCTION_PRICE}`
+    // are ubiquitous ad-tech macros. cmdi must NOT fire on bare `${VAR}`.
+    negative!(cmdi_brace_var_user_dot,   "/api?v=${user.name}");
+    negative!(cmdi_brace_macro_uuid,     "/sync?ssp=emxdigital&user_id=${UUID}");
+    negative!(cmdi_brace_macro_auction,  "/bid?price=${AUCTION_PRICE}");
+
+    // 2026-05-22 (legit-dataset FP fix) — DoubleClick floodlight + common
+    // `;param=` matrix params must NOT collide with shell commands. The
+    // shell-cmd boundary now requires a real arg context, not `=`.
+    negative!(cmdi_floodlight_cat_tag,   "/activity;src=13196098;type=us2020;cat=homepage123");
+    negative!(cmdi_matrix_id_param,      "/api?a=1;id=12345");
+    negative!(cmdi_matrix_ls_param,      "/api?x=1;ls=grid");
+    negative!(cmdi_category_word,        "/shop;category=shoes");
+    // ...but a real `;cat /etc/passwd` (space-arg) still fires.
+    positive!(cmdi_semicolon_cat_arg,    "/run?cmd=x;cat%20/etc/passwd");
 
     // ============================================================
     // GAP-008 (2026-05-08) — Log4Shell coverage

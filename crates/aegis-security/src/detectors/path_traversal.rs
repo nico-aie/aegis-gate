@@ -19,7 +19,15 @@ static TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?:%2e\./)",
         r"(?:/etc/(?:passwd|shadow|hosts|resolv\.conf))",
         r"(?:/proc/self/(?:environ|cmdline|fd))",
-        r"(?:(?:c|d):[\\/])",
+        // 2026-05-22 (legit-dataset FP fix) — Windows drive root, but
+        // anchored to a value boundary so the drive letter isn't the
+        // tail of a normal word. The old `(?:c|d):[\\/]` matched `c:/`
+        // / `d:/` ANYWHERE, false-positiving on ubiquitous strings like
+        // `dynami(c:/)slot`, `ab(c:/)cdn`, `a(d:/)banner` (ad-tech).
+        // Now the drive letter must follow start or a non-alphanumeric
+        // (`=c:\`, `/c:/`, `=C:/boot.ini`), matching a real
+        // `?file=c:\windows` traversal but not a mid-word coincidence.
+        r"(?i)(?:^|[^a-z0-9])[cd]:[\\/]",
         r"(?:boot\.ini)",
         r"(?:win\.ini)",
         r"(?:\\\\[^\\]+\\)",
@@ -234,6 +242,13 @@ mod tests {
     negative!(clean_underscore, "/my_page");
     negative!(clean_page, "/page?num=1");
     negative!(clean_sort, "/list?sort=name");
+    // 2026-05-22 (legit-dataset FP fix) — `c:/` / `d:/` as the tail of
+    // a normal word (NOT a Windows drive root) must NOT flag. These are
+    // ubiquitous in ad-tech / tracking URLs.
+    negative!(clean_dynamic_colon_slash, "/track?cb=dynamic:/slot");
+    negative!(clean_word_abc_drive,      "/i?src=pic-abc:/cdn/x.png");
+    negative!(clean_word_ad_drive,       "/sync?x=ad:/banner");
+    negative!(clean_scheme_like,         "/r?cb=basic:/auth");
     negative!(clean_filter, "/items?category=books");
     negative!(clean_download, "/download/file-v1.2.3.zip");
     negative!(clean_manifest, "/manifest.json");
