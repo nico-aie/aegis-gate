@@ -194,21 +194,15 @@ risk:
     repeat_offender: 15
   decay_half_life: "5m"
   thresholds:
-    # 2026-05-21 — the cumulative IP-risk gate is DISABLED in dev via
-    # the `enabled` toggle (replaces the old "set challenge_at/block_at
-    # above max" hack). With `enabled: false`, accumulated per-bucket
-    # score never challenges or blocks; detector signals are still
-    # recorded (Top Attackers keeps climbing), and per-request detector
-    # blocks fire independently of this gate.
-    #
-    # Why off in dev: dev runs shared-IP traffic (one source IP for
-    # many k6 VUs), so a low cumulative threshold would let attacker
-    # VUs tar legit VUs sharing the IP and trigger spurious 429/403s.
-    # The numeric thresholds below stay SANE (40/80) so flipping
-    # `enabled: true` (here, or via the dashboard Traffic Gates toggle,
-    # or PUT /api/risk/thresholds) immediately gives a working gate.
-    # Production ships enabled (see config/profiles/prod-balanced.yaml).
-    enabled:      false
+    # 2026-05-22 — cumulative IP-risk gate ENABLED by default (enforce).
+    # Operators have `log_only` as a safety valve (set_profile / dashboard
+    # Shadow Mode), so the traffic gates ship on. CAVEAT for load tests:
+    # dev traffic often comes from ONE source IP (many k6 VUs), and a
+    # per-IP cumulative gate lets attacker VUs raise the score for legit
+    # VUs sharing that IP → spurious 429/403. When benchmarking, flip to
+    # `log_only` (or vary source IPs). Per-request detector blocks fire
+    # independently of this gate.
+    enabled:      true
     challenge_at: 40
     block_at:     80
     max:          100
@@ -292,7 +286,7 @@ rate_limit:
 ddos:
   enabled: true              # gate on (secure-by-default)
   observe_only: false        # enforce; flip to true for shadow-mode validation
-  per_ip_limit: 1000         # max requests per source IP within the window
+  per_ip_limit: 60000        # 2026-05-22 — raised 1000 → 60000 (6k rps/IP) per operator policy
   per_ip_window_s: 10        # sliding-window length (seconds)
   block_ttl_s: 300           # auto-block duration on burst-exceed (5 min)
   spike_multiplier: 3.0      # current_rps > 3 × baseline → spike_active
