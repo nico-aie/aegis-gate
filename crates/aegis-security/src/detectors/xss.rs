@@ -76,7 +76,13 @@ impl Detector for XssDetector {
             }
         }
 
-        for name in &["cookie", "referer", "user-agent"] {
+        // 2026-05-22 — `cookie` removed from the XSS scan set. Cookies
+        // are server-set and not a reflected-XSS injection vector for the
+        // same site; scanning the whole cookie blob caused frequent false
+        // positives (analytics/consent cookies contain `&#NN;`, `\u00XX`,
+        // `onX=` substrings that trip the patterns). referer + user-agent
+        // stay — those ARE attacker-controlled and reflected.
+        for name in &["referer", "user-agent"] {
             if let Some(val) = req.headers.get(*name).and_then(|v| v.to_str().ok()) {
                 check_xss(val, name, &mut signals);
                 let entity_decoded = super::html_entity_decode(val);
@@ -257,4 +263,43 @@ mod tests {
         // `&copy;` decodes to nothing in our narrow table; even if
         // it did, the result wouldn't match XSS patterns.
         "/?q=Copyright+&copy;+2026");
+
+    // 2026-05-22 — the `cookie` header is no longer scanned for XSS
+    // (server-set, not a reflected vector). A cookie value carrying
+    // XSS-like substrings (e.g. an analytics blob with `&#x3c;`) must
+    // NOT trip the detector — while the SAME content in referer /
+    // user-agent (attacker-controlled, reflected) still must.
+    fn header_view(name: &str, value: &str) -> Vec<Signal> {
+        let m = http::Method::GET;
+        let u: http::Uri = "/".parse().unwrap();
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            value.parse().unwrap(),
+        );
+        let b = BodyPeek::empty();
+        XssDetector.inspect(&make_view(&m, &u, &h, &b))
+    }
+
+    #[test]
+    fn cookie_with_xss_like_content_is_ignored() {
+        // analytics/consent cookie carrying a numeric entity + an onX= run
+        let cookie = "_ga=GA1.2.123; consent=&#x3c;x&#x3e;; ab_test=onerror=1";
+        assert!(
+            header_view("cookie", cookie).is_empty(),
+            "cookie must not be XSS-scanned",
+        );
+    }
+
+    #[test]
+    fn referer_and_user_agent_still_scanned() {
+        assert!(
+            !header_view("referer", "https://x.test/?q=<script>alert(1)</script>").is_empty(),
+            "referer must still be XSS-scanned",
+        );
+        assert!(
+            !header_view("user-agent", "Mozilla/5.0 <script>alert(1)</script>").is_empty(),
+            "user-agent must still be XSS-scanned",
+        );
+    }
 }
