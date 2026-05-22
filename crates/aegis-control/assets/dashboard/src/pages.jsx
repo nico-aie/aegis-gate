@@ -2030,7 +2030,13 @@ function PolicyPostureCard() {
   const ruleCount = Array.isArray(rulesApi.data?.rules) ? rulesApi.data.rules.length : 0;
   const blCount = Array.isArray(blApi.data?.entries) ? blApi.data.entries.length : 0;
   const wlCount = Array.isArray(wlApi.data?.entries) ? wlApi.data.entries.length : 0;
-  const ddosObserve = ddosApi.data?.observe_only === true;
+  // 2026-05-22 — DDoS is "not enforcing" if EITHER the config
+  // observe_only flag is set OR a set_profile log_only is in effect for
+  // the ddos feature (effective_mode). Previously this chip read only
+  // observe_only, so a global/feature log_only was mislabeled "enforce".
+  const ddosConfigObserve = ddosApi.data?.observe_only === true;
+  const ddosLogOnly = ddosApi.data?.effective_mode === 'log_only';
+  const ddosObserve = ddosConfigObserve || ddosLogOnly;
   const ddosEnabled = ddosApi.data?.enabled === true;
 
   const chips = [
@@ -2076,13 +2082,15 @@ function PolicyPostureCard() {
     },
     {
       label: ddosEnabled
-        ? (ddosObserve ? 'DDoS observe' : 'DDoS enforce')
+        ? (ddosLogOnly ? 'DDoS log_only' : (ddosConfigObserve ? 'DDoS observe' : 'DDoS enforce'))
         : 'DDoS off',
       tone: ddosEnabled && !ddosObserve ? 'ok' : 'neutral',
       title: ddosEnabled
-        ? (ddosObserve
-            ? 'DDoS gate in observe-only mode · Traffic Gates'
-            : 'DDoS gate enforcing · Traffic Gates')
+        ? (ddosLogOnly
+            ? 'DDoS detecting but not blocking — set_profile log_only in effect · Traffic Gates'
+            : (ddosConfigObserve
+                ? 'DDoS gate in observe-only mode (config) · Traffic Gates'
+                : 'DDoS gate enforcing · Traffic Gates'))
         : 'DDoS gate disabled · Traffic Gates',
       href: '#/traffic-gates',
     },
@@ -10592,11 +10600,18 @@ function DdosGateCard() {
   // state that visually neutralises both pills and dims the live
   // telemetry tiles.
   const hotDisabled = cfg.enabled === false;
+  // 2026-05-22 — a set_profile log_only on the ddos feature suppresses
+  // the 503 just like the config observe_only flag, so the badge must
+  // reflect it too (was previously config-only and falsely showed
+  // ENFORCING under a global/feature log_only).
+  const ddosLogOnly = data.effective_mode === 'log_only';
   const modeStyle = hotDisabled
     ? { bg: 'rgba(160,160,160,0.18)', fg: 'var(--ink-dim)', label: 'DISABLED' }
-    : cfg.observe_only
-      ? { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)', label: 'OBSERVE-ONLY' }
-      : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'ENFORCING' };
+    : ddosLogOnly
+      ? { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)', label: 'LOG-ONLY (set_profile)' }
+      : cfg.observe_only
+        ? { bg: 'rgba(240,185,11,0.14)', fg: 'var(--warn)', label: 'OBSERVE-ONLY' }
+        : { bg: 'rgba(14,203,129,0.14)', fg: 'var(--up)', label: 'ENFORCING' };
   const spikeStyle = hotDisabled
     ? { bg: 'rgba(160,160,160,0.18)', fg: 'var(--ink-dim)', label: '—' }
     : data.spike_active

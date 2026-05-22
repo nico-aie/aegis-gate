@@ -860,8 +860,21 @@ pub(crate) fn admin_router(
         // isn't installed, so the page renders an explicit
         // "DDoS gate disabled" card instead of erroring.
         "/api/gates/ddos" => {
+            // 2026-05-22 — resolve the live interop mode for the `ddos`
+            // feature so the gate view reflects a `set_profile log_only`,
+            // not just the config-level `observe_only` flag. Same resolver
+            // the data plane uses to decide enforce vs forward.
+            let ddos_mode = services
+                .interop
+                .as_ref()
+                .map(|rt| {
+                    aegis_control::interop::rule_map::mode_for_rule(&rt.modes, Some("ddos"))
+                        .as_str()
+                })
+                .unwrap_or("enforce");
             let body = aegis_control::api::gates::render_get(
                 services.ddos.as_ref(),
+                ddos_mode,
             );
             json_body_response(200, body, "private, max-age=2")
         }
