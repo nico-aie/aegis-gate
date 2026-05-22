@@ -151,10 +151,11 @@ pub struct WafConfig {
     /// when the current in-flight count exceeds the adaptive limit.
     /// Critical-tier requests are never shed; Low / Medium / High
     /// shed in that order. The limit auto-tunes via Gradient2 from
-    /// observed RTTs (`L(t+1) = L(t) * RTT_min / RTT_now`). See
-    /// `crates/aegis-proxy/src/shed.rs` for the algorithm and
-    /// `docs/operator/load-shedding.md` (TBD) for the operator
-    /// guide. Default `enabled: true` so Round-3 resilience
+    /// the WAF's own inspection latency only (2026-05-22 — upstream
+    /// RTT is excluded so a slow backend can't make a healthy WAF
+    /// shed). See `crates/aegis-proxy/src/shed.rs` for the algorithm
+    /// and `docs/data-plane/adaptive-load-shedding.md` for the
+    /// operator guide. Default `enabled: true` so Round-3 resilience
     /// scoring works out of the box.
     #[serde(default)]
     pub load_shedder: LoadShedderConfig,
