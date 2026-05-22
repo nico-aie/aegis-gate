@@ -72,17 +72,20 @@ These come straight from `crates/aegis-security/src/detectors/*.rs`. A
 single detector hit emits a `Signal { tag, score }`; the engine sums
 all signals from the chain.
 
-> **2026-05-20 recalibration (Option B), amended 2026-05-21.** The
+> **2026-05-20 recalibration (Option B), amended 2026-05-23.** The
 > per-request block gate sums this request's signals and compares to
-> the matched tier's `risk_threshold`. Defaults are now **critical 50 /
-> high 70 / medium 70 / low 70** — medium/low were lowered from 80/90
-> on 2026-05-21 so a single clear exploit (score 70) blocks on **every**
-> tier, not just critical+high. (Pre-fix, a textbook SQLi on a low-tier
-> path like `/` summed to 70 < 90 and was forwarded to upstream — a
-> false negative.) Weaker / probing signals (recon 25/50, oversize 30,
-> AI fallback 60, …) stay below 70 and must still accumulate before
-> blocking, so the false-positive guard holds. Definitive RCE scores 90
-> and canary honeypots score 100 (block on every tier with margin). The
+> the matched tier's `risk_threshold`. Defaults are **critical 50 /
+> high 70 / medium 70 / low 80**. A single clear exploit (score 70 —
+> sqli, xss, ssrf, path_traversal, cmdi, ssti, nosql, CRLF) blocks on
+> critical/high/medium but **not** on `low`: 2026-05-23 `low` was
+> raised 70→80 so only the strongest single signals auto-block low-tier
+> traffic (static assets, etc.). The detector ceiling is now **80**
+> (canary excepted): definitive-RCE — **Log4Shell, XXE = 80** — plus
+> the **canary honeypot (100)** are the only detectors that block a lone
+> request at `low`; a clear exploit there must stack with another signal
+> (70 + any ≥10) or accumulate via the cumulative gate. Weaker / probing
+> signals (recon 25/50, oversize 30, AI 60, …) stay below 70 and still
+> accumulate before blocking, so the false-positive guard holds. The
 > **cumulative** bucket, by contrast, adds `max(signal)` per request
 > (SEC-M003), not the sum. Values below are the single-source-of-truth
 > scores from `crates/aegis-security/src/detectors/scores.rs`.
@@ -99,12 +102,12 @@ all signals from the chain.
 | Path traversal | `path_traversal` | **70** | `scores::path_traversal::PATH_TRAVERSAL` |
 | SSRF | `ssrf` | **70** | `scores::ssrf::SSRF` |
 | Command injection (baseline) | `command_injection` | **70** | `scores::command_injection::BASELINE` |
-| Log4Shell / JNDI | `command_injection` | **90** | `scores::command_injection::LOG4SHELL` |
+| Log4Shell / JNDI | `command_injection` | **80** | `scores::command_injection::LOG4SHELL` — definitive-RCE ceiling; blocks at every tier incl. `low` |
 | Template injection (SSTI) | `template_injection` | **70** | `scores::template_injection::TEMPLATE_INJECTION` |
 | NoSQL injection | `nosql_injection` | **70** | `scores::nosql_injection::NOSQL_INJECTION` |
 | Header injection — CRLF | `header_injection` | **70** | `scores::header_injection::CRLF` |
 | Header injection — XFH poisoning | `header_injection` | **50** | `scores::header_injection::XFH` |
-| Body abuse — XXE | `body_abuse` | **90** | `scores::body_abuse::XXE` |
+| Body abuse — XXE | `body_abuse` | **80** | `scores::body_abuse::XXE` — definitive-RCE ceiling; blocks at every tier incl. `low` |
 | Body abuse — mass assignment | `body_abuse` | **60** | `scores::body_abuse::MASS_ASSIGNMENT` |
 | Body abuse — proto pollution | `body_abuse` | **50** | `scores::body_abuse::PROTO_POLLUTION` |
 | Body abuse — deep nesting | `body_abuse` | **35** | `scores::body_abuse::DEEP_NESTING` |
