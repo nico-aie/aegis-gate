@@ -24,7 +24,7 @@ verbatim.
 | [recon.md](./recon.md) | `recon_path`, `recon_tool` | URL patterns + path entropy — **framework recon** (Spring actuator dangers / Laravel Ignition / Swagger / GraphQL / K8s API / Kibana / Jenkins / CGI / Prometheus federation) added 2026-05-08 (GAP-001) |
 | [brute-force.md](./brute-force.md) | `brute_force` | Login endpoints |
 | [body-abuse.md](./body-abuse.md) | `body_abuse`, `xxe`, `mass_assignment`, `proto_pollution` | Body (JSON / XML / form) — **prototype pollution** (`__proto__` / `constructor.prototype`) added 2026-05-08 (GAP-010, score 45) |
-| [command-injection.md](./command-injection.md) | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, **Log4Shell `${jndi:...}`** (score 60) |
+| [command-injection.md](./command-injection.md) | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, **Log4Shell `${jndi:...}`** (score 80) |
 | [template-injection.md](./template-injection.md) | `template_injection` | URL, body — Jinja2 `{{config}}` / Twig / Mako / Freemarker `<#assign>` / Velocity `#set()` / SpEL `${T(...)}` / Handlebars `{{#with}}` |
 | [nosql-injection.md](./nosql-injection.md) | `nosql_injection` | URL, body — MongoDB operator injection (`?param[$ne]=foo`, `{"$where":"..."}`) |
 | [open-redirect.md](./open-redirect.md) | `open_redirect` | Query string — suspicious external URLs (`http(s)://`, `//`, `javascript:`, `data:`) in redirect-style params (`?next=`, `?redirect_uri=`, …); allowlist via `cfg.detectors.open_redirect.allowed_domains`. Score 30 (phishing tier). Added 2026-05-09 (GAP-009). |
@@ -47,8 +47,8 @@ AI detector itself is gated by `cfg.ai.enabled` at boot time
 today (a runtime `PUT /api/ai/enabled` knob is queued).
 
 > **The dashboard does not expose a per-detector score editor.** The
-> score table is a calibrated ladder (25 / 30 / 35–40 / 45 / 50 / 60)
-> that interacts with `risk.thresholds.challenge_at` and `block_at` —
+> score table is a calibrated ladder (25 / 30 / 35–40 / 45 / 50 / 60 /
+> 70 / 80 / 100) that interacts with `risk.thresholds.challenge_at` and `block_at` —
 > changing one without the other breaks both. Operators tune posture
 > by adjusting thresholds, moving classes to `log_only`, applying
 > per-tier overrides, or scoping `RaiseRisk(delta)` rules to a

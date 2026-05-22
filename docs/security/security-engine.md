@@ -192,7 +192,7 @@ block on their own; they accumulate signals.
 | Body abuse | `body_abuse`, `xxe`, `mass_assignment`, `proto_pollution` | Body (size, nesting, JSON / XML / form) — `proto_pollution` sub-tag (score 45) added 2026-05-08 (GAP-010) |
 | Recon | `recon_path`, `recon_tool` | URL patterns + path entropy (`/.env`, `/wp-admin/…`, Docker REST) — framework recon (Spring actuator danger paths / Laravel Ignition / Swagger / GraphQL / K8s API / Kibana / Jenkins / CGI / Prometheus federation) added 2026-05-08 (GAP-001) |
 | Brute force | `brute_force` | Login endpoints (failure counter via `velocity.rs`) |
-| Command injection | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, Log4Shell `${jndi:...}` (score 60) |
+| Command injection | `command_injection` | URL, body, allowlisted headers — `$()`, backticks, `\|cmd`, `;cmd`, `/bin/sh`, reverse-shell shapes, Log4Shell `${jndi:...}` (score 80) |
 | Template injection | `template_injection` | URL, body — Jinja2 / Twig / SpEL / Freemarker / Velocity / Handlebars |
 | NoSQL injection | `nosql_injection` | URL, body — MongoDB operator injection (`[$ne]`, `[$where]`, `"$gt":`) |
 | Open redirect | `open_redirect` | Query string — suspicious external URLs in redirect-style params (`?next=`, `?redirect_uri=`); allowlist via `cfg.detectors.open_redirect.allowed_domains` |
@@ -307,9 +307,10 @@ so the distinction matters.
 
 Sum of every signal that fired on **this single request**. Compared
 against the matched route's tier `risk_threshold` (critical 50 / high
-70 / medium 70 / low 70 by default — medium/low lowered from 80/90 on
-2026-05-21 so a single clear exploit at score 70 blocks on every tier,
-not just critical+high) to decide block vs allow.
+70 / medium 70 / low 80 by default — 2026-05-23 `low` was raised 70→80
+so a single clear exploit at score 70 blocks on critical/high/medium
+but **not** `low`; only definitive-RCE (Log4Shell, XXE = 80) and the
+canary (100) block a lone request at `low`) to decide block vs allow.
 
 **Where to edit:** the dashboard **Detectors page → Edit tier** modal
 (audit-mutated `PUT /api/tiers/{name}`). YAML equivalent in
@@ -417,9 +418,9 @@ safely without touching the calibrated score ladder):
 | SSRF | per-request + per-IP | **70** | `detectors/ssrf.rs` |
 | Header injection — CRLF / smuggling | per-request + per-IP | **70** (XFH poisoning **50**) | `detectors/header_injection.rs` |
 | Recon (probe / scanner-UA) | per-request + per-IP | **25 / 50** | `detectors/recon.rs` |
-| Body abuse (size → depth → proto-pollution → mass-assign → XXE) | per-request + per-IP | **30 / 35 / 50 / 60 / 90** | `detectors/body_abuse.rs` |
+| Body abuse (size → depth → proto-pollution → mass-assign → XXE) | per-request + per-IP | **30 / 35 / 50 / 60 / 80** | `detectors/body_abuse.rs` (XXE capped 90→80 on 2026-05-23) |
 | Brute force | per-request + per-IP | **50** (default; YAML-configurable) | `detectors/brute_force.rs` |
-| Command injection | per-request + per-IP | **70** (Log4Shell **90**) | `detectors/command_injection.rs` |
+| Command injection | per-request + per-IP | **70** (Log4Shell **80**) | `detectors/command_injection.rs` (Log4Shell capped 90→80 on 2026-05-23) |
 | Template injection (SSTI) | per-request + per-IP | **70** | `detectors/template_injection.rs` |
 | NoSQL injection | per-request + per-IP | **70** | `detectors/nosql_injection.rs` |
 | Open redirect | per-request + per-IP | **50** | `detectors/open_redirect.rs` |
@@ -481,7 +482,7 @@ Host: localhost:8080
 
 1. **Listener** parses the request.
 2. **Route table** matches `catch-all` (no host pin, prefix `/`).
-   Tier = `low` (threshold 70). Upstream = `stub-pool`.
+   Tier = `low` (threshold 80). Upstream = `stub-pool`.
 3. **Access gate**: source IP not blacklisted, not rate-limited.
    Strike score = 0. Pass.
 4. **Detector chain** runs all enabled detectors. The sqli detector's
@@ -489,19 +490,20 @@ Host: localhost:8080
    `Signal { tag: "sqli", score: 70 }`.
 5. **Rule engine** has no operator rule matching this URL. No-op.
 6. **Per-request tier gate** (Option B, 2026-05-20; thresholds amended
-   2026-05-21): the request's summed detector score (`70`) is compared
-   to the matched tier's `risk_threshold`. For `low` that's now **70 —
-   `70 ≥ 70`, so the WAF BLOCKS** (403). All tiers default ≤ 70, so a
-   single clear exploit blocks regardless of path. RCE-class hits
-   (Log4Shell, XXE = 90) and canary (100) block with extra margin.
-   A weaker single signal (e.g. lone `recon` = 50) stays under 70, so
-   it forwards as `allow` — but the audit + `X-WAF-Rule-Id` still
-   record `recon` (see step 7).
-7. **Audit + metrics**: `action: "block"`, `rule_id: "sqli"`
+   2026-05-23): the request's summed detector score (`70`) is compared
+   to the matched tier's `risk_threshold`. For `low` that's now **80 —
+   `70 < 80`, so the per-request gate ALLOWS** (forwarded, detected). At
+   `low` only definitive-RCE (Log4Shell, XXE = 80) and the canary (100)
+   block a lone request; on a critical/high/medium route (threshold
+   ≤ 70) this same sqli would have blocked outright (403). The detection
+   is NOT silent — see step 7 — and the IP still accumulates risk
+   (step 8), which is what eventually blocks a repeat offender on `low`.
+7. **Audit + metrics**: `action: "allow"`, `rule_id: "sqli"`
    (matches the `X-WAF-Rule-Id` header), `fields.detectors: ["sqli"]`,
-   `risk_score: 70`. For an under-threshold forward the action is
-   `allow` but `rule_id`/`X-WAF-Rule-Id` still carry the fired
-   detectors — the detection is never silent.
+   `risk_score: 70`. Under-threshold forwards still carry the fired
+   detectors in `rule_id`/`X-WAF-Rule-Id` — the detection is never
+   silent. (On a critical/high/medium route the same hit records
+   `action: "block"`.)
 8. **Cumulative IP risk score** climbs by `max(signal)` = 70 (the
    cumulative gate uses max per SEC-M003, not the per-request sum).
    Two more hits in 5 min

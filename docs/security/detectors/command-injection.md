@@ -155,11 +155,12 @@ Added 2026-05-08 (Run-5 GAP-008). Log4Shell is RCE-class command injection — t
 
 Broader header scans risk overlap with `header_injection`; the allowlist is conservative.
 
-**Score: 60.** One tier above baseline cmdi because:
+**Score: 80** (2026-05-23, capped from 90). The detector ceiling
+(canary excepted), one tier above baseline cmdi (70) because:
 
 - CVSS 10.0 (most severe CVE in years; active worldwide exploitation).
 - Pattern specificity: `${jndi:<scheme>://` is so specific that FP rate is essentially zero on real traffic.
-- One hit + one prior risk-event reaches `block_at: 80` (60 + 30 = 90). Two consecutive hits cap at 100 (60 + 60 → max-clamp). Effectively: confirmed Log4Shell payload escalates to block within 1-2 requests.
+- A single hit (score 80) clears the per-request tier gate on **every** tier — including `low` (threshold 80) — so a confirmed Log4Shell payload blocks on the first request regardless of route. Cumulatively, one hit (max-signal 80) also meets `block_at: 80`.
 
 **Field tag stays `command_injection`** — audit log records the firing detector class, not the sub-pattern. Operators investigating high-cmdi-volume from a host can grep their audit log for `${jndi:` to identify Log4Shell specifically.
 
@@ -222,7 +223,7 @@ The Run-6 "missed" verdict was a deployment-vs-code timing discrepancy — patte
 - 4 direct shell invocation
 - 2 exfil shapes
 - 9 negative cases (clean queries, base64, bare pipes, legacy `;`, etc.)
-- **14 Log4Shell cases (Run-5 GAP-008):** direct JNDI URLs (LDAP/RMI/DNS), bare `${jndi:`, nested `${${::-j}...}` obfuscation, case-fold `${${lower:j}ndi:...}`, env-lookup `${${env:HOME:-j}ndi:...}`, header-scan positives (UA / Referer / X-Api-Version), score-tier verification (60 for Log4Shell, 50 for baseline cmdi), `${HOME}` plain envvar negative
+- **14 Log4Shell cases (Run-5 GAP-008):** direct JNDI URLs (LDAP/RMI/DNS), bare `${jndi:`, nested `${${::-j}...}` obfuscation, case-fold `${${lower:j}ndi:...}`, env-lookup `${${env:HOME:-j}ndi:...}`, header-scan positives (UA / Referer / X-Api-Version), score-tier verification (80 for Log4Shell, 70 for baseline cmdi), `${HOME}` plain envvar negative
 
 Plus rule_map regression test in `aegis-control::interop::rule_map::tests::command_injection_maps_to_rules_engine`.
 
