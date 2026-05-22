@@ -173,6 +173,21 @@ ddos:
   tightened_per_ip_rps: 20   # per-IP cap during spike (cluster-wire deferred)
 
 # ---------------------------------------------------------------------------
+# Adaptive load shedder (Gradient2). Tier-aware availability gate, NOT a
+# detector: when in-flight concurrency exceeds the adaptive limit it sheds
+# with 503 (Critical never shed; Low → Medium → High shed in that order).
+# The limit auto-tunes from WAF-inspection RTT only (upstream latency is
+# excluded — see crates/aegis-proxy/src/shed.rs).
+# 2026-05-22 — sized for >=10k RPS. By Little's law concurrency ≈ RPS ×
+# WAF-latency; with sub-ms inspection a 20k ceiling leaves ample headroom,
+# and the 2k floor stops a transient RTT blip from shedding healthy load.
+# ---------------------------------------------------------------------------
+load_shedder:
+  enabled: true
+  initial_limit: 20000       # adaptive ceiling (max concurrent in WAF)
+  min_limit: 2000            # floor — never shed below this concurrency
+
+# ---------------------------------------------------------------------------
 # Rules — engine on; no custom rules by default. Detector chain handles
 # OWASP shapes; custom rules go in config/rules/*.yaml when needed.
 # ---------------------------------------------------------------------------

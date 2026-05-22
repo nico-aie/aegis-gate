@@ -1337,6 +1337,16 @@ pub(crate) async fn forward_allow_to_upstream(
 ) {
     use aegis_control::interop::headers::DecisionTag;
 
+    // Load shedder gradient signal — feed WAF-inspection latency ONLY.
+    // We are at the allow path *before* the upstream connect, so
+    // `request_start.elapsed()` is the time spent inside the WAF
+    // (parse + detectors + gates) with zero upstream round-trip mixed
+    // in. Recording here keeps the shedder from treating a slow backend
+    // as WAF overload — see shed.rs `record_rtt`.
+    if let Some(shedder) = ctx.load_shedder.get() {
+        shedder.record_rtt(request_start.elapsed());
+    }
+
     let host = parts
         .headers
         .get(hyper::header::HOST)
