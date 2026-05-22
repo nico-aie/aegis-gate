@@ -19,13 +19,18 @@ static RECON_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:wp-config\.php)",
         r"(?i)(?:web\.config)",
         r"(?i)(?:phpinfo\(\))",
-        r"(?i)(?:wp-admin)",
-        r"(?i)(?:wp-login)",
-        r"(?i)(?:administrator)",
-        r"(?i)(?:phpmyadmin)",
-        r"(?i)(?:adminer)",
+        // 2026-05-22 FP fix — anchor admin-panel probes to a path
+        // SEGMENT (preceded by `/` or start, followed by a boundary)
+        // so `/wp-admin/`, `/administrator/`, `/adminer.php` still match
+        // but mid-word legit paths don't (`/api/administrators`,
+        // `/myadminer-helper`).
+        r"(?i)(?:^|/)wp-admin(?:$|[/?])",
+        r"(?i)(?:^|/)wp-login(?:$|[/?.])",
+        r"(?i)(?:^|/)administrator(?:$|[/?])",
+        r"(?i)(?:^|/)phpmyadmin(?:$|[/?])",
+        r"(?i)(?:^|/)adminer(?:$|[/?.])",
         r"(?i)(?:/debug/)",
-        r"(?i)(?:/console)",
+        r"(?i)(?:/console)(?:$|[/?])",
         r"(?i)(?:elmah\.axd)",
         r"(?i)(?:trace\.axd)",
         r"(?i)(?:server-status)",
@@ -345,6 +350,18 @@ mod tests {
     path_positive!(test_php,                 "/test.php");
     path_positive!(i_php,                    "/i.php");
     path_positive!(phpinfo_php_with_query,   "/phpinfo.php?details=1");
+
+    // 2026-05-22 FP fix — anchored admin-panel probes still fire as a
+    // path segment...
+    path_positive!(administrator_panel,   "/administrator/");
+    path_positive!(administrator_index,   "/administrator/index.php");
+    path_positive!(console_subpath,       "/console/login");
+    // ...but mid-word legit paths no longer false-positive.
+    path_negative!(fp_api_administrators, "/api/administrators");
+    path_negative!(fp_administration,     "/users/administration");
+    path_negative!(fp_console_dashboard,  "/console-dashboard");
+    path_negative!(fp_my_adminer_helper,  "/myadminer-helper");
+    path_negative!(fp_wp_admin_guide,     "/blog/wp-administration-tips");
 
     // UA-based positive tests.
     macro_rules! ua_positive {
