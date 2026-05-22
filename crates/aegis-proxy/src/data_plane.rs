@@ -302,6 +302,7 @@ pub(crate) async fn handle_data_request_inner(
             req.uri(),
             req.method(),
             bus,
+            None,
         );
         if blk_mode == aegis_control::interop::headers::Mode::LogOnly {
             log_only_intent = Some(block_tag);
@@ -359,6 +360,7 @@ pub(crate) async fn handle_data_request_inner(
             req.uri(),
             req.method(),
             bus,
+            None,
         );
         if stk_mode == aegis_control::interop::headers::Mode::LogOnly {
             log_only_intent = Some(tag);
@@ -463,6 +465,7 @@ pub(crate) async fn handle_data_request_inner(
                             req.uri(),
                             req.method(),
                             bus,
+                            None,
                         );
                         return (resp, DecisionTag::block("ddos"));
                     }
@@ -1139,6 +1142,15 @@ pub(crate) async fn handle_data_request_inner(
                 // so the AttacksAggregator can map it to "ip-risk"
                 // instead of falling through to "unknown". See the
                 // matching stamp on the Strike-Block path above.
+                // 2026-05-22 — attach the redacted request echo so a
+                // risk-score block shows headers + body + cookies in the
+                // detail drawer, like detector blocks do. Same verbosity
+                // gate as the detector-block echo.
+                let rs_echo = if !load_mode.is_critical() && allow_verbose_fields {
+                    Some(request_echo_fields(&parts.headers, Some(&body_bytes)))
+                } else {
+                    None
+                };
                 let resp = blocked_response(
                     peer,
                     "blocked by risk score",
@@ -1147,6 +1159,7 @@ pub(crate) async fn handle_data_request_inner(
                     &parts.uri,
                     &parts.method,
                     bus,
+                    rs_echo,
                 );
                 if rs_mode == aegis_control::interop::headers::Mode::LogOnly {
                     log_only_intent = Some(tag);
@@ -2559,8 +2572,28 @@ mod request_echo_tests {
         let hdrs = echo["request_headers"].as_object().unwrap();
         assert_eq!(hdrs["user-agent"], "curl/8.0");
         assert_eq!(hdrs["authorization"], "[redacted]");
-        assert_eq!(hdrs["cookie"], "[redacted]");
+        // cookie is now shown with per-pair redaction; `session` is sensitive.
+        assert_eq!(hdrs["cookie"], "session=[redacted]");
         assert_eq!(hdrs["x-api-key"], "[redacted]");
+    }
+
+    #[test]
+    fn cookie_shows_pairs_but_masks_sensitive_values() {
+        let h = headers(&[(
+            "cookie",
+            "_ga=GA1.2.3; sessionid=abc123; consent=yes; auth_token=xyz; ab_test=onerror=1",
+        )]);
+        let echo = request_echo_fields(&h, None);
+        let c = echo["request_headers"]["cookie"].as_str().unwrap();
+        // non-credential cookies stay visible (this is the FP-debugging value)
+        assert!(c.contains("_ga=GA1.2.3"), "analytics cookie shown: {c}");
+        assert!(c.contains("consent=yes"), "consent cookie shown: {c}");
+        assert!(c.contains("ab_test=onerror=1"), "state cookie shown: {c}");
+        // credential cookies are masked
+        assert!(c.contains("sessionid=[redacted]"), "session masked: {c}");
+        assert!(c.contains("auth_token=[redacted]"), "auth masked: {c}");
+        // the secret values themselves never appear
+        assert!(!c.contains("abc123") && !c.contains("xyz"), "no secret leak: {c}");
     }
 
     #[test]
@@ -2808,10 +2841,19 @@ fn request_echo_fields(
     let mut hdrs = serde_json::Map::new();
     for (name, value) in headers.iter().take(MAX_HEADERS) {
         let key = name.as_str().to_ascii_lowercase();
-        let rendered = if is_sensitive_header(&key) {
+        let val_str = value.to_str().unwrap_or("[binary]");
+        // 2026-05-22 — the `cookie` header is shown for blocked-request
+        // forensics (which cookie tripped a detector?), but the VALUES of
+        // sensitive-named cookie pairs (session / auth / token / csrf / …)
+        // are masked so session credentials never reach the audit chain or
+        // dashboard. Other sensitive headers (authorization, x-*-token, …)
+        // stay fully masked.
+        let rendered = if key == "cookie" {
+            redact_cookie(val_str)
+        } else if is_sensitive_header(&key) {
             "[redacted]".to_string()
         } else {
-            value.to_str().unwrap_or("[binary]").to_string()
+            val_str.to_string()
         };
         // Last value wins for repeated header names — multi-valued
         // request headers are rare and the preview is forensic, not
@@ -2847,11 +2889,52 @@ fn request_echo_fields(
 /// Header names whose VALUES carry secrets and must never reach the
 /// audit log / dashboard. The name itself is still surfaced so an
 /// operator can see the header was present.
+/// Render a `Cookie` header value for the forensic echo: each
+/// `name=value` pair is preserved so operators can see which cookie
+/// tripped a detector, but the value is masked when the cookie NAME
+/// looks sensitive (session / auth / token / csrf / …). Session
+/// credentials therefore never reach the audit chain or dashboard,
+/// while analytics / consent / state cookies stay visible for
+/// false-positive debugging.
+fn redact_cookie(raw: &str) -> String {
+    raw.split(';')
+        .map(|pair| {
+            let pair = pair.trim();
+            match pair.split_once('=') {
+                Some((name, _)) if is_sensitive_cookie_name(name.trim()) => {
+                    format!("{}=[redacted]", name.trim())
+                }
+                _ => pair.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Cookie names whose VALUES carry credentials / CSRF tokens / session
+/// identifiers and must be masked even in a blocked-request echo.
+fn is_sensitive_cookie_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.ends_with("sid")          // sid / jsessionid / phpsessid / asp.net_sessionid
+        || n.contains("session")
+        || n.contains("token")
+        || n.contains("auth")
+        || n.contains("jwt")
+        || n.contains("csrf")
+        || n.contains("xsrf")
+        || n.contains("secret")
+        || n.contains("password")
+        || n.contains("apikey")
+        || n.contains("api-key")
+}
+
 fn is_sensitive_header(lower_name: &str) -> bool {
     const EXACT: &[&str] = &[
         "authorization",
         "proxy-authorization",
-        "cookie",
+        // `cookie` is intentionally NOT here — it's rendered with
+        // per-pair redaction by `redact_cookie` so blocked-request
+        // forensics can see non-credential cookies.
         "set-cookie",
         "x-api-key",
         "x-auth-token",
@@ -2906,6 +2989,11 @@ fn blocked_response(
     uri: &hyper::Uri,
     method: &hyper::Method,
     bus: &AuditBus,
+    // 2026-05-22 — optional redacted request echo (headers + body
+    // preview, cookie pairs masked) merged into the audit `fields` so
+    // gate blocks (e.g. risk-score) surface the same detail drawer the
+    // detector blocks already do. `None` keeps the slim shape.
+    echo: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Response<Full<Bytes>> {
     let ev = aegis_core::audit::AuditEvent {
         schema_version: 1,
@@ -2941,10 +3029,15 @@ fn blocked_response(
         method: Some(method.to_string()),
         path: Some(uri.to_string()),
         mode: None,
-        fields: serde_json::json!({
-            "path": uri.to_string(),
-            "method": method.to_string(),
-        }),
+        fields: {
+            let mut f = serde_json::Map::new();
+            f.insert("path".to_string(), serde_json::Value::String(uri.to_string()));
+            f.insert("method".to_string(), serde_json::Value::String(method.to_string()));
+            if let Some(echo) = echo {
+                f.extend(echo);
+            }
+            serde_json::Value::Object(f)
+        },
     };
     bus.emit(ev);
     Response::builder()
