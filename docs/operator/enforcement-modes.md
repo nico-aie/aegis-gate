@@ -52,6 +52,11 @@ Resolution is **most-specific-wins**: `policy → feature → default`. A
 `scope: all` write resets the default **and** clears every feature/policy
 override.
 
+The toggleable **features** (from `GET /__waf_control/capabilities`) are:
+`access_control`, `rules_engine`, `rate_limit`, `risk_engine`, and
+`ddos` (added 2026-05-22 — so `log_only` now covers the DDoS gate too;
+see [ddos-protection.md](../security/ddos-protection.md)).
+
 ### 2. Operator — dashboard or admin API (global)
 
 All three are admin-plane, audit-mutated, and CSRF-gated:
@@ -75,6 +80,7 @@ endpoint above.
 | Action | log_only-gated | Where |
 |---|---|---|
 | `block` (detectors, blacklist, strike-block, risk-score) | ✅ | data plane gates |
+| `block` (DDoS per-IP burst, rule `ddos`) | ✅ | data plane — `ddos` feature (added 2026-05-22). Also has its own `ddos.observe_only` config flag; `enforce` needs both mode=enforce AND observe_only=false |
 | `rate_limit` (per-IP gate) | ✅ | data plane |
 | `challenge` (cumulative-risk PoW) | ✅ | data plane (fixed 2026-05-22) |
 | `timeout` / `circuit_breaker` | n/a | upstream-availability outcomes — the contract carves these out of the "must not apply" rule |
@@ -88,7 +94,7 @@ endpoint above.
 - **Current state:** `GET /__waf_control/capabilities` →
   `active.default_mode` + `active.overrides`; or `GET /api/mode`.
 - **Regression test:** [`tests/interop/dr-t6-mode-enforcement.sh`](../../tests/interop/dr-t6-mode-enforcement.sh)
-  exercises `block` + `rate_limit` × `enforce` / `log_only` end-to-end;
+  exercises `block` + `rate_limit` + `ddos` × `enforce` / `log_only` end-to-end;
   [`dr-t3-mode-cycle.sh`](../../tests/interop/dr-t3-mode-cycle.sh) checks
   the header flips + scope overrides.
 

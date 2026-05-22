@@ -76,6 +76,9 @@ pub fn rule_to_feature(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "risk-strikes" => ("risk_engine", "strikes"),
         "risk-score" | "risk-challenge" => ("risk_engine", "score"),
 
+        // ---- ddos ----
+        "ddos" => ("ddos", "per_ip"),
+
         // System-level signals (body-too-large, mtls_required,
         // websocket_*, unmatched_route, …) — not toggleable by
         // policy, always enforce.
@@ -271,6 +274,17 @@ mod tests {
             rule_to_feature("ip-rate-limit"),
             Some(("rate_limit", "per_ip")),
         );
+    }
+
+    #[test]
+    fn ddos_rule_id_routes_to_ddos_feature() {
+        assert_eq!(rule_to_feature("ddos"), Some(("ddos", "per_ip")));
+        // log_only on the ddos feature resolves for the ddos rule_id.
+        let store = ModeStore::new(Mode::Enforce);
+        store.set_feature("ddos", Mode::LogOnly);
+        assert_eq!(mode_for_rule(&store, Some("ddos")), Mode::LogOnly);
+        // other features unaffected.
+        assert_eq!(mode_for_rule(&store, Some("sqli")), Mode::Enforce);
     }
 
     #[test]
