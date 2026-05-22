@@ -123,9 +123,14 @@ static EVASION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)^\s*javascript\s*:",
         // data: scheme — HTML injection via redirect.
         r"(?i)^\s*data\s*:",
-        // URL-encoded scheme prefix; catches `%2F%2Fevil.com`,
-        // `%6A%61%76%61%73%63%72%69%70%74:` (encoded `javascript:`).
-        r"(?i)^\s*(?:%2[fF])(?:%2[fF])?(?:https?|javascript|data)?\s*(?:%3[aA]|:)?",
+        // 2026-05-22 FP fix — encoded protocol-relative `//` only
+        // (`%2F%2Fevil.com`). The old pattern required just a SINGLE
+        // leading `%2F`, so a legit encoded RELATIVE path like
+        // `next=%2Fdashboard` (encoded `/dashboard`) falsely flagged.
+        // Encoded SCHEME tricks (`%6A%61…` = `javascript:`) are still
+        // caught: the detector also matches the url-decoded value
+        // against the `^javascript:` / `^data:` patterns above.
+        r"(?i)^\s*(?:%2[fF]){2}",
         // `@`-userinfo trick — the REAL host is after the `@`
         // (`https://trusted.com@evil.com`). No legit redirect uses
         // userinfo in the authority.
@@ -454,6 +459,10 @@ mod tests {
     }
 
     negative!(or_relative_path,       "/login?next=/dashboard");
+    // 2026-05-22 FP fix — a single-encoded relative path is NOT an
+    // open redirect (encoded `/dashboard`, `/account/settings`).
+    negative!(or_encoded_relative,        "/login?next=%2Fdashboard");
+    negative!(or_encoded_relative_nested, "/r?redirect=%2Faccount%2Fsettings");
     negative!(or_empty_value,         "/login?next=");
     negative!(or_no_query,            "/login");
     negative!(or_query_no_redirect,   "/login?utm=campaign&id=42");
