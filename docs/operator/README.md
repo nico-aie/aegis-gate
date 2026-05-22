@@ -14,6 +14,7 @@ Start here if you have a binary and need to make it do something.
 | [benchmark-mode.md](./benchmark-mode.md) | Opt-in diagnostic mode — per-request `X-Aegis-*` response headers + dashboard panels |
 | [risk-tuning.md](./risk-tuning.md) | **What to do when a detector fires too much / too little** — why scores aren't UI-editable, and the safe knobs available (`set_profile log_only`, `risk.thresholds`, `RaiseRisk` rules, per-tier overrides, allowlists) |
 | [traffic-gates.md](./traffic-gates.md) | **The four binary block-or-pass gates** that fire BEFORE the detector chain (access list, strike-block, rate-limit, DDoS) — operator workflow, tuning, and "why was my legit traffic blocked?" diagnostics |
+| [enforcement-modes.md](./enforcement-modes.md) | **`enforce` vs `log_only`** — how the committee (`set_profile`) and operators (dashboard / `PUT /api/mode`) toggle enforcement, the scope/granularity rules, and how to verify via `X-WAF-Mode` |
 | [profiles.md](./profiles.md) | Pick the right `config/profiles/*.yaml` — empirical comparison + per-knob trade-off table |
 
 For testing the running system end-to-end, see
