@@ -1144,7 +1144,11 @@ function PageLiveFeed() {
                     })()}
                   </td>
                   <td onClick={ev => ev.stopPropagation()}>
-                    <button className="icon-btn" title="Inspect"><window.I.External /></button>
+                    <button
+                      className="icon-btn"
+                      title="Inspect"
+                      onClick={() => { setCursorIdx(idx); setSelected(e); }}
+                    ><window.I.External /></button>
                   </td>
                 </tr>
               ))}
