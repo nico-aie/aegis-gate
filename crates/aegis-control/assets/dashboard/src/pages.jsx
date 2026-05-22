@@ -340,15 +340,15 @@ function PageOverview() {
         <window.StatTile
           title="Requests / s"
           value={requestRate !== undefined ? requestRate.toFixed(1) : '—'}
-          sub={<>1-second sliding average</>}
+          sub={<>10-second sliding average</>}
           icon={<window.I.Activity />}
           sparkData={sparkTotal}
           sparkColor="#3B82F6"
         />
         <window.StatTile
-          title="Block rate · since start"
+          title="Block rate · last 10s"
           value={blockRate !== undefined ? `${blockRate.toFixed(1)}%` : '—'}
-          sub={<><span className="num">{blocksTotal.toLocaleString()}</span> blocked · process-lifetime (not windowed)</>}
+          sub={<><span className="num">{blocksTotal.toLocaleString()}</span> blocked · process-lifetime count</>}
           icon={<window.I.Ban />}
           tone="down"
           sparkData={sparkBlocked}
@@ -2162,7 +2162,7 @@ function SecOpsPostureCard() {
         ? `${requestRate.toFixed(1)} req/s`
         : '— req/s',
       tone: 'neutral',
-      title: 'Live request rate · /api/stats',
+      title: 'Request rate · 10-second average · /api/stats',
       href: '#/overview',
     },
     {
@@ -2170,7 +2170,7 @@ function SecOpsPostureCard() {
         ? `${blockRate.toFixed(1)}% blocked`
         : `${blocksTotal.toLocaleString()} blocked`,
       tone: 'neutral',
-      title: 'Block rate · process-lifetime · /api/stats',
+      title: 'Block rate · last 10s window · /api/stats',
       href: '#/live',
     },
     {
@@ -3414,6 +3414,69 @@ function DetectorMaskCard() {
   );
 }
 
+// 2026-05-22 — Availability gate explainer. `load_shed` is the one
+// "block reason" that appears in Attack distribution / Top Attackers
+// but has NO row in the Base detector mask, which confused operators.
+// This read-only card states plainly: it is a tier-aware adaptive
+// concurrency shedder, not a content detector. It sheds (503 +
+// Retry-After) only when in-flight concurrency exceeds the adaptive
+// limit, and it respects the SAME risk tiers shown below — Critical is
+// never shed; Low/Medium/High shed in that order. The limit auto-tunes
+// from WAF-inspection latency ONLY (upstream RTT is excluded, so a slow
+// backend never makes a healthy WAF shed). Tunables live in the
+// `load_shedder:` config block; see docs/data-plane/adaptive-load-shedding.md.
+function LoadShedGateCard() {
+  return (
+    <div data-component="load-shed-gate-card" className="card" style={{ marginBottom: 12, padding: 0 }}>
+      <div className="card-head" style={{ padding: 12 }}>
+        <div>
+          <div className="card-title">
+            Availability gate · load_shed
+            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '2px 6px', borderRadius: 4, background: 'var(--surface-active)' }}>
+              not a detector
+            </span>
+          </div>
+          <div className="card-subtitle">
+            You won't find <code>load_shed</code> in the Base mask above — it
+            isn't a content detector. It's an adaptive concurrency shedder
+            (Gradient2) that returns <span className="num">503</span> +{' '}
+            <code>Retry-After: 1</code> only when in-flight requests exceed the
+            auto-tuned limit. It appears in Attack distribution because the
+            aggregator buckets every block by <code>rule_id</code>.
+          </div>
+        </div>
+      </div>
+
+      <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* Shed order — keyed off the very tiers listed below this card. */}
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>
+            Shed order under overload
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11, color: 'var(--ink-dim)' }}>
+            <span className="pill tier-low">Low</span>
+            <span className="pill tier-med">Medium</span>
+            <span className="pill tier-high">High</span>
+            <span>shed first → in that order;</span>
+            <span className="pill tier-crit">Critical</span>
+            <span style={{ fontWeight: 600, color: 'var(--ink)' }}>never shed.</span>
+          </div>
+        </div>
+
+        {/* The single most important property — why it doesn't false-trip. */}
+        <div style={{ fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.5 }}>
+          The limit auto-tunes from <strong style={{ color: 'var(--ink)' }}>WAF-inspection
+          latency only</strong> — the upstream round-trip is excluded, so a slow
+          or jittery backend never makes a healthy WAF shed traffic it could
+          serve. Tune via the <code>load_shedder:</code> block
+          (<code>enabled</code> / <code>initial_limit</code> / <code>min_limit</code>)
+          in your config profile.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Read-only score reference — sits inside the unified Detectors
 // card. The tier legend is always visible so operators can decode
 // the chip colours in the mask grid above without hunting; the
@@ -3990,6 +4053,13 @@ function PageTierConfig() {
           card so operators see the full detector inventory in
           one place). */}
       <DetectorMaskCard />
+
+      {/* 2026-05-22 — load_shed explainer. Operators kept hunting for a
+          `load_shed` row in the Base mask above (it surfaces in Attack
+          distribution because the aggregator buckets every block by
+          rule_id). It is NOT a detector: it is a tier-aware availability
+          gate. Documenting it here, next to the tiers it keys off of. */}
+      <LoadShedGateCard />
 
       <div className="split-list">
         <div className="left">

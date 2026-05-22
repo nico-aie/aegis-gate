@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use aegis_core::tier::Tier;
 
@@ -41,25 +41,17 @@ impl LoadShedder {
         }
     }
 
-    /// Record a completed request's RTT and update the gradient.
+    /// Record one request's **WAF-inspection** RTT and update the
+    /// gradient. IMPORTANT (2026-05-22): feed this the WAF's own
+    /// processing time only — NOT the upstream round-trip. Mixing in
+    /// upstream latency makes a slow/jittery backend look like WAF
+    /// overload, so a healthy WAF sheds traffic it could handle (the
+    /// failure mode at high RPS). The data plane records
+    /// `request_start.elapsed()` at the upstream-forward boundary.
     pub fn record_rtt(&self, rtt: Duration) {
         let us = rtt.as_micros() as u64;
         if us == 0 {
             return;
-        }
-
-        // Update min RTT.
-        let mut current_min = self.rtt_min_us.load(Ordering::Relaxed);
-        while us < current_min {
-            match self.rtt_min_us.compare_exchange_weak(
-                current_min,
-                us,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(actual) => current_min = actual,
-            }
         }
 
         // Exponential moving average for current RTT.
@@ -71,6 +63,24 @@ impl LoadShedder {
             (alpha * us as f64 + (1.0 - alpha) * prev as f64) as u64
         };
         self.rtt_now_us.store(smoothed, Ordering::Relaxed);
+
+        // rtt_min tracks the RECENT best, not the all-time best.
+        // 2026-05-22 — a new low sets it immediately; otherwise it
+        // DECAYS UPWARD (~0.2 %/sample, capped below the smoothed RTT)
+        // so a single ultra-fast sample (e.g. a 0.3 ms cache hit)
+        // can't pin the gradient near zero forever — which previously
+        // pegged the limit at `min_limit` and shed healthy traffic.
+        let current_min = self.rtt_min_us.load(Ordering::Relaxed);
+        if us < current_min {
+            let _ = self.rtt_min_us.compare_exchange(
+                current_min, us, Ordering::Relaxed, Ordering::Relaxed,
+            );
+        } else if current_min != u64::MAX {
+            let decayed = (current_min + current_min / 512 + 1).min(smoothed.max(1));
+            let _ = self.rtt_min_us.compare_exchange(
+                current_min, decayed, Ordering::Relaxed, Ordering::Relaxed,
+            );
+        }
 
         // Gradient: gradient = rtt_min / rtt_now ∈ (0, 1].
         //
@@ -167,35 +177,34 @@ impl LoadShedder {
         }
     }
 
-    /// RAII admit: `acquire`s a slot, captures `Instant::now()`, and
-    /// returns a guard whose `Drop` calls `release` + `record_rtt`
-    /// with the elapsed time. Use in the data plane so a request
-    /// cancelled mid-flight still releases its slot and feeds RTT
-    /// signal to the Gradient2 adapter — `acquire` + `release`
-    /// without RAII would leak the counter on any future that
-    /// drops between the two calls (same class of bug as
-    /// F-CRITICAL-008's inflight counter).
+    /// RAII admit: `acquire`s an in-flight slot and returns a guard
+    /// whose `Drop` `release`s it — so a request cancelled or panicking
+    /// mid-flight still frees its slot (a manual acquire/release would
+    /// leak the counter on any future that drops between the two).
+    ///
+    /// 2026-05-22 — the guard NO LONGER records RTT on drop. Its old
+    /// behaviour timed the WHOLE request (WAF + upstream), so upstream
+    /// latency drove the gradient and a slow backend looked like WAF
+    /// overload. The data plane now records WAF-inspection-only latency
+    /// via [`record_rtt`] at the upstream-forward boundary; the guard is
+    /// purely the concurrency counter.
     pub fn admit_guard(self: &Arc<Self>) -> ShedGuard {
         self.acquire();
         ShedGuard {
             shedder: Arc::clone(self),
-            start: Instant::now(),
         }
     }
 }
 
-/// RAII guard issued by [`LoadShedder::admit_guard`]. Drop releases
-/// the in-flight slot and records the request's RTT into the
-/// Gradient2 estimator.
+/// RAII guard issued by [`LoadShedder::admit_guard`]. Drop releases the
+/// in-flight slot. RTT is recorded separately (WAF-inspection-only).
 pub struct ShedGuard {
     shedder: Arc<LoadShedder>,
-    start: Instant,
 }
 
 impl Drop for ShedGuard {
     fn drop(&mut self) {
         self.shedder.release();
-        self.shedder.record_rtt(self.start.elapsed());
     }
 }
 
@@ -404,5 +413,37 @@ mod tests {
         assert_eq!(critical_ok, total);
         // CatchAll: should be fully shed.
         assert_eq!(catchall_ok, 0);
+    }
+
+    #[test]
+    fn rtt_min_decays_so_one_fast_sample_doesnt_peg_limit_low() {
+        // 2026-05-22 regression — a single ultra-fast sample used to
+        // latch rtt_min forever, so every normal request looked
+        // "stressed" (gradient ≪ 0.9) and the limit pinned at min_limit,
+        // shedding healthy traffic. With rtt_min decay, a steady normal
+        // latency lets the gradient recover toward 1 and the limit climbs
+        // back well above the floor.
+        let s = LoadShedder::new(1000, 100);
+        s.record_rtt(Duration::from_micros(300)); // ultra-fast outlier
+        for _ in 0..2000 {
+            s.record_rtt(Duration::from_millis(3)); // steady normal WAF latency
+        }
+        assert!(
+            s.current_limit() > 100,
+            "limit must recover above min_limit after rtt_min decays: got {}",
+            s.current_limit(),
+        );
+    }
+
+    #[test]
+    fn admit_guard_does_not_record_rtt() {
+        // 2026-05-22 — RTT is recorded explicitly (WAF-inspection-only),
+        // NOT by the guard. Dropping a guard must not feed the gradient
+        // (otherwise upstream latency would drive shedding).
+        let s = Arc::new(LoadShedder::new(100, 10));
+        {
+            let _g = s.admit_guard();
+        }
+        assert!(s.min_rtt().is_none(), "guard drop must not record RTT");
     }
 }

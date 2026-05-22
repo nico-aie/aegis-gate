@@ -132,6 +132,18 @@ ddos:
   spike_multiplier: 4.0
   tightened_per_ip_rps: 100
 
+# Adaptive load shedder (Gradient2). Tier-aware availability gate, NOT a
+# detector: sheds with 503 when in-flight concurrency exceeds the adaptive
+# limit (Critical never shed; Low → Medium → High shed in that order). The
+# limit auto-tunes from WAF-inspection RTT only — upstream latency excluded
+# (see crates/aegis-proxy/src/shed.rs). 2026-05-22 — this is the
+# throughput-tuned profile, so the ceiling is doubled vs balanced/strict
+# (40k) to comfortably clear >=10k RPS with sub-ms inspection; 4k floor.
+load_shedder:
+  enabled: true
+  initial_limit: 40000
+  min_limit: 4000
+
 rules:
   paths: []
   max_rule_count: 10000
