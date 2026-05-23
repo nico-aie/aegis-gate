@@ -307,10 +307,13 @@ so the distinction matters.
 
 Sum of every signal that fired on **this single request**. Compared
 against the matched route's tier `risk_threshold` (critical 50 / high
-70 / medium 70 / low 80 by default — 2026-05-23 `low` was raised 70→80
-so a single clear exploit at score 70 blocks on critical/high/medium
-but **not** `low`; only definitive-RCE (Log4Shell, XXE = 80) and the
-canary (100) block a lone request at `low`) to decide block vs allow.
+60 / medium 70 / low 80 by default — 2026-05-23 clean 10-apart ladder,
+settable per profile via the `tiers:` config block. A single clear
+exploit at score 70 blocks on critical/high/medium but **not** `low`;
+only definitive-RCE (Log4Shell, XXE = 80) and the canary (100) block a
+lone request at `low`. At high=60, score-60 signals — AI,
+mass_assignment, velocity — block on a single hit at `high`) to decide
+block vs allow.
 
 **Where to edit:** the dashboard **Detectors page → Edit tier** modal
 (audit-mutated `PUT /api/tiers/{name}`). YAML equivalent in

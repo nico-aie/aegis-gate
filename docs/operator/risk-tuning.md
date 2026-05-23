@@ -8,14 +8,17 @@
 > **2026-05-20 — per-request tier gate (Option B), amended 2026-05-23.**
 > A request is blocked per-request when the **sum** of its detector
 > scores reaches the matched tier's per-request threshold
-> (`risk_threshold`: critical 50 / high 70 / medium 70 / low 80). This
-> is separate from the **cumulative** IP-risk gate (which accumulates
-> across requests and decays). A single clear exploit
+> (`risk_threshold`: critical 50 / high 60 / medium 70 / low 80 — a
+> clean 10-apart ladder, settable per profile via the `tiers:` config
+> block). This is separate from the **cumulative** IP-risk gate (which
+> accumulates across requests and decays). A single clear exploit
 > (sqli/xss/ssrf/path_traversal/cmdi/ssti/nosql/CRLF = 70) blocks on
 > the protective tiers (critical, high, medium) but **not** on `low`;
 > the detector ceiling is 80 (canary excepted), so definitive-RCE
 > (Log4Shell, XXE = 80) plus the canary honeypot (100) are the only
-> detectors that block a **lone** request on `low`. Route → tier
+> detectors that block a **lone** request on `low`. At high=60, the
+> score-60 signals (AI, mass_assignment, velocity) also block on a
+> single hit at `high`. Route → tier
 > assignment therefore decides how aggressively each route blocks: put
 > sensitive/public-attack-surface routes on `critical`/`high`/`medium`;
 > a route left on `low` only blocks RCE-class single hits (or
@@ -59,8 +62,8 @@ Each detector emits a score from a small, **deliberately calibrated** ladder:
 | Tier | Score | Detectors | Meaning |
 |---|---|---|---|
 | Definitive RCE / CVE (ceiling) | **80** | Log4Shell (`${jndi:…}`), XXE | Direct compromise vector; one hit blocks on EVERY tier incl. `low` (threshold 80). 2026-05-23: capped 90→80 as the max non-canary score |
-| High-confidence exploit | **70** | sqli, xss, cmdi (baseline), ssrf, ssti, nosqli, path_traversal, header_injection (CRLF) | Unambiguous attack; one hit reaches the per-request gate on critical (50), high (70), medium (70) — but NOT `low` (80), where it must stack |
-| Privileged / mass-assignment | **60** | body mass-assignment | Strong abuse signal; blocks on critical/high/medium |
+| High-confidence exploit | **70** | sqli, xss, cmdi (baseline), ssrf, ssti, nosqli, path_traversal, header_injection (CRLF) | Unambiguous attack; one hit reaches the per-request gate on critical (50), high (60), medium (70) — but NOT `low` (80), where it must stack |
+| Privileged / mass-assignment / AI / velocity | **60** | body mass-assignment, AI verdict, velocity-sequence | Strong signal; one hit blocks on critical (50) + high (60); on medium/low it must stack |
 | Heuristic | **50** | header XFH, prototype pollution, open_redirect, recon_tool UA, brute_force | Context-dependent; blocks on critical only as a single hit, else accumulates |
 | Body shape | **30–35** | body_oversize, body_deep_nesting | Weak alone; meaningful in combination |
 | Probe / canary | **25** | recon_path | Single hit is information-only; rate / accumulation matters more than score |
@@ -69,11 +72,12 @@ Two gates consume these scores:
 
 1. **Per-request gate (Option B, 2026-05-20; amended 2026-05-23):**
    block when the **sum** of this request's detector scores ≥ the
-   matched tier's `risk_threshold` (critical 50 / high 70 / medium 70 /
-   low 80). A lone `sqli=70` blocks on critical/high/medium but NOT
-   `low` (70 < 80); two probes (`recon_path 25` + `recon_tool 50` = 75)
-   block on critical/high/medium too but not `low`; an RCE
-   (`Log4Shell 80`) blocks everywhere including `low`.
+   matched tier's `risk_threshold` (critical 50 / high 60 / medium 70 /
+   low 80 — settable per profile via the `tiers:` config block). A lone
+   `sqli=70` blocks on critical/high/medium but NOT `low` (70 < 80); two
+   probes (`recon_path 25` + `recon_tool 50` = 75) block on
+   critical/high/medium too but not `low`; an RCE (`Log4Shell 80`)
+   blocks everywhere including `low`.
 2. **Cumulative gate:** each malicious request also adds `max(signal)`
    to the per-`RiskKey` bucket (SEC-M003 — max, not sum, to avoid a
    single multi-class hit clamping the bucket). When the bucket

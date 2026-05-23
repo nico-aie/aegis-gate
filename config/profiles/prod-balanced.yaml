@@ -35,17 +35,19 @@ listeners:
 
 # ---------------------------------------------------------------------------
 # Runtime sizing (restart-only — tokio can't resize a built runtime).
-# 2026-05-23 (perf) — pin workers to cores to tighten the latency tail
-# under high RPS. Assumes a DEDICATED WAF box.
 # ---------------------------------------------------------------------------
 runtime:
   workers: auto          # = num_cpus (>= 2). One async worker per core.
-  cpu_affinity: true     # pin workers to distinct cores → less scheduler
-                         # jitter + cache migration under load (tighter p99).
-                         # Requires the binary built with `--features affinity`
-                         # (Makefile FEATURES); logged + ignored on hosts
-                         # without affinity support. Don't enable if the WAF
-                         # shares cores with the upstream / Redis.
+                         # NOTE: in a CPU-limited container, num_cpus may
+                         # report the cgroup quota (e.g. "1") — set an explicit
+                         # `workers: <N>` matched to the box if `auto` under-sizes.
+  cpu_affinity: false    # OFF by default. 2026-05-23 — pinning HURT a
+                         # containerised box (cgroup exposed "1 logical CPU",
+                         # so workers oversubscribed one core: p95 7.7→10.6ms,
+                         # p99 14→19ms). Enable ONLY on a DEDICATED bare-metal/
+                         # VM box with real, distinct, exposed cores AND the
+                         # binary built with `--features affinity`. Never in a
+                         # CPU-quota'd container.
 
 # ---------------------------------------------------------------------------
 # TLS
@@ -211,6 +213,21 @@ rules:
   strict_compile: false
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Per-tier block scores (per-request gate). A request blocks when its
+# summed detector score reaches the matched tier's risk_threshold.
+# 2026-05-23 — clean 10-apart ladder. Omit a tier to use the code
+# default; the dashboard PUT /api/tiers/<name> applies live overrides
+# (a restart re-applies this block).
+#   critical=50 / high=60 (AI/mass_assign/velocity block alone) /
+#   medium=70 (clear exploits) / low=80 (RCE + canary only).
+# ---------------------------------------------------------------------------
+tiers:
+  critical: { risk_threshold: 50 }
+  high:     { risk_threshold: 60 }
+  medium:   { risk_threshold: 70 }
+  low:      { risk_threshold: 80 }
+
 # Detector mask — full default. brute_force ON because production
 # IPs fan out (only the test harness disables it for shared-IP
 # synthetic load).

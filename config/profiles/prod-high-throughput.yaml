@@ -40,14 +40,13 @@ listeners:
   admin:
     bind: "127.0.0.1:9443"
 
-# Runtime sizing (restart-only). 2026-05-23 (perf) — this is the
-# throughput-tuned profile: one worker per core + pin to cores for the
-# tightest tail under high RPS. Assumes a dedicated WAF box;
-# cpu_affinity requires the binary built with `--features affinity`
-# (logged + ignored otherwise).
+# Runtime sizing (restart-only). Throughput-tuned: one worker per core.
+# cpu_affinity OFF by default — it HURT a containerised box (cgroup-limited
+# CPUs → oversubscription). Enable ONLY on dedicated bare-metal/VM with
+# real cores + `--features affinity`.
 runtime:
   workers: auto
-  cpu_affinity: true
+  cpu_affinity: false
 
 tls:
   min_version: "1.2"
@@ -157,6 +156,16 @@ rules:
   paths: []
   max_rule_count: 10000
   strict_compile: false
+
+# Per-tier block scores (per-request gate). 2026-05-23 — 10-apart
+# ladder; omit a tier to use the code default. Dashboard PUT
+# /api/tiers/<name> applies live overrides (restart re-applies this).
+# critical=50 / high=60 / medium=70 / low=80.
+tiers:
+  critical: { risk_threshold: 50 }
+  high:     { risk_threshold: 60 }
+  medium:   { risk_threshold: 70 }
+  low:      { risk_threshold: 80 }
 
 # Tighter detector mask: recon + brute_force OFF (their hit rates
 # are domain-specific; turn them back on if your upstream needs

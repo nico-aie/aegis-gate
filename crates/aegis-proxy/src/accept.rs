@@ -374,6 +374,15 @@ pub(crate) async fn admin_accept_loop(
     // dashboard's Configuration Backup card can fetch it.
     services.config_yaml_path = config_yaml_path;
 
+    // 2026-05-23 — seed per-tier block scores from the `tiers:`
+    // config block. Overlays the configured `risk_threshold`s onto the
+    // `defaults_for`-seeded store before the data plane shares it, so a
+    // profile's declared posture is live from the first request.
+    // Tiers omitted from config keep their code default.
+    services
+        .tiers
+        .apply_risk_thresholds(cfg.tiers.risk_threshold_overrides());
+
     // 2026-05-10 — share the TierStore between DashboardServices
     // (PUT /api/tiers/{name}) and ProxyContext (data plane reads
     // per-tier challenge/block thresholds + challenges_enabled
