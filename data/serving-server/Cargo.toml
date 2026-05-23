@@ -26,8 +26,14 @@ tokio-stream = { version = "0.1",  features = ["net", "time"] }
 tonic = { version = "0.12", features = ["transport"] }
 prost = "0.13"
 
-# ONNX Runtime — exact version pinned to match aegis-gate workspace
-ort     = { version = "=2.0.0-rc.12", features = ["download-binaries", "ndarray"] }
+# ONNX Runtime — exact version pinned to match aegis-gate workspace.
+# 2026-05-23 (staging-local) — switched download-binaries → load-dynamic
+# +api-24 to match this RHEL 9.7 host (glibc 2.34): the crate's prebuilt
+# requires glibc 2.38 and fails with __isoc23_* undefined symbols. We
+# dlopen the Microsoft ORT 1.24.4 .so installed at
+# /usr/local/lib/libonnxruntime.so via ORT_DYLIB_PATH (same recipe as the
+# WAF binary — see project memory / deploy/STAGING-BENCHMARK.md §2.1).
+ort     = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "std", "api-24"] }
 ndarray = "0.17"
 
 # CLI
