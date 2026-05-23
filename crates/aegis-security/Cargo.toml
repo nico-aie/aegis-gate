@@ -25,14 +25,6 @@ geoip = ["dep:maxminddb"]
 # its native binary at first build (~50 MB) so the operator
 # doesn't need to wrestle with a system-wide install.
 ai = ["dep:ort", "dep:ndarray", "dep:async-channel"]
-# Off by default. With `ai-remote`,
-# `detectors::ai::remote::RemoteAiDetector` is compiled in — a gRPC
-# client to the standalone `aegis-infer` batch inference server
-# (`data/serving-server/`). Pulls `tonic` + `prost` and compiles the
-# proto at build time (vendored protoc, no system protobuf needed).
-# Independent of `ai` (in-process ONNX): a build can have either, both,
-# or neither. See `data/serving-server/INTEGRATION.md`.
-ai-remote = ["dep:tonic", "dep:prost", "dep:hyper-util", "dep:tower"]
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
@@ -66,23 +58,8 @@ maxminddb = { workspace = true, optional = true }
 ort = { workspace = true, optional = true }
 ndarray = { workspace = true, optional = true }
 # In-process batch accumulator (detectors::ai::batch) — MPMC work queue
-# from the collector to the worker tasks. Version matches the standalone
-# serving server (data/serving-server/Cargo.toml).
+# from the collector to the worker tasks.
 async-channel = { version = "2", optional = true }
-
-# Optional — gated by the `ai-remote` feature (gRPC client to the
-# aegis-infer serving server). Versions pinned to match the server crate
-# (data/serving-server/Cargo.toml).
-tonic = { version = "0.12", features = ["transport"], optional = true }
-prost = { version = "0.13", optional = true }
-hyper-util = { version = "0.1", features = ["tokio"], optional = true }
-tower = { version = "0.4", optional = true }
-
-# Build-time proto compilation — only does work when `ai-remote` is on
-# (see build.rs); the vendored protoc means no system protobuf-compiler.
-[build-dependencies]
-tonic-build = "0.12"
-protoc-bin-vendored = "3"
 
 [dev-dependencies]
 tempfile = "3"

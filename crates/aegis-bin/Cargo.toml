@@ -36,11 +36,6 @@ geoip = ["aegis-proxy/geoip"]
 # at boot. Off by default — enabling adds ~50 MB to the binary
 # and requires the operator to ship a model artifact. AI-T1.
 ai = ["aegis-security/ai", "aegis-proxy/ai", "aegis-control/ai"]
-# 2026-05-23 — remote AI inference via the standalone `aegis-infer`
-# gRPC batch server (data/serving-server/). Independent of `ai`:
-# enable either for in-process ONNX, `ai-remote` for offloaded
-# inference, or both (remote takes precedence, in-process is fallback).
-ai-remote = ["aegis-security/ai-remote", "aegis-proxy/ai-remote"]
 # `vault`, `aws`, `gcp`, `azure` — cloud secret-resolver
 # adapters. Each opts in to a single-cloud SDK. Combine freely.
 vault = ["aegis-proxy/vault"]

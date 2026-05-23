@@ -320,22 +320,27 @@ pub struct AiConfig {
     /// resolving > 0.95 in practice.
     #[serde(default = "default_ai_confidence_threshold")]
     pub confidence_threshold: f32,
-    /// 2026-05-23 — when set, run AI inference on the standalone
-    /// `aegis-infer` gRPC batch server instead of in-process ONNX.
-    /// Format: `"unix:///path/to.sock"` (co-located, recommended) or
-    /// `"tcp://host:port"`. Requires the `ai-remote` build feature;
-    /// takes precedence over `model_path` when both are present.
-    /// Always fail-open if the server is unreachable.
-    #[serde(default)]
-    pub remote_endpoint: Option<String>,
+    /// 2026-05-23 — synchronous session pool. `N > 1` loads N independent
+    /// ONNX sessions; each request grabs a free one and runs `[1,27]`
+    /// directly (no batching, no async bridge), giving ~`N ×` the
+    /// single-session throughput while keeping the clean low-tail
+    /// synchronous path. The scaling lever for a fast CPU model when one
+    /// session can't keep up with the AI-invocation rate. Each pooled
+    /// session is capped to 1 intra-op thread (parallelism from the pool,
+    /// not per-session threads). Default 1 (single session). Ignored when
+    /// `batch_enabled` is set.
+    #[serde(default = "default_ai_sessions")]
+    pub sessions: usize,
     /// 2026-05-23 — in-process dynamic batching. When `true`, inference
     /// runs through a batch accumulator (Triton-style): requests within
     /// a `delay_ms` window share one `[N, 27]` ONNX pass across `workers`
     /// parallel sessions, instead of the per-request `[1, 27]` path that
     /// serialises behind a single session. Big throughput win at high
-    /// RPS. Requires the `ai` build feature + `model_path`. Falls back to
-    /// single-inference `AiDetector` when `false`. Ignored if a
-    /// `remote_endpoint` is set (remote takes precedence).
+    /// RPS only when inference is the bottleneck (slow/large model). For
+    /// a fast model prefer `sessions` (a synchronous pool) — batching's
+    /// coordination overhead can hurt at high request rates. Requires the
+    /// `ai` build feature + `model_path`. Falls back to single-inference
+    /// `AiDetector` when `false`.
     #[serde(default)]
     pub batch_enabled: bool,
     /// Number of parallel ONNX sessions (= inference workers) for batch
@@ -360,7 +365,7 @@ impl Default for AiConfig {
             enabled: false,
             model_path: None,
             confidence_threshold: default_ai_confidence_threshold(),
-            remote_endpoint: None,
+            sessions: default_ai_sessions(),
             batch_enabled: false,
             workers: default_ai_workers(),
             max_batch: default_ai_max_batch(),
@@ -371,6 +376,10 @@ impl Default for AiConfig {
 
 fn default_ai_confidence_threshold() -> f32 {
     0.85
+}
+
+fn default_ai_sessions() -> usize {
+    1
 }
 
 fn default_ai_workers() -> usize {

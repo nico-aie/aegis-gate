@@ -260,8 +260,8 @@ overrides apply.
 | `enabled` | `false` | **Off by default** — the bundled model over-fires below threshold 0.95 |
 | `model_path` | unset | Path to the ONNX classifier (build with `--features ai`) |
 | `confidence_threshold` | `0.85` | Don't ship `enabled: true` below `0.95` without a per-deployment calibration pass |
-| `remote_endpoint` | unset | Offload inference to the `aegis-infer` gRPC server (build with `--features ai-remote`). `unix:///path.sock` or `tcp://host:port`. Takes precedence over `model_path`; fail-open. See [deploy/GUIDE.md § 8](../deploy/GUIDE.md#8-remote-ai-inference-aegis-infer) |
-| `batch_enabled` | `false` | In-process dynamic batching — requests within `delay_ms` share one `[N,27]` ONNX pass across `workers` sessions. Big throughput win at high RPS; fail-open + sheds under overload. Ignored if `remote_endpoint` is set |
+| `sessions` | `1` | **Synchronous session pool** — `N` independent ONNX sessions, each request runs `[1,27]` on a free one. ~`N×` throughput with low-tail synchronous latency; the scaling lever for a fast model. Each pooled session is capped to 1 intra-op thread |
+| `batch_enabled` | `false` | In-process dynamic batching — requests within `delay_ms` share one `[N,27]` ONNX pass across `workers` sessions. Only a win when inference is the bottleneck (slow/large model); for a fast model prefer `sessions`. Fail-open + sheds under overload |
 | `workers` | CPU count (max 8) | Parallel ONNX sessions for batch mode (one per worker). Keep ≤ physical cores |
 | `max_batch` | `32` | Max requests accumulated per batch forward pass |
 | `delay_ms` | `2` | Max ms the collector waits to fill a batch before flushing |
@@ -271,12 +271,11 @@ ai:
   enabled: true
   model_path: data/ai_model/waf_model.onnx
   confidence_threshold: 0.95
-  # Optional: offload to the aegis-infer batch server (build --features ai-remote)
-  # remote_endpoint: unix:///run/aegis-infer/infer.sock
+  # Scale a fast model across cores (synchronous pool):
+  # sessions: 4
 ```
 
-Hot-flippable via `PUT /api/ai/enabled` (audit-mutated) — applies to both
-the in-process and remote detector.
+Hot-flippable via `PUT /api/ai/enabled` (audit-mutated).
 
 ---
 
