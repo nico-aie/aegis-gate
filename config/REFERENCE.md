@@ -260,15 +260,19 @@ overrides apply.
 | `enabled` | `false` | **Off by default** — the bundled model over-fires below threshold 0.95 |
 | `model_path` | unset | Path to the ONNX classifier (build with `--features ai`) |
 | `confidence_threshold` | `0.85` | Don't ship `enabled: true` below `0.95` without a per-deployment calibration pass |
+| `remote_endpoint` | unset | Offload inference to the `aegis-infer` gRPC server (build with `--features ai-remote`). `unix:///path.sock` or `tcp://host:port`. Takes precedence over `model_path`; fail-open. See [deploy/GUIDE.md § 8](../deploy/GUIDE.md#8-remote-ai-inference-aegis-infer) |
 
 ```yaml
 ai:
   enabled: true
   model_path: data/ai_model/waf_model.onnx
   confidence_threshold: 0.95
+  # Optional: offload to the aegis-infer batch server (build --features ai-remote)
+  # remote_endpoint: unix:///run/aegis-infer/infer.sock
 ```
 
-Hot-flippable via `PUT /api/ai/enabled` (audit-mutated).
+Hot-flippable via `PUT /api/ai/enabled` (audit-mutated) — applies to both
+the in-process and remote detector.
 
 ---
 

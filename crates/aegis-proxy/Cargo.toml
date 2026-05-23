@@ -23,6 +23,10 @@ geoip = ["aegis-security/geoip"]
 # aegis-security so the boot path in src/run.rs can wire it
 # into the chain when `cfg.ai.enabled = true`.
 ai = ["aegis-security/ai", "aegis-control/ai"]
+# 2026-05-23 — remote AI inference via the aegis-infer gRPC serving
+# server. run.rs wires `RemoteAiDetector` when `ai.remote_endpoint` is
+# set. Independent of `ai`; can be built with either, both, or neither.
+ai-remote = ["aegis-security/ai-remote"]
 # `vault` enables resolution of `${secret:vault:<path>#<field>}`
 # config references against a HashiCorp Vault server. Off by
 # default so single-node + non-Vault deployments stay slim.
