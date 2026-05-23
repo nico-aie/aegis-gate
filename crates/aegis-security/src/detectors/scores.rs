@@ -16,7 +16,7 @@
 //! 2026-05-20 (Option B) — clear single-request exploits (sqli, xss,
 //! ssrf, path_traversal, cmdi, ssti, nosql, CRLF) score 70 so one hit
 //! reaches the per-request tier gate on the protective tiers
-//! (critical=50, high=70, medium=70) — but NOT `low`.
+//! (critical=50, high=60, medium=70) — but NOT `low`.
 //! 2026-05-23 — `low` raised to 80 and the detector ceiling capped at
 //! 80 (canary excepted): definitive-RCE (Log4Shell, XXE) score 80, so
 //! ONLY they (plus the canary honeypot at 100) block on a single hit
@@ -55,7 +55,7 @@ use serde::Serialize;
 // 2026-05-20 (Option B recalibration) — raised the clear-exploit
 // detector scores so a SINGLE high-confidence attack reaches the
 // per-request tier gate on the protective tiers (critical=50,
-// high=70, medium=70).
+// high=60, medium=70).
 // 2026-05-23 — capped the detector ceiling at 80 (canary excepted)
 // and raised `low` to 80: definitive-RCE classes (Log4Shell, XXE)
 // score 80 — the strongest single signal — so they (plus canary 100)

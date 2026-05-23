@@ -81,9 +81,15 @@ impl Tier {
                 50,
                 10,
             ),
+            // 2026-05-23 — high lowered 70→60 for a clean 10-apart
+            // ladder (critical 50 / high 60 / medium 70 / low 80). At
+            // 60, score-60 signals (AI, mass_assignment, velocity)
+            // block on a single hit at `high` — intentional: `high`
+            // routes trust those signals to block alone, `medium`/`low`
+            // require a clear exploit (70) / RCE (80).
             "high" => (
                 vec!["rate", "rules", "sqli", "xss", "ssrf", "bots", "ai", "risk"],
-                70,
+                60,
                 100,
             ),
             // `medium` keeps `risk_threshold` 70 so a single clear
@@ -172,6 +178,28 @@ impl TierStore {
     pub fn get(&self, name: &str) -> Option<Tier> {
         let s = self.inner.lock().expect("tier store poisoned");
         s.tiers.get(name).cloned()
+    }
+
+    /// 2026-05-23 — seed per-tier `risk_threshold` from the `tiers:`
+    /// config block at boot. Overlays the configured block scores onto
+    /// the `defaults_for`-seeded store; tiers absent from the iterator
+    /// keep their code default. Out-of-range values are skipped
+    /// (config validation already rejects > 100, so this is just
+    /// belt-and-suspenders). Unknown tier names are ignored.
+    pub fn apply_risk_thresholds<'a>(
+        &self,
+        overrides: impl IntoIterator<Item = (&'a str, u32)>,
+    ) {
+        let mut s = self.inner.lock().expect("tier store poisoned");
+        for (name, threshold) in overrides {
+            if threshold > 100 {
+                continue;
+            }
+            if let Some(t) = s.tiers.get_mut(name) {
+                t.risk_threshold = threshold;
+                t.updated_at = chrono::Utc::now();
+            }
+        }
     }
 
     /// Update a tier. Returns `Ok(updated)` or `Err(reason)` on
@@ -305,11 +333,30 @@ mod tests {
             "low risk_threshold ({low}) must be <= {RCE_CEILING} so definitive-RCE (and \
              the canary) still block on a single hit at low",
         );
-        // Exact defaults after the 2026-05-23 calibration.
+        // Exact defaults after the 2026-05-23 calibration — a clean
+        // 10-apart ladder (high lowered 70→60).
         assert_eq!(Tier::defaults_for("critical").risk_threshold, 50);
-        assert_eq!(Tier::defaults_for("high").risk_threshold, 70);
+        assert_eq!(Tier::defaults_for("high").risk_threshold, 60);
         assert_eq!(Tier::defaults_for("medium").risk_threshold, 70);
         assert_eq!(Tier::defaults_for("low").risk_threshold, 80);
+    }
+
+    /// 2026-05-23 — the `tiers:` config block seeds risk_threshold at
+    /// boot, overlaying configured tiers and leaving omitted tiers at
+    /// their code default.
+    #[test]
+    fn apply_risk_thresholds_overlays_config() {
+        let s = TierStore::new();
+        assert_eq!(s.get("high").unwrap().risk_threshold, 60, "code default first");
+        // Override high + low; leave critical/medium at defaults.
+        s.apply_risk_thresholds([("high", 65), ("low", 90)]);
+        assert_eq!(s.get("high").unwrap().risk_threshold, 65, "high overridden");
+        assert_eq!(s.get("low").unwrap().risk_threshold, 90, "low overridden");
+        assert_eq!(s.get("critical").unwrap().risk_threshold, 50, "critical untouched");
+        assert_eq!(s.get("medium").unwrap().risk_threshold, 70, "medium untouched");
+        // Out-of-range + unknown names are ignored, not panics.
+        s.apply_risk_thresholds([("high", 200), ("bogus", 50)]);
+        assert_eq!(s.get("high").unwrap().risk_threshold, 65, "over-100 skipped");
     }
 
     #[test]
