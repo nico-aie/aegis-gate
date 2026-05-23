@@ -403,7 +403,7 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
   // events don't pad the visible buffer.
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/audit/since?limit=${maxLen}`, { credentials: 'same-origin' })
+    fetch(`/api/audit/since?tail=1&limit=${maxLen}`, { credentials: 'same-origin' })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (cancelled || !data || !Array.isArray(data.events)) return;
@@ -842,6 +842,11 @@ function useThreatIntelApi(window = 3600, limit = 20) {
 // Hook: audit log with filters
 function useAuditLogApi({ ip, ruleId, requestId, from, to, limit = 200 } = {}) {
   const params = new URLSearchParams();
+  // 2026-05-23 — tail=1 returns the NEWEST `limit` events (back of the
+  // ring). Without it, cursor=0 returns the OLDEST retained events, so
+  // Recent Requests / Audit Trail / the Investigation pivot froze on
+  // stale traffic after a flood. (Respects the ip/rule_id filters.)
+  params.set('tail', '1');
   if (limit) params.set('limit', String(limit));
   if (ip) params.set('ip', ip);
   if (ruleId) params.set('rule_id', ruleId);
@@ -870,7 +875,7 @@ function useTiersApi() {
 // long-term fix; this is enough to retire the hardcoded rows
 // flagged in CQA-T1 / T14 today.
 function useTopRiskPathsApi(limit = 200, top = 8) {
-  const api = useApi(`/api/audit/since?limit=${limit}`, {
+  const api = useApi(`/api/audit/since?tail=1&limit=${limit}`, {
     intervalMs: 5000,
     fallback: { events: [] },
   });
