@@ -441,9 +441,20 @@ impl CompiledRouteTable {
                     Some(FailureModeConfig::FailOpen) => FailureMode::FailOpen,
                     None => tier.default_failure_mode(),
                 };
-                let methods = rc.methods.as_ref().map(|ms| {
-                    ms.iter().map(|m| m.to_ascii_uppercase()).collect()
-                });
+                // 2026-05-23 — an EMPTY methods list means "all methods"
+                // (same as `None`), not "match no methods". The
+                // `/api/routes` view renders both `None` and `[]` as `[]`,
+                // so editing a route in the dashboard (e.g. changing its
+                // tier) round-trips `methods: []` back via PUT; without
+                // this filter the recompiled route matched NO methods and
+                // every request 404'd as `unmatched_route` / fell through
+                // to another route — the "tier change doesn't take effect,
+                // still old tier" symptom.
+                let methods = rc
+                    .methods
+                    .as_ref()
+                    .filter(|ms| !ms.is_empty())
+                    .map(|ms| ms.iter().map(|m| m.to_ascii_uppercase()).collect());
 
                 // TCP-T3c — resolve the upstream pool's scheme
                 // at compile time + parse the route's
@@ -1408,6 +1419,44 @@ state: { backend: in_memory }
             table.resolve("h", "/api", &http::Method::PUT).unwrap().route_id,
             "catch-all"
         );
+    }
+
+    /// 2026-05-23 regression — a route with `methods: []` (EMPTY, not
+    /// absent) must match ALL methods, exactly like omitting `methods`.
+    /// The `/api/routes` view renders both `None` and `[]` as `[]`, so a
+    /// dashboard route edit (e.g. changing the tier) round-trips
+    /// `methods: []` back through PUT. Before the fix the recompiled
+    /// route matched NO methods, so every request 404'd as
+    /// `unmatched_route` or fell through to another (old-tier) route —
+    /// "tier change doesn't take effect / still old tier".
+    #[test]
+    fn empty_methods_list_matches_all_methods() {
+        let yaml = r#"
+listeners:
+  data:  [{ bind: "127.0.0.1:8080" }]
+  admin: { bind: "127.0.0.1:9090" }
+routes:
+  - { id: catch-all, path: "/", methods: [], upstream: stub }
+upstreams:
+  stub: { members: [{ addr: "127.0.0.1:9999" }] }
+state: { backend: in_memory }
+"#;
+        let cfg = aegis_core::load_config_str(yaml).unwrap();
+        let table = RouteTable::build(&cfg).unwrap();
+        for m in [
+            http::Method::GET,
+            http::Method::POST,
+            http::Method::PUT,
+            http::Method::DELETE,
+        ] {
+            assert_eq!(
+                table
+                    .resolve("h", "/", &m)
+                    .unwrap_or_else(|| panic!("empty-methods route must match {m}"))
+                    .route_id,
+                "catch-all",
+            );
+        }
     }
 
     /// `route_summaries()` returns rows sorted by priority descending
