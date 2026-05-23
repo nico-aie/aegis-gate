@@ -44,7 +44,13 @@ CARGO ?= cargo
 # clicks "test alert receiver" and the dashboard reports success
 # while nothing actually leaves the WAF. Override with
 # FEATURES="redis" for slim builds.
-FEATURES        ?= redis geoip alerts ai
+#
+# 2026-05-23 (perf) — `affinity` added by default so the prod
+# profiles' `runtime.cpu_affinity: true` actually pins worker threads
+# to cores (tighter tail latency under load). It's a no-op on hosts/
+# OSes without affinity support (logged + ignored), so non-users pay
+# nothing.
+FEATURES        ?= redis geoip alerts ai affinity
 
 # Feature set actually passed to cargo. Defaults to $(FEATURES); the
 # benchmark-binary targets (`bench-dev`, `stage`) override it via a

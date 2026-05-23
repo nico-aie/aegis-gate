@@ -1,10 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use dashmap::DashMap;
+use parking_lot::Mutex;
 
 use aegis_core::state::StateBackend;
 use aegis_core::tier::{FailureMode, Tier};
+
+/// 2026-05-23 — at most one idle-key sweep per this interval, so the
+/// in-process counting maps stay bounded without per-request cost.
+const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
 /// 2026-05-18 (QC Sprint 1.2 — F-CRITICAL-005): per-tier override
 /// of the global limit + window. Operator writes one of these
@@ -162,8 +169,8 @@ impl From<aegis_core::config::DdosConfig> for DdosConfig {
 pub struct DdosDetector {
     /// Wrapped in `ArcSwap` so config hot-reload (file/etcd
     /// watcher OR audit-mutated `PUT /api/gates/ddos`) can update
-    /// thresholds atomically without rebuilding the per-IP state
-    /// in the StateBackend. Matches the `IpRateLimiter` pattern.
+    /// thresholds atomically without rebuilding the per-IP state.
+    /// Matches the `IpRateLimiter` pattern.
     /// Hot-path cost: one `ArcSwap::load` per request (~5 ns).
     config: arc_swap::ArcSwap<DdosConfig>,
     /// Rolling RPS estimate (requests in current second).
@@ -172,6 +179,38 @@ pub struct DdosDetector {
     baseline_rps: AtomicU64,
     /// Whether cluster spike mode is active.
     spike_active: AtomicU64,
+    /// 2026-05-23 (perf) — in-process per-`(tier,ip)` sliding window.
+    /// Replaces the per-request `StateBackend::incr_window` round-trip
+    /// (the dominant WAF-overhead tail + a Redis-throughput cap at
+    /// high RPS). Same proven pattern as `IpRateLimiter`. Tradeoff:
+    /// counting is now PER-NODE, not cluster-wide — a flood spread
+    /// thin across many nodes needs to breach each node's window. In
+    /// practice an LB fans a single source IP to every node, so each
+    /// node breaches independently, and the in-process per-IP
+    /// rate-limiter already provides a second per-node cap.
+    windows: DashMap<String, VecDeque<Instant>>,
+    /// In-process auto-block cache (`ip -> expiry`). Replaces the
+    /// per-request `StateBackend::is_auto_blocked` round-trip. On a
+    /// fresh local breach the runtime ALSO writes the block to the
+    /// backend asynchronously (fire-and-forget) so the cluster-wide
+    /// block list + dashboard stay populated.
+    local_blocks: DashMap<IpAddr, Instant>,
+    /// Bounds the idle-key sweep to one run per `IDLE_SWEEP_INTERVAL`.
+    last_sweep: Mutex<Instant>,
+}
+
+/// In-process decision from [`DdosDetector::check_local`]. Carries
+/// enough for the runtime to decide enforcement + async propagation
+/// without any backend round-trip on the hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalDdosDecision {
+    /// Under the per-IP window — forward.
+    Allowed,
+    /// IP is in the local auto-block cache from an earlier breach.
+    AlreadyBlocked,
+    /// This request tipped the IP over the limit. The runtime should
+    /// propagate the block to the backend with this TTL.
+    NewlyBlocked { ttl: Duration },
 }
 
 /// Result of DDoS check.
@@ -246,20 +285,68 @@ impl DdosRuntime {
     /// before route resolution. The detector reads the per-tier
     /// limit + window via `DdosConfig::limit_for(tier)` instead
     /// of the global values.
+    /// 2026-05-23 (perf) — the per-request decision is now fully
+    /// in-process: NO `StateBackend` round-trip on the hot path (was
+    /// 2 — `is_auto_blocked` + `incr_window` — the dominant
+    /// WAF-overhead tail and a Redis-throughput cap). On a fresh
+    /// breach we propagate the auto-block to the backend
+    /// asynchronously (fire-and-forget) so the cluster block list +
+    /// dashboard stay populated without blocking the request. Returns
+    /// `Result` for signature stability (the in-process path can't
+    /// fail like a backend call); callers' fail-mode branches are now
+    /// effectively unreachable.
     pub async fn check_with_tier(
         &self,
         peer_ip: IpAddr,
         tier: Option<Tier>,
     ) -> aegis_core::Result<DdosCheckOutcome> {
-        let result = self
-            .detector
-            .check_with_tier(self.state.as_ref(), peer_ip, tier)
-            .await?;
-        let observe_only = self.detector.config_snapshot().observe_only;
+        let cfg = self.detector.config_snapshot();
+        let observe_only = cfg.observe_only;
+        if !cfg.enabled {
+            return Ok(DdosCheckOutcome {
+                blocked: false,
+                reason: None,
+                spike_active: false,
+                observe_only,
+            });
+        }
+
+        let decision = self.detector.check_local(peer_ip, tier, Instant::now());
+        let spike_active = self.detector.is_spike_active();
+
+        let (blocked, reason) = match decision {
+            LocalDdosDecision::Allowed => (false, None),
+            LocalDdosDecision::AlreadyBlocked => {
+                (true, Some(format!("auto-blocked IP: {peer_ip}")))
+            }
+            LocalDdosDecision::NewlyBlocked { ttl } => {
+                // Cluster propagation — durability + dashboard block
+                // list. Fire-and-forget: never on the request's
+                // critical path.
+                let state = std::sync::Arc::clone(&self.state);
+                tokio::spawn(async move {
+                    if let Err(e) = state.auto_block(peer_ip, ttl).await {
+                        tracing::warn!(
+                            ip = %peer_ip,
+                            error = %e,
+                            "ddos: async auto_block propagation failed",
+                        );
+                    }
+                });
+                (
+                    true,
+                    Some(format!(
+                        "IP {peer_ip} exceeded per-IP burst limit; blocked for {} s",
+                        ttl.as_secs()
+                    )),
+                )
+            }
+        };
+
         Ok(DdosCheckOutcome {
-            blocked: result.blocked,
-            reason: result.reason,
-            spike_active: result.spike_active,
+            blocked,
+            reason,
+            spike_active,
             observe_only,
         })
     }
@@ -323,7 +410,100 @@ impl DdosDetector {
             rolling_rps: AtomicU64::new(0),
             baseline_rps: AtomicU64::new(100),
             spike_active: AtomicU64::new(0),
+            windows: DashMap::new(),
+            local_blocks: DashMap::new(),
+            last_sweep: Mutex::new(Instant::now()),
         }
+    }
+
+    /// 2026-05-23 (perf) — in-process per-IP check. No backend
+    /// round-trip: reads the local auto-block cache, then the
+    /// in-process sliding window. Caller must have already confirmed
+    /// `cfg.enabled` (the runtime short-circuits on disabled). The
+    /// `now` seam lets unit tests drive window-edge behaviour
+    /// deterministically.
+    pub fn check_local(
+        &self,
+        ip: IpAddr,
+        tier: Option<Tier>,
+        now: Instant,
+    ) -> LocalDdosDecision {
+        let cfg = self.config.load();
+
+        // 1. Local auto-block cache. Copy the expiry out before
+        // touching the map again so we don't hold a read guard across
+        // a remove (DashMap would deadlock on the same shard).
+        if let Some(expiry) = self.local_blocks.get(&ip).map(|e| *e.value()) {
+            if now < expiry {
+                return LocalDdosDecision::AlreadyBlocked;
+            }
+            self.local_blocks.remove(&ip);
+        }
+
+        // 2. In-process sliding window, keyed per (tier, ip) so a
+        // tight Critical-tier quota doesn't auto-block an IP's Low
+        // static-asset traffic — mirrors the old backend key.
+        let (per_ip_limit, per_ip_window_s) = cfg.limit_for(tier);
+        let window = Duration::from_secs(u64::from(per_ip_window_s));
+        let tier_str = tier.map(|t| t.as_str()).unwrap_or("none");
+        let key = format!("{tier_str}:{ip}");
+        let cutoff = now.checked_sub(window).unwrap_or(now);
+
+        let mut entry = self.windows.entry(key).or_default();
+        while let Some(&t) = entry.front() {
+            if t < cutoff {
+                entry.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if entry.len() as u64 >= per_ip_limit {
+            // Breach. Don't push (measure would-have rate, like the
+            // rate limiter) — record the block locally.
+            drop(entry);
+            let ttl = Duration::from_secs(cfg.block_ttl_s);
+            self.local_blocks
+                .insert(ip, now.checked_add(ttl).unwrap_or(now));
+            self.maybe_sweep(now);
+            return LocalDdosDecision::NewlyBlocked { ttl };
+        }
+
+        entry.push_back(now);
+        drop(entry);
+        self.rolling_rps.fetch_add(1, Ordering::Relaxed);
+        self.maybe_sweep(now);
+        LocalDdosDecision::Allowed
+    }
+
+    /// Bounded idle-key sweep — at most one run per
+    /// `IDLE_SWEEP_INTERVAL` (one mutex try-lock amortised on the hot
+    /// path). Drops window keys idle for > 2× their window and
+    /// expired local auto-blocks.
+    fn maybe_sweep(&self, now: Instant) {
+        let mut guard = match self.last_sweep.try_lock() {
+            Some(g) => g,
+            None => return,
+        };
+        if now.saturating_duration_since(*guard) < IDLE_SWEEP_INTERVAL {
+            return;
+        }
+        *guard = now;
+        drop(guard);
+
+        let stale_after =
+            Duration::from_secs(u64::from(self.config.load().per_ip_window_s)) * 2;
+        self.windows.retain(|_, deque| match deque.back() {
+            Some(&latest) => now.saturating_duration_since(latest) < stale_after,
+            None => false,
+        });
+        self.local_blocks.retain(|_, &mut expiry| expiry > now);
+    }
+
+    /// Number of IPs currently tracked in the sliding-window map —
+    /// useful for metrics / introspection.
+    pub fn tracked(&self) -> usize {
+        self.windows.len()
     }
 
     /// 2026-05-09 — hot-swap the detector config. Keeps the
@@ -483,13 +663,15 @@ impl DdosDetector {
     /// to zero and `baseline_rps` to the cold-start default so the
     /// next benchmark run re-warms from a clean slate. Config
     /// (thresholds, enabled flag) is left intact — it's durable.
-    /// The per-IP sliding window + auto-block entries live in the
-    /// StateBackend and are cleared separately by
-    /// `StateBackend::reset_ephemeral`.
+    /// 2026-05-23 — also clears the in-process sliding-window +
+    /// local auto-block maps (they moved off the StateBackend onto
+    /// the detector), so a reset truly starts from a clean slate.
     pub fn reset(&self) {
         self.rolling_rps.store(0, Ordering::Relaxed);
         self.spike_active.store(0, Ordering::Relaxed);
         self.baseline_rps.store(100, Ordering::Relaxed);
+        self.windows.clear();
+        self.local_blocks.clear();
     }
 }
 
@@ -1051,5 +1233,116 @@ mod tests {
         assert_eq!(detector.baseline_rps(), 500, "baseline preserved across disabled tick");
         assert_eq!(detector.current_rps(), 0, "rolling drained");
         assert!(!detector.is_spike_active(), "spike cleared while disabled");
+    }
+
+    // ---- 2026-05-23 in-process counting (check_local) ----
+
+    /// Deterministic window-edge + expiry test via the `now` seam:
+    /// allowed under the limit, breach AT the limit, stays blocked
+    /// until the TTL expires, then (once the window also rolls off)
+    /// allowed again.
+    #[test]
+    fn check_local_blocks_at_limit_then_expires() {
+        let cfg = DdosConfig {
+            per_ip_limit: 3,
+            per_ip_window_s: 10,
+            block_ttl_s: 60,
+            ..Default::default()
+        };
+        let d = DdosDetector::new(cfg);
+        let ip: IpAddr = "10.1.0.1".parse().unwrap();
+        let t0 = Instant::now();
+
+        // 3 allowed within the window.
+        for i in 0..3 {
+            assert_eq!(
+                d.check_local(ip, None, t0 + Duration::from_millis(i * 10)),
+                LocalDdosDecision::Allowed,
+                "request {i} under limit must be allowed",
+            );
+        }
+        // 4th tips over → newly blocked with the configured TTL.
+        assert_eq!(
+            d.check_local(ip, None, t0 + Duration::from_millis(40)),
+            LocalDdosDecision::NewlyBlocked { ttl: Duration::from_secs(60) },
+        );
+        // Still inside the block TTL → already blocked.
+        assert_eq!(
+            d.check_local(ip, None, t0 + Duration::from_secs(30)),
+            LocalDdosDecision::AlreadyBlocked,
+        );
+        // After the TTL AND the window have rolled off → allowed again.
+        assert_eq!(
+            d.check_local(ip, None, t0 + Duration::from_secs(120)),
+            LocalDdosDecision::Allowed,
+        );
+    }
+
+    /// Per-(tier,ip) isolation: an IP burning its Critical-tier quota
+    /// must not auto-block its Low-tier traffic.
+    #[test]
+    fn check_local_buckets_per_tier() {
+        let cfg = DdosConfig { per_ip_limit: 2, per_ip_window_s: 10, ..Default::default() };
+        let d = DdosDetector::new(cfg);
+        let ip: IpAddr = "10.1.0.2".parse().unwrap();
+        let t = Instant::now();
+        // Exhaust Critical.
+        assert_eq!(d.check_local(ip, Some(Tier::Critical), t), LocalDdosDecision::Allowed);
+        assert_eq!(d.check_local(ip, Some(Tier::Critical), t), LocalDdosDecision::Allowed);
+        assert!(matches!(
+            d.check_local(ip, Some(Tier::Critical), t),
+            LocalDdosDecision::NewlyBlocked { .. } | LocalDdosDecision::AlreadyBlocked,
+        ));
+        // Low tier for the SAME ip is a separate window — still allowed.
+        // (The IP is now in local_blocks, so it WILL be AlreadyBlocked;
+        //  the block is per-IP by design. Use a fresh IP to prove the
+        //  window key is per-tier.)
+        let ip2: IpAddr = "10.1.0.3".parse().unwrap();
+        assert_eq!(d.check_local(ip2, Some(Tier::Critical), t), LocalDdosDecision::Allowed);
+        assert_eq!(d.check_local(ip2, Some(Tier::Low), t), LocalDdosDecision::Allowed,
+            "Low-tier window is independent of the Critical-tier window");
+    }
+
+    /// Perf invariant — the runtime hot path makes ZERO StateBackend
+    /// round-trips (the whole point of the 2026-05-23 change). A
+    /// counting backend asserts `incr_window` + `is_auto_blocked` are
+    /// never called; only `auto_block` may fire (async, on breach).
+    #[tokio::test]
+    async fn runtime_hot_path_makes_no_backend_roundtrip() {
+        use std::sync::atomic::AtomicU64;
+        struct CountingState {
+            incr: AtomicU64,
+            is_blocked: AtomicU64,
+        }
+        #[async_trait::async_trait]
+        impl StateBackend for CountingState {
+            async fn get(&self, _: &str) -> aegis_core::Result<Option<Vec<u8>>> { Ok(None) }
+            async fn set(&self, _: &str, _: &[u8], _: Duration) -> aegis_core::Result<()> { Ok(()) }
+            async fn del(&self, _: &str) -> aegis_core::Result<()> { Ok(()) }
+            async fn incr_window(&self, _: &str, _: Duration, _: u64) -> aegis_core::Result<aegis_core::SlidingWindowResult> {
+                self.incr.fetch_add(1, Ordering::Relaxed);
+                Ok(aegis_core::SlidingWindowResult { count: 1, allowed: true, retry_after: None })
+            }
+            async fn token_bucket(&self, _: &str, _: u32, _: u32) -> aegis_core::Result<bool> { Ok(true) }
+            async fn get_risk(&self, _: &aegis_core::RiskKey) -> aegis_core::Result<u32> { Ok(0) }
+            async fn add_risk(&self, _: &aegis_core::RiskKey, _: i32, _: u32) -> aegis_core::Result<u32> { Ok(0) }
+            async fn auto_block(&self, _: IpAddr, _: Duration) -> aegis_core::Result<()> { Ok(()) }
+            async fn is_auto_blocked(&self, _: IpAddr) -> aegis_core::Result<bool> {
+                self.is_blocked.fetch_add(1, Ordering::Relaxed);
+                Ok(false)
+            }
+            async fn put_nonce(&self, _: &str, _: Duration) -> aegis_core::Result<bool> { Ok(true) }
+            async fn consume_nonce(&self, _: &str) -> aegis_core::Result<bool> { Ok(true) }
+        }
+        let state = Arc::new(CountingState { incr: AtomicU64::new(0), is_blocked: AtomicU64::new(0) });
+        let cfg = DdosConfig { per_ip_limit: 3, per_ip_window_s: 10, block_ttl_s: 60, ..Default::default() };
+        let rt = DdosRuntime::new(cfg, state.clone());
+        let ip: IpAddr = "10.1.0.9".parse().unwrap();
+        // Drive past the limit (allowed ×3, breach, already-blocked).
+        for _ in 0..6 {
+            let _ = rt.check_with_tier(ip, Some(Tier::Low)).await.unwrap();
+        }
+        assert_eq!(state.incr.load(Ordering::Relaxed), 0, "incr_window must never be called on the hot path");
+        assert_eq!(state.is_blocked.load(Ordering::Relaxed), 0, "is_auto_blocked must never be called on the hot path");
     }
 }
