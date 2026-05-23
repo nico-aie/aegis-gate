@@ -101,3 +101,6 @@ release/
 # (3 MB) DO go in — they're small enough.
 # /tests/security/dataset/attacks_v4.ndjson
 # /tests/security/dataset/attacks_v4.ndjson.gz
+
+# Local-only staging redeploy runbook — never commit
+/.stg_runbook.md
