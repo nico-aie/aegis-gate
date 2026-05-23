@@ -185,40 +185,25 @@ ai:
   model_path: data/ai_model/waf_model.onnx
   confidence_threshold: 0.85
 
-  # 2026-05-23 — in-process dynamic batching (Triton-style). When on,
-  # requests that arrive within `delay_ms` share a single [N, 27] ONNX
-  # forward pass across `workers` parallel sessions, instead of the
-  # per-request [1, 27] path that serialises behind one session. Big
-  # throughput win at high RPS (validated ~22k req/s, avg batch ~30).
-  # Requires the `ai` build feature + `model_path`. Falls back to the
-  # single-inference detector when false. Ignored if `remote_endpoint`
-  # is set (remote wins). Fail-open + sheds under overload.
+  # 2026-05-23 — synchronous session pool. `sessions: N` loads N
+  # independent ONNX sessions; each request grabs a free one and runs
+  # [1,27] directly (no batching, no async bridge). ~N× the single-
+  # session throughput with the same low-tail synchronous latency — the
+  # scaling lever for a fast model when one session can't keep up with
+  # the AI-invocation rate. Each pooled session is capped to 1 intra-op
+  # thread (parallelism from the pool, not per-session threads). Default 1.
+  #   sessions: 4
+
+  # In-process dynamic batching (Triton-style): requests within `delay_ms`
+  # share one [N,27] ONNX pass across `workers` sessions. Only a win when
+  # inference itself is the bottleneck (slow/large model or GPU); for a
+  # fast CPU model prefer the session pool above — batching's coordination
+  # overhead can hurt p99 at high request rates. Fail-open + sheds under
+  # overload. Ignored when `sessions` alone is set without batch_enabled.
   #   batch_enabled: false   # set true to enable batch mode
   #   workers: 4             # parallel ONNX sessions (default: CPU count, max 8)
   #   max_batch: 32          # max requests per forward pass (default 32)
   #   delay_ms: 2            # batch fill window in ms (default 2)
-
-  # 2026-05-23 — remote inference (optional). When set, the WAF runs
-  # the AI detector against the standalone `aegis-infer` gRPC batch
-  # server (data/serving-server/) instead of loading ONNX in-process.
-  # The server batches across requests, so throughput scales without
-  # bloating the WAF binary with `ort`/ONNX.
-  #
-  #   - Requires building with the `ai-remote` feature, e.g.
-  #       make build FEATURES="redis geoip alerts ai-remote affinity"
-  #     (`ai` and `ai-remote` are independent; if both are built and a
-  #      remote_endpoint is set, remote WINS and in-process is the
-  #      fallback used only when the remote connect fails at boot).
-  #   - `confidence_threshold` above is reused for the remote verdict.
-  #   - Always fail-open: if the server is down/slow, no AI signal is
-  #     emitted and the regex detectors keep serving.
-  #
-  # Endpoint forms:
-  #   unix:///run/aegis-infer/infer.sock   # co-located (recommended)
-  #   tcp://127.0.0.1:50051                # same host over loopback
-  #   tcp://10.0.0.5:50051                 # remote host
-  #
-  # remote_endpoint: unix:///run/aegis-infer/infer.sock
 
 # ---------------------------------------------------------------------------
 # Bot classifier (gate-style, observational) — DEFAULT OFF

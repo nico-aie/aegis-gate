@@ -24,41 +24,6 @@ pub mod xss;
 #[cfg(feature = "ai")]
 pub mod ai;
 
-// 2026-05-23 — remote AI detector. gRPC client to the standalone
-// `aegis-infer` batch serving server. Gated by `ai-remote`, which is
-// independent of `ai` (no ONNX Runtime pulled in). See
-// `data/serving-server/INTEGRATION.md`.
-#[cfg(feature = "ai-remote")]
-pub mod remote_ai;
-
-/// Connection config for the remote AI detector.
-#[cfg(feature = "ai-remote")]
-pub struct RemoteAiConfig {
-    /// `"tcp://host:port"` or `"unix:///path/to/socket"`.
-    pub endpoint: String,
-    /// `prob_attack >= threshold` → emit the `ai` signal.
-    pub threshold: f32,
-}
-
-/// Connect to the aegis-infer serving server and return the concrete
-/// detector. The concrete type (not a boxed `dyn Detector`) lets the
-/// boot path grab the runtime-toggle handle before boxing, so the
-/// dashboard's AI enable/disable controls the remote detector exactly
-/// like the in-process one. Errors propagate so the boot path can fall
-/// back to in-process ONNX (or no AI) instead of failing the boot.
-#[cfg(feature = "ai-remote")]
-pub async fn build_remote_ai_detector(
-    cfg: &RemoteAiConfig,
-) -> Result<remote_ai::RemoteAiDetector, Box<dyn std::error::Error + Send + Sync>> {
-    let detector = if let Some(path) = cfg.endpoint.strip_prefix("unix://") {
-        remote_ai::RemoteAiDetector::connect_uds(path, cfg.threshold).await?
-    } else {
-        let addr = cfg.endpoint.strip_prefix("tcp://").unwrap_or(cfg.endpoint.as_str());
-        remote_ai::RemoteAiDetector::connect_tcp(addr, cfg.threshold).await?
-    };
-    Ok(detector)
-}
-
 pub use mask::{
     tier_index, tier_str, DetectorClass, DetectorMask, DetectorMaskBody, MaskState,
     SharedDetectorMask, ALL_TIERS,

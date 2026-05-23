@@ -420,62 +420,6 @@ pub async fn run(
             .expect("histogram registration failed"),
     );
 
-    // 2026-05-23 — remote AI: when `ai.remote_endpoint` is set, run
-    // inference on the standalone `aegis-infer` gRPC batch server
-    // instead of in-process ONNX. Takes precedence over the in-process
-    // detector; fail-soft (a connect failure falls back). Requires the
-    // `ai-remote` feature; without it, a set endpoint logs + is ignored.
-    #[allow(unused_mut, unused_variables, unused_assignments)]
-    let mut remote_ai_installed = false;
-    // The remote detector's runtime toggle, captured so the in-process
-    // wiring below can hand it to the control plane (dashboard AI card +
-    // PUT /api/ai/enabled). None when ai-remote is off or unconfigured.
-    #[allow(unused_mut, unused_variables, unused_assignments)]
-    let mut remote_ai_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
-    #[cfg(feature = "ai-remote")]
-    if let Some(endpoint) = cfg.ai.remote_endpoint.as_ref() {
-        match aegis_security::detectors::build_remote_ai_detector(
-            &aegis_security::detectors::RemoteAiConfig {
-                endpoint: endpoint.clone(),
-                threshold: cfg.ai.confidence_threshold,
-            },
-        )
-        .await
-        {
-            Ok(detector) => {
-                // Grab the toggle BEFORE boxing, seed it from
-                // `cfg.ai.enabled` (same as in-process), then box onto
-                // the chain. The data plane reads the same AtomicBool.
-                let toggle = detector.runtime_toggle();
-                toggle.store(cfg.ai.enabled, std::sync::atomic::Ordering::Relaxed);
-                tracing::info!(
-                    endpoint = %endpoint,
-                    threshold = cfg.ai.confidence_threshold,
-                    initial_enabled = cfg.ai.enabled,
-                    "remote AI detector connected (aegis-infer gRPC serving server)",
-                );
-                detector_vec.push(Box::new(detector));
-                remote_ai_installed = true;
-                remote_ai_toggle = Some(toggle);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    endpoint = %endpoint,
-                    error = %e,
-                    "remote AI connect failed — falling back to in-process ONNX (if `ai`)",
-                );
-            }
-        }
-    }
-    #[cfg(not(feature = "ai-remote"))]
-    if let Some(endpoint) = cfg.ai.remote_endpoint.as_ref() {
-        tracing::warn!(
-            endpoint = %endpoint,
-            "ai.remote_endpoint set but binary built WITHOUT the `ai-remote` feature — \
-             ignoring; falling back to in-process ONNX (if `ai`)",
-        );
-    }
-
     // AI-T5 / AI-T6 — push the ML detector onto the chain now
     // that the metrics registry exists.  Boot fails loudly on
     // a missing model file or an unreadable .onnx; the
@@ -486,14 +430,7 @@ pub async fn run(
     let ai_runtime_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
     #[cfg(feature = "ai")]
     {
-        if remote_ai_installed {
-            // Remote AI already pushed the "ai" detector — skip the
-            // in-process ONNX load (the chain would otherwise run two
-            // "ai" detectors) and hand the control plane the REMOTE
-            // toggle so the dashboard AI card enables/disables it.
-            tracing::info!("remote AI detector active — in-process ONNX load skipped");
-            ai_runtime_toggle = remote_ai_toggle.clone();
-        } else if cfg.ai.batch_enabled {
+        if cfg.ai.batch_enabled {
             // 2026-05-23 — in-process dynamic batching. Spin up the batch
             // accumulator (N parallel sessions + collector) and install
             // the BatchAiDetector. Same verdict/toggle semantics as the
@@ -595,13 +532,22 @@ pub async fn run(
                         ))
                     })?,
                 );
-                match aegis_security::detectors::ai::AiDetector::load(
+                // 2026-05-23 — load a session pool of `cfg.ai.sessions`
+                // (1 = single session, the default). N > 1 parallelises
+                // inference across N sessions via the synchronous
+                // round-robin path — no batching, no async bridge.
+                match aegis_security::detectors::ai::Model::load_pool(
                     model_path,
                     normal_idx,
-                    cfg.ai.confidence_threshold,
+                    cfg.ai.sessions,
                 ) {
-                    Ok(detector) => {
-                        let detector = detector.with_metrics(ai_metrics);
+                    Ok(model) => {
+                        let sessions = model.session_count();
+                        let detector = aegis_security::detectors::ai::AiDetector::from_model(
+                            std::sync::Arc::new(model),
+                            cfg.ai.confidence_threshold,
+                        )
+                        .with_metrics(ai_metrics);
                         // AI-T10 — grab the runtime-toggle handle BEFORE
                         // we box the detector. Both the data plane and
                         // the control plane read the same `AtomicBool`.
@@ -614,6 +560,7 @@ pub async fn run(
                         tracing::info!(
                             model_path = %model_path.display(),
                             threshold = cfg.ai.confidence_threshold,
+                            sessions,
                             initial_enabled = cfg.ai.enabled,
                             "AI detector loaded; runtime toggle wired",
                         );

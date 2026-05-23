@@ -20,6 +20,7 @@
 //! `Sequence<Map<i64, f32>>` shape.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use ndarray::Array2;
@@ -90,84 +91,88 @@ pub enum ModelError {
 /// that satisfies the borrow checker; per-request inference is
 /// short (~0.5 ms) so contention is negligible at WAF scale.
 pub struct Model {
-    session: Mutex<Session>,
+    /// One or more independent ORT sessions sharing the same model file.
+    /// A single entry is the default (and the batch-worker case); the
+    /// synchronous session *pool* (`ai.sessions: N`) holds N, picked
+    /// round-robin in [`Model::predict`] so concurrent requests run in
+    /// parallel instead of serialising behind one `Mutex<Session>`.
+    sessions: Vec<Mutex<Session>>,
+    /// Round-robin cursor for picking a session.
+    next: AtomicUsize,
     /// Index of the `Normal` class.  Anything else is "attack".
     /// Default 0 for the shipped binary model.
     normal_class_idx: i64,
 }
 
 impl Model {
-    /// Open an ONNX file and prepare the session.
+    /// Open an ONNX file and prepare a single session (ORT default
+    /// threading). Equivalent to `load_pool(.., 1)`.
     pub fn load(model_path: &Path, normal_class_idx: i64) -> Result<Self, ModelError> {
+        Self::load_pool(model_path, normal_class_idx, 1)
+    }
+
+    /// Load a *pool* of `n` independent sessions sharing the model file.
+    /// [`Model::predict`] round-robins across them, so up to `n` requests
+    /// run inference in parallel without the single-session `Mutex`
+    /// bottleneck — the scaling path for a fast CPU model.
+    ///
+    /// For `n > 1` each session is capped to **one** intra-op thread:
+    /// parallelism comes from the pool, not from per-session ORT threads,
+    /// which would otherwise oversubscribe the box (N sessions × cores
+    /// threads). `n == 1` keeps ORT's default threading — best latency
+    /// for a lone session.
+    pub fn load_pool(
+        model_path: &Path,
+        normal_class_idx: i64,
+        n: usize,
+    ) -> Result<Self, ModelError> {
         if !model_path.exists() {
             return Err(ModelError::NotFound {
                 path: model_path.display().to_string(),
             });
         }
-        let session = Session::builder()
-            .map_err(|e| ModelError::SessionBuild(e.to_string()))?
-            .commit_from_file(model_path)
-            .map_err(|e| ModelError::SessionLoad(e.to_string()))?;
+        let n = n.max(1);
+        let intra_threads = if n > 1 { Some(1) } else { None };
+        let mut sessions = Vec::with_capacity(n);
+        for _ in 0..n {
+            sessions.push(Mutex::new(build_session(model_path, intra_threads)?));
+        }
         Ok(Self {
-            session: Mutex::new(session),
+            sessions,
+            next: AtomicUsize::new(0),
             normal_class_idx,
         })
     }
 
-    /// Run one inference.  Allocates a single 1×N tensor; no
-    /// batch shaping yet (per-request inference is the WAF
-    /// shape).  Returns `Err` only on hard failures — the
-    /// caller treats a model error as fail-open.
-    pub fn predict(&self, features: &[f32; NUM_FEATURES]) -> Result<Prediction, ModelError> {
-        let started = std::time::Instant::now();
+    /// Number of sessions in the pool (1 for single / batch-worker).
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
 
-        // Build a 1×NUM_FEATURES input matrix.
-        let mut mat = Array2::<f32>::zeros((1, NUM_FEATURES));
-        for (j, &v) in features.iter().enumerate() {
-            mat[[0, j]] = v;
+    /// Pick a session: round-robin start, then `try_lock`-scan for a free
+    /// one (avoids waiting on a busy session when another is idle); fall
+    /// back to blocking on the round-robin pick if all are in use.
+    fn acquire_session(&self) -> Result<std::sync::MutexGuard<'_, Session>, ModelError> {
+        let n = self.sessions.len();
+        let start = self.next.fetch_add(1, Ordering::Relaxed) % n;
+        for off in 0..n {
+            let idx = (start + off) % n;
+            if let Ok(guard) = self.sessions[idx].try_lock() {
+                return Ok(guard);
+            }
         }
-        let input = Tensor::from_array(mat)
-            .map_err(|e| ModelError::Inference(format!("tensor build: {e}")))?;
-
-        let mut session = self
-            .session
+        self.sessions[start]
             .lock()
-            .map_err(|_| ModelError::Inference("session mutex poisoned".into()))?;
+            .map_err(|_| ModelError::Inference("session mutex poisoned".into()))
+    }
 
-        let outputs: SessionOutputs = session
-            .run(inputs!["X" => input])
-            .map_err(|e| ModelError::Inference(e.to_string()))?;
-
-        // Pull the predicted class index from the `label` output.
-        let class_idx = extract_class_idx(&outputs)?;
-        let is_attack = class_idx != self.normal_class_idx;
-
-        // 2026-05-19 — Extract the full probability row once, then
-        // derive both `confidence` (probability of the predicted
-        // class) and `prob_attack` (sum of non-normal classes) from
-        // it. For the bundled binary model, `prob_attack` reduces
-        // to `probabilities[1]`.
-        let probs = extract_probabilities(&outputs).unwrap_or_default();
-        let confidence = probs
-            .get(class_idx as usize)
-            .filter(|p| p.is_finite())
-            .copied()
-            .unwrap_or(1.0);
-        let prob_attack = compute_prob_attack(&probs, self.normal_class_idx)
-            // Fallback: if probabilities aren't dense, use the
-            // argmax label as the only signal. is_attack ⇒ 1.0,
-            // else 0.0 — keeps the threshold gate sensible.
-            .unwrap_or(if is_attack { 1.0 } else { 0.0 });
-
-        let latency_us = started.elapsed().as_micros() as u64;
-
-        Ok(Prediction {
-            class_idx,
-            is_attack,
-            confidence,
-            prob_attack,
-            latency_us,
-        })
+    /// Run one inference. Picks a session from the pool (round-robin /
+    /// first-free) and runs a single `1×N` forward pass on it. Returns
+    /// `Err` only on hard failures — the caller treats a model error as
+    /// fail-open.
+    pub fn predict(&self, features: &[f32; NUM_FEATURES]) -> Result<Prediction, ModelError> {
+        let mut session = self.acquire_session()?;
+        run_inference(&mut session, features, self.normal_class_idx)
     }
 
     /// Run batch inference: `n` feature rows in a single
@@ -197,10 +202,7 @@ impl Model {
         let input = Tensor::from_array(mat)
             .map_err(|e| ModelError::Inference(format!("tensor build: {e}")))?;
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| ModelError::Inference("session mutex poisoned".into()))?;
+        let mut session = self.acquire_session()?;
         let outputs: SessionOutputs = session
             .run(inputs!["X" => input])
             .map_err(|e| ModelError::Inference(e.to_string()))?;
@@ -266,6 +268,67 @@ impl Model {
 
         Ok(results)
     }
+}
+
+/// Build one ORT session from the model file, optionally capping the
+/// intra-op thread pool. `None` = ORT default (one thread per core);
+/// `Some(t)` pins it to `t` (the pool passes `Some(1)` to avoid
+/// oversubscription across N sessions).
+fn build_session(model_path: &Path, intra_threads: Option<usize>) -> Result<Session, ModelError> {
+    let mut builder = Session::builder().map_err(|e| ModelError::SessionBuild(e.to_string()))?;
+    if let Some(t) = intra_threads {
+        builder = builder
+            .with_intra_threads(t)
+            .map_err(|e| ModelError::SessionBuild(e.to_string()))?;
+    }
+    builder
+        .commit_from_file(model_path)
+        .map_err(|e| ModelError::SessionLoad(e.to_string()))
+}
+
+/// Run one `1×NUM_FEATURES` inference on an already-locked session and
+/// build the `Prediction`. Shared by single + pooled `predict` — the
+/// pool just chooses which session's guard to hand in.
+fn run_inference(
+    session: &mut Session,
+    features: &[f32; NUM_FEATURES],
+    normal_class_idx: i64,
+) -> Result<Prediction, ModelError> {
+    let started = std::time::Instant::now();
+
+    let mut mat = Array2::<f32>::zeros((1, NUM_FEATURES));
+    for (j, &v) in features.iter().enumerate() {
+        mat[[0, j]] = v;
+    }
+    let input = Tensor::from_array(mat)
+        .map_err(|e| ModelError::Inference(format!("tensor build: {e}")))?;
+
+    let outputs: SessionOutputs = session
+        .run(inputs!["X" => input])
+        .map_err(|e| ModelError::Inference(e.to_string()))?;
+
+    let class_idx = extract_class_idx(&outputs)?;
+    let is_attack = class_idx != normal_class_idx;
+
+    // Extract the probability row once; derive `confidence` (prob of the
+    // predicted class) and `prob_attack` (sum of non-normal classes).
+    let probs = extract_probabilities(&outputs).unwrap_or_default();
+    let confidence = probs
+        .get(class_idx as usize)
+        .filter(|p| p.is_finite())
+        .copied()
+        .unwrap_or(1.0);
+    let prob_attack = compute_prob_attack(&probs, normal_class_idx)
+        .unwrap_or(if is_attack { 1.0 } else { 0.0 });
+
+    let latency_us = started.elapsed().as_micros() as u64;
+    Ok(Prediction {
+        class_idx,
+        is_attack,
+        confidence,
+        prob_attack,
+        latency_us,
+    })
 }
 
 /// Read the argmax class index from the model's `label`

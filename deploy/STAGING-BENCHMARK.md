@@ -254,13 +254,9 @@ ls -la /usr/local/lib/libonnxruntime.so*
 Confirm the workspace dep in `/opt/aegis-gate/Cargo.toml` matches this
 exact line:
 
-> **Optional — remote AI (`aegis-infer`).** To offload ML inference to
-> the standalone gRPC batch server instead of (or as a fallback to)
-> in-process ONNX, add the `ai-remote` feature:
-> `FEATURES="redis geoip alerts ai ai-remote taxii otel" make build`.
-> This also builds the `aegis-infer` server crate. Set it up in
-> [§ 6.5](#65--optional-remote-ai-inference-aegis-infer) below. Skip this
-> if you are benchmarking the in-process AI path.
+> **Scaling AI throughput.** For a fast model that saturates one ONNX
+> session, set `ai.sessions: N` (synchronous pool, ~N× throughput) — see
+> [`config/REFERENCE.md`](../config/REFERENCE.md). No extra build flags.
 
 ```toml
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "std", "tracing", "api-24"] }
@@ -720,82 +716,6 @@ RUST_LOG=info \
 
 Ctrl-C triggers a graceful drain — readiness flips to 503, listeners close
 after `AEGIS_DRAIN_GRACE_MS` (default 5 s).
-
----
-
-## 6.5 · (Optional) Remote AI inference (`aegis-infer`)
-
-Skip this section unless you built with `ai-remote` (§ 2) and want ML
-inference offloaded to the batch serving server. Full reference:
-[`GUIDE.md` § 8](GUIDE.md#8-remote-ai-inference-aegis-infer) and
-[`../data/serving-server/INTEGRATION.md`](../data/serving-server/INTEGRATION.md).
-Co-located over a Unix socket is the staging-recommended topology.
-
-```sh
-# 1 — build the serving-server binary alongside the WAF
-cd ~/aegis-gate/data/serving-server
-~/.cargo/bin/cargo build --release --bin aegis-infer
-sudo install -m 0755 target/release/aegis-infer /usr/local/bin/aegis-infer
-
-# 2 — stage the model artifact (operator-supplied; never in git)
-sudo mkdir -p /etc/aegis/ai_model
-sudo cp /path/to/waf_model.onnx /etc/aegis/ai_model/waf_model.onnx
-
-# 3 — install + start the serving server (UDS at /run/aegis-infer/infer.sock)
-sudo tee /etc/systemd/system/aegis-infer.service > /dev/null <<'EOF'
-[Unit]
-Description=Aegis WAF AI Inference Server
-After=network.target
-# Order ahead of the WAF (optional; the WAF fail-soft if absent)
-Before=aegis-gate.service
-
-[Service]
-Type=simple
-User=YOUR_USER
-RuntimeDirectory=aegis-infer
-RuntimeDirectoryMode=0750
-ExecStart=/usr/local/bin/aegis-infer \
-    --model-path /etc/aegis/ai_model/waf_model.onnx \
-    --workers 2 --max-batch 128 --delay-ms 2 \
-    --bind-uds /run/aegis-infer/infer.sock \
-    --log-level info
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo sed -i "s/YOUR_USER/$USER/" /etc/systemd/system/aegis-infer.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now aegis-infer
-sudo systemctl status aegis-infer --no-pager     # expect: active, mode=onnx
-```
-
-Then point the WAF config (`config/staging.yaml`) at the socket and
-restart the WAF:
-
-```yaml
-ai:
-  enabled: true
-  confidence_threshold: 0.85
-  remote_endpoint: unix:///run/aegis-infer/infer.sock
-```
-
-```sh
-./waf validate --config config/staging.yaml
-sudo systemctl restart aegis-gate
-# Confirm the WAF picked up the remote detector:
-journalctl -u aegis-gate | grep -i "remote AI detector connected"
-```
-
-**Sizing for the 3–5k RPS benchmark target:** `--workers 2 --max-batch
-128 --delay-ms 2` is a good start; bump `--workers` toward physical core
-count if the `aegis-infer` `Stats` show `avg_batch_size` pinned near 1
-(under-batching) or inference latency climbing. **Fail-open** is
-unconditional: if `aegis-infer` is stopped mid-run the WAF keeps serving
-on the regex chain (AI signals just stop) — verify with
-`sudo systemctl stop aegis-infer` and confirm traffic still flows + a
-`remote ai inference error` line appears at TRACE.
 
 ---
 
