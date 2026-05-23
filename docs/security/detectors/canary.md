@@ -55,8 +55,9 @@ Practical consequences:
 - 100 reads as "certain" in the dashboard risk/confidence UI.
 
 100 is on the documented score ladder
-(`crates/aegis-security/src/detectors/scores.rs`); it sits one rung
-above the definitive-RCE classes (Log4Shell, XXE) at 90.
+(`crates/aegis-security/src/detectors/scores.rs`); it sits above the
+definitive-RCE classes (Log4Shell, XXE) at 80 — the only non-canary
+detectors that reach the `low` tier's per-request gate (threshold 80).
 
 If an operator wants softer behaviour (log instead of block), set the
 `rules_engine.canary` policy to `log_only` via the interop

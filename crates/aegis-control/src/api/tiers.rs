@@ -86,23 +86,25 @@ impl Tier {
                 70,
                 100,
             ),
-            // 2026-05-21 — medium/low `risk_threshold` lowered from
-            // 80/90 to 70 so a single clear exploit (sqli, xss,
-            // path_traversal, … = score 70) BLOCKS on every tier, not
-            // just critical+high. Pre-fix a textbook SQLi on a low/
-            // medium-tier path (`/`, `/static`, …) summed to 70 < 80/90
-            // and was forwarded to upstream (200) — a false negative
-            // the staging deploy + OC benchmark would fail on. Weaker
-            // signals (recon 25/50, oversize 30, AI fallback 60, …) stay
-            // below 70 and still accumulate before blocking, so the
-            // false-positive guard is intact. `block_threshold`
+            // `medium` keeps `risk_threshold` 70 so a single clear
+            // exploit (sqli, xss, path_traversal, … = score 70) still
+            // BLOCKS here (and on critical+high). `block_threshold`
             // (count-based) is unchanged.
             "medium" => (vec!["rate", "rules", "sqli", "xss"], 70, 1000),
-            // `low` is the most permissive tier. Anything unknown
-            // also falls here defensively (validators reject unknown
-            // names elsewhere, but `defaults_for` is also called
+            // `low` is the most permissive tier (static assets, etc.).
+            // 2026-05-23 — `risk_threshold` raised 70→80: at `low` ONLY
+            // the strongest single signals block — definitive-RCE
+            // (Log4Shell, XXE = score 80) and the canary honeypot (100).
+            // A lone clear exploit (70) no longer blocks on `low`; it
+            // must stack with another signal (70 + any ≥10) or the IP
+            // accumulates via the cumulative gate. This is intentional:
+            // the operator asked that only strong detectors auto-block
+            // low-tier traffic. critical/high/medium are unchanged, so
+            // clear exploits still block on a single hit there. Anything
+            // unknown also falls here defensively (validators reject
+            // unknown names elsewhere, but `defaults_for` is also called
             // from the migration path for forward-compat).
-            _ => (vec!["rate", "rules"], 70, 10_000),
+            _ => (vec!["rate", "rules"], 80, 10_000),
         };
         Tier {
             name: name.into(),
@@ -267,17 +269,21 @@ mod tests {
         assert!(s.get("low").is_some(), "low row must exist");
     }
 
-    /// 2026-05-21 regression — a single clear exploit scores 70
-    /// (`scores::sqli::SQLI` etc.); every tier's default
-    /// `risk_threshold` must be <= 70 so one such hit blocks on ANY
-    /// tier, not just critical+high. Pre-fix low/medium were 90/80,
-    /// so a textbook SQLi on `/` (low tier) summed to 70 < 90 and was
-    /// forwarded to upstream (200) — a false negative. Guards against
-    /// anyone bumping low/medium back above the clear-exploit score.
+    /// 2026-05-23 calibration — a single clear exploit scores 70
+    /// (`scores::sqli::SQLI` etc.) and must still block on a single hit
+    /// on the protective tiers (critical/high/medium ≤ 70). `low` is
+    /// raised to 80 so ONLY the strongest single signals — definitive-
+    /// RCE (Log4Shell, XXE = 80) and the canary honeypot (100) — block
+    /// a lone request there; a clear exploit must stack to block on
+    /// `low`. Guards against (a) bumping critical/high/medium above the
+    /// clear-exploit score, and (b) `low` drifting away from the
+    /// RCE/canary ceiling (80).
     #[test]
-    fn default_thresholds_block_single_clear_exploit_on_every_tier() {
+    fn default_thresholds_match_2026_05_23_calibration() {
         const CLEAR_EXPLOIT_SCORE: u32 = 70;
-        for name in ["critical", "high", "medium", "low"] {
+        const RCE_CEILING: u32 = 80;
+        // Protective tiers: a single clear exploit (70) blocks.
+        for name in ["critical", "high", "medium"] {
             let t = Tier::defaults_for(name);
             assert!(
                 t.risk_threshold <= CLEAR_EXPLOIT_SCORE,
@@ -286,11 +292,24 @@ mod tests {
                 t.risk_threshold,
             );
         }
-        // Exact defaults after the 2026-05-21 calibration.
+        // `low`: clear exploit (70) does NOT block alone, but the RCE
+        // ceiling (80) and canary (100) do.
+        let low = Tier::defaults_for("low").risk_threshold;
+        assert!(
+            low > CLEAR_EXPLOIT_SCORE,
+            "low risk_threshold ({low}) must be > {CLEAR_EXPLOIT_SCORE} so a lone clear \
+             exploit does not auto-block low-tier traffic",
+        );
+        assert!(
+            low <= RCE_CEILING,
+            "low risk_threshold ({low}) must be <= {RCE_CEILING} so definitive-RCE (and \
+             the canary) still block on a single hit at low",
+        );
+        // Exact defaults after the 2026-05-23 calibration.
         assert_eq!(Tier::defaults_for("critical").risk_threshold, 50);
         assert_eq!(Tier::defaults_for("high").risk_threshold, 70);
         assert_eq!(Tier::defaults_for("medium").risk_threshold, 70);
-        assert_eq!(Tier::defaults_for("low").risk_threshold, 70);
+        assert_eq!(Tier::defaults_for("low").risk_threshold, 80);
     }
 
     #[test]

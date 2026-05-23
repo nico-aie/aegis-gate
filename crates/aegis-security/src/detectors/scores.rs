@@ -12,15 +12,19 @@
 //! Operators asked "what score does each detector emit, and how does
 //! it interact with `risk.thresholds`?" — see [`docs/operator/risk-
 //! tuning.md`](../../../../docs/operator/risk-tuning.md). Detector
-//! scores are a calibrated ladder (25 / 30 / 35 / 50 / 60 / 70 / 90 / 100).
+//! scores are a calibrated ladder (25 / 30 / 35 / 50 / 60 / 70 / 80 / 100).
 //! 2026-05-20 (Option B) — clear single-request exploits (sqli, xss,
 //! ssrf, path_traversal, cmdi, ssti, nosql, CRLF) score 70 so one hit
 //! reaches the per-request tier gate on the protective tiers
-//! (critical=50, high=70); definitive-RCE (Log4Shell, XXE) score 90
-//! so they block on every tier including `low`. Probing / low-severity
-//! signals (recon path 25, body oversize 30, open_redirect 50) stay
-//! moderate so they only block on stricter tiers or via cumulative
-//! accumulation. The
+//! (critical=50, high=70, medium=70) — but NOT `low`.
+//! 2026-05-23 — `low` raised to 80 and the detector ceiling capped at
+//! 80 (canary excepted): definitive-RCE (Log4Shell, XXE) score 80, so
+//! ONLY they (plus the canary honeypot at 100) block on a single hit
+//! at `low`; a lone clear exploit (70) still blocks on critical/high/
+//! medium but on `low` it must stack with another signal. Probing /
+//! low-severity signals (recon path 25, body oversize 30,
+//! open_redirect 50, AI 60) stay moderate so they only block on
+//! stricter tiers or via cumulative accumulation. The
 //! UI needs to display the calibration so operators can read it; it
 //! is **not** an editor. Editing scores via the dashboard is
 //! deliberately not supported — see the operator guide for the
@@ -51,13 +55,18 @@ use serde::Serialize;
 // 2026-05-20 (Option B recalibration) — raised the clear-exploit
 // detector scores so a SINGLE high-confidence attack reaches the
 // per-request tier gate on the protective tiers (critical=50,
-// high=70). Definitive-RCE classes (Log4Shell, XXE) score 90 so
-// they block on EVERY tier including `low`. Operator-curated canary
-// honeypots score 100 (~0 false positives). Low-severity / probing
-// signals (recon path, body oversize, open_redirect) stay moderate
-// so they only block on stricter tiers or via cumulative
-// accumulation. All values stay on the documented ladder
-// {15,20,25,30,35,40,45,50,60,70,90,100}.
+// high=70, medium=70).
+// 2026-05-23 — capped the detector ceiling at 80 (canary excepted)
+// and raised `low` to 80: definitive-RCE classes (Log4Shell, XXE)
+// score 80 — the strongest single signal — so they (plus canary 100)
+// are the ONLY detectors that block on a single hit at `low`. A lone
+// clear exploit (70) still blocks on critical/high/medium but must
+// stack with another signal to block on `low`. Operator-curated
+// canary honeypots score 100 (~0 false positives). Low-severity /
+// probing signals (recon path, body oversize, open_redirect, AI 60)
+// stay moderate so they only block on stricter tiers or via
+// cumulative accumulation. All values stay on the documented ladder
+// {15,20,25,30,35,40,45,50,60,70,80,100}.
 
 pub mod sqli {
     pub const SQLI: u32 = 70;
@@ -93,7 +102,9 @@ pub mod body_abuse {
     /// Privileged-field key (`role`, `is_admin`, `password_hash`, …).
     pub const MASS_ASSIGNMENT: u32 = 60;
     /// XML external-entity declaration (`<!ENTITY ... SYSTEM ...>`).
-    pub const XXE: u32 = 90;
+    /// 2026-05-23 — capped 90→80 (detector ceiling, canary excepted)
+    /// so it blocks on every tier including `low` (threshold 80).
+    pub const XXE: u32 = 80;
 }
 
 pub mod recon {
@@ -114,8 +125,11 @@ pub mod command_injection {
     /// Shell-meta payload (`$()`, backticks, `| cmd`, `; cmd`,
     /// reverse-shell shapes, …).
     pub const BASELINE: u32 = 70;
-    /// Log4Shell / JNDI lookup (CVE-2021-44228) — Critical-RCE tier.
-    pub const LOG4SHELL: u32 = 90;
+    /// Log4Shell / JNDI lookup (CVE-2021-44228) — definitive-RCE.
+    /// 2026-05-23 — capped 90→80 (the new detector ceiling, canary
+    /// excepted) so it remains the strongest single signal and blocks
+    /// on every tier including `low` (threshold raised to 80).
+    pub const LOG4SHELL: u32 = 80;
 }
 
 pub mod template_injection {
@@ -381,11 +395,12 @@ mod tests {
         //  - 15 / 20 — behaviour-signals sub-block accumulators
         //    (per-signal score is below block_at by design;
         //     scores stack with OWASP signals).
-        //  - 70 — velocity-sequence higher-severity rule
-        //    (login→withdrawal < 5 s).
-        //  - 90 — definitive-RCE tier (Log4Shell, XXE).
+        //  - 70 — clear single-request exploits (sqli, xss, …).
+        //  - 80 — definitive-RCE ceiling (Log4Shell, XXE). 2026-05-23
+        //    capped from 90 so 80 is the max non-canary score and the
+        //    `low` tier (threshold 80) blocks only on these.
         //  - 100 — canary honeypot hit (operator-curated, ~0 FP).
-        let allowed = [15u32, 20, 25, 30, 35, 40, 45, 50, 60, 70, 90, 100];
+        let allowed = [15u32, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 100];
         for entry in CATALOG {
             assert!(
                 allowed.contains(&entry.score),
