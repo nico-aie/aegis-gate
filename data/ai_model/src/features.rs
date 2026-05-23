@@ -156,7 +156,7 @@ fn shannon_entropy(s: &str) -> f32 {
         .sum()
 }
 
-/// Extract 26 WAF features from a raw HTTP request string.
+/// Extract 27 WAF features from a raw HTTP request string.
 ///
 /// Accepts both formats:
 ///   Single-line : "METHOD /url body"

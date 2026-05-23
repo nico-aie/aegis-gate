@@ -437,13 +437,27 @@ fn main() {
     let batch_size: usize = get_flag(&args, "--batch-size")
         .and_then(|s| s.parse().ok())
         .unwrap_or(8192);
-    let do_bench    = args.iter().any(|a| a == "--bench");
-    let bench_only  = args.iter().any(|a| a == "--bench-only");
-    let do_unified  = args.iter().any(|a| a == "--unified");
-    let save_preds  = get_flag(&args, "--save-preds");
+    let do_bench      = args.iter().any(|a| a == "--bench");
+    let bench_only    = args.iter().any(|a| a == "--bench-only");
+    let do_unified    = args.iter().any(|a| a == "--unified");
+    let save_preds    = get_flag(&args, "--save-preds");
+    // --filter-source <name>[,<name>...] — only evaluate these sources (used with --unified)
+    let filter_sources: Option<Vec<String>> = get_flag(&args, "--filter-source")
+        .map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
 
-    let all_sources     = ["legitimate", "malicious", "srbh", "csic", "huggingface", "modern"];
-    let default_sources = ["legitimate", "malicious", "modern"];
+    // Source names match the `source` column in dataset_unified.csv.
+    // Use --unified to evaluate all sources; --source <name> reads eval_data/<name>.csv.
+    let all_sources     = [
+        "openappsec_legitimate", "openappsec_malicious",
+        "srbh2020_combine", "srbh2020_transfer", "csic2010",
+        "huggingface", "payloads_all_the_things",
+        "hackathon_attacks", "attack_based_malicious",
+        "normal_api", "normal_traffic",
+    ];
+    let default_sources = [
+        "openappsec_legitimate", "openappsec_malicious",
+        "hackathon_attacks", "attack_based_malicious",
+    ];
     let sources: Vec<String> = match get_flag(&args, "--source").as_deref() {
         Some("all") => all_sources.iter().map(|s| s.to_string()).collect(),
         Some(s)     => s.split(',').map(|x| x.trim().to_string()).collect(),
@@ -488,6 +502,9 @@ fn main() {
             }
             let mut sorted_sources: Vec<String> = by_source.keys().cloned().collect();
             sorted_sources.sort();
+            if let Some(ref filters) = filter_sources {
+                sorted_sources.retain(|s| filters.iter().any(|f| s.contains(f.as_str())));
+            }
             for src in &sorted_sources {
                 let rows = &by_source[src];
                 if let Some(r) = evaluate_source(&mut session, src, rows, batch_size) {
