@@ -691,9 +691,31 @@ pub(crate) async fn handle_data_request_inner(
         body: &body_peek,
     };
 
-    // Tier classification needs `view`, so it's run here rather
-    // than at the very top.
-    let (tier, _failure_mode) = aegis_security::pipeline::classify_tier(None, &view);
+    // 2026-05-23 — resolve the route's tier UP FRONT so the per-request
+    // block gate, the per-tier detector mask, and the load shedder all
+    // key off the route's `tier_override`. Previously this stage used
+    // `classify_tier(None, …)`, which ALWAYS returns Low since the
+    // path→tier heuristic was removed — so a route's tier_override never
+    // affected per-request blocking / shedding / the mask. Only the
+    // allow-path audit label (resolved later in the forward path) picked
+    // up the route tier, so the dashboard showed the new tier while the
+    // blocking behaviour stayed on Low: "changed the tier but it doesn't
+    // take effect, score still by the old tier".
+    //
+    // The forward path re-resolves the route for upstream selection +
+    // circuit breaking; here we only read the tier (a cheap ArcSwap trie
+    // walk). Unmatched routes fall back to Low and still 404 in the
+    // forward path exactly as before.
+    let host_for_tier = parts
+        .headers
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let tier = upstream_ctx
+        .route_table
+        .resolve(host_for_tier, parts.uri.path(), &parts.method)
+        .map(|rc| rc.tier)
+        .unwrap_or(aegis_core::tier::Tier::Low);
     tracing::Span::current().record(
         "tier",
         aegis_security::detectors::tier_str(tier),
