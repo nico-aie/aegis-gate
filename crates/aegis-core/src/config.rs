@@ -328,6 +328,30 @@ pub struct AiConfig {
     /// Always fail-open if the server is unreachable.
     #[serde(default)]
     pub remote_endpoint: Option<String>,
+    /// 2026-05-23 — in-process dynamic batching. When `true`, inference
+    /// runs through a batch accumulator (Triton-style): requests within
+    /// a `delay_ms` window share one `[N, 27]` ONNX pass across `workers`
+    /// parallel sessions, instead of the per-request `[1, 27]` path that
+    /// serialises behind a single session. Big throughput win at high
+    /// RPS. Requires the `ai` build feature + `model_path`. Falls back to
+    /// single-inference `AiDetector` when `false`. Ignored if a
+    /// `remote_endpoint` is set (remote takes precedence).
+    #[serde(default)]
+    pub batch_enabled: bool,
+    /// Number of parallel ONNX sessions (= inference workers) for batch
+    /// mode. Each owns one session; keep ≤ physical cores. Default = CPU
+    /// count clamped to [1, 8].
+    #[serde(default = "default_ai_workers")]
+    pub workers: usize,
+    /// Max requests accumulated before a batch is forced. Larger = better
+    /// throughput, higher worst-case latency. Default 32.
+    #[serde(default = "default_ai_max_batch")]
+    pub max_batch: usize,
+    /// Max time (ms) the collector waits to fill a batch before flushing.
+    /// Lower = lower latency; higher = bigger batches at low RPS.
+    /// Default 2.
+    #[serde(default = "default_ai_delay_ms")]
+    pub delay_ms: u64,
 }
 
 impl Default for AiConfig {
@@ -337,12 +361,31 @@ impl Default for AiConfig {
             model_path: None,
             confidence_threshold: default_ai_confidence_threshold(),
             remote_endpoint: None,
+            batch_enabled: false,
+            workers: default_ai_workers(),
+            max_batch: default_ai_max_batch(),
+            delay_ms: default_ai_delay_ms(),
         }
     }
 }
 
 fn default_ai_confidence_threshold() -> f32 {
     0.85
+}
+
+fn default_ai_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 8)
+}
+
+fn default_ai_max_batch() -> usize {
+    32
+}
+
+fn default_ai_delay_ms() -> u64 {
+    2
 }
 
 /// Data-plane request-handling knobs.
