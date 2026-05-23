@@ -375,11 +375,20 @@ pub(crate) fn admin_router(
                 ts_from: parse_ts(query, "ts_from"),
                 ts_to: parse_ts(query, "ts_to"),
             };
-            json_body_response(
-                200,
-                services.audit.render_since_filtered(cursor, limit, &filter),
-                "private, no-store",
-            )
+            // 2026-05-23 — `?tail=1` returns the NEWEST `limit` events
+            // (back of the ring) for the dashboard's "newest-first"
+            // backfill. Without it, `cursor=0` returns the OLDEST
+            // retained events, which made the live views appear frozen
+            // on stale traffic after a flood.
+            let tail = parse_query_str(query, "tail")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+            let body = if tail {
+                services.audit.render_latest_filtered(limit, &filter)
+            } else {
+                services.audit.render_since_filtered(cursor, limit, &filter)
+            };
+            json_body_response(200, body, "private, no-store")
         }
         // Phase-3 reports: CSV export of the in-process audit ring.
         // Same data as `/api/audit/since` (capped at 200 events) but

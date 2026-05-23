@@ -287,6 +287,42 @@ impl AuditRing {
         }
     }
 
+    /// 2026-05-23 — TAIL query: the **newest** `limit` matching events
+    /// (walked from the back of the ring), returned in ascending `seq`
+    /// order to match the `since()` wire shape, with
+    /// `next_cursor = high_water` so a follow-up `since(next_cursor)`
+    /// streams only genuinely-new events.
+    ///
+    /// This is the correct backfill for the "newest-first" views (Live
+    /// Feed, Recent Requests, Audit Trail). `since(0, n)` returns the
+    /// OLDEST `n` retained events — after sustained traffic / a flood
+    /// those are stale, which made the dashboard appear frozen on old
+    /// events while the genuinely-newest ones sat at the back of the
+    /// ring (2026-05-23 staleness fix).
+    pub fn latest_filtered(&self, limit: u32, filter: &AuditFilter) -> AuditSinceResponse {
+        let state = self.inner.lock().expect("audit ring poisoned");
+        let high_water = state.next_seq.saturating_sub(1);
+        let limit = limit.max(1) as usize;
+        let mut events: Vec<AuditSinceEntry> =
+            Vec::with_capacity(limit.min(state.entries.len()));
+        for (seq, ev) in state.entries.iter().rev() {
+            if events.len() >= limit {
+                break;
+            }
+            if !filter.matches(ev) {
+                continue;
+            }
+            events.push(AuditSinceEntry { seq: *seq, event: ev.clone() });
+        }
+        events.reverse(); // ascending seq, matching `since()`
+        AuditSinceResponse {
+            cursor: 0,
+            next_cursor: high_water,
+            events,
+            gap: false,
+        }
+    }
+
     /// Current high-water-mark sequence (next seq about to be
     /// assigned, minus one). Useful for tests + monitoring.
     /// Phase-3 per-route stats — walks the ring and aggregates by
@@ -441,6 +477,15 @@ impl AuditHandler {
             *cache = Some((now, cursor, limit, resp));
         }
         body
+    }
+
+    /// 2026-05-23 — render the TAIL (newest `limit` matching events).
+    /// Not cached: it's the initial backfill / a low-frequency poll,
+    /// and the `(cursor, limit)` cache key would collide with `since`.
+    pub fn render_latest_filtered(&self, limit: u32, filter: &AuditFilter) -> String {
+        let limit = clamp_limit(limit);
+        let resp = self.ring.latest_filtered(limit, filter);
+        serde_json::to_string(&resp).unwrap_or_else(|_| String::from("{}"))
     }
 }
 
@@ -619,6 +664,58 @@ mod tests {
         assert!(f.matches(&ev_filter("b", "1.1.1.1", None, &["recon_path"])));
         // Neither — rejected.
         assert!(!f.matches(&ev_filter("c", "1.1.1.1", Some("sqli"), &["xss"])));
+    }
+
+    #[test]
+    fn latest_returns_newest_not_oldest() {
+        // 2026-05-23 regression — the dashboard appeared frozen on
+        // stale traffic because `since(0, n)` returns the OLDEST n
+        // retained events. `latest(n)` must return the NEWEST n
+        // (ascending seq) so the newest-first views surface current
+        // activity even when the ring holds far more than n events.
+        let ring = AuditRing::with_capacity(100);
+        for id in ["a", "b", "c", "d", "e"] {
+            ring.record(ev(id));
+        }
+        // Baseline: since(0,2) returns the OLDEST two.
+        let oldest: Vec<_> = ring
+            .since(0, 2)
+            .events
+            .iter()
+            .map(|e| e.event.request_id.clone())
+            .collect();
+        assert_eq!(oldest, vec!["a", "b"]);
+
+        // Tail: latest_filtered(2) returns the NEWEST two, ascending seq.
+        let tail = ring.latest_filtered(2, &AuditFilter::default());
+        let newest: Vec<_> = tail
+            .events
+            .iter()
+            .map(|e| e.event.request_id.clone())
+            .collect();
+        assert_eq!(newest, vec!["d", "e"], "tail must return newest, ascending seq");
+        assert_eq!(tail.next_cursor, 5, "next_cursor = high_water so follow-up since() streams only new events");
+        assert!(!tail.gap);
+    }
+
+    #[test]
+    fn latest_filtered_returns_newest_matching_only() {
+        // Tail must respect the filter (e.g. an Investigation IP pivot)
+        // and still return the NEWEST matching events.
+        let ring = AuditRing::with_capacity(100);
+        ring.record(ev_filter("old-target", "9.9.9.9", None, &[]));
+        for id in ["noise1", "noise2", "noise3"] {
+            ring.record(ev_filter(id, "1.1.1.1", None, &[]));
+        }
+        ring.record(ev_filter("new-target", "9.9.9.9", None, &[]));
+        let f = AuditFilter { ip: Some("9.9.9.9".into()), ..Default::default() };
+        let ids: Vec<_> = ring
+            .latest_filtered(1, &f)
+            .events
+            .iter()
+            .map(|e| e.event.request_id.clone())
+            .collect();
+        assert_eq!(ids, vec!["new-target"], "tail+filter must return the newest matching event");
     }
 
     #[test]
