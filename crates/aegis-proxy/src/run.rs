@@ -493,6 +493,88 @@ pub async fn run(
             // toggle so the dashboard AI card enables/disables it.
             tracing::info!("remote AI detector active — in-process ONNX load skipped");
             ai_runtime_toggle = remote_ai_toggle.clone();
+        } else if cfg.ai.batch_enabled {
+            // 2026-05-23 — in-process dynamic batching. Spin up the batch
+            // accumulator (N parallel sessions + collector) and install
+            // the BatchAiDetector. Same verdict/toggle semantics as the
+            // single detector; just amortises ORT cost across a [N,27]
+            // pass instead of serialising [1,27] behind one session.
+            ai_runtime_toggle = match cfg.ai.model_path.as_ref() {
+                Some(model_path) if model_path.exists() => {
+                    let normal_idx = aegis_security::detectors::ai::DEFAULT_NORMAL_CLASS_IDX;
+                    let ai_metrics = std::sync::Arc::new(
+                        aegis_control::metrics::ai::AiMetrics::register(&metrics).map_err(|e| {
+                            aegis_core::WafError::Config(format!(
+                                "ai metrics registration failed: {e}"
+                            ))
+                        })?,
+                    );
+                    match aegis_security::detectors::ai::batch_spawn(
+                        model_path,
+                        normal_idx,
+                        cfg.ai.workers,
+                        cfg.ai.max_batch,
+                        cfg.ai.delay_ms,
+                    ) {
+                        Ok(svc) => {
+                            let detector = aegis_security::detectors::ai::BatchAiDetector::new(
+                                svc,
+                                cfg.ai.confidence_threshold,
+                                aegis_security::detectors::scores::ai::AI,
+                            )
+                            .with_metrics(ai_metrics);
+                            let toggle = detector.runtime_toggle();
+                            toggle.store(cfg.ai.enabled, std::sync::atomic::Ordering::Relaxed);
+                            tracing::info!(
+                                model_path = %model_path.display(),
+                                threshold = cfg.ai.confidence_threshold,
+                                workers = cfg.ai.workers,
+                                max_batch = cfg.ai.max_batch,
+                                delay_ms = cfg.ai.delay_ms,
+                                initial_enabled = cfg.ai.enabled,
+                                "AI batch detector loaded; runtime toggle wired",
+                            );
+                            detector_vec.push(Box::new(detector));
+                            Some(toggle)
+                        }
+                        Err(e) => {
+                            if cfg.ai.enabled {
+                                return Err(aegis_core::WafError::Config(format!(
+                                    "ai.enabled = true but batch model load from {} failed: {e}",
+                                    model_path.display(),
+                                )));
+                            }
+                            tracing::warn!(
+                                model_path = %model_path.display(),
+                                error = %e,
+                                "ai.enabled = false and batch model load failed — \
+                                 AI detector skipped",
+                            );
+                            None
+                        }
+                    }
+                }
+                Some(model_path) => {
+                    if cfg.ai.enabled {
+                        return Err(aegis_core::WafError::Config(format!(
+                            "ai.enabled = true but model file does not exist at {}",
+                            model_path.display(),
+                        )));
+                    }
+                    tracing::warn!(
+                        model_path = %model_path.display(),
+                        "ai.model_path set but file missing — AI batch detector skipped",
+                    );
+                    None
+                }
+                None => {
+                    tracing::warn!(
+                        "ai.batch_enabled = true but no model_path configured — \
+                         AI detector skipped",
+                    );
+                    None
+                }
+            };
         } else {
         // 2026-05-10 — AI detector now loads whenever
         // `cfg.ai.model_path` points at an existing file, regardless

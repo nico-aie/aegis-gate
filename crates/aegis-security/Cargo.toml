@@ -24,7 +24,7 @@ geoip = ["dep:maxminddb"]
 # operators see the misconfiguration loudly.  ORT downloads
 # its native binary at first build (~50 MB) so the operator
 # doesn't need to wrestle with a system-wide install.
-ai = ["dep:ort", "dep:ndarray"]
+ai = ["dep:ort", "dep:ndarray", "dep:async-channel"]
 # Off by default. With `ai-remote`,
 # `detectors::ai::remote::RemoteAiDetector` is compiled in — a gRPC
 # client to the standalone `aegis-infer` batch inference server
@@ -65,6 +65,10 @@ maxminddb = { workspace = true, optional = true }
 # Optional — gated by the `ai` feature.
 ort = { workspace = true, optional = true }
 ndarray = { workspace = true, optional = true }
+# In-process batch accumulator (detectors::ai::batch) — MPMC work queue
+# from the collector to the worker tasks. Version matches the standalone
+# serving server (data/serving-server/Cargo.toml).
+async-channel = { version = "2", optional = true }
 
 # Optional — gated by the `ai-remote` feature (gRPC client to the
 # aegis-infer serving server). Versions pinned to match the server crate

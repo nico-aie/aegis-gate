@@ -185,6 +185,19 @@ ai:
   model_path: data/ai_model/waf_model.onnx
   confidence_threshold: 0.85
 
+  # 2026-05-23 — in-process dynamic batching (Triton-style). When on,
+  # requests that arrive within `delay_ms` share a single [N, 27] ONNX
+  # forward pass across `workers` parallel sessions, instead of the
+  # per-request [1, 27] path that serialises behind one session. Big
+  # throughput win at high RPS (validated ~22k req/s, avg batch ~30).
+  # Requires the `ai` build feature + `model_path`. Falls back to the
+  # single-inference detector when false. Ignored if `remote_endpoint`
+  # is set (remote wins). Fail-open + sheds under overload.
+  #   batch_enabled: false   # set true to enable batch mode
+  #   workers: 4             # parallel ONNX sessions (default: CPU count, max 8)
+  #   max_batch: 32          # max requests per forward pass (default 32)
+  #   delay_ms: 2            # batch fill window in ms (default 2)
+
   # 2026-05-23 — remote inference (optional). When set, the WAF runs
   # the AI detector against the standalone `aegis-infer` gRPC batch
   # server (data/serving-server/) instead of loading ONNX in-process.

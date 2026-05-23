@@ -35,9 +35,13 @@ use aegis_core::pipeline::RequestView;
 
 use super::{Detector, Signal};
 
+pub mod batch;
+pub mod batch_detector;
 pub mod features;
 pub mod model;
 
+pub use batch::{batch_spawn, BatchError, BatchService};
+pub use batch_detector::BatchAiDetector;
 pub use model::{Model, ModelError, Prediction};
 
 /// Metric-recording surface the AI detector calls per
@@ -222,7 +226,10 @@ impl AiDetector {
     /// keep the feature distribution close to what the model
     /// was trained on.  The legacy single-line shape still
     /// parses cleanly (extractor handles both).
-    fn build_request_string(req: &RequestView<'_>) -> String {
+    ///
+    /// `pub(crate)` so [`super::batch_detector::BatchAiDetector`] renders
+    /// requests identically — one source of truth, no feature drift.
+    pub(crate) fn build_request_string(req: &RequestView<'_>) -> String {
         let method = req.method.as_str();
         // Path-and-query, falling back to "/" for empty URIs.
         let pq = req

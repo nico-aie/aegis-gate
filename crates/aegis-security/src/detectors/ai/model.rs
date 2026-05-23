@@ -169,6 +169,103 @@ impl Model {
             latency_us,
         })
     }
+
+    /// Run batch inference: `n` feature rows in a single
+    /// `[n, NUM_FEATURES]` forward pass, returning one `Prediction` per
+    /// row in order. This is what the in-process batch accumulator
+    /// ([`super::batch`]) calls — amortising the per-call ORT overhead
+    /// across the whole batch, which is the whole point of batching.
+    /// Same fail-open contract as [`Model::predict`]: a hard error
+    /// returns `Err` and the caller treats it as "no signal".
+    pub fn predict_batch(
+        &self,
+        features: &[[f32; NUM_FEATURES]],
+    ) -> Result<Vec<Prediction>, ModelError> {
+        let n = features.len();
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let started = std::time::Instant::now();
+
+        // Build the [n, NUM_FEATURES] input matrix.
+        let mut mat = Array2::<f32>::zeros((n, NUM_FEATURES));
+        for (i, row) in features.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
+                mat[[i, j]] = v;
+            }
+        }
+        let input = Tensor::from_array(mat)
+            .map_err(|e| ModelError::Inference(format!("tensor build: {e}")))?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| ModelError::Inference("session mutex poisoned".into()))?;
+        let outputs: SessionOutputs = session
+            .run(inputs!["X" => input])
+            .map_err(|e| ModelError::Inference(e.to_string()))?;
+
+        // Labels [n].
+        let labels: Vec<i64> = {
+            let entry = outputs
+                .get("label")
+                .ok_or_else(|| ModelError::Output("missing `label` output".into()))?;
+            let (_shape, data) = entry
+                .try_extract_tensor::<i64>()
+                .map_err(|e| ModelError::Output(format!("label extract: {e}")))?;
+            data.to_vec()
+        };
+        if labels.len() != n {
+            return Err(ModelError::Output(format!(
+                "label tensor length {} != batch size {n}",
+                labels.len()
+            )));
+        }
+
+        // Probabilities [n, K] — optional (legacy exporters omit a dense
+        // tensor; we fall back to the argmax label per row).
+        let (probs, k): (Vec<f32>, usize) = outputs
+            .get("probabilities")
+            .and_then(|e| e.try_extract_tensor::<f32>().ok())
+            .and_then(|(shape, data)| {
+                let k = *shape.get(1)? as usize;
+                (k > 0 && data.len() == n * k).then(|| (data.to_vec(), k))
+            })
+            .unwrap_or_default();
+
+        let latency_us = started.elapsed().as_micros() as u64;
+        let per_us = latency_us / n as u64;
+
+        let results = labels
+            .into_iter()
+            .enumerate()
+            .map(|(i, class_idx)| {
+                let is_attack = class_idx != self.normal_class_idx;
+                let (confidence, prob_attack) = if k > 0 {
+                    let row = &probs[i * k..(i + 1) * k];
+                    let confidence = row
+                        .get(class_idx as usize)
+                        .filter(|p| p.is_finite())
+                        .copied()
+                        .unwrap_or(1.0);
+                    let prob_attack = compute_prob_attack(row, self.normal_class_idx)
+                        .unwrap_or(if is_attack { 1.0 } else { 0.0 });
+                    (confidence, prob_attack)
+                } else {
+                    (1.0, if is_attack { 1.0 } else { 0.0 })
+                };
+                Prediction {
+                    class_idx,
+                    is_attack,
+                    confidence,
+                    prob_attack,
+                    latency_us: per_us,
+                }
+            })
+            .collect();
+
+        Ok(results)
+    }
 }
 
 /// Read the argmax class index from the model's `label`
