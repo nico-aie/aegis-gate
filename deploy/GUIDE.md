@@ -247,12 +247,140 @@ under `fips`) fail fast with a precise error.
 | TOTP rejected | Check NTP — TOTP allows ±1 step (30 s) |
 | Health probe failing | `/healthz/ready` requires config loaded + state backend up + ≥ 1 healthy upstream + not draining |
 | LB sees node down right after drain | That's the expected path. Drain flips readiness, LB pulls within `inter × fall`, then `systemctl stop` aborts after grace. See `docs/operations/ha-clustering.md`. |
+| AI never fires with `remote_endpoint` set | Binary must be built with the `ai-remote` feature; boot logs `ai.remote_endpoint set but binary built WITHOUT the ai-remote feature` otherwise. Then check `aegis-infer` is up (`systemctl status aegis-infer`) and the socket/port matches. AI is also fail-open — a down server logs `remote ai inference error` at TRACE and forwards on the regex verdict. |
+
+---
+
+## 8. Remote AI inference (`aegis-infer`)
+
+The AI/ML detector can run **in-process** (ONNX loaded into the WAF,
+`--features ai`) or **offloaded** to the standalone `aegis-infer` gRPC
+batch server (`--features ai-remote`). The serving server accumulates a
+batch across concurrent requests and runs one `[N×27]` ONNX pass, so
+inference throughput scales past the ~2k RPS ceiling of the serialised
+in-process `Mutex<Session>`. Source + protocol:
+[`../data/serving-server/`](../data/serving-server/) and its
+[`INTEGRATION.md`](../data/serving-server/INTEGRATION.md).
+
+The two are independent build features:
+
+| Build | Behaviour |
+|-------|-----------|
+| `ai` only | In-process ONNX (status quo). |
+| `ai-remote` only | All AI inference offloaded to `aegis-infer`. |
+| `ai` + `ai-remote` | If `ai.remote_endpoint` is set, **remote wins**; in-process ONNX is the fallback used only if the remote connect fails at boot. |
+| neither | No AI detector; the regex/signature chain still runs. |
+
+```sh
+# Build the WAF with remote-AI support (add to your usual feature set)
+make build FEATURES="redis geoip alerts ai-remote affinity"
+```
+
+### Topology — co-located over a Unix socket (recommended)
+
+```
+┌──────────────────────── one node ───────────────────────┐
+│  ┌───────────────┐    UDS (no TLS)    ┌───────────────┐  │
+│  │  aegis-gate   │◄──────────────────►│  aegis-infer  │  │
+│  │  (WAF, :8443) │  /run/aegis-infer/ │  (ONNX batch) │  │
+│  └───────────────┘     infer.sock     └───────────────┘  │
+└──────────────────────────────────────────────────────────┘
+```
+
+A UDS avoids TLS + a TCP hop (~0.2 ms lower latency than loopback TCP)
+and keeps inference unreachable off-box. Use `tcp://` only when the
+server runs on a different host.
+
+### systemd unit for the serving server
+
+```ini
+# /etc/systemd/system/aegis-infer.service
+[Unit]
+Description=Aegis WAF AI Inference Server
+After=network.target
+
+[Service]
+Type=simple
+User=aegis
+# RuntimeDirectory creates + chowns /run/aegis-infer (0750) on start
+RuntimeDirectory=aegis-infer
+RuntimeDirectoryMode=0750
+ExecStart=/usr/local/bin/aegis-infer \
+    --model-path /etc/aegis/ai_model/waf_model.onnx \
+    --workers 4 \
+    --max-batch 256 \
+    --delay-ms 2 \
+    --bind-uds /run/aegis-infer/infer.sock \
+    --log-level info
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Order it ahead of the WAF so the socket exists at WAF boot — though it
+need not: the WAF **fail-soft** at boot (a missing server logs a warning
+and falls back to in-process ONNX if `ai` was also built; otherwise AI
+is simply absent) and **fail-open** per-request (a down/slow server →
+no AI signal, the regex chain still serves). For a hard ordering add
+`Wants=aegis-infer.service` + `After=aegis-infer.service` to the WAF unit.
+
+### WAF config
+
+```yaml
+ai:
+  enabled: true                 # seeds the dashboard AI toggle on
+  confidence_threshold: 0.85    # reused for the remote verdict
+  remote_endpoint: unix:///run/aegis-infer/infer.sock
+  # tcp://127.0.0.1:50051       # alternative: same-host loopback
+  # model_path: ...             # only used as the fallback (ai + ai-remote)
+```
+
+The dashboard **Detectors → AI** card and `PUT /api/ai/enabled` control
+the remote detector exactly like the in-process one — the toggle is
+seeded from `ai.enabled` and flips live without a restart.
+
+### Tuning the serving server
+
+| Workload | `--workers` | `--max-batch` | `--delay-ms` | Target RPS |
+|----------|-------------|---------------|--------------|------------|
+| < 1k RPS | 1 | 64 | 5 | ~1k |
+| 1–5k | 2 | 128 | 2 | ~5k |
+| 5–10k | 4 | 256 | 2 | ~10k |
+| > 10k | 8 | 512 | 1 | 20k+ |
+
+`--workers` = parallel ONNX sessions ≈ cores reserved for inference
+(keep ≤ physical cores). Verify a batch is forming under load with
+`aegis-infer`'s `Stats` RPC (`avg_batch_size` should be > 1).
+
+### Verify
+
+```sh
+systemctl status aegis-infer            # server up, mode=onnx
+ls -l /run/aegis-infer/infer.sock       # socket present, srw-r-----
+# Boot the WAF; expect this line in the WAF log:
+#   "remote AI detector connected (aegis-infer gRPC serving server)"
+journalctl -u aegis-gate | grep -i "remote AI"
+```
 
 ---
 
 ## Upgrade notes
 
 Behavior changes a deployer should know about, newest first.
+
+### 2026-05-23 — remote AI inference (`aegis-infer`)
+
+- **New optional `ai-remote` build feature + `ai.remote_endpoint` config.**
+  Offloads ML inference to the standalone `aegis-infer` gRPC batch server
+  (see section 8). **Action for deployers:** none required — the feature
+  is off unless you build with `ai-remote` AND set `ai.remote_endpoint`.
+  Existing `ai` (in-process ONNX) deployments are unchanged. To adopt:
+  build with `ai-remote`, deploy the `aegis-infer.service`, point
+  `ai.remote_endpoint` at its socket. Remote AI is fail-soft at boot and
+  fail-open per request, so a serving-server outage never takes the WAF
+  down — it degrades to the regex/signature chain.
 
 ### 2026-05-21 — tier thresholds + detector logging
 
@@ -287,3 +415,4 @@ Behavior changes a deployer should know about, newest first.
 - [`../docs/operations/runtime-tuning.md`](../docs/operations/runtime-tuning.md) — Layer-1 worker sizing.
 - [`../docs/operations/dr-backup.md`](../docs/operations/dr-backup.md) — snapshots, restore drills.
 - [`../docs/operations/compliance.md`](../docs/operations/compliance.md) — what each profile actually changes.
+- [`../data/serving-server/INTEGRATION.md`](../data/serving-server/INTEGRATION.md) — remote AI (`aegis-infer`) integration + protocol (section 8).

@@ -185,6 +185,28 @@ ai:
   model_path: data/ai_model/waf_model.onnx
   confidence_threshold: 0.85
 
+  # 2026-05-23 — remote inference (optional). When set, the WAF runs
+  # the AI detector against the standalone `aegis-infer` gRPC batch
+  # server (data/serving-server/) instead of loading ONNX in-process.
+  # The server batches across requests, so throughput scales without
+  # bloating the WAF binary with `ort`/ONNX.
+  #
+  #   - Requires building with the `ai-remote` feature, e.g.
+  #       make build FEATURES="redis geoip alerts ai-remote affinity"
+  #     (`ai` and `ai-remote` are independent; if both are built and a
+  #      remote_endpoint is set, remote WINS and in-process is the
+  #      fallback used only when the remote connect fails at boot).
+  #   - `confidence_threshold` above is reused for the remote verdict.
+  #   - Always fail-open: if the server is down/slow, no AI signal is
+  #     emitted and the regex detectors keep serving.
+  #
+  # Endpoint forms:
+  #   unix:///run/aegis-infer/infer.sock   # co-located (recommended)
+  #   tcp://127.0.0.1:50051                # same host over loopback
+  #   tcp://10.0.0.5:50051                 # remote host
+  #
+  # remote_endpoint: unix:///run/aegis-infer/infer.sock
+
 # ---------------------------------------------------------------------------
 # Bot classifier (gate-style, observational) — DEFAULT OFF
 # ---------------------------------------------------------------------------

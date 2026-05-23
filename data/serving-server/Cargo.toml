@@ -1,0 +1,62 @@
+# Standalone crate — intentionally NOT part of the aegis-gate workspace.
+# This empty [workspace] table tells Cargo to stop searching for a parent workspace.
+[workspace]
+
+[package]
+name        = "aegis-infer"
+version     = "0.1.0"
+edition     = "2021"
+description = "Aegis WAF — gRPC batch AI inference server"
+
+# ── Binaries ─────────────────────────────────────────────────────────────────
+[[bin]]
+name = "aegis-infer"
+path = "src/main.rs"
+
+[[bin]]
+name = "infer-bench"
+path = "src/bin/bench_client.rs"
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+[dependencies]
+tokio        = { version = "1",    features = ["full"] }
+tokio-stream = { version = "0.1",  features = ["net", "time"] }
+
+# gRPC / protobuf
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+
+# ONNX Runtime — exact version pinned to match aegis-gate workspace
+ort     = { version = "=2.0.0-rc.12", features = ["download-binaries", "ndarray"] }
+ndarray = "0.17"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Errors
+anyhow    = "1"
+thiserror = "2"
+
+# Regex (feature extraction, same as aegis-security)
+regex = "1"
+
+# Async MPMC for worker pool dispatch
+async-channel = "2"
+
+# hyper-util — needed for TokioIo wrapper in UDS connector
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = "0.4"
+
+# Build-time proto compilation
+[build-dependencies]
+tonic-build = "0.12"
+# Vendored protoc — no system protobuf-compiler needed (macOS + Linux).
+protoc-bin-vendored = "3"
+
+[profile.release]
+opt-level = 3
+lto       = "thin"

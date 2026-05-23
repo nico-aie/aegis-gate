@@ -320,6 +320,14 @@ pub struct AiConfig {
     /// resolving > 0.95 in practice.
     #[serde(default = "default_ai_confidence_threshold")]
     pub confidence_threshold: f32,
+    /// 2026-05-23 — when set, run AI inference on the standalone
+    /// `aegis-infer` gRPC batch server instead of in-process ONNX.
+    /// Format: `"unix:///path/to.sock"` (co-located, recommended) or
+    /// `"tcp://host:port"`. Requires the `ai-remote` build feature;
+    /// takes precedence over `model_path` when both are present.
+    /// Always fail-open if the server is unreachable.
+    #[serde(default)]
+    pub remote_endpoint: Option<String>,
 }
 
 impl Default for AiConfig {
@@ -328,6 +336,7 @@ impl Default for AiConfig {
             enabled: false,
             model_path: None,
             confidence_threshold: default_ai_confidence_threshold(),
+            remote_endpoint: None,
         }
     }
 }
