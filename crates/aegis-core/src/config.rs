@@ -113,6 +113,15 @@ pub struct WafConfig {
     /// can't resize once built.
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    /// 2026-05-23 — per-tier per-request block scores. Seeds the
+    /// `TierStore` `risk_threshold` at boot so operators can pin tier
+    /// posture declaratively per profile instead of editing code or
+    /// relying on (non-durable) dashboard edits. Any tier omitted
+    /// falls back to the code default (`Tier::defaults_for`). The
+    /// dashboard `PUT /api/tiers/<name>` still applies live runtime
+    /// overrides; a restart re-applies this block.
+    #[serde(default)]
+    pub tiers: TiersConfig,
     /// CI-T8 — MaxMind GeoIP databases. When set, the
     /// `aegis-security/geoip` reader loads them at boot and the
     /// AttacksHandler enriches `/api/attacks/top` rows with
@@ -492,6 +501,73 @@ fn default_blocking_threads() -> usize {
     512
 }
 
+/// 2026-05-23 — per-tier per-request block score (`risk_threshold`)
+/// seeds. Each canonical tier is optional; omitted tiers use the code
+/// default from `Tier::defaults_for`. Only the per-request block score
+/// is settable here — `challenges_enabled` / cumulative overrides stay
+/// on the dashboard `PUT /api/tiers/<name>` surface.
+///
+/// ```yaml
+/// tiers:
+///   critical: { risk_threshold: 50 }
+///   high:     { risk_threshold: 60 }
+///   medium:   { risk_threshold: 70 }
+///   low:      { risk_threshold: 80 }
+/// ```
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct TiersConfig {
+    #[serde(default)]
+    pub critical: Option<TierThresholdConfig>,
+    #[serde(default)]
+    pub high: Option<TierThresholdConfig>,
+    #[serde(default)]
+    pub medium: Option<TierThresholdConfig>,
+    #[serde(default)]
+    pub low: Option<TierThresholdConfig>,
+}
+
+/// One tier's configurable block score.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct TierThresholdConfig {
+    /// Per-request block score (0–100). A request blocks when its
+    /// summed detector score reaches this value on the matched tier.
+    pub risk_threshold: u32,
+}
+
+impl TiersConfig {
+    /// Flatten to `(tier_name, risk_threshold)` pairs for the
+    /// configured tiers only. Drives `TierStore` seeding at boot.
+    pub fn risk_threshold_overrides(&self) -> Vec<(&'static str, u32)> {
+        let mut out = Vec::new();
+        if let Some(t) = &self.critical {
+            out.push(("critical", t.risk_threshold));
+        }
+        if let Some(t) = &self.high {
+            out.push(("high", t.risk_threshold));
+        }
+        if let Some(t) = &self.medium {
+            out.push(("medium", t.risk_threshold));
+        }
+        if let Some(t) = &self.low {
+            out.push(("low", t.risk_threshold));
+        }
+        out
+    }
+
+    /// Reject out-of-range scores (the gate compares against a value
+    /// capped at 100, so anything above that can never block).
+    pub fn validate(&self) -> crate::Result<()> {
+        for (name, rt) in self.risk_threshold_overrides() {
+            if rt > 100 {
+                return Err(crate::error::WafError::Config(format!(
+                    "tiers.{name}.risk_threshold must be <= 100 (got {rt})"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn default_stack_size_kb() -> usize {
     2048
 }
@@ -628,6 +704,8 @@ impl WafConfig {
         // Layer-1: runtime sizing constraints (workers >= 2, sane
         // blocking-pool size, sane stack).
         self.runtime.validate()?;
+        // 2026-05-23 — per-tier block-score bounds (<= 100).
+        self.tiers.validate()?;
         // 2026-05-11 CORE-09 / CTL-08 — reject not-implemented
         // state-backend + reconcile-mode values at lint time
         // instead of letting them pass `validate()` and then

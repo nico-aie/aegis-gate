@@ -74,18 +74,21 @@ all signals from the chain.
 
 > **2026-05-20 recalibration (Option B), amended 2026-05-23.** The
 > per-request block gate sums this request's signals and compares to
-> the matched tier's `risk_threshold`. Defaults are **critical 50 /
-> high 70 / medium 70 / low 80**. A single clear exploit (score 70 —
-> sqli, xss, ssrf, path_traversal, cmdi, ssti, nosql, CRLF) blocks on
-> critical/high/medium but **not** on `low`: 2026-05-23 `low` was
-> raised 70→80 so only the strongest single signals auto-block low-tier
-> traffic (static assets, etc.). The detector ceiling is now **80**
-> (canary excepted): definitive-RCE — **Log4Shell, XXE = 80** — plus
-> the **canary honeypot (100)** are the only detectors that block a lone
-> request at `low`; a clear exploit there must stack with another signal
-> (70 + any ≥10) or accumulate via the cumulative gate. Weaker / probing
-> signals (recon 25/50, oversize 30, AI 60, …) stay below 70 and still
-> accumulate before blocking, so the false-positive guard holds. The
+> the matched tier's `risk_threshold`. Defaults are a clean 10-apart
+> ladder — **critical 50 / high 60 / medium 70 / low 80** — settable
+> per profile via the `tiers:` config block (`tiers.<name>.risk_threshold`),
+> or live via the dashboard *Edit Tier* modal. A single clear exploit
+> (score 70 — sqli, xss, ssrf, path_traversal, cmdi, ssti, nosql, CRLF)
+> blocks on critical/high/medium but **not** on `low` (2026-05-23 `low`
+> was raised 70→80 so only the strongest single signals auto-block
+> low-tier static-asset traffic). The detector ceiling is **80** (canary
+> excepted): definitive-RCE — **Log4Shell, XXE = 80** — plus the
+> **canary honeypot (100)** are the only detectors that block a lone
+> request at `low`; a clear exploit there must stack (70 + any ≥10) or
+> accumulate via the cumulative gate. At **high=60**, the score-60
+> signals (AI, mass_assignment, velocity) block on a single hit at
+> `high`. Weaker / probing signals (recon 25/50, oversize 30, …) stay
+> below 60 and accumulate before blocking, so the FP guard holds. The
 > **cumulative** bucket, by contrast, adds `max(signal)` per request
 > (SEC-M003), not the sum. Values below are the single-source-of-truth
 > scores from `crates/aegis-security/src/detectors/scores.rs`.
