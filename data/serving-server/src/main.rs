@@ -192,8 +192,13 @@ async fn main() -> anyhow::Result<()> {
 fn init_logging(args: &Args) {
     use tracing_subscriber::EnvFilter;
 
+    // When RUST_LOG is not set, default to user's log level but suppress ORT's
+    // shape-mismatch warnings (batch size differs from the {1} declared in the
+    // model's static metadata — dynamic batching is intentional and works fine).
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&args.log_level));
+        .unwrap_or_else(|_| {
+            EnvFilter::new(format!("{},ort=error", args.log_level))
+        });
 
     if args.json_logs {
         tracing_subscriber::fmt()
