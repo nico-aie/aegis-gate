@@ -34,6 +34,20 @@ listeners:
     bind: "127.0.0.1:9443"
 
 # ---------------------------------------------------------------------------
+# Runtime sizing (restart-only — tokio can't resize a built runtime).
+# 2026-05-23 (perf) — pin workers to cores to tighten the latency tail
+# under high RPS. Assumes a DEDICATED WAF box.
+# ---------------------------------------------------------------------------
+runtime:
+  workers: auto          # = num_cpus (>= 2). One async worker per core.
+  cpu_affinity: true     # pin workers to distinct cores → less scheduler
+                         # jitter + cache migration under load (tighter p99).
+                         # Requires the binary built with `--features affinity`
+                         # (Makefile FEATURES); logged + ignored on hosts
+                         # without affinity support. Don't enable if the WAF
+                         # shares cores with the upstream / Redis.
+
+# ---------------------------------------------------------------------------
 # TLS
 # ---------------------------------------------------------------------------
 tls:

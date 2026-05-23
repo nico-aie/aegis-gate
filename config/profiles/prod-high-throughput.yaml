@@ -40,6 +40,15 @@ listeners:
   admin:
     bind: "127.0.0.1:9443"
 
+# Runtime sizing (restart-only). 2026-05-23 (perf) — this is the
+# throughput-tuned profile: one worker per core + pin to cores for the
+# tightest tail under high RPS. Assumes a dedicated WAF box;
+# cpu_affinity requires the binary built with `--features affinity`
+# (logged + ignored otherwise).
+runtime:
+  workers: auto
+  cpu_affinity: true
+
 tls:
   min_version: "1.2"
   certificates:
