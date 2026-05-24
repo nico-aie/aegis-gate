@@ -4230,7 +4230,7 @@ function PageTierConfig() {
                     {selected.challenges_enabled === true ? (
                       <><span style={{ color: 'var(--up)', fontWeight: 600 }}>challenges on</span> · PoW on threshold crossing</>
                     ) : (
-                      <>challenges off · escalate to block on threshold crossing</>
+                      <>challenges off · challenge band passes through (blocks only at block threshold)</>
                     )}
                     {' · '}
                     thresholds: <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>
@@ -4427,7 +4427,7 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
                 <ol style={{ margin: '6px 0 0', paddingLeft: 18 }}>
                   <li><strong>Traffic Gates</strong> (global, before tier matching) — access list, strike-block, rate-limit, DDoS. Configured on Traffic Gates page.</li>
                   <li><strong>Per-request block score</strong> (this tier) — when THIS one request's detector scores sum to ≥ the value below, block immediately.</li>
-                  <li><strong>Cumulative IP history</strong> — IP's running score crosses the global thresholds (Traffic Gates → #3). On this tier, challenges either run or escalate to block based on the toggle below.</li>
+                  <li><strong>Cumulative IP history</strong> — IP's running score crosses the global thresholds (Traffic Gates → #3). On this tier, the challenge band either runs a PoW puzzle or is skipped (allowed through) based on the toggle below; either way only the block threshold blocks.</li>
                 </ol>
                 Otherwise → allow + forward to upstream. <code>X-WAF-Risk-Score</code> always reports the cumulative IP score (contract §5.1).
               </div>
@@ -4465,7 +4465,7 @@ function TierEditModal({ tier, onCancel, onSave, busy }) {
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
               <input type="checkbox" checked={challengesEnabled} onChange={e => setChallengesEnabled(e.target.checked)} />
-              <span><strong>Allow challenges</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → escalate to block)</span></span>
+              <span><strong>Allow challenges</strong> <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>(off → challenge band skipped, blocks only at block threshold)</span></span>
             </label>
             <div className="form-hint" style={{ marginTop: 6 }}>
               Cumulative thresholds are global — edit on <a href="#/traffic-gates" style={{ color: 'var(--accent)' }}>Traffic Gates → #3</a>.
