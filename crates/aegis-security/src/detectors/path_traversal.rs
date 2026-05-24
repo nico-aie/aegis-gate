@@ -68,6 +68,27 @@ static TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+/// Patterns applied to the request BODY — the full set minus the bare
+/// literal `..[\\/]` rule.
+///
+/// 2026-05-24 (FP fix) — legit analytics / RUM POST bodies (Shopify
+/// Monorail boomerang, Chromium UMA, …) embed third-party resource
+/// URLs whose paths routinely contain `../` (relative-path
+/// resolution). That's data, not an attack, and it was firing
+/// `path_traversal(body)` on essentially every such beacon. The body
+/// is still scanned for every OTHER rule — encoded `%2e%2e`, sensitive
+/// targets (`/etc/passwd`, `/proc/self`), drive roots (`c:\`), UNC,
+/// null bytes, encoded backslash — so a file-targeted body traversal
+/// is still caught. The URL path+query is unaffected (it uses the full
+/// `TRAVERSAL_PATTERNS`), so query-delivered `../` detection is intact.
+static BODY_TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    TRAVERSAL_PATTERNS
+        .iter()
+        .filter(|re| re.as_str() != r"(?:\.\.[\\/])")
+        .cloned()
+        .collect()
+});
+
 impl Detector for PathTraversalDetector {
     fn id(&self) -> &'static str {
         "path_traversal"
@@ -85,7 +106,7 @@ impl Detector for PathTraversalDetector {
         // win on that score.
         let raw_uri = req.uri.to_string();
         for variant in super::normalize_for_detection(&raw_uri) {
-            check(&variant, "uri", &mut signals);
+            check(&variant, "uri", &TRAVERSAL_PATTERNS, &mut signals);
             if !signals.is_empty() {
                 break;
             }
@@ -94,7 +115,7 @@ impl Detector for PathTraversalDetector {
         let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
         if !body.is_empty() && signals.is_empty() {
             for variant in super::normalize_for_detection(body) {
-                check(&variant, "body", &mut signals);
+                check(&variant, "body", &BODY_TRAVERSAL_PATTERNS, &mut signals);
                 if !signals.is_empty() {
                     break;
                 }
@@ -105,8 +126,8 @@ impl Detector for PathTraversalDetector {
     }
 }
 
-fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
-    for re in TRAVERSAL_PATTERNS.iter() {
+fn check(input: &str, field: &str, patterns: &[Regex], signals: &mut Vec<Signal>) {
+    for re in patterns {
         if re.is_match(input) {
             signals.push(Signal {
                 score: super::scores::path_traversal::PATH_TRAVERSAL,
@@ -275,4 +296,53 @@ mod tests {
     negative!(clean_encoded_backslash_value, "/track?d=a%5cb");
     negative!(clean_encoded_backslash_upper, "/img?u=a%5Cb");
     negative!(clean_beacon_encoded_bs, "/AGY0DmkM-xA2f00AEg/t9amcwJVb2mp3z?d=x%5cy");
+
+    // 2026-05-24 (FP fix) — body scanning skips the bare literal `../`.
+    fn view_with_body(body: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
+        (
+            http::Method::POST,
+            "/beacon".parse().unwrap(),
+            http::HeaderMap::new(),
+            BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false),
+        )
+    }
+
+    // Analytics/RUM bodies (Shopify Monorail boomerang, Chromium UMA)
+    // carry resource URLs with `../` — must NOT flag path_traversal.
+    #[test]
+    fn body_relative_url_dotdot_is_clean() {
+        let det = PathTraversalDetector;
+        let (m, u, h, b) = view_with_body(
+            r#"{"resource_timing":"https://cdn.shop.com/a/../b/app.js","page":"/x/../y"}"#,
+        );
+        let req = make_view(&m, &u, &h, &b);
+        assert!(det.inspect(&req).is_empty(), "FP: ../ in analytics body");
+    }
+
+    // A file-targeted traversal in a body is STILL caught (sensitive target).
+    #[test]
+    fn body_etc_passwd_still_flagged() {
+        let det = PathTraversalDetector;
+        let (m, u, h, b) = view_with_body(r#"{"file":"../../../../etc/passwd"}"#);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!det.inspect(&req).is_empty(), "missed /etc/passwd in body");
+    }
+
+    // Encoded `%2e%2e%2f` in a body is still a strong signal — keep it.
+    #[test]
+    fn body_encoded_dotdot_still_flagged() {
+        let det = PathTraversalDetector;
+        let (m, u, h, b) = view_with_body("p=%2e%2e%2f%2e%2e%2fwindows");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!det.inspect(&req).is_empty(), "missed encoded ../ in body");
+    }
+
+    // URL path+query `../` detection is UNCHANGED — only the body is relaxed.
+    #[test]
+    fn uri_dotdot_detection_unchanged() {
+        let det = PathTraversalDetector;
+        let (m, u, h, b) = view_with_uri("/path?file=../secret.txt");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!det.inspect(&req).is_empty(), "lost URI ../ detection");
+    }
 }
