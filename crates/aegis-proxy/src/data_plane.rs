@@ -1090,8 +1090,15 @@ pub(crate) async fn handle_data_request_inner(
         },
         None => (global.challenge_at, global.block_at, true),
     };
-    // Composite-key cumulative level. When the matched tier disables
-    // challenges, the challenge rung escalates straight to Block.
+    // Composite-key cumulative level. 2026-05-24 — when the matched tier
+    // disables challenges, the challenge rung is SKIPPED (treated as
+    // Allow), NOT escalated to Block. Disabling challenges means "don't
+    // run the PoW gate", not "lower the block threshold to challenge_at":
+    // a challenge-band score (challenge_at..block_at) passes through, and
+    // only block_at blocks. (Previously this escalated to Block, which
+    // surprised operators by effectively blocking at challenge_at — e.g.
+    // a cumulative 60 blocking when block_at is 70.) A tier that wants a
+    // hard block earlier should lower its `cumulative_block_at` instead.
     let level = {
         let lvl = risk.level_with_for_key(
             &build_risk_key(peer_ip, &parts.headers, tls_fingerprint),
@@ -1100,7 +1107,7 @@ pub(crate) async fn handle_data_request_inner(
         );
         match lvl {
             aegis_security::risk::RiskLevel::Challenge if !challenges_enabled => {
-                aegis_security::risk::RiskLevel::Block
+                aegis_security::risk::RiskLevel::Allow
             }
             other => other,
         }
