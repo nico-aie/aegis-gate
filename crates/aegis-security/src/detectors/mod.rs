@@ -322,6 +322,38 @@ pub(crate) fn normalize_for_detection(input: &str) -> Vec<String> {
     out
 }
 
+/// Whether the request body should be regex-scanned by the content
+/// detectors (sqli / command_injection / …).
+///
+/// 2026-05-24 (FP fix) — only bodies the origin will parse as
+/// STRUCTURED TEXT are scanned: JSON (`application/json`, `*+json`),
+/// form (`application/x-www-form-urlencoded`), XML (`application/xml`,
+/// `*+xml`), and `text/*`. Opaque/binary bodies — Chromium UMA
+/// protobuf, `application/octet-stream` beacons, images, multipart
+/// file uploads — are high-entropy and coincidentally match injection
+/// regexes (a GPU id `0x0000C0DE` → the sqli hex rule; random bytes →
+/// cmdi shell-command shapes). Replaying the captured corpora showed
+/// ~all sqli/cmdi false positives came from scanning such beacon
+/// bodies. A body with a missing or unrecognised content-type is NOT
+/// scanned (skip-by-default); injection in those is an app-layer
+/// concern (parameterised queries / safe exec).
+pub(crate) fn body_is_scannable(headers: &http::HeaderMap) -> bool {
+    let Some(ct) = headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    // Drop any `; charset=…` / `; boundary=…` params and normalise case.
+    let ct = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    ct.starts_with("text/")
+        || ct == "application/json"
+        || ct.ends_with("+json")
+        || ct == "application/xml"
+        || ct.ends_with("+xml")
+        || ct == "application/x-www-form-urlencoded"
+}
+
 /// Detector trait — each OWASP detector implements this.
 pub trait Detector: Send + Sync {
     fn id(&self) -> &'static str;
