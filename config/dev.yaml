@@ -77,6 +77,12 @@ routes:
     path: "/"
     match_type: prefix
     upstream: stub-pool
+    # 2026-05-25 — default routing tier = high. The catch-all is the
+    # fallback for every unmatched request, so this makes HIGH the
+    # effective default tier (per-request block threshold 60 instead of
+    # Low's 80). Without this the route falls back to the code default
+    # (Tier::Low). Raise/lower per specific route with its own tier_override.
+    tier_override: high
 
 # ---------------------------------------------------------------------------
 # Upstream pools — single stub. Tests don't reach the upstream;
