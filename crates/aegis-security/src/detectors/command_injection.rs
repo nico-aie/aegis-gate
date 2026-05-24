@@ -141,26 +141,36 @@ impl Detector for CommandInjectionDetector {
             }
         }
 
-        // Body — first 8 KiB.
-        let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() && signals.is_empty() {
-            for variant in super::normalize_for_detection(body) {
-                check(&variant, "body", &mut signals);
-                if !signals.is_empty() {
-                    break;
+        // Body — first 8 KiB, but only when it's structured text the
+        // origin will parse (JSON / form / XML / text). Opaque/binary
+        // beacon bodies are skipped (2026-05-24 FP fix — see
+        // `body_is_scannable`); high-entropy blobs coincidentally matched
+        // the shell-command shapes and produced ~all body false positives.
+        if signals.is_empty() && super::body_is_scannable(req.headers) {
+            let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
+            if !body.is_empty() {
+                for variant in super::normalize_for_detection(body) {
+                    check(&variant, "body", &mut signals);
+                    if !signals.is_empty() {
+                        break;
+                    }
                 }
             }
         }
 
-        // 2026-05-08 GAP-008 — Log4Shell payloads frequently
-        // arrive in headers (UA, Referer, custom auth/version
-        // headers). Scan a conservative allowlist of common
-        // headers; broader header scans risk header_injection
-        // overlap.
+        // 2026-05-08 GAP-008 — Log4Shell payloads frequently arrive in
+        // headers (UA, Referer, custom auth/version headers). 2026-05-24
+        // (FP fix) — headers are scanned for LOG4SHELL ONLY. The baseline
+        // cmdi patterns (`;sh`, `|id`, `$(…)`…) are NOT run on headers:
+        // adtech cookies + telemetry user-agents are huge token blobs
+        // that coincidentally match shell shapes, and header-borne
+        // baseline cmdi is rare/app-specific. `${jndi:…}` RCE stays.
         for name in HEADER_SCAN_ALLOWLIST {
             if let Some(val) = req.headers.get(*name).and_then(|v| v.to_str().ok()) {
-                check(val, name, &mut signals);
-                check(&super::url_decode(val), name, &mut signals);
+                if check_log4shell(val, name, &mut signals) {
+                    continue;
+                }
+                check_log4shell(&super::url_decode(val), name, &mut signals);
             }
         }
 
@@ -183,11 +193,14 @@ const HEADER_SCAN_ALLOWLIST: &[&str] = &[
     "x-requested-with",
 ];
 
-fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
-    // GAP-008 (2026-05-08) — Log4Shell first; score 80 (Critical
-    // RCE / known-CVE tier). Same field tag as baseline cmdi so
-    // the audit log + by-class counter stay coherent — operators
-    // grep for "${jndi:" in audit if they need to differentiate.
+/// Log4Shell-only scan. Returns true on a hit. Used directly for the
+/// header allowlist (header-borne `${jndi:…}` is real RCE), and as the
+/// first rung of the full [`check`] (URL + body).
+fn check_log4shell(input: &str, field: &str, signals: &mut Vec<Signal>) -> bool {
+    // GAP-008 (2026-05-08) — Log4Shell; score 80 (Critical RCE /
+    // known-CVE tier). Same field tag as baseline cmdi so the audit
+    // log + by-class counter stay coherent — operators grep for
+    // "${jndi:" in audit if they need to differentiate.
     for re in LOG4SHELL_PATTERNS.iter() {
         if re.is_match(input) {
             signals.push(Signal {
@@ -195,8 +208,15 @@ fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
                 tag: "command_injection".into(),
                 field: field.into(),
             });
-            return;
+            return true;
         }
+    }
+    false
+}
+
+fn check(input: &str, field: &str, signals: &mut Vec<Signal>) {
+    if check_log4shell(input, field, signals) {
+        return;
     }
     // Baseline cmdi patterns; score 70 (high-confidence
     // injection tier).
@@ -681,5 +701,49 @@ mod tests {
         let b = BodyPeek::empty();
         let req = make_view(&m, &u, &h, &b);
         assert!(d.inspect(&req).iter().any(|s| s.score == 80));
+    }
+
+    // 2026-05-24 (FP fix) — content-type gated body + log4shell-only headers.
+    fn body_view(ct: Option<&str>, body: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
+        let mut h = http::HeaderMap::new();
+        if let Some(ct) = ct {
+            h.insert("content-type", ct.parse().unwrap());
+        }
+        (
+            http::Method::POST,
+            "/api/run".parse().unwrap(),
+            h,
+            BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false),
+        )
+    }
+
+    #[test]
+    fn body_scanned_when_form_urlencoded() {
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = body_view(Some("application/x-www-form-urlencoded"), "cmd=foo;whoami");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "form body cmdi must fire");
+    }
+
+    #[test]
+    fn body_skipped_when_octet_stream() {
+        let d = CommandInjectionDetector;
+        let (m, u, h, b) = body_view(Some("application/octet-stream"), "blob;whoami|id$(cat /etc/passwd)");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "binary beacon body must be skipped");
+    }
+
+    // Baseline cmdi in a cookie must NOT fire (headers are log4shell-only);
+    // a Log4Shell cookie still fires — see `log4shell_cookie_header_blocks`.
+    #[test]
+    fn baseline_cmdi_in_cookie_not_scanned() {
+        let d = CommandInjectionDetector;
+        let u: http::Uri = "/".parse().unwrap();
+        let m = http::Method::GET;
+        let mut h = http::HeaderMap::new();
+        h.insert("cookie", "sid=abc;whoami".parse().unwrap());
+        let b = BodyPeek::empty();
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "baseline cmdi in cookie must not fire");
     }
 }

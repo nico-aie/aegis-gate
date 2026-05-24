@@ -20,7 +20,13 @@ static SQLI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:AND\s+1\s*=\s*1)",
         r"(?i)(?:'\s*OR\s+'[^']*'\s*=\s*')",
         r"(?i)(?:'\s*;\s*(?:DROP|DELETE|UPDATE|INSERT))",
-        r"(?i)(?:--\s*$)",
+        // 2026-05-24 (FP fix) — the comment marker must follow a quote
+        // (string breakout). Bare trailing `--` matched any value ending
+        // in `--`, e.g. the IAB US-Privacy string `us_privacy=1---`. Real
+        // comment SQLi breaks out of a quoted string (`admin'--`, `' OR
+        // 1=1--`); numeric injections are caught by the OR/UNION rules
+        // regardless of the trailing `--`.
+        r"(?i)(?:'[^']*--)",
         r"(?i)(?:/\*.*\*/)",
         r"(?i)(?:WAITFOR\s+DELAY)",
         r"(?i)(?:BENCHMARK\s*\()",
@@ -31,7 +37,11 @@ static SQLI_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)(?:xp_cmdshell)",
         r"(?i)(?:information_schema)",
         r"(?i)(?:sys\.(?:objects|columns|tables))",
-        r"(?i)(?:0x[0-9a-f]{8,})",
+        // 2026-05-24 (FP fix) — REMOVED `0x[0-9a-f]{8,}`. It matched any
+        // 8+ hex run after `0x`, false-positiving on GPU device ids
+        // (`0x0000C0DE` in Chromium UMA telemetry), content hashes, and
+        // tokens. Real hex-encoding SQLi (`0x4142…`) is almost always
+        // paired with UNION/SELECT/CHAR, which the other rules catch.
         r"(?i)(?:CHAR\s*\(\s*\d+\s*\))",
         r"(?i)(?:CONCAT\s*\()",
         r"(?i)(?:GROUP\s+BY\s+.+\s+HAVING)",
@@ -65,23 +75,28 @@ impl Detector for SqliDetector {
             }
         }
 
-        // Check body.
-        let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
-        if !body.is_empty() && signals.is_empty() {
-            for variant in super::normalize_for_detection(body) {
-                check_patterns(&variant, "body", &mut signals);
-                if !signals.is_empty() {
-                    break;
+        // Check body — only when it's structured text the origin will
+        // parse (JSON / form / XML / text). Opaque/binary beacon bodies
+        // are skipped (2026-05-24 FP fix — see `body_is_scannable`); they
+        // were the source of ~all captured body false positives.
+        if signals.is_empty() && super::body_is_scannable(req.headers) {
+            let body = std::str::from_utf8(req.body.peek(8192)).unwrap_or("");
+            if !body.is_empty() {
+                for variant in super::normalize_for_detection(body) {
+                    check_patterns(&variant, "body", &mut signals);
+                    if !signals.is_empty() {
+                        break;
+                    }
                 }
             }
         }
 
-        // Check selected headers.
-        for name in &["cookie", "referer", "x-forwarded-for", "user-agent"] {
-            if let Some(val) = req.headers.get(*name).and_then(|v| v.to_str().ok()) {
-                check_patterns(val, name, &mut signals);
-            }
-        }
+        // 2026-05-24 (FP fix) — baseline sqli header scanning (cookie /
+        // referer / x-forwarded-for / user-agent) was REMOVED. It
+        // false-positived on adtech cookies + telemetry user-agents (huge
+        // token blobs), and header-borne sqli only matters when the app
+        // interpolates a header into SQL — rare and app-specific. URL +
+        // structured-body scanning remain.
 
         signals
     }
@@ -155,7 +170,7 @@ mod tests {
     positive_test!(sqli_update_set, "/?q=UPDATE+users+SET+admin=1");
     positive_test!(sqli_delete_from, "/?q=DELETE+FROM+sessions");
     positive_test!(sqli_alter_table, "/?q=ALTER+TABLE+users+ADD+col+INT");
-    positive_test!(sqli_comment, "/?id=1--");
+    positive_test!(sqli_comment, "/?id=1'--");
     positive_test!(sqli_c_comment, "/?id=1/**/");
     positive_test!(sqli_waitfor, "/?id=1;WAITFOR+DELAY+'0:0:5'");
     positive_test!(sqli_benchmark, "/?id=BENCHMARK(1000,MD5('a'))");
@@ -166,7 +181,6 @@ mod tests {
     positive_test!(sqli_xp_cmdshell, "/?q=xp_cmdshell+'dir'");
     positive_test!(sqli_information_schema, "/?q=information_schema.tables");
     positive_test!(sqli_sys_objects, "/?q=sys.objects");
-    positive_test!(sqli_hex_encoded, "/?q=0x4142434445464748");
     positive_test!(sqli_char_func, "/?q=CHAR(65)");
     positive_test!(sqli_concat, "/?q=CONCAT('a','b')");
     positive_test!(sqli_group_by_having, "/?q=GROUP+BY+id+HAVING+1=1");
@@ -231,4 +245,48 @@ mod tests {
     negative_test!(clean_date, "/archive/2024/01/15");
     negative_test!(clean_empty_query, "/path?");
     negative_test!(clean_anchor, "/docs/intro#overview");
+    // 2026-05-24 (FP fix) — corpus regressions.
+    // Trailing `--` without a quote (IAB US-Privacy string) is data.
+    negative_test!(clean_usp_string, "/sync?UICR=k-v21zQAxC5PD&us_privacy=1---");
+    // `0x…` hex run (GPU id / hash / token) is no longer flagged.
+    negative_test!(clean_hex_blob, "/sync?gpu=0x0000C0DE");
+    negative_test!(clean_hash_param, "/t?sig=0xdeadbeefcafebabe");
+
+    // 2026-05-24 (FP fix) — content-type gated body scanning.
+    fn body_view(ct: Option<&str>, body: &str) -> (http::Method, http::Uri, http::HeaderMap, BodyPeek) {
+        let mut h = http::HeaderMap::new();
+        if let Some(ct) = ct {
+            h.insert("content-type", ct.parse().unwrap());
+        }
+        (
+            http::Method::POST,
+            "/api/x".parse().unwrap(),
+            h,
+            BodyPeek::new(body.as_bytes().to_vec(), Some(body.len() as u64), false),
+        )
+    }
+
+    #[test]
+    fn body_scanned_when_json() {
+        let d = SqliDetector;
+        let (m, u, h, b) = body_view(Some("application/json"), r#"{"q":"1 UNION SELECT * FROM users"}"#);
+        let req = make_view(&m, &u, &h, &b);
+        assert!(!d.inspect(&req).is_empty(), "JSON body sqli must fire");
+    }
+
+    #[test]
+    fn body_skipped_when_octet_stream() {
+        let d = SqliDetector;
+        let (m, u, h, b) = body_view(Some("application/octet-stream"), "x 0x0000C0DE UNION SELECT 1 FROM t");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "binary beacon body must be skipped");
+    }
+
+    #[test]
+    fn body_skipped_when_no_content_type() {
+        let d = SqliDetector;
+        let (m, u, h, b) = body_view(None, "1 UNION SELECT * FROM users");
+        let req = make_view(&m, &u, &h, &b);
+        assert!(d.inspect(&req).is_empty(), "missing content-type body must be skipped");
+    }
 }
