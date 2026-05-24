@@ -1187,10 +1187,20 @@ pub(crate) async fn handle_data_request_inner(
                 let block_score = risk
                     .snapshot_with_key(&build_risk_key(peer_ip, &parts.headers, tls_fingerprint))
                     .map(|s| s.score);
-                let tag = match block_score {
+                let mut tag = match block_score {
                     Some(s) => DecisionTag::block("risk-score").with_tier(tier).with_risk_score(s),
-                    None    => DecisionTag::block("risk-score").with_tier(tier),
+                    None => DecisionTag::block("risk-score").with_tier(tier),
                 };
+                // 2026-05-24 — if THIS request's own detectors fired but
+                // stayed under the per-request tier threshold, it routes
+                // through the cumulative gate and blocks as `risk-score`.
+                // Stamp the per-request detector score onto the tag so
+                // `X-WAF-Detector-Score` matches the detector-block path.
+                // `rule_id` stays `risk-score` (the enforcing gate); the
+                // contributing detector is surfaced in the audit fields below.
+                if let Some(rs) = detected_request_score {
+                    tag = tag.with_detector_score(rs);
+                }
                 // F-CRITICAL-002 — honor `set_profile
                 // mode=log_only` on `risk_engine.score`. When
                 // LogOnly, emit the audit (via blocked_response
@@ -1208,11 +1218,25 @@ pub(crate) async fn handle_data_request_inner(
                 // risk-score block shows headers + body + cookies in the
                 // detail drawer, like detector blocks do. Same verbosity
                 // gate as the detector-block echo.
-                let rs_echo = if !load_mode.is_critical() && allow_verbose_fields {
-                    Some(request_echo_fields(&parts.headers, Some(&body_bytes)))
+                // 2026-05-24 — carry the per-request detector score + fired
+                // detector tags into the audit `fields` so the detail drawer
+                // attributes a risk-score block to the detector that drove it
+                // (e.g. path_traversal=70, under the LOW per-request 80 but
+                // >= the cumulative block_at 70) instead of rendering a
+                // scoreless reputation block. A genuinely clean cumulative
+                // block leaves both None → fields stay slim → drawer shows `—`.
+                let mut rs_fields = if !load_mode.is_critical() && allow_verbose_fields {
+                    request_echo_fields(&parts.headers, Some(&body_bytes))
                 } else {
-                    None
+                    serde_json::Map::new()
                 };
+                if let Some(rs) = detected_request_score {
+                    rs_fields.insert("request_score".into(), serde_json::json!(rs));
+                }
+                if let Some(d) = detected_detectors.as_ref() {
+                    rs_fields.insert("detectors".into(), serde_json::Value::String(d.clone()));
+                }
+                let rs_echo = if rs_fields.is_empty() { None } else { Some(rs_fields) };
                 let resp = blocked_response(
                     peer,
                     "blocked by risk score",
