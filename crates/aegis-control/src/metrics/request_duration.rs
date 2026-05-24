@@ -9,10 +9,11 @@
 //!
 //! | label        | covers |
 //! |--------------|--------|
-//! | `rate_limit` | `IpRateLimiter::consume` call only |
-//! | `detect`     | `run_all_filtered` (all enabled detectors for the resolved tier) |
-//! | `respond`    | response builder + `bus.emit` for the audit event |
-//! | `total`      | entry to response built — a single sample per request |
+//! | `rate_limit`   | `IpRateLimiter::consume` call only |
+//! | `detect`       | `run_all_filtered` (all enabled detectors for the resolved tier) |
+//! | `respond`      | response builder + `bus.emit` for the audit event |
+//! | `waf_overhead` | WAF processing only — entry up to the upstream forward (== `total` for blocked/early-exit requests that never forward). Excludes the backend round-trip, so this is the WAF's own cost. |
+//! | `total`        | entry to response built, **incl. upstream forward** — one sample per request |
 //!
 //! Buckets cover the realistic WAF-internal range (0.05 ms → 250 ms).
 //! Anything beyond that is host noise — see
@@ -31,6 +32,10 @@ pub mod stage {
     pub const RATE_LIMIT: &str = "rate_limit";
     pub const DETECT: &str = "detect";
     pub const RESPOND: &str = "respond";
+    /// WAF processing cost, excluding the upstream backend round-trip
+    /// (entry → just before the upstream forward; == `TOTAL` for
+    /// blocked/early-exit requests that never forward).
+    pub const WAF_OVERHEAD: &str = "waf_overhead";
     pub const TOTAL: &str = "total";
 }
 

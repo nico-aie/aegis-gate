@@ -685,7 +685,13 @@ pub(crate) fn admin_router(
             let body = match services.request_stage_hist.as_ref() {
                 None => serde_json::json!({"stages": {}}).to_string(),
                 Some(h) => {
-                    let stages = [stage::TOTAL, stage::DETECT, stage::RATE_LIMIT, stage::RESPOND];
+                    let stages = [
+                        stage::TOTAL,
+                        stage::WAF_OVERHEAD,
+                        stage::DETECT,
+                        stage::RATE_LIMIT,
+                        stage::RESPOND,
+                    ];
                     let mut out = serde_json::Map::new();
                     for s in stages {
                         if let Some(p) = h.percentiles_ms(s) {

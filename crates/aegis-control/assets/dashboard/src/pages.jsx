@@ -68,24 +68,48 @@ function eventIp(ev) {
 }
 
 // ============== OVERVIEW ==============
-// Color palette for OWASP categories — used to overlay a colour on
-// API-returned `name` strings (which are stable identifiers like
-// `sqli`, `xss`, `ssrf`, …).
+// Deterministic distinct colour for any class name not in an explicit
+// palette below — golden-angle hue spread (FNV-1a hash → hue) so an
+// unrecognised or newly-added class gets its own hue instead of every
+// such class collapsing onto one shared grey. Stable per name across
+// renders.
+function stableHueColor(name) {
+  let h = 2166136261;
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  const hue = ((h % 360) * 137.508) % 360; // golden angle for spread
+  return `hsl(${hue.toFixed(1)}, 62%, 58%)`;
+}
+
+// Color palette for detector/OWASP categories — overlaid on API-returned
+// `name` strings (stable identifiers like `sqli`, `xss`, `ssrf`, …).
+// Every distinct class has a distinct hex; aliases (recon/recon_path,
+// cmdi/command_injection, ssti/template_injection) intentionally share.
 const CAT_COLOR = {
   sqli: '#F6465D',
   xss: '#A555E0',
-  ssrf: '#FF8C42',
-  path_traversal: '#FCD535',
+  ssrf: '#F472B6',
+  path_traversal: '#A78BFA',
   recon: '#4DA8FF',
-  cmdi: '#FF4D4D',
-  lfi: '#E0A415',
-  honeypot: '#FCD535',
-  rce: '#F6465D',
-  body_abuse: '#A87715',
-  header_injection: '#6B4710',
-  brute_force: '#3B2A1A',
+  recon_path: '#4DA8FF',
+  cmdi: '#FF7A45',
+  command_injection: '#FF7A45',
+  nosql_injection: '#14B8A6',
+  ssti: '#FB923C',
+  template_injection: '#FB923C',
+  open_redirect: '#38BDF8',
+  header_injection: '#B45309',
+  body_abuse: '#84CC16',
+  brute_force: '#E11D48',
+  velocity_sequence: '#6366F1',
+  ai: '#D946EF',
+  lfi: '#EAB308',
+  honeypot: '#FACC15',
+  rce: '#DC2626',
 };
-function colorFor(name) { return CAT_COLOR[name] || '#6B7280'; }
+function colorFor(name) { return CAT_COLOR[name] || stableHueColor(name); }
 
 function PageOverview() {
   const stats = window.useStatsApi();              // /api/stats — request_rate, blocks_total, block_rate_pct
@@ -1202,12 +1226,26 @@ const ATTACK_WINDOWS = {
 const DETECTOR_COLORS = {
   sqli:        'var(--down)',
   xss:         '#F0B90B',
-  command_injection: '#F6465D',
+  command_injection: '#FF7A45', // orange-red — distinct from sqli's themed red
   path_traversal:    '#A78BFA',
   ssrf:        '#F472B6',
   crlf:        '#60A5FA',
   bot:         '#34D399',
   scanner:     '#9CA3AF',
+  // 2026-05-24 — the core detector classes were missing here, so they
+  // all fell to the grey fallback and rendered identically. Each now
+  // has a distinct hue.
+  recon:               '#4DA8FF', // blue
+  recon_path:          '#4DA8FF',
+  nosql_injection:     '#14B8A6', // teal
+  template_injection:  '#FB923C', // orange
+  ssti:                '#FB923C',
+  open_redirect:       '#38BDF8', // sky
+  header_injection:    '#B45309', // brown
+  body_abuse:          '#84CC16', // lime
+  brute_force:         '#E11D48', // rose
+  velocity_sequence:   '#6366F1', // indigo
+  ai:                  '#D946EF', // magenta
   // 2026-05-18 (QC TLS wire-up + Phase F detectors): colours for
   // the new signal tags so the Detector Breakdown chart renders
   // them at stable hues. Picked to be distinct from the OWASP
@@ -1222,11 +1260,11 @@ const DETECTOR_COLORS = {
   velocity_login_to_deposit:    '#FB923C', // orange — ATO shape
   velocity_login_to_withdrawal: '#F97316', // darker orange — cashout shape
   velocity_otp_to_deposit:      '#FDBA74', // peach — post-2FA monetisation
-  velocity_otp_to_withdrawal:   '#FB923C', // share with login_to_deposit
+  velocity_otp_to_withdrawal:   '#C2410C', // burnt orange — distinct from login_to_deposit
   device_ip_rotation:           '#8B5CF6', // violet — cross-IP rotation
 };
 function detectorColor(name) {
-  return DETECTOR_COLORS[name] || 'var(--ink-mute)';
+  return DETECTOR_COLORS[name] || stableHueColor(name);
 }
 
 function PageAttackEvents() {
@@ -1477,7 +1515,7 @@ function PageAnalytics() {
           />
           {(() => {
             const stages = latency.data?.stages || {};
-            const stageOrder = ['total', 'detect', 'rate_limit', 'respond'];
+            const stageOrder = ['total', 'waf_overhead', 'detect', 'rate_limit', 'respond'];
             const present = stageOrder.filter(s => stages[s]);
             if (present.length === 0) {
               return (
