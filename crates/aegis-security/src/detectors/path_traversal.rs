@@ -32,7 +32,18 @@ static TRAVERSAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?:win\.ini)",
         r"(?:\\\\[^\\]+\\)",
         r"(?:%00|\x00)",
-        r"(?:%5c)",
+        // 2026-05-24 (FP fix) — the old bare `(?:%5c)` matched an
+        // encoded backslash ANYWHERE, false-positiving on the heap of
+        // legit traffic that carries encoded backslashes in query
+        // values (encoded URLs, JSON/analytics payloads, Windows paths
+        // as DATA — e.g. opaque CDN/beacon paths with `?d=a%5cb`). It
+        // was also lowercase-only, so it FP'd on legit `%5c` yet let a
+        // real `%5C` attack slip past. Now the encoded backslash must
+        // sit in a traversal context: adjacent to `..` or doubled
+        // (encoded UNC `\\`). Real `..%5c..%5c` still fires — the
+        // decode pass recovers `..\`, caught by the `\.\.[\\/]` rule
+        // above; a lone `%5c` in a value no longer trips.
+        r"(?i)(?:\.\.%5c|%5c\.\.|%5c%5c)",
         // GAP-002 (Run-5, 2026-05-09) — overlong UTF-8 encoding
         // for `.`, `/`, `\`. RFC 3629 forbids these (any code
         // point < 0x80 must be encoded in 1 byte), but legacy
@@ -186,7 +197,12 @@ mod tests {
     positive!(dotdot_fragment, "/path?f=../../hidden");
     positive!(windows_backslash, "/..\\system32\\config");
     positive!(multiple_dotdot, "/public/../../../../etc/shadow");
-    positive!(encoded_backslash, "/%5cwindows%5csystem32");
+    // 2026-05-24 (FP fix) — was `/%5cwindows%5csystem32` (a lone
+    // encoded backslash, the over-broad case). Now assert the real
+    // attack forms: encoded UNC `\\server\share`, and the uppercase
+    // `%5C` traversal that the old lowercase-only rule let through.
+    positive!(encoded_backslash_unc, "/%5c%5cserver%5cshare");
+    positive!(encoded_backslash_upper, "/%5C..%5C..%5Cwindows");
     // GAP-002 (Run-5) — overlong UTF-8 + Docker socket positives.
     positive!(overlong_utf8_slash,    "/?p=%c0%af..%c0%af..%c0%afetc%c0%afpasswd");
     positive!(overlong_utf8_dot,      "/?p=%c0%ae%c0%ae/etc");
@@ -252,4 +268,11 @@ mod tests {
     negative!(clean_filter, "/items?category=books");
     negative!(clean_download, "/download/file-v1.2.3.zip");
     negative!(clean_manifest, "/manifest.json");
+    // 2026-05-24 (FP fix) — a bare encoded backslash in a query/body
+    // value is data, not traversal. These mirror the user-reported
+    // false positive: opaque CDN/beacon paths whose query carried an
+    // encoded `\`. Both cases must now pass clean.
+    negative!(clean_encoded_backslash_value, "/track?d=a%5cb");
+    negative!(clean_encoded_backslash_upper, "/img?u=a%5Cb");
+    negative!(clean_beacon_encoded_bs, "/AGY0DmkM-xA2f00AEg/t9amcwJVb2mp3z?d=x%5cy");
 }
