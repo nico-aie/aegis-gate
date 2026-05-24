@@ -5930,6 +5930,21 @@ function PageSettings() {
         </div>
       </div>
 
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="card-head">
+          <div className="card-title">Shadow Mode (Dry-Run)</div>
+          <div
+            className={`toggle ${isShadow ? 'on' : ''}`}
+            onClick={busy ? undefined : toggleShadow}
+            style={{ cursor: busy ? 'wait' : 'pointer' }}
+          />
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
+          Log detections without blocking. Audit chain still records every event;
+          /api/mode endpoint is audit-mutated and CSRF-gated.
+        </div>
+      </div>
+
       {isShadow && (
         <div className="banner warn" style={{ marginBottom: 12 }}>
           <div style={{ marginTop: 1 }}><window.I.Siren /></div>
@@ -5961,21 +5976,6 @@ function PageSettings() {
       <MtlsModeCard />
       <MtlsCaBundleCard />
       <MtlsSansCard />
-
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-head">
-          <div className="card-title">Shadow Mode (Dry-Run)</div>
-          <div
-            className={`toggle ${isShadow ? 'on' : ''}`}
-            onClick={busy ? undefined : toggleShadow}
-            style={{ cursor: busy ? 'wait' : 'pointer' }}
-          />
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-          Log detections without blocking. Audit chain still records every event;
-          /api/mode endpoint is audit-mutated and CSRF-gated.
-        </div>
-      </div>
 
       {/* 2026-05-19 — two dashboard features removed from this page
           during cleanup:

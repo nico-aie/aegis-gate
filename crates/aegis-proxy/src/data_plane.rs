@@ -3854,3 +3854,205 @@ state: {{ backend: in_memory }}
         waf_task.abort();
     }
 }
+
+#[cfg(test)]
+mod log_only_enforce_tests {
+    //! 2026-05-24 regression guard for the v2.x interop contract:
+    //! `set_profile` `log_only` MUST actually forward a would-be-blocked
+    //! request (HTTP 200), and `enforce` MUST block it (HTTP 403). This
+    //! exercises the real data-plane mode gate (`interop_modes` →
+    //! `mode_for_rule` → forward-on-LogOnly) end to end through
+    //! `handle_data_request`, not just the `X-WAF-Mode` header — a review
+    //! nearly mis-diagnosed this because the header reports the *would-be*
+    //! action while the status code reports what actually happened.
+
+    use std::convert::Infallible;
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use aegis_control::interop::headers::Mode;
+    use aegis_control::interop::mode::ModeStore;
+    use aegis_core::audit::AuditBus;
+    use aegis_core::{ClientIdentity, SecurityPipeline};
+    use aegis_security::detectors::Detector;
+
+    use crate::proxy::ProxyContext;
+
+    /// Everything `handle_data_request` needs, bundled so the serve
+    /// closure clones one `Arc` instead of 13.
+    struct Args {
+        detectors: Vec<Box<dyn Detector>>,
+        mask: aegis_security::detectors::SharedDetectorMask,
+        risk: aegis_security::risk::RiskTracker,
+        ip_rl: aegis_security::rate_limit::IpRateLimiter,
+        load_gauge: aegis_core::LoadGauge,
+        verbosity: aegis_core::SharedVerbosity,
+        rsh: aegis_control::metrics::request_duration::RequestStageHistogram,
+        rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram,
+        ra: aegis_control::metrics::route_activity::RouteActivityWindow,
+        dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram,
+        dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics,
+        bus: AuditBus,
+        ctx: Arc<ProxyContext>,
+    }
+
+    /// Mock upstream that 200s everything, so a *forwarded* request is
+    /// distinguishable from a 403 block by status code.
+    async fn spawn_upstream() -> std::net::SocketAddr {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let svc = service_fn(|_r: hyper::Request<hyper::body::Incoming>| async {
+                        Ok::<_, Infallible>(hyper::Response::new(Full::new(Bytes::from(
+                            "upstream-ok",
+                        ))))
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(s), svc)
+                        .await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// Send one GET and return the HTTP status code (raw to avoid a
+    /// client dep; the WAF closes the conn after the response).
+    async fn get_status(waf: std::net::SocketAddr, path: &str) -> u16 {
+        let mut s = tokio::net::TcpStream::connect(waf).await.unwrap();
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: any\r\nConnection: close\r\n\r\n"
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        let _ = s.read_to_end(&mut buf).await;
+        let head = String::from_utf8_lossy(&buf);
+        head.lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn set_profile_log_only_forwards_enforce_blocks() {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        // Shared ModeStore wired into the data plane exactly like run.rs.
+        let modes = Arc::new(ModeStore::new(Mode::Enforce));
+        ctx.interop_modes.set(modes.clone()).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk: aegis_security::risk::RiskTracker::new(&cfg.risk),
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                &metrics,
+            )
+            .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        async move {
+                            let (resp, _tag) = super::handle_data_request(
+                                req,
+                                peer,
+                                &a.detectors,
+                                &a.mask,
+                                &a.risk,
+                                &a.ip_rl,
+                                &a.load_gauge,
+                                &a.verbosity,
+                                &a.rsh,
+                                &a.rlh,
+                                &a.ra,
+                                &a.dlh,
+                                &a.bus,
+                                &a.ctx,
+                                &a.dhm,
+                                &ClientIdentity::Anonymous,
+                                None,
+                            )
+                            .await;
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Multi-vector payload: sqli + path_traversal in the query →
+        // per-request score well over any tier threshold → would block.
+        let atk = "/?q=1%27%20OR%201=1%20UNION%20SELECT%20pw%20FROM%20users&p=..%2F..%2F..%2Fetc%2Fpasswd";
+
+        // ENFORCE → real 403 block.
+        modes.set_all(Mode::Enforce);
+        let enforced = get_status(waf_addr, atk).await;
+        assert_eq!(enforced, 403, "enforce must block the attack with 403");
+
+        // LOG_ONLY → forwarded to upstream (200), NOT blocked.
+        modes.set_all(Mode::LogOnly);
+        let logged = get_status(waf_addr, atk).await;
+        assert_eq!(
+            logged, 200,
+            "log_only must FORWARD the would-be-blocked request (got {logged}); \
+             the data-plane mode gate is not honoring set_profile",
+        );
+
+        // Granular: rules_engine=log_only (feature-level) also forwards.
+        modes.set_all(Mode::Enforce);
+        modes.set_feature("rules_engine", Mode::LogOnly);
+        let feat = get_status(waf_addr, atk).await;
+        assert_eq!(feat, 200, "rules_engine=log_only must forward");
+    }
+}

@@ -1,0 +1,263 @@
+{
+  "info": {
+    "name": "Aegis WAF — Control Plane (__waf_control)",
+    "description": "v2.5 benchmark control-plane endpoints for Aegis WAF.\n\nAll /__waf_control/* endpoints are LOOPBACK-ONLY (run from the same host) and require the `X-Benchmark-Secret` header. They are served on BOTH the data port (8443, {{baseUrl}}) and the admin port (9443, {{adminUrl}}). `challenge/verify` is a PUBLIC data-plane endpoint (no secret).\n\nSetup:\n- Collection variables: `baseUrl` (data port — dev defaults to plain HTTP on :8080), `adminUrl` (admin port — dev plain HTTP on :9443), `secret` (default waf-hackathon-2026-ctrl).\n- To use TLS instead, set baseUrl=https://localhost:8443 (and adminUrl https only if you enabled admin TLS), then turn OFF Settings → 'SSL certificate verification' (self-signed dev cert).\n- The top-level requests hit the DATA port; the 'Admin port (9443)' folder mirrors the control ops against the ADMIN port.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080", "type": "string" },
+    { "key": "adminUrl", "value": "http://localhost:9443", "type": "string" },
+    { "key": "secret", "value": "waf-hackathon-2026-ctrl", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "capabilities",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "X-Benchmark-Secret", "value": "{{secret}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/__waf_control/capabilities",
+          "host": ["{{baseUrl}}"],
+          "path": ["__waf_control", "capabilities"]
+        },
+        "description": "List the features/policies this build can toggle. Call this first — its response gives the valid names for set_profile."
+      }
+    },
+    {
+      "name": "healthz",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "X-Benchmark-Secret", "value": "{{secret}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/__waf_control/healthz",
+          "host": ["{{baseUrl}}"],
+          "path": ["__waf_control", "healthz"]
+        },
+        "description": "Liveness — 200 {\"ok\":true,\"status\":\"alive\"} as soon as the data-plane dispatcher can respond."
+      }
+    },
+    {
+      "name": "reset_state",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-Benchmark-Secret", "value": "{{secret}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/__waf_control/reset_state",
+          "host": ["{{baseUrl}}"],
+          "path": ["__waf_control", "reset_state"]
+        },
+        "description": "Wipe ephemeral state (nonces, rate windows, auto-block, cumulative risk keys). No body. Atomic: the data plane may 503 in-flight requests briefly during the wipe."
+      }
+    },
+    {
+      "name": "flush_cache",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-Benchmark-Secret", "value": "{{secret}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/__waf_control/flush_cache",
+          "host": ["{{baseUrl}}"],
+          "path": ["__waf_control", "flush_cache"]
+        },
+        "description": "Clear internal caches. No body."
+      }
+    },
+    {
+      "name": "set_profile",
+      "description": "Switch detector enforcement scope/mode. Body rejects unknown fields (400). scope: all|features|policies, mode: enforce|log_only.",
+      "item": [
+        {
+          "name": "all — enforce",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scope\": \"all\",\n  \"mode\": \"enforce\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/__waf_control/set_profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["__waf_control", "set_profile"]
+            }
+          }
+        },
+        {
+          "name": "all — log_only",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scope\": \"all\",\n  \"mode\": \"log_only\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/__waf_control/set_profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["__waf_control", "set_profile"]
+            }
+          }
+        },
+        {
+          "name": "features — enforce",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scope\": \"features\",\n  \"mode\": \"enforce\",\n  \"features\": [\"sqli\", \"xss\", \"path_traversal\", \"command_injection\"]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/__waf_control/set_profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["__waf_control", "set_profile"]
+            }
+          }
+        },
+        {
+          "name": "policies — log_only",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scope\": \"policies\",\n  \"mode\": \"log_only\",\n  \"feature\": \"rules_engine\",\n  \"policies\": [\"sqli\"]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/__waf_control/set_profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["__waf_control", "set_profile"]
+            },
+            "description": "feature + policies must match names from the capabilities response."
+          }
+        }
+      ]
+    },
+    {
+      "name": "challenge/verify (public — no secret)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"challenge_token\": \"<token-from-429-challenge-body>\",\n  \"nonce\": \"<solved-pow-nonce>\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/challenge/verify",
+          "host": ["{{baseUrl}}"],
+          "path": ["challenge", "verify"]
+        },
+        "description": "PUBLIC data-plane endpoint (v2.5 §4) — NOT under /__waf_control/, no X-Benchmark-Secret. Submit a PoW solution: challenge_token echoed from a 429 challenge response + the solved nonce."
+      }
+    },
+    {
+      "name": "Admin port (9443)",
+      "description": "Same control endpoints, but against the ADMIN listener ({{adminUrl}}). Both ports serve /__waf_control/* identically (loopback + X-Benchmark-Secret).",
+      "item": [
+        {
+          "name": "capabilities (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" }
+            ],
+            "url": {
+              "raw": "{{adminUrl}}/__waf_control/capabilities",
+              "host": ["{{adminUrl}}"],
+              "path": ["__waf_control", "capabilities"]
+            }
+          }
+        },
+        {
+          "name": "healthz (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" }
+            ],
+            "url": {
+              "raw": "{{adminUrl}}/__waf_control/healthz",
+              "host": ["{{adminUrl}}"],
+              "path": ["__waf_control", "healthz"]
+            }
+          }
+        },
+        {
+          "name": "reset_state (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" }
+            ],
+            "url": {
+              "raw": "{{adminUrl}}/__waf_control/reset_state",
+              "host": ["{{adminUrl}}"],
+              "path": ["__waf_control", "reset_state"]
+            }
+          }
+        },
+        {
+          "name": "flush_cache (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" }
+            ],
+            "url": {
+              "raw": "{{adminUrl}}/__waf_control/flush_cache",
+              "host": ["{{adminUrl}}"],
+              "path": ["__waf_control", "flush_cache"]
+            }
+          }
+        },
+        {
+          "name": "set_profile — all enforce (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Benchmark-Secret", "value": "{{secret}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scope\": \"all\",\n  \"mode\": \"enforce\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{adminUrl}}/__waf_control/set_profile",
+              "host": ["{{adminUrl}}"],
+              "path": ["__waf_control", "set_profile"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
