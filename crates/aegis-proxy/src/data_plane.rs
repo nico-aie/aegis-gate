@@ -144,19 +144,36 @@ pub(crate) async fn handle_data_request_inner(
     struct TotalGuard<'a> {
         h: &'a aegis_control::metrics::request_duration::RequestStageHistogram,
         t0: std::time::Instant,
+        // WAF-only elapsed (µs), set right before the upstream forward.
+        // 0 means the request never forwarded (blocked / early exit), so
+        // `waf_overhead` == `total` — the whole request was WAF work.
+        overhead_us: &'a std::sync::atomic::AtomicU64,
     }
     impl<'a> Drop for TotalGuard<'a> {
         fn drop(&mut self) {
-            self.h.record(
-                aegis_control::metrics::request_duration::stage::TOTAL,
-                self.t0.elapsed(),
-            );
+            use aegis_control::metrics::request_duration::stage;
+            let total = self.t0.elapsed();
+            self.h.record(stage::TOTAL, total);
+            // `waf_overhead` excludes the upstream backend round-trip:
+            // the WAF's own cost. Falls back to `total` when no forward
+            // happened (those requests have no upstream wait to exclude).
+            let ov = self.overhead_us.load(std::sync::atomic::Ordering::Relaxed);
+            let overhead = if ov == 0 {
+                total
+            } else {
+                std::time::Duration::from_micros(ov)
+            };
+            self.h.record(stage::WAF_OVERHEAD, overhead);
         }
     }
     let request_start = std::time::Instant::now();
+    // Captured just before the upstream forward (see the forward sites
+    // below); stays 0 for requests that block/exit before forwarding.
+    let waf_overhead_us = std::sync::atomic::AtomicU64::new(0);
     let _total_guard = TotalGuard {
         h: request_stage_hist,
         t0: request_start,
+        overhead_us: &waf_overhead_us,
     };
     // P7: bump the request counter so the sampler can update mode.
     load_gauge.tick();
@@ -1049,7 +1066,68 @@ pub(crate) async fn handle_data_request_inner(
     // separate `risk-score` block and silently re-enforce. Jump
     // straight to upstream forward and apply the intent override
     // at the tail.
-    let (resp, allow_tag) = if log_only_intent.is_some() || detected_under_threshold.is_some() {
+    //
+    // 2026-05-24 — evaluate the cumulative IP-risk level UP FRONT so it
+    // applies to every non-log_only request, including under-tier-
+    // threshold detections. Decay (trust recovery) runs only for a
+    // genuinely clean request: a detection that just recorded a malicious
+    // score (even one under the per-request threshold) must NOT claw it
+    // back here. Same condition as the old clean-path branch.
+    if detected_under_threshold.is_none() && log_only_intent.is_none() {
+        risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers, tls_fingerprint));
+    }
+    // Per-tier cumulative thresholds, falling back to the global values
+    // when the matched tier has no override (Option B).
+    let global = risk.thresholds();
+    let (challenge_at, block_at, challenges_enabled) = match upstream_ctx.tiers.get() {
+        Some(store) => match store.get(tier.as_str()) {
+            Some(t) => (
+                t.cumulative_challenge_at.unwrap_or(global.challenge_at),
+                t.cumulative_block_at.unwrap_or(global.block_at),
+                t.challenges_enabled,
+            ),
+            None => (global.challenge_at, global.block_at, true),
+        },
+        None => (global.challenge_at, global.block_at, true),
+    };
+    // Composite-key cumulative level. When the matched tier disables
+    // challenges, the challenge rung escalates straight to Block.
+    let level = {
+        let lvl = risk.level_with_for_key(
+            &build_risk_key(peer_ip, &parts.headers, tls_fingerprint),
+            challenge_at,
+            block_at,
+        );
+        match lvl {
+            aegis_security::risk::RiskLevel::Challenge if !challenges_enabled => {
+                aegis_security::risk::RiskLevel::Block
+            }
+            other => other,
+        }
+    };
+
+    // WAF detection is done; from here it's the upstream forward (or a
+    // small block/challenge response build). Capture the WAF-only
+    // elapsed now so the `waf_overhead` stage excludes the backend
+    // round-trip. Requests that blocked/exited before this point left
+    // `waf_overhead_us` at 0, so the guard reports their `total` (they
+    // have no upstream wait to strip).
+    waf_overhead_us.store(
+        request_start.elapsed().as_micros() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    // 2026-05-24 — the cumulative IP-risk gate is authoritative. An
+    // under-tier-threshold detection forwards (allow + watch) ONLY while
+    // the IP's cumulative level is still `Allow`; once it crosses into
+    // Challenge or Block it falls through to the match below and gets the
+    // 429 challenge / risk-score block. Without this a recon scanner that
+    // only ever trips under-threshold detector paths accumulates to the
+    // block threshold yet keeps sailing through. `log_only` stays exempt:
+    // it deliberately never enforces.
+    let (resp, allow_tag) = if log_only_intent.is_some()
+        || (detected_under_threshold.is_some()
+            && matches!(level, aegis_security::risk::RiskLevel::Allow))
+    {
         // log_only OR under-tier-threshold detection: forward to
         // upstream WITHOUT running the clean-decay path (the
         // malicious score was already recorded and must accumulate).
@@ -1087,58 +1165,12 @@ pub(crate) async fn handle_data_request_inner(
             _ => (resp, tag),
         }
     } else {
-        // Clean request — let the trust-recovery clock claw back any
-        // accumulated score (capped at `trust_recovery.per_hour` so
-        // one benign request can't reset a flagged client). Then the
-        // adaptive-mitigation classifier decides between Allow,
-        // Challenge, and Block based on the post-state vs the
-        // configured `RiskThresholds`.
-        //
-        // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
-        // decay the composite-key bucket (matching the
-        // record_malicious_with_key calls above). Trust-recovery
-        // operates on the per-session bucket so a malicious session
-        // doesn't drag down a clean-session sibling on the same IP.
-        risk.record_clean_with_key(build_risk_key(peer_ip, &parts.headers, tls_fingerprint));
-
-        // 2026-05-10 — Option B per-tier overrides. Look up the
-        // matched tier's cumulative thresholds + challenges_enabled
-        // flag from the live TierStore. None / missing fields fall
-        // back to the global thresholds, so existing deployments
-        // without tier overrides see no behavior change.
-        let global = risk.thresholds();
-        let (challenge_at, block_at, challenges_enabled) =
-            match upstream_ctx.tiers.get() {
-                Some(store) => match store.get(tier.as_str()) {
-                    Some(t) => (
-                        t.cumulative_challenge_at.unwrap_or(global.challenge_at),
-                        t.cumulative_block_at.unwrap_or(global.block_at),
-                        t.challenges_enabled,
-                    ),
-                    None => (global.challenge_at, global.block_at, true),
-                },
-                None => (global.challenge_at, global.block_at, true),
-            };
-        // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
-        // composite-key level read. Same bucket the write path
-        // populates (the record_malicious_with_key calls above).
-        let level = risk.level_with_for_key(
-            &build_risk_key(peer_ip, &parts.headers, tls_fingerprint),
-            challenge_at,
-            block_at,
-        );
-        // 2026-05-10 — when the matched tier has challenges_enabled
-        // = false, the challenge rung is removed from the tier's
-        // response ladder. Cumulative score crossing challenge_at
-        // escalates straight to block instead of emitting a 429
-        // PoW. Lets operators run high-stakes tiers (admin APIs,
-        // payment paths) with hard allow/block semantics.
-        let level = match level {
-            aegis_security::risk::RiskLevel::Challenge if !challenges_enabled => {
-                aegis_security::risk::RiskLevel::Block
-            }
-            other => other,
-        };
+        // Cumulative-risk gate (authoritative). Reached for genuinely
+        // clean requests AND for under-threshold detections whose IP has
+        // accumulated to Block — `level` (and the decay for clean
+        // requests) was computed up front above. The adaptive-mitigation
+        // classifier maps the cumulative level to Allow / Challenge /
+        // Block.
         match level {
             aegis_security::risk::RiskLevel::Block => {
                 // NEW-4 (2026-05-08) — stamp the snapshot score
