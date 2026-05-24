@@ -285,6 +285,26 @@ pub(crate) async fn handle_data_request_inner(
         let trusted = default_trusted_proxies();
         aegis_security::ip_rep::xff::resolve_client_ip(peer.ip(), xff, &trusted)
     };
+    // 2026-05-24 — resolve the route's tier ONCE here (read-only trie
+    // walk) so EVERY block path labels its audit event with the real
+    // route tier (`tier_override`), not the legacy path heuristic. A
+    // catch-all `/` route at tier=high previously showed cumulative
+    // `risk-score` blocks as Low because `blocked_response` hard-coded
+    // `classify_tier_from_path` (always Low) while per-request detector
+    // blocks on the SAME route correctly showed high. Unmatched paths
+    // fall back to Low (and still 404 in the forward path as before).
+    let route_tier = upstream_ctx
+        .route_table
+        .resolve(
+            req.headers()
+                .get(hyper::header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("localhost"),
+            req.uri().path(),
+            req.method(),
+        )
+        .map(|rc| rc.tier)
+        .unwrap_or(aegis_core::tier::Tier::Low);
     // FIX 2026-05-03 — runtime access-list enforcement. The
     // blacklist + whitelist were CRUD-only before this commit
     // (operators could add entries via the Console + see them
@@ -316,6 +336,7 @@ pub(crate) async fn handle_data_request_inner(
             "blocked by blacklist",
             Some(format!("blacklist:{entry_id}")),
             None,
+            route_tier,
             req.uri(),
             req.method(),
             bus,
@@ -374,6 +395,7 @@ pub(crate) async fn handle_data_request_inner(
             "blocked by repeat-offender strikes",
             Some("risk-strikes".into()),
             strike_score,
+            route_tier,
             req.uri(),
             req.method(),
             bus,
@@ -479,6 +501,7 @@ pub(crate) async fn handle_data_request_inner(
                             outcome.reason.as_deref().unwrap_or("ddos: blocked"),
                             Some("ddos".into()),
                             None,
+                            route_tier,
                             req.uri(),
                             req.method(),
                             bus,
@@ -723,16 +746,10 @@ pub(crate) async fn handle_data_request_inner(
     // circuit breaking; here we only read the tier (a cheap ArcSwap trie
     // walk). Unmatched routes fall back to Low and still 404 in the
     // forward path exactly as before.
-    let host_for_tier = parts
-        .headers
-        .get(hyper::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost");
-    let tier = upstream_ctx
-        .route_table
-        .resolve(host_for_tier, parts.uri.path(), &parts.method)
-        .map(|rc| rc.tier)
-        .unwrap_or(aegis_core::tier::Tier::Low);
+    // Reuse the route tier resolved up front (line ~290, same request,
+    // before the early gates) — drives the per-request block gate, the
+    // per-tier detector mask, and the load shedder.
+    let tier = route_tier;
     tracing::Span::current().record(
         "tier",
         aegis_security::detectors::tier_str(tier),
@@ -957,12 +974,13 @@ pub(crate) async fn handle_data_request_inner(
                 request_id: blake3::hash(format!("{}:{}", peer, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)).as_bytes()).to_hex().to_string(),
                 class: aegis_core::audit::AuditClass::Detection,
                 tenant_id: None,
-                // 2026-05-05 — populate the tier so the dashboard's
-                // Live Feed shows it instead of a risk-score bucket.
-                // 2026-05-21 — the path→tier heuristic was removed:
-                // `classify_tier(None, …)` at this stage always
-                // returns the default Low tier (route resolution +
-                // `tier_override` happen later in the forward path).
+                // 2026-05-05 — populate the tier so the dashboard's Live
+                // Feed shows it. 2026-05-24 — `tier` is the route-resolved
+                // tier (`route_tier`, resolved up front at line ~290), so a
+                // per-request detector block on a high-tier route is
+                // labelled high — matching the cumulative `risk-score`
+                // path, which now passes the same `tier` to
+                // `blocked_response`.
                 tier: Some(tier),
                 action: "block".into(),
                 reason: reason.clone(),
@@ -1242,6 +1260,7 @@ pub(crate) async fn handle_data_request_inner(
                     "blocked by risk score",
                     Some("risk-score".into()),
                     block_score,
+                    tier,
                     &parts.uri,
                     &parts.method,
                     bus,
@@ -3082,6 +3101,10 @@ fn blocked_response(
     reason: &str,
     rule_id: Option<String>,
     risk_score: Option<u32>,
+    // 2026-05-24 — route-resolved tier passed by the caller (each block
+    // path resolves it once up front). Replaces the old internal
+    // `classify_tier_from_path` call.
+    tier: aegis_core::tier::Tier,
     uri: &hyper::Uri,
     method: &hyper::Method,
     bus: &AuditBus,
@@ -3106,16 +3129,15 @@ fn blocked_response(
         .to_string(),
         class: aegis_core::audit::AuditClass::Detection,
         tenant_id: None,
-        // 2026-05-20 — early-block paths (blacklist / strike-block /
-        // rate-limit / body errors) return BEFORE route+tier
-        // classification, so this previously emitted `tier: None`.
-        // The dashboard then fell back to a RISK-derived tier
-        // (`tierForRisk`), which made a benign low-tier path on a
-        // high-risk IP render as "crit" in Live Feed. Stamp the
-        // cheap path-heuristic tier here so the audit event carries
-        // the real route sensitivity (e.g. /catalog → low,
-        // /login → critical) regardless of where the block fired.
-        tier: Some(aegis_security::pipeline::classify_tier_from_path(uri.path()).0),
+        // 2026-05-24 — use the route-resolved tier the caller passed
+        // (the matched route's `tier_override`, e.g. a catch-all `/`
+        // route at tier=high). Previously this hard-coded
+        // `classify_tier_from_path(uri.path())`, which ALWAYS returns
+        // Low since the path heuristic was removed — so a cumulative
+        // `risk-score` block on a high-tier route rendered as Low in the
+        // Live Feed while a per-request detector block on the SAME route
+        // correctly showed high. Now both agree.
+        tier: Some(tier),
         action: "block".into(),
         reason: reason.into(),
         client_ip: peer.ip().to_string(),
@@ -4054,5 +4076,34 @@ state: {{ backend: in_memory }}
         modes.set_feature("rules_engine", Mode::LogOnly);
         let feat = get_status(waf_addr, atk).await;
         assert_eq!(feat, 200, "rules_engine=log_only must forward");
+    }
+
+    // 2026-05-24 — a block routed through `blocked_response` (cumulative
+    // risk-score, blacklist, strike, ddos) must audit the ROUTE tier the
+    // caller passes, NOT the legacy path-heuristic Low. Regression guard
+    // for: a high-tier catch-all `/` route showed risk-score blocks as
+    // Low in the Live Feed while per-request detector blocks showed high.
+    #[tokio::test]
+    async fn blocked_response_audits_caller_tier_not_low() {
+        let bus = AuditBus::new(16);
+        let mut rx = bus.subscribe();
+        let uri: hyper::Uri = "/anything.php".parse().unwrap();
+        let _ = super::blocked_response(
+            "1.2.3.4:5".parse().unwrap(),
+            "blocked by risk score",
+            Some("risk-score".into()),
+            Some(100),
+            aegis_core::tier::Tier::High,
+            &uri,
+            &hyper::Method::GET,
+            &bus,
+            None,
+        );
+        let ev = rx.try_recv().expect("audit event emitted");
+        assert_eq!(
+            ev.tier,
+            Some(aegis_core::tier::Tier::High),
+            "risk-score block on a HIGH route must audit as High, not Low",
+        );
     }
 }
