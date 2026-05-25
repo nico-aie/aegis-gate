@@ -346,6 +346,19 @@ function fmtTs(epoch) {
   const s = String(d.getSeconds()).padStart(2, '0');
   return `${h}:${m}:${s}`;
 }
+// 2026-05-25 — for cumulative-gate rows (`risk-challenge` / `risk-score`),
+// append the contributing detector(s) from `fields.detectors` so the feed
+// reveals WHAT raised the score (e.g. ["risk-challenge", "recon_path"])
+// instead of just the gate name — the QC "log looks like no detector fired
+// but still challenged" gap. Per-request detector blocks already carry the
+// detector list AS the rule_id, so those are left untouched (no dup).
+function feedRules(ruleId, fields, fallback) {
+  if (!ruleId) return fallback || [];
+  const isGate = ruleId === 'risk-challenge' || ruleId === 'risk-score';
+  const raw = fields && typeof fields.detectors === 'string' ? fields.detectors : '';
+  const dets = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  return isGate && dets.length ? [ruleId, ...dets] : [ruleId];
+}
 // 2026-05-03 — backfill Live Feed from /api/audit/since on mount
 // so an analyst landing on the page mid-incident sees recent
 // events instead of "1 of 1 events" + the SSE connect handshake.
@@ -381,7 +394,7 @@ function mapAuditToLiveRow(ev, seq) {
     tier: normalizeWafTier(ev.tier) || tierForRisk(risk),
     risk,
     action,
-    rules: ruleId ? [ruleId] : (ev.rules || []),
+    rules: feedRules(ruleId, f, ev.rules),
     cat: ev.category || ev.cat || null,
     status: f.status || ev.status || (action === 'block' ? 403 : 200),
     latency: f.latency_ms || ev.latency_ms || 0,
@@ -475,7 +488,7 @@ function useRealLiveFeed(maxLen = 60, paused = false) {
             tier: normalizeWafTier(ev.tier) || tierForRisk(risk),
             risk,
             action,
-            rules: ruleId ? [ruleId] : (ev.rules || []),
+            rules: feedRules(ruleId, f, ev.rules),
             cat: ev.category || ev.cat || null,
             status: f.status || ev.status || (action === 'block' ? 403 : 200),
             latency: f.latency_ms || ev.latency_ms || 0,
