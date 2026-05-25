@@ -3807,10 +3807,7 @@ function DetectorDetailModal({ cls, rows, onClose }) {
 // reveal the detailed metrics tiles.
 function AiDetectorRow() {
   const aiEnabledApi = window.useAiEnabledApi();
-  const aiThresholdApi = window.useAiThresholdApi ? window.useAiThresholdApi() : { data: null };
   const [busy, setBusy] = useStateP(false);
-  const [thrBusy, setThrBusy] = useStateP(false);
-  const [thrDraft, setThrDraft] = useStateP(null);
   const [expanded, setExpanded] = useStateP(false);
   const [metrics, setMetrics] = useStateP(null);
 
@@ -3854,9 +3851,6 @@ function AiDetectorRow() {
 
   const featurePresent = !!aiEnabledApi.data?.feature_present;
   const runtimeOn = !!aiEnabledApi.data?.enabled;
-  const liveThreshold = Number.isFinite(Number(aiThresholdApi.data?.threshold))
-    ? Number(aiThresholdApi.data.threshold) : 0.5;
-  const thrValue = thrDraft != null ? thrDraft : liveThreshold;
   const total = (metrics?.attack || 0) + (metrics?.normal || 0);
   const attackPct = total > 0 ? ((metrics.attack / total) * 100).toFixed(1) : '0.0';
   const fbTotal = metrics?.fallback ? Object.values(metrics.fallback).reduce((a, b) => a + b, 0) : 0;
@@ -3895,34 +3889,6 @@ function AiDetectorRow() {
     }
   }
 
-  // 2026-05-25 — retune the P(Attack) gate live (audit-mutated
-  // PUT /api/ai/threshold). Server enforces the 0.5–1.0 floor/ceiling;
-  // we mirror it here for instant feedback. Higher = fewer false positives.
-  async function applyThreshold() {
-    if (thrBusy || !featurePresent) return;
-    const v = Number(thrValue);
-    if (!Number.isFinite(v) || v < 0.5 || v > 1.0) {
-      window.aegisToast('Threshold must be between 0.50 and 1.00', 'warn');
-      return;
-    }
-    setThrBusy(true);
-    try {
-      const r = await window.aiThresholdPut(v);
-      if (r.status === 200 && r.ok) {
-        window.aegisToast(`AI threshold set to ${v.toFixed(2)}`, 'ok');
-        setThrDraft(null);
-        aiThresholdApi.reload && aiThresholdApi.reload();
-      } else if (r.status === 409 && r.reason === 'feature_off') {
-        window.aegisToast('AI detector feature not built — rebuild with `--features ai`', 'warn');
-      } else {
-        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
-        window.aegisToast(`Threshold update failed: ${msg}`, 'err');
-      }
-    } finally {
-      setThrBusy(false);
-    }
-  }
-
   return (
     <>
       <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -3956,31 +3922,7 @@ function AiDetectorRow() {
             {expanded ? '▾ hide details' : '▸ details'}
           </button>
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {featurePresent && (
-            <span
-              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}
-              title="Minimum P(Attack) for the AI verdict to count as malicious (0.50–1.00). Higher = fewer false positives. Audit-mutated, applied live."
-            >
-              <span>P(atk)≥</span>
-              <input
-                type="number" min="0.5" max="1" step="0.05"
-                value={thrValue}
-                onChange={e => setThrDraft(e.target.value === '' ? '' : Number(e.target.value))}
-                disabled={thrBusy}
-                style={{ width: 58, fontSize: 11, padding: '3px 4px', background: 'var(--canvas-2)', border: '1px solid var(--hairline)', borderRadius: 4, color: 'inherit' }}
-              />
-              <button
-                className="btn"
-                onClick={applyThreshold}
-                disabled={thrBusy || Number(thrValue) === liveThreshold}
-                style={{ fontSize: 11, padding: '4px 8px' }}
-                title={`Live: ${liveThreshold.toFixed(2)}`}
-              >
-                {thrBusy ? '…' : 'Apply'}
-              </button>
-            </span>
-          )}
+        <div style={{ display: 'flex', gap: 6 }}>
           <button
             className="btn"
             onClick={flip}

@@ -1049,21 +1049,6 @@ async function aiEnabledPut(enabled) {
   const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
   return { status: r.status, ...json };
 }
-// 2026-05-25 — runtime AI confidence (P(Attack)) threshold.
-function useAiThresholdApi() {
-  return useApi('/api/ai/threshold', { intervalMs: 10000, fallback: { threshold: 0.0, feature_present: false } });
-}
-async function aiThresholdPut(threshold) {
-  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-  const r = await fetch('/api/ai/threshold', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
-    credentials: 'same-origin',
-    body: JSON.stringify({ threshold: Number(threshold) }),
-  });
-  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-  return { status: r.status, ...json };
-}
 
 // 2026-05-11 PR #7 — runtime toggle for the three-rung
 // response-filter (`Pipeline::on_body_frame`). GET is open-on-
@@ -1342,7 +1327,6 @@ Object.assign(window, {
   routeUpsert, routeDelete, routeTest,
   // AI-T10 — AI detector runtime on/off
   useAiEnabledApi, aiEnabledPut,
-  useAiThresholdApi, aiThresholdPut,
   // 2026-05-11 PR #7 — response-filter rung toggles
   useResponseFilterApi, responseFilterPut,
   // TI-T — audit-mutated tier edits

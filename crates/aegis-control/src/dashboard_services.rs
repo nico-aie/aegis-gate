@@ -171,13 +171,6 @@ pub struct DashboardServices {
     /// "feature not present" banner instead of a misleading 500.
     pub ai_toggle:
         Option<std::sync::Arc<dyn crate::api::ai_toggle::AiToggleWriter>>,
-    /// 2026-05-25 — writer handle for the AI detector's live P(Attack)
-    /// threshold (`AiDetector::runtime_threshold()`). Audit-mutated
-    /// `PUT /api/ai/threshold` retunes it hot. `None` when the `ai` feature
-    /// / model isn't wired (handler returns 409 `feature_off`, like
-    /// `ai_toggle`).
-    pub ai_threshold:
-        Option<std::sync::Arc<dyn crate::api::ai_toggle::AiThresholdWriter>>,
     /// PR #7 (2026-05-11) — writer handle for the live
     /// `Pipeline`'s `ResponseFilterConfig`. The bin crate stashes
     /// the same `Arc<Pipeline>` instance the data plane reads
@@ -565,7 +558,6 @@ impl DashboardServices {
                 // `ai` feature is on AND `cfg.ai.enabled` is
                 // true).
                 ai_toggle: None,
-                ai_threshold: None,
                 // PR #7 — wired by `aegis-bin` once the live
                 // `Pipeline` is built. Until then the GET handler
                 // returns `wired: false` so the dashboard renders
