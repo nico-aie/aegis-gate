@@ -9634,6 +9634,15 @@ function PageInvestigation() {
                 title="Recent requests"
                 sub="newest first · click a row for full request detail · audit ring (last 200)"
               />
+              <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--ink-dim)', borderBottom: '1px solid var(--hairline)', lineHeight: 1.6 }}>
+                <strong>How to read a row:</strong>{' '}
+                <span className="mono">IP risk</span> = the source's running score (per {'{ip, device, session}'} bucket; decays over time).{' '}
+                <span className="mono">Req</span> = this request's own detector score.{' '}
+                <span className="mono">Rule</span> = the gate that actioned it; for{' '}
+                <span className="mono">risk-challenge</span> / <span className="mono">risk-score</span> the contributing detector is appended (e.g.{' '}
+                <span className="mono" style={{ color: 'var(--accent)' }}>· recon_path</span>), or{' '}
+                <em>· cumulative</em> when this request scored 0 and was actioned on the IP's accumulated risk from earlier requests.
+              </div>
               {events.length === 0 && audit.data ? (
                 <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink-dim)' }}>
                   Audit ring is empty. Drive some traffic first — try{' '}
@@ -9683,7 +9692,20 @@ function PageInvestigation() {
                           <td className="num">{f.status || e.status || '—'}</td>
                           <td className="num">{e.risk_score ?? '—'}</td>
                           <td className="num">{Number.isFinite(Number(f.request_score)) ? Number(f.request_score) : '—'}</td>
-                          <td className="mono"><code style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{e.rule_id || e.reason || '—'}</code></td>
+                          <td className="mono">
+                            <code style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{e.rule_id || e.reason || '—'}</code>
+                            {(e.rule_id === 'risk-challenge' || e.rule_id === 'risk-score') && (
+                              f.detectors
+                                ? <span
+                                    style={{ fontSize: 10, color: 'var(--accent)' }}
+                                    title="Detector that raised this request's score; the cumulative gate then actioned it"
+                                  >{' · '}{f.detectors}</span>
+                                : <span
+                                    style={{ fontSize: 10, color: 'var(--ink-dim)', fontStyle: 'italic' }}
+                                    title="No detector fired on THIS request — actioned on the IP's accumulated risk built by earlier requests"
+                                  >{' · cumulative'}</span>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}

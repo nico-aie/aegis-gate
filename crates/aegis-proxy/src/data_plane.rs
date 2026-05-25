@@ -1369,6 +1369,8 @@ pub(crate) async fn handle_data_request_inner(
                         peer_ip,
                         tier,
                         challenge_score,
+                        detected_request_score,
+                        detected_detectors.as_deref(),
                         &parts.uri,
                         &parts.method,
                         bus,
@@ -3134,12 +3136,22 @@ fn default_trusted_proxies() -> Vec<ipnet::IpNet> {
 /// `action: challenge` never reached the audit log / UI (only the live
 /// `X-WAF-Action` response header carried it). Unlike `blocked_response` this
 /// builds no HTTP response — the 429 PoW body is shaped by the caller.
+/// 2026-05-25 — `detector_score` + `detectors` mirror the risk-score
+/// block path: when THIS request tripped a detector under the per-request
+/// threshold and then the cumulative gate challenged it, the audit records
+/// `fields.request_score` + `fields.detectors` so the feed can show the
+/// detector that raised the score (`risk-challenge · recon_path`) and the
+/// per-request score — instead of a scoreless `risk-challenge` row. Both
+/// `None` (this request scored 0 → challenged purely on the IP's accumulated
+/// history) leaves the fields slim, which the UI renders as `· cumulative`.
 #[allow(clippy::too_many_arguments)]
 fn emit_challenge_audit(
     peer: std::net::SocketAddr,
     peer_ip: std::net::IpAddr,
     tier: aegis_core::tier::Tier,
     risk_score: Option<u32>,
+    detector_score: Option<u32>,
+    detectors: Option<&str>,
     uri: &hyper::Uri,
     method: &hyper::Method,
     bus: &AuditBus,
@@ -3174,6 +3186,12 @@ fn emit_challenge_audit(
             let mut f = serde_json::Map::new();
             f.insert("path".to_string(), serde_json::Value::String(uri.to_string()));
             f.insert("method".to_string(), serde_json::Value::String(method.to_string()));
+            if let Some(rs) = detector_score {
+                f.insert("request_score".to_string(), serde_json::json!(rs));
+            }
+            if let Some(d) = detectors {
+                f.insert("detectors".to_string(), serde_json::Value::String(d.to_string()));
+            }
             if let Some(echo) = echo {
                 f.extend(echo);
             }
@@ -4232,6 +4250,8 @@ state: {{ backend: in_memory }}
             "9.9.9.9".parse().unwrap(),
             aegis_core::tier::Tier::High,
             Some(45),
+            Some(25),
+            Some("recon_path"),
             &uri,
             &hyper::Method::GET,
             &bus,
@@ -4243,6 +4263,18 @@ state: {{ backend: in_memory }}
         assert_eq!(ev.tier, Some(aegis_core::tier::Tier::High));
         assert_eq!(ev.risk_score, Some(45), "audit carries the cumulative score");
         assert_eq!(ev.client_ip, "9.9.9.9");
+        // 2026-05-25 — the contributing detector + per-request score ride in
+        // `fields` so the feed can show `risk-challenge · recon_path` + Req.
+        assert_eq!(
+            ev.fields.get("detectors").and_then(|v| v.as_str()),
+            Some("recon_path"),
+            "challenge audit must carry the detector that raised the score"
+        );
+        assert_eq!(
+            ev.fields.get("request_score").and_then(|v| v.as_u64()),
+            Some(25),
+            "challenge audit must carry this request's detector score"
+        );
     }
 
     /// 2026-05-25 — end-to-end + CONTRACT proof that a per-tier
