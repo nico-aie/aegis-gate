@@ -428,6 +428,14 @@ pub async fn run(
     let ai_runtime_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>;
     #[cfg(not(feature = "ai"))]
     let ai_runtime_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+    // 2026-05-25 — parallel handle to the AI detector's runtime P(Attack)
+    // threshold (`runtime_threshold()`), wired to `services.ai_threshold` so
+    // `PUT /api/ai/threshold` retunes it hot. Set in the same arms that grab
+    // the enable toggle, below.
+    #[cfg(feature = "ai")]
+    let mut ai_runtime_threshold: Option<std::sync::Arc<std::sync::atomic::AtomicU32>> = None;
+    #[cfg(not(feature = "ai"))]
+    let ai_runtime_threshold: Option<std::sync::Arc<std::sync::atomic::AtomicU32>> = None;
     #[cfg(feature = "ai")]
     {
         if cfg.ai.batch_enabled {
@@ -462,6 +470,7 @@ pub async fn run(
                             .with_metrics(ai_metrics);
                             let toggle = detector.runtime_toggle();
                             toggle.store(cfg.ai.enabled, std::sync::atomic::Ordering::Relaxed);
+                            ai_runtime_threshold = Some(detector.runtime_threshold());
                             tracing::info!(
                                 model_path = %model_path.display(),
                                 threshold = cfg.ai.confidence_threshold,
@@ -557,6 +566,7 @@ pub async fn run(
                         // so `enabled: false` in YAML still boots with
                         // AI off (operator opts in via dashboard).
                         toggle.store(cfg.ai.enabled, std::sync::atomic::Ordering::Relaxed);
+                        ai_runtime_threshold = Some(detector.runtime_threshold());
                         tracing::info!(
                             model_path = %model_path.display(),
                             threshold = cfg.ai.confidence_threshold,
@@ -1583,6 +1593,7 @@ pub async fn run(
         admin_upstream_writer,
         admin_route_writer,
         ai_runtime_toggle.clone(),
+        ai_runtime_threshold.clone(),
         pipeline.clone(),
         admin_state_backend,
         admin_identity_tracker,

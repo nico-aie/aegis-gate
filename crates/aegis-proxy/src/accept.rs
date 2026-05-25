@@ -63,6 +63,12 @@ pub(crate) async fn admin_accept_loop(
     // `PUT /api/ai/enabled` handler in `admin_mutate.rs` reads
     // it from `services.ai_toggle` (set further down).
     ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
+    // 2026-05-25 — runtime P(Attack) threshold handle for the AI detector
+    // (`AiDetector::runtime_threshold()`, f32 bits in an AtomicU32). `None`
+    // alongside `ai_toggle` when the AI feature/model isn't wired. Read by
+    // the audit-mutated `PUT /api/ai/threshold` handler via
+    // `services.ai_threshold` (set further down).
+    ai_threshold: Option<Arc<std::sync::atomic::AtomicU32>>,
     // 2026-05-11 PR #7 — live `Pipeline` whose `ResponseFilterConfig`
     // the audit-mutated `PUT /api/response-filter` handler flips.
     // Same `Arc<Pipeline>` instance the data plane reads
@@ -565,6 +571,11 @@ pub(crate) async fn admin_accept_loop(
     if let Some(toggle) = ai_toggle {
         services.ai_toggle = Some(
             toggle as Arc<dyn aegis_control::api::ai_toggle::AiToggleWriter>,
+        );
+    }
+    if let Some(th) = ai_threshold {
+        services.ai_threshold = Some(
+            th as Arc<dyn aegis_control::api::ai_toggle::AiThresholdWriter>,
         );
     }
     // 2026-05-11 PR #7 — surface the live `Pipeline` as the

@@ -28,7 +28,7 @@
 //! caller increments around the `inspect()` call.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use aegis_core::pipeline::RequestView;
@@ -152,7 +152,12 @@ pub struct AiDetector {
     /// Falls back to argmax behaviour when the model exporter
     /// doesn't ship a dense probability tensor (legacy sklearn
     /// shape — `prob_attack` is 1.0 when is_attack, 0.0 else).
-    threshold: f32,
+    ///
+    /// 2026-05-25 — runtime-mutable via audit-mutated
+    /// `PUT /api/ai/threshold`. Stored as `AtomicU32` (f32 bits) so the
+    /// dashboard writer and the hot path share one handle (mirrors
+    /// `runtime_enabled`); seeded from `cfg.ai.confidence_threshold` at boot.
+    runtime_threshold: Arc<AtomicU32>,
     /// Per-signal score added to the risk total when AI flags
     /// a request.  Mirrors the score the regex detectors
     /// contribute (50–60 each); set high enough that AI alone
@@ -189,7 +194,7 @@ impl AiDetector {
         let model = Model::load(model_path, normal_class_idx)?;
         Ok(Self {
             model: Arc::new(model),
-            threshold,
+            runtime_threshold: Arc::new(AtomicU32::new(threshold.to_bits())),
             score: super::scores::ai::AI,
             scale_score_by_prob: false,
             metrics: Arc::new(NoopAiMetricsSink),
@@ -203,7 +208,7 @@ impl AiDetector {
     pub fn from_model(model: SharedModel, threshold: f32) -> Self {
         Self {
             model,
-            threshold,
+            runtime_threshold: Arc::new(AtomicU32::new(threshold.to_bits())),
             score: super::scores::ai::AI,
             scale_score_by_prob: false,
             metrics: Arc::new(NoopAiMetricsSink),
@@ -227,6 +232,15 @@ impl AiDetector {
     /// inference — no lock, single relaxed load.
     pub fn runtime_toggle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.runtime_enabled)
+    }
+
+    /// 2026-05-25 — clone of the runtime P(Attack) threshold handle (f32
+    /// bits in an `AtomicU32`). The control plane stashes this on
+    /// `DashboardServices` so the audit-mutated `PUT /api/ai/threshold`
+    /// handler can retune it hot; the data plane reads the same atom per
+    /// inference (single relaxed load, no lock).
+    pub fn runtime_threshold(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.runtime_threshold)
     }
 
     /// Override the initial runtime-toggle value (defaults to
@@ -366,10 +380,11 @@ impl Detector for AiDetector {
             Ok(p) => {
                 let lat_seconds = (p.latency_us as f64) / 1_000_000.0;
                 self.metrics.record_prediction(p.is_attack, lat_seconds);
+                let threshold = f32::from_bits(self.runtime_threshold.load(Ordering::Relaxed));
                 tracing::trace!(
                     prob_attack = p.prob_attack,
                     class_idx = p.class_idx,
-                    threshold = self.threshold,
+                    threshold = threshold,
                     latency_us = p.latency_us,
                     "ai prediction",
                 );
@@ -377,7 +392,7 @@ impl Detector for AiDetector {
                 // see `signals_from_prediction`.
                 signals_from_prediction(
                     &p,
-                    self.threshold,
+                    threshold,
                     self.score,
                     self.scale_score_by_prob,
                     self.metrics.as_ref(),

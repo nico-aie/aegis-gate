@@ -42,7 +42,8 @@ use crate::admin_mutate::{
     handle_alert_receivers_put, handle_detectors_put, handle_loadmode_put,
     handle_logging_put, handle_mode_put, handle_mtls_sans_delete,
     handle_mtls_sans_put, handle_mtls_sans_test, handle_pool_delete,
-    handle_ai_enabled_get, handle_ai_enabled_put, handle_response_filter_get,
+    handle_ai_enabled_get, handle_ai_enabled_put,
+    handle_ai_threshold_get, handle_ai_threshold_put, handle_response_filter_get,
     handle_response_filter_put, handle_pool_upsert,
     handle_risk_canary_paths_put, handle_risk_reset, handle_risk_reset_key,
     handle_risk_thresholds_put, handle_route_delete,
@@ -334,6 +335,17 @@ pub(crate) async fn handle_admin_request(
         }
         if method == hyper::Method::PUT {
             return handle_ai_enabled_put(req, services).await;
+        }
+    }
+
+    // 2026-05-25 — runtime AI confidence (P(Attack)) threshold. Same gating
+    // as /api/ai/enabled: audit-mutated CSRF-gated PUT, open-on-session GET.
+    if path == "/api/ai/threshold" {
+        if method == hyper::Method::GET {
+            return handle_ai_threshold_get(services).await;
+        }
+        if method == hyper::Method::PUT {
+            return handle_ai_threshold_put(req, services).await;
         }
     }
 
