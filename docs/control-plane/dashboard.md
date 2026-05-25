@@ -81,7 +81,10 @@ session cookie + matching CSRF token for mutating methods. See
 - **Overview** — requests/sec by tier, decisions histogram, top blocked
   IPs, upstream pool health summary (cluster-wide).
 - **Live feed** — SSE-driven request stream with filtering (tier,
-  decision, path, status).
+  decision, path, status). The **IP risk** column is the source's
+  cumulative score; the **Req** column is this request's detector score —
+  see [risk-scoring.md § Reading the two scores](../security/risk-scoring.md#reading-the-two-scores-in-the-dashboard--audit)
+  for why they differ.
 - **Attacks** — detector breakdown, top rules firing, threat-intel feed
   hits, bot classification mix.
 - **Routes** — route table, host + path matchers, linked upstream pool,
