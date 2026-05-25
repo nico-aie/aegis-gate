@@ -3186,6 +3186,10 @@ fn emit_challenge_audit(
             let mut f = serde_json::Map::new();
             f.insert("path".to_string(), serde_json::Value::String(uri.to_string()));
             f.insert("method".to_string(), serde_json::Value::String(method.to_string()));
+            // The challenge response is always 429 (PoW). Stamp it so the
+            // feed's Status column matches blocks/allows (the listener emit
+            // that used to carry this is now skipped for challenge).
+            f.insert("status".to_string(), serde_json::json!(429));
             if let Some(rs) = detector_score {
                 f.insert("request_score".to_string(), serde_json::json!(rs));
             }
@@ -4274,6 +4278,11 @@ state: {{ backend: in_memory }}
             ev.fields.get("request_score").and_then(|v| v.as_u64()),
             Some(25),
             "challenge audit must carry this request's detector score"
+        );
+        assert_eq!(
+            ev.fields.get("status").and_then(|v| v.as_u64()),
+            Some(429),
+            "challenge audit stamps the 429 status (listener emit is skipped for challenge)"
         );
     }
 

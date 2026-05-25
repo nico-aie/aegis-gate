@@ -1606,7 +1606,17 @@ pub(crate) async fn accept_loop(
                             f
                         },
                     };
-                    bus.emit(event);
+                    // 2026-05-25 — the data plane now audits challenges too
+                    // (emit_challenge_audit: XFF-resolved client_ip +
+                    // fields.detectors + request_score + status:429), the same
+                    // way blocks are audited in the data plane. Skip the
+                    // listener emit for `challenge` to avoid a DUPLICATE feed
+                    // row (the data-plane row carries the detector; this one
+                    // wouldn't). `allow` stays listener-emitted (sole emitter);
+                    // `block` already returned early above.
+                    if action != "challenge" {
+                        bus.emit(event);
+                    }
 
                     // MTLS-T3 — record this request against the
                     // per-identity sliding-window tracker so the
