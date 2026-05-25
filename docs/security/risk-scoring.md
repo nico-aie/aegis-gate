@@ -197,6 +197,37 @@ treatment. See
 [security-engine.md § Risk model](./security-engine.md#risk-model)
 for the full per-request vs per-bucket separation.
 
+### Reading the two scores in the dashboard / audit
+
+The Live Feed and the Investigation → Request detail drawer surface
+**both** numbers under deliberately distinct labels. They are computed
+differently and will often disagree — that is expected, not a bug:
+
+| Label (UI) | Audit field | What it measures | Formula |
+|---|---|---|---|
+| **Request score (detectors)** | `fields.request_score` | how malicious *this one request* is | **sum** of this request's detector signals, capped at 100 |
+| **IP risk (cumulative)** | `risk_score` | how malicious *the source* is over time | running per-`RiskKey` total; adds **`max(signal)`** per request (SEC-M003), capped at 100, then decays |
+
+**Why a request can score 100 yet IP risk shows 70.** A request that
+trips `sqli` (70) + `path_traversal` (70) has a *per-request* score of
+`70 + 70 = 140 → capped 100`. But the cumulative bucket only ever adds
+the **strongest single signal** (`max = 70`), never the sum — this is
+SEC-M003, so one multi-detector request can't slam an IP straight to
+100. On a fresh bucket (`strikes: 1` in the drawer) the cumulative is
+therefore `0 + 70 = 70`. The displayed cumulative is the value **after**
+this request was recorded, not before — send the same attack twice on
+one session and the IP risk goes `70 → 100` (`70 + 70`, capped).
+
+**Which number actually blocked the request** — read `Reason` / `rule_id`:
+- `rule_id` = a **detector** (e.g. `sqli`, `sqli,path_traversal`) → the
+  **per-request** gate fired (this request's summed score ≥ the tier's
+  `risk_threshold`). The IP-risk value shown is just context.
+- `rule_id` = `risk-score` / `risk-challenge` → the **cumulative** gate
+  fired (the source's running score crossed `block_at` / `challenge_at`).
+  The contributing detector rides in `fields.detectors`; the feed renders
+  it as `risk-challenge · recon_path`, or `· cumulative` when this request
+  itself scored 0 and was actioned purely on the IP's accumulated history.
+
 ## Worked example: AI detector chain
 
 When `cfg.ai.enabled: true` and the binary is built `--features ai`,
