@@ -87,6 +87,51 @@ pub mod fallback_reason {
 /// swaps the layout.
 pub const DEFAULT_NORMAL_CLASS_IDX: i64 = 0;
 
+/// Shared verdict logic for both the synchronous [`AiDetector`] and the
+/// batch-backed [`batch_detector::BatchAiDetector`]: gate on
+/// `P(Attack) ≥ threshold`, optionally scale the emitted score by
+/// `P(Attack)`, and record the low-confidence fall-through.
+///
+/// One source of truth so the two detectors can't drift — the gate and
+/// the score-scaling rule live here, not copy-pasted into each
+/// `inspect()`. Caller is responsible for `record_prediction` (it owns
+/// the latency) before calling this.
+pub(crate) fn signals_from_prediction(
+    p: &Prediction,
+    threshold: f32,
+    score: u32,
+    scale_score_by_prob: bool,
+    metrics: &dyn AiMetricsSink,
+) -> Vec<Signal> {
+    // 2026-05-19 — Gate on `prob_attack` (probability the request is
+    // malicious regardless of which class won argmax), not
+    // `is_attack && confidence`. `threshold` is then interpretable as the
+    // minimum P(Attack) the operator accepts as evidence, and multi-class
+    // model upgrades plug in unchanged (P(Attack) = 1 - P(Normal) for any K).
+    if p.prob_attack >= threshold {
+        // Full base score, or score scaled by P(Attack) when the operator
+        // opted into smooth risk-aggregator semantics.
+        let signal_score = if scale_score_by_prob {
+            ((score as f32) * p.prob_attack).round() as u32
+        } else {
+            score
+        };
+        vec![Signal {
+            score: signal_score,
+            tag: "ai".into(),
+            field: "request".into(),
+        }]
+    } else {
+        if p.is_attack {
+            // argmax committed to "attack" but P(Attack) was below the
+            // operator's gate — count it so the threshold can be tuned
+            // from data.
+            metrics.record_fallback(fallback_reason::LOW_CONFIDENCE);
+        }
+        Vec::new()
+    }
+}
+
 /// Model wrapped in `Arc` so cheap clones share the underlying
 /// `ort::Session`.
 pub type SharedModel = Arc<Model>;
@@ -209,68 +254,71 @@ impl AiDetector {
         self
     }
 
-    /// Render the request into the multi-line shape the
-    /// feature extractor + the trained model expect:
+    /// Render the request into the multi-line shape the feature
+    /// extractor + the trained model expect — a verbatim match of how
+    /// `data/ml_waf/build_clean_dataset.py` (`save_csv`) renders each
+    /// training row:
     ///
     /// ```text
     /// METHOD /path?query body
     /// User-Agent: …
     /// Cookie: …
-    /// Referer: …
+    /// …
     /// ```
     ///
-    /// Only the three headers the training pipeline saw are
-    /// folded in — scanner UA detection lives in `User-Agent`,
-    /// session-shape signals in `Cookie`, and origin-rewrite /
-    /// SSRF hints in `Referer`.  Other headers are ignored to
-    /// keep the feature distribution close to what the model
-    /// was trained on.  The legacy single-line shape still
-    /// parses cleanly (extractor handles both).
+    /// - **Body** is capped at 8 KiB (`_MAX_BODY_LEN`) and its CR/LF are
+    ///   collapsed to spaces (`make_row` did `\r\n→\n`, `\r→\n`; `save_csv`
+    ///   did `\n→space`) so the body stays on the request line. Without
+    ///   this, a multi-line body (XML/XXE, multipart, pretty JSON) makes
+    ///   the extractor mis-split at the first body newline and lump the
+    ///   rest into header text.
+    /// - **Headers** folded = `_INCLUDE_HEADERS` exactly (set + canonical
+    ///   casing). The 29 features are order-invariant w.r.t. header order
+    ///   (`header_count` = `\n` count; `header_entropy` and the pattern
+    ///   scans are char-frequency / match counts), so a fixed canonical
+    ///   order reproduces the training feature values.
     ///
     /// `pub(crate)` so [`super::batch_detector::BatchAiDetector`] renders
     /// requests identically — one source of truth, no feature drift.
     pub(crate) fn build_request_string(req: &RequestView<'_>) -> String {
         let method = req.method.as_str();
-        // Path-and-query, falling back to "/" for empty URIs.
+        // Path-and-query, falling back to "/" for empty URIs (already the
+        // relative target — matches `_normalize_url` output at training).
         let pq = req
             .uri
             .path_and_query()
             .map(|pq| pq.as_str())
             .unwrap_or("/");
-        // Bound the body peek at a sensible chunk — feature
-        // extraction iterates the full string, so a multi-MB
-        // upload would blow the latency budget.  4 KiB matches
-        // the corpus the model was trained on.
-        let body_bytes = req.body.peek(4096);
+        // Body: up to 8 KiB (matches `_MAX_BODY_LEN`; features.rs then
+        // truncates to MAX_BODY_BYTES). Trim + collapse CR/LF to spaces
+        // exactly as the training renderer does.
+        let body_raw = String::from_utf8_lossy(req.body.peek(8192));
+        let body = body_raw
+            .trim()
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\n', " ");
 
-        let mut out = String::with_capacity(64 + body_bytes.len());
+        let mut out = String::with_capacity(96 + body.len());
         out.push_str(method);
         out.push(' ');
         out.push_str(pq);
-        if !body_bytes.is_empty() {
+        if !body.is_empty() {
             out.push(' ');
-            // Lossy UTF-8 — non-text payloads still produce a
-            // string suitable for regex feature counts, which
-            // is what the training pipeline did.
-            let body = String::from_utf8_lossy(body_bytes);
             out.push_str(&body);
         }
 
-        // Headers the training pipeline included.  Skip silently
-        // when a header is missing or its value isn't valid
-        // UTF-8 (regexes only run on the textual portion).
-        for hdr in ["user-agent", "cookie", "referer"] {
-            if let Some(value) = req.headers.get(hdr).and_then(|v| v.to_str().ok()) {
+        // Fold the SAME header set the training pipeline kept
+        // (`_INCLUDE_HEADERS`), one per line as "Canonical-Key: value".
+        // Skip a header that's absent, non-UTF-8, or empty after trim
+        // (matches `_filter_headers`' truthiness check).
+        for (lower, canonical) in HEADER_FOLD {
+            if let Some(value) = req.headers.get(*lower).and_then(|v| v.to_str().ok()) {
+                let value = value.trim();
+                if value.is_empty() {
+                    continue;
+                }
                 out.push('\n');
-                // RFC 9110 header names are case-insensitive;
-                // emit the canonical spelling the training set
-                // used so the textual line shape matches.
-                let canonical = match hdr {
-                    "user-agent" => "User-Agent",
-                    "cookie"     => "Cookie",
-                    "referer"    => "Referer",
-                    _ => hdr,
-                };
                 out.push_str(canonical);
                 out.push_str(": ");
                 out.push_str(value);
@@ -280,6 +328,21 @@ impl AiDetector {
         out
     }
 }
+
+/// Headers folded into the model's request string — must match
+/// `_INCLUDE_HEADERS` in `data/ml_waf/build_clean_dataset.py` exactly
+/// (set + canonical casing), or the 29-feature vector (header_count,
+/// header_entropy, and the pattern scans over header text) drifts from
+/// what the model was trained on. `(lowercase-lookup, canonical-render)`.
+const HEADER_FOLD: &[(&str, &str)] = &[
+    ("user-agent", "User-Agent"),
+    ("cookie", "Cookie"),
+    ("referer", "Referer"),
+    ("authorization", "Authorization"),
+    ("content-type", "Content-Type"),
+    ("x-forwarded-for", "X-Forwarded-For"),
+    ("x-real-ip", "X-Real-IP"),
+];
 
 impl Detector for AiDetector {
     fn id(&self) -> &'static str {
@@ -303,20 +366,6 @@ impl Detector for AiDetector {
             Ok(p) => {
                 let lat_seconds = (p.latency_us as f64) / 1_000_000.0;
                 self.metrics.record_prediction(p.is_attack, lat_seconds);
-
-                // 2026-05-19 — Gate on `prob_attack` (probability that
-                // the request is malicious, regardless of which class
-                // won argmax) instead of the previous
-                // `is_attack && confidence >= threshold` shape. Two
-                // benefits:
-                //   1. `threshold` is interpretable: it's the minimum
-                //      P(Attack) the operator accepts as evidence of an
-                //      attack. 0.5 == argmax behaviour, 0.85/0.95 ==
-                //      "high-confidence only" gating.
-                //   2. Multi-class model upgrades are transparent:
-                //      P(Attack) = 1 - P(Normal) regardless of K, so
-                //      future `[Normal, SQLi, XSS, RCE, ...]` models
-                //      plug in without changing the gate.
                 tracing::trace!(
                     prob_attack = p.prob_attack,
                     class_idx = p.class_idx,
@@ -324,33 +373,15 @@ impl Detector for AiDetector {
                     latency_us = p.latency_us,
                     "ai prediction",
                 );
-
-                if p.prob_attack >= self.threshold {
-                    // Score contribution: full base score, or scaled by
-                    // P(Attack) when the operator opted into smooth
-                    // risk-aggregator semantics via
-                    // `with_prob_scaled_score(true)`.
-                    let signal_score = if self.scale_score_by_prob {
-                        ((self.score as f32) * p.prob_attack).round() as u32
-                    } else {
-                        self.score
-                    };
-                    vec![Signal {
-                        score: signal_score,
-                        tag: "ai".into(),
-                        field: "request".into(),
-                    }]
-                } else {
-                    if p.is_attack {
-                        // Model's argmax committed to "attack" but
-                        // P(Attack) was below the operator's gate —
-                        // count the fall-through so operators can tune
-                        // the threshold from data.
-                        self.metrics
-                            .record_fallback(fallback_reason::LOW_CONFIDENCE);
-                    }
-                    Vec::new()
-                }
+                // Shared gate (prob_attack ≥ threshold + score scaling) —
+                // see `signals_from_prediction`.
+                signals_from_prediction(
+                    &p,
+                    self.threshold,
+                    self.score,
+                    self.scale_score_by_prob,
+                    self.metrics.as_ref(),
+                )
             }
             Err(e) => {
                 self.metrics
@@ -418,21 +449,63 @@ mod tests {
     }
 
     #[test]
-    fn build_request_string_caps_body_at_4kb() {
-        // 6 KiB of body — extractor only sees the first 4 KiB.
-        let big = vec![b'a'; 6 * 1024];
+    fn build_request_string_caps_body_at_8kb() {
+        // 10 KiB of body — renderer peeks only the first 8 KiB
+        // (matches _MAX_BODY_LEN in build_clean_dataset.py).
+        let big = vec![b'a'; 10 * 1024];
         let m = http::Method::POST;
         let u: http::Uri = "/upload".parse().unwrap();
         let h = http::HeaderMap::new();
         let b = make_body(&big);
         let req = view_for(&m, &u, &h, &b);
         let s = AiDetector::build_request_string(&req);
-        // "POST /upload " + 4096 chars = 13 + 4096 = 4109 chars.
         assert!(
-            s.len() <= "POST /upload ".len() + 4096,
-            "expected ≤ 4 KiB body cap, got {}",
+            s.len() <= "POST /upload ".len() + 8192,
+            "expected ≤ 8 KiB body cap, got {}",
             s.len()
         );
+    }
+
+    #[test]
+    fn build_request_string_collapses_body_newlines() {
+        // Multi-line body (e.g. XML) must stay on the request line so the
+        // first '\n' marks where headers begin — CR/LF collapse to spaces.
+        let m = http::Method::POST;
+        let u: http::Uri = "/api/feedback".parse().unwrap();
+        let h = http::HeaderMap::new();
+        let b = make_body(b"<?xml version=\"1.0\"?>\r\n<!DOCTYPE x [\n<!ENTITY e SYSTEM \"file:///etc/passwd\">\n]>");
+        let req = view_for(&m, &u, &h, &b);
+        let s = AiDetector::build_request_string(&req);
+        assert!(!s.contains('\n'), "body newlines must be collapsed, got {s:?}");
+        assert!(s.starts_with("POST /api/feedback "), "got {s:?}");
+        assert!(s.contains("<!ENTITY"), "payload preserved, got {s:?}");
+    }
+
+    #[test]
+    fn build_request_string_folds_all_seven_headers() {
+        // Every header in _INCLUDE_HEADERS must be folded (not just 3).
+        let m = http::Method::GET;
+        let u: http::Uri = "/".parse().unwrap();
+        let mut h = http::HeaderMap::new();
+        h.insert("user-agent", http::HeaderValue::from_static("UA"));
+        h.insert("cookie", http::HeaderValue::from_static("sid=1"));
+        h.insert("referer", http::HeaderValue::from_static("https://x/"));
+        h.insert("authorization", http::HeaderValue::from_static("Bearer t"));
+        h.insert("content-type", http::HeaderValue::from_static("application/json"));
+        h.insert("x-forwarded-for", http::HeaderValue::from_static("1.2.3.4"));
+        h.insert("x-real-ip", http::HeaderValue::from_static("1.2.3.4"));
+        let b = BodyPeek::empty();
+        let req = view_for(&m, &u, &h, &b);
+        let s = AiDetector::build_request_string(&req);
+        for canon in [
+            "User-Agent: UA", "Cookie: sid=1", "Referer: https://x/",
+            "Authorization: Bearer t", "Content-Type: application/json",
+            "X-Forwarded-For: 1.2.3.4", "X-Real-IP: 1.2.3.4",
+        ] {
+            assert!(s.contains(canon), "missing folded header {canon:?} in {s:?}");
+        }
+        // header_count feature == number of folded lines == 7.
+        assert_eq!(features::extract_features(&s)[27], 7.0);
     }
 
     #[test]
