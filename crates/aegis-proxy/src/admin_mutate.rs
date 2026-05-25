@@ -3424,6 +3424,108 @@ pub(crate) async fn handle_ai_enabled_get(
 }
 
 // ---------------------------------------------------------------------------
+// 2026-05-25 — runtime AI confidence (P(Attack)) threshold
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn handle_ai_threshold_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let body = match services.ai_threshold.as_ref() {
+        Some(t) => serde_json::json!({ "threshold": t.get(), "feature_present": true }),
+        None    => serde_json::json!({ "threshold": 0.0,     "feature_present": false }),
+    };
+    json_response(200, &body)
+}
+
+pub(crate) async fn handle_ai_threshold_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::ai_toggle::{AiThresholdPatch, AI_THRESHOLD_FLOOR};
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "ai-threshold-put");
+
+    // Feature-off shape, identical to the enable toggle.
+    let Some(writer) = services.ai_threshold.as_ref().cloned() else {
+        let body = serde_json::json!({
+            "ok": false,
+            "reason": "feature_off",
+            "message": "AI detector not wired — rebuild with FEATURES=\"… ai\" and set cfg.ai.enabled = true",
+        });
+        return json_body_response(409, body.to_string(), "private, no-store");
+    };
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let patch: AiThresholdPatch = match serde_json::from_str(body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    // Range + floor validation. Reject NaN, <floor, or >1.0 so a fat-finger
+    // can't drive the model to flag (near-)everything or never fire.
+    if !patch.threshold.is_finite()
+        || patch.threshold < AI_THRESHOLD_FLOOR
+        || patch.threshold > 1.0
+    {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "threshold must be between {AI_THRESHOLD_FLOOR} and 1.0 (got {})",
+                patch.threshold
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "threshold": writer.get() });
+    let after = serde_json::json!({ "threshold": patch.threshold });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/ai/threshold",
+        action: "ai_threshold_put",
+        reason: "operator retuned AI confidence threshold",
+    };
+
+    let writer_for_apply = Arc::clone(&writer);
+    let new_threshold = patch.threshold;
+    let outcome = services.mutate.apply::<_, (), &'static str>(
+        &req_ctx,
+        before,
+        after,
+        move || {
+            writer_for_apply.set(new_threshold);
+            Ok(())
+        },
+    );
+    match outcome {
+        Ok(_) => json_response(
+            200,
+            &serde_json::json!({
+                "ok": true,
+                "threshold": patch.threshold,
+                "request_id": pre.request_id,
+            }),
+        ),
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RT-T3 — audit-mutated route CRUD
 // ---------------------------------------------------------------------------
 
