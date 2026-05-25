@@ -161,11 +161,15 @@ rules:
 # ladder; omit a tier to use the code default. Dashboard PUT
 # /api/tiers/<name> applies live overrides (restart re-applies this).
 # critical=50 / high=60 / medium=70 / low=80.
+# 2026-05-25 — cumulative-IP-risk challenge rung ON per tier: a score in
+# the challenge band (risk.thresholds challenge_at..block_at) issues a 429
+# PoW instead of passing through. Activates this profile's challenge_at
+# tuning, which was inert while challenges defaulted off.
 tiers:
-  critical: { risk_threshold: 50 }
-  high:     { risk_threshold: 60 }
-  medium:   { risk_threshold: 70 }
-  low:      { risk_threshold: 80 }
+  critical: { risk_threshold: 50, challenges_enabled: true }
+  high:     { risk_threshold: 60, challenges_enabled: true }
+  medium:   { risk_threshold: 70, challenges_enabled: true }
+  low:      { risk_threshold: 80, challenges_enabled: true }
 
 # Every detector on. Compliance auditors want every signal even
 # if the operator filters/mutes specific ones.

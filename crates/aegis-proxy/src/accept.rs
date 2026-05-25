@@ -382,6 +382,12 @@ pub(crate) async fn admin_accept_loop(
     services
         .tiers
         .apply_risk_thresholds(cfg.tiers.risk_threshold_overrides());
+    // 2026-05-25 — seed the per-tier challenge rung from config too, so a
+    // profile that declares `challenges_enabled: true` issues PoW challenges
+    // for cumulative-band scores from the first request (no dashboard flip).
+    services
+        .tiers
+        .apply_challenges_enabled(cfg.tiers.challenges_enabled_overrides());
 
     // 2026-05-10 — share the TierStore between DashboardServices
     // (PUT /api/tiers/{name}) and ProxyContext (data plane reads

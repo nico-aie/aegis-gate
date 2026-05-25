@@ -222,11 +222,15 @@ rules:
 #   critical=50 / high=60 (AI/mass_assign/velocity block alone) /
 #   medium=70 (clear exploits) / low=80 (RCE + canary only).
 # ---------------------------------------------------------------------------
+# 2026-05-25 — cumulative-IP-risk challenge rung ON per tier: a score in
+# the challenge band (risk.thresholds challenge_at..block_at) issues a 429
+# PoW instead of passing through. Activates this profile's challenge_at
+# tuning, which was inert while challenges defaulted off.
 tiers:
-  critical: { risk_threshold: 50 }
-  high:     { risk_threshold: 60 }
-  medium:   { risk_threshold: 70 }
-  low:      { risk_threshold: 80 }
+  critical: { risk_threshold: 50, challenges_enabled: true }
+  high:     { risk_threshold: 60, challenges_enabled: true }
+  medium:   { risk_threshold: 70, challenges_enabled: true }
+  low:      { risk_threshold: 80, challenges_enabled: true }
 
 # Detector mask — full default. brute_force ON because production
 # IPs fan out (only the test harness disables it for shared-IP

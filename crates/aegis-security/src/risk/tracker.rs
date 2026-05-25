@@ -638,6 +638,85 @@ mod tests {
         assert!(t.snapshot(ip("10.0.0.9")).is_some(), "active offender survives");
     }
 
+    /// 2026-05-25 — regression guard for the staging `45.45.237.206`
+    /// anomaly. The audit showed 9 under-threshold recon hits (+25 each)
+    /// interleaved with clean requests, all from ONE composite key
+    /// (IP-only: no session cookie, no TLS device_fp), inside ~760 ms — yet
+    /// the reported cumulative bounced 25/50 and the IP NEVER blocked. That
+    /// would be a cumulative-evasion bug IF the tracker failed to accumulate
+    /// across the clean/malicious interleave.
+    ///
+    /// This replays that exact interleave on a single shared key with a
+    /// deterministic clock (events ms apart → trust decay ≈ 0) and proves the
+    /// tracker DOES accumulate monotonically and crosses `block_at` by the
+    /// 3rd recon hit (3 × 25 = 75 ≥ 70): clean requests in between do NOT
+    /// reset or fragment the score. So the staging non-block is NOT a
+    /// tracker-logic bug — it is consistent with the cumulative key being
+    /// wiped between request batches (the benchmark harness calling
+    /// `POST /__waf_control/reset_state`, which clears cumulative risk keys)
+    /// or those requests not actually sharing the key on the wire.
+    #[test]
+    fn interleaved_clean_does_not_reset_cumulative_for_shared_key() {
+        use aegis_core::risk::RiskKey;
+        let t = RiskTracker::new(&cfg());
+        // IP-only composite key — exactly what plain-HTTP traffic with no
+        // session cookie produces (build_risk_key: device_fp None, session None).
+        let key = RiskKey::from_ip(ip("45.45.237.206"));
+        let t0 = Instant::now();
+        let at = |n: u64| t0 + Duration::from_millis(n);
+
+        // (ms_offset, is_recon) — the real ordering/offsets from the staging
+        // audit. recon (R) = under-threshold recon detection (request_score 25
+        // → max signal 25, recorded to the cumulative key). clean (C) = a
+        // benign request that runs the decay path.
+        let seq: &[(u64, bool)] = &[
+            (0, false), (1, true), (13, true), (231, true), (232, true),
+            (249, false), (462, false), (464, false), (486, false), (693, false),
+            (696, false), (722, false), (727, false), (733, false), (733, true),
+            (735, false), (737, false), (738, false), (739, true), (740, false),
+            (744, true), (746, true), (747, false), (756, true), (759, false),
+            (760, false),
+        ];
+
+        let thr = t.thresholds();
+        let mut recon_hits = 0u32;
+        let mut first_block_hit: Option<u32> = None;
+        for &(off, is_recon) in seq {
+            if is_recon {
+                recon_hits += 1;
+                let st = t.record_malicious_at_with_key(key.clone(), 25, at(off));
+                if first_block_hit.is_none() && st.score >= thr.block_at {
+                    first_block_hit = Some(recon_hits);
+                }
+            } else {
+                t.record_clean_at_with_key(key.clone(), at(off));
+            }
+        }
+
+        // 9 recon × 25 = 225, clamped to max=100; the clean interleave decays
+        // ~0 over <1 s, so the shared key MUST sit at the cap — NOT bouncing
+        // at 25/50 the way the staging audit showed.
+        let final_score = t.snapshot_with_key(&key).map(|s| s.score).unwrap_or(0);
+        assert_eq!(
+            final_score, 100,
+            "shared-key cumulative must accumulate across the clean interleave, not reset"
+        );
+        // The cumulative gate classifies a capped key as Block …
+        assert_eq!(
+            t.level_with_for_key(&key, thr.challenge_at, thr.block_at),
+            RiskLevel::Block,
+            "an IP at the score cap must classify as Block"
+        );
+        // … and it crossed block_at at the 3rd recon hit (75 ≥ 70), long
+        // before the 9th. The staging IP allowing all 9 is NOT reproducible
+        // against the tracker — confirming the logic accumulates correctly.
+        assert_eq!(
+            first_block_hit,
+            Some(3),
+            "block_at (70) must be crossed at the 3rd recon hit"
+        );
+    }
+
     #[test]
     fn record_malicious_increments_score_and_strikes() {
         let t = RiskTracker::new(&cfg());

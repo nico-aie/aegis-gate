@@ -122,11 +122,15 @@ state:
 #   medium=70    blocks score>=70 (clear exploits: sqli/xss/… + up)
 #   low=80       blocks score>=80 (definitive-RCE Log4Shell/XXE + canary)
 # ---------------------------------------------------------------------------
+# 2026-05-25 — challenges_enabled: true on every tier. With it on, a
+# cumulative IP-risk score in the challenge band (risk.thresholds
+# challenge_at..block_at) issues a 429 PoW challenge instead of passing
+# through as allow. Off (the code default) only block_at blocks.
 tiers:
-  critical: { risk_threshold: 50 }
-  high:     { risk_threshold: 60 }
-  medium:   { risk_threshold: 70 }
-  low:      { risk_threshold: 80 }
+  critical: { risk_threshold: 50, challenges_enabled: true }
+  high:     { risk_threshold: 60, challenges_enabled: true }
+  medium:   { risk_threshold: 70, challenges_enabled: true }
+  low:      { risk_threshold: 80, challenges_enabled: true }
 
 # ---------------------------------------------------------------------------
 # Detectors — every class on, so attack-corpus tests trip them all
