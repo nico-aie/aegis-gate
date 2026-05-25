@@ -51,14 +51,20 @@ pub struct Tier {
     /// (validated: challenge < block when both Some).
     #[serde(default)]
     pub cumulative_block_at: Option<u32>,
-    /// 2026-05-10 — when `false`, the challenge rung is removed
-    /// from this tier's response ladder: cumulative score crossing
-    /// `challenge_at` escalates straight to block instead of
-    /// emitting a 429 PoW. **Defaults to `false`** (operator-confirmed
-    /// 2026-05-10 R2) — challenges are opt-in. Most deployments
-    /// want hard allow/block semantics; the PoW rung is useful for
-    /// specific scenarios (browser-only public tiers) and operators
-    /// can flip it on per tier.
+    /// 2026-05-10 — when `false`, the challenge rung is removed from
+    /// this tier's response ladder. 2026-05-24 correction: a cumulative
+    /// score in the challenge band (`challenge_at..block_at`) PASSES
+    /// THROUGH as Allow — it does NOT escalate to block. Disabling
+    /// challenges means "don't run the PoW gate", not "block at
+    /// `challenge_at`": only `block_at` blocks. (The data plane remaps
+    /// `RiskLevel::Challenge => Allow` when this is false — see
+    /// `data_plane.rs` cumulative gate.) **Defaults to `false`**
+    /// (operator-confirmed 2026-05-10 R2) — challenges are opt-in. Most
+    /// deployments want hard allow/block semantics; the PoW rung is
+    /// useful for specific scenarios (browser-only public tiers) and
+    /// operators can flip it on per tier. NOTE: a tier that wants an
+    /// earlier hard block with challenges off should lower its
+    /// `cumulative_block_at` rather than rely on the (removed) escalation.
     #[serde(default)]
     pub challenges_enabled: bool,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -197,6 +203,24 @@ impl TierStore {
             }
             if let Some(t) = s.tiers.get_mut(name) {
                 t.risk_threshold = threshold;
+                t.updated_at = chrono::Utc::now();
+            }
+        }
+    }
+
+    /// 2026-05-25 — seed per-tier `challenges_enabled` from the `tiers:`
+    /// config block at boot, mirroring [`Self::apply_risk_thresholds`].
+    /// Tiers absent from the iterator keep their store default (`false`).
+    /// Unknown tier names are ignored. The dashboard `PUT /api/tiers/<name>`
+    /// can still flip this live afterward.
+    pub fn apply_challenges_enabled<'a>(
+        &self,
+        overrides: impl IntoIterator<Item = (&'a str, bool)>,
+    ) {
+        let mut s = self.inner.lock().expect("tier store poisoned");
+        for (name, enabled) in overrides {
+            if let Some(t) = s.tiers.get_mut(name) {
+                t.challenges_enabled = enabled;
                 t.updated_at = chrono::Utc::now();
             }
         }

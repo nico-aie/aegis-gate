@@ -1344,6 +1344,37 @@ pub(crate) async fn handle_data_request_inner(
                     Some(s) => DecisionTag::challenge("risk-challenge").with_tier(tier).with_risk_score(s),
                     None    => DecisionTag::challenge("risk-challenge").with_tier(tier),
                 };
+                // 2026-05-25 — emit a Detection audit for the CHALLENGE
+                // action. The Block path audits via `blocked_response` and
+                // the Allow path audits inside `forward_allow_to_upstream`,
+                // but this rung previously built the 429 and returned WITHOUT
+                // emitting — so `action: challenge` never reached the audit
+                // log / dashboard Live Feed (only the live `X-WAF-Action`
+                // header carried it). Mirrors the `blocked_response` shape
+                // with `action: "challenge"` + `rule_id: risk-challenge`, and
+                // is emitted UNCONDITIONALLY (before the log_only branch)
+                // exactly like the block path — so the OC's correlation chain
+                // sees the challenge even when `risk_engine.score` is
+                // `log_only` (the response stamper still marks `X-WAF-Mode`).
+                // Honors the same load-shed `allow_block_emit` gate as the
+                // detector-block audit.
+                if allow_block_emit {
+                    let echo = if !load_mode.is_critical() && allow_verbose_fields {
+                        Some(request_echo_fields(&parts.headers, Some(&body_bytes)))
+                    } else {
+                        None
+                    };
+                    emit_challenge_audit(
+                        peer,
+                        peer_ip,
+                        tier,
+                        challenge_score,
+                        &parts.uri,
+                        &parts.method,
+                        bus,
+                        echo,
+                    );
+                }
                 // Contract §2.7 — honor `set_profile mode=log_only` on
                 // `risk_engine.score` for the CHALLENGE action too (not
                 // just block). In log_only the WAF MUST report the
@@ -3095,6 +3126,63 @@ fn default_trusted_proxies() -> Vec<ipnet::IpNet> {
     Vec::new()
 }
 
+/// 2026-05-25 — emit a Detection audit for the CHALLENGE action.
+/// Mirrors [`blocked_response`]'s audit shape (`action: "challenge"`,
+/// `rule_id: risk-challenge`) so the dashboard Live Feed + AttacksAggregator
+/// surface challenges the same way they surface blocks. The cumulative-gate
+/// challenge rung previously built the 429 and returned WITHOUT auditing, so
+/// `action: challenge` never reached the audit log / UI (only the live
+/// `X-WAF-Action` response header carried it). Unlike `blocked_response` this
+/// builds no HTTP response — the 429 PoW body is shaped by the caller.
+#[allow(clippy::too_many_arguments)]
+fn emit_challenge_audit(
+    peer: std::net::SocketAddr,
+    peer_ip: std::net::IpAddr,
+    tier: aegis_core::tier::Tier,
+    risk_score: Option<u32>,
+    uri: &hyper::Uri,
+    method: &hyper::Method,
+    bus: &AuditBus,
+    echo: Option<serde_json::Map<String, serde_json::Value>>,
+) {
+    let ev = aegis_core::audit::AuditEvent {
+        schema_version: 1,
+        ts: chrono::Utc::now(),
+        request_id: blake3::hash(
+            format!(
+                "{}:{}",
+                peer,
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            )
+            .as_bytes(),
+        )
+        .to_hex()
+        .to_string(),
+        class: aegis_core::audit::AuditClass::Detection,
+        tenant_id: None,
+        tier: Some(tier),
+        action: "challenge".into(),
+        reason: "risk score over challenge threshold".into(),
+        client_ip: peer_ip.to_string(),
+        route_id: None,
+        rule_id: Some("risk-challenge".to_string()),
+        risk_score,
+        method: Some(method.to_string()),
+        path: Some(uri.to_string()),
+        mode: None,
+        fields: {
+            let mut f = serde_json::Map::new();
+            f.insert("path".to_string(), serde_json::Value::String(uri.to_string()));
+            f.insert("method".to_string(), serde_json::Value::String(method.to_string()));
+            if let Some(echo) = echo {
+                f.extend(echo);
+            }
+            serde_json::Value::Object(f)
+        },
+    };
+    bus.emit(ev);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn blocked_response(
     peer: std::net::SocketAddr,
@@ -3963,6 +4051,28 @@ mod log_only_enforce_tests {
             .unwrap_or(0)
     }
 
+    /// Like [`get_status`] but also returns the response body, so a 429
+    /// challenge envelope can be inspected for the v2.5 contract fields.
+    async fn get_response(waf: std::net::SocketAddr, path: &str) -> (u16, String) {
+        let mut s = tokio::net::TcpStream::connect(waf).await.unwrap();
+        let req = format!("GET {path} HTTP/1.1\r\nHost: any\r\nConnection: close\r\n\r\n");
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        let _ = s.read_to_end(&mut buf).await;
+        let raw = String::from_utf8_lossy(&buf).to_string();
+        let status = raw
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        let body = raw
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b.to_string())
+            .unwrap_or_default();
+        (status, body)
+    }
+
     #[tokio::test]
     async fn set_profile_log_only_forwards_enforce_blocks() {
         let backend = spawn_upstream().await;
@@ -4104,6 +4214,187 @@ state: {{ backend: in_memory }}
             ev.tier,
             Some(aegis_core::tier::Tier::High),
             "risk-score block on a HIGH route must audit as High, not Low",
+        );
+    }
+
+    /// 2026-05-25 — the cumulative-gate CHALLENGE rung must emit an audit
+    /// (action "challenge", rule_id "risk-challenge") so it appears in the
+    /// audit log / dashboard Live Feed. Previously the rung built the 429 and
+    /// returned without auditing, so operators never saw `challenge` actions
+    /// (only the live X-WAF-Action header carried it).
+    #[tokio::test]
+    async fn challenge_audit_emits_challenge_action_with_tier_and_score() {
+        let bus = AuditBus::new(16);
+        let mut rx = bus.subscribe();
+        let uri: hyper::Uri = "/login".parse().unwrap();
+        super::emit_challenge_audit(
+            "9.9.9.9:443".parse().unwrap(),
+            "9.9.9.9".parse().unwrap(),
+            aegis_core::tier::Tier::High,
+            Some(45),
+            &uri,
+            &hyper::Method::GET,
+            &bus,
+            None,
+        );
+        let ev = rx.try_recv().expect("challenge audit event emitted");
+        assert_eq!(ev.action, "challenge", "challenge rung must audit action=challenge");
+        assert_eq!(ev.rule_id.as_deref(), Some("risk-challenge"));
+        assert_eq!(ev.tier, Some(aegis_core::tier::Tier::High));
+        assert_eq!(ev.risk_score, Some(45), "audit carries the cumulative score");
+        assert_eq!(ev.client_ip, "9.9.9.9");
+    }
+
+    /// 2026-05-25 — end-to-end + CONTRACT proof that a per-tier
+    /// `challenges_enabled` toggle drives the cumulative-IP-risk challenge
+    /// rung through `handle_data_request`:
+    ///   • enabled  → a cumulative score in the band `[challenge_at,block_at)`
+    ///                returns 429 with the v2.5 §4 Format-A PoW envelope
+    ///                (`challenge_token` / `difficulty` / `submit_url` /
+    ///                `submit_method`) AND emits an `action: challenge` audit.
+    ///   • disabled → the SAME band score passes through as allow (200,
+    ///                forwarded upstream) — no PoW.
+    /// The PoW solve/verify round trip itself is covered by the
+    /// `challenge::pow` tests (`verify_accepts_correct_solution`, …).
+    #[tokio::test]
+    async fn challenges_enabled_tier_issues_pow_challenge_for_band_score() {
+        let backend = spawn_upstream().await;
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: pool }}
+upstreams:
+  pool: {{ members: [{{ addr: "{backend}" }}] }}
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        let ctx = Arc::new(ProxyContext::build(&cfg, pipeline).unwrap());
+
+        // Catch-all `/` resolves to the LOW tier. Seed low.challenges_enabled
+        // exactly as the boot path does from `challenges_enabled_overrides()`.
+        let tiers = Arc::new(aegis_control::api::tiers::TierStore::new());
+        tiers.apply_challenges_enabled([("low", true)]);
+        ctx.tiers.set(tiers.clone()).ok();
+
+        // PoW issuer so the 429 envelope carries a real challenge_token.
+        let issuer = Arc::new(aegis_security::challenge::PowIssuer::new(
+            [7u8; 32],
+            8,
+            std::time::Duration::from_secs(60),
+        ));
+        ctx.pow_issuer.set(issuer).ok();
+        ctx.interop_modes.set(Arc::new(ModeStore::new(Mode::Enforce))).ok();
+
+        let metrics = aegis_control::metrics::MetricsRegistry::init();
+        let risk = aegis_security::risk::RiskTracker::new(&cfg.risk);
+        // Pre-seed the loopback composite key (no cookie/TLS → IP-only) into
+        // the challenge band: score 50 ∈ [challenge_at 30, block_at 70).
+        risk.record_malicious("127.0.0.1".parse().unwrap(), 50);
+
+        let args = Arc::new(Args {
+            detectors: aegis_security::detectors::default_detectors(),
+            mask: aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors),
+            risk,
+            ip_rl: aegis_security::rate_limit::IpRateLimiter::new(
+                crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+            ),
+            load_gauge: aegis_core::LoadGauge::new(cfg.load_mode.clone()),
+            verbosity: aegis_core::SharedVerbosity::from_config(&cfg.logging),
+            rsh: aegis_control::metrics::request_duration::RequestStageHistogram::register(&metrics)
+                .unwrap(),
+            rlh: aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&metrics)
+                .unwrap(),
+            ra: aegis_control::metrics::route_activity::RouteActivityWindow::new(),
+            dlh: aegis_control::metrics::detector_latency::DetectorLatencyHistogram::register(
+                &metrics,
+            )
+            .unwrap(),
+            dhm: aegis_control::metrics::detector_hits::DetectorHitMetrics::register(&metrics)
+                .unwrap(),
+            bus: AuditBus::new(64),
+            ctx: ctx.clone(),
+        });
+        let mut rx = args.bus.subscribe();
+
+        let waf = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let waf_addr = waf.local_addr().unwrap();
+        let args_l = args.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, peer)) = waf.accept().await {
+                let args_c = args_l.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let a = args_c.clone();
+                        async move {
+                            let (resp, _tag) = super::handle_data_request(
+                                req,
+                                peer,
+                                &a.detectors,
+                                &a.mask,
+                                &a.risk,
+                                &a.ip_rl,
+                                &a.load_gauge,
+                                &a.verbosity,
+                                &a.rsh,
+                                &a.rlh,
+                                &a.ra,
+                                &a.dlh,
+                                &a.bus,
+                                &a.ctx,
+                                &a.dhm,
+                                &ClientIdentity::Anonymous,
+                                None,
+                            )
+                            .await;
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // ENABLED → 429 with the v2.5 §4 Format-A PoW envelope.
+        let (status, body) = get_response(waf_addr, "/").await;
+        assert_eq!(status, 429, "band score on a challenges-enabled tier must 429");
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|_| panic!("challenge body must be JSON, got: {body}"));
+        assert_eq!(v["challenge"], serde_json::json!(true));
+        assert_eq!(v["challenge_type"], serde_json::json!("proof_of_work"));
+        assert!(
+            v["challenge_token"].as_str().map(|t| !t.is_empty()).unwrap_or(false),
+            "v2.5 §4 requires a non-empty challenge_token, got: {body}"
+        );
+        assert!(v["difficulty"].is_number(), "envelope must carry difficulty");
+        assert_eq!(v["submit_url"], serde_json::json!("/challenge/verify"));
+        assert_eq!(v["submit_method"], serde_json::json!("POST"));
+
+        // … and the challenge must be audited (drain all events, find it).
+        let mut saw_challenge = false;
+        while let Ok(ev) = rx.try_recv() {
+            if ev.action == "challenge" {
+                saw_challenge = true;
+                assert_eq!(ev.rule_id.as_deref(), Some("risk-challenge"));
+                assert_eq!(ev.client_ip, "127.0.0.1");
+            }
+        }
+        assert!(saw_challenge, "challenge action must reach the audit bus");
+
+        // DISABLED → same band score now passes through as allow (forwarded).
+        tiers.apply_challenges_enabled([("low", false)]);
+        let (status_off, _body) = get_response(waf_addr, "/").await;
+        assert_eq!(
+            status_off, 200,
+            "challenges off → band score must pass through as allow (forwarded), got {status_off}"
         );
     }
 }

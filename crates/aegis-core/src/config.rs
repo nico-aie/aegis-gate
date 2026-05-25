@@ -562,18 +562,19 @@ fn default_blocking_threads() -> usize {
     512
 }
 
-/// 2026-05-23 — per-tier per-request block score (`risk_threshold`)
-/// seeds. Each canonical tier is optional; omitted tiers use the code
-/// default from `Tier::defaults_for`. Only the per-request block score
-/// is settable here — `challenges_enabled` / cumulative overrides stay
-/// on the dashboard `PUT /api/tiers/<name>` surface.
+/// 2026-05-23 — per-tier seeds from the `tiers:` config block. Each
+/// canonical tier is optional; omitted tiers use the code default from
+/// `Tier::defaults_for`. The per-request block score (`risk_threshold`)
+/// and the cumulative-challenge toggle (`challenges_enabled`, added
+/// 2026-05-25) are settable here; per-tier cumulative threshold overrides
+/// stay on the dashboard `PUT /api/tiers/<name>` surface.
 ///
 /// ```yaml
 /// tiers:
-///   critical: { risk_threshold: 50 }
-///   high:     { risk_threshold: 60 }
-///   medium:   { risk_threshold: 70 }
-///   low:      { risk_threshold: 80 }
+///   critical: { risk_threshold: 50, challenges_enabled: true }
+///   high:     { risk_threshold: 60, challenges_enabled: true }
+///   medium:   { risk_threshold: 70, challenges_enabled: true }
+///   low:      { risk_threshold: 80, challenges_enabled: true }
 /// ```
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct TiersConfig {
@@ -587,12 +588,20 @@ pub struct TiersConfig {
     pub low: Option<TierThresholdConfig>,
 }
 
-/// One tier's configurable block score.
+/// One tier's configurable seeds.
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub struct TierThresholdConfig {
     /// Per-request block score (0–100). A request blocks when its
     /// summed detector score reaches this value on the matched tier.
     pub risk_threshold: u32,
+    /// 2026-05-25 — opt-in cumulative-IP-risk challenge rung for this
+    /// tier. `Some(true)` makes a cumulative score in the challenge band
+    /// (`challenge_at..block_at`) issue a 429 PoW challenge; absent or
+    /// `Some(false)` leaves the band passing through as allow (only
+    /// `block_at` blocks). Seeded into the TierStore at boot; the
+    /// dashboard `PUT /api/tiers/<name>` can still override it live.
+    #[serde(default)]
+    pub challenges_enabled: Option<bool>,
 }
 
 impl TiersConfig {
@@ -611,6 +620,27 @@ impl TiersConfig {
         }
         if let Some(t) = &self.low {
             out.push(("low", t.risk_threshold));
+        }
+        out
+    }
+
+    /// 2026-05-25 — flatten to `(tier_name, challenges_enabled)` for the
+    /// tiers that set the toggle explicitly. Drives `TierStore`
+    /// challenge-rung seeding at boot. Tiers that omit `challenges_enabled`
+    /// are not returned (they keep the store default, `false`).
+    pub fn challenges_enabled_overrides(&self) -> Vec<(&'static str, bool)> {
+        let mut out = Vec::new();
+        for (name, tier) in [
+            ("critical", &self.critical),
+            ("high", &self.high),
+            ("medium", &self.medium),
+            ("low", &self.low),
+        ] {
+            if let Some(t) = tier {
+                if let Some(enabled) = t.challenges_enabled {
+                    out.push((name, enabled));
+                }
+            }
         }
         out
     }
@@ -3413,6 +3443,26 @@ pub enum ComplianceMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiers_config_parses_challenges_enabled_and_flattens_overrides() {
+        // 2026-05-25 — `challenges_enabled` must be a recognized config key
+        // (previously absent → silently ignored) and flow into the boot-time
+        // TierStore seed via `challenges_enabled_overrides()`.
+        let yaml = r#"
+critical: { risk_threshold: 50, challenges_enabled: true }
+high:     { risk_threshold: 60, challenges_enabled: true }
+medium:   { risk_threshold: 70 }
+low:      { risk_threshold: 80, challenges_enabled: false }
+"#;
+        let tiers: TiersConfig = serde_yaml::from_str(yaml).unwrap();
+        let mut ce = tiers.challenges_enabled_overrides();
+        ce.sort();
+        // `medium` omitted the toggle → not present (keeps store default).
+        assert_eq!(ce, vec![("critical", true), ("high", true), ("low", false)]);
+        // The existing risk_threshold seeding is unaffected.
+        assert_eq!(tiers.high.unwrap().risk_threshold, 60);
+    }
 
     #[tokio::test]
     async fn config_broadcast_sends_and_receives() {
