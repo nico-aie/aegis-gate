@@ -89,6 +89,22 @@ static DLP_PATTERNS: LazyLock<Vec<DlpPattern>> = LazyLock::new(|| {
             regex: Regex::new(r"\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+)\b").unwrap(),
             validator: None,
         },
+        // 2026-05-25 — env-file / config-dump secret assignment, e.g. a
+        // leaked `.env`: `DB_PASSWORD=…`, `AWS_SECRET=…`, `API_KEY=…`.
+        // Anchored to a line (multiline) with an env-var-style key followed
+        // by `=` and a non-empty value, so it catches leaked credential
+        // files but NOT JSON (`"password": "…"` uses `:`, not `=`, and the
+        // quoted key won't match) or `var token = …` (the key isn't at line
+        // start). Group 1 captures the KEY only so audit/scan never echoes
+        // the secret value; redact() still replaces the whole assignment.
+        DlpPattern {
+            name: "env_secret",
+            regex: Regex::new(
+                r"(?im)^[ \t]*([A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|token))[ \t]*=[ \t]*\S.*$",
+            )
+            .unwrap(),
+            validator: None,
+        },
     ]
 });
 
@@ -338,6 +354,39 @@ mod tests {
         let redacted = redact(text);
         assert!(!redacted.contains("4111"));
         assert!(redacted.contains("[REDACTED]"));
+    }
+
+    // 2026-05-25 — env-file / config-dump secret leak (the `.env` leak case:
+    // upstream served `DB_PASSWORD=…` and the WAF must not pass the value
+    // through). redact() runs on response bodies via Pipeline::on_body_frame.
+    #[test]
+    fn detect_and_redact_env_secret() {
+        let leak = "DB_PASSWORD=sup3r-s3cret-value\nAPI_KEY=AKIA-not-real-1234\n";
+        let matches = scan(leak);
+        assert!(
+            matches.iter().any(|m| m.pattern_name == "env_secret"),
+            "env-style secret assignment must be detected"
+        );
+        // scan() captures the KEY only, never the secret value.
+        assert!(
+            matches.iter().all(|m| !m.matched_value.contains("sup3r-s3cret-value")),
+            "scan must not echo the secret value"
+        );
+        let redacted = redact(leak);
+        assert!(!redacted.contains("sup3r-s3cret-value"), "DB_PASSWORD value must be redacted");
+        assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn env_secret_no_false_positive_on_json_or_js() {
+        // JSON uses `:` (and a quoted key) — must NOT match.
+        let json = r#"{"password": "hint-only", "note": "set your token here"}"#;
+        assert!(scan(json).iter().all(|m| m.pattern_name != "env_secret"));
+        assert_eq!(redact(json), json, "JSON password field must pass through untouched");
+        // `var token = …` — key not at line start — must NOT match.
+        let js = "var token = computeToken();";
+        assert!(scan(js).iter().all(|m| m.pattern_name != "env_secret"));
+        assert_eq!(redact(js), js);
     }
 
     // Clean text.
