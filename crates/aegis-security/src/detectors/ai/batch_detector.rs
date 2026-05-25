@@ -20,7 +20,8 @@ use aegis_core::pipeline::RequestView;
 use crate::detectors::{Detector, Signal};
 
 use super::{
-    fallback_reason, features, AiDetector, AiMetricsSink, BatchService, NoopAiMetricsSink,
+    fallback_reason, features, signals_from_prediction, AiDetector, AiMetricsSink, BatchService,
+    NoopAiMetricsSink,
 };
 
 /// AI detector backed by the in-process batch accumulator. Cheap to
@@ -109,25 +110,15 @@ impl Detector for BatchAiDetector {
             Ok(p) => {
                 let lat_seconds = (p.latency_us as f64) / 1_000_000.0;
                 self.metrics.record_prediction(p.is_attack, lat_seconds);
-
-                if p.prob_attack >= self.threshold {
-                    let signal_score = if self.scale_score_by_prob {
-                        ((self.score as f32) * p.prob_attack).round() as u32
-                    } else {
-                        self.score
-                    };
-                    vec![Signal {
-                        score: signal_score,
-                        tag: "ai".into(),
-                        field: "request".into(),
-                    }]
-                } else {
-                    if p.is_attack {
-                        self.metrics
-                            .record_fallback(fallback_reason::LOW_CONFIDENCE);
-                    }
-                    Vec::new()
-                }
+                // Shared gate — identical semantics to the synchronous
+                // AiDetector (see `super::signals_from_prediction`).
+                signals_from_prediction(
+                    &p,
+                    self.threshold,
+                    self.score,
+                    self.scale_score_by_prob,
+                    self.metrics.as_ref(),
+                )
             }
             Err(e) => {
                 // Overload-shed and inference/timeout errors both collapse

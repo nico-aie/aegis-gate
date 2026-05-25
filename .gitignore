@@ -80,6 +80,7 @@ release/
 # real certs (or wire ACME) before production use.
 /config/certs/
 .claude/
+__pycache__
 
 # =========================
 # MaxMind GeoIP databases

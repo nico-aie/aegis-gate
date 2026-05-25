@@ -1,5 +1,5 @@
 /// WAF feature extraction — exact port of ml_waf/features.py.
-/// 27 dense float32 features per HTTP request string.
+/// 29 dense float32 features per HTTP request string.
 ///
 /// Input format (multi-line):
 ///   Line 0:  "METHOD /url [body]"
@@ -9,7 +9,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-pub const NUM_FEATURES: usize = 27;
+pub const NUM_FEATURES: usize = 29;
 
 /// Mirror build_clean_dataset.py truncation limits so live inference matches training.
 const MAX_URL_BYTES: usize = 4_096;
@@ -55,6 +55,8 @@ pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
     "crlf_inject_count",
     "double_encode_count",
     "ssti_count",
+    "header_count",
+    "header_entropy",
 ];
 
 static SQL_RE: Lazy<Regex> = Lazy::new(|| {
@@ -72,7 +74,7 @@ static SCANNER_RE: Lazy<Regex> = Lazy::new(|| {
 static PCT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"%[0-9a-fA-F]{2}").unwrap());
 
 static CMD_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[;|]|\|\||&&|\$\(|`[^`]*`").unwrap());
+    Lazy::new(|| Regex::new(r"\||&&|\$\(|`[^`]*`").unwrap());
 
 static SSRF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(?:127\.0\.0\.1|localhost|169\.254\.|0\.0\.0\.0|::1|file://|dict://|gopher://|ftp://)").unwrap()
@@ -113,42 +115,56 @@ fn method_id(method: &str) -> f32 {
     }
 }
 
-/// Decode %XX percent-encoding. Non-hex sequences are kept as-is.
+/// Decode %XX percent-encoding — mirrors Python's `urllib.parse.unquote`.
+///
+/// Collects decoded bytes first, then interprets them as UTF-8 (with lossy
+/// fallback for invalid sequences).  The old byte-by-byte char-push approach
+/// produced Latin-1 characters for multi-byte UTF-8 sequences:
+///   %E4%B8%AD → 'ä' + '¸' + soft-hyphen  (wrong)
+/// vs Python:
+///   %E4%B8%AD → '中'                       (correct)
+///
+/// For pure ASCII inputs (the common WAF case) both approaches are identical.
 fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
+    let mut raw: Vec<u8> = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
             let hi = (bytes[i + 1] as char).to_digit(16);
             let lo = (bytes[i + 2] as char).to_digit(16);
             if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h * 16 + l) as u8 as char);
+                raw.push((h * 16 + l) as u8);
                 i += 3;
                 continue;
             }
         }
-        out.push(bytes[i] as char);
+        raw.push(bytes[i]);
         i += 1;
     }
-    out
+    // Interpret as UTF-8; replace invalid sequences (same as Python's errors='replace').
+    String::from_utf8_lossy(&raw).into_owned()
 }
 
-/// Shannon entropy — uses chars to match Python's behaviour.
+/// Shannon entropy — mirrors Python's `_entropy()` exactly.
+///
+/// Uses a HashMap keyed by char so every Unicode code point gets its own
+/// bucket.  The old fixed-array approach (256 slots) silently merged all
+/// chars with code point > 255 into a single bucket, underestimating
+/// entropy for non-ASCII payloads.
 fn shannon_entropy(s: &str) -> f32 {
     if s.is_empty() {
         return 0.0;
     }
-    let mut counts = [0u32; 256];
+    let mut counts: std::collections::HashMap<char, u32> = std::collections::HashMap::new();
     let mut n = 0u32;
     for c in s.chars() {
-        counts[(c as u32).min(255) as usize] += 1;
+        *counts.entry(c).or_insert(0) += 1;
         n += 1;
     }
     let n = n as f32;
     counts
-        .iter()
-        .filter(|&&c| c > 0)
+        .values()
         .map(|&c| {
             let p = c as f32 / n;
             -p * p.log2()
@@ -156,7 +172,7 @@ fn shannon_entropy(s: &str) -> f32 {
         .sum()
 }
 
-/// Extract 26 WAF features from a raw HTTP request string.
+/// Extract 29 WAF features from a raw HTTP request string.
 ///
 /// Accepts both formats:
 ///   Single-line : "METHOD /url body"
@@ -180,58 +196,71 @@ pub fn extract_features(request: &str) -> [f32; NUM_FEATURES] {
 
     // `full` includes url + body + header values so every regex pattern
     // also scans User-Agent, Cookie, Referer, etc. — mirrors Python logic.
-    let full = {
+    // Separate full strings:
+    // - full_for_chars: URL + body only (for character counts, no header noise)
+    // - full_for_patterns: URL + body + headers (for regex-based attack detection in all fields)
+    let full_for_chars = {
+        let mut s = url.to_string();
+        if !body.is_empty() { s.push(' '); s.push_str(body); }
+        s
+    };
+
+    let full_for_patterns = {
         let mut s = url.to_string();
         if !body.is_empty()         { s.push(' '); s.push_str(body); }
         if !headers_text.is_empty() { s.push(' '); s.push_str(&headers_text); }
         s
     };
 
-    let full_dec = url_decode(&full);
-    let n = full.chars().count().max(1) as f32;
+    let full_dec_for_patterns = url_decode(&full_for_patterns);
+    let n = full_for_chars.chars().count().max(1) as f32;
 
     // num_params counts query-string and body params, not header values.
     let num_params =
         (if query.is_empty() { 0 } else { query.matches('&').count() + 1 })
         + (if body.is_empty()  { 0 } else { body.matches('&').count() + 1 });
 
-    let digit_count  = full.chars().filter(|c| c.is_ascii_digit()).count() as f32;
-    let upper_count  = full.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
-    let special_count = full
+    let digit_count  = full_for_chars.chars().filter(|c| c.is_ascii_digit()).count() as f32;
+    let upper_count  = full_for_chars.chars().filter(|c| c.is_ascii_uppercase()).count() as f32;
+    let special_count = full_for_chars
         .chars()
         .filter(|c| matches!(c, '\'' | '"' | '<' | '>' | ';' | '=' | '%' | '&' | '+'))
         .count() as f32;
 
     // "../" is already lowercase — no need to lowercase full_dec before matching.
-    let path_traversal = full_dec.matches("../").count() as f32;
+    let path_traversal = full_dec_for_patterns.matches("../").count() as f32;
 
     [
-        request.len() as f32,                                              // 0  total length (incl. headers)
+        // Python len() counts Unicode *characters*; Rust str::len() counts UTF-8
+        // *bytes*.  Use chars().count() so the values match for non-ASCII input.
+        request.chars().count() as f32,                                    // 0  total length in chars
         method_id(method),                                                 // 1
-        path.len() as f32,                                                 // 2
-        query.len() as f32,                                                // 3
-        body.len() as f32,                                                 // 4  body from first line only
+        path.chars().count() as f32,                                       // 2
+        query.chars().count() as f32,                                      // 3
+        body.chars().count() as f32,                                       // 4  body length in chars
         num_params as f32,                                                 // 5  query + body params
-        shannon_entropy(&full),                                            // 6
+        shannon_entropy(&full_for_chars),                                  // 6
         digit_count / n,                                                   // 7
         upper_count / n,                                                   // 8
         special_count,                                                     // 9
-        full.matches('\'').count() as f32,                                 // 10
-        full.matches('"').count() as f32,                                  // 11
-        (full.matches('<').count() + full.matches('>').count()) as f32,    // 12
-        full.matches(';').count() as f32,                                  // 13
-        PCT_RE.find_iter(&full).count() as f32,                            // 14 raw
-        SQL_RE.find_iter(&full_dec).count() as f32,                        // 15 decoded
-        XSS_RE.find_iter(&full_dec).count() as f32,                        // 16 decoded
+        full_for_chars.matches('\'').count() as f32,                       // 10
+        full_for_chars.matches('"').count() as f32,                        // 11
+        (full_for_chars.matches('<').count() + full_for_chars.matches('>').count()) as f32,    // 12
+        full_for_chars.matches(';').count() as f32,                        // 13
+        PCT_RE.find_iter(&full_for_chars).count() as f32,                  // 14 raw
+        SQL_RE.find_iter(&full_dec_for_patterns).count() as f32,           // 15 decoded
+        XSS_RE.find_iter(&full_dec_for_patterns).count() as f32,           // 16 decoded
         path_traversal,                                                    // 17 decoded
-        CMD_RE.find_iter(&full_dec).count() as f32,                        // 18 decoded
-        SCANNER_RE.find_iter(&full_dec).count() as f32,                    // 19 decoded
-        SSRF_RE.find_iter(&full_dec).count() as f32,                       // 20 decoded
-        PHP_RE.find_iter(&full_dec).count() as f32,                        // 21 decoded
-        NULL_BYTE_RE.find_iter(&full).count() as f32,                      // 22 raw
-        HEX_ENCODE_RE.find_iter(&full).count() as f32,                     // 23 raw
-        CRLF_RE.find_iter(&full).count() as f32,                           // 24 raw
-        DBL_ENC_RE.find_iter(&full).count() as f32,                        // 25 raw
-        SSTI_RE.find_iter(&full_dec).count() as f32,                       // 26 decoded
+        CMD_RE.find_iter(&full_dec_for_patterns).count() as f32,           // 18 decoded
+        SCANNER_RE.find_iter(&full_dec_for_patterns).count() as f32,       // 19 decoded
+        SSRF_RE.find_iter(&full_dec_for_patterns).count() as f32,          // 20 decoded
+        PHP_RE.find_iter(&full_dec_for_patterns).count() as f32,           // 21 decoded
+        NULL_BYTE_RE.find_iter(&full_for_patterns).count() as f32,          // 22 raw — %00 vanishes after url_decode, must scan raw string
+        HEX_ENCODE_RE.find_iter(&full_for_chars).count() as f32,           // 23 raw
+        CRLF_RE.find_iter(&full_for_chars).count() as f32,                 // 24 raw
+        DBL_ENC_RE.find_iter(&full_for_chars).count() as f32,              // 25 raw
+        SSTI_RE.find_iter(&full_dec_for_patterns).count() as f32,          // 26 decoded
+        request.matches('\n').count() as f32,                              // 27 header_count
+        shannon_entropy(&headers_text),                                    // 28 header_entropy
     ]
 }
