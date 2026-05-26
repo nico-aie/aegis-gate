@@ -23,7 +23,7 @@ balancing security against performance.
 | **CRITICAL** | `/login`, `/otp`, `/deposit`, `/withdrawal`, `/payments/*` | Per-user rate limit, device FP, behavioral check, transaction velocity, challenge, response-schema validation | **Fail-close** |
 | **HIGH** | `/api/*`, `/user/*`, `/game/*` | DDoS, IP+session rate limit, OWASP detection, smart caching, bot filter | Fail-open |
 | **MEDIUM** | `/static/*`, `/assets/*`, `/public/*` | Basic rate limit, path-traversal detection, aggressive caching | Fail-open |
-| **CATCH-ALL** | `/**` | Baseline SQLi/XSS, rate limit, known-bad IP blocking, full logging | Fail-open |
+| **LOW** (default) | `/**` (catch-all routing role) | Baseline SQLi/XSS, rate limit, known-bad IP blocking, full logging | Fail-open |
 
 > The "Example routes" column is **illustrative of what an operator
 > assigns to each tier via route config** — it is NOT an automatic
@@ -73,46 +73,78 @@ Regardless of tier, every request gets:
 
 ## Configuration
 
+> **2026-05-25:** the old "tiers carry their own routes/detectors/rate
+> limits" schema is gone. Tier membership is now a property of the
+> **route** (`tier_override`), not the tier. The `tiers:` block only seeds
+> per-tier *scoring knobs*; routing, detector masks, and rate limits are
+> configured separately.
+
+### `tiers:` block — per-tier scoring knobs
+
+A map keyed by canonical tier name. Each entry is optional; omitted tiers
+fall back to the code defaults (`TiersConfig` / `TierThresholdConfig` in
+`aegis-core/src/config.rs`).
+
 ```yaml
 tiers:
-  - name: critical
-    routes: ["/login", "/otp", "/deposit", "/withdrawal", "/payments/*"]
-    match_type: wildcard
-    failure_mode: fail_close
-    detectors: [sqli, xss, ssrf, brute_force, header_injection, body_abuse, command_injection]
-    rate_limit:
-      requests: 10
-      window_s: 60
-      scope: [ip, session, device]
-    challenge:
-      enabled: true
-      initial: js
-      escalate_to: captcha
-    response_schema: strict
-    cache: disabled
+  # risk_threshold: per-request block score — a request blocks when its
+  #   summed detector score reaches this value on the matched tier.
+  # challenges_enabled: when true, a *cumulative* IP-risk score landing in
+  #   the challenge band (risk.thresholds challenge_at..block_at) issues a
+  #   429 PoW challenge instead of passing through as allow.
+  critical: { risk_threshold: 50, challenges_enabled: true }
+  high:     { risk_threshold: 60, challenges_enabled: true }
+  medium:   { risk_threshold: 70, challenges_enabled: true }
+  low:      { risk_threshold: 80, challenges_enabled: true }
+```
 
-  - name: high
-    routes: ["/api/*", "/user/*", "/game/*"]
-    match_type: wildcard
-    failure_mode: fail_open
-    # …
+### Assigning a route to a tier
 
-  - name: medium
-    routes: ["/static/*", "/assets/*", "/public/*"]
-    match_type: wildcard
-    failure_mode: fail_open
-    # …
+Tier comes from the route's `tier_override`; a route with no override
+falls back to the **code default, Low**. Routes live in the top-level
+`routes:` table, not inside the tier block:
 
-  - name: low
-    routes: ["/**"]
-    match_type: wildcard
-    failure_mode: fail_open
+```yaml
+routes:
+  - id: login
+    path: "/login"
+    match_type: prefix
+    upstream: app-pool
+    tier_override: critical
+  - id: catch-all          # fallback for every unmatched request
+    path: "/"
+    match_type: prefix
+    upstream: stub-pool
+    tier_override: high     # makes HIGH the *effective* default tier
+```
+
+> Note: the code default for an override-less route is **Low**, but the
+> shipped configs pin the catch-all route to `tier_override: high`, so the
+> *effective* default in practice is HIGH (per-request threshold 60, not
+> Low's 80).
+
+### Per-tier detector overrides
+
+Detector class enable/disable is a separate block. The global toggles are
+the baseline; `per_tier` overrides them for requests classified to that
+tier (`Some(true)` force-on, `Some(false)` force-off, absent = inherit):
+
+```yaml
+detectors:
+  sqli: { enabled: true }
+  per_tier:
+    critical:
+      command_injection: true
+      brute_force: true
+    low:
+      recon: false
 ```
 
 ## Implementation
 
-- `src/pipeline/tier.rs` — tier resolver + compiled pattern cache
-- `src/config/schema.rs::TierConfig` — schema
+- `crates/aegis-core/src/tier.rs` — the `Tier` enum + per-tier `default_failure_mode`
+- `crates/aegis-proxy/src/route/mod.rs` — route → tier resolution (`tier_override`, default `Tier::Low`)
+- `crates/aegis-core/src/config.rs` — `TiersConfig` / `TierThresholdConfig` (per-tier `risk_threshold` + `challenges_enabled`); `DetectorsConfig.per_tier` / `TierDetectorMask` for per-tier detector overrides
 
 ## Performance notes
 
