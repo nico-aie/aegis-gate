@@ -62,6 +62,19 @@ static LOG4SHELL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // Catches the ${${(lower|upper|env|sys|date):X}...} shape,
         // which is unique to Log4j substitution lookups.
         r"(?i)\$\{[^}]*\$\{(?:lower|upper|env|sys|date)\s*:[^}]*\}[^}]*\}",
+        // 2026-05-26 — ThinkPHP "invokefunction" RCE (CVE-2018-20062 /
+        // CVE-2019-9082 family): `?s=/index/\think\app/invokefunction&
+        // function=call_user_func_array&vars[0]=system&vars[1][]=whoami`.
+        // A known-CVE, actively-exploited PHP-framework RCE — same
+        // definitive-RCE tier (score 80) as Log4Shell. The regex/AI chain
+        // previously missed it (it only blocked once the IP accumulated to
+        // the cumulative gate); these patterns block it PER-REQUEST.
+        // `[\\/]+` tolerates the namespace's backslash/slash separators
+        // after URL-decode + normalization. ~0 FP — no legit URL routes
+        // through `think/app/invokefunction`, nor pairs `invokefunction`
+        // with `call_user_func_array`.
+        r"(?i)think[\\/]+app[\\/]+invokefunction",
+        r"(?i)invokefunction.{0,80}call_user_func_array",
     ]
     .iter()
     .map(|p| Regex::new(p).expect("log4shell regex compiles"))
@@ -342,7 +355,15 @@ mod tests {
     positive!(cmdi_blind_timeout,         "/api?x=test;timeout+5+whoami");
     positive!(cmdi_blind_sleep_then_echo, "/api?x=a;sleep+5;echo+done");
 
+    // --- 2026-05-26 — ThinkPHP "invokefunction" RCE (known-CVE, score 80) ---
+    positive!(thinkphp_rce_invokefunction,
+        "/index.php?s=/index/think/app/invokefunction&function=call_user_func_array&vars0=system");
+    positive!(thinkphp_rce_encoded_backslash,
+        "/public/index.php?s=/index/%5Cthink%5Capp/invokefunction&function=call_user_func_array");
+
     // --- Negatives: common FP traps ---
+    // A normal ThinkPHP route (no invokefunction RCE) must NOT fire.
+    negative!(thinkphp_benign_route,     "/index.php?s=/index/home/index");
     negative!(clean_root,                "/");
     negative!(clean_query_simple,        "/search?q=hello");
     negative!(clean_pipe_in_regex,       "/api/regex?p=foo|bar");        // bare pipe, no shell builtin after
