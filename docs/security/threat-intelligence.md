@@ -1,146 +1,195 @@
-# Threat Intelligence (v2, enterprise)
+# Threat Intelligence (v2)
 
-> **Status:** Implemented — `threat_intel::ThreatIntelStore`
-> ships in-memory indicator storage; `threat_intel::taxii`
-> (gated by the `aegis-security/taxii` Cargo feature) ships a
-> TAXII 2.1 client + background fetcher loop that decodes STIX
-> 2.1 patterns (IPv4 / IPv6 / domain / URL / SHA-256) into
-> indicators and ingests them on a configurable interval.
-> Lease-gating the loop is the boot site's responsibility (same
-> pattern as ACME and the gitops poll driver).
+> **Status:** Partially built, **not yet wired into the request path.**
+> The in-process indicator store (`threat_intel::ThreatIntelStore`) and
+> the TAXII 2.1 / STIX 2.1 client + fetcher loop (`threat_intel::taxii`,
+> gated by the `aegis-security/taxii` Cargo feature) exist and are
+> unit-tested, but nothing in `aegis-proxy` / `aegis-bin` constructs the
+> store, spawns the fetcher, or calls `check_ip` / `check_domain` on the
+> hot path. Treat this as a **library awaiting integration**, not a live
+> feature.
+>
+> The broader "enterprise" surface (MISP + commercial-feed clients, a
+> typed `ArcSwap` / AhoCorasick index, JA3 / JA4 / user-agent / ASN
+> indicator matching, YAML-driven action mapping, HA-leader feed
+> distribution) is **planned, not built.** Each section below is tagged
+> **[built]**, **[planned]**, or **[unwired]**.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
-> **Enterprise addendum.** Ingests STIX 2.1 / TAXII 2.1 collections,
-> commercial feeds, and plain-text IP/URL lists. Indicators feed
-> [`ip-reputation.md`](./ip-reputation.md) and the
-> [`rule-engine.md`](./rule-engine.md) `ThreatFeed` condition.
-
 ## Purpose
 
-Keep an authoritative, versioned index of known-bad IPs, URLs, user
-agents, JA4 fingerprints, TLS/JA3 hashes, ASNs, and domains, refreshed
-on a schedule, with provenance tracked all the way to the block
-decision.
+Maintain an index of known-bad IPs, CIDRs, and domains (with URL and
+SHA-256 indicators also ingested), refreshed from threat feeds, carrying
+feed provenance (`feed_id` + `confidence`) through to the eventual block
+decision. The intended consumers are [`ip-reputation.md`](./ip-reputation.md)
+and the [`rule-engine.md`](./rule-engine.md) `ThreatFeed` condition — that
+wiring is **not in place yet**.
 
 ## Indicator types
 
-| Type | Example | Consumers |
-|---|---|---|
-| `ipv4` / `ipv6` / `cidr` | `203.0.113.0/24` | IP reputation |
-| `domain` | `evil.example` | SSRF, rule engine |
-| `url` | `/wp-admin/` | rule engine |
-| `ja3` / `ja4` | `769,47-53...` | device fingerprint |
-| `user_agent` regex | `sqlmap/.*` | rule engine |
-| `asn` | `12345` | IP reputation |
-| `file_hash` | `sha256:...` | content scanning |
+The implemented enum is `IndicatorType` in `threat_intel/mod.rs`. Only IP
+and domain indicators have a matching path today; the rest are ingested
+and stored but never queried.
+
+| Type | Status | Matched by | Notes |
+|---|---|---|---|
+| `Ip` (v4 + v6) | **[built]** | `check_ip` (exact) | single `IpAddr`, string-keyed |
+| `Cidr` | **[built]** | `check_ip` (linear `IpNet::contains`) | parsed once at ingest |
+| `Domain` | **[built]** | `check_domain` (exact) | |
+| `Url` | **[unwired]** | — | ingested into the domain map; no URL lookup caller |
+| `Sha256` | **[unwired]** | — | stored in the IP bucket; never queried |
+| `JA3` | **[unwired]** | — | stored; never queried |
+| `ja4` / `user_agent` / `asn` | **[planned]** | — | not represented in the enum |
+
+> **JA4 is *not* a threat-intel indicator.** Device/TLS fingerprinting is
+> a separate subsystem (`aegis-security/src/fingerprint/`) that does not
+> read this store. For the record: the runtime JA4 is a **TLS** post-
+> handshake fingerprint ("JA4-light" — negotiated cipher + ALPN + version
+> + SNI type; canonical ClientHello JA4 is implemented but unwired because
+> rustls 0.23 doesn't expose the ClientHello). There is **no HTTP / JA4H
+> fingerprint**; the only HTTP signal in identity is the User-Agent folded
+> into the device hash (`device_fp_hash(ja4, ua)`).
 
 ## Feed providers
 
-- **TAXII 2.1** — pull STIX 2.1 bundles from a collection
-- **MISP** — pull events via REST API
-- **Commercial HTTPS** (Cloudflare, Crowdsec, Recorded Future, GreyNoise,
-  Spur, AbuseIPDB enterprise) — API-key auth
-- **Plain-text list** — line-per-entry, minimal metadata
-- **Local file** — air-gapped environments
+- **[built]** TAXII 2.1 — pull STIX 2.1 indicator objects from a
+  collection (`threat_intel::taxii`, gated by the `taxii` feature).
+- **[built]** Plain-text IP list — `parse_plaintext_feed` (one IP per
+  line, `#` comments). **IPs only**; no URL/domain support.
+- **[planned]** MISP REST client, commercial HTTPS feeds (Cloudflare,
+  Crowdsec, Recorded Future, GreyNoise, Spur, AbuseIPDB), CSV / JSON feed
+  parsers, local-file loader. `FeedFormat::{Csv, Json}` are enum variants
+  with no parser behind them.
 
-## Indicator record
+## Indicator record **[built]**
+
+The actual struct (`threat_intel/mod.rs`):
 
 ```rust
 pub struct Indicator {
-    pub value: IndicatorValue,
+    pub value: String,              // not a typed IndicatorValue
+    pub indicator_type: IndicatorType,
+    pub confidence: u8,             // 0–100
+    pub severity: Severity,         // enum: Low | Medium | High | Critical
     pub feed_id: String,
-    pub first_seen: OffsetDateTime,
-    pub last_seen: OffsetDateTime,
-    pub ttl_s: u64,
-    pub confidence: u8,     // 0-100
-    pub severity: u8,       // 0-100
-    pub action_hint: ActionHint, // block | raise_risk | watch
-    pub labels: Vec<String>,
+    pub expires_at: Instant,        // not ttl_s / first_seen / last_seen
 }
 ```
 
-## Index structure
+There is no `IndicatorValue`, `first_seen`, `last_seen`, `ttl_s`,
+`action_hint`, or `labels` field. `severity` is an enum, not a 0–100 int.
 
-Indexed by type for O(1) lookup:
+## Index structure **[built]**
 
-- `HashSet<IpAddr>` for exact IPs
-- CIDR sorted list with binary search
-- `AhoCorasick` for URL / UA literals
-- `HashMap<String, Indicator>` for hashes and JA4
+Per-type, behind individual `Mutex`es — **not** a single `ArcSwap`:
 
-All indexes live behind `ArcSwap<FeedIndex>` so updates are atomic
-and hot-path reads are wait-free.
+- `Mutex<HashMap<String, Indicator>>` for exact IPs (keyed by IP string)
+- `Mutex<Vec<(IpNet, Indicator)>>` for CIDRs — **linear scan** with
+  `IpNet::contains` (the comment notes a CIDR-tree can replace it if feeds
+  ever reach BGP-table scale)
+- `Mutex<HashMap<String, Indicator>>` for domains (and URLs)
+- `Mutex<HashMap<String, OverrideAction>>` for local allow/block overrides
+  (overrides always win)
 
-## Provenance
+There is **no `ArcSwap`, no `FeedIndex` type, and no AhoCorasick** —
+URL/domain matching is exact-string HashMap lookup, and every read takes a
+`Mutex` lock (reads are not wait-free). An `ArcSwap`-backed index with
+literal automata is **[planned]**.
 
-Every indicator carries `feed_id` + `confidence` through to the audit
-record. When a block decision cites a feed indicator, the auditor can
-trace the chain: `block → rule → indicator → feed → source`.
+## Provenance **[built, partial]**
 
-Revoking or disabling a feed removes its indicators on the next
-`ArcSwap` swap — instant global retraction.
+Each `ThreatMatch` carries the matched `Indicator` (so `feed_id` +
+`confidence` are available to the caller). There is **no dedicated
+`provenance.rs`** module and no `block → rule → indicator → feed → source`
+trail helper — provenance is just the fields on the indicator.
 
-## Confidence → action
+Retraction is `ThreatIntelStore::clear()` (drops all indicators) plus
+per-entry TTL eviction; there is no per-feed `ArcSwap`-swap retraction.
 
-```yaml
-threat_intel:
-  action_mapping:
-    confidence_gte_80_and_severity_gte_70: block
-    confidence_gte_50: raise_risk_20
-    confidence_gte_20: watch
-```
+## Confidence → action **[built]**
 
-## Feed refresh
+Hardcoded in `severity_to_action(severity, confidence)` — **not**
+YAML-configurable. The actual mapping:
 
-Runs on the cluster leader (see [`ha-clustering.md`](../operations/ha-clustering.md))
-to avoid redundant fetches. Workers consume the resulting index
-through the state backend (or hot-reload broadcast).
+| Severity | Confidence | Action |
+|---|---|---|
+| Critical | any | `Block` |
+| High | ≥ 70 | `Block` |
+| High | < 70 | `RaiseRisk(40)` |
+| Medium | ≥ 80 | `RaiseRisk(30)` |
+| Medium | < 80 | `RaiseRisk(20)` |
+| Low | any | `Monitor` |
+
+A YAML `action_mapping` block (as in earlier drafts of this doc) does not
+exist.
+
+## Feed refresh **[built for TAXII; HA distribution planned]**
+
+`taxii::spawn_fetcher(store, cfg)` spawns a background task that polls one
+collection every `cfg.poll_interval` (default 15 min), fetches
+incrementally via `added_after`, drains all pages, and ingests every
+decoded indicator. Transient errors trigger exponential backoff capped at
+the poll interval.
+
+- **Lease-gating** the loop (so only one cluster node fetches) is the boot
+  site's responsibility — the same pattern as ACME and the gitops poll
+  driver. **This wrapper does not exist yet** (no caller spawns the
+  fetcher).
+- "Workers consume the index via the state backend / hot-reload broadcast"
+  is **[planned]** — the store is a plain in-process structure with no
+  cross-node sharing.
 
 ## Freshness + staleness
 
-- Feeds that haven't updated within `stale_after` emit a warning
-- Indicators past their TTL are evicted on the next swap
-- Clock skew guarded by `max_future_drift_s`
+- **[built]** Indicators past `expires_at` are skipped on lookup and
+  evicted on the next ingest that hits the `max_indicators` cap
+  (`evict_expired`).
+- **[planned]** `stale_after` feed-staleness warnings and a
+  `max_future_drift_s` clock-skew guard are not implemented.
 
 ## Configuration
 
-```yaml
-threat_intel:
-  enabled: true
-  feeds:
-    - name: abuseipdb
-      type: http_txt
-      url: "https://lists.blocklist.de/lists/all.txt"
-      refresh_s: 3600
-      default_confidence: 60
-      default_action: raise_risk_20
+**[built]** — the TAXII feed config (`taxii::TaxiiConfig`), constructed in
+code (no unified YAML loader yet):
 
-    - name: mitre_taxii
-      type: taxii21
-      url: "https://cti-taxii.mitre.org/stix/collections/..."
-      refresh_s: 21600
-
-    - name: vendor_feed
-      type: http_json
-      url: "https://api.vendor.example/indicators"
-      auth: { type: bearer, token: "${secret:vault:kv/data/waf#ti_token}" }
-      refresh_s: 900
-
-  action_mapping: { ... }
-  stale_after_s: 86400
+```rust
+TaxiiConfig {
+    api_root: "https://taxii.example.org/api/",
+    collection_id: "<collection-uuid>",
+    auth: TaxiiAuth::Bearer { token },   // None | Basic | Bearer
+    poll_interval: Duration::from_secs(900),
+    request_timeout: Duration::from_secs(30),
+    default_confidence: 75,
+    default_severity: Severity::Medium,
+    default_ttl: Duration::from_secs(86_400),
+    feed_id: "taxii".into(),
+}
 ```
+
+**[planned]** — a unified `threat_intel:` YAML block (multiple feeds,
+`type`/`auth`/vault secret refs, `action_mapping`, `stale_after_s`) is not
+wired. The in-code `FeedConfig` struct exposes `id`, `url`, `format`,
+`default_confidence`, `default_severity`, `ttl`, `enabled` — no `auth`,
+no refresh interval, no secret references.
 
 ## Implementation
 
-- `src/threat_intel/fetcher.rs` — per-feed scheduler
-- `src/threat_intel/taxii.rs` — STIX 2.1 + TAXII 2.1 parser
-- `src/threat_intel/misp.rs` — MISP REST client
-- `src/threat_intel/index.rs` — `FeedIndex` + `ArcSwap`
-- `src/threat_intel/provenance.rs` — decision trail helper
+Files that actually exist:
+
+- `crates/aegis-security/src/threat_intel/mod.rs` — `Indicator`,
+  `IndicatorType`, `Severity`, `ThreatIntelStore`, `severity_to_action`,
+  `parse_plaintext_feed`
+- `crates/aegis-security/src/threat_intel/taxii.rs` — TAXII 2.1 client,
+  STIX 2.1 pattern parser, background fetcher loop (gated by `taxii`)
+
+Files referenced by earlier drafts that **do not exist**: `fetcher.rs`,
+`misp.rs`, `index.rs`, `provenance.rs`.
 
 ## Performance notes
 
-- Hot-path lookup is a single `ArcSwap::load()` + hashmap/binary search
-- Feed fetches are off-hot-path on the leader
-- Index rebuilds are incremental where possible
+- A lookup is a `Mutex` lock + HashMap get for exact IPs/domains, plus a
+  linear scan of the CIDR vector. Not wait-free; fine for low-thousands of
+  indicators.
+- TAXII fetches run off the hot path in the background poll task.
+- An incremental / `ArcSwap`-backed rebuild is **[planned]**, not present.
