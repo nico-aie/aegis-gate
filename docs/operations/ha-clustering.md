@@ -360,12 +360,12 @@ or B-track milestone that owns it.
 |---|---|---|---|
 | 1 | **HA load-balancer reference deploy** — drop an `aegis-lb` HAProxy container into `deploy/docker-compose.dev.yml` per pattern C; add `tests/cluster/05-single-vip-baseline.sh` + `06-mid-burst-failover.sh`. Closes the test-methodology gap surfaced 2026-04-29. | open (carry-over 6) | — |
 | 2 | **Boot-site lease wraps for GitOps + TAXII** — code drivers exist (B3-T1 + B3-T2); wire `cluster_lease::spawn_with_lease("leader:gitops" / "leader:taxii", …)` in `aegis-bin::main`. | open (B3 carry-over) | — |
-| 3 | **`node.id` config knob** — today it's hostname + PID; long-running clusters want a stable identity that survives restart. Surfaces in `/api/cluster.our_node`, audit logs, lease holder strings. | open | — |
+| 3 | ~~**`node.id` config knob**~~ — ✅ **done** (HA-T3, verified 2026-05-27). `aegis-bin::lease_select::derive_node_id` resolves `cfg.node.id` → `AEGIS_NODE_ID` → `${HOSTNAME}-${PID}-${NANOS}`. Set `node.id: "${POD_NAME}"` for a restart-stable identity. | closed | — |
 | 4 | **Redis Sentinel / replica failover** — current single-Redis primary is a SPOF. Document the Sentinel topology + verify the WAF reconnects on primary swap. | open | — |
 | 5 | **`redis_cluster` backend** — slot-hashed shards for fleets > ~50 k req/s where one Redis primary becomes the bottleneck. Pulls the existing Lua scripts onto a cluster-aware connection pool. | open | — |
 | 6 | **`raft` backend** — embed `openraft` so the WAF cluster doesn't depend on an external state store at all. Targets sites where running Redis isn't acceptable (regulated air-gapped envs). | open | — |
 | 7 | **`foca_swim` gossip layer** — for soft state (device fingerprints, bot confidence). Out-of-band of the security path. | open | — |
-| 8 | **Per-member health surfacing on `/api/cluster.peers`** — today the field is always `[]`. Needs a membership registry; could piggyback on the gossip layer in (7) or be a separate small lease-watch loop. | open | — |
+| 8 | **Per-member health surfacing on `/api/cluster.peers`** — the membership registry **is built** (HA-T4, verified 2026-05-27): `accept.rs` runs a `members:<node_id>` heartbeat lease + a 5s poller (`lease_store.list_keys_with_prefix("members:")` → `LeaderView::set_members`) that populates `peers` with `{id, version, last_heartbeat}`. **Remaining:** enrich `ClusterPeer.addr` + `leases` (empty today) and per-member health. The earlier "always `[]`" claim is stale. | partial | — |
 
 ## Implementation map
 

@@ -335,18 +335,15 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
 
 - **`node.id` knob** — ✅ already implemented (HA-T3, see §5).
 
-- **`/api/cluster.peers` roster** — the plumbing exists: `LeaderView` is
-  constructed at `accept.rs:211`, has `set_members(Vec<ClusterPeer>)` +
-  `members()`, and `render_cluster` already serialises `peers:
-  view.members()`. What's missing is a **member registry + populator**:
-  `ClusterPeer { id, addr, version, last_heartbeat, leases }` needs addr +
-  WAF version + held leases, which the config-plane ACK keys
-  (`config:waf:applied:<node>`) do NOT carry — so do NOT fake it from
-  `applied_map`. Instead: each node writes `members:<node_id>` (JSON
-  ClusterPeer) with a TTL via the lease store on a heartbeat; a poll task
-  calls `lease_store.list_keys_with_prefix("members:")`, parses, and
-  `leader_view.set_members(...)`. (The HA-T4 comment in `tracking.rs`
-  already specifies this shape.)
+- **`/api/cluster.peers` roster** — ✅ **already implemented** (HA-T4,
+  verified 2026-05-27). `accept.rs` runs a `members:<node_id>` heartbeat
+  lease (15s TTL) + a 5s poller that calls
+  `lease_store.list_keys_with_prefix("members:")` (RedisLease + InProcess
+  both implement it) and `leader_view.set_members(...)`; `render_cluster`
+  serialises `peers`. `ClusterPeer.addr`/`leases` are empty today (id +
+  WAF version + last_heartbeat are populated) — enriching addr/leases is
+  the only follow-up. The "`peers` always `[]`" claim in
+  `ha-clustering.md` Roadmap #8 is **stale**.
 
 - **Redis Sentinel/managed + reconnect test** — `tests/cluster/07-redis-failover.sh`;
   verify `state/redis.rs` (deadpool lazy reconnect) survives a primary swap.
