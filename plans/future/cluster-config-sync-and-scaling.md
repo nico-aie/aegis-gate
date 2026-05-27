@@ -339,7 +339,13 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
     - `handle_tier_put` → `cfg.tiers` is only `{risk_threshold,
       challenges_enabled}`; `TierStore` also has pipeline / block_threshold
       / cumulative_challenge_at / cumulative_block_at. Extend
-      `TierThresholdConfig`.
+      `TierThresholdConfig`. **BLOCKED on a boot-path refactor** (traced
+      2026-05-27): the watcher's `ApplyTargets` is built in `run.rs` BEFORE
+      `DashboardServices` exists, so the apply-side can only re-derive
+      **run.rs-level** handles (this is why AI [`AtomicBool` at run.rs:428]
+      and response-filter [the `Pipeline` `run()` param] folded cleanly).
+      `TierStore` is created INSIDE `DashboardServices::spawn`
+      (`dashboard_services.rs:409`) — no handle reaches the watcher.
     - ✅ `handle_response_filter_put` — **DONE** (`a5b818d`). Added
       `cfg.response_filter` to `WafConfig` (3 bools, default true →
       behaviour-preserving), boot-seed + `apply_cfg_change_to_response_filter`
@@ -350,6 +356,22 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
     - `handle_upstreams_config_put` (pool registry) + `handle_rules_*`
       (rules engine) — heavier; `cfg.upstreams` / rules largely exist but
       the re-derive logic is big.
+  - **Unblocking the services-level folds (tier / rules / blacklist) — do
+    this ONCE to enable all of them.** The blocker is that the config
+    watcher's `ApplyTargets` is assembled in `run.rs` before
+    `DashboardServices` is built, so it can only re-derive run.rs-level
+    handles. Two ways out:
+    - **(1) Lift the stores to `run.rs`** — create + seed `TierStore`
+      (etc.) in `run.rs`, pass the `Arc` into both the watcher and
+      `DashboardServices::spawn_with_mask_and_leader` (new param; the
+      constructor currently makes its own at `dashboard_services.rs:409`).
+    - **(2) Spawn the watcher after services** — move the
+      `redis_source::spawn_watcher` call into the post-`DashboardServices`
+      boot site and thread the run.rs-level targets (mask / rate-limiter /
+      tls / ai) into it. Then `ApplyTargets` can include `services.tiers`
+      etc. directly.
+    Either is a boot-path refactor; (1) is more localized. Until done,
+    only run.rs-level stores (AI, response-filter) are foldable.
   - **Eventual semantics** (option A): folded toggles now apply on the
     next watcher poll (~3s) on ALL nodes incl. local — the store is the
     single source of truth. The file/etcd watchers don't yet call the new
