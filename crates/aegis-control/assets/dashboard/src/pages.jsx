@@ -8821,9 +8821,67 @@ function LatencyChip({ label, us }) {
   );
 }
 
+// 2026-05-27 — cluster config-plane status. Shows the active shared
+// config version + each node's applied version, flagging drift (a node
+// stuck behind the active version). Backed by GET /api/config; renders an
+// honest empty state on single-node (in-memory) or before any activation.
+function ConfigVersionCard({ config }) {
+  const data = config?.data;
+  const active = (data && typeof data.version === 'number') ? data.version : 0;
+  const applied = (data && Array.isArray(data.applied)) ? data.applied : [];
+  const hasBackend = data ? data.backend !== false : true;
+  return (
+    <div className="card">
+      <div className="card-title">Layer 2 · Shared config version</div>
+      {!hasBackend ? (
+        <div className="muted">
+          Single-node (in-memory) — config is process-local; no shared
+          version. Run with a Redis state backend for fleet-wide config.
+        </div>
+      ) : (active === 0 && applied.length === 0) ? (
+        <div className="muted">
+          No config version activated yet. A <code>PUT /api/config</code>
+          publishes version 1; every node then converges on it.
+        </div>
+      ) : (
+        <>
+          <div style={{ margin: '4px 0 12px' }}>
+            Active version: <strong>v{active}</strong>
+            <span className="muted"> · {applied.length} node(s) reporting</span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', opacity: 0.7 }}>
+                <th>Node</th><th>Applied</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {applied.length === 0 ? (
+                <tr><td colSpan="3" className="muted">No nodes have reported yet.</td></tr>
+              ) : applied.map((n) => {
+                const drift = n.version !== active;
+                return (
+                  <tr key={n.node}>
+                    <td><code>{n.node}</code></td>
+                    <td>v{n.version}</td>
+                    <td style={{ color: drift ? '#d9822b' : '#3aa757', fontWeight: 600 }}>
+                      {drift ? `behind (active v${active})` : 'in sync'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
+
 function PageScaling() {
   const runtime = window.useRuntimeApi();
   const cluster = window.useClusterApi();
+  const config = window.useConfigApi();
   const state = window.useStateApi();
   const loadmode = window.useLoadModeApi ? window.useLoadModeApi() : { data: null };
   const [draining, setDraining] = useStateP(false);
@@ -8862,6 +8920,7 @@ function PageScaling() {
       <LoadModeCard loadmode={loadmode} />
       <ScalingL1Card runtime={runtime} />
       <ScalingL2Card cluster={cluster} onDrain={onDrain} draining={draining} />
+      <ConfigVersionCard config={config} />
       <ScalingL3Card state={state} />
     </>
   );
