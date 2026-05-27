@@ -316,22 +316,28 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
 
 **Implementation notes (traced 2026-05-27 — read before starting):**
 
-- **Fold toggles** — each handler (`handle_detectors_put`,
-  `handle_ai_enabled_put`, `handle_tier_put`, `handle_upstreams_config_put`,
-  `handle_rules_*`, `handle_response_filter_put` in `admin_mutate.rs`)
-  currently swaps an in-process store directly. To make them propagate:
-  (1) build the *patched* `WafConfig` (current doc's blob, deserialized +
-  the field changed), (2) activate it via `ConfigStore::activate` (reuse
-  the `apply_async` pattern from `handle_config_put`), (3) **extend the
-  apply side** — `config_source/reload.rs` + the `redis_source`/etcd/file
-  watchers only re-derive mask/routes/rate-limit/TLS today; they do **not**
-  re-derive the AI `runtime_enabled` atomic, the `TierStore`, the rules
-  engine, or the response-filter config. Add `apply_cfg_change_to_*`
-  helpers for those and call them in all three watchers (and the boot
-  path) so a config swap reconstructs every in-process store. This is the
-  big item — the apply-side re-derive is the real work, not the write side.
-  - [ ] Retire detector-mask local snapshot as primary durability once the
-    detector mask flows through the doc.
+- **Fold toggles** — ✅ **AI toggle done** (`32c8325` apply-side, `3d2ca70`
+  write-side) — this establishes the **reusable pattern** for the rest:
+  - *Write side* (handler): patch the field on the shared doc's YAML blob
+    at the **`serde_yaml::Value`** level (`WafConfig` isn't `Serialize`),
+    seed from the boot config file when no doc exists, validate via
+    `load_config_str`, activate via `services.mutate.apply_async` →
+    `ConfigStore::activate` (200/409). See `handle_ai_enabled_put` +
+    `patch_ai_enabled` in `admin_mutate.rs`.
+  - *Apply side* (the real work): add `reload::apply_cfg_change_to_<x>`
+    that re-derives the in-process store from `new_cfg`, add it to
+    `redis_source::ApplyTargets`, call it in `apply_and_swap`, and pass the
+    handle at the `run.rs` spawn site. See `apply_cfg_change_to_ai`.
+  - **Remaining toggles** (mechanical, same pattern): `handle_tier_put`
+    (TierStore), `handle_response_filter_put` (response-filter cfg),
+    `handle_detectors_put` (full detector mask — then retire the local
+    snapshot), `handle_upstreams_config_put` (pool registry — heavier),
+    `handle_rules_*` (rules engine — heavier).
+  - **Eventual semantics** (option A): folded toggles now apply on the
+    next watcher poll (~3s) on ALL nodes incl. local — the store is the
+    single source of truth. The file/etcd watchers don't yet call the new
+    `apply_cfg_change_to_*` helpers (only `redis_source` does); wire them
+    there too if file/etcd-driven reloads should re-derive these stores.
 
 - **`node.id` knob** — ✅ already implemented (HA-T3, see §5).
 
