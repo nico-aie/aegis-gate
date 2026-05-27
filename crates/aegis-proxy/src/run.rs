@@ -1104,6 +1104,38 @@ pub async fn run(
         }
     }
 
+    // 2026-05-27 — shared-store config watcher (multi-node config
+    // plane). INDEPENDENT of the boot config source above: it watches
+    // the versioned `config:waf:doc` in the runtime `StateBackend` so a
+    // console edit on any node converges on every node and survives
+    // leader failover (the config lives in the store, not the leader's
+    // process). On `in_memory` single-node the doc is never written, so
+    // the watcher is a harmless no-op — we always spawn it. ACKs the
+    // applied version per node (`config:waf:applied:<node>`) for the
+    // dashboard drift view; NACKs (keeps last-good) on a bad version.
+    {
+        let node_id = lease_store.self_id().to_string();
+        let store = crate::config_source::config_store::ConfigStore::new(state.clone());
+        let targets = crate::config_source::redis_source::ApplyTargets {
+            detector_mask: Some(mask.clone()),
+            proxy_ctx: Some(upstream_ctx.clone()),
+            ip_rate_limiter: Some(ip_rate_limiter.clone()),
+            tls_resolver: tls_resolver.clone(),
+        };
+        tracing::info!(
+            node_id = %node_id,
+            "config reload watcher: shared-store (config:waf:doc)",
+        );
+        std::mem::drop(crate::config_source::redis_source::spawn_watcher(
+            store,
+            node_id,
+            cfg_swap.clone(),
+            bus.clone(),
+            targets,
+            crate::config_source::redis_source::DEFAULT_POLL,
+        ));
+    }
+
     // MTLS-T3 — create the per-identity sliding-window tracker
     // here, ahead of both accept loops, so the data-plane
     // (`accept_loop`) can record requests against it AND the
