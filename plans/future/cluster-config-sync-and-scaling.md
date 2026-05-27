@@ -5,8 +5,9 @@
 > watcher (`e9691d1`), boot-site watcher spawn (`e4bc458`), and
 > `PUT /api/config` + rollback via the new async `AuditedMutate::apply_async`
 > (`912b16e`). Edit → shared store → every node converges, survives leader
-> failover. **Next:** `GET /api/config` drift view + console badge (the
-> `admin_get.rs` sync `match` needs an async arm), then Phases B–D. Target:
+> failover. **Phase A complete** — `GET /api/config` drift view (`312ab8d`)
+> + Scaling-page `ConfigVersionCard` (`30d22f9`) landed. **Next:** Phases
+> B–D. Target:
 > each team runs N WAF nodes behind a VIP; security state AND configuration
 > are shared and survive leader failover; config is editable from the
 > console and converges on every node.

@@ -228,12 +228,19 @@ Immediate items:
    `services.state_backend`. **Config plane is now wired end-to-end:
    edit → store → every node converges.**
 2. ~~**Boot wiring**~~ — **DONE (`e4bc458`)**.
-3. **`GET /api/config` drift view + console badge** — remaining. The GET
-   router (`admin_get.rs`) is a **synchronous `match path { … }`**; the
-   drift view needs async store reads (`current_version` + `applied_map`).
-   Resolve the sync/async boundary (make the relevant arm async, or route
-   `GET /api/config` through the async `handle_admin_request` path), then
-   add the console applied-version badge + per-node drift table.
+3. ~~**`GET /api/config` drift view + console badge**~~ — **DONE**
+   (`312ab8d` backend, `30d22f9` console). `GET /api/config` intercepted on
+   the async `handle_admin_request` path (the sync GET router can't await);
+   Scaling-page `ConfigVersionCard` shows active version + per-node drift.
+   Bundle rebuilt. (Visual render not browser-verified in the build env.)
+
+**Phase A is COMPLETE** — config edit → shared store → every node
+converges, survives leader failover, editable + observable from the
+console. Next: **Phase B** (fold detectors/tiers/upstreams/rules/AI/
+response-filter PUTs through the config-plane write path so those
+console toggles propagate too; HA hardening — verify `node.id` knob,
+`/api/cluster.peers` roster, Redis-failover test), then **Phase C**
+(metrics aggregation) + **Phase D** (HAProxy LB ref deploy).
 4. **Phase B** — route detectors/tiers/upstreams/rules/AI/response-filter
    PUTs through the config plane; HA hardening (stable `node.id`, peers
    roster, Redis failover test).
