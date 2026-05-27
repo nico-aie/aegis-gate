@@ -461,7 +461,47 @@ pub(crate) async fn handle_admin_request(
         }
     }
 
+    // 2026-05-27 — cluster config-plane read. Intercepted here on the
+    // async path (the GET `admin_router` is synchronous and the store
+    // reads are async): current activated version + per-node applied
+    // versions for the console drift view.
+    if method == hyper::Method::GET && path == "/api/config" {
+        return handle_config_get(services).await;
+    }
+
     admin_router(req, cfg, readiness, startup, metrics, services)
+}
+
+/// 2026-05-27 — render the cluster config-plane status: the current
+/// activated version + each live node's applied version (drift view).
+/// Reads through a `ConfigStore` built from the runtime state backend;
+/// empty/zero when no config has been activated or no backend is wired.
+async fn handle_config_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let Some(backend) = services.state_backend.as_ref() else {
+        return json_body_response(
+            200,
+            serde_json::json!({ "version": 0, "applied": [], "backend": false }).to_string(),
+            "private, max-age=2",
+        );
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    let version = store.current_version().await.unwrap_or(0);
+    let applied: Vec<serde_json::Value> = store
+        .applied_map()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(node, v)| serde_json::json!({ "node": node, "version": v }))
+        .collect();
+    let body = serde_json::json!({
+        "version": version,
+        "applied": applied,
+        "backend": true,
+    })
+    .to_string();
+    json_body_response(200, body, "private, max-age=2")
 }
 
 /// HACK-T4 rollback — body for
