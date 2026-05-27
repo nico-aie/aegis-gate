@@ -336,16 +336,15 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
     each needs a **`WafConfig` schema extension** in aegis-core (+ its
     validation + boot seeding) *before* it can be folded. This is a design
     decision (do we want these runtime stores to live in `WafConfig`?):
-    - `handle_tier_put` → `cfg.tiers` is only `{risk_threshold,
-      challenges_enabled}`; `TierStore` also has pipeline / block_threshold
-      / cumulative_challenge_at / cumulative_block_at. Extend
-      `TierThresholdConfig`. **BLOCKED on a boot-path refactor** (traced
-      2026-05-27): the watcher's `ApplyTargets` is built in `run.rs` BEFORE
-      `DashboardServices` exists, so the apply-side can only re-derive
-      **run.rs-level** handles (this is why AI [`AtomicBool` at run.rs:428]
-      and response-filter [the `Pipeline` `run()` param] folded cleanly).
-      `TierStore` is created INSIDE `DashboardServices::spawn`
-      (`dashboard_services.rs:409`) — no handle reaches the watcher.
+    - ✅ `handle_tier_put` — **DONE** (`08a8e65` plumbing + `eacaa4b` fold).
+      Required (a) the boot-path refactor — `TierStore` now created in
+      `run.rs` and threaded into both the watcher's `ApplyTargets` AND
+      `DashboardServices::spawn_with_mask_and_leader` (test-facing
+      `spawn`/`spawn_with_mask` pass a fresh store, so those call sites are
+      untouched) — and (b) extending `TierThresholdConfig` with
+      block_threshold / cumulative_* / pipeline + `TierStore::
+      apply_optional_overrides`. The plumbing is the reusable template for
+      the remaining services-level folds (rules / blacklist).
     - ✅ `handle_response_filter_put` — **DONE** (`a5b818d`). Added
       `cfg.response_filter` to `WafConfig` (3 bools, default true →
       behaviour-preserving), boot-seed + `apply_cfg_change_to_response_filter`

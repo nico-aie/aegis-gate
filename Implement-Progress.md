@@ -236,15 +236,15 @@ Immediate items:
 
 **Phase A is COMPLETE** — config edit → shared store → every node
 converges, survives leader failover, editable + observable from the
-console. Next: **Phase B** — the remaining work is mostly the
-**fold-toggles refactor** (route detectors/tiers/upstreams/rules/AI/
-response-filter PUTs through the config-plane write path; the real work
-is the *apply-side re-derive* — `reload.rs` only rebuilds
-mask/routes/rate-limit/TLS today, not the AI atomic / TierStore / rules /
-response-filter). HA hardening is **mostly already done** (verified
-2026-05-27): `node.id` knob (HA-T3) ✅, `/api/cluster.peers` membership
-registry (HA-T4) ✅ — only Redis-Sentinel failover (test) + ClusterPeer
-addr/leases enrichment remain. Then **Phase C** (metrics aggregation) +
+console. **Phase B fold-toggles in progress** — folded so far (config edit
+→ shared doc → every node re-derives on next watcher poll, eventual):
+**AI** (`3d2ca70`), **response_filter** (`a5b818d`, first WafConfig schema
+ext), **tier** (`08a8e65` boot-path refactor threading TierStore run.rs→
+watcher+services, `eacaa4b` full fold). HA hardening **mostly already
+done** (node.id HA-T3 ✅, /api/cluster.peers HA-T4 ✅). **Remaining folds:**
+`detectors` (hardest — operator-override model vs cfg.detectors),
+`upstreams` + `rules` (heavy re-derive); each reuses the TierStore
+run.rs→services plumbing template. Then **Phase C** (metrics aggregation) +
 **Phase D** (HAProxy LB ref deploy).
 4. **Phase B** — route detectors/tiers/upstreams/rules/AI/response-filter
    PUTs through the config plane; HA hardening (stable `node.id`, peers
