@@ -37,9 +37,16 @@
   for 2 min with **legit p99 1.03 ms, legit median 0.13 ms, legit OK 100 %,
   detection 80 %**. v2.5 changes are header-only on the hot path; no
   re-measurement required.
-- **Active track:** none open. Last branch merged:
-  `fix/v2.5-contract-compliance-and-cleanup` →
-  develop @ `fd587db` (see Last Completed).
+- **Active track:** **Cluster config sync & scaling** (multi-node
+  next-round). Plan:
+  [`plans/future/cluster-config-sync-and-scaling.md`](./plans/future/cluster-config-sync-and-scaling.md);
+  design doc
+  [`docs/operations/cluster-config-distribution.md`](./docs/operations/cluster-config-distribution.md).
+  **Done on `develop`:** Phase 0 — `StateBackend` generic KV primitives
+  (`incrby`/`expire`/`scan_prefix`/`cas_set`, `dcdd96f`); Phase A core —
+  `ConfigStore` (versioned `config:waf:doc` + CAS activation + immutable
+  snapshots + rollback + per-node ACK) and the `redis_source` watcher
+  (`e9691d1`). **Next:** see Next Task.
 - **v2.5 interop contract:** **shipped** —
   `challenge_token`/`submit_url`/`submit_method` wire shape,
   public `/challenge/verify` on data plane, loopback-gated
@@ -207,9 +214,29 @@ For full chronological detail see `git log` and the
 
 ## Next Task
 
-No track is currently active. The hackathon v2.5 contract surface
-is conformant and all critical bundles are closed. When picking
-up the next slice, prefer items from `plans/future/`:
+**Active: Cluster config sync & scaling** — finish Phase A, then
+Phases B–D per
+[`plans/future/cluster-config-sync-and-scaling.md`](./plans/future/cluster-config-sync-and-scaling.md).
+Immediate items:
+
+1. **`PUT /api/config` write path** — dry-run `WafConfig::validate` →
+   `ConfigStore::activate(expected_version, blob, actor, summary)` →
+   `Applied{version}` (200 + audit) or `Conflict{current}` (409). Add a
+   rollback endpoint over `ConfigStore::rollback`.
+2. **Boot wiring** — build a `ConfigStore` from the runtime
+   `StateBackend` and `redis_source::spawn_watcher(...)` alongside the
+   file/etcd watchers in `aegis-proxy/src/run.rs` (mirror the etcd
+   watcher's `ApplyTargets`). Gate on `state.backend != in_memory` or
+   always-on (in-memory single-node is harmless).
+3. **Console** — applied-version badge + per-node drift table from
+   `ConfigStore::applied_map`.
+4. **Phase B** — route detectors/tiers/upstreams/rules/AI/response-filter
+   PUTs through the config plane; HA hardening (stable `node.id`, peers
+   roster, Redis failover test).
+5. **Phase C** — metrics aggregation (`metrics/window_flush.rs` for P4/P5).
+6. **Phase D** — HAProxy LB reference deploy + single-VIP benchmark.
+
+Deferred backlog (pick up after the above) from `plans/future/`:
 
 - **Smart caching** —
   [`plans/future/smart-caching.md`](./plans/future/smart-caching.md).
