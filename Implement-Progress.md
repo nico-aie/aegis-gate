@@ -214,43 +214,68 @@ For full chronological detail see `git log` and the
 
 ## Next Task
 
-**Active: Cluster config sync & scaling** — finish Phase A, then
-Phases B–D per
+**Active track: Cluster config sync & scaling** — full plan +
+per-fold technical notes in
 [`plans/future/cluster-config-sync-and-scaling.md`](./plans/future/cluster-config-sync-and-scaling.md).
-Immediate items:
 
-1. ~~**`PUT /api/config` write path**~~ — **DONE (`912b16e`)**: chose
-   option (a) — added async `AuditedMutate::apply_async` (CSRF + audit +
-   async mutator, std Mutex never held across await). `PUT /api/config`
-   validates the blob → `ConfigStore::activate` → 200 `{version}` / 409
-   `{current}`; `POST /api/config/rollback` → `ConfigStore::rollback`.
-   Routed in `admin_dispatch.rs`; builds a `ConfigStore` from
-   `services.state_backend`. **Config plane is now wired end-to-end:
-   edit → store → every node converges.**
-2. ~~**Boot wiring**~~ — **DONE (`e4bc458`)**.
-3. ~~**`GET /api/config` drift view + console badge**~~ — **DONE**
-   (`312ab8d` backend, `30d22f9` console). `GET /api/config` intercepted on
-   the async `handle_admin_request` path (the sync GET router can't await);
-   Scaling-page `ConfigVersionCard` shows active version + per-node drift.
-   Bundle rebuilt. (Visual render not browser-verified in the build env.)
+**DONE (all on `develop`, green):**
+- **Phase 0** — `StateBackend` KV primitives (`incrby`/`expire`/`scan_prefix`/`cas_set`) `dcdd96f`.
+- **Phase A** — full config plane: `ConfigStore` (versioned `config:waf:doc`,
+  CAS activation, immutable snapshots, rollback, per-node ACK) `e9691d1`;
+  `redis_source` watcher (apply via `reload::` helpers, ACK/NACK/fail-static)
+  + boot wiring `e4bc458`; async `AuditedMutate::apply_async` + `PUT`/`POST
+  /api/config`(+`/rollback`) `912b16e`; `GET /api/config` drift `312ab8d`;
+  Scaling-page `ConfigVersionCard` `30d22f9`.
+- **Phase B (partial)** — folded **AI** `3d2ca70`, **response_filter**
+  `a5b818d` (1st `WafConfig` schema ext), **tier** `08a8e65`+`eacaa4b`
+  (boot-path refactor threading `TierStore` run.rs→watcher+services + schema
+  ext). HA hardening already built (`node.id` HA-T3, `/api/cluster.peers`
+  HA-T4).
 
-**Phase A is COMPLETE** — config edit → shared store → every node
-converges, survives leader failover, editable + observable from the
-console. **Phase B fold-toggles in progress** — folded so far (config edit
-→ shared doc → every node re-derives on next watcher poll, eventual):
-**AI** (`3d2ca70`), **response_filter** (`a5b818d`, first WafConfig schema
-ext), **tier** (`08a8e65` boot-path refactor threading TierStore run.rs→
-watcher+services, `eacaa4b` full fold). HA hardening **mostly already
-done** (node.id HA-T3 ✅, /api/cluster.peers HA-T4 ✅). **Remaining folds:**
-`detectors` (hardest — operator-override model vs cfg.detectors),
-`upstreams` + `rules` (heavy re-derive); each reuses the TierStore
-run.rs→services plumbing template. Then **Phase C** (metrics aggregation) +
-**Phase D** (HAProxy LB ref deploy).
-4. **Phase B** — route detectors/tiers/upstreams/rules/AI/response-filter
-   PUTs through the config plane; HA hardening (stable `node.id`, peers
-   roster, Redis failover test).
-5. **Phase C** — metrics aggregation (`metrics/window_flush.rs` for P4/P5).
-6. **Phase D** — HAProxy LB reference deploy + single-VIP benchmark.
+**REMAINING (resume order):**
+1. **Fold `detectors`** — *apply-side already wired* (`apply_cfg_change_to_mask`
+   re-derives the mask from `cfg.detectors` in the watcher). Only fold the
+   dedicated `PUT /api/detectors` handler: `cfg.detectors` is the SAME shape
+   as the PUT body (per-class `DetectorToggle{enabled}` + `per_tier`
+   `TierDetectorMask`), so map the PUT body → patch `cfg.detectors.<class>.enabled`
+   + `cfg.detectors.per_tier.<tier>.<class>` on the doc + activate via
+   `apply_async`. Mechanical (≈12 classes). Reuse the handler-fold template
+   below. *Smallest remaining — do first.*
+2. **`rules`** — needs a NEW feature first: `cfg.rules` is `{paths, max_rule_count,
+   strict_compile}` (rule *files*), NOT the rule list. Add `cfg.rules.inline:
+   Vec<RuleDef>`, seed the `RuleStore` from it (reuse the TierStore
+   run.rs→services plumbing), add `apply_cfg_change_to_rules`, then fold the
+   CRUD handlers (post/put/delete/toggle each patch the inline list + activate).
+3. **`upstreams`** — needs a NEW feature first: pools are NOT hot-reloadable
+   today (`run.rs` warns "pools are NOT rebuilt"). Implement live pool rebuild
+   (DNS re-resolve + health re-arm) on `cfg.upstreams` change, add
+   `apply_cfg_change_to_upstreams`, then fold `PUT /api/upstreams/config`.
+4. **Phase C — metrics aggregation** — `crates/aegis-control/src/metrics/window_flush.rs`
+   (local ring → `incrby` flush, `expire` TTL=2×window) for `RouteActivityWindow`
+   (P5) + `AccessListHits` (P4); flush tasks at boot; endpoint reads switch to
+   `scan_prefix`+sum when `backend != in_memory`, else local rings;
+   `flush_failed` audit. Design: [`plans/future/multi-node-metrics-aggregation.md`](./plans/future/multi-node-metrics-aggregation.md).
+5. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
+   + Helm toggle + single-VIP RPS benchmark.
+
+**Reusable fold patterns (from AI / response_filter / tier):**
+- *Write side*: handler patches the field on the shared doc's YAML blob via
+  `serde_yaml::Value` (`WafConfig` isn't `Serialize`), seeds from
+  `services.config_yaml_path` when no doc exists, validates via
+  `aegis_core::load_config_str`, activates via `services.mutate.apply_async`
+  → 200 `{version}` / 409 `{current}`. See `handle_ai_enabled_put` /
+  `handle_response_filter_put` / `handle_tier_put` + the `patch_*` helpers in
+  `admin_mutate.rs`.
+- *Apply side*: add `reload::apply_cfg_change_to_<x>` (re-derives the
+  in-process store from `new_cfg`), add a field to
+  `redis_source::ApplyTargets`, call it in `apply_and_swap`, pass the handle
+  at the `run.rs` watcher-spawn site.
+- *Services-level stores* (created in `DashboardServices::spawn`) need the
+  **TierStore plumbing template**: create in `run.rs`, thread the `Arc` into
+  `spawn_with_mask_and_leader` (new param; `spawn`/`spawn_with_mask` pass a
+  fresh default so test call sites stay untouched) AND `admin_accept_loop`.
+- *If a new schema field carries a `Vec`* (like tier `pipeline`), drop `Copy`
+  from the config struct's derive.
 
 Deferred backlog (pick up after the above) from `plans/future/`:
 
