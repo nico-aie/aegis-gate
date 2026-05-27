@@ -167,99 +167,147 @@ fn redact_receivers_for_audit(
 // CC-T1.1.b — upstream pool writes (PUT whole-map / PUT pool / DELETE pool)
 // ---------------------------------------------------------------------------
 
-/// Build the audit-chain projection of the current upstream config.
-/// Pool configs hold no secrets so the projection is the same shape
-/// the GET handler returns — keeps the chain entry diffable against
-/// the dashboard's view of state.
-fn upstreams_audit_view(
-    cfg_snapshot: &aegis_core::config::WafConfig,
-    pools: &std::collections::HashMap<String, aegis_core::config::PoolConfig>,
-) -> serde_json::Value {
-    // Build a synthetic WafConfig with just `upstreams` swapped so
-    // we can reuse `UpstreamsConfigView::from_config`. The view
-    // pre-computes `referenced_by_routes` from the live route list,
-    // which we want for both before/after.
-    let mut cfg = cfg_snapshot.clone();
-    cfg.upstreams = pools.clone();
-    let view =
-        aegis_control::api::upstreams_config::UpstreamsConfigView::from_config(&cfg);
-    serde_json::to_value(&view).unwrap_or(serde_json::Value::Null)
+/// 2026-05-27 (Phase B upstreams fold) — replace the whole
+/// `cfg.upstreams` mapping on a YAML config doc with `pools_json` (the
+/// raw request JSON; `PoolConfig` isn't `Serialize` so we route the
+/// operator's authored value straight through JSON → YAML, preserving
+/// hostnames). The apply-side resolves them per-node at activation.
+fn patch_upstreams_replace(
+    base: &str,
+    pools_json: &serde_json::Value,
+) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let pools_yaml =
+        serde_yaml::to_value(pools_json).map_err(|e| format!("pools not serialisable: {e}"))?;
+    map.insert(serde_yaml::Value::String("upstreams".into()), pools_yaml);
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Upsert one pool into `cfg.upstreams.<id>` on a YAML config doc.
+fn patch_upstream_pool_set(
+    base: &str,
+    id: &str,
+    pool_json: &serde_json::Value,
+) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let upstreams = yaml_child_map(map, "upstreams")?;
+    let pool_yaml =
+        serde_yaml::to_value(pool_json).map_err(|e| format!("pool not serialisable: {e}"))?;
+    upstreams.insert(serde_yaml::Value::String(id.into()), pool_yaml);
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Remove `cfg.upstreams.<id>` from a YAML config doc (idempotent).
+fn patch_upstream_pool_remove(base: &str, id: &str) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let upstreams = yaml_child_map(map, "upstreams")?;
+    upstreams.remove(id);
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Local resolvability gate for the folded upstream handlers: resolve
+/// `pools` against this node's resolver (Strict) purely to surface
+/// typos as a 400 before activating. The result is discarded — the doc
+/// stores operator-authored hostnames and every node re-resolves at
+/// apply time (`reload::apply_cfg_change_to_upstreams`).
+async fn validate_upstream_resolvable(
+    pools: std::collections::HashMap<String, aegis_core::config::PoolConfig>,
+) -> Result<(), aegis_control::api::mutation::MutationError> {
+    crate::upstream::dns_resolve::expand_hostname_members(pools)
+        .await
+        .map(|_| ())
+        .map_err(|e| aegis_control::api::mutation::MutationError::Validation(e.to_string()))
 }
 
 pub(crate) async fn handle_upstreams_config_put(
     req: hyper::Request<hyper::body::Incoming>,
-    cfg: &aegis_core::config::WafConfig,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
     use http_body_util::BodyExt;
 
     let pre = mutation_preamble(&req, "upstreams-config-put");
 
-    let Some(writer) = services.upstream_writer.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "upstream writer not wired".into(),
-            ),
-        );
-    };
-
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
             return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
             )
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
-
-    #[derive(serde::Deserialize)]
-    struct Body {
-        pools: std::collections::HashMap<String, aegis_core::config::PoolConfig>,
-    }
-    let parsed: Body = match serde_json::from_str(if body_str.is_empty() {
-        "{\"pools\":{}}"
-    } else {
-        body_str
-    }) {
-        Ok(b) => b,
-        Err(e) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-            )
-        }
-    };
-
-    // 2026-05-11 (PR-DNS-1) — resolve any hostname members before
-    // they reach the live `PoolRegistry`. The before/after audit
-    // view reflects the operator's authored shape (which may carry
-    // hostnames); the registry-bound config carries the resolved
-    // IP literals so the LB strategies have something to distribute
-    // across.
-    let resolved_pools = match crate::upstream::dns_resolve::expand_hostname_members(
-        parsed.pools.clone(),
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-            );
-        }
-    };
-
-    let before = upstreams_audit_view(cfg, &cfg.upstreams);
-    let after = upstreams_audit_view(cfg, &parsed.pools);
-    let count = parsed.pools.len();
+    let body_json: serde_json::Value =
+        match serde_json::from_str(if body_str.is_empty() { "{\"pools\":{}}" } else { body_str }) {
+            Ok(v) => v,
+            Err(e) => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+                )
+            }
+        };
+    let pools_json = body_json
+        .get("pools")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    // Validate the authored shape deserialises into PoolConfigs.
+    let pools_typed: std::collections::HashMap<String, aegis_core::config::PoolConfig> =
+        match serde_json::from_value(pools_json.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+                )
+            }
+        };
+    let count = pools_typed.len();
     let names: Vec<String> = {
-        let mut v: Vec<String> = parsed.pools.keys().cloned().collect();
+        let mut v: Vec<String> = pools_typed.keys().cloned().collect();
         v.sort();
         v
     };
+    // Local resolvability gate (typos → 400) — result discarded.
+    if let Err(e) = validate_upstream_resolvable(pools_typed).await {
+        return mutation_error_response(e);
+    }
 
+    // 2026-05-27 (Phase B upstreams fold) — patch `cfg.upstreams` on the
+    // shared doc + activate. Each node rebuilds its `PoolRegistry` from
+    // the activated config via `apply_cfg_change_to_upstreams` (per-node
+    // DNS). Retires the per-node direct `PoolRegistry::apply`.
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_upstreams_replace(&base_blob, &pools_json) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({ "count": count, "names": names });
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -270,24 +318,38 @@ pub(crate) async fn handle_upstreams_config_put(
         action: "upstreams_set",
         reason: "operator replaced upstream pool table",
     };
-    let writer_for_apply = Arc::clone(&writer);
-    let pools_for_apply = resolved_pools;
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        after,
-        move || writer_for_apply.apply(&pools_for_apply),
-    );
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.activate(expected, blob, &actor, "replace upstream pools").await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "count": count,
-                "names": names,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "count": count,
+                    "names": names,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -295,62 +357,66 @@ pub(crate) async fn handle_upstreams_config_put(
 pub(crate) async fn handle_pool_upsert(
     req: hyper::Request<hyper::body::Incoming>,
     pool_id: &str,
-    cfg: &aegis_core::config::WafConfig,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
     use http_body_util::BodyExt;
 
     let pre = mutation_preamble(&req, "pool-upsert");
-    let Some(writer) = services.upstream_writer.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "upstream writer not wired".into(),
-            ),
-        );
-    };
 
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
             return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
             )
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
-    let pool_cfg: aegis_core::config::PoolConfig = match serde_json::from_str(body_str) {
-        Ok(p) => p,
+    let pool_json: serde_json::Value = match serde_json::from_str(body_str) {
+        Ok(v) => v,
         Err(e) => {
             return mutation_error_response(
                 aegis_control::api::mutation::MutationError::Validation(e.to_string()),
             )
         }
     };
+    let pool_typed: aegis_core::config::PoolConfig =
+        match serde_json::from_value(pool_json.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+                )
+            }
+        };
+    let mut one = std::collections::HashMap::new();
+    one.insert(pool_id.to_string(), pool_typed);
+    if let Err(e) = validate_upstream_resolvable(one).await {
+        return mutation_error_response(e);
+    }
 
-    // Build the candidate map: existing minus this pool, plus the
-    // new entry. Read-modify-write under the registry's atomic
-    // swap.
-    let mut next = cfg.upstreams.clone();
-    next.insert(pool_id.to_string(), pool_cfg);
-
-    let before = upstreams_audit_view(cfg, &cfg.upstreams);
-    let after = upstreams_audit_view(cfg, &next);
-
-    // 2026-05-11 (PR-DNS-1) — resolve hostnames in the candidate
-    // map so the registry only ever sees IP-literal members. The
-    // audit view (`after`) keeps the operator's authored shape so
-    // hostnames show up in the chain.
-    let next = match crate::upstream::dns_resolve::expand_hostname_members(next).await {
-        Ok(r) => r,
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let new_blob = match patch_upstream_pool_set(&base_blob, pool_id, &pool_json) {
+        Ok(b) => b,
         Err(e) => {
             return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-            );
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
         }
     };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
 
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({ "pool": pool_id });
     let resource = format!("/api/upstreams/pool/{pool_id}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -362,23 +428,38 @@ pub(crate) async fn handle_pool_upsert(
         action: "pool_upsert",
         reason: "operator upserted upstream pool",
     };
-    let writer_for_apply = Arc::clone(&writer);
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let pool_id_owned = pool_id.to_string();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        after,
-        move || writer_for_apply.apply(&next),
-    );
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.activate(expected, blob, &actor, "upsert upstream pool").await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "pool": pool_id_owned,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "pool": pool_id_owned,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -386,34 +467,35 @@ pub(crate) async fn handle_pool_upsert(
 pub(crate) async fn handle_pool_delete(
     req: hyper::Request<hyper::body::Incoming>,
     pool_id: &str,
-    cfg: &aegis_core::config::WafConfig,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
     let pre = mutation_preamble(&req, "pool-delete");
-    let Some(writer) = services.upstream_writer.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "upstream writer not wired".into(),
-            ),
-        );
-    };
 
-    if !cfg.upstreams.contains_key(pool_id) {
-        // 400-class validation rather than 500: caller passed a
-        // name that doesn't exist. Distinct error message so the
-        // dashboard can render the "no such pool" toast directly.
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let doc_cfg = match aegis_core::load_config_str(&base_blob) {
+        Ok(c) => c,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(format!(
+                    "active config doc failed to parse: {e}"
+                )),
+            )
+        }
+    };
+    if !doc_cfg.upstreams.contains_key(pool_id) {
         return mutation_error_response(
             aegis_control::api::mutation::MutationError::Validation(format!(
                 "no pool named '{pool_id}'"
             )),
         );
     }
-
-    // Refuse with the route-reference list when the pool is still
-    // referenced. This is the audit-finding-driven contract: the
-    // dashboard's delete confirm modal surfaces this list so the
-    // operator knows what to fix first.
-    let refs = aegis_control::api::upstreams_config::routes_referencing(cfg, pool_id);
+    // Refuse with the route-reference list (checked against the doc —
+    // the source of truth) so the dashboard's delete confirm modal can
+    // surface what to fix first.
+    let refs = aegis_control::api::upstreams_config::routes_referencing(&doc_cfg, pool_id);
     if !refs.is_empty() {
         let body = serde_json::json!({
             "ok": false,
@@ -427,11 +509,24 @@ pub(crate) async fn handle_pool_delete(
         return json_body_response(409, body.to_string(), "private, no-store");
     }
 
-    let mut next = cfg.upstreams.clone();
-    next.remove(pool_id);
+    let new_blob = match patch_upstream_pool_remove(&base_blob, pool_id) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
 
-    let before = upstreams_audit_view(cfg, &cfg.upstreams);
-    let after = upstreams_audit_view(cfg, &next);
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({ "removed": pool_id });
     let resource = format!("/api/upstreams/pool/{pool_id}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "DELETE",
@@ -443,23 +538,38 @@ pub(crate) async fn handle_pool_delete(
         action: "pool_delete",
         reason: "operator removed upstream pool",
     };
-    let writer_for_apply = Arc::clone(&writer);
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
     let pool_id_owned = pool_id.to_string();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        after,
-        move || writer_for_apply.apply(&next),
-    );
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.activate(expected, blob, &actor, "delete upstream pool").await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "removed": pool_id_owned,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "removed": pool_id_owned,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -1869,15 +1979,13 @@ fn patch_rule_remove(base: &str, id: &str) -> Result<String, String> {
     serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
-/// 2026-05-27 (Phase B rules fold) — shared tail for the folded rule
-/// CRUD handlers: load the active config doc (or seed from the boot
-/// file), apply `patch` to its YAML blob, validate, and activate
-/// through the config plane. The watcher re-derives the `RuleStore` +
-/// engine ruleset on every node via `apply_cfg_change_to_rules`.
-/// Returns the loaded `(blob, version)` to the caller via the closure
-/// so existence checks run against the doc (the source of truth), not
-/// the eventually-consistent local store.
-async fn load_config_doc_for_rules(
+/// 2026-05-27 (Phase B) — shared loader for the folded config-plane
+/// CRUD handlers (rules + upstreams): return the active config doc's
+/// `(ConfigStore, blob, version)`, seeding from the boot YAML file when
+/// no doc has been activated yet. Handlers parse + patch the blob then
+/// activate. Existence / reference checks run against this doc (the
+/// source of truth), not the eventually-consistent local store.
+async fn load_active_config_doc(
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Result<
     (crate::config_source::config_store::ConfigStore, String, u64),
@@ -1966,7 +2074,7 @@ pub(crate) async fn handle_rules_post(
     // 2026-05-27 (Phase B rules fold) — patch `cfg.rules.inline` on the
     // shared config doc + activate. The watcher re-derives the RuleStore
     // + engine ruleset on every node via `apply_cfg_change_to_rules`.
-    let (store, base_blob, expected) = match load_config_doc_for_rules(services).await {
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -2078,7 +2186,7 @@ pub(crate) async fn handle_rules_put(
         return mutation_error_response(rule_validation_error(&v));
     }
 
-    let (store, base_blob, expected) = match load_config_doc_for_rules(services).await {
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -2166,7 +2274,7 @@ pub(crate) async fn handle_rules_delete(
 ) -> Response<Full<Bytes>> {
     let pre = mutation_preamble(&req, "rules-delete");
 
-    let (store, base_blob, expected) = match load_config_doc_for_rules(services).await {
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -2254,7 +2362,7 @@ pub(crate) async fn handle_rules_toggle(
 ) -> Response<Full<Bytes>> {
     let pre = mutation_preamble(&req, "rules-toggle");
 
-    let (store, base_blob, expected) = match load_config_doc_for_rules(services).await {
+    let (store, base_blob, expected) = match load_active_config_doc(services).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -4974,6 +5082,47 @@ state:
         let seq = v["rules"]["inline"].as_sequence().unwrap();
         assert_eq!(seq.len(), 1);
         assert_eq!(seq[0]["id"].as_str(), Some("r2"));
+    }
+
+    // ---- 2026-05-27 (Phase B upstreams fold) — patch_upstream* helpers ----
+
+    #[test]
+    fn patch_upstreams_replace_sets_whole_map() {
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\nupstreams:\n  old:\n    members:\n      - addr: \"127.0.0.1:1111\"\n";
+        let pools: serde_json::Value = serde_json::json!({
+            "default": { "members": [ { "addr": "127.0.0.1:3000" } ] }
+        });
+        let out = patch_upstreams_replace(base, &pools).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert!(v["upstreams"].get("old").is_none(), "whole map replaced");
+        assert_eq!(
+            v["upstreams"]["default"]["members"][0]["addr"].as_str(),
+            Some("127.0.0.1:3000"),
+        );
+    }
+
+    #[test]
+    fn patch_upstream_pool_set_then_remove() {
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\nupstreams:\n  a:\n    members:\n      - addr: \"127.0.0.1:1111\"\n";
+        let pool: serde_json::Value =
+            serde_json::json!({ "members": [ { "addr": "127.0.0.1:2222" } ] });
+        let out = patch_upstream_pool_set(base, "b", &pool).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            v["upstreams"]["a"]["members"][0]["addr"].as_str(),
+            Some("127.0.0.1:1111"),
+            "existing pool kept",
+        );
+        assert_eq!(
+            v["upstreams"]["b"]["members"][0]["addr"].as_str(),
+            Some("127.0.0.1:2222"),
+            "new pool added",
+        );
+
+        let out2 = patch_upstream_pool_remove(&out, "a").unwrap();
+        let v2: serde_yaml::Value = serde_yaml::from_str(&out2).unwrap();
+        assert!(v2["upstreams"].get("a").is_none(), "removed");
+        assert!(v2["upstreams"].get("b").is_some(), "other pool kept");
     }
 
     #[test]

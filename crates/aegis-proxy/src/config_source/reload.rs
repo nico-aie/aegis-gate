@@ -425,6 +425,63 @@ pub fn apply_cfg_change_to_rules(
     }
 }
 
+/// Outcome of rebuilding the upstream pool registry from a config swap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpstreamsReloadOutcome {
+    /// No `UpstreamWriter` handle wired.
+    NoWriter,
+    /// `cfg.upstreams` was resolved + applied to the live `PoolRegistry`.
+    /// `pools` is the pool count after the swap.
+    Applied { pools: usize },
+    /// DNS resolution or pool validation failed; the live pools are
+    /// unchanged.
+    Failed { reason: String },
+}
+
+/// 2026-05-27 (Phase B upstreams fold) — rebuild the live upstream
+/// `PoolRegistry` from `new_cfg.upstreams` on a config swap, so a
+/// cluster-wide activation rebuilds pools on every node (eventual).
+///
+/// Hostnames are resolved **per node** at apply time (the shared doc
+/// keeps operator-authored hostnames; each node uses its own resolver
+/// view) via `expand_hostname_members`. `SoftSkip` mirrors the boot
+/// path: a transient resolver blip drops the failing hostname's members
+/// rather than wiping the whole table. The resolved pools then go
+/// through the same `PoolRegistry::apply` the audit-mutated PUT uses
+/// (atomic pool + circuit-breaker + connection-pool rebuild).
+///
+/// This closes the gap the file/etcd watchers warn about ("pools are
+/// NOT rebuilt from reload") for the config-plane path: folded upstream
+/// PUTs now patch `cfg.upstreams` + activate, and this re-derives.
+pub async fn apply_cfg_change_to_upstreams(
+    new_cfg: &WafConfig,
+    writer: Option<&Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
+) -> UpstreamsReloadOutcome {
+    let Some(writer) = writer else {
+        return UpstreamsReloadOutcome::NoWriter;
+    };
+    let resolved = match crate::upstream::dns_resolve::expand_hostname_members_with_policy(
+        new_cfg.upstreams.clone(),
+        crate::upstream::dns_resolve::ResolveFailurePolicy::SoftSkip,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return UpstreamsReloadOutcome::Failed {
+                reason: e.to_string(),
+            }
+        }
+    };
+    let pools = resolved.len();
+    match writer.apply(&resolved) {
+        Ok(()) => UpstreamsReloadOutcome::Applied { pools },
+        Err(e) => UpstreamsReloadOutcome::Failed {
+            reason: e.to_string(),
+        },
+    }
+}
+
 /// Pure: derive the IP rate-limit config the boot path uses
 /// from a `WafConfig`. Shared between `aegis-proxy::run` (boot)
 /// and the watchers (hot-reload) so the selection rule stays
@@ -945,6 +1002,48 @@ rules:
       enabled: false
 "#
         .to_string()
+    }
+
+    // ---- 2026-05-27 (Phase B upstreams fold) — apply_cfg_change_to_upstreams ----
+
+    #[tokio::test]
+    async fn upstreams_reload_no_writer_is_noop() {
+        let cfg = parse(&yaml_with_sqli(true, &[]));
+        assert_eq!(
+            apply_cfg_change_to_upstreams(&cfg, None).await,
+            UpstreamsReloadOutcome::NoWriter,
+        );
+    }
+
+    #[tokio::test]
+    async fn upstreams_reload_applies_pools_from_cfg() {
+        use aegis_core::config::PoolConfig;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        struct RecordingWriter(Mutex<HashMap<String, PoolConfig>>);
+        impl aegis_control::api::upstreams_config::UpstreamWriter for RecordingWriter {
+            fn apply(
+                &self,
+                new_pools: &HashMap<String, PoolConfig>,
+            ) -> Result<(), aegis_control::api::upstreams_config::PoolValidationError> {
+                *self.0.lock().unwrap() = new_pools.clone();
+                Ok(())
+            }
+        }
+
+        // `yaml_with_sqli` carries one IP-literal pool (`default` →
+        // 127.0.0.1:3000); IP members pass through DNS untouched so the
+        // apply re-derive needs no network.
+        let cfg = parse(&yaml_with_sqli(true, &[]));
+        let recorder = Arc::new(RecordingWriter(Mutex::new(HashMap::new())));
+        let writer: Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter> =
+            recorder.clone();
+
+        let outcome = apply_cfg_change_to_upstreams(&cfg, Some(&writer)).await;
+        assert_eq!(outcome, UpstreamsReloadOutcome::Applied { pools: 1 });
+        let applied = recorder.0.lock().unwrap();
+        assert!(applied.contains_key("default"), "cfg.upstreams.default rebuilt");
     }
 
     #[test]

@@ -230,7 +230,8 @@ per-fold technical notes in
   `a5b818d` (1st `WafConfig` schema ext), **tier** `08a8e65`+`eacaa4b`
   (boot-path refactor threading `TierStore` run.rs→watcher+services + schema
   ext), **detectors** (base **+ per-tier** through the config plane; see
-  below), **rules** (inline-rules schema + CRUD fold; see below). HA hardening
+  below), **rules** (inline-rules schema + CRUD fold; see below), **upstreams**
+  (per-node DNS pool rebuild on swap + 3-handler fold; see below). HA hardening
   already built (`node.id` HA-T3, `/api/cluster.peers` HA-T4).
 - **Detectors fold (full)** — the plan's "apply-side already wired" was only
   true for the **base**: `apply_cfg_change_to_mask` re-derived base via
@@ -279,21 +280,36 @@ per-fold technical notes in
     doc, not the local store** (eventual-consistency-safe: create-then-edit
     before the next poll works). Body+id validated up front (400 vs silent
     skip). Old `rebuild_ruleset_after_mutation` removed.
+- **Upstreams fold (full)** — the plan's "sizable risky feature" was overstated:
+  the live pool rebuild already exists (`PoolRegistry::apply` does the atomic
+  pool + circuit-breaker + connection-pool swap; the audit-mutated PUT used it).
+  The only gap was calling it from the *reload* path + handling **async DNS**
+  (the watcher's `apply_and_swap` was sync). Shipped:
+  - *Apply (reload.rs)* — `apply_cfg_change_to_upstreams` (async): resolves
+    `cfg.upstreams` **per node** (`expand_hostname_members`, `SoftSkip`) then
+    `PoolRegistry::apply`. `apply_and_swap` is now `async`; the watch loop
+    `.await`s it. The shared doc keeps operator hostnames; each node uses its
+    own resolver view (user-confirmed over freezing IPs at PUT time).
+  - *Plumbing* — ApplyTargets gains `upstream_writer`
+    (`Arc::new(upstream_ctx.pools.clone())`, in scope at the watcher spawn).
+  - *Write (admin_mutate.rs)* — `patch_upstreams_replace` / `patch_upstream_pool_set`
+    / `patch_upstream_pool_remove` patch `cfg.upstreams` on the doc (raw request
+    JSON → YAML, since `PoolConfig` isn't `Serialize`). All 3 handlers
+    (`PUT /api/upstreams/config`, pool upsert, pool delete) folded to
+    `apply_async`/`activate`; `cfg` param dropped (existence + route-ref checks
+    now run against the doc). Local `Strict` DNS resolve kept as a 400 typo gate
+    (result discarded). `upstreams_audit_view` removed.
 
 **REMAINING (resume order):**
-1. **`upstreams`** — needs a NEW feature first: pools are NOT hot-reloadable
-   today (`run.rs` warns "pools are NOT rebuilt"). Implement live pool rebuild
-   (DNS re-resolve + health re-arm) on `cfg.upstreams` change, add
-   `apply_cfg_change_to_upstreams`, then fold `PUT /api/upstreams/config`.
-2. **Phase C — metrics aggregation** — `crates/aegis-control/src/metrics/window_flush.rs`
+1. **Phase C — metrics aggregation** — `crates/aegis-control/src/metrics/window_flush.rs`
    (local ring → `incrby` flush, `expire` TTL=2×window) for `RouteActivityWindow`
    (P5) + `AccessListHits` (P4); flush tasks at boot; endpoint reads switch to
    `scan_prefix`+sum when `backend != in_memory`, else local rings;
    `flush_failed` audit. Design: [`plans/future/multi-node-metrics-aggregation.md`](./plans/future/multi-node-metrics-aggregation.md).
-3. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
+2. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
    + Helm toggle + single-VIP RPS benchmark.
 
-**Reusable fold patterns (from AI / response_filter / tier / detectors):**
+**Reusable fold patterns (from AI / response_filter / tier / detectors / rules / upstreams):**
 - *Write side*: handler patches the field on the shared doc's YAML blob via
   `serde_yaml::Value` (`WafConfig` isn't `Serialize`), seeds from
   `services.config_yaml_path` when no doc exists, validates via

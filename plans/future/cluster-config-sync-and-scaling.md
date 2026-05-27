@@ -369,12 +369,18 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
         (`ai`→`cfg.ai.enabled`) + `cfg.detectors.per_tier.<tier>` (`null`=remove);
         `handle_detectors_put` rewritten to the `apply_async`/`activate` template.
         Retires the per-node local-snapshot override model.
-    - `handle_upstreams_config_put` → **blocked on a missing feature**:
-      upstream **pools are not hot-reloadable today** (`run.rs` logs
-      "cfg.upstreams diff detected but pools are NOT rebuilt from
-      file/etcd reload"). Folding upstreams means first implementing live
-      pool rebuild (DNS re-resolve, health-check re-arm, connection
-      churn) — a sizable, risky feature, not a fold. **Fresh-session.**
+    - ✅ `handle_upstreams_config_put` (+ pool upsert/delete) — **DONE**
+      (2026-05-27, full fold). The "sizable risky feature" was overstated:
+      the live pool rebuild already existed (`PoolRegistry::apply` does the
+      atomic pool + circuit-breaker + connection-pool swap, used by the
+      audit-mutated PUT). The only gaps were (a) calling it from the *reload*
+      path and (b) async DNS (the watcher's `apply_and_swap` was sync). Shipped:
+      `apply_cfg_change_to_upstreams` (async — per-node `expand_hostname_members`
+      + `PoolRegistry::apply`); `apply_and_swap` made `async`; ApplyTargets
+      `upstream_writer`; `patch_upstreams_replace`/`_pool_set`/`_pool_remove`
+      (raw JSON → YAML since `PoolConfig` isn't `Serialize`); all 3 handlers
+      folded to `apply_async`/`activate`. Doc keeps operator hostnames; each
+      node resolves with its own resolver view (chosen over freezing IPs).
     - ✅ `handle_rules_*` — **DONE** (2026-05-27, full fold). The blocker
       was real: `cfg.rules` was `{paths, max_rule_count, strict_compile}`
       (rule *files*) with **no rule-list representation**, and the dashboard

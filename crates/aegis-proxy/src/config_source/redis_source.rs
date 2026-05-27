@@ -61,6 +61,12 @@ pub struct ApplyTargets {
     /// (`pipeline.rules_arc()`), rebuilt from the re-derived `RuleStore`
     /// so a folded rule CRUD takes effect on every node.
     pub active_ruleset: Option<Arc<aegis_security::RuleSet>>,
+    /// 2026-05-27 (Phase B upstreams fold) — the live `PoolRegistry`
+    /// (as an `UpstreamWriter`). `cfg.upstreams` is resolved per-node
+    /// (async DNS) + applied on each swap so a folded upstream PUT
+    /// rebuilds pools on every node.
+    pub upstream_writer:
+        Option<Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -110,7 +116,7 @@ async fn watch_loop(
 
                 match aegis_core::load_config_str(&doc.blob) {
                     Ok(new_cfg) => {
-                        apply_and_swap(&new_cfg, &cfg, &bus, &targets, doc.version);
+                        apply_and_swap(&new_cfg, &cfg, &bus, &targets, doc.version).await;
                         applied_version = doc.version;
                         // ACK the version we just applied.
                         let _ = store.record_applied(&node_id, applied_version).await;
@@ -167,7 +173,7 @@ async fn watch_loop(
 /// Run the four hot-swap helpers then atomic-swap `cfg`. Mirrors the
 /// etcd watcher; route-table failure is the one we surface loudly since
 /// a bad route rebuild would otherwise silently keep stale routing.
-fn apply_and_swap(
+async fn apply_and_swap(
     new_cfg: &WafConfig,
     cfg: &Arc<ArcSwap<WafConfig>>,
     bus: &AuditBus,
@@ -211,6 +217,16 @@ fn apply_and_swap(
         targets.rules.as_ref(),
         targets.active_ruleset.as_ref(),
     );
+    if let reload::UpstreamsReloadOutcome::Failed { reason } =
+        reload::apply_cfg_change_to_upstreams(new_cfg, targets.upstream_writer.as_ref()).await
+    {
+        tracing::error!(
+            version,
+            reason = %reason,
+            "shared config: upstream pool rebuild failed; live pools unchanged",
+        );
+        bus.emit(reload_event("upstreams_reload_failed", reason, "", version));
+    }
 
     cfg.store(Arc::new(new_cfg.clone()));
 }

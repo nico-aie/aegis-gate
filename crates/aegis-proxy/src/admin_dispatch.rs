@@ -298,15 +298,15 @@ pub(crate) async fn handle_admin_request(
     //   PUT    /api/upstreams/pool/{id}        single-pool upsert
     //   DELETE /api/upstreams/pool/{id}        single-pool delete (route-ref guarded)
     if method == hyper::Method::PUT && path == "/api/upstreams/config" {
-        return handle_upstreams_config_put(req, cfg, services).await;
+        return handle_upstreams_config_put(req, services).await;
     }
     if let Some(suffix) = path.strip_prefix("/api/upstreams/pool/") {
         if !suffix.is_empty() && !suffix.contains('/') {
             if method == hyper::Method::PUT {
-                return handle_pool_upsert(req, suffix, cfg, services).await;
+                return handle_pool_upsert(req, suffix, services).await;
             }
             if method == hyper::Method::DELETE {
-                return handle_pool_delete(req, suffix, cfg, services).await;
+                return handle_pool_delete(req, suffix, services).await;
             }
         }
     }

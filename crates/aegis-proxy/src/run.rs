@@ -1181,6 +1181,10 @@ pub async fn run(
             tiers: Some(tier_store.clone()),
             rules: Some(rule_store.clone()),
             active_ruleset: Some(pipeline.rules_arc()),
+            upstream_writer: Some(
+                Arc::new(upstream_ctx.pools.clone())
+                    as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>,
+            ),
         };
         tracing::info!(
             node_id = %node_id,
