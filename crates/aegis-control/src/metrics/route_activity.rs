@@ -211,6 +211,45 @@ impl RouteActivityWindow {
     }
 }
 
+impl RouteRing {
+    /// 2026-05-27 (Phase C) — report every live bucket as
+    /// `(absolute_bucket_ts, count)` for the metrics flush. The bucket
+    /// at index `idx` represents the most recent second `t <=
+    /// last_bucket_ts` with `t % WINDOW_SECS == idx`; lazy reset
+    /// guarantees the bucket's count belongs to that second (an older
+    /// occupant would have been zeroed when the index was reused, which
+    /// happens within `WINDOW_SECS`). A fully-idle ring (last bucket
+    /// older than the window) reports nothing.
+    fn drain_buckets(&self, now_secs: u64) -> Vec<(u64, u64)> {
+        let last = self.last_bucket_ts.load(Ordering::Relaxed);
+        if last == 0 || last < now_secs.saturating_sub(WINDOW_SECS - 1) {
+            return Vec::new();
+        }
+        let w = WINDOW_SECS as i64;
+        let mut out = Vec::new();
+        for (idx, b) in self.buckets.iter().enumerate() {
+            let count = b.load(Ordering::Relaxed);
+            if count == 0 {
+                continue;
+            }
+            // back = how many seconds before `last` this index last owned.
+            let back = (((last % WINDOW_SECS) as i64 - idx as i64) % w + w) % w;
+            out.push((last.saturating_sub(back as u64), count));
+        }
+        out
+    }
+}
+
+impl super::window_flush::BucketSource for RouteActivityWindow {
+    fn drain_buckets(&self, now_secs: u64) -> Vec<(String, Vec<(u64, u64)>)> {
+        self.rings
+            .iter()
+            .map(|kv| (kv.key().clone(), kv.value().drain_buckets(now_secs)))
+            .filter(|(_, b)| !b.is_empty())
+            .collect()
+    }
+}
+
 impl Default for RouteActivityWindow {
     fn default() -> Self {
         Self::new()
@@ -247,6 +286,33 @@ mod tests {
     fn snapshot_returns_none_for_unknown_route() {
         let w = RouteActivityWindow::new();
         assert!(snapshot_at(&w, "ghost", 100).is_none());
+    }
+
+    #[test]
+    fn drain_buckets_reconstructs_absolute_timestamps() {
+        use super::super::window_flush::BucketSource;
+        let w = RouteActivityWindow::new();
+        record_at(&w, "r", 1000); // idx 40, abs_ts 1000
+        record_at(&w, "r", 1000); // count 2 at 1000
+        record_at(&w, "r", 1005); // idx 45, abs_ts 1005, count 1
+        let ring = w.rings.get("r").unwrap();
+        let mut got = ring.value().drain_buckets(1010);
+        got.sort();
+        assert_eq!(got, vec![(1000, 2), (1005, 1)]);
+
+        // Source view yields the per-route grouping.
+        let all = w.drain_buckets(1010);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, "r");
+    }
+
+    #[test]
+    fn drain_buckets_empty_for_idle_ring() {
+        use super::super::window_flush::BucketSource;
+        let w = RouteActivityWindow::new();
+        record_at(&w, "r", 1000);
+        // now far past the window — ring is stale, reports nothing.
+        assert!(w.drain_buckets(1000 + WINDOW_SECS + 5).is_empty());
     }
 
     #[test]

@@ -190,6 +190,17 @@ pub trait StateBackend: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
+    /// Read an `incrby` counter at `key`, decoding it to a `u64`
+    /// (absent/expired → 0). A dedicated primitive because the on-disk
+    /// representation differs per backend (Redis stores the decimal
+    /// string `INCRBY` produces; the in-memory backend stores LE bytes),
+    /// so a generic `get` + parse can't be backend-agnostic. The metrics
+    /// aggregation read path (`window_flush::read_window`) sums these
+    /// across nodes. Default 0 keeps stub backends compiling.
+    async fn get_counter(&self, _key: &str) -> Result<u64> {
+        Ok(0)
+    }
+
     /// Single-key compare-and-set: write `new` iff the current value
     /// equals `expected` (`None` = key must be absent). `ttl = None`
     /// persists the key (config must not expire). Returns `true` on a

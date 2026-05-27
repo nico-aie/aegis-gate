@@ -205,6 +205,10 @@ impl StateBackend for MeteredStateBackend {
         self.inner.scan_prefix(prefix).await
     }
 
+    async fn get_counter(&self, key: &str) -> Result<u64> {
+        self.inner.get_counter(key).await
+    }
+
     async fn cas_set(
         &self,
         key: &str,

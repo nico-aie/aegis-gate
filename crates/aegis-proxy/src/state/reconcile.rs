@@ -437,6 +437,20 @@ impl StateBackend for ReconcilingBackend {
         }
     }
 
+    async fn get_counter(&self, key: &str) -> Result<u64> {
+        match self.primary.get_counter(key).await {
+            Ok(v) => {
+                self.maybe_exit_partition().await;
+                Ok(v)
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("get_counter", &e);
+                self.fallback.get_counter(key).await
+            }
+            Err(other) => Err(other),
+        }
+    }
+
     async fn cas_set(
         &self,
         key: &str,

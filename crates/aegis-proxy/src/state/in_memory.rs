@@ -300,6 +300,22 @@ impl StateBackend for InMemoryBackend {
         Ok(())
     }
 
+    async fn get_counter(&self, key: &str) -> Result<u64> {
+        // Decode the same LE-byte representation `incrby` writes;
+        // absent / expired keys read as 0.
+        let v = self.kv.get(key).and_then(|e| {
+            if e.is_expired() {
+                None
+            } else {
+                e.value
+                    .get(..8)
+                    .and_then(|s| s.try_into().ok())
+                    .map(u64::from_le_bytes)
+            }
+        });
+        Ok(v.unwrap_or(0))
+    }
+
     async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
         Ok(self
             .kv
@@ -718,6 +734,19 @@ mod tests {
         assert_eq!(b.incrby("c", 5).await.unwrap(), 5);
         assert_eq!(b.incrby("c", 3).await.unwrap(), 8);
         assert_eq!(b.incrby("fresh", 1).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_counter_reads_incrby_value() {
+        // 2026-05-27 (Phase C) — get_counter must decode the same
+        // representation incrby writes (LE bytes here, decimal string on
+        // Redis) so the metrics aggregation read path is backend-agnostic.
+        let b = backend();
+        assert_eq!(b.get_counter("absent").await.unwrap(), 0, "absent key reads 0");
+        b.incrby("c", 42).await.unwrap();
+        assert_eq!(b.get_counter("c").await.unwrap(), 42);
+        b.incrby("c", 8).await.unwrap();
+        assert_eq!(b.get_counter("c").await.unwrap(), 50);
     }
 
     #[tokio::test]

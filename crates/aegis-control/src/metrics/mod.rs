@@ -7,6 +7,7 @@ pub mod request_duration;
 pub mod route_activity;
 pub mod route_latency;
 pub mod runtime;
+pub mod window_flush;
 #[cfg(feature = "ai")]
 pub mod ai;
 pub mod state_ops;

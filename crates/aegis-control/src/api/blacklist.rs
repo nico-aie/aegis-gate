@@ -104,11 +104,47 @@ impl EntryHitRing {
     }
 }
 
+impl EntryHitRing {
+    /// 2026-05-27 (Phase C) — report every live bucket as
+    /// `(absolute_bucket_ts, count)` for the metrics flush, where
+    /// `absolute_bucket_ts` is the hour-bucket's start second. As in
+    /// `RouteRing::drain_buckets`, lazy reset guarantees a bucket's
+    /// count belongs to its most-recent residue-matching hour within
+    /// the last `HIT_BUCKET_COUNT` hours; a fully-stale ring reports
+    /// nothing.
+    fn drain_buckets(&self, now_secs: u64) -> Vec<(u64, u64)> {
+        let last = self.last_bucket_ts.load(Ordering::Relaxed);
+        let last_bucket = last / HIT_BUCKET_SECS;
+        let now_bucket = now_secs / HIT_BUCKET_SECS;
+        let span = HIT_BUCKET_COUNT as u64;
+        if last == 0 || now_bucket.saturating_sub(last_bucket) >= span {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (idx, b) in self.buckets.iter().enumerate() {
+            let count = b.load(Ordering::Relaxed);
+            if count == 0 {
+                continue;
+            }
+            let back = (last_bucket % span + span - idx as u64) % span;
+            let bucket_no = last_bucket.saturating_sub(back);
+            out.push((bucket_no * HIT_BUCKET_SECS, count));
+        }
+        out
+    }
+}
+
 fn current_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs()
+}
+
+impl crate::metrics::window_flush::BucketSource for AccessListStore {
+    fn drain_buckets(&self, now_secs: u64) -> Vec<(String, Vec<(u64, u64)>)> {
+        self.drain_hit_buckets(now_secs)
+    }
 }
 
 /// Per-list per-entry hit counter. Built once when the
@@ -134,6 +170,14 @@ impl AccessListHits {
         self.rings
             .iter()
             .map(|kv| (kv.key().clone(), kv.value().snapshot(now, window_secs)))
+            .collect()
+    }
+
+    fn drain_all(&self, now_secs: u64) -> Vec<(String, Vec<(u64, u64)>)> {
+        self.rings
+            .iter()
+            .map(|kv| (kv.key().clone(), kv.value().drain_buckets(now_secs)))
+            .filter(|(_, b)| !b.is_empty())
             .collect()
     }
 
@@ -238,8 +282,20 @@ impl AccessListStore {
     /// `{entry_id: count}` over the last `window_secs` seconds,
     /// rounded up to the 1-hour bucket granularity. Entries with
     /// zero recorded hits since boot are omitted.
+    ///
+    /// **Node-local view.** On a cluster, use
+    /// [`Self::hit_counts_aggregated`] when a shared state backend is
+    /// wired so the dashboard sums every node's hits.
     pub fn hit_counts(&self, window_secs: u64) -> HashMap<String, u64> {
         self.hits.snapshot_window(window_secs)
+    }
+
+    /// 2026-05-27 (Phase C) — drain every entry's live hour-buckets as
+    /// `(entry_id, [(absolute_bucket_ts, count)])` for the metrics
+    /// flush task. `key_prefix` (e.g. `waf:hits:bl`) is set on the
+    /// `WindowFlush`, not here.
+    pub fn drain_hit_buckets(&self, now_secs: u64) -> Vec<(String, Vec<(u64, u64)>)> {
+        self.hits.drain_all(now_secs)
     }
 
     pub fn list(&self) -> Vec<AccessListEntry> {
@@ -439,6 +495,26 @@ fn validate_entry(e: &AccessListEntry) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_hit_ring_drain_reconstructs_hour_buckets() {
+        // 2026-05-27 (Phase C) — drain yields (hour_bucket_start_secs, count).
+        let r = EntryHitRing::new();
+        r.record(3600 * 100 + 5); // hour-bucket 100 → abs_ts 360000
+        r.record(3600 * 100 + 9); // same bucket → count 2
+        r.record(3600 * 101 + 1); // hour-bucket 101 → abs_ts 363600, count 1
+        let mut got = r.drain_buckets(3600 * 101 + 10);
+        got.sort();
+        assert_eq!(got, vec![(3600 * 100, 2), (3600 * 101, 1)]);
+    }
+
+    #[test]
+    fn entry_hit_ring_drain_empty_when_stale() {
+        let r = EntryHitRing::new();
+        r.record(3600 * 100);
+        // 25 hours later — older than the 24-bucket window.
+        assert!(r.drain_buckets(3600 * 125).is_empty());
+    }
 
     fn entry(id: &str, kind: &str, value: &str) -> AccessListEntry {
         AccessListEntry {

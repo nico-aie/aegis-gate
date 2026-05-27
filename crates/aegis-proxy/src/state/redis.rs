@@ -619,6 +619,15 @@ mod backend {
             Ok(())
         }
 
+        async fn get_counter(&self, key: &str) -> Result<u64> {
+            let mut c = self.conn().await?;
+            // GET on an INCRBY key returns the decimal string Redis
+            // stores; `redis-rs` decodes it straight to an integer.
+            // Absent key → nil → None → 0.
+            let v: Option<i64> = self.with_timeout("get_counter", c.get(key)).await?;
+            Ok(v.unwrap_or(0).max(0) as u64)
+        }
+
         async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
             let pattern = format!("{prefix}*");
             let mut out = Vec::new();
