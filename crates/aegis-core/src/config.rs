@@ -597,11 +597,32 @@ pub struct TiersConfig {
 }
 
 /// One tier's configurable seeds.
-#[derive(Clone, Copy, Debug, Deserialize)]
+///
+/// 2026-05-27 — extended with the richer per-tier fields the dashboard
+/// `PUT /api/tiers/<name>` sets (`block_threshold`, `cumulative_*`,
+/// `pipeline`) so the config plane can carry the full per-tier state and
+/// fold that handler. All the new fields are optional — omitted → the
+/// `TierStore` keeps its code default / current value. (No longer `Copy`:
+/// `pipeline` is a `Vec`.)
+#[derive(Clone, Debug, Deserialize)]
 pub struct TierThresholdConfig {
     /// Per-request block score (0–100). A request blocks when its
     /// summed detector score reaches this value on the matched tier.
     pub risk_threshold: u32,
+    /// Cumulative-IP-risk hard-block score for this tier. `None` →
+    /// inherit the global `risk.thresholds.block_at`.
+    #[serde(default)]
+    pub block_threshold: Option<u32>,
+    /// Per-tier cumulative challenge-band start. `None` → inherit global.
+    #[serde(default)]
+    pub cumulative_challenge_at: Option<u32>,
+    /// Per-tier cumulative block point. `None` → inherit global.
+    #[serde(default)]
+    pub cumulative_block_at: Option<u32>,
+    /// Descriptive detector-pipeline names for this tier. `None` → keep
+    /// the code default (`Tier::defaults_for`).
+    #[serde(default)]
+    pub pipeline: Option<Vec<String>>,
     /// 2026-05-25 — opt-in cumulative-IP-risk challenge rung for this
     /// tier. `Some(true)` makes a cumulative score in the challenge band
     /// (`challenge_at..block_at`) issue a 429 PoW challenge; absent or

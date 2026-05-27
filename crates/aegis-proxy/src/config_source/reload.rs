@@ -332,6 +332,29 @@ pub fn apply_cfg_change_to_tiers(
     };
     tiers.apply_risk_thresholds(new_cfg.tiers.risk_threshold_overrides());
     tiers.apply_challenges_enabled(new_cfg.tiers.challenges_enabled_overrides());
+    // The richer per-tier fields (block_threshold / cumulative_* /
+    // pipeline) — applied where the cfg entry carries them.
+    let optional = [
+        ("critical", &new_cfg.tiers.critical),
+        ("high", &new_cfg.tiers.high),
+        ("medium", &new_cfg.tiers.medium),
+        ("low", &new_cfg.tiers.low),
+    ]
+    .into_iter()
+    .filter_map(|(name, opt)| {
+        opt.as_ref().map(|t| {
+            (
+                name,
+                aegis_control::api::tiers::OptionalTierFields {
+                    block_threshold: t.block_threshold,
+                    cumulative_challenge_at: t.cumulative_challenge_at,
+                    cumulative_block_at: t.cumulative_block_at,
+                    pipeline: t.pipeline.clone(),
+                },
+            )
+        })
+    });
+    tiers.apply_optional_overrides(optional);
     TiersReloadOutcome::Applied
 }
 

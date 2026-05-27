@@ -3343,25 +3343,6 @@ pub(crate) async fn handle_tier_put(
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
-    #[derive(serde::Deserialize)]
-    struct TierPatch {
-        pipeline: Vec<String>,
-        risk_threshold: u32,
-        block_threshold: u32,
-        // 2026-05-10 — Option B fields. All optional so older
-        // dashboards / scripts that PUT only the legacy shape
-        // still work; missing values are interpreted as
-        // "inherit global" / "challenges enabled".
-        #[serde(default)]
-        cumulative_challenge_at: Option<u32>,
-        #[serde(default)]
-        cumulative_block_at: Option<u32>,
-        // 2026-05-10 R2 — operator-confirmed default `false`:
-        // challenges are opt-in per tier. Older PUTs that omit the
-        // field land `false` instead of the prior `true`.
-        #[serde(default)]
-        challenges_enabled: bool,
-    }
     let patch: TierPatch = match serde_json::from_str(body_str) {
         Ok(p) => p,
         Err(e) => {
@@ -3371,10 +3352,67 @@ pub(crate) async fn handle_tier_put(
         }
     };
 
-    // before/after via the public `get()` API — emits enough
-    // detail for the audit chain to surface the diff.
-    let before = serde_json::to_value(services.tiers.get(tier_name))
-        .unwrap_or(serde_json::Value::Null);
+    // 2026-05-27 (Phase B fold, option A — eventual). Patch
+    // `tiers.<name>` on the shared config doc + activate; every node
+    // re-derives the tier via `apply_cfg_change_to_tiers` on its next
+    // watcher poll.
+    let Some(backend) = services.state_backend.as_ref() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "config plane unavailable: no state backend wired".into(),
+            ),
+        );
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+
+    let (base_blob, expected) = match store.load().await {
+        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(None) => match services.config_yaml_path.as_ref() {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(s) => (s, 0u64),
+                Err(e) => {
+                    return mutation_error_response(
+                        aegis_control::api::mutation::MutationError::Internal(format!(
+                            "cannot read boot config {} to seed the config plane: {e}",
+                            path.display()
+                        )),
+                    )
+                }
+            },
+            None => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(
+                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
+                    ),
+                )
+            }
+        },
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(format!(
+                    "config store read failed: {e}"
+                )),
+            )
+        }
+    };
+
+    let new_blob = match patch_tier(&base_blob, tier_name, &patch) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected });
     let after = serde_json::json!({
         "name": tier_name,
         "pipeline": patch.pipeline,
@@ -3396,33 +3434,91 @@ pub(crate) async fn handle_tier_put(
         reason: "operator updated tier",
     };
 
-    let tiers = services.tiers.clone();
-    let tier_name_owned = tier_name.to_string();
-    let outcome = services.mutate.apply::<_, aegis_control::api::tiers::Tier, String>(
-        &req_ctx,
-        before,
-        after,
-        move || tiers.put(
-            &tier_name_owned,
-            patch.pipeline,
-            patch.risk_threshold,
-            patch.block_threshold,
-            patch.cumulative_challenge_at,
-            patch.cumulative_block_at,
-            patch.challenges_enabled,
-        ),
-    );
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, "update tier")
+                .await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "tier": tier_name,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "tier": tier_name,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
+}
+
+/// PUT /api/tiers/<name> body. Module-level (was inline) so `patch_tier`
+/// can borrow it.
+#[derive(serde::Deserialize)]
+struct TierPatch {
+    pipeline: Vec<String>,
+    risk_threshold: u32,
+    block_threshold: u32,
+    #[serde(default)]
+    cumulative_challenge_at: Option<u32>,
+    #[serde(default)]
+    cumulative_block_at: Option<u32>,
+    #[serde(default)]
+    challenges_enabled: bool,
+}
+
+/// Patch `tiers.<name>` on a YAML config blob via `serde_yaml::Value`
+/// (`WafConfig` isn't `Serialize`). Writes every field the PUT carries so
+/// the activated config fully represents the tier. Creates the `tiers`
+/// mapping (and the per-tier entry) if absent.
+fn patch_tier(base: &str, tier_name: &str, patch: &TierPatch) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let tiers = map
+        .entry(serde_yaml::Value::String("tiers".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let serde_yaml::Value::Mapping(tiers_map) = tiers else {
+        return Err("`tiers` config is not a mapping".into());
+    };
+    let mut entry = serde_yaml::Mapping::new();
+    let s = |x: &str| serde_yaml::Value::String(x.into());
+    entry.insert(s("risk_threshold"), (patch.risk_threshold as u64).into());
+    entry.insert(s("block_threshold"), (patch.block_threshold as u64).into());
+    entry.insert(s("challenges_enabled"), patch.challenges_enabled.into());
+    entry.insert(
+        s("pipeline"),
+        serde_yaml::Value::Sequence(patch.pipeline.iter().map(|p| s(p)).collect()),
+    );
+    if let Some(c) = patch.cumulative_challenge_at {
+        entry.insert(s("cumulative_challenge_at"), (c as u64).into());
+    }
+    if let Some(c) = patch.cumulative_block_at {
+        entry.insert(s("cumulative_block_at"), (c as u64).into());
+    }
+    tiers_map.insert(s(tier_name), serde_yaml::Value::Mapping(entry));
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -4395,6 +4491,27 @@ mod tests {
         assert_eq!(v["response_filter"]["scrub_stack_traces"], serde_yaml::Value::Bool(false));
         assert_eq!(v["response_filter"]["mask_internal_ips"], serde_yaml::Value::Bool(true));
         assert_eq!(v["response_filter"]["redact_dlp"], serde_yaml::Value::Bool(false));
+    }
+
+    #[test]
+    fn patch_tier_writes_full_entry_and_omits_none_cumulative() {
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n";
+        let patch = TierPatch {
+            pipeline: vec!["sqli".into(), "xss".into()],
+            risk_threshold: 60,
+            block_threshold: 80,
+            cumulative_challenge_at: Some(40),
+            cumulative_block_at: None,
+            challenges_enabled: true,
+        };
+        let out = patch_tier(base, "high", &patch).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(v["tiers"]["high"]["risk_threshold"].as_u64(), Some(60));
+        assert_eq!(v["tiers"]["high"]["block_threshold"].as_u64(), Some(80));
+        assert_eq!(v["tiers"]["high"]["challenges_enabled"].as_bool(), Some(true));
+        assert_eq!(v["tiers"]["high"]["cumulative_challenge_at"].as_u64(), Some(40));
+        assert!(v["tiers"]["high"]["cumulative_block_at"].is_null());
+        assert_eq!(v["tiers"]["high"]["pipeline"][0].as_str(), Some("sqli"));
     }
 
     #[test]

@@ -151,6 +151,17 @@ struct TierStoreState {
     tiers: HashMap<String, Tier>,
 }
 
+/// 2026-05-27 — optional per-tier field overrides sourced from
+/// `cfg.tiers` (config-plane fold). Each `Some` value is applied;
+/// `None` leaves the tier's current value untouched.
+#[derive(Clone, Debug, Default)]
+pub struct OptionalTierFields {
+    pub block_threshold: Option<u32>,
+    pub cumulative_challenge_at: Option<u32>,
+    pub cumulative_block_at: Option<u32>,
+    pub pipeline: Option<Vec<String>>,
+}
+
 #[derive(Clone)]
 pub struct TierStore {
     inner: Arc<Mutex<TierStoreState>>,
@@ -221,6 +232,38 @@ impl TierStore {
         for (name, enabled) in overrides {
             if let Some(t) = s.tiers.get_mut(name) {
                 t.challenges_enabled = enabled;
+                t.updated_at = chrono::Utc::now();
+            }
+        }
+    }
+
+    /// 2026-05-27 — apply the richer per-tier fields from `cfg.tiers`
+    /// (`block_threshold` / `cumulative_*` / `pipeline`). Each field is
+    /// applied only when `Some`; omitted fields keep the tier's current
+    /// value. Unknown tier names are ignored. Used by both boot seeding
+    /// and the config-plane watcher so a folded `PUT /api/tiers/<name>`
+    /// (which patches `cfg.tiers`) propagates the full per-tier state.
+    pub fn apply_optional_overrides<'a>(
+        &self,
+        overrides: impl IntoIterator<Item = (&'a str, OptionalTierFields)>,
+    ) {
+        let mut s = self.inner.lock().expect("tier store poisoned");
+        for (name, f) in overrides {
+            if let Some(t) = s.tiers.get_mut(name) {
+                if let Some(b) = f.block_threshold {
+                    if b <= 100 {
+                        t.block_threshold = b;
+                    }
+                }
+                if let Some(c) = f.cumulative_challenge_at {
+                    t.cumulative_challenge_at = Some(c);
+                }
+                if let Some(c) = f.cumulative_block_at {
+                    t.cumulative_block_at = Some(c);
+                }
+                if let Some(p) = f.pipeline {
+                    t.pipeline = p;
+                }
                 t.updated_at = chrono::Utc::now();
             }
         }

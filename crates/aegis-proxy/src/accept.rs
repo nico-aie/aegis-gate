@@ -381,20 +381,18 @@ pub(crate) async fn admin_accept_loop(
     // dashboard's Configuration Backup card can fetch it.
     services.config_yaml_path = config_yaml_path;
 
-    // 2026-05-23 — seed per-tier block scores from the `tiers:`
-    // config block. Overlays the configured `risk_threshold`s onto the
-    // `defaults_for`-seeded store before the data plane shares it, so a
-    // profile's declared posture is live from the first request.
-    // Tiers omitted from config keep their code default.
-    services
-        .tiers
-        .apply_risk_thresholds(cfg.tiers.risk_threshold_overrides());
-    // 2026-05-25 — seed the per-tier challenge rung from config too, so a
-    // profile that declares `challenges_enabled: true` issues PoW challenges
-    // for cumulative-band scores from the first request (no dashboard flip).
-    services
-        .tiers
-        .apply_challenges_enabled(cfg.tiers.challenges_enabled_overrides());
+    // 2026-05-23/25/27 — seed per-tier settings from the `tiers:` config
+    // block onto the `defaults_for`-seeded store before the data plane
+    // shares it, so a profile's declared posture is live from the first
+    // request. Goes through the same helper the config-plane watcher uses
+    // (`apply_cfg_change_to_tiers`) so boot + hot-reload stay identical:
+    // risk_threshold + challenges_enabled + the richer block_threshold /
+    // cumulative_* / pipeline fields. Tiers omitted from config keep their
+    // code default.
+    let _ = crate::config_source::reload::apply_cfg_change_to_tiers(
+        &cfg,
+        Some(&services.tiers),
+    );
 
     // 2026-05-10 — share the TierStore between DashboardServices
     // (PUT /api/tiers/{name}) and ProxyContext (data plane reads
