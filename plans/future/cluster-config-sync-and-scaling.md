@@ -340,10 +340,10 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
       challenges_enabled}`; `TierStore` also has pipeline / block_threshold
       / cumulative_challenge_at / cumulative_block_at. Extend
       `TierThresholdConfig`.
-    - `handle_response_filter_put` → `ResponseFilterConfig`
-      (`scrub_stack_traces` / `mask_internal_ips` / `redact_dlp`) lives in
-      `aegis-security::pipeline`, **not** in `WafConfig`. Add a
-      `cfg.response_filter` block.
+    - ✅ `handle_response_filter_put` — **DONE** (`a5b818d`). Added
+      `cfg.response_filter` to `WafConfig` (3 bools, default true →
+      behaviour-preserving), boot-seed + `apply_cfg_change_to_response_filter`
+      + folded handler. The proof that the schema-extension path works.
     - `handle_detectors_put` → `SharedDetectorMask` has operator overrides
       beyond `cfg.detectors` (the local snapshot exists precisely because
       they diverge). Reconcile the override model with `cfg.detectors`.
