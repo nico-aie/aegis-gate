@@ -349,16 +349,26 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
       `cfg.response_filter` to `WafConfig` (3 bools, default true →
       behaviour-preserving), boot-seed + `apply_cfg_change_to_response_filter`
       + folded handler. The proof that the schema-extension path works.
-    - `handle_detectors_put` → **apply-side already done** (the watcher
-      already calls `apply_cfg_change_to_mask` which re-derives the mask
-      from `cfg.detectors` + compliance clamp). So `cfg.detectors` changes
-      already propagate via a full-doc `PUT /api/config`. The remaining
-      gap is folding the **dedicated** `PUT /api/detectors` handler, which
-      needs a bidirectional `MaskState ↔ cfg.detectors` mapping (the PUT
-      produces a `MaskState` with base + per-tier overrides; we'd have to
-      serialize that back into the `cfg.detectors` YAML shape so the
-      re-derive reproduces it). The local-snapshot override model is the
-      wrinkle. **Fresh-session task** — error-prone mapping, don't rush.
+    - ✅ `handle_detectors_put` — **DONE** (2026-05-27, full fold). The
+      "apply-side already done" claim was only true for the **base**:
+      `apply_cfg_change_to_mask` re-derived base via `DetectorMask::from_config`
+      and *preserved* live per-tier overrides, never reading
+      `cfg.detectors.per_tier`. Folding the PUT naively would have **silently
+      dropped** per-tier overrides on the next ~3s poll, so the full
+      bidirectional mapping was built:
+      - `DetectorMask::resolve_tier_override` (tri-state `TierDetectorMask` →
+        full mask, `None`=inherit base) + `MaskState::from_detectors_config`
+        (base + `Ai` from sibling `cfg.ai.enabled` + per-tier overlays) — one
+        constructor shared by boot + all watchers.
+      - `apply_cfg_change_to_mask` now `store_state`s the FULL `MaskState`.
+        **Contract change** (file/etcd/redis in lockstep): `cfg.detectors.per_tier`
+        is the source of truth; a live override absent from cfg is cleared.
+        Bugfix side effect: file+etcd reloads now set the base `Ai` bit from
+        `cfg.ai.enabled` (was clobbered off before).
+      - `patch_detectors` (write side) maps PUT body → `cfg.detectors.<class>.enabled`
+        (`ai`→`cfg.ai.enabled`) + `cfg.detectors.per_tier.<tier>` (`null`=remove);
+        `handle_detectors_put` rewritten to the `apply_async`/`activate` template.
+        Retires the per-node local-snapshot override model.
     - `handle_upstreams_config_put` → **blocked on a missing feature**:
       upstream **pools are not hot-reloadable today** (`run.rs` logs
       "cfg.upstreams diff detected but pools are NOT rebuilt from

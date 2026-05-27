@@ -229,36 +229,53 @@ per-fold technical notes in
 - **Phase B (partial)** — folded **AI** `3d2ca70`, **response_filter**
   `a5b818d` (1st `WafConfig` schema ext), **tier** `08a8e65`+`eacaa4b`
   (boot-path refactor threading `TierStore` run.rs→watcher+services + schema
-  ext). HA hardening already built (`node.id` HA-T3, `/api/cluster.peers`
+  ext), **detectors** (base **+ per-tier** through the config plane; see
+  below). HA hardening already built (`node.id` HA-T3, `/api/cluster.peers`
   HA-T4).
+- **Detectors fold (full)** — the plan's "apply-side already wired" was only
+  true for the **base**: `apply_cfg_change_to_mask` re-derived base via
+  `DetectorMask::from_config` and *preserved* live per-tier overrides, never
+  reading `cfg.detectors.per_tier`. Folding the PUT naively would have
+  **silently dropped** per-tier overrides on the next ~3s poll. Full fold
+  shipped instead (user-confirmed):
+  - *Pure (aegis-security)* — `DetectorMask::resolve_tier_override` (tri-state
+    `TierDetectorMask` → full mask, `None`=inherit base) +
+    `MaskState::from_detectors_config(cfg.detectors, ai_enabled)` (base + `Ai`
+    bit from sibling `cfg.ai.enabled` + per-tier overlays). One constructor now
+    shared by boot **and** every watcher.
+  - *Apply (reload.rs)* — `apply_cfg_change_to_mask` now `store_state`s the FULL
+    `MaskState` from cfg. **Contract change** (file/etcd/redis all in lockstep):
+    `cfg.detectors.per_tier` is now the source of truth — a live override absent
+    from cfg is cleared. Side effect / bugfix: file+etcd reloads now set the
+    base `Ai` bit from `cfg.ai.enabled` (previously clobbered off).
+  - *Boot (run.rs)* — seeds via `from_detectors_config` so per-tier overlays
+    authored in YAML apply at boot, not just after the first reload.
+  - *Write (admin_mutate.rs)* — `patch_detectors` patches base toggles
+    (`ai`→sibling `cfg.ai.enabled`, `open_redirect`→`.enabled`, rest →
+    `cfg.detectors.<class>.enabled`) + per-tier (`Some`→all-`Some`
+    `TierDetectorMask`, `null`→remove); `handle_detectors_put` rewritten to the
+    `apply_async`/`activate` template (requires a state backend; retires the
+    local-snapshot model). Old `mask_state_to_json` removed.
 
 **REMAINING (resume order):**
-1. **Fold `detectors`** — *apply-side already wired* (`apply_cfg_change_to_mask`
-   re-derives the mask from `cfg.detectors` in the watcher). Only fold the
-   dedicated `PUT /api/detectors` handler: `cfg.detectors` is the SAME shape
-   as the PUT body (per-class `DetectorToggle{enabled}` + `per_tier`
-   `TierDetectorMask`), so map the PUT body → patch `cfg.detectors.<class>.enabled`
-   + `cfg.detectors.per_tier.<tier>.<class>` on the doc + activate via
-   `apply_async`. Mechanical (≈12 classes). Reuse the handler-fold template
-   below. *Smallest remaining — do first.*
-2. **`rules`** — needs a NEW feature first: `cfg.rules` is `{paths, max_rule_count,
+1. **`rules`** — needs a NEW feature first: `cfg.rules` is `{paths, max_rule_count,
    strict_compile}` (rule *files*), NOT the rule list. Add `cfg.rules.inline:
    Vec<RuleDef>`, seed the `RuleStore` from it (reuse the TierStore
    run.rs→services plumbing), add `apply_cfg_change_to_rules`, then fold the
    CRUD handlers (post/put/delete/toggle each patch the inline list + activate).
-3. **`upstreams`** — needs a NEW feature first: pools are NOT hot-reloadable
+2. **`upstreams`** — needs a NEW feature first: pools are NOT hot-reloadable
    today (`run.rs` warns "pools are NOT rebuilt"). Implement live pool rebuild
    (DNS re-resolve + health re-arm) on `cfg.upstreams` change, add
    `apply_cfg_change_to_upstreams`, then fold `PUT /api/upstreams/config`.
-4. **Phase C — metrics aggregation** — `crates/aegis-control/src/metrics/window_flush.rs`
+3. **Phase C — metrics aggregation** — `crates/aegis-control/src/metrics/window_flush.rs`
    (local ring → `incrby` flush, `expire` TTL=2×window) for `RouteActivityWindow`
    (P5) + `AccessListHits` (P4); flush tasks at boot; endpoint reads switch to
    `scan_prefix`+sum when `backend != in_memory`, else local rings;
    `flush_failed` audit. Design: [`plans/future/multi-node-metrics-aggregation.md`](./plans/future/multi-node-metrics-aggregation.md).
-5. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
+4. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
    + Helm toggle + single-VIP RPS benchmark.
 
-**Reusable fold patterns (from AI / response_filter / tier):**
+**Reusable fold patterns (from AI / response_filter / tier / detectors):**
 - *Write side*: handler patches the field on the shared doc's YAML blob via
   `serde_yaml::Value` (`WafConfig` isn't `Serialize`), seeds from
   `services.config_yaml_path` when no doc exists, validates via

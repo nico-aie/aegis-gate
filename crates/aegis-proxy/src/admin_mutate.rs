@@ -35,7 +35,9 @@
 //!   chars before audit-chain entries land.
 //! - [`upstreams_audit_view`] — converts a `UpstreamsConfig`
 //!   into the audit-chain `before/after` shape.
-//! - [`mask_state_to_json`] — same for detector mask state.
+//! - [`patch_detectors`] — patches `cfg.detectors` (+ sibling
+//!   `cfg.ai.enabled`) on the shared config-plane doc for the
+//!   folded `PUT /api/detectors`.
 //! - [`default_true`] — serde default helper.
 //!
 //! ## Visibility
@@ -59,7 +61,6 @@ use bytes::Bytes;
 use http_body_util::Full;
 use hyper::Response;
 
-use aegis_core::config::WafConfig;
 use aegis_core::ReadinessSignal;
 
 use crate::responses::{
@@ -2647,72 +2648,158 @@ pub(crate) async fn handle_risk_reset_key(
     }
 }
 
+/// 2026-05-27 (Phase B detectors fold) — get-or-create a child mapping
+/// under `m[key]`, erroring if the key exists but isn't a mapping. Used
+/// by [`patch_detectors`] to drill into the nested config blocks
+/// (`detectors`, `detectors.per_tier`, the per-class entries).
+fn yaml_child_map<'a>(
+    m: &'a mut serde_yaml::Mapping,
+    key: &str,
+) -> Result<&'a mut serde_yaml::Mapping, String> {
+    let entry = m
+        .entry(serde_yaml::Value::String(key.into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    match entry {
+        serde_yaml::Value::Mapping(mm) => Ok(mm),
+        _ => Err(format!("`{key}` config is not a mapping")),
+    }
+}
+
+/// Build the `TierDetectorMask` YAML shape (all 16 classes as explicit
+/// bools) from a `DetectorMaskBody`. An all-`Some` mask losslessly
+/// round-trips back to the full override the operator PUT when
+/// `reload::apply_cfg_change_to_mask` re-derives it.
+fn tier_override_yaml(mb: &aegis_security::detectors::DetectorMaskBody) -> serde_yaml::Value {
+    let s = |x: &str| serde_yaml::Value::String(x.into());
+    let mut entry = serde_yaml::Mapping::new();
+    for (k, v) in [
+        ("sqli", mb.sqli),
+        ("xss", mb.xss),
+        ("path_traversal", mb.path_traversal),
+        ("ssrf", mb.ssrf),
+        ("header_injection", mb.header_injection),
+        ("body_abuse", mb.body_abuse),
+        ("recon", mb.recon),
+        ("brute_force", mb.brute_force),
+        ("command_injection", mb.command_injection),
+        ("template_injection", mb.template_injection),
+        ("nosql_injection", mb.nosql_injection),
+        ("open_redirect", mb.open_redirect),
+        ("behavior_signals", mb.behavior_signals),
+        ("velocity", mb.velocity),
+        ("canary", mb.canary),
+        ("ai", mb.ai),
+    ] {
+        entry.insert(s(k), serde_yaml::Value::Bool(v));
+    }
+    serde_yaml::Value::Mapping(entry)
+}
+
+/// Patch `cfg.detectors` (+ the sibling `cfg.ai.enabled`) on a YAML
+/// config blob from a `DetectorsPutBody`, mirroring the live-mask
+/// semantics of `apply_put_body`:
+///
+/// * `body.mask` present → write every base class to
+///   `cfg.detectors.<class>.enabled`, **except** `ai` which routes to
+///   the sibling `cfg.ai.enabled` block (AI config lives there, not in
+///   `cfg.detectors`). Absent → leave the base untouched.
+/// * `body.overrides[tier]` = `Some(mask)` → write
+///   `cfg.detectors.per_tier.<tier>` as an all-`Some` `TierDetectorMask`;
+///   `None` → remove that tier's entry. Unknown tier names are rejected.
+///
+/// The activated doc is re-derived on every node by
+/// `reload::apply_cfg_change_to_mask`, so the fold is eventually
+/// consistent across the fleet.
+fn patch_detectors(
+    base: &str,
+    body: &aegis_control::api::detectors::DetectorsPutBody,
+) -> Result<String, String> {
+    use aegis_security::detectors::mask::DetectorClass;
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let s = |x: &str| serde_yaml::Value::String(x.into());
+
+    if let Some(mask) = body.mask.as_ref() {
+        // AI bit lives in the sibling `cfg.ai` block, not `cfg.detectors`.
+        yaml_child_map(map, "ai")?.insert(s("enabled"), serde_yaml::Value::Bool(mask.ai));
+        // The other 15 mask bits all map to a `.enabled` field under
+        // `cfg.detectors` (14 `DetectorToggle` classes + the
+        // `OpenRedirectConfig`, which also carries `.enabled`).
+        let det = yaml_child_map(map, "detectors")?;
+        for (class, enabled) in [
+            (DetectorClass::Sqli, mask.sqli),
+            (DetectorClass::Xss, mask.xss),
+            (DetectorClass::PathTraversal, mask.path_traversal),
+            (DetectorClass::Ssrf, mask.ssrf),
+            (DetectorClass::HeaderInjection, mask.header_injection),
+            (DetectorClass::BodyAbuse, mask.body_abuse),
+            (DetectorClass::Recon, mask.recon),
+            (DetectorClass::BruteForce, mask.brute_force),
+            (DetectorClass::CommandInjection, mask.command_injection),
+            (DetectorClass::TemplateInjection, mask.template_injection),
+            (DetectorClass::NoSqlInjection, mask.nosql_injection),
+            (DetectorClass::OpenRedirect, mask.open_redirect),
+            (DetectorClass::BehaviorSignals, mask.behavior_signals),
+            (DetectorClass::Velocity, mask.velocity),
+            (DetectorClass::Canary, mask.canary),
+        ] {
+            yaml_child_map(det, class.as_str())?
+                .insert(s("enabled"), serde_yaml::Value::Bool(enabled));
+        }
+    }
+
+    if !body.overrides.is_empty() {
+        let per_tier = {
+            let det = yaml_child_map(map, "detectors")?;
+            yaml_child_map(det, "per_tier")?
+        };
+        for (tier_raw, ov) in &body.overrides {
+            let tier = aegis_control::api::detectors::parse_tier_str(tier_raw)
+                .ok_or_else(|| format!("unknown tier: {tier_raw}"))?;
+            let key = aegis_security::detectors::tier_str(tier);
+            match ov {
+                Some(mb) => {
+                    per_tier.insert(s(key), tier_override_yaml(mb));
+                }
+                None => {
+                    per_tier.remove(key);
+                }
+            }
+        }
+    }
+
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
 pub(crate) async fn handle_detectors_put(
     req: hyper::Request<hyper::body::Incoming>,
-    cfg: &WafConfig,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
     use http_body_util::BodyExt;
 
-    // Pull CSRF cookie + header before consuming the body.
-    let csrf_cookie = req
-        .headers()
-        .get_all(hyper::header::COOKIE)
-        .iter()
-        .filter_map(|h| h.to_str().ok())
-        .find_map(|raw| extract_named_cookie(raw, "aegis_csrf"))
-        .map(|s| s.to_string());
-    let csrf_header = req
-        .headers()
-        .get("x-csrf-token")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string());
-    // F-CRITICAL-004 (2026-05-17 Phase 3 step 5): read the
-    // validated actor identity set by `admin_auth_middleware` —
-    // the client-supplied `X-Actor` header is silently stripped
-    // at the gate so this code never sees a spoofed value.
-    // `unwrap_or("admin")` is a defensive fallback for paths
-    // that bypass the gate (open endpoints don't normally land
-    // on mutation handlers, but be paranoid).
-    let actor = req
-        .headers()
-        .get("x-aegis-actor")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("admin")
-        .to_string();
-    let request_id = req
-        .headers()
-        .get("x-request-id")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            blake3::hash(
-                format!(
-                    "detectors-put:{}",
-                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                )
-                .as_bytes(),
-            )
-            .to_hex()
-            .to_string()
-        });
+    let pre = mutation_preamble(&req, "detectors-put");
 
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            let err = aegis_control::api::mutation::MutationError::Internal(
-                "failed to read request body".into(),
-            );
-            return mutation_error_response(err);
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "failed to read request body".into(),
+                ),
+            )
         }
     };
     let body_str = match std::str::from_utf8(body_bytes.as_ref()) {
         Ok(s) => s,
         Err(_) => {
-            let err = aegis_control::api::mutation::MutationError::Validation(
-                "request body is not valid UTF-8".into(),
-            );
-            return mutation_error_response(err);
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "request body is not valid UTF-8".into(),
+                ),
+            )
         }
     };
 
@@ -2725,83 +2812,120 @@ pub(crate) async fn handle_detectors_put(
         }
     };
 
-    let modes: Vec<aegis_core::config::ComplianceMode> = cfg
-        .compliance
-        .as_ref()
-        .map(|c| c.modes.clone())
-        .unwrap_or_default();
+    // 2026-05-27 (Phase B detectors fold, option A — eventual). Route the
+    // detector mask change through the cluster config plane instead of
+    // flipping the local in-process `SharedDetectorMask`: patch the base
+    // toggles + per-tier overrides onto the shared config document and
+    // activate. Every node's watcher (incl. this one) re-derives the full
+    // mask state via `apply_cfg_change_to_mask` on its next poll (~3s) —
+    // the shared store is the single source of truth, so the change is
+    // eventually-consistent across the fleet. This retires the per-node
+    // local-snapshot model: per-tier overrides now live in the doc.
+    let Some(backend) = services.state_backend.as_ref() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "config plane unavailable: no state backend wired".into(),
+            ),
+        );
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
-    // Snapshot before/after states for the audit-chain diff. The
-    // dashboard reads `diff.before` / `diff.after` to render a
-    // "what changed" tooltip on the audit log row.
-    let before_state = services.detector_mask.load_state();
-    let proposed_state = match aegis_control::api::detectors::apply_put_body(
-        before_state.clone(),
-        put_body,
-        &modes,
-    ) {
-        Ok(s) => s,
-        Err(violations) => {
+    let (base_blob, expected) = match store.load().await {
+        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(None) => match services.config_yaml_path.as_ref() {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(s) => (s, 0u64),
+                Err(e) => {
+                    return mutation_error_response(
+                        aegis_control::api::mutation::MutationError::Internal(format!(
+                            "cannot read boot config {} to seed the config plane: {e}",
+                            path.display()
+                        )),
+                    )
+                }
+            },
+            None => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(
+                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
+                    ),
+                )
+            }
+        },
+        Err(e) => {
             return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Validation(violations.join("; ")),
-            );
+                aegis_control::api::mutation::MutationError::Internal(format!(
+                    "config store read failed: {e}"
+                )),
+            )
         }
     };
 
-    let before = mask_state_to_json(&before_state);
-    let after = mask_state_to_json(&proposed_state);
+    let new_blob = match patch_detectors(&base_blob, &put_body) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
 
+    let touched_tiers: Vec<&str> = put_body.overrides.keys().map(|k| k.as_str()).collect();
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({
+        "base_changed": put_body.mask.is_some(),
+        "tiers": touched_tiers,
+    });
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
-        csrf_cookie: csrf_cookie.as_deref(),
-        csrf_header: csrf_header.as_deref(),
-        actor: &actor,
-        request_id: &request_id,
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
         resource: "/api/detectors",
-        // CQF-T3 quality fix — was "update" for everything; the
-        // generic label made the rollback dispatcher unable to
-        // match this row vs. e.g. `mode_set` or
-        // `risk_thresholds_set`. The new label is consistent
-        // with the other audit-mutated handlers
-        // (`{resource}_set`).
         action: "detector_mask_set",
         reason: "operator updated detector mask",
     };
-    let mask_handle = services.detector_mask.clone();
-    let outcome = services.mutate.apply(&req_ctx, before, after, || {
-        mask_handle.store_state(proposed_state.clone());
-        Ok::<(), String>(())
-    });
 
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, "update detector mask")
+                .await
+        })
+        .await;
     match outcome {
-        Ok(_) => {
-            // DURABLE-T2 — best-effort persist after the in-memory
-            // swap succeeds. Disk write failure does NOT fail the
-            // PUT — the live mask is already updated, the audit
-            // chain entry committed, and next successful PUT will
-            // retry persistence. We log a warn so operators can
-            // see the durability gap.
-            if let Some(persist_cfg) = cfg.detectors.persistence.as_ref() {
-                let snap = aegis_control::api::detectors_persist::DetectorMaskSnapshot::from_state(
-                    &services.detector_mask.load_state(),
-                );
-                if let Err(e) = aegis_control::api::detectors_persist::save_snapshot(
-                    &persist_cfg.path,
-                    &snap,
-                ).await {
-                    tracing::warn!(
-                        path = %persist_cfg.path.display(),
-                        error = %e,
-                        "detector mask snapshot save failed; live state intact, retry on next PUT",
-                    );
-                }
-            }
-            let body = aegis_control::api::detectors::render_get(
-                &services.detector_mask,
-                &modes,
-            );
-            json_body_response(200, body, "private, no-store")
-        }
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -3278,30 +3402,6 @@ pub(crate) async fn handle_mtls_sans_test(
     )
 }
 
-/// Render a [`MaskState`] as a JSON object with `base` and
-/// `overrides` keys. Used as the `before`/`after` payload of the
-/// audit-chain diff so reviewers can see exactly which tier (and
-/// which class within that tier) changed.
-fn mask_state_to_json(
-    state: &aegis_security::detectors::MaskState,
-) -> serde_json::Value {
-    use aegis_security::detectors::{tier_str, DetectorMaskBody, ALL_TIERS};
-    let mut overrides = serde_json::Map::new();
-    for tier in ALL_TIERS {
-        if let Some(m) = state.override_for(tier) {
-            let body: DetectorMaskBody = m.into();
-            overrides.insert(
-                tier_str(tier).to_string(),
-                serde_json::to_value(body).unwrap_or(serde_json::Value::Null),
-            );
-        }
-    }
-    let base: DetectorMaskBody = state.base.into();
-    serde_json::json!({
-        "base": base,
-        "overrides": serde_json::Value::Object(overrides),
-    })
-}
 
 // FIX 2026-05-04 — convert a `&[RouteConfig]` to the
 // `RouteSummary` shape `services.routes` exposes via
@@ -4512,6 +4612,120 @@ mod tests {
         assert_eq!(v["tiers"]["high"]["cumulative_challenge_at"].as_u64(), Some(40));
         assert!(v["tiers"]["high"]["cumulative_block_at"].is_null());
         assert_eq!(v["tiers"]["high"]["pipeline"][0].as_str(), Some("sqli"));
+    }
+
+    // ---- 2026-05-27 (Phase B detectors fold) — patch_detectors ----
+
+    #[test]
+    fn patch_detectors_writes_base_toggles_and_routes_ai_to_sibling_block() {
+        use aegis_control::api::detectors::DetectorsPutBody;
+        use aegis_security::detectors::{DetectorMask, DetectorMaskBody};
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\nai:\n  enabled: true\n";
+        let mut mb = DetectorMaskBody::from(DetectorMask::all_enabled());
+        mb.sqli = false; // disable sqli on the base
+        mb.ai = false; // AI lives in the sibling cfg.ai block, not cfg.detectors
+        let body = DetectorsPutBody {
+            mask: Some(mb),
+            overrides: Default::default(),
+        };
+        let out = patch_detectors(base, &body).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(v["detectors"]["sqli"]["enabled"].as_bool(), Some(false));
+        assert_eq!(v["detectors"]["xss"]["enabled"].as_bool(), Some(true));
+        assert_eq!(
+            v["ai"]["enabled"].as_bool(),
+            Some(false),
+            "the base mask `ai` bit routes to cfg.ai.enabled, not cfg.detectors.ai",
+        );
+        // open_redirect is an OpenRedirectConfig (has `.enabled`), so it
+        // patches the same way as the DetectorToggle classes.
+        assert_eq!(v["detectors"]["open_redirect"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn patch_detectors_writes_per_tier_override() {
+        use aegis_control::api::detectors::DetectorsPutBody;
+        use aegis_security::detectors::{DetectorClass, DetectorMask, DetectorMaskBody};
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n";
+        let ov = DetectorMaskBody::from(
+            DetectorMask::all_enabled().with(DetectorClass::Recon, false),
+        );
+        let mut body = DetectorsPutBody::default();
+        body.overrides.insert("medium".into(), Some(ov));
+        let out = patch_detectors(base, &body).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            v["detectors"]["per_tier"]["medium"]["recon"].as_bool(),
+            Some(false),
+        );
+        assert_eq!(
+            v["detectors"]["per_tier"]["medium"]["sqli"].as_bool(),
+            Some(true),
+        );
+    }
+
+    #[test]
+    fn patch_detectors_clears_per_tier_override_on_null() {
+        use aegis_control::api::detectors::DetectorsPutBody;
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\ndetectors:\n  per_tier:\n    medium:\n      recon: false\n";
+        let mut body = DetectorsPutBody::default();
+        body.overrides.insert("medium".into(), None); // null clears
+        let out = patch_detectors(base, &body).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert!(
+            v["detectors"]["per_tier"].get("medium").is_none(),
+            "null override removes the per_tier entry",
+        );
+    }
+
+    #[test]
+    fn patch_detectors_rejects_unknown_tier() {
+        use aegis_control::api::detectors::DetectorsPutBody;
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n";
+        let mut body = DetectorsPutBody::default();
+        body.overrides.insert("paranoid".into(), None);
+        assert!(patch_detectors(base, &body).is_err());
+    }
+
+    #[test]
+    fn patch_detectors_roundtrips_through_config_and_resolve() {
+        use aegis_control::api::detectors::DetectorsPutBody;
+        use aegis_core::tier::Tier;
+        use aegis_security::detectors::{DetectorClass, DetectorMask, DetectorMaskBody, MaskState};
+        // A complete, valid config so load_config_str accepts it.
+        let base = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+"#;
+        let ov = DetectorMaskBody::from(
+            DetectorMask::all_enabled().with(DetectorClass::CommandInjection, false),
+        );
+        let mut body = DetectorsPutBody::default();
+        body.overrides.insert("critical".into(), Some(ov));
+        let out = patch_detectors(base, &body).unwrap();
+
+        // The patched blob validates (per_tier shape obeys deny_unknown_fields).
+        let cfg = aegis_core::load_config_str(&out).expect("patched config validates");
+        // And the apply-side re-derive reproduces the override.
+        let state = MaskState::from_detectors_config(&cfg.detectors, cfg.ai.enabled);
+        let crit = state.resolve(Some(Tier::Critical));
+        assert!(
+            !crit.is_enabled(DetectorClass::CommandInjection),
+            "per_tier override survives patch → load → re-derive",
+        );
     }
 
     #[test]

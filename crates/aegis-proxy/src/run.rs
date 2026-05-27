@@ -307,23 +307,22 @@ pub async fn run(
 
     // Hot-reloadable detector class mask. Initial state mirrors
     // `cfg.detectors`; the control plane swaps it via PUT
-    // `/api/detectors` (P2 of the security-toggle plan).
-    let mask = aegis_security::detectors::SharedDetectorMask::from_config(&cfg.detectors);
-
-    // 2026-05-19 — seed the `Ai` bit from `cfg.ai.enabled`. The AI
-    // detector config lives in a sibling `cfg.ai` block (not in
-    // `cfg.detectors`), so `from_config` above can't see it. We
-    // OR the bit in here so `GET /api/detectors` lists AI alongside
-    // the OWASP toggles and per-tier overrides can target it.
-    // The existing `Arc<AtomicBool>` (set further down) stays as
-    // the global kill-switch; Phase 3 wires the AI dispatcher to
-    // AND both gates so toggling either off skips inference.
-    {
-        use aegis_security::detectors::mask::DetectorClass;
-        let mut base = mask.load_state().base;
-        base = base.with(DetectorClass::Ai, cfg.ai.enabled);
-        mask.store(base);
-    }
+    // `/api/detectors` (folded through the cluster config plane in
+    // Phase B), and the config watchers re-derive it on reload.
+    //
+    // 2026-05-27 (Phase B detectors fold) — seed the full effective
+    // state (base + `Ai` bit from the sibling `cfg.ai.enabled` block +
+    // `cfg.detectors.per_tier` overrides) through the same
+    // `MaskState::from_detectors_config` constructor the watchers use,
+    // so a per-tier overlay authored in YAML applies at boot, not just
+    // after the first reload. The existing `Arc<AtomicBool>` (set
+    // further down) stays as the global AI kill-switch.
+    let mask = aegis_security::detectors::SharedDetectorMask::from_state(
+        aegis_security::detectors::MaskState::from_detectors_config(
+            &cfg.detectors,
+            cfg.ai.enabled,
+        ),
+    );
 
     // CC-T (compliance-on-boot) — `cfg.detectors.<class>.enabled:
     // false` flipped together with `cfg.compliance.modes: [pci|...]`

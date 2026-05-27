@@ -2591,8 +2591,12 @@ pub struct DetectorsConfig {
     ///       recon: false              # disable recon on baseline
     /// ```
     ///
-    /// Schema only — consumer wiring lands when the detector mask
-    /// runtime gains a tier-aware resolver (Phase E).
+    /// 2026-05-27 (Phase B detectors fold) — now **consumed**: the boot
+    /// path and every config watcher build the live `MaskState` via
+    /// `MaskState::from_detectors_config`, which resolves each entry here
+    /// into a per-tier override (`Some(true)`/`Some(false)` force on/off,
+    /// `None` inherits the base). This is the source of truth — a live
+    /// override absent from this map is cleared on the next reload.
     #[serde(default)]
     pub per_tier: HashMap<Tier, TierDetectorMask>,
 }

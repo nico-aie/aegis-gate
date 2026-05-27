@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use aegis_core::config::WafConfig;
-use aegis_security::detectors::{DetectorMask, SharedDetectorMask};
+use aegis_security::detectors::{MaskState, SharedDetectorMask};
 use aegis_security::rate_limit::{IpRateLimitConfig, IpRateLimiter};
 
 use crate::listener::client_trust::ClientTrustStore;
@@ -53,15 +53,22 @@ pub enum ReloadOutcome {
     NoMask,
 }
 
-/// Re-derive the detector mask base from `new_cfg.detectors` and
-/// run the compliance clamp against the result. Per-tier
-/// overrides are preserved.
+/// Re-derive the full detector mask state (base **and** per-tier
+/// overrides) from `new_cfg` and run the compliance clamp against
+/// the result.
 ///
-/// The mask's `store(new_base)` only replaces the base; per-tier
-/// overrides set via `PUT /api/detectors` survive the reload.
-/// The compliance clamp then re-runs on both base and overrides
-/// so a freshly-disabled compliance-pinned class gets forced
-/// back on no matter where it lives.
+/// 2026-05-27 (Phase B detectors fold) — contract change. The
+/// config document is now the single source of truth for per-tier
+/// overrides: the whole [`MaskState`] is rebuilt from
+/// `new_cfg.detectors` (base `enabled` flags + the `Ai` bit from
+/// `new_cfg.ai.enabled` + `cfg.detectors.per_tier`) and
+/// `store_state`'d, so an override authored in YAML — or activated
+/// through the cluster config plane via the folded
+/// `PUT /api/detectors` — re-derives identically on every node.
+/// A live override absent from `cfg.detectors.per_tier` is cleared
+/// (it used to be preserved). The compliance clamp then re-runs on
+/// both base and overrides so a freshly-disabled compliance-pinned
+/// class gets forced back on no matter where it lives.
 pub fn apply_cfg_change_to_mask(
     new_cfg: &WafConfig,
     mask: Option<&SharedDetectorMask>,
@@ -70,8 +77,9 @@ pub fn apply_cfg_change_to_mask(
         return ReloadOutcome::NoMask;
     };
 
-    let new_base = DetectorMask::from_config(&new_cfg.detectors);
-    mask.store(new_base);
+    let new_state =
+        MaskState::from_detectors_config(&new_cfg.detectors, new_cfg.ai.enabled);
+    mask.store_state(new_state);
 
     let modes = new_cfg
         .compliance
@@ -504,7 +512,7 @@ pub fn apply_cfg_change_to_client_auth(
 mod tests {
     use super::*;
     use aegis_core::config::ComplianceMode;
-    use aegis_security::detectors::DetectorClass;
+    use aegis_security::detectors::{DetectorClass, DetectorMask};
 
     fn yaml_with_sqli(enabled: bool, modes: &[&str]) -> String {
         let modes_yaml = if modes.is_empty() {
@@ -538,6 +546,35 @@ detectors:
 
     fn parse(yaml: &str) -> WafConfig {
         aegis_core::load_config_str(yaml).unwrap()
+    }
+
+    // 2026-05-27 (Phase B detectors fold) — config carrying a per-tier
+    // override so the watcher re-derive can be exercised.
+    fn yaml_with_per_tier() -> String {
+        r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+detectors:
+  sqli:
+    enabled: true
+  per_tier:
+    medium:
+      recon: false
+"#
+        .to_string()
     }
 
     // 2026-05-27 (Phase B) — config with an explicit `ai.enabled`.
@@ -766,11 +803,17 @@ tiers:
     }
 
     #[test]
-    fn preserves_per_tier_overrides_on_reload() {
+    fn clears_live_per_tier_override_absent_from_cfg() {
+        // 2026-05-27 (Phase B detectors fold) — contract change. The
+        // shared config doc is now the single source of truth for
+        // per-tier overrides: a live override NOT present in
+        // `cfg.detectors.per_tier` is cleared on reload (it used to be
+        // preserved). Operators set per-tier policy through the folded
+        // `PUT /api/detectors`, which patches `cfg.detectors.per_tier`
+        // + activates, so the watcher re-derive reproduces it.
         use aegis_core::tier::Tier;
-        let cfg = parse(&yaml_with_sqli(true, &[]));
+        let cfg = parse(&yaml_with_sqli(true, &[])); // no per_tier
         let mask = SharedDetectorMask::default();
-        // Operator set a per-tier override before reload.
         let custom_override = DetectorMask::all_enabled()
             .with(DetectorClass::Recon, false);
         mask.store_state(
@@ -779,9 +822,38 @@ tiers:
 
         let outcome = apply_cfg_change_to_mask(&cfg, Some(&mask));
         assert_eq!(outcome, ReloadOutcome::Applied);
-        let live = mask.load_state();
-        let kept = live.override_for(Tier::Medium).expect("override preserved");
-        assert!(!kept.is_enabled(DetectorClass::Recon), "override survived reload");
+        assert_eq!(
+            mask.load_state().override_for(Tier::Medium),
+            None,
+            "live override absent from cfg is cleared — cfg is source of truth",
+        );
+    }
+
+    #[test]
+    fn rederives_per_tier_override_from_cfg() {
+        // The watcher reproduces an override carried by
+        // `cfg.detectors.per_tier` so a folded PUT propagates to every
+        // node. Tiers omitted from cfg carry no override.
+        use aegis_core::tier::Tier;
+        let cfg = parse(&yaml_with_per_tier());
+        let mask = SharedDetectorMask::default();
+
+        let outcome = apply_cfg_change_to_mask(&cfg, Some(&mask));
+        assert_eq!(outcome, ReloadOutcome::Applied);
+        let state = mask.load_state();
+        let medium = state.resolve(Some(Tier::Medium));
+        assert!(
+            !medium.is_enabled(DetectorClass::Recon),
+            "cfg per_tier.medium.recon=false re-derived onto the live mask",
+        );
+        assert!(
+            medium.is_enabled(DetectorClass::Sqli),
+            "unset per_tier classes inherit the base (sqli stays on)",
+        );
+        assert!(
+            state.override_for(Tier::High).is_none(),
+            "tiers omitted from cfg.per_tier carry no override",
+        );
     }
 
     // ---- apply_cfg_change_to_routes ----

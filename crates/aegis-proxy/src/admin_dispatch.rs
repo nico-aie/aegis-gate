@@ -114,7 +114,7 @@ pub(crate) async fn handle_admin_request(
     // P2 mutating endpoint: PUT /api/detectors. Reads body
     // asynchronously, runs through AuditedMutate.
     if method == hyper::Method::PUT && path == "/api/detectors" {
-        return handle_detectors_put(req, cfg, services).await;
+        return handle_detectors_put(req, services).await;
     }
 
     // 2026-05-27 — cluster config plane. Audit-mutated + CSRF-gated via

@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use aegis_core::config::DetectorsConfig;
+use aegis_core::config::{DetectorsConfig, TierDetectorMask};
 use aegis_core::tier::Tier;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
@@ -392,6 +392,68 @@ impl From<DetectorMaskBody> for DetectorMask {
     }
 }
 
+impl DetectorMask {
+    /// 2026-05-27 (Phase B detectors fold) — resolve a per-tier
+    /// override mask by layering a tri-state [`TierDetectorMask`] over
+    /// `self` (the base): `Some(true)` / `Some(false)` force the class
+    /// on / off for that tier, `None` inherits the base bit. Mirrors
+    /// the documented `cfg.detectors.per_tier.<tier>` semantics so a
+    /// folded `PUT /api/detectors` re-derives an identical override on
+    /// every node straight from the shared config document. The `ai`
+    /// bit inherits the base's `Ai` bit (which the caller seeds from
+    /// `cfg.ai.enabled` — see [`MaskState::from_detectors_config`]).
+    pub fn resolve_tier_override(self, tm: &TierDetectorMask) -> DetectorMask {
+        let mut m = self;
+        m.set(DetectorClass::Sqli, tm.sqli.unwrap_or(self.is_enabled(DetectorClass::Sqli)));
+        m.set(DetectorClass::Xss, tm.xss.unwrap_or(self.is_enabled(DetectorClass::Xss)));
+        m.set(
+            DetectorClass::PathTraversal,
+            tm.path_traversal.unwrap_or(self.is_enabled(DetectorClass::PathTraversal)),
+        );
+        m.set(DetectorClass::Ssrf, tm.ssrf.unwrap_or(self.is_enabled(DetectorClass::Ssrf)));
+        m.set(
+            DetectorClass::HeaderInjection,
+            tm.header_injection.unwrap_or(self.is_enabled(DetectorClass::HeaderInjection)),
+        );
+        m.set(
+            DetectorClass::BodyAbuse,
+            tm.body_abuse.unwrap_or(self.is_enabled(DetectorClass::BodyAbuse)),
+        );
+        m.set(DetectorClass::Recon, tm.recon.unwrap_or(self.is_enabled(DetectorClass::Recon)));
+        m.set(
+            DetectorClass::BruteForce,
+            tm.brute_force.unwrap_or(self.is_enabled(DetectorClass::BruteForce)),
+        );
+        m.set(
+            DetectorClass::CommandInjection,
+            tm.command_injection.unwrap_or(self.is_enabled(DetectorClass::CommandInjection)),
+        );
+        m.set(
+            DetectorClass::TemplateInjection,
+            tm.template_injection.unwrap_or(self.is_enabled(DetectorClass::TemplateInjection)),
+        );
+        m.set(
+            DetectorClass::NoSqlInjection,
+            tm.nosql_injection.unwrap_or(self.is_enabled(DetectorClass::NoSqlInjection)),
+        );
+        m.set(
+            DetectorClass::OpenRedirect,
+            tm.open_redirect.unwrap_or(self.is_enabled(DetectorClass::OpenRedirect)),
+        );
+        m.set(
+            DetectorClass::BehaviorSignals,
+            tm.behavior_signals.unwrap_or(self.is_enabled(DetectorClass::BehaviorSignals)),
+        );
+        m.set(
+            DetectorClass::Velocity,
+            tm.velocity.unwrap_or(self.is_enabled(DetectorClass::Velocity)),
+        );
+        m.set(DetectorClass::Canary, tm.canary.unwrap_or(self.is_enabled(DetectorClass::Canary)));
+        m.set(DetectorClass::Ai, tm.ai.unwrap_or(self.is_enabled(DetectorClass::Ai)));
+        m
+    }
+}
+
 /// Effective mask state held inside the [`SharedDetectorMask`]
 /// `ArcSwap`. Carries both the global base mask and per-tier
 /// overrides (P3 of the security-toggle plan). Indexed by
@@ -432,6 +494,30 @@ impl MaskState {
     pub fn with_base(mut self, base: DetectorMask) -> Self {
         self.base = base;
         self
+    }
+
+    /// 2026-05-27 (Phase B detectors fold) — build the full effective
+    /// mask state from a `cfg.detectors` snapshot plus the sibling AI
+    /// gate (`cfg.ai.enabled`). The base mirrors the per-class
+    /// `enabled` flags with the `Ai` bit OR'd in from `ai_enabled` (AI
+    /// config lives in `cfg.ai`, not `cfg.detectors`). Each tier listed
+    /// in `cfg.per_tier` becomes a per-tier override resolved against
+    /// the base via [`DetectorMask::resolve_tier_override`]; tiers
+    /// absent from `per_tier` carry no override (they inherit the base
+    /// at resolve time).
+    ///
+    /// This is the single source of truth the boot path
+    /// (`aegis-proxy::run`) and every config watcher
+    /// (`reload::apply_cfg_change_to_mask`) share, so per-tier overlays
+    /// authored in YAML — or activated through the cluster config plane
+    /// — apply identically on every node.
+    pub fn from_detectors_config(cfg: &DetectorsConfig, ai_enabled: bool) -> Self {
+        let base = DetectorMask::from_config(cfg).with(DetectorClass::Ai, ai_enabled);
+        let mut state = MaskState::new(base);
+        for (tier, tm) in &cfg.per_tier {
+            state = state.with_override(*tier, Some(base.resolve_tier_override(tm)));
+        }
+        state
     }
 }
 
@@ -814,5 +900,73 @@ mod tests {
         let new_state = MaskState::new(DetectorMask::all_enabled());
         s.store_state(new_state);
         assert_eq!(s.resolve(Some(Tier::Medium)), DetectorMask::all_enabled());
+    }
+
+    // ---- 2026-05-27 (Phase B detectors fold) — per-tier override
+    // reconstruction from cfg.detectors.per_tier ----------------------
+
+    #[test]
+    fn resolve_tier_override_forces_and_inherits() {
+        use aegis_core::config::TierDetectorMask;
+        // Base: sqli ON, recon OFF, ai OFF (the rest follow `all_enabled`).
+        let base = DetectorMask::all_enabled()
+            .with(DetectorClass::Recon, false)
+            .with(DetectorClass::Ai, false);
+        let tm = TierDetectorMask {
+            sqli: Some(false),   // force OFF on this tier
+            recon: Some(true),   // force ON on this tier
+            ai: Some(true),      // force AI ON on this tier
+            ..Default::default() // everything else inherits the base
+        };
+        let resolved = base.resolve_tier_override(&tm);
+        assert!(!resolved.is_enabled(DetectorClass::Sqli), "Some(false) forces off");
+        assert!(resolved.is_enabled(DetectorClass::Recon), "Some(true) forces on");
+        assert!(resolved.is_enabled(DetectorClass::Ai), "Some(true) forces AI on");
+        // Inherited (None) classes match the base verbatim.
+        assert!(resolved.is_enabled(DetectorClass::Xss), "None inherits base ON");
+        assert!(resolved.is_enabled(DetectorClass::Velocity), "None inherits base ON");
+    }
+
+    #[test]
+    fn from_detectors_config_seeds_base_ai_and_per_tier() {
+        use aegis_core::config::{DetectorsConfig, TierDetectorMask};
+        use aegis_core::tier::Tier;
+        let mut cfg = DetectorsConfig::default();
+        cfg.xss.enabled = false; // base flips xss off
+        cfg.per_tier.insert(
+            Tier::Critical,
+            TierDetectorMask {
+                command_injection: Some(true),
+                ..Default::default()
+            },
+        );
+
+        // ai_enabled = true must OR the Ai bit into the base AND be the
+        // inherit value for per-tier overrides that don't pin `ai`.
+        let state = MaskState::from_detectors_config(&cfg, true);
+
+        assert!(state.base.is_enabled(DetectorClass::Sqli), "base sqli on");
+        assert!(!state.base.is_enabled(DetectorClass::Xss), "base xss off");
+        assert!(state.base.is_enabled(DetectorClass::Ai), "ai bit OR'd from ai_enabled");
+
+        let crit = state
+            .override_for(Tier::Critical)
+            .expect("critical override seeded from cfg.per_tier");
+        assert!(crit.is_enabled(DetectorClass::CommandInjection), "pinned on");
+        assert!(!crit.is_enabled(DetectorClass::Xss), "inherits base (xss off)");
+        assert!(crit.is_enabled(DetectorClass::Ai), "ai inherits ai_enabled=true");
+
+        // Tiers not listed in cfg.per_tier carry no override.
+        assert_eq!(state.override_for(Tier::High), None);
+        assert_eq!(state.override_for(Tier::Medium), None);
+        assert_eq!(state.override_for(Tier::Low), None);
+    }
+
+    #[test]
+    fn from_detectors_config_ai_disabled_clears_ai_bit() {
+        use aegis_core::config::DetectorsConfig;
+        let cfg = DetectorsConfig::default();
+        let state = MaskState::from_detectors_config(&cfg, false);
+        assert!(!state.base.is_enabled(DetectorClass::Ai), "ai_enabled=false → bit off");
     }
 }
