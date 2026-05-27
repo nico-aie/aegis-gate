@@ -365,12 +365,15 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
       file/etcd reload"). Folding upstreams means first implementing live
       pool rebuild (DNS re-resolve, health-check re-arm, connection
       churn) — a sizable, risky feature, not a fold. **Fresh-session.**
-    - `handle_rules_*` → `cfg.rules: RulesConfig` exists, but this is
-      **CRUD** (post/put/delete/toggle), not a single toggle: each op
-      would patch the rules list in `cfg.rules` + activate, and the
-      apply-side needs a new `apply_cfg_change_to_rules` re-deriving the
-      `RuleStore` (services-level → reuses the TierStore plumbing
-      template). Tractable but a chunk. **Fresh-session.**
+    - `handle_rules_*` → **blocked, corrected 2026-05-27**: `cfg.rules`
+      is `{ paths: Vec<PathBuf>, max_rule_count, strict_compile }` — it
+      points at rule *files* + limits, **NOT** the rule list. The
+      dashboard `RuleStore` (CRUD'd via `/api/rules`) has **no `WafConfig`
+      representation** and isn't seeded from `cfg.rules`. So folding rules
+      requires first adding a NEW "inline rules" schema (e.g.
+      `cfg.rules.inline: Vec<RuleDef>`) + seeding the `RuleStore` from it +
+      an apply-side re-derive — a sizable new feature, not a fold.
+      **Fresh-session / design decision.**
   - **Unblocking the services-level folds (tier / rules / blacklist) — do
     this ONCE to enable all of them.** The blocker is that the config
     watcher's `ApplyTargets` is assembled in `run.rs` before
