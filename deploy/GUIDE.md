@@ -182,6 +182,29 @@ Operationally:
    systemctl stop aegis-gate                      # SIGTERM, grace, abort
    ```
 
+### Config plane (console edits propagate fleet-wide)
+
+With `state.backend: redis`, a console edit on **any** node (detector mask,
+tier thresholds, rule CRUD, upstream pools, AI on/off, response-filter rungs)
+is written to a shared, versioned config document and converges on every node
+within one watcher poll (~3 s), surviving restart + leader failover. Each
+node's applied version is visible at `GET /api/config` (drift view).
+
+Operationally this means: **don't hand-edit each node's `waf.yaml` and reload
+in lockstep** — make the edit once through the dashboard / admin API and let
+the plane converge. Bulk/GitOps changes go through `PUT /api/config` (full-doc,
+optimistic-concurrency); `POST /api/config/rollback` reverts to an earlier
+version. New config this introduced: durable `rules.inline[]` and the now-live
+`detectors.per_tier`.
+
+Full mechanical, AI-drivable deploy + operate steps:
+[`./CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md). Design + key/endpoint
+reference: [`../docs/operations/cluster-config-distribution.md`](../docs/operations/cluster-config-distribution.md).
+
+Also `redis`-only: **cluster-wide metrics** — `/api/analytics/route-activity`
+and `/api/{blacklist,whitelist}/hits` return a fleet-wide sum instead of one
+node's slice (automatic; no config knob).
+
 ---
 
 ## 4. Health monitoring
@@ -253,6 +276,32 @@ under `fips`) fail fast with a precise error.
 ## Upgrade notes
 
 Behavior changes a deployer should know about, newest first.
+
+### 2026-05-27 — config plane: console edits propagate fleet-wide
+
+- **Console toggles + CRUD now route through a shared, versioned config
+  document** (`config:waf:doc` in the `StateBackend`). On `state.backend:
+  redis` an edit on any node converges on every node (~3 s) and survives
+  restart/failover; the folded surfaces are detectors (base **+ per-tier**),
+  tiers, rules, upstreams, AI on/off, and response-filter rungs. **Action for
+  deployers:** stop hand-editing per-node `waf.yaml` + reloading in lockstep —
+  edit once via the dashboard/admin API. Bulk changes go through
+  `PUT /api/config`; revert via `POST /api/config/rollback`. See
+  [`./CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md).
+- **New config: `rules.inline[]`** — operator rules are now persistent +
+  cluster-propagated (were ephemeral + node-local; lost on restart). `rules.paths`
+  is unchanged (backup tooling only, not loaded into the live engine).
+- **`detectors.per_tier` is now consumed** (was schema-only). The config
+  document is the source of truth — a live per-tier override absent from
+  `detectors.per_tier` is cleared on reload. **Action for deployers:** if you
+  relied on per-tier overrides set only via the old node-local PUT (not in any
+  config), re-assert them through the dashboard so they land in the doc.
+- **Bugfix:** file/etcd config reloads now also re-derive the `Ai` detector-mask
+  bit from `cfg.ai.enabled` (it was previously cleared on every reload).
+- **Cluster-wide metrics (redis only):** `/api/analytics/route-activity` and
+  `/api/{blacklist,whitelist}/hits` now return a fleet-wide sum instead of the
+  serving node's slice. Automatic when `backend != in_memory`; no config knob.
+  `in_memory` single-node still reads the local rings.
 
 ### 2026-05-23 — AI inference scaling (session pool + batching)
 

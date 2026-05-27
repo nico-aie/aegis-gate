@@ -221,7 +221,30 @@ common mistakes:
 
 ## Custom rules
 
-Drop additional `.yaml` files into `rules/` and point
-`security.rules.path` at the directory. The example rule lives at
-[`rules/example.yaml`](./rules/example.yaml). Rule DSL grammar:
-[`docs/security/rule-engine.md`](../docs/security/rule-engine.md).
+Two ways to supply operator rules:
+
+1. **Inline (recommended) — `rules.inline[]`.** Persistent + cluster-
+   propagated: the live `RuleStore` is seeded from this list at boot, and
+   dashboard rule CRUD (`POST/PUT/DELETE /api/rules`, `…/toggle`) edits it
+   through the config plane so changes survive restart and reach every node.
+
+   ```yaml
+   rules:
+     inline:
+       - id: block-internal-ua
+         body: "- id: block-internal-ua\n  priority: 100\n  when: true\n  then: log_only\n"
+         enabled: true
+     max_rule_count: 10000
+     strict_compile: false
+   ```
+
+2. **Files — `rules.paths[]`.** Kept for the backup/snapshot tooling. **Note:**
+   `rules.paths` is **not** loaded into the live engine (only `rules.inline` +
+   dashboard CRUD are). Rule DSL grammar:
+   [`docs/security/rule-engine.md`](../docs/security/rule-engine.md).
+
+> **`detectors.per_tier` is now live.** Per-tier detector overrides
+> (`detectors.per_tier.<tier>.<class>: true|false`, `true` force-on, `false`
+> force-off, omitted = inherit base) are consumed by the engine and treated as
+> the source of truth (a live override absent from the config is cleared on
+> reload). See [`../docs/operations/cluster-config-distribution.md`](../docs/operations/cluster-config-distribution.md).
