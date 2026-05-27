@@ -161,6 +161,13 @@ pub async fn run(
         redact_dlp: cfg.response_filter.redact_dlp,
     });
 
+    // 2026-05-27 (Phase B) — create the shared TierStore here so the same
+    // Arc threads into BOTH the config-plane watcher (re-derives per-tier
+    // settings from `cfg.tiers` on a swap) AND `DashboardServices` (where
+    // it's boot-seeded + shared with the data plane). Boot seeding from
+    // `cfg.tiers` happens in `admin_accept_loop`.
+    let tier_store = Arc::new(aegis_control::api::tiers::TierStore::new());
+
     // FDP-T2 — adopt listener FDs from an exec'ing parent if
     // present. `AEGIS_LISTEN_FDS=N` + `AEGIS_LISTEN_FD_NAMES=...`
     // signals "first-boot path is fresh-bind" vs "hot-handover
@@ -1137,6 +1144,7 @@ pub async fn run(
                 pipeline.clone()
                     as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
             ),
+            tiers: Some(tier_store.clone()),
         };
         tracing::info!(
             node_id = %node_id,
@@ -1645,6 +1653,7 @@ pub async fn run(
         admin_tls_acceptor,
         upstream_ctx.clone(),
         config_yaml_path.clone(),
+        tier_store,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

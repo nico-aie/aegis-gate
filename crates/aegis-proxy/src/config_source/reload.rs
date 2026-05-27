@@ -303,6 +303,38 @@ pub fn apply_cfg_change_to_response_filter(
     }
 }
 
+/// Outcome of re-deriving per-tier settings from a config swap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TiersReloadOutcome {
+    /// No `TierStore` handle wired.
+    NoStore,
+    /// Per-tier `risk_threshold` + `challenges_enabled` were re-applied
+    /// from `cfg.tiers`.
+    Applied,
+}
+
+/// 2026-05-27 (config-plane fold-toggles, Phase B) — re-derive the
+/// per-tier settings carried by `cfg.tiers` (`risk_threshold` +
+/// `challenges_enabled`) onto the live `TierStore` on a config swap, so a
+/// cluster-wide activation propagates them to every node (eventual).
+/// Reuses the same `apply_*` methods the boot path uses
+/// (`accept.rs` seeds the store identically at startup). Tiers omitted
+/// from `cfg.tiers` keep their current value (the methods only touch
+/// listed tiers). The richer per-tier fields (block_threshold /
+/// cumulative_*) aren't in `cfg.tiers` yet — folding the dedicated
+/// `PUT /api/tiers/<name>` fully needs that schema extension (tracked).
+pub fn apply_cfg_change_to_tiers(
+    new_cfg: &WafConfig,
+    tiers: Option<&Arc<aegis_control::api::tiers::TierStore>>,
+) -> TiersReloadOutcome {
+    let Some(tiers) = tiers else {
+        return TiersReloadOutcome::NoStore;
+    };
+    tiers.apply_risk_thresholds(new_cfg.tiers.risk_threshold_overrides());
+    tiers.apply_challenges_enabled(new_cfg.tiers.challenges_enabled_overrides());
+    TiersReloadOutcome::Applied
+}
+
 /// Pure: derive the IP rate-limit config the boot path uses
 /// from a `WafConfig`. Shared between `aegis-proxy::run` (boot)
 /// and the watchers (hot-reload) so the selection rule stays
@@ -616,6 +648,47 @@ response_filter:
         assert!(!got.scrub_stack_traces);
         assert!(got.mask_internal_ips);
         assert!(!got.redact_dlp);
+    }
+
+    #[test]
+    fn tiers_reload_no_store_is_noop() {
+        let cfg = parse(&yaml_with_ai(false));
+        assert_eq!(
+            apply_cfg_change_to_tiers(&cfg, None),
+            TiersReloadOutcome::NoStore,
+        );
+    }
+
+    #[test]
+    fn tiers_reload_applies_risk_threshold_and_challenges_from_cfg() {
+        let tiers = Arc::new(aegis_control::api::tiers::TierStore::new());
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+tiers:
+  high: { risk_threshold: 55, challenges_enabled: true }
+"#;
+        let cfg = parse(yaml);
+        assert_eq!(
+            apply_cfg_change_to_tiers(&cfg, Some(&tiers)),
+            TiersReloadOutcome::Applied,
+        );
+        let high = tiers.get("high").expect("high tier exists");
+        assert_eq!(high.risk_threshold, 55);
+        assert!(high.challenges_enabled);
     }
 
     #[test]

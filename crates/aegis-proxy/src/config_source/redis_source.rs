@@ -50,6 +50,9 @@ pub struct ApplyTargets {
     /// `cfg.response_filter` so a folded response-filter toggle propagates.
     pub response_filter_writer:
         Option<Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>>,
+    /// 2026-05-27 (Phase B) — per-tier settings (`risk_threshold` +
+    /// `challenges_enabled`), re-derived from `cfg.tiers` on each swap.
+    pub tiers: Option<Arc<aegis_control::api::tiers::TierStore>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -194,6 +197,7 @@ fn apply_and_swap(
         new_cfg,
         targets.response_filter_writer.as_ref(),
     );
+    let _ = reload::apply_cfg_change_to_tiers(new_cfg, targets.tiers.as_ref());
 
     cfg.store(Arc::new(new_cfg.clone()));
 }

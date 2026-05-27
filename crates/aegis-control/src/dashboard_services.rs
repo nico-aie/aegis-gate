@@ -373,6 +373,7 @@ impl DashboardServices {
             admin_identity,
             session_idle_seconds,
             None,
+            Arc::new(TierStore::new()),
         )
     }
 
@@ -398,6 +399,12 @@ impl DashboardServices {
         admin_identity: Arc<AdminIdentity>,
         session_idle_seconds: u64,
         leader_view: Option<Arc<crate::api::tracking::LeaderView>>,
+        // 2026-05-27 (config-plane fold-toggles) — the TierStore is now
+        // created by `run()` so the same `Arc` can be threaded into the
+        // config-plane watcher (which re-derives per-tier settings from
+        // `cfg.tiers` on a config swap) AND shared with the data plane.
+        // Test/single-node call sites pass a fresh `TierStore::new()`.
+        tiers: Arc<TierStore>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
         let stats_agg = Arc::new(StatsAggregator::new());
         let attacks_agg = Arc::new(AttacksAggregator::new());
@@ -406,7 +413,7 @@ impl DashboardServices {
         let filter_catalogue = Arc::new(FilterCatalogue::new());
         let rules = Arc::new(RuleStore::new());
         let rule_stats = Arc::new(RuleStats::new());
-        let tiers = Arc::new(TierStore::new());
+        // `tiers` is now supplied by the caller (see the param doc).
         let routes = Arc::new(RoutesHandler::new());
         let blacklist = Arc::new(AccessListStore::new());
         let whitelist = Arc::new(AccessListStore::new());

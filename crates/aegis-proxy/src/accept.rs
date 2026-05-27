@@ -138,6 +138,12 @@ pub(crate) async fn admin_accept_loop(
     // "Configuration backup (YAML)" download can read the file
     // at request time.
     config_yaml_path: Option<std::path::PathBuf>,
+    // 2026-05-27 (config-plane fold-toggles) — the shared `TierStore`,
+    // created in `run()` so the config-plane watcher can re-derive
+    // per-tier settings from `cfg.tiers` on a config swap. Threaded into
+    // `DashboardServices` so `services.tiers` IS this instance (also
+    // shared with the data-plane `ProxyContext`).
+    tiers: Arc<aegis_control::api::tiers::TierStore>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -354,6 +360,7 @@ pub(crate) async fn admin_accept_loop(
         admin_identity,
         session_idle_seconds,
         Some(Arc::clone(&leader_view)),
+        Arc::clone(&tiers),
     );
     // Hand the interop Runtime to the admin control plane via
     // `services.interop`. Same Arc that the data-plane
