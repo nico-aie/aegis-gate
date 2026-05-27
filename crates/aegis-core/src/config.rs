@@ -85,6 +85,14 @@ pub struct WafConfig {
     pub bots: BotConfig,
     #[serde(default)]
     pub dlp: DlpConfig,
+    /// 2026-05-27 — response-body filter rungs (stack-trace scrub /
+    /// RFC-1918 mask / DLP redact). Added so the config plane can carry
+    /// these toggles (they previously lived only in the runtime
+    /// `aegis-security::pipeline::ResponseFilterConfig`). Defaults match
+    /// the runtime default (all on) so configs that omit the block are
+    /// byte-identical at boot.
+    #[serde(default)]
+    pub response_filter: ResponseFilterConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
     #[serde(default)]
@@ -2842,6 +2850,36 @@ impl Default for OpenRedirectConfig {
 
 fn default_true() -> bool {
     true
+}
+
+// ---------------------------------------------------------------------------
+// Response filter (2026-05-27)
+// ---------------------------------------------------------------------------
+
+/// Response-body filter rungs. Mirrors
+/// `aegis-security::pipeline::ResponseFilterConfig` so the config plane
+/// can carry these toggles cluster-wide. Each field defaults to `true`
+/// (safe-by-default scrubbing — matches the runtime default), so a config
+/// that omits the `response_filter:` block behaves exactly as before.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseFilterConfig {
+    #[serde(default = "default_true")]
+    pub scrub_stack_traces: bool,
+    #[serde(default = "default_true")]
+    pub mask_internal_ips: bool,
+    #[serde(default = "default_true")]
+    pub redact_dlp: bool,
+}
+
+impl Default for ResponseFilterConfig {
+    fn default() -> Self {
+        Self {
+            scrub_stack_traces: true,
+            mask_internal_ips: true,
+            redact_dlp: true,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

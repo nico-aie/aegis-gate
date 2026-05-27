@@ -265,6 +265,44 @@ pub fn apply_cfg_change_to_ai(
     AiReloadOutcome::Applied { enabled }
 }
 
+/// Outcome of re-deriving the response-filter rungs from a config swap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseFilterReloadOutcome {
+    /// No writer handle wired (no-pipeline build / test bundle).
+    NoWriter,
+    /// The three rungs were set from `cfg.response_filter`.
+    Applied {
+        scrub_stack_traces: bool,
+        mask_internal_ips: bool,
+        redact_dlp: bool,
+    },
+}
+
+/// 2026-05-27 (config-plane fold-toggles, Phase B) — re-derive the
+/// response-body filter rungs from `new_cfg.response_filter` on a config
+/// swap, so a cluster-wide activation that flips a rung takes effect on
+/// every node (eventual). Mirrors the in-process `PUT /api/response-filter`
+/// handler by pushing a `ResponseFilterPatch` through the same writer.
+pub fn apply_cfg_change_to_response_filter(
+    new_cfg: &WafConfig,
+    writer: Option<&Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>>,
+) -> ResponseFilterReloadOutcome {
+    let Some(writer) = writer else {
+        return ResponseFilterReloadOutcome::NoWriter;
+    };
+    let rf = &new_cfg.response_filter;
+    writer.set(aegis_control::api::response_filter::ResponseFilterPatch {
+        scrub_stack_traces: rf.scrub_stack_traces,
+        mask_internal_ips: rf.mask_internal_ips,
+        redact_dlp: rf.redact_dlp,
+    });
+    ResponseFilterReloadOutcome::Applied {
+        scrub_stack_traces: rf.scrub_stack_traces,
+        mask_internal_ips: rf.mask_internal_ips,
+        redact_dlp: rf.redact_dlp,
+    }
+}
+
 /// Pure: derive the IP rate-limit config the boot path uses
 /// from a `WafConfig`. Shared between `aegis-proxy::run` (boot)
 /// and the watchers (hot-reload) so the selection rule stays
@@ -504,6 +542,80 @@ ai:
         );
         assert!(!toggle.load(Ordering::Relaxed));
         assert!(!mask.load().is_enabled(DetectorClass::Ai));
+    }
+
+    #[test]
+    fn response_filter_defaults_all_true_when_block_omitted() {
+        // Behaviour-preservation: a config with no `response_filter:`
+        // block must default every rung ON (matches the runtime default).
+        let cfg = parse(&yaml_with_ai(false)); // no response_filter block
+        assert!(cfg.response_filter.scrub_stack_traces);
+        assert!(cfg.response_filter.mask_internal_ips);
+        assert!(cfg.response_filter.redact_dlp);
+    }
+
+    #[test]
+    fn response_filter_reload_no_writer_is_noop() {
+        let cfg = parse(&yaml_with_ai(false));
+        assert_eq!(
+            apply_cfg_change_to_response_filter(&cfg, None),
+            ResponseFilterReloadOutcome::NoWriter,
+        );
+    }
+
+    #[test]
+    fn response_filter_reload_sets_rungs_from_cfg() {
+        use aegis_control::api::response_filter::{ResponseFilterPatch, ResponseFilterWriter};
+        struct MockRf(std::sync::Mutex<ResponseFilterPatch>);
+        impl ResponseFilterWriter for MockRf {
+            fn set(&self, p: ResponseFilterPatch) {
+                *self.0.lock().unwrap() = p;
+            }
+            fn get(&self) -> ResponseFilterPatch {
+                self.0.lock().unwrap().clone()
+            }
+        }
+        let writer: Arc<dyn ResponseFilterWriter> = Arc::new(MockRf(std::sync::Mutex::new(
+            ResponseFilterPatch {
+                scrub_stack_traces: true,
+                mask_internal_ips: true,
+                redact_dlp: true,
+            },
+        )));
+        let yaml = r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+response_filter:
+  scrub_stack_traces: false
+  redact_dlp: false
+"#;
+        let cfg = parse(yaml);
+        let out = apply_cfg_change_to_response_filter(&cfg, Some(&writer));
+        assert_eq!(
+            out,
+            ResponseFilterReloadOutcome::Applied {
+                scrub_stack_traces: false,
+                mask_internal_ips: true, // omitted → default true
+                redact_dlp: false,
+            },
+        );
+        let got = writer.get();
+        assert!(!got.scrub_stack_traces);
+        assert!(got.mask_internal_ips);
+        assert!(!got.redact_dlp);
     }
 
     #[test]

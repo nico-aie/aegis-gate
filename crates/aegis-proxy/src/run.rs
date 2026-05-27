@@ -150,6 +150,17 @@ pub async fn run(
     let cfg: Arc<WafConfig> = cfg_swap.load_full();
     let mut handles = Vec::new();
 
+    // 2026-05-27 (Phase B) — seed the response-filter rungs from
+    // `cfg.response_filter` at boot so an operator-authored YAML value
+    // (e.g. `redact_dlp: false`) is honored. Defaults are all-true, so a
+    // config that omits the block leaves the pipeline at its prior
+    // default — byte-identical boot behaviour.
+    pipeline.set_filter_config(aegis_security::pipeline::ResponseFilterConfig {
+        scrub_stack_traces: cfg.response_filter.scrub_stack_traces,
+        mask_internal_ips: cfg.response_filter.mask_internal_ips,
+        redact_dlp: cfg.response_filter.redact_dlp,
+    });
+
     // FDP-T2 — adopt listener FDs from an exec'ing parent if
     // present. `AEGIS_LISTEN_FDS=N` + `AEGIS_LISTEN_FD_NAMES=...`
     // signals "first-boot path is fresh-bind" vs "hot-handover
@@ -1122,6 +1133,10 @@ pub async fn run(
             ip_rate_limiter: Some(ip_rate_limiter.clone()),
             tls_resolver: tls_resolver.clone(),
             ai_toggle: ai_runtime_toggle.clone(),
+            response_filter_writer: Some(
+                pipeline.clone()
+                    as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
+            ),
         };
         tracing::info!(
             node_id = %node_id,

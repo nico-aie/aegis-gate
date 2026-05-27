@@ -46,6 +46,10 @@ pub struct ApplyTargets {
     /// 2026-05-27 (Phase B) — AI detector runtime gate, re-derived from
     /// `cfg.ai.enabled` on each swap so a folded AI toggle propagates.
     pub ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// 2026-05-27 (Phase B) — response-filter rungs, re-derived from
+    /// `cfg.response_filter` so a folded response-filter toggle propagates.
+    pub response_filter_writer:
+        Option<Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -185,6 +189,10 @@ fn apply_and_swap(
         new_cfg,
         targets.ai_toggle.as_ref(),
         targets.detector_mask.as_ref(),
+    );
+    let _ = reload::apply_cfg_change_to_response_filter(
+        new_cfg,
+        targets.response_filter_writer.as_ref(),
     );
 
     cfg.store(Arc::new(new_cfg.clone()));

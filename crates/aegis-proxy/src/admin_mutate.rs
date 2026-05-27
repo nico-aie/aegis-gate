@@ -3622,7 +3622,7 @@ pub(crate) async fn handle_response_filter_put(
 
     let pre = mutation_preamble(&req, "response-filter-put");
 
-    let Some(writer) = services.response_filter_writer.as_ref().cloned() else {
+    if services.response_filter_writer.is_none() {
         // No writer wired — test bundles, no-pipeline builds. Return
         // the same `feature_off` shape as `/api/ai/enabled` so the
         // dashboard can render a clear "not wired" banner instead of
@@ -3653,12 +3653,67 @@ pub(crate) async fn handle_response_filter_put(
         }
     };
 
-    let before_snap = writer.get();
-    let before = serde_json::json!({
-        "scrub_stack_traces": before_snap.scrub_stack_traces,
-        "mask_internal_ips":  before_snap.mask_internal_ips,
-        "redact_dlp":         before_snap.redact_dlp,
-    });
+    // 2026-05-27 (Phase B fold-toggles, option A — eventual). Route the
+    // rung change through the config plane: patch `response_filter` on the
+    // shared doc + activate. Every node's watcher re-derives the rungs via
+    // `apply_cfg_change_to_response_filter` on its next poll.
+    let Some(backend) = services.state_backend.as_ref() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "config plane unavailable: no state backend wired".into(),
+            ),
+        );
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+
+    let (base_blob, expected) = match store.load().await {
+        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(None) => match services.config_yaml_path.as_ref() {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(s) => (s, 0u64),
+                Err(e) => {
+                    return mutation_error_response(
+                        aegis_control::api::mutation::MutationError::Internal(format!(
+                            "cannot read boot config {} to seed the config plane: {e}",
+                            path.display()
+                        )),
+                    )
+                }
+            },
+            None => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(
+                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
+                    ),
+                )
+            }
+        },
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(format!(
+                    "config store read failed: {e}"
+                )),
+            )
+        }
+    };
+
+    let new_blob = match patch_response_filter(&base_blob, &patch) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected });
     let after = serde_json::json!({
         "scrub_stack_traces": patch.scrub_stack_traces,
         "mask_internal_ips":  patch.mask_internal_ips,
@@ -3675,30 +3730,74 @@ pub(crate) async fn handle_response_filter_put(
         reason: "operator updated response-filter rungs",
     };
 
-    let writer_for_apply = Arc::clone(&writer);
-    let patch_for_apply = patch.clone();
-    let outcome = services.mutate.apply::<_, (), &'static str>(
-        &req_ctx,
-        before,
-        after,
-        move || {
-            writer_for_apply.set(patch_for_apply);
-            Ok(())
-        },
-    );
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, "update response-filter rungs")
+                .await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "scrub_stack_traces": patch.scrub_stack_traces,
-                "mask_internal_ips":  patch.mask_internal_ips,
-                "redact_dlp":         patch.redact_dlp,
-                "request_id":         pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "scrub_stack_traces": patch.scrub_stack_traces,
+                    "mask_internal_ips":  patch.mask_internal_ips,
+                    "redact_dlp":         patch.redact_dlp,
+                    "version":            version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id":         pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
+}
+
+/// Patch the three `response_filter` rungs on a YAML config blob via
+/// `serde_yaml::Value` (`WafConfig` isn't `Serialize`). Creates the
+/// `response_filter` mapping if absent.
+fn patch_response_filter(
+    base: &str,
+    patch: &aegis_control::api::response_filter::ResponseFilterPatch,
+) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let rf = map
+        .entry(serde_yaml::Value::String("response_filter".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let serde_yaml::Value::Mapping(rf_map) = rf else {
+        return Err("`response_filter` config is not a mapping".into());
+    };
+    for (k, v) in [
+        ("scrub_stack_traces", patch.scrub_stack_traces),
+        ("mask_internal_ips", patch.mask_internal_ips),
+        ("redact_dlp", patch.redact_dlp),
+    ] {
+        rf_map.insert(
+            serde_yaml::Value::String(k.into()),
+            serde_yaml::Value::Bool(v),
+        );
+    }
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
 pub(crate) async fn handle_response_filter_get(
@@ -4280,6 +4379,22 @@ mod tests {
         let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
         assert_eq!(v["ai"]["enabled"], serde_yaml::Value::Bool(false));
         assert_eq!(v["state"]["backend"], serde_yaml::Value::String("redis".into()));
+    }
+
+    #[test]
+    fn patch_response_filter_sets_all_three_rungs() {
+        use aegis_control::api::response_filter::ResponseFilterPatch;
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n";
+        let patch = ResponseFilterPatch {
+            scrub_stack_traces: false,
+            mask_internal_ips: true,
+            redact_dlp: false,
+        };
+        let out = patch_response_filter(base, &patch).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(v["response_filter"]["scrub_stack_traces"], serde_yaml::Value::Bool(false));
+        assert_eq!(v["response_filter"]["mask_internal_ips"], serde_yaml::Value::Bool(true));
+        assert_eq!(v["response_filter"]["redact_dlp"], serde_yaml::Value::Bool(false));
     }
 
     #[test]
