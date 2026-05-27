@@ -1,13 +1,15 @@
 # Cluster Config Sync & Scaling (next round)
 
-> **Status:** In progress (2026-05-27). **Done:** Phase 0 (`StateBackend`
-> generic KV primitives — `dcdd96f`) + Phase A core (`ConfigStore` +
-> `redis_source` watcher — `e9691d1`). **Next:** `PUT /api/config` write
-> path, boot-site watcher spawn in `run.rs`, console drift view (rest of
-> Phase A), then Phases B–D. Target: each team runs N WAF nodes behind a
-> VIP; security state AND configuration are shared and survive leader
-> failover; config is editable from the console and converges on every
-> node.
+> **Status:** In progress (2026-05-27). **Phase A wired end-to-end:**
+> Phase 0 KV primitives (`dcdd96f`), `ConfigStore` + `redis_source`
+> watcher (`e9691d1`), boot-site watcher spawn (`e4bc458`), and
+> `PUT /api/config` + rollback via the new async `AuditedMutate::apply_async`
+> (`912b16e`). Edit → shared store → every node converges, survives leader
+> failover. **Next:** `GET /api/config` drift view + console badge (the
+> `admin_get.rs` sync `match` needs an async arm), then Phases B–D. Target:
+> each team runs N WAF nodes behind a VIP; security state AND configuration
+> are shared and survive leader failover; config is editable from the
+> console and converges on every node.
 >
 > Author context: written 2026-05-26 after auditing the current HA story
 > (see [`../../docs/operations/ha-clustering.md`](../../docs/operations/ha-clustering.md)).

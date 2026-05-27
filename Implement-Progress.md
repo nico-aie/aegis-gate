@@ -219,24 +219,21 @@ Phases B–D per
 [`plans/future/cluster-config-sync-and-scaling.md`](./plans/future/cluster-config-sync-and-scaling.md).
 Immediate items:
 
-1. **`PUT /api/config` write path** — dry-run `WafConfig::validate` →
-   `ConfigStore::activate(expected_version, blob, actor, summary)` →
-   `Applied{version}` (200 + audit) or `Conflict{current}` (409). Add a
-   rollback endpoint over `ConfigStore::rollback`. **DESIGN NOTE:**
-   `ConfigStore::activate` is **async** (StateBackend ops) but the admin
-   `services.mutate.apply(...)` (`AuditedMutate`) pipeline runs a
-   **synchronous** closure (it bundles CSRF validation + before/after
-   audit). So either (a) add an async-aware apply path, or (b) in the
-   handler do CSRF-validate + emit the audit event manually around the
-   async `activate`. Build a `ConfigStore` from `services.state_backend`
-   (already a `DashboardServices` field — no new field needed). Route in
-   `admin_dispatch.rs` (`PUT /api/config`, `POST /api/config/rollback`,
-   `GET /api/config` for current version + `applied_map`).
-2. ~~**Boot wiring**~~ — **DONE (`e4bc458`)**: `redis_source::spawn_watcher`
-   spawns in `run.rs` on every node (reuses `lease_store.self_id()` as
-   node id; harmless no-op on in_memory).
-3. **Console** — applied-version badge + per-node drift table from
-   `ConfigStore::applied_map` (read via the new `GET /api/config`).
+1. ~~**`PUT /api/config` write path**~~ — **DONE (`912b16e`)**: chose
+   option (a) — added async `AuditedMutate::apply_async` (CSRF + audit +
+   async mutator, std Mutex never held across await). `PUT /api/config`
+   validates the blob → `ConfigStore::activate` → 200 `{version}` / 409
+   `{current}`; `POST /api/config/rollback` → `ConfigStore::rollback`.
+   Routed in `admin_dispatch.rs`; builds a `ConfigStore` from
+   `services.state_backend`. **Config plane is now wired end-to-end:
+   edit → store → every node converges.**
+2. ~~**Boot wiring**~~ — **DONE (`e4bc458`)**.
+3. **`GET /api/config` drift view + console badge** — remaining. The GET
+   router (`admin_get.rs`) is a **synchronous `match path { … }`**; the
+   drift view needs async store reads (`current_version` + `applied_map`).
+   Resolve the sync/async boundary (make the relevant arm async, or route
+   `GET /api/config` through the async `handle_admin_request` path), then
+   add the console applied-version badge + per-node drift table.
 4. **Phase B** — route detectors/tiers/upstreams/rules/AI/response-filter
    PUTs through the config plane; HA hardening (stable `node.id`, peers
    roster, Redis failover test).
