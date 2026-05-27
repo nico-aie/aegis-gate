@@ -1523,43 +1523,6 @@ struct RulePutBody {
     enabled: bool,
 }
 
-/// 2026-05-17 F-CRITICAL-001 (control audit): rebuild the live
-/// `Arc<RuleSet>` after a successful CRUD mutation so the data
-/// plane sees the operator's change on the next request. Logs at
-/// `info` on success and `warn` on parse failure (the operator's
-/// dashboard already shows the lint warnings; this is the
-/// server-side accounting trace). No-op when
-/// `services.active_ruleset` is `None` (single-node test fixture
-/// without a security pipeline wired).
-fn rebuild_ruleset_after_mutation(
-    services: &aegis_control::dashboard_services::DashboardServices,
-    label: &str,
-) {
-    let Some(active) = services.active_ruleset.as_ref() else {
-        // No engine wired (test fixture / partial harness) — nothing
-        // to refresh. The RuleStore mutation already landed.
-        return;
-    };
-    match aegis_control::api::rules::rebuild_active_ruleset(&services.rules, active) {
-        Ok(n) => {
-            tracing::info!(
-                target: "aegis.rules.live",
-                trigger = label,
-                active_rule_count = n,
-                "rule set refreshed",
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "aegis.rules.live",
-                trigger = label,
-                error = %e,
-                "rule set refresh skipped — operator must fix body and re-save",
-            );
-        }
-    }
-}
-
 fn default_true() -> bool {
     true
 }
@@ -1835,6 +1798,138 @@ fn mutation_preamble(req: &hyper::Request<hyper::body::Incoming>, prefix: &str) 
     MutationPreamble { csrf_cookie, csrf_header, actor, request_id }
 }
 
+/// 2026-05-27 (Phase B rules fold) — get-or-create the
+/// `cfg.rules.inline` sequence on a YAML config doc, erroring if
+/// `rules`/`rules.inline` exist but have the wrong shape.
+fn rules_inline_seq<'a>(
+    map: &'a mut serde_yaml::Mapping,
+) -> Result<&'a mut serde_yaml::Sequence, String> {
+    let s = |x: &str| serde_yaml::Value::String(x.into());
+    let rules = map
+        .entry(s("rules"))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let serde_yaml::Value::Mapping(rules_map) = rules else {
+        return Err("`rules` config is not a mapping".into());
+    };
+    let inline = rules_map
+        .entry(s("inline"))
+        .or_insert_with(|| serde_yaml::Value::Sequence(serde_yaml::Sequence::new()));
+    match inline {
+        serde_yaml::Value::Sequence(seq) => Ok(seq),
+        _ => Err("`rules.inline` config is not a sequence".into()),
+    }
+}
+
+/// Build the `RuleDef` YAML shape (`{id, body, enabled}`).
+fn rule_def_yaml(id: &str, body: &str, enabled: bool) -> serde_yaml::Value {
+    let s = |x: &str| serde_yaml::Value::String(x.into());
+    let mut m = serde_yaml::Mapping::new();
+    m.insert(s("id"), s(id));
+    m.insert(s("body"), s(body));
+    m.insert(s("enabled"), serde_yaml::Value::Bool(enabled));
+    serde_yaml::Value::Mapping(m)
+}
+
+/// Upsert one rule into `cfg.rules.inline` on a YAML config blob:
+/// replace the entry with matching `id` in place, or append a new one.
+/// Used by the folded `POST`/`PUT`/toggle rule handlers.
+fn patch_rule_upsert(
+    base: &str,
+    id: &str,
+    body: &str,
+    enabled: bool,
+) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let seq = rules_inline_seq(map)?;
+    let entry = rule_def_yaml(id, body, enabled);
+    match seq
+        .iter()
+        .position(|v| v.get("id").and_then(|x| x.as_str()) == Some(id))
+    {
+        Some(idx) => seq[idx] = entry,
+        None => seq.push(entry),
+    }
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// Remove the rule with `id` from `cfg.rules.inline` (idempotent — a
+/// missing id is a no-op). Used by the folded `DELETE` rule handler.
+fn patch_rule_remove(base: &str, id: &str) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let seq = rules_inline_seq(map)?;
+    seq.retain(|v| v.get("id").and_then(|x| x.as_str()) != Some(id));
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+/// 2026-05-27 (Phase B rules fold) — shared tail for the folded rule
+/// CRUD handlers: load the active config doc (or seed from the boot
+/// file), apply `patch` to its YAML blob, validate, and activate
+/// through the config plane. The watcher re-derives the `RuleStore` +
+/// engine ruleset on every node via `apply_cfg_change_to_rules`.
+/// Returns the loaded `(blob, version)` to the caller via the closure
+/// so existence checks run against the doc (the source of truth), not
+/// the eventually-consistent local store.
+async fn load_config_doc_for_rules(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Result<
+    (crate::config_source::config_store::ConfigStore, String, u64),
+    Response<Full<Bytes>>,
+> {
+    let Some(backend) = services.state_backend.as_ref() else {
+        return Err(mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "config plane unavailable: no state backend wired".into(),
+            ),
+        ));
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+    match store.load().await {
+        Ok(Some(doc)) => Ok((store, doc.blob, doc.version)),
+        Ok(None) => match services.config_yaml_path.as_ref() {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(s) => Ok((store, s, 0u64)),
+                Err(e) => Err(mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Internal(format!(
+                        "cannot read boot config {} to seed the config plane: {e}",
+                        path.display()
+                    )),
+                )),
+            },
+            None => Err(mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
+                ),
+            )),
+        },
+        Err(e) => Err(mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(format!(
+                "config store read failed: {e}"
+            )),
+        )),
+    }
+}
+
+/// Convert a `ValidateResponse` failure into the `MutationError` the
+/// folded handlers surface (mirrors the old in-store upsert error).
+fn rule_validation_error(
+    v: &aegis_control::api::rules::ValidateResponse,
+) -> aegis_control::api::mutation::MutationError {
+    aegis_control::api::mutation::MutationError::Validation(
+        v.errors
+            .first()
+            .map(|m| format!("line {}: {}", m.line, m.message))
+            .unwrap_or_else(|| "rule body invalid".into()),
+    )
+}
+
 pub(crate) async fn handle_rules_post(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
@@ -1855,13 +1950,59 @@ pub(crate) async fn handle_rules_post(
         ),
     };
 
-    if services.rules.get(&parsed.id).is_some() {
+    // Validate id + body up front — `load_config_str` on the patched
+    // doc only checks the YAML shape, not the rule DSL, so an invalid
+    // rule would otherwise activate and then be silently skipped by the
+    // apply-side `replace_all`. Reject here so the operator gets a 400.
+    let mut v = aegis_control::api::rules::validate_rule_body(&parsed.body);
+    if let Some(id_err) = aegis_control::api::rules::validate_rule_id(&parsed.id) {
+        v.errors.push(id_err);
+        v.ok = false;
+    }
+    if !v.ok {
+        return mutation_error_response(rule_validation_error(&v));
+    }
+
+    // 2026-05-27 (Phase B rules fold) — patch `cfg.rules.inline` on the
+    // shared config doc + activate. The watcher re-derives the RuleStore
+    // + engine ruleset on every node via `apply_cfg_change_to_rules`.
+    let (store, base_blob, expected) = match load_config_doc_for_rules(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    // Existence check against the doc (source of truth) so a
+    // create-then-edit before the watcher polls behaves correctly.
+    let doc_cfg = match aegis_core::load_config_str(&base_blob) {
+        Ok(c) => c,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(format!(
+                "active config doc failed to parse: {e}"
+            )),
+        ),
+    };
+    if doc_cfg.rules.inline.iter().any(|r| r.id == parsed.id) {
         return json_response(
             409,
             &serde_json::json!({"error": "rule_exists", "id": parsed.id}),
         );
     }
 
+    let new_blob = match patch_rule_upsert(&base_blob, &parsed.id, &parsed.body, parsed.enabled) {
+        Ok(b) => b,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e),
+        ),
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({"id": parsed.id, "enabled": parsed.enabled});
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "POST",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -1872,41 +2013,37 @@ pub(crate) async fn handle_rules_post(
         action: "rule_create",
         reason: "operator creates rule",
     };
-    let rules_store = services.rules.clone();
-    let rule_id = parsed.id.clone();
-    let rule_body = parsed.body.clone();
-    let rule_enabled = parsed.enabled;
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        serde_json::Value::Null,
-        serde_json::json!({"id": parsed.id, "body": parsed.body, "enabled": parsed.enabled}),
-        || {
-            let v = rules_store.upsert(&rule_id, &rule_body, rule_enabled);
-            if v.ok {
-                Ok(())
-            } else {
-                Err(aegis_control::api::mutation::MutationError::Validation(
-                    v.errors
-                        .first()
-                        .map(|m| format!("line {}: {}", m.line, m.message))
-                        .unwrap_or_else(|| "rule body invalid".into()),
-                ))
-            }
-        },
-    );
-
-    if outcome.is_ok() {
-        rebuild_ruleset_after_mutation(services, "rule_create");
-    }
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.activate(expected, blob, &actor, "create rule").await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            201,
-            &serde_json::json!({
-                "ok": true,
-                "id": parsed.id,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                201,
+                &serde_json::json!({
+                    "ok": true,
+                    "id": parsed.id,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -1932,18 +2069,50 @@ pub(crate) async fn handle_rules_put(
         ),
     };
 
-    let before = services
-        .rules
-        .get(rule_id)
-        .map(|r| serde_json::json!({"id": r.id, "body": r.body, "enabled": r.enabled}))
-        .unwrap_or(serde_json::Value::Null);
-    if before.is_null() {
+    let mut v = aegis_control::api::rules::validate_rule_body(&parsed.body);
+    if let Some(id_err) = aegis_control::api::rules::validate_rule_id(rule_id) {
+        v.errors.push(id_err);
+        v.ok = false;
+    }
+    if !v.ok {
+        return mutation_error_response(rule_validation_error(&v));
+    }
+
+    let (store, base_blob, expected) = match load_config_doc_for_rules(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let doc_cfg = match aegis_core::load_config_str(&base_blob) {
+        Ok(c) => c,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(format!(
+                "active config doc failed to parse: {e}"
+            )),
+        ),
+    };
+    if !doc_cfg.rules.inline.iter().any(|r| r.id == rule_id) {
         return json_response(
             404,
             &serde_json::json!({"error": "rule_not_found", "id": rule_id}),
         );
     }
 
+    let new_blob = match patch_rule_upsert(&base_blob, rule_id, &parsed.body, parsed.enabled) {
+        Ok(b) => b,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e),
+        ),
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({"id": rule_id, "enabled": parsed.enabled});
     let resource = format!("/api/rules/{rule_id}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -1955,41 +2124,37 @@ pub(crate) async fn handle_rules_put(
         action: "rule_update",
         reason: "operator updates rule",
     };
-    let rules_store = services.rules.clone();
-    let rule_id_owned = rule_id.to_string();
-    let rule_body = parsed.body.clone();
-    let rule_enabled = parsed.enabled;
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        serde_json::json!({"id": rule_id, "body": parsed.body, "enabled": parsed.enabled}),
-        || {
-            let v = rules_store.upsert(&rule_id_owned, &rule_body, rule_enabled);
-            if v.ok {
-                Ok(())
-            } else {
-                Err(aegis_control::api::mutation::MutationError::Validation(
-                    v.errors
-                        .first()
-                        .map(|m| format!("line {}: {}", m.line, m.message))
-                        .unwrap_or_else(|| "rule body invalid".into()),
-                ))
-            }
-        },
-    );
-
-    if outcome.is_ok() {
-        rebuild_ruleset_after_mutation(services, "rule_update");
-    }
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.activate(expected, blob, &actor, "update rule").await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "id": rule_id,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "id": rule_id,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -2001,18 +2166,41 @@ pub(crate) async fn handle_rules_delete(
 ) -> Response<Full<Bytes>> {
     let pre = mutation_preamble(&req, "rules-delete");
 
-    let before = services
-        .rules
-        .get(rule_id)
-        .map(|r| serde_json::json!({"id": r.id, "body": r.body, "enabled": r.enabled}))
-        .unwrap_or(serde_json::Value::Null);
-    if before.is_null() {
+    let (store, base_blob, expected) = match load_config_doc_for_rules(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let doc_cfg = match aegis_core::load_config_str(&base_blob) {
+        Ok(c) => c,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(format!(
+                "active config doc failed to parse: {e}"
+            )),
+        ),
+    };
+    if !doc_cfg.rules.inline.iter().any(|r| r.id == rule_id) {
         return json_response(
             404,
             &serde_json::json!({"error": "rule_not_found", "id": rule_id}),
         );
     }
 
+    let new_blob = match patch_rule_remove(&base_blob, rule_id) {
+        Ok(b) => b,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e),
+        ),
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({"id": rule_id, "deleted": true});
     let resource = format!("/api/rules/{rule_id}");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "DELETE",
@@ -2024,35 +2212,37 @@ pub(crate) async fn handle_rules_delete(
         action: "rule_delete",
         reason: "operator deletes rule",
     };
-    let rules_store = services.rules.clone();
-    let rule_id_owned = rule_id.to_string();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        serde_json::Value::Null,
-        || {
-            if rules_store.delete(&rule_id_owned) {
-                Ok(())
-            } else {
-                Err(aegis_control::api::mutation::MutationError::Internal(
-                    "rule disappeared concurrently".into(),
-                ))
-            }
-        },
-    );
-
-    if outcome.is_ok() {
-        rebuild_ruleset_after_mutation(services, "rule_delete");
-    }
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.activate(expected, blob, &actor, "delete rule").await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "id": rule_id,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "id": rule_id,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -2064,15 +2254,44 @@ pub(crate) async fn handle_rules_toggle(
 ) -> Response<Full<Bytes>> {
     let pre = mutation_preamble(&req, "rules-toggle");
 
-    let current = match services.rules.get(rule_id) {
-        Some(r) => r,
-        None => return json_response(
-            404,
-            &serde_json::json!({"error": "rule_not_found", "id": rule_id}),
+    let (store, base_blob, expected) = match load_config_doc_for_rules(services).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let doc_cfg = match aegis_core::load_config_str(&base_blob) {
+        Ok(c) => c,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(format!(
+                "active config doc failed to parse: {e}"
+            )),
         ),
     };
-
+    // Read the current rule from the doc (source of truth) so the flip
+    // is against the authoritative state, not the lagging local store.
+    let Some(current) = doc_cfg.rules.inline.iter().find(|r| r.id == rule_id) else {
+        return json_response(
+            404,
+            &serde_json::json!({"error": "rule_not_found", "id": rule_id}),
+        );
+    };
     let next_enabled = !current.enabled;
+
+    let new_blob = match patch_rule_upsert(&base_blob, rule_id, &current.body, next_enabled) {
+        Ok(b) => b,
+        Err(e) => return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(e),
+        ),
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected, "enabled": current.enabled });
+    let after = serde_json::json!({"id": rule_id, "enabled": next_enabled});
     let resource = format!("/api/rules/{rule_id}/toggle");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -2084,38 +2303,38 @@ pub(crate) async fn handle_rules_toggle(
         action: "rule_toggle",
         reason: "operator toggles rule",
     };
-    let rules_store = services.rules.clone();
-    let rule_id_owned = rule_id.to_string();
-    let rule_body = current.body.clone();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        serde_json::json!({"id": current.id, "enabled": current.enabled}),
-        serde_json::json!({"id": current.id, "enabled": next_enabled}),
-        || {
-            let v = rules_store.upsert(&rule_id_owned, &rule_body, next_enabled);
-            if v.ok {
-                Ok(())
-            } else {
-                Err(aegis_control::api::mutation::MutationError::Internal(
-                    "toggle revalidation failed".into(),
-                ))
-            }
-        },
-    );
-
-    if outcome.is_ok() {
-        rebuild_ruleset_after_mutation(services, "rule_toggle");
-    }
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.activate(expected, blob, &actor, "toggle rule").await
+        })
+        .await;
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "id": rule_id,
-                "enabled": next_enabled,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "id": rule_id,
+                    "enabled": next_enabled,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
 }
@@ -4726,6 +4945,35 @@ state:
             !crit.is_enabled(DetectorClass::CommandInjection),
             "per_tier override survives patch → load → re-derive",
         );
+    }
+
+    // ---- 2026-05-27 (Phase B rules fold) — patch_rule_* helpers ----
+
+    #[test]
+    fn patch_rule_upsert_appends_then_replaces_in_place() {
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n";
+        let out = patch_rule_upsert(base, "r1", "rule r1 { allow }", true).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(v["rules"]["inline"][0]["id"].as_str(), Some("r1"));
+        assert_eq!(v["rules"]["inline"][0]["body"].as_str(), Some("rule r1 { allow }"));
+        assert_eq!(v["rules"]["inline"][0]["enabled"].as_bool(), Some(true));
+
+        // Upserting the same id replaces in place (no duplicate).
+        let out2 = patch_rule_upsert(&out, "r1", "rule r1 { block }", false).unwrap();
+        let v2: serde_yaml::Value = serde_yaml::from_str(&out2).unwrap();
+        assert_eq!(v2["rules"]["inline"].as_sequence().unwrap().len(), 1);
+        assert_eq!(v2["rules"]["inline"][0]["body"].as_str(), Some("rule r1 { block }"));
+        assert_eq!(v2["rules"]["inline"][0]["enabled"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn patch_rule_remove_drops_only_the_named_entry() {
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\nrules:\n  inline:\n    - id: r1\n      body: \"rule r1 { allow }\"\n      enabled: true\n    - id: r2\n      body: \"rule r2 { allow }\"\n      enabled: true\n";
+        let out = patch_rule_remove(base, "r1").unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let seq = v["rules"]["inline"].as_sequence().unwrap();
+        assert_eq!(seq.len(), 1);
+        assert_eq!(seq[0]["id"].as_str(), Some("r2"));
     }
 
     #[test]

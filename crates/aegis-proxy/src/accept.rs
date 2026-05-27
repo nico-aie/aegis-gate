@@ -144,6 +144,12 @@ pub(crate) async fn admin_accept_loop(
     // `DashboardServices` so `services.tiers` IS this instance (also
     // shared with the data-plane `ProxyContext`).
     tiers: Arc<aegis_control::api::tiers::TierStore>,
+    // 2026-05-27 (Phase B rules fold) — the shared `RuleStore`, created
+    // in `run()` so the config-plane watcher re-derives the rule set
+    // from `cfg.rules.inline` on a swap. Threaded into `DashboardServices`
+    // so `services.rules` IS this instance — the same store the folded
+    // rule-CRUD handlers and `GET /api/rules` read.
+    rules: Arc<aegis_control::api::rules::RuleStore>,
 ) {
     let startup = aegis_control::health::StartupProbe::default();
     startup.mark_started();
@@ -361,6 +367,7 @@ pub(crate) async fn admin_accept_loop(
         session_idle_seconds,
         Some(Arc::clone(&leader_view)),
         Arc::clone(&tiers),
+        Arc::clone(&rules),
     );
     // Hand the interop Runtime to the admin control plane via
     // `services.interop`. Same Arc that the data-plane

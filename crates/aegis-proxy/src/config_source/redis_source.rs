@@ -53,6 +53,14 @@ pub struct ApplyTargets {
     /// 2026-05-27 (Phase B) — per-tier settings (`risk_threshold` +
     /// `challenges_enabled`), re-derived from `cfg.tiers` on each swap.
     pub tiers: Option<Arc<aegis_control::api::tiers::TierStore>>,
+    /// 2026-05-27 (Phase B rules fold) — the dashboard `RuleStore`,
+    /// re-derived from `cfg.rules.inline` on each swap (the inline list
+    /// is the source of truth).
+    pub rules: Option<Arc<aegis_control::api::rules::RuleStore>>,
+    /// 2026-05-27 (Phase B rules fold) — the live engine `RuleSet`
+    /// (`pipeline.rules_arc()`), rebuilt from the re-derived `RuleStore`
+    /// so a folded rule CRUD takes effect on every node.
+    pub active_ruleset: Option<Arc<aegis_security::RuleSet>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -198,6 +206,11 @@ fn apply_and_swap(
         targets.response_filter_writer.as_ref(),
     );
     let _ = reload::apply_cfg_change_to_tiers(new_cfg, targets.tiers.as_ref());
+    let _ = reload::apply_cfg_change_to_rules(
+        new_cfg,
+        targets.rules.as_ref(),
+        targets.active_ruleset.as_ref(),
+    );
 
     cfg.store(Arc::new(new_cfg.clone()));
 }

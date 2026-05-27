@@ -374,6 +374,7 @@ impl DashboardServices {
             session_idle_seconds,
             None,
             Arc::new(TierStore::new()),
+            Arc::new(RuleStore::new()),
         )
     }
 
@@ -405,13 +406,21 @@ impl DashboardServices {
         // `cfg.tiers` on a config swap) AND shared with the data plane.
         // Test/single-node call sites pass a fresh `TierStore::new()`.
         tiers: Arc<TierStore>,
+        // 2026-05-27 (Phase B rules fold) — the `RuleStore` is likewise
+        // created by `run()` so the same `Arc` is threaded into the
+        // config-plane watcher (which re-derives the rule set from
+        // `cfg.rules.inline` on a swap) AND shared with the data plane
+        // via `services.rules`. Test/single-node call sites pass a fresh
+        // `RuleStore::new()`.
+        rules: Arc<RuleStore>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
         let stats_agg = Arc::new(StatsAggregator::new());
         let attacks_agg = Arc::new(AttacksAggregator::new());
         let audit_ring = Arc::new(AuditRing::new());
         let witness_state = Arc::new(WitnessState::new());
         let filter_catalogue = Arc::new(FilterCatalogue::new());
-        let rules = Arc::new(RuleStore::new());
+        // `rules` is now supplied by the caller (see the param doc) so
+        // the config-plane watcher and the data plane share one store.
         let rule_stats = Arc::new(RuleStats::new());
         // `tiers` is now supplied by the caller (see the param doc).
         let routes = Arc::new(RoutesHandler::new());

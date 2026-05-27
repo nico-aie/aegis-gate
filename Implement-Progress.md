@@ -230,8 +230,8 @@ per-fold technical notes in
   `a5b818d` (1st `WafConfig` schema ext), **tier** `08a8e65`+`eacaa4b`
   (boot-path refactor threading `TierStore` run.rs→watcher+services + schema
   ext), **detectors** (base **+ per-tier** through the config plane; see
-  below). HA hardening already built (`node.id` HA-T3, `/api/cluster.peers`
-  HA-T4).
+  below), **rules** (inline-rules schema + CRUD fold; see below). HA hardening
+  already built (`node.id` HA-T3, `/api/cluster.peers` HA-T4).
 - **Detectors fold (full)** — the plan's "apply-side already wired" was only
   true for the **base**: `apply_cfg_change_to_mask` re-derived base via
   `DetectorMask::from_config` and *preserved* live per-tier overrides, never
@@ -256,23 +256,41 @@ per-fold technical notes in
     `TierDetectorMask`, `null`→remove); `handle_detectors_put` rewritten to the
     `apply_async`/`activate` template (requires a state backend; retires the
     local-snapshot model). Old `mask_state_to_json` removed.
+- **Rules fold (full)** — discovered that dashboard rules were **ephemeral +
+  node-local**: the engine `RuleSet` boots empty (`aegis-bin` `RuleSet::new()`),
+  the `RuleStore` boots empty, and `cfg.rules.paths` is **never loaded** into
+  the live engine (snapshot/backup tooling only). Folding it therefore *added*
+  durability + propagation (net win, user-confirmed):
+  - *Schema (aegis-core)* — `cfg.rules.inline: Vec<RuleDef{id,body,enabled}>`
+    (the persistent rule list; `cfg.rules.paths` untouched for backup tooling).
+  - *Store (aegis-control)* — `RuleStore::replace_all(&[RuleDef])` makes the
+    store match `cfg.rules.inline` exactly (validates id+body, drops absent,
+    returns rejected); reuses `rebuild_active_ruleset`.
+  - *Apply (reload.rs)* — `apply_cfg_change_to_rules` re-derives the store +
+    engine ruleset from `cfg.rules.inline` (source of truth) on every swap.
+  - *Plumbing* — `RuleStore` lifted to `run.rs` (TierStore template) + threaded
+    through `admin_accept_loop` → `spawn_with_mask_and_leader`; ApplyTargets
+    gains `rules` + `active_ruleset` (`pipeline.rules_arc()`, in scope at the
+    watcher spawn). Boot seeds the store from `cfg.rules.inline` so rules are
+    live from the first request.
+  - *Write (admin_mutate.rs)* — `patch_rule_upsert`/`patch_rule_remove` patch
+    `cfg.rules.inline`; all 4 CRUD handlers (POST/PUT/DELETE/toggle) rewritten
+    to the `apply_async`/`activate` template. **Existence checks run against the
+    doc, not the local store** (eventual-consistency-safe: create-then-edit
+    before the next poll works). Body+id validated up front (400 vs silent
+    skip). Old `rebuild_ruleset_after_mutation` removed.
 
 **REMAINING (resume order):**
-1. **`rules`** — needs a NEW feature first: `cfg.rules` is `{paths, max_rule_count,
-   strict_compile}` (rule *files*), NOT the rule list. Add `cfg.rules.inline:
-   Vec<RuleDef>`, seed the `RuleStore` from it (reuse the TierStore
-   run.rs→services plumbing), add `apply_cfg_change_to_rules`, then fold the
-   CRUD handlers (post/put/delete/toggle each patch the inline list + activate).
-2. **`upstreams`** — needs a NEW feature first: pools are NOT hot-reloadable
+1. **`upstreams`** — needs a NEW feature first: pools are NOT hot-reloadable
    today (`run.rs` warns "pools are NOT rebuilt"). Implement live pool rebuild
    (DNS re-resolve + health re-arm) on `cfg.upstreams` change, add
    `apply_cfg_change_to_upstreams`, then fold `PUT /api/upstreams/config`.
-3. **Phase C — metrics aggregation** — `crates/aegis-control/src/metrics/window_flush.rs`
+2. **Phase C — metrics aggregation** — `crates/aegis-control/src/metrics/window_flush.rs`
    (local ring → `incrby` flush, `expire` TTL=2×window) for `RouteActivityWindow`
    (P5) + `AccessListHits` (P4); flush tasks at boot; endpoint reads switch to
    `scan_prefix`+sum when `backend != in_memory`, else local rings;
    `flush_failed` audit. Design: [`plans/future/multi-node-metrics-aggregation.md`](./plans/future/multi-node-metrics-aggregation.md).
-4. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
+3. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
    + Helm toggle + single-VIP RPS benchmark.
 
 **Reusable fold patterns (from AI / response_filter / tier / detectors):**

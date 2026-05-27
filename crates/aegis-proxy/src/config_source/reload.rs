@@ -366,6 +366,65 @@ pub fn apply_cfg_change_to_tiers(
     TiersReloadOutcome::Applied
 }
 
+/// Outcome of re-deriving the rule set from a config swap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RulesReloadOutcome {
+    /// No `RuleStore` handle wired.
+    NoStore,
+    /// The `RuleStore` was replaced from `cfg.rules.inline` and the
+    /// active engine ruleset rebuilt. `live_rules` is the number of
+    /// enabled rules that compiled; `rejected` lists inline rule ids
+    /// that failed id/body validation (skipped, not stored).
+    Applied {
+        live_rules: usize,
+        rejected: Vec<String>,
+    },
+}
+
+/// 2026-05-27 (Phase B rules fold) — re-derive the live `RuleStore`
+/// from `new_cfg.rules.inline` (the source of truth) and rebuild the
+/// active engine ruleset on a config swap, so a cluster-wide
+/// activation propagates rule CRUD to every node (eventual). Reuses
+/// the same `RuleStore::replace_all` + `rebuild_active_ruleset` the
+/// boot path uses, so seeding and hot-reload stay identical.
+///
+/// Rules absent from `cfg.rules.inline` are dropped (cfg is
+/// authoritative). Inline rules that fail validation are skipped and
+/// returned in `rejected`. A parse failure during the engine rebuild
+/// leaves the previous live ruleset intact (the `RuleStore` swap still
+/// lands) — the same non-rollback contract the CRUD handlers use.
+pub fn apply_cfg_change_to_rules(
+    new_cfg: &WafConfig,
+    rules: Option<&Arc<aegis_control::api::rules::RuleStore>>,
+    active_ruleset: Option<&Arc<aegis_security::RuleSet>>,
+) -> RulesReloadOutcome {
+    let Some(store) = rules else {
+        return RulesReloadOutcome::NoStore;
+    };
+    let rejected: Vec<String> = store
+        .replace_all(&new_cfg.rules.inline)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let live_rules = match active_ruleset {
+        Some(rs) => match aegis_control::api::rules::rebuild_active_ruleset(store, rs) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "rule rebuild after config swap failed to parse; live ruleset unchanged",
+                );
+                rs.len()
+            }
+        },
+        None => 0,
+    };
+    RulesReloadOutcome::Applied {
+        live_rules,
+        rejected,
+    }
+}
+
 /// Pure: derive the IP rate-limit config the boot path uses
 /// from a `WafConfig`. Shared between `aegis-proxy::run` (boot)
 /// and the watchers (hot-reload) so the selection rule stays
@@ -854,6 +913,66 @@ tiers:
             state.override_for(Tier::High).is_none(),
             "tiers omitted from cfg.per_tier carry no override",
         );
+    }
+
+    // ---- 2026-05-27 (Phase B rules fold) — apply_cfg_change_to_rules ----
+
+    fn yaml_with_inline_rules() -> String {
+        // Real rule DSL (list format) so `rebuild_active_ruleset` parses it.
+        r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+rules:
+  inline:
+    - id: r1
+      body: "- id: r1\n  priority: 100\n  when: true\n  then: allow\n"
+      enabled: true
+    - id: r2
+      body: "- id: r2\n  priority: 90\n  when: true\n  then: log_only\n"
+      enabled: false
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn rules_reload_no_store_is_noop() {
+        let cfg = parse(&yaml_with_sqli(true, &[]));
+        assert_eq!(
+            apply_cfg_change_to_rules(&cfg, None, None),
+            RulesReloadOutcome::NoStore,
+        );
+    }
+
+    #[test]
+    fn rules_reload_seeds_store_and_rebuilds_engine() {
+        let cfg = parse(&yaml_with_inline_rules());
+        let store = Arc::new(aegis_control::api::rules::RuleStore::new());
+        let ruleset = Arc::new(aegis_security::RuleSet::new());
+        // Pre-seed a stale rule absent from cfg — it must be dropped.
+        store.upsert("stale", "- id: stale\n  priority: 1\n  when: true\n  then: allow\n", true);
+
+        let outcome = apply_cfg_change_to_rules(&cfg, Some(&store), Some(&ruleset));
+        assert_eq!(
+            outcome,
+            RulesReloadOutcome::Applied { live_rules: 1, rejected: vec![] },
+            "2 rules in store, only the enabled one live in the engine",
+        );
+        assert_eq!(store.list().len(), 2, "both inline rules in the store");
+        assert!(store.get("stale").is_none(), "stale rule dropped — cfg is source of truth");
+        assert_eq!(ruleset.len(), 1, "only the enabled rule compiled into the engine");
     }
 
     // ---- apply_cfg_change_to_routes ----

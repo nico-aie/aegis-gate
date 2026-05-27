@@ -168,6 +168,41 @@ pub async fn run(
     // `cfg.tiers` happens in `admin_accept_loop`.
     let tier_store = Arc::new(aegis_control::api::tiers::TierStore::new());
 
+    // 2026-05-27 (Phase B rules fold) — create the shared RuleStore here
+    // (same template as TierStore) so one Arc threads into BOTH the
+    // config-plane watcher AND `DashboardServices` (`services.rules`).
+    // Seed it from `cfg.rules.inline` and rebuild the live engine ruleset
+    // (`pipeline.rules_arc()`, the same Arc `admin_accept_loop` later
+    // shares with `ProxyContext`) so operator rules are durable across
+    // restarts and live from the first request — not just after a CRUD.
+    let rule_store = Arc::new(aegis_control::api::rules::RuleStore::new());
+    {
+        let live_ruleset = pipeline.rules_arc();
+        match crate::config_source::reload::apply_cfg_change_to_rules(
+            &cfg,
+            Some(&rule_store),
+            Some(&live_ruleset),
+        ) {
+            crate::config_source::reload::RulesReloadOutcome::Applied {
+                live_rules,
+                rejected,
+            } => {
+                if !rejected.is_empty() {
+                    tracing::warn!(
+                        rejected = ?rejected,
+                        "cfg.rules.inline had entries that failed validation; skipped at boot seed",
+                    );
+                }
+                tracing::info!(
+                    live_rules,
+                    inline = cfg.rules.inline.len(),
+                    "seeded RuleStore from cfg.rules.inline",
+                );
+            }
+            crate::config_source::reload::RulesReloadOutcome::NoStore => {}
+        }
+    }
+
     // FDP-T2 — adopt listener FDs from an exec'ing parent if
     // present. `AEGIS_LISTEN_FDS=N` + `AEGIS_LISTEN_FD_NAMES=...`
     // signals "first-boot path is fresh-bind" vs "hot-handover
@@ -1144,6 +1179,8 @@ pub async fn run(
                     as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
             ),
             tiers: Some(tier_store.clone()),
+            rules: Some(rule_store.clone()),
+            active_ruleset: Some(pipeline.rules_arc()),
         };
         tracing::info!(
             node_id = %node_id,
@@ -1653,6 +1690,7 @@ pub async fn run(
         upstream_ctx.clone(),
         config_yaml_path.clone(),
         tier_store,
+        rule_store,
     )));
 
     readiness.config_loaded.store(true, Ordering::Relaxed);

@@ -301,6 +301,45 @@ impl RuleStore {
         let mut s = self.inner.lock().expect("rule store poisoned");
         s.rules.remove(id).is_some()
     }
+
+    /// 2026-05-27 (Phase B rules fold) — atomically replace the entire
+    /// rule set from the config-plane inline list (`cfg.rules.inline`),
+    /// which is the source of truth: rules absent from `inline` are
+    /// dropped. Each entry is validated (id + body); invalid entries
+    /// are skipped and returned as `(id, ValidateResponse)` so the
+    /// caller (boot seed / config watcher) can log them without
+    /// aborting the swap. Valid entries land with a fresh `updated_at`.
+    pub fn replace_all(
+        &self,
+        inline: &[aegis_core::config::RuleDef],
+    ) -> Vec<(String, ValidateResponse)> {
+        let now = chrono::Utc::now();
+        let mut next: HashMap<String, Rule> = HashMap::new();
+        let mut rejected = Vec::new();
+        for r in inline {
+            let mut v = validate_rule_body(&r.body);
+            if let Some(id_err) = validate_rule_id(&r.id) {
+                v.errors.push(id_err);
+                v.ok = false;
+            }
+            if v.ok {
+                next.insert(
+                    r.id.clone(),
+                    Rule {
+                        id: r.id.clone(),
+                        body: r.body.clone(),
+                        enabled: r.enabled,
+                        updated_at: now,
+                    },
+                );
+            } else {
+                rejected.push((r.id.clone(), v));
+            }
+        }
+        let mut s = self.inner.lock().expect("rule store poisoned");
+        s.rules = next;
+        rejected
+    }
 }
 
 /// 2026-05-17 F-CRITICAL-001 (control audit): bridge from the
@@ -507,6 +546,43 @@ mod tests {
         let v = s.upsert("r1", "", true);
         assert!(!v.ok);
         assert!(s.get("r1").is_none());
+    }
+
+    // 2026-05-27 (Phase B rules fold) — replace_all makes the store
+    // match cfg.rules.inline exactly (source of truth).
+    #[test]
+    fn replace_all_replaces_whole_set_and_drops_absent() {
+        use aegis_core::config::RuleDef;
+        let s = RuleStore::new();
+        s.upsert("stale", "rule stale { allow }", true);
+
+        let inline = vec![
+            RuleDef { id: "r1".into(), body: "rule r1 { allow }".into(), enabled: true },
+            RuleDef { id: "r2".into(), body: "rule r2 { allow }".into(), enabled: false },
+        ];
+        let rejected = s.replace_all(&inline);
+        assert!(rejected.is_empty(), "all valid");
+        assert!(s.get("stale").is_none(), "rule absent from inline is dropped");
+        assert_eq!(s.list().len(), 2);
+        assert!(s.get("r1").unwrap().enabled);
+        assert!(!s.get("r2").unwrap().enabled);
+    }
+
+    #[test]
+    fn replace_all_collects_invalid_rules() {
+        use aegis_core::config::RuleDef;
+        let s = RuleStore::new();
+        let inline = vec![
+            RuleDef { id: "ok".into(), body: "rule ok { allow }".into(), enabled: true },
+            RuleDef { id: "sqli".into(), body: "rule sqli { allow }".into(), enabled: true }, // reserved id
+            RuleDef { id: "empty".into(), body: "".into(), enabled: true }, // empty body
+        ];
+        let rejected = s.replace_all(&inline);
+        let rejected_ids: Vec<&str> = rejected.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(rejected_ids.contains(&"sqli"));
+        assert!(rejected_ids.contains(&"empty"));
+        assert_eq!(s.list().len(), 1, "only the valid rule landed");
+        assert!(s.get("ok").is_some());
     }
 
     #[test]

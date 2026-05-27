@@ -375,15 +375,21 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
       file/etcd reload"). Folding upstreams means first implementing live
       pool rebuild (DNS re-resolve, health-check re-arm, connection
       churn) — a sizable, risky feature, not a fold. **Fresh-session.**
-    - `handle_rules_*` → **blocked, corrected 2026-05-27**: `cfg.rules`
-      is `{ paths: Vec<PathBuf>, max_rule_count, strict_compile }` — it
-      points at rule *files* + limits, **NOT** the rule list. The
-      dashboard `RuleStore` (CRUD'd via `/api/rules`) has **no `WafConfig`
-      representation** and isn't seeded from `cfg.rules`. So folding rules
-      requires first adding a NEW "inline rules" schema (e.g.
-      `cfg.rules.inline: Vec<RuleDef>`) + seeding the `RuleStore` from it +
-      an apply-side re-derive — a sizable new feature, not a fold.
-      **Fresh-session / design decision.**
+    - ✅ `handle_rules_*` — **DONE** (2026-05-27, full fold). The blocker
+      was real: `cfg.rules` was `{paths, max_rule_count, strict_compile}`
+      (rule *files*) with **no rule-list representation**, and the dashboard
+      `RuleStore` + engine `RuleSet` both boot **empty** (`cfg.rules.paths`
+      feeds only the snapshot/backup tooling, never the live engine), so
+      dashboard rules were ephemeral + node-local. The fold added the missing
+      feature and made rules durable + cluster-propagated:
+      - `cfg.rules.inline: Vec<RuleDef{id,body,enabled}>` (new schema;
+        `cfg.rules.paths` untouched).
+      - `RuleStore::replace_all` (store ← inline, source of truth) +
+        `apply_cfg_change_to_rules` (store + engine re-derive on every swap).
+      - `RuleStore` lifted to `run.rs` (TierStore plumbing template) +
+        ApplyTargets `rules`/`active_ruleset`; boot-seeded from inline.
+      - All 4 CRUD handlers patch `cfg.rules.inline` + activate, with
+        existence checks against the doc (eventual-consistency-safe).
   - **Unblocking the services-level folds (tier / rules / blacklist) — do
     this ONCE to enable all of them.** The blocker is that the config
     watcher's `ApplyTargets` is assembled in `run.rs` before
