@@ -313,12 +313,43 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
       deliberately-invalid version, assert nodes NACK + stay on last-good.
 
 ### P1 — Fold runtime toggles + HA hardening
-- [ ] Route `/api/detectors`, `/api/ai/enabled`, `/api/tiers/*`,
-      `/api/upstreams/*`, `/api/rules/*`, `/api/response-filter` through the
-      shared doc; re-derive in-process stores on apply.
-- [ ] Retire detector-mask local snapshot as primary durability.
-- [ ] Redis Sentinel/managed + reconnect test.
-- [ ] Stable `node.id` knob; populate `/api/cluster.peers` via heartbeat set.
+
+**Implementation notes (traced 2026-05-27 — read before starting):**
+
+- **Fold toggles** — each handler (`handle_detectors_put`,
+  `handle_ai_enabled_put`, `handle_tier_put`, `handle_upstreams_config_put`,
+  `handle_rules_*`, `handle_response_filter_put` in `admin_mutate.rs`)
+  currently swaps an in-process store directly. To make them propagate:
+  (1) build the *patched* `WafConfig` (current doc's blob, deserialized +
+  the field changed), (2) activate it via `ConfigStore::activate` (reuse
+  the `apply_async` pattern from `handle_config_put`), (3) **extend the
+  apply side** — `config_source/reload.rs` + the `redis_source`/etcd/file
+  watchers only re-derive mask/routes/rate-limit/TLS today; they do **not**
+  re-derive the AI `runtime_enabled` atomic, the `TierStore`, the rules
+  engine, or the response-filter config. Add `apply_cfg_change_to_*`
+  helpers for those and call them in all three watchers (and the boot
+  path) so a config swap reconstructs every in-process store. This is the
+  big item — the apply-side re-derive is the real work, not the write side.
+  - [ ] Retire detector-mask local snapshot as primary durability once the
+    detector mask flows through the doc.
+
+- **`node.id` knob** — ✅ already implemented (HA-T3, see §5).
+
+- **`/api/cluster.peers` roster** — the plumbing exists: `LeaderView` is
+  constructed at `accept.rs:211`, has `set_members(Vec<ClusterPeer>)` +
+  `members()`, and `render_cluster` already serialises `peers:
+  view.members()`. What's missing is a **member registry + populator**:
+  `ClusterPeer { id, addr, version, last_heartbeat, leases }` needs addr +
+  WAF version + held leases, which the config-plane ACK keys
+  (`config:waf:applied:<node>`) do NOT carry — so do NOT fake it from
+  `applied_map`. Instead: each node writes `members:<node_id>` (JSON
+  ClusterPeer) with a TTL via the lease store on a heartbeat; a poll task
+  calls `lease_store.list_keys_with_prefix("members:")`, parses, and
+  `leader_view.set_members(...)`. (The HA-T4 comment in `tracking.rs`
+  already specifies this shape.)
+
+- **Redis Sentinel/managed + reconnect test** — `tests/cluster/07-redis-failover.sh`;
+  verify `state/redis.rs` (deadpool lazy reconnect) survives a primary swap.
 
 ### P2 — Throughput + polish
 - [ ] HAProxy reference deploy + single-VIP cluster RPS benchmark.
