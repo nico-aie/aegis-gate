@@ -214,9 +214,15 @@ For full chronological detail see `git log` and the
 
 ## Next Task
 
-**Active track: Cluster config sync & scaling** — full plan +
-per-fold technical notes in
+**Cluster config sync & scaling — ✅ TRACK COMPLETE** (2026-05-27): Phase 0
+(KV primitives) + Phase A (config plane) + Phase B (folded ALL console
+toggles/CRUD: AI, response_filter, tier, detectors, rules, upstreams) + Phase C
+(multi-node metrics aggregation) + Phase D (HAProxy single-VIP — was already
+shipped as HA-T1). Full plan + per-fold technical notes in
 [`plans/future/cluster-config-sync-and-scaling.md`](./plans/future/cluster-config-sync-and-scaling.md).
+**No remaining work on this track.** Optional polish backlog (P2): Redis
+keyspace-notification fast path, Console fleet-view, `redis_cluster` backend.
+Pick the next track from "Tracks in flight" / the deferred backlog below.
 
 **DONE (all on `develop`, green):**
 - **Phase 0** — `StateBackend` KV primitives (`incrby`/`expire`/`scan_prefix`/`cas_set`) `dcdd96f`.
@@ -322,10 +328,23 @@ per-fold technical notes in
     `last_seen_age_s` stays node-local).
   - *Follow-up (ops, not code)*: re-run the `prod-balanced` 5k-RPS bench with the
     flush tasks active to confirm no p99 regression (design step 5).
+- **Phase D — HAProxy LB (already DONE; the plan entry was stale)** — verified
+  2026-05-27 that this was shipped as **HA-T1 (run-05)**, not outstanding:
+  - `deploy/haproxy/haproxy.cfg` — single-VIP config (`:9180` plaintext / `:9443`
+    TLS, `leastconn`, `/healthz/ready` http-check, `/stats` on `:8404`).
+  - `aegis-lb` service in `deploy/docker-compose.dev.yml` (`profiles: ["ha"]`,
+    `haproxy:2.9-alpine`, VIP + stats ports, healthcheck, `host.docker.internal`
+    extra_host for Linux).
+  - Single-VIP RPS benchmark: `tests/cluster/05-single-vip-baseline.sh` (brings
+    up aegis-lb + 2 WAF nodes, k6 at the VIP, asserts both backends served
+    ≥ 15 %, prints throughput) — part of the `tests/cluster/01..06` HA suite.
+  - Helm: `deploy/helm/aegis-gate` data-plane `Service.type: LoadBalancer` +
+    replicas/HPA = the k8s-native single-VIP equivalent.
+  No new code needed. (Optional ops follow-up: run `tests/cluster/05` to capture
+  a fresh throughput number — deferred per the docker-cleanup caution.)
 
-**REMAINING (resume order):**
-1. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
-   + Helm toggle + single-VIP RPS benchmark.
+**REMAINING:** none — the **Cluster config sync & scaling track is complete**
+(Phase 0 + A + B fold-all + C + D). Deferred backlog below is independent.
 
 **Reusable fold patterns (from AI / response_filter / tier / detectors / rules / upstreams):**
 - *Write side*: handler patches the field on the shared doc's YAML blob via

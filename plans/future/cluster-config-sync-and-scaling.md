@@ -434,7 +434,11 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
   verify `state/redis.rs` (deadpool lazy reconnect) survives a primary swap.
 
 ### P2 — Throughput + polish
-- [ ] HAProxy reference deploy + single-VIP cluster RPS benchmark.
+- [x] HAProxy reference deploy + single-VIP cluster RPS benchmark — **already
+  shipped as HA-T1 (run-05)**: `deploy/haproxy/haproxy.cfg` + the `aegis-lb`
+  `profiles: ["ha"]` service in `deploy/docker-compose.dev.yml` +
+  `tests/cluster/05-single-vip-baseline.sh` (k6 at the VIP, asserts both
+  backends served ≥ 15 %) + Helm data-plane `Service.type: LoadBalancer`.
 - [ ] Redis keyspace-notification fast path (poll stays as fallback).
 - [ ] Console "fleet view": per-node applied config version + drift alarm.
 - [ ] `redis_cluster` backend *iff* load testing demands it.
