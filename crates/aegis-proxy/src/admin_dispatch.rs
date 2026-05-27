@@ -39,7 +39,8 @@ use crate::admin_login::{handle_admin_login, handle_admin_logout};
 use crate::admin_mutate::{
     handle_access_list_delete, handle_access_list_post, handle_admin_drain,
     handle_alert_ack, handle_alert_receiver_delete, handle_alert_receiver_test,
-    handle_alert_receivers_put, handle_detectors_put, handle_loadmode_put,
+    handle_alert_receivers_put, handle_config_put, handle_config_rollback,
+    handle_detectors_put, handle_loadmode_put,
     handle_logging_put, handle_mode_put, handle_mtls_sans_delete,
     handle_mtls_sans_put, handle_mtls_sans_test, handle_pool_delete,
     handle_ai_enabled_get, handle_ai_enabled_put, handle_response_filter_get,
@@ -114,6 +115,16 @@ pub(crate) async fn handle_admin_request(
     // asynchronously, runs through AuditedMutate.
     if method == hyper::Method::PUT && path == "/api/detectors" {
         return handle_detectors_put(req, cfg, services).await;
+    }
+
+    // 2026-05-27 — cluster config plane. Audit-mutated + CSRF-gated via
+    // the async AuditedMutate path; activation is a StateBackend CAS that
+    // every node's shared-store watcher then converges on.
+    if method == hyper::Method::PUT && path == "/api/config" {
+        return handle_config_put(req, services).await;
+    }
+    if method == hyper::Method::POST && path == "/api/config/rollback" {
+        return handle_config_rollback(req, services).await;
     }
 
     // P6 mutating endpoint: PUT /api/risk/{ip}/reset. Audit-mutated

@@ -1563,6 +1563,222 @@ fn default_true() -> bool {
     true
 }
 
+/// Body for `PUT /api/config` — activate a new config version.
+#[derive(serde::Deserialize)]
+struct ConfigPutBody {
+    /// The version the editor started from (optimistic concurrency).
+    #[serde(default)]
+    expected_version: u64,
+    /// The full `WafConfig` as YAML.
+    blob: String,
+    /// Short human summary of the change.
+    #[serde(default)]
+    summary: String,
+}
+
+/// Body for `POST /api/config/rollback`.
+#[derive(serde::Deserialize)]
+struct ConfigRollbackBody {
+    target_version: u64,
+}
+
+/// 2026-05-27 — `PUT /api/config`. Activate a new cluster-wide config
+/// version through the shared `ConfigStore`. Audit-mutated + CSRF-gated
+/// via the **async** `AuditedMutate::apply_async` path (activation is a
+/// `StateBackend` round-trip). Returns 200 `{version}` on apply, 409
+/// `{current}` on an optimistic-concurrency conflict. A conflict still
+/// produces an audit entry — recording the *attempt* is desirable for a
+/// config-authority endpoint.
+pub(crate) async fn handle_config_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    let pre = mutation_preamble(&req, "config-put");
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "failed to read request body".into(),
+                ),
+            );
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let parsed: ConfigPutBody = match serde_json::from_str(body_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
+
+    // Single validation surface: the blob must parse as a WafConfig
+    // before it can be activated. Reject early — nothing is written.
+    if let Err(e) = aegis_core::load_config_str(&parsed.blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "config blob failed validation: {e}"
+            )),
+        );
+    }
+
+    let Some(backend) = services.state_backend.as_ref() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "config plane unavailable: no state backend wired".into(),
+            ),
+        );
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+
+    let current = store.current_version().await.unwrap_or(0);
+    let before = serde_json::json!({ "version": current });
+    let after = serde_json::json!({
+        "expected_version": parsed.expected_version,
+        "summary": parsed.summary,
+    });
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/config",
+        action: "config_activate",
+        reason: "operator activated config version",
+    };
+
+    let store_for_apply = store.clone();
+    let blob = parsed.blob;
+    let actor = pre.actor.clone();
+    let summary = parsed.summary;
+    let expected = parsed.expected_version;
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply
+                .activate(expected, blob, &actor, &summary)
+                .await
+        })
+        .await;
+
+    match outcome {
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "version": version,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// 2026-05-27 — `POST /api/config/rollback`. Re-activate a prior
+/// (immutable) snapshot as a new version. Same async audited path.
+pub(crate) async fn handle_config_rollback(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt;
+    let pre = mutation_preamble(&req, "config-rollback");
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(
+                    "failed to read request body".into(),
+                ),
+            );
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let parsed: ConfigRollbackBody = match serde_json::from_str(body_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
+
+    let Some(backend) = services.state_backend.as_ref() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "config plane unavailable: no state backend wired".into(),
+            ),
+        );
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+
+    let current = store.current_version().await.unwrap_or(0);
+    let before = serde_json::json!({ "version": current });
+    let after = serde_json::json!({ "rollback_to": parsed.target_version });
+
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/config/rollback",
+        action: "config_rollback",
+        reason: "operator rolled back config version",
+    };
+
+    let store_for_apply = store.clone();
+    let actor = pre.actor.clone();
+    let target = parsed.target_version;
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.rollback(target, &actor).await
+        })
+        .await;
+
+    match outcome {
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "version": version,
+                    "rolled_back_to": target,
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 /// Helper: read the standard mutation preamble (CSRF cookie +
 /// header, actor, request_id) into one struct so the four CRUD
 /// handlers don't repeat boilerplate.

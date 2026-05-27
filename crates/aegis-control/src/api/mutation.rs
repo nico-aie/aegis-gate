@@ -224,6 +224,59 @@ impl AuditedMutate {
 
         Ok(MutationOutcome { value, chain_entry })
     }
+
+    /// Async sibling of [`Self::apply`] for mutators whose state change
+    /// is asynchronous — e.g. a `StateBackend` round-trip like the
+    /// cluster config plane's `ConfigStore::activate`. Identical
+    /// contract: CSRF is checked first, the future runs exactly once and
+    /// only after CSRF passes, and a chain entry is written iff the
+    /// future succeeds (Err → `MutationError::Validation`, no chain
+    /// entry — same "every entry is a real change" invariant).
+    ///
+    /// The std `Mutex` guarding the chain is locked only AFTER the await
+    /// completes, so it is never held across an `.await` point.
+    pub async fn apply_async<F, Fut, T, E>(
+        &self,
+        req: &MutationRequest<'_>,
+        before: serde_json::Value,
+        after: serde_json::Value,
+        mutator: F,
+    ) -> Result<MutationOutcome<T>, MutationError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+        E: std::fmt::Display,
+    {
+        if requires_csrf(req.method) {
+            match csrf_validate(req.csrf_cookie, req.csrf_header) {
+                CsrfResult::Valid => {}
+                CsrfResult::MissingCookie => return Err(MutationError::CsrfMissingCookie),
+                CsrfResult::MissingHeader => return Err(MutationError::CsrfMissingHeader),
+                CsrfResult::Mismatch => return Err(MutationError::CsrfMismatch),
+            }
+        }
+
+        let value = mutator()
+            .await
+            .map_err(|e| MutationError::Validation(e.to_string()))?;
+
+        let entry = AdminChangeEntry {
+            ts: chrono::Utc::now(),
+            actor: req.actor.into(),
+            resource: req.resource.into(),
+            action: req.action.into(),
+            reason: req.reason.into(),
+            diff: serde_json::json!({ "before": before, "after": after }),
+        };
+        let event: AuditEvent = entry.to_audit_event(req.request_id);
+        let chain_entry = {
+            let mut writer = self.chain.lock().expect("audit chain poisoned");
+            writer.append(event.clone())
+        };
+        self.bus.emit(event);
+
+        Ok(MutationOutcome { value, chain_entry })
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +364,53 @@ mod tests {
         // closure — the audit entry then records the read intent.
         assert_eq!(out.value, 42);
         assert_eq!(m.chain_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_async_rejects_csrf_before_running_future() {
+        let m = AuditedMutate::new(AuditBus::new(8));
+        let r = req("PUT", None, Some("token"));
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran2 = ran.clone();
+        let out: Result<MutationOutcome<()>, _> = m
+            .apply_async(&r, serde_json::Value::Null, serde_json::Value::Null, || async move {
+                ran2.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok::<(), Boom>(())
+            })
+            .await;
+        assert!(matches!(out.unwrap_err(), MutationError::CsrfMissingCookie));
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "future must NOT run when CSRF fails",
+        );
+        assert_eq!(m.chain_len(), 0, "no chain entry on CSRF reject");
+    }
+
+    #[tokio::test]
+    async fn apply_async_success_appends_one_chain_entry() {
+        let m = AuditedMutate::new(AuditBus::new(8));
+        let r = req("PUT", Some("tok"), Some("tok"));
+        let out = m
+            .apply_async(&r, serde_json::Value::Null, serde_json::json!({"v": 7}), || async {
+                Ok::<u32, Boom>(7)
+            })
+            .await
+            .unwrap();
+        assert_eq!(out.value, 7);
+        assert_eq!(m.chain_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_async_failed_future_writes_no_chain_entry() {
+        let m = AuditedMutate::new(AuditBus::new(8));
+        let r = req("PUT", Some("tok"), Some("tok"));
+        let out: Result<MutationOutcome<()>, _> = m
+            .apply_async(&r, serde_json::Value::Null, serde_json::Value::Null, || async {
+                Err::<(), Boom>(Boom("activation conflict"))
+            })
+            .await;
+        assert!(matches!(out.unwrap_err(), MutationError::Validation(_)));
+        assert_eq!(m.chain_len(), 0, "no chain entry when the future errors");
     }
 
     #[test]
