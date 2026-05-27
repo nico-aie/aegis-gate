@@ -349,12 +349,28 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
       `cfg.response_filter` to `WafConfig` (3 bools, default true →
       behaviour-preserving), boot-seed + `apply_cfg_change_to_response_filter`
       + folded handler. The proof that the schema-extension path works.
-    - `handle_detectors_put` → `SharedDetectorMask` has operator overrides
-      beyond `cfg.detectors` (the local snapshot exists precisely because
-      they diverge). Reconcile the override model with `cfg.detectors`.
-    - `handle_upstreams_config_put` (pool registry) + `handle_rules_*`
-      (rules engine) — heavier; `cfg.upstreams` / rules largely exist but
-      the re-derive logic is big.
+    - `handle_detectors_put` → **apply-side already done** (the watcher
+      already calls `apply_cfg_change_to_mask` which re-derives the mask
+      from `cfg.detectors` + compliance clamp). So `cfg.detectors` changes
+      already propagate via a full-doc `PUT /api/config`. The remaining
+      gap is folding the **dedicated** `PUT /api/detectors` handler, which
+      needs a bidirectional `MaskState ↔ cfg.detectors` mapping (the PUT
+      produces a `MaskState` with base + per-tier overrides; we'd have to
+      serialize that back into the `cfg.detectors` YAML shape so the
+      re-derive reproduces it). The local-snapshot override model is the
+      wrinkle. **Fresh-session task** — error-prone mapping, don't rush.
+    - `handle_upstreams_config_put` → **blocked on a missing feature**:
+      upstream **pools are not hot-reloadable today** (`run.rs` logs
+      "cfg.upstreams diff detected but pools are NOT rebuilt from
+      file/etcd reload"). Folding upstreams means first implementing live
+      pool rebuild (DNS re-resolve, health-check re-arm, connection
+      churn) — a sizable, risky feature, not a fold. **Fresh-session.**
+    - `handle_rules_*` → `cfg.rules: RulesConfig` exists, but this is
+      **CRUD** (post/put/delete/toggle), not a single toggle: each op
+      would patch the rules list in `cfg.rules` + activate, and the
+      apply-side needs a new `apply_cfg_change_to_rules` re-deriving the
+      `RuleStore` (services-level → reuses the TierStore plumbing
+      template). Tractable but a chunk. **Fresh-session.**
   - **Unblocking the services-level folds (tier / rules / blacklist) — do
     this ONCE to enable all of them.** The blocker is that the config
     watcher's `ApplyTargets` is assembled in `run.rs` before
