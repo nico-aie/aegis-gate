@@ -3442,7 +3442,7 @@ pub(crate) async fn handle_ai_enabled_put(
     // the binary lacks the `ai` feature (or `cfg.ai.enabled` was
     // false at boot), we want the dashboard to render a clear
     // "feature off" banner — not a generic 500.
-    let Some(toggle) = services.ai_toggle.as_ref().cloned() else {
+    if services.ai_toggle.is_none() {
         let body = serde_json::json!({
             "ok": false,
             "reason": "feature_off",
@@ -3469,8 +3469,76 @@ pub(crate) async fn handle_ai_enabled_put(
         }
     };
 
-    let before = serde_json::json!({ "enabled": toggle.get() });
-    let after = serde_json::json!({ "enabled": patch.enabled });
+    // 2026-05-27 (Phase B fold-toggles, option A — eventual). Route the
+    // toggle through the cluster config plane instead of flipping the
+    // local in-process atomic: patch `ai.enabled` on the shared config
+    // document and activate it. Every node's watcher (incl. this one)
+    // re-derives the AI gate via `apply_cfg_change_to_ai` on its next
+    // poll (~3s) — the shared store is the single source of truth, so
+    // the change is eventually-consistent across the fleet rather than
+    // instant-local.
+    let Some(backend) = services.state_backend.as_ref() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "config plane unavailable: no state backend wired".into(),
+            ),
+        );
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+
+    // Base blob to patch: the active shared doc, or — on a fresh cluster
+    // with nothing activated yet — the boot config file (seeds v1).
+    // Without either (etcd-boot / no path), the operator must publish a
+    // baseline via PUT /api/config first.
+    let (base_blob, expected) = match store.load().await {
+        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(None) => match services.config_yaml_path.as_ref() {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(s) => (s, 0u64),
+                Err(e) => {
+                    return mutation_error_response(
+                        aegis_control::api::mutation::MutationError::Internal(format!(
+                            "cannot read boot config {} to seed the config plane: {e}",
+                            path.display()
+                        )),
+                    )
+                }
+            },
+            None => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(
+                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
+                    ),
+                )
+            }
+        },
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(format!(
+                    "config store read failed: {e}"
+                )),
+            )
+        }
+    };
+
+    let new_blob = match patch_ai_enabled(&base_blob, patch.enabled) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({ "ai_enabled": patch.enabled });
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: pre.csrf_cookie.as_deref(),
@@ -3482,36 +3550,63 @@ pub(crate) async fn handle_ai_enabled_put(
         reason: if patch.enabled { "operator enabled AI detector" } else { "operator disabled AI detector" },
     };
 
-    let toggle_for_apply = Arc::clone(&toggle);
-    // 2026-05-19 — also flip the `Ai` mask bit so GET /api/detectors
-    // stays consistent with the AtomicBool. Phase 3 wires the AI
-    // dispatcher to AND both gates, so either toggle path now
-    // effectively disables AI.
-    let mask_for_apply = services.detector_mask.clone();
-    let outcome = services.mutate.apply::<_, (), &'static str>(
-        &req_ctx,
-        before,
-        after,
-        move || {
-            toggle_for_apply.set(patch.enabled);
-            use aegis_security::detectors::mask::DetectorClass;
-            let mut base = mask_for_apply.load_state().base;
-            base = base.with(DetectorClass::Ai, patch.enabled);
-            mask_for_apply.store(base);
-            Ok(())
-        },
-    );
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let summary = if patch.enabled { "enable AI detector" } else { "disable AI detector" };
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            store_for_apply.activate(expected, blob, &actor, summary).await
+        })
+        .await;
+
     match outcome {
-        Ok(_) => json_response(
-            200,
-            &serde_json::json!({
-                "ok": true,
-                "enabled": patch.enabled,
-                "request_id": pre.request_id,
-            }),
-        ),
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "enabled": patch.enabled,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
         Err(e) => mutation_error_response(e),
     }
+}
+
+/// Patch `ai.enabled` on a YAML config blob via `serde_yaml::Value`
+/// (`WafConfig` isn't `Serialize`, so we edit the generic Value tree).
+/// Creates the `ai` mapping if absent. Returns the re-serialized YAML.
+fn patch_ai_enabled(base: &str, enabled: bool) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let ai = map
+        .entry(serde_yaml::Value::String("ai".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let serde_yaml::Value::Mapping(ai_map) = ai else {
+        return Err("`ai` config is not a mapping".into());
+    };
+    ai_map.insert(
+        serde_yaml::Value::String("enabled".into()),
+        serde_yaml::Value::Bool(enabled),
+    );
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -4161,6 +4256,31 @@ pub(crate) async fn handle_strikes_put(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patch_ai_enabled_sets_existing_field() {
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\nai:\n  enabled: false\n";
+        let out = patch_ai_enabled(base, true).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(v["ai"]["enabled"], serde_yaml::Value::Bool(true));
+    }
+
+    #[test]
+    fn patch_ai_enabled_creates_ai_block_when_absent() {
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n";
+        let out = patch_ai_enabled(base, true).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(v["ai"]["enabled"], serde_yaml::Value::Bool(true));
+    }
+
+    #[test]
+    fn patch_ai_enabled_preserves_other_fields() {
+        let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\nstate:\n  backend: redis\nai:\n  enabled: true\n";
+        let out = patch_ai_enabled(base, false).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(v["ai"]["enabled"], serde_yaml::Value::Bool(false));
+        assert_eq!(v["state"]["backend"], serde_yaml::Value::String("redis".into()));
+    }
 
     #[test]
     fn ca_bundle_apply_flag_default_is_false() {
