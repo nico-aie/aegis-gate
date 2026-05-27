@@ -328,11 +328,28 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
     that re-derives the in-process store from `new_cfg`, add it to
     `redis_source::ApplyTargets`, call it in `apply_and_swap`, and pass the
     handle at the `run.rs` spawn site. See `apply_cfg_change_to_ai`.
-  - **Remaining toggles** (mechanical, same pattern): `handle_tier_put`
-    (TierStore), `handle_response_filter_put` (response-filter cfg),
-    `handle_detectors_put` (full detector mask — then retire the local
-    snapshot), `handle_upstreams_config_put` (pool registry — heavier),
-    `handle_rules_*` (rules engine — heavier).
+  - **Remaining toggles — NOT mechanical** (traced 2026-05-27). AI was
+    the one clean fold because `cfg.ai.enabled` *fully represents* the
+    runtime state. The others hit a **config-schema gap**: the runtime
+    store holds state `WafConfig` doesn't carry, and the doc blob is
+    validated with `deny_unknown_fields`, so there's no overlay escape —
+    each needs a **`WafConfig` schema extension** in aegis-core (+ its
+    validation + boot seeding) *before* it can be folded. This is a design
+    decision (do we want these runtime stores to live in `WafConfig`?):
+    - `handle_tier_put` → `cfg.tiers` is only `{risk_threshold,
+      challenges_enabled}`; `TierStore` also has pipeline / block_threshold
+      / cumulative_challenge_at / cumulative_block_at. Extend
+      `TierThresholdConfig`.
+    - `handle_response_filter_put` → `ResponseFilterConfig`
+      (`scrub_stack_traces` / `mask_internal_ips` / `redact_dlp`) lives in
+      `aegis-security::pipeline`, **not** in `WafConfig`. Add a
+      `cfg.response_filter` block.
+    - `handle_detectors_put` → `SharedDetectorMask` has operator overrides
+      beyond `cfg.detectors` (the local snapshot exists precisely because
+      they diverge). Reconcile the override model with `cfg.detectors`.
+    - `handle_upstreams_config_put` (pool registry) + `handle_rules_*`
+      (rules engine) — heavier; `cfg.upstreams` / rules largely exist but
+      the re-derive logic is big.
   - **Eventual semantics** (option A): folded toggles now apply on the
     next watcher poll (~3s) on ALL nodes incl. local — the store is the
     single source of truth. The file/etcd watchers don't yet call the new
