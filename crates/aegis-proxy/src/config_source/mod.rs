@@ -34,4 +34,6 @@
 #[cfg(feature = "etcd")]
 pub mod etcd_source;
 
+pub mod config_store;
+pub mod redis_source;
 pub mod reload;
