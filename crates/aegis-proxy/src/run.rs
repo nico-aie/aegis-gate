@@ -1121,6 +1121,7 @@ pub async fn run(
             proxy_ctx: Some(upstream_ctx.clone()),
             ip_rate_limiter: Some(ip_rate_limiter.clone()),
             tls_resolver: tls_resolver.clone(),
+            ai_toggle: ai_runtime_toggle.clone(),
         };
         tracing::info!(
             node_id = %node_id,

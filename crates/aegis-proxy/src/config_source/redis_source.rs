@@ -43,6 +43,9 @@ pub struct ApplyTargets {
     pub proxy_ctx: Option<Arc<crate::proxy::ProxyContext>>,
     pub ip_rate_limiter: Option<Arc<aegis_security::rate_limit::IpRateLimiter>>,
     pub tls_resolver: Option<Arc<crate::listener::tls::DynamicResolver>>,
+    /// 2026-05-27 (Phase B) — AI detector runtime gate, re-derived from
+    /// `cfg.ai.enabled` on each swap so a folded AI toggle propagates.
+    pub ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Spawn the shared-store config watcher. Exits when the last strong
@@ -176,6 +179,13 @@ fn apply_and_swap(
 
     let _ = reload::apply_cfg_change_to_rate_limit(new_cfg, targets.ip_rate_limiter.as_ref());
     let _ = reload::apply_cfg_change_to_tls(new_cfg, targets.tls_resolver.as_ref());
+    // Phase B fold-toggles: re-derive the AI runtime gate from
+    // `cfg.ai.enabled` so an activated config flips AI on every node.
+    let _ = reload::apply_cfg_change_to_ai(
+        new_cfg,
+        targets.ai_toggle.as_ref(),
+        targets.detector_mask.as_ref(),
+    );
 
     cfg.store(Arc::new(new_cfg.clone()));
 }

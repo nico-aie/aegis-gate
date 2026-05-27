@@ -227,6 +227,44 @@ pub fn apply_cfg_change_to_rate_limit(
     }
 }
 
+/// Outcome of re-deriving the AI runtime gate from a config swap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiReloadOutcome {
+    /// No AI toggle handle wired — binary built without `ai`, or
+    /// `cfg.ai.enabled` was false at boot so no detector (and no
+    /// runtime toggle) exists. Nothing to re-derive.
+    NoToggle,
+    /// The runtime toggle (+ the mask `Ai` bit) were set from
+    /// `cfg.ai.enabled`.
+    Applied { enabled: bool },
+}
+
+/// 2026-05-27 (config-plane fold-toggles, Phase B) — re-derive the AI
+/// detector's runtime gate from `new_cfg.ai.enabled` on a config swap, so
+/// a cluster-wide config activation that flips `ai.enabled` takes effect
+/// on every node (eventual — applied on the watcher's next poll). Sets
+/// BOTH the runtime `AtomicBool` (the live dispatcher gate the data plane
+/// reads per request) and the detector mask's `Ai` bit (so
+/// `GET /api/detectors` stays consistent), mirroring the in-process
+/// `PUT /api/ai/enabled` handler.
+pub fn apply_cfg_change_to_ai(
+    new_cfg: &WafConfig,
+    ai_toggle: Option<&Arc<std::sync::atomic::AtomicBool>>,
+    mask: Option<&SharedDetectorMask>,
+) -> AiReloadOutcome {
+    let Some(toggle) = ai_toggle else {
+        return AiReloadOutcome::NoToggle;
+    };
+    let enabled = new_cfg.ai.enabled;
+    toggle.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    if let Some(mask) = mask {
+        use aegis_security::detectors::mask::DetectorClass;
+        let base = mask.load_state().base.with(DetectorClass::Ai, enabled);
+        mask.store(base);
+    }
+    AiReloadOutcome::Applied { enabled }
+}
+
 /// Pure: derive the IP rate-limit config the boot path uses
 /// from a `WafConfig`. Shared between `aegis-proxy::run` (boot)
 /// and the watchers (hot-reload) so the selection rule stays
@@ -407,6 +445,65 @@ detectors:
 
     fn parse(yaml: &str) -> WafConfig {
         aegis_core::load_config_str(yaml).unwrap()
+    }
+
+    // 2026-05-27 (Phase B) — config with an explicit `ai.enabled`.
+    fn yaml_with_ai(enabled: bool) -> String {
+        format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+ai:
+  enabled: {enabled}
+"#
+        )
+    }
+
+    #[test]
+    fn ai_reload_no_toggle_handle_is_noop() {
+        let cfg = parse(&yaml_with_ai(true));
+        assert_eq!(
+            apply_cfg_change_to_ai(&cfg, None, None),
+            AiReloadOutcome::NoToggle,
+        );
+    }
+
+    #[test]
+    fn ai_reload_sets_toggle_and_mask_from_cfg() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let toggle = Arc::new(AtomicBool::new(false));
+        let mask = SharedDetectorMask::default();
+
+        // cfg.ai.enabled = true → atomic on + mask Ai bit on.
+        let cfg_on = parse(&yaml_with_ai(true));
+        assert_eq!(
+            apply_cfg_change_to_ai(&cfg_on, Some(&toggle), Some(&mask)),
+            AiReloadOutcome::Applied { enabled: true },
+        );
+        assert!(toggle.load(Ordering::Relaxed));
+        assert!(mask.load().is_enabled(DetectorClass::Ai));
+
+        // cfg.ai.enabled = false → atomic off + mask Ai bit off.
+        let cfg_off = parse(&yaml_with_ai(false));
+        assert_eq!(
+            apply_cfg_change_to_ai(&cfg_off, Some(&toggle), Some(&mask)),
+            AiReloadOutcome::Applied { enabled: false },
+        );
+        assert!(!toggle.load(Ordering::Relaxed));
+        assert!(!mask.load().is_enabled(DetectorClass::Ai));
     }
 
     #[test]
