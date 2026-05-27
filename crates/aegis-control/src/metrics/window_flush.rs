@@ -117,25 +117,22 @@ impl WindowFlush {
     }
 }
 
-/// Read an aggregated window from the state backend: scan keys under
-/// `key_prefix`, keep only buckets whose `abs_ts` falls within
-/// `[now - window_secs, now]`, then sum per id (`INCRBY` already
-/// aggregated across nodes). Returns `id -> total`; empty when the
-/// backend has no matching keys, so callers fall back to local rings on
-/// `in_memory` single-node deployments.
-pub async fn read_window(
+/// Scan every aggregated bucket under `key_prefix` and group them by id
+/// as `(abs_bucket_ts, count)` (no window filter — that's applied at
+/// read time by [`sum_window`], so a single scan serves any window the
+/// dashboard asks for). `INCRBY` already summed across nodes. Empty when
+/// the backend has no matching keys.
+pub async fn read_buckets(
     state: &Arc<dyn StateBackend>,
     key_prefix: &str,
-    window_secs: u64,
-    now_secs: u64,
-) -> HashMap<String, u64> {
-    let mut totals: HashMap<String, u64> = HashMap::new();
+    _now_secs: u64,
+) -> HashMap<String, Vec<(u64, u64)>> {
+    let mut out: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
     let scan = format!("{key_prefix}:");
     let keys = match state.scan_prefix(&scan).await {
         Ok(k) => k,
-        Err(_) => return totals,
+        Err(_) => return out,
     };
-    let cutoff = now_secs.saturating_sub(window_secs);
     for key in keys {
         // `<prefix>:<abs_ts>:<id>` — strip the prefix, split the numeric
         // bucket-ts off the front; the remainder is the id verbatim.
@@ -148,13 +145,145 @@ pub async fn read_window(
         let Ok(abs_ts) = ts_str.parse::<u64>() else {
             continue;
         };
-        if abs_ts < cutoff {
-            continue;
-        }
         let v = state.get_counter(&key).await.unwrap_or(0);
-        *totals.entry(id.to_string()).or_insert(0) += v;
+        out.entry(id.to_string()).or_default().push((abs_ts, v));
     }
-    totals
+    out
+}
+
+/// Sum the cached per-bucket aggregate over `[now - window_secs, now]`,
+/// dropping ids whose windowed total is zero. Pure + sync so a
+/// synchronous dashboard endpoint can serve any window off a single
+/// cached snapshot.
+pub fn sum_window(
+    buckets: &HashMap<String, Vec<(u64, u64)>>,
+    window_secs: u64,
+    now_secs: u64,
+) -> HashMap<String, u64> {
+    let cutoff = now_secs.saturating_sub(window_secs);
+    buckets
+        .iter()
+        .filter_map(|(id, bs)| {
+            let total: u64 = bs
+                .iter()
+                .filter(|(ts, _)| *ts >= cutoff)
+                .map(|(_, c)| *c)
+                .sum();
+            (total > 0).then(|| (id.clone(), total))
+        })
+        .collect()
+}
+
+/// Read an aggregated window from the state backend in one shot
+/// (`read_buckets` + `sum_window`). Returns `id -> total`; empty when
+/// the backend has no matching keys, so callers fall back to local rings
+/// on `in_memory` single-node deployments.
+pub async fn read_window(
+    state: &Arc<dyn StateBackend>,
+    key_prefix: &str,
+    window_secs: u64,
+    now_secs: u64,
+) -> HashMap<String, u64> {
+    let buckets = read_buckets(state, key_prefix, now_secs).await;
+    sum_window(&buckets, window_secs, now_secs)
+}
+
+/// 2026-05-27 (Phase C) — read-cheap snapshot of the latest cluster-wide
+/// per-bucket aggregate for one counter class. The flush task refreshes
+/// it each cycle (`read_buckets` → `store`); the synchronous dashboard
+/// endpoints call [`Self::window_totals`] without awaiting — sidestepping
+/// the sync admin GET dispatcher's inability to `.await` a Redis read.
+#[derive(Clone)]
+pub struct AggregateCache {
+    inner: Arc<arc_swap::ArcSwap<HashMap<String, Vec<(u64, u64)>>>>,
+}
+
+impl AggregateCache {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(arc_swap::ArcSwap::from_pointee(HashMap::new())),
+        }
+    }
+
+    /// Cluster-wide windowed totals computed synchronously from the
+    /// cached per-bucket aggregate.
+    pub fn window_totals(&self, window_secs: u64, now_secs: u64) -> HashMap<String, u64> {
+        sum_window(&self.inner.load(), window_secs, now_secs)
+    }
+
+    fn store(&self, buckets: HashMap<String, Vec<(u64, u64)>>) {
+        self.inner.store(Arc::new(buckets));
+    }
+}
+
+impl Default for AggregateCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn now_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn flush_failed_event(key_prefix: &str, errors: usize) -> aegis_core::audit::AuditEvent {
+    aegis_core::audit::AuditEvent {
+        schema_version: 1,
+        ts: chrono::Utc::now(),
+        request_id: String::new(),
+        class: aegis_core::audit::AuditClass::Admin,
+        tenant_id: None,
+        tier: None,
+        action: "metrics_flush_failed".into(),
+        reason: format!("counter flush to state backend failing ({key_prefix})"),
+        client_ip: String::new(),
+        route_id: None,
+        rule_id: None,
+        risk_score: None,
+        method: None,
+        path: None,
+        mode: None,
+        fields: serde_json::json!({ "key_prefix": key_prefix, "errors": errors }),
+    }
+}
+
+/// 2026-05-27 (Phase C) — spawn the background flush loop for one counter
+/// class. Each `interval` tick: flush local-ring deltas into the shared
+/// `INCRBY` counters, then refresh `cache` with a fresh cluster-wide
+/// per-bucket read. A `metrics_flush_failed` audit event is emitted
+/// (edge-triggered) when the backend starts erroring and the loop keeps
+/// running on the local rings in the meantime. Exits when the last
+/// strong ref to `source` is dropped.
+pub fn spawn_flush_task(
+    source: Arc<dyn BucketSource>,
+    state: Arc<dyn StateBackend>,
+    bus: aegis_core::audit::AuditBus,
+    cache: AggregateCache,
+    key_prefix: String,
+    ttl: Duration,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut flusher = WindowFlush::new(key_prefix.clone(), ttl);
+        let mut ticker = tokio::time::interval(interval);
+        let mut in_error_episode = false;
+        loop {
+            ticker.tick().await;
+            let now = now_secs();
+            let out = flusher.flush(source.as_ref(), &state, now).await;
+            cache.store(read_buckets(&state, &key_prefix, now).await);
+            if out.errors > 0 && !in_error_episode {
+                in_error_episode = true;
+                bus.emit(flush_failed_event(&key_prefix, out.errors));
+            } else if out.errors == 0 {
+                in_error_episode = false;
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -246,6 +375,22 @@ mod tests {
 
     fn backend() -> Arc<dyn StateBackend> {
         Arc::new(MapBackend::new())
+    }
+
+    #[test]
+    fn sum_window_filters_window_and_drops_zero_ids() {
+        let mut b: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
+        b.insert("a".into(), vec![(1000, 5), (970, 3), (10, 99)]); // 10 is stale
+        b.insert("idle".into(), vec![(10, 7)]); // entirely outside window
+        let totals = sum_window(&b, 60, 1000);
+        assert_eq!(totals.get("a"), Some(&8), "5 + 3 within window; 99 excluded");
+        assert!(totals.get("idle").is_none(), "zero-in-window id dropped");
+    }
+
+    #[test]
+    fn aggregate_cache_starts_empty() {
+        let c = AggregateCache::new();
+        assert!(c.window_totals(60, 1000).is_empty());
     }
 
     #[tokio::test]

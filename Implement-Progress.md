@@ -299,14 +299,32 @@ per-fold technical notes in
     `apply_async`/`activate`; `cfg` param dropped (existence + route-ref checks
     now run against the doc). Local `Strict` DNS resolve kept as a 400 typo gate
     (result discarded). `upstreams_audit_view` removed.
+- **Phase C — metrics aggregation (DONE, 2026-05-27)** — `e47fa95` (foundation)
+  + follow-up (wiring). Multi-node cluster-wide P5 route-activity + P4
+  access-list-hit counters.
+  - *Primitive*: `StateBackend::get_counter` (encoding-agnostic counter read —
+    in-memory decodes LE bytes, Redis parses the decimal string; forwarded
+    through Metered + Reconciling wrappers).
+  - *Helper* (`metrics/window_flush.rs`): `WindowFlush` (per-`(id,abs_ts)` delta
+    → `INCRBY <prefix>:<abs_ts>:<id>` + TTL), `read_buckets`/`sum_window`/
+    `read_window`, `AggregateCache` (`ArcSwap` snapshot the flush task refreshes),
+    `spawn_flush_task` (flush + cache-refresh + edge-triggered `metrics_flush_failed`
+    audit). **Keyed by absolute bucket ts** → correct across ring rotation.
+  - *Sources*: `BucketSource` for `RouteActivityWindow` + `AccessListStore`
+    (abs-ts reconstruction from `last_bucket_ts`; only actively-written buckets
+    have non-zero deltas, for which reconstruction is exact).
+  - *Wiring*: `accept.rs` spawns 3 flush tasks (`waf:route` / `waf:hits:bl` /
+    `waf:hits:wl`) + sets the caches on `DashboardServices` **only when
+    `cfg.state.backend != in_memory`**. The 3 sync GET endpoints
+    (`/api/analytics/route-activity`, `/api/blacklist|whitelist/hits`) read the
+    cache when wired (cluster-wide) else the local rings (single-node). Sync
+    dispatcher kept — the cache sidesteps the can't-`.await` problem (route
+    `last_seen_age_s` stays node-local).
+  - *Follow-up (ops, not code)*: re-run the `prod-balanced` 5k-RPS bench with the
+    flush tasks active to confirm no p99 regression (design step 5).
 
 **REMAINING (resume order):**
-1. **Phase C — metrics aggregation** — `crates/aegis-control/src/metrics/window_flush.rs`
-   (local ring → `incrby` flush, `expire` TTL=2×window) for `RouteActivityWindow`
-   (P5) + `AccessListHits` (P4); flush tasks at boot; endpoint reads switch to
-   `scan_prefix`+sum when `backend != in_memory`, else local rings;
-   `flush_failed` audit. Design: [`plans/future/multi-node-metrics-aggregation.md`](./plans/future/multi-node-metrics-aggregation.md).
-2. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
+1. **Phase D — HAProxy LB** — `aegis-lb` container in `deploy/docker-compose.dev.yml`
    + Helm toggle + single-VIP RPS benchmark.
 
 **Reusable fold patterns (from AI / response_filter / tier / detectors / rules / upstreams):**

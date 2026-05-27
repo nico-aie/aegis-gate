@@ -224,6 +224,16 @@ pub struct DashboardServices {
     /// (the inner `DashMap` is Arc-shared).
     pub route_activity:
         Option<crate::metrics::route_activity::RouteActivityWindow>,
+    /// 2026-05-27 (Phase C) — cluster-wide aggregate caches for the
+    /// route-activity (P5) + access-list-hit (P4) counters. `Some` only
+    /// when a shared state backend is wired (`aegis-proxy::run` spawns
+    /// the flush tasks for `backend != in_memory`); the synchronous
+    /// dashboard endpoints read these to show a fleet-wide view instead
+    /// of this node's local-ring slice. `None` → single-node, read the
+    /// local rings.
+    pub route_activity_cache: Option<crate::metrics::window_flush::AggregateCache>,
+    pub blacklist_hits_cache: Option<crate::metrics::window_flush::AggregateCache>,
+    pub whitelist_hits_cache: Option<crate::metrics::window_flush::AggregateCache>,
     /// Per-detector evaluation-duration histogram. Same wiring
     /// pattern as `route_latency_hist`. `Some` once
     /// `aegis-proxy::run` has registered it; populated by the
@@ -592,6 +602,9 @@ impl DashboardServices {
                 request_stage_hist: None,
                 route_latency_hist: None,
                 route_activity: None,
+                route_activity_cache: None,
+                blacklist_hits_cache: None,
+                whitelist_hits_cache: None,
                 detector_latency_hist: None,
                 // Phase-3 incident overlay — empty at boot, fills
                 // as operators ack/snooze/resolve via the dashboard.

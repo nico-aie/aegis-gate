@@ -671,6 +671,59 @@ pub(crate) async fn admin_accept_loop(
     services.route_latency_hist = Some(route_latency_hist.clone());
     services.route_activity = Some(route_activity.clone());
     services.detector_latency_hist = Some(detector_latency_hist.clone());
+
+    // 2026-05-27 (Phase C) — when a shared state backend is wired, spawn
+    // the per-counter-class flush tasks that mirror the local rings into
+    // cluster-wide `INCRBY` counters + refresh the aggregate caches the
+    // dashboard endpoints serve. On `in_memory` single-node the local
+    // rings already are the whole truth, so we skip the machinery.
+    if cfg.state.backend != aegis_core::config::StateBackendKind::InMemory {
+        if let Some(state) = services.state_backend.clone() {
+            use aegis_control::metrics::window_flush::{
+                spawn_flush_task, AggregateCache, BucketSource,
+            };
+            const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+            // P5 route activity — 60 s window, TTL 2× window.
+            let ra_cache = AggregateCache::new();
+            services.route_activity_cache = Some(ra_cache.clone());
+            std::mem::drop(spawn_flush_task(
+                Arc::new(route_activity.clone()) as Arc<dyn BucketSource>,
+                state.clone(),
+                services.bus.clone(),
+                ra_cache,
+                "waf:route".into(),
+                std::time::Duration::from_secs(120),
+                FLUSH_INTERVAL,
+            ));
+            // P4 access-list hits — 24 h window, TTL 48 h.
+            let hit_ttl = std::time::Duration::from_secs(86_400 * 2);
+            let bl_cache = AggregateCache::new();
+            services.blacklist_hits_cache = Some(bl_cache.clone());
+            std::mem::drop(spawn_flush_task(
+                services.blacklist.clone() as Arc<dyn BucketSource>,
+                state.clone(),
+                services.bus.clone(),
+                bl_cache,
+                "waf:hits:bl".into(),
+                hit_ttl,
+                FLUSH_INTERVAL,
+            ));
+            let wl_cache = AggregateCache::new();
+            services.whitelist_hits_cache = Some(wl_cache.clone());
+            std::mem::drop(spawn_flush_task(
+                services.whitelist.clone() as Arc<dyn BucketSource>,
+                state,
+                services.bus.clone(),
+                wl_cache,
+                "waf:hits:wl".into(),
+                hit_ttl,
+                FLUSH_INTERVAL,
+            ));
+            tracing::info!(
+                "Phase C: spawned cluster metrics flush tasks (route-activity + access-list hits)",
+            );
+        }
+    }
     // HACK-T3 — wire the same detector list the data plane
     // runs so `/api/rules/simulate` can evaluate against an
     // identical chain.

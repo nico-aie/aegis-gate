@@ -41,6 +41,15 @@ use crate::responses::{
     dashboard_response, dashboard_shell_response, json_body_response, json_response,
 };
 
+/// 2026-05-27 (Phase C) — wall-clock seconds for windowing the cached
+/// cluster-wide metric aggregates.
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub(crate) fn admin_router(
     req: hyper::Request<hyper::body::Incoming>,
     cfg: &WafConfig,
@@ -632,16 +641,48 @@ pub(crate) fn admin_router(
             let body = match services.route_activity.as_ref() {
                 None => serde_json::json!({"routes": []}).to_string(),
                 Some(w) => {
-                    let rows: Vec<serde_json::Value> = w
-                        .snapshot_all()
-                        .into_iter()
-                        .map(|(route, a)| serde_json::json!({
-                            "route": route,
-                            "last_60s_count": a.count_60s,
-                            "last_seen_age_s": a.last_seen_age_s,
-                        }))
-                        .collect();
-                    serde_json::json!({"routes": rows}).to_string()
+                    let rows: Vec<serde_json::Value> = match services
+                        .route_activity_cache
+                        .as_ref()
+                    {
+                        // Cluster-wide aggregate (Phase C): the count is
+                        // summed across nodes; `last_seen_age_s` stays
+                        // node-local ("when THIS node last saw the route").
+                        Some(cache) => {
+                            let now = now_unix_secs();
+                            let mut rows: Vec<(String, u64, Option<u64>)> = cache
+                                .window_totals(60, now)
+                                .into_iter()
+                                .map(|(route, count)| {
+                                    let age =
+                                        w.snapshot(&route).and_then(|a| a.last_seen_age_s);
+                                    (route, count, age)
+                                })
+                                .collect();
+                            rows.sort_by(|a, b| b.1.cmp(&a.1));
+                            rows.into_iter()
+                                .map(|(route, count, age)| {
+                                    serde_json::json!({
+                                        "route": route,
+                                        "last_60s_count": count,
+                                        "last_seen_age_s": age,
+                                    })
+                                })
+                                .collect()
+                        }
+                        None => w
+                            .snapshot_all()
+                            .into_iter()
+                            .map(|(route, a)| {
+                                serde_json::json!({
+                                    "route": route,
+                                    "last_60s_count": a.count_60s,
+                                    "last_seen_age_s": a.last_seen_age_s,
+                                })
+                            })
+                            .collect(),
+                    };
+                    serde_json::json!({ "routes": rows }).to_string()
                 }
             };
             json_body_response(200, body, "private, max-age=2")
@@ -748,18 +789,21 @@ pub(crate) fn admin_router(
         // rounds up to one bucket.
         "/api/blacklist/hits" => {
             let window = parse_query_u64(query, "window", 3600);
-            let body = serde_json::json!({
-                "window_secs": window,
-                "hits": services.blacklist.hit_counts(window),
-            });
+            // Cluster-wide aggregate when wired (Phase C); else node-local.
+            let hits = match services.blacklist_hits_cache.as_ref() {
+                Some(cache) => cache.window_totals(window, now_unix_secs()),
+                None => services.blacklist.hit_counts(window),
+            };
+            let body = serde_json::json!({ "window_secs": window, "hits": hits });
             json_body_response(200, body.to_string(), "private, max-age=5")
         }
         "/api/whitelist/hits" => {
             let window = parse_query_u64(query, "window", 3600);
-            let body = serde_json::json!({
-                "window_secs": window,
-                "hits": services.whitelist.hit_counts(window),
-            });
+            let hits = match services.whitelist_hits_cache.as_ref() {
+                Some(cache) => cache.window_totals(window, now_unix_secs()),
+                None => services.whitelist.hit_counts(window),
+            };
+            let body = serde_json::json!({ "window_secs": window, "hits": hits });
             json_body_response(200, body.to_string(), "private, max-age=5")
         }
         "/api/admin/sessions" => {

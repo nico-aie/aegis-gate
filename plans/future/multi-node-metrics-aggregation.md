@@ -1,5 +1,22 @@
 # Multi-node metrics aggregation (P4 + P5 counters)
 
+> **Status (2026-05-27): ✅ IMPLEMENTED.** Shipped as Phase C of the
+> cluster config/scaling track (`e47fa95` foundation + follow-up
+> wiring). Built per the hybrid local+flush design below, with two
+> refinements the original sketch didn't anticipate:
+> - **Keyed by absolute bucket timestamp** (`<prefix>:<abs_ts>:<id>`),
+>   not ring index — the naive per-index delta drops counts across ring
+>   rotation. A `get_counter` `StateBackend` primitive reads the counters
+>   back (encoding differs per backend, so `get`+parse can't be generic).
+> - **Read path uses a flush-task-maintained `AggregateCache`** (an
+>   `ArcSwap` snapshot) rather than awaiting `read_window` per request:
+>   the admin GET dispatcher is synchronous and can't `.await`. The cache
+>   refresh rides the existing flush cadence.
+>
+> See `Implement-Progress.md` → "Phase C — metrics aggregation (DONE)"
+> for the file-by-file landing. Remaining: the perf benchmark (design
+> step 5, an ops verification, not code).
+
 > **Status (2026-05-11): Deferred.** The per-route activity
 > counter (P5, `bebca12`) and per-entry access-list hit counter
 > (P4, `3c59dcb`) are correct for single-node deployments but
