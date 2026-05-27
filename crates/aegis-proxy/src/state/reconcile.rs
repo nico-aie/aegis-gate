@@ -390,6 +390,78 @@ impl StateBackend for ReconcilingBackend {
         }
     }
 
+    // --- 2026-05-27 generic KV primitives (config plane + metrics agg) ---
+
+    async fn incrby(&self, key: &str, delta: u64) -> Result<u64> {
+        match self.primary.incrby(key, delta).await {
+            Ok(v) => {
+                self.maybe_exit_partition().await;
+                Ok(v)
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("incrby", &e);
+                self.fallback.incrby(key, delta).await
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    async fn expire(&self, key: &str, ttl: Duration) -> Result<()> {
+        // Mirror to fallback so a partition that starts after this
+        // keeps the TTL locally too.
+        let _ = self.fallback.expire(key, ttl).await;
+        match self.primary.expire(key, ttl).await {
+            Ok(()) => {
+                self.maybe_exit_partition().await;
+                Ok(())
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("expire", &e);
+                Ok(())
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        match self.primary.scan_prefix(prefix).await {
+            Ok(v) => {
+                self.maybe_exit_partition().await;
+                Ok(v)
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("scan_prefix", &e);
+                self.fallback.scan_prefix(prefix).await
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    async fn cas_set(
+        &self,
+        key: &str,
+        expected: Option<&[u8]>,
+        new: &[u8],
+        ttl: Option<Duration>,
+    ) -> Result<bool> {
+        // Mirror successful swaps to fallback so reads-after-write
+        // (and a subsequent partition) see the new config locally.
+        match self.primary.cas_set(key, expected, new, ttl).await {
+            Ok(swapped) => {
+                self.maybe_exit_partition().await;
+                if swapped {
+                    let _ = self.fallback.cas_set(key, expected, new, ttl).await;
+                }
+                Ok(swapped)
+            }
+            Err(e @ WafError::State(_)) => {
+                self.enter_partition("cas_set", &e);
+                self.fallback.cas_set(key, expected, new, ttl).await
+            }
+            Err(other) => Err(other),
+        }
+    }
+
     /// SC-T1 — health for the reconciling wrapper.
     ///
     /// Surfaces the primary's snapshot but rebrands the `backend`

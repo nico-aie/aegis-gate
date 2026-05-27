@@ -140,6 +140,39 @@ redis.call('SET', key, tostring(new_val))
 return new_val
 "#;
 
+/// Lua script for a single-key compare-and-set (config-plane
+/// activation). Binary-safe: `expected` / `new` are passed as raw
+/// ARGV strings.
+///
+///   KEYS[1]  = key
+///   ARGV[1]  = expect_present ("1" = compare against ARGV[2];
+///              "0" = require the key to be absent)
+///   ARGV[2]  = expected value (ignored when expect_present == 0)
+///   ARGV[3]  = new value
+///   ARGV[4]  = ttl_ms ("0" = persist — no expiry, config must not
+///              age out)
+///
+/// Returns 1 on a successful swap, 0 on a value mismatch.
+pub const CAS_SET_LUA: &str = r#"
+local cur = redis.call('GET', KEYS[1])
+local matches
+if tonumber(ARGV[1]) == 1 then
+    matches = (cur == ARGV[2])
+else
+    matches = (cur == false)
+end
+if not matches then
+    return 0
+end
+local ttl = tonumber(ARGV[4])
+if ttl > 0 then
+    redis.call('SET', KEYS[1], ARGV[3], 'PX', ttl)
+else
+    redis.call('SET', KEYS[1], ARGV[3])
+end
+return 1
+"#;
+
 #[cfg(feature = "redis")]
 mod backend {
     //! Real Redis backend — only compiled with `--features redis`.
@@ -225,6 +258,7 @@ mod backend {
         sliding_window: Arc<Script>,
         token_bucket: Arc<Script>,
         add_risk: Arc<Script>,
+        cas_script: Arc<Script>,
         latency: Arc<Mutex<LatencyRing>>,
         health_cache: Arc<Mutex<Option<CachedHealth>>>,
         last_error_at: Arc<Mutex<Option<Instant>>>,
@@ -253,6 +287,7 @@ mod backend {
                 sliding_window: Arc::new(Script::new(SLIDING_WINDOW_LUA)),
                 token_bucket: Arc::new(Script::new(TOKEN_BUCKET_LUA)),
                 add_risk: Arc::new(Script::new(ADD_RISK_LUA)),
+                cas_script: Arc::new(Script::new(CAS_SET_LUA)),
                 latency: Arc::new(Mutex::new(LatencyRing::new(
                     LATENCY_BUFFER_CAPACITY,
                 ))),
@@ -560,6 +595,83 @@ mod backend {
             let mut c = self.conn().await?;
             let n: i32 = self.with_timeout("consume_nonce", c.del(&k)).await?;
             Ok(n > 0)
+        }
+
+        // --- 2026-05-27 generic KV primitives (config plane + metrics agg) ---
+
+        async fn incrby(&self, key: &str, delta: u64) -> Result<u64> {
+            let mut c = self.conn().await?;
+            // INCRBY is atomic + commutative across nodes.
+            let v: i64 = self
+                .with_timeout("incrby", c.incr(key, delta as i64))
+                .await?;
+            Ok(v.max(0) as u64)
+        }
+
+        async fn expire(&self, key: &str, ttl: Duration) -> Result<()> {
+            let mut c = self.conn().await?;
+            let ttl_ms = ttl.as_millis().max(1) as u64;
+            self.with_timeout::<i64, _>(
+                "expire",
+                redis::cmd("PEXPIRE").arg(key).arg(ttl_ms).query_async(&mut c),
+            )
+            .await?;
+            Ok(())
+        }
+
+        async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+            let pattern = format!("{prefix}*");
+            let mut out = Vec::new();
+            let mut c = self.conn().await?;
+            let mut cursor: u64 = 0;
+            loop {
+                let (next, keys): (u64, Vec<String>) = self
+                    .with_timeout(
+                        "scan_prefix",
+                        redis::cmd("SCAN")
+                            .arg(cursor)
+                            .arg("MATCH")
+                            .arg(&pattern)
+                            .arg("COUNT")
+                            .arg(512)
+                            .query_async(&mut c),
+                    )
+                    .await?;
+                out.extend(keys);
+                cursor = next;
+                if cursor == 0 {
+                    break;
+                }
+            }
+            Ok(out)
+        }
+
+        async fn cas_set(
+            &self,
+            key: &str,
+            expected: Option<&[u8]>,
+            new: &[u8],
+            ttl: Option<Duration>,
+        ) -> Result<bool> {
+            let mut c = self.conn().await?;
+            let ttl_ms = ttl.map(|t| t.as_millis().max(1) as u64).unwrap_or(0);
+            let (present, exp_bytes): (i64, &[u8]) = match expected {
+                Some(e) => (1, e),
+                None => (0, b""),
+            };
+            let r: i64 = self
+                .with_timeout(
+                    "cas_set",
+                    self.cas_script
+                        .key(key)
+                        .arg(present)
+                        .arg(exp_bytes)
+                        .arg(new)
+                        .arg(ttl_ms)
+                        .invoke_async(&mut c),
+                )
+                .await?;
+            Ok(r == 1)
         }
 
         /// 2026-05-20 — `/__waf_control/reset_state` ephemeral wipe.

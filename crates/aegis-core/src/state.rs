@@ -160,6 +160,54 @@ pub trait StateBackend: Send + Sync + 'static {
     async fn put_nonce(&self, nonce: &str, ttl: Duration) -> Result<bool>;
     async fn consume_nonce(&self, nonce: &str) -> Result<bool>;
 
+    // --- 2026-05-27 — generic KV primitives for the multi-node config
+    // plane + counter aggregation (see
+    // `plans/future/cluster-config-sync-and-scaling.md` and
+    // `multi-node-metrics-aggregation.md`). Default impls keep the
+    // many test-stub + out-of-tree backends compiling; the shipped
+    // `redis` / `in_memory` backends and the `Reconciling` / `Metered`
+    // wrappers override them. ---
+
+    /// Atomically add `delta` to the integer at `key` (treating an
+    /// absent/expired key as 0) and return the new value. Commutative
+    /// across nodes — the metrics flush relies on `INCRBY` semantics so
+    /// concurrent per-node flushes converge to the right total.
+    async fn incrby(&self, _key: &str, _delta: u64) -> Result<u64> {
+        Err(crate::error::WafError::State(
+            "incrby unsupported by this backend".into(),
+        ))
+    }
+
+    /// Set / refresh the TTL on an existing key. No-op default (a
+    /// backend that can't expire just keeps the key).
+    async fn expire(&self, _key: &str, _ttl: Duration) -> Result<()> {
+        Ok(())
+    }
+
+    /// Return every key matching `prefix`. Default returns empty so
+    /// callers fall back to their local in-process view (single-node).
+    async fn scan_prefix(&self, _prefix: &str) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// Single-key compare-and-set: write `new` iff the current value
+    /// equals `expected` (`None` = key must be absent). `ttl = None`
+    /// persists the key (config must not expire). Returns `true` on a
+    /// successful swap, `false` on a value mismatch (optimistic-
+    /// concurrency conflict). The config plane uses this to activate a
+    /// new config version atomically. Default errors so backends opt in.
+    async fn cas_set(
+        &self,
+        _key: &str,
+        _expected: Option<&[u8]>,
+        _new: &[u8],
+        _ttl: Option<Duration>,
+    ) -> Result<bool> {
+        Err(crate::error::WafError::State(
+            "cas_set unsupported by this backend".into(),
+        ))
+    }
+
     /// 2026-05-20 — clear all EPHEMERAL state for
     /// `/__waf_control/reset_state` (committee items 2, 4, 6:
     /// rate-limit counters, challenge nonces, temporary

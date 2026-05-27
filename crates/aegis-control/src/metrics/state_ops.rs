@@ -188,6 +188,33 @@ impl StateBackend for MeteredStateBackend {
         r
     }
 
+    // --- 2026-05-27 generic KV primitives (config plane + metrics agg).
+    // Forwarded without a per-op metric (like `health()`): these run at
+    // config-edit / background-flush cadence, not the per-request hot
+    // path, so they stay off the `waf_state_backend_ops_total` series. ---
+
+    async fn incrby(&self, key: &str, delta: u64) -> Result<u64> {
+        self.inner.incrby(key, delta).await
+    }
+
+    async fn expire(&self, key: &str, ttl: Duration) -> Result<()> {
+        self.inner.expire(key, ttl).await
+    }
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.scan_prefix(prefix).await
+    }
+
+    async fn cas_set(
+        &self,
+        key: &str,
+        expected: Option<&[u8]>,
+        new: &[u8],
+        ttl: Option<Duration>,
+    ) -> Result<bool> {
+        self.inner.cas_set(key, expected, new, ttl).await
+    }
+
     /// SC-T1 — forward `health()` through to the wrapped backend so
     /// the dashboard sees the real backend identifier (`redis` /
     /// `in_memory` / `reconciling`) instead of the trait-default

@@ -269,6 +269,87 @@ impl StateBackend for InMemoryBackend {
         Ok(self.kv.remove(&k).is_some())
     }
 
+    // --- 2026-05-27 generic KV primitives (config plane + metrics agg) ---
+
+    async fn incrby(&self, key: &str, delta: u64) -> Result<u64> {
+        let mut e = self.kv.entry(key.to_string()).or_insert_with(|| Entry {
+            value: 0u64.to_le_bytes().to_vec(),
+            expires_at: None,
+        });
+        // An expired counter restarts at 0 (matches Redis, where the
+        // key would have been evicted before this INCRBY recreates it).
+        if e.is_expired() {
+            e.value = 0u64.to_le_bytes().to_vec();
+            e.expires_at = None;
+        }
+        let cur = e
+            .value
+            .get(..8)
+            .and_then(|s| s.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or(0);
+        let next = cur.saturating_add(delta);
+        e.value = next.to_le_bytes().to_vec();
+        Ok(next)
+    }
+
+    async fn expire(&self, key: &str, ttl: Duration) -> Result<()> {
+        if let Some(mut e) = self.kv.get_mut(key) {
+            e.expires_at = Some(Instant::now() + ttl);
+        }
+        Ok(())
+    }
+
+    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        Ok(self
+            .kv
+            .iter()
+            .filter(|kv| !kv.value().is_expired() && kv.key().starts_with(prefix))
+            .map(|kv| kv.key().clone())
+            .collect())
+    }
+
+    async fn cas_set(
+        &self,
+        key: &str,
+        expected: Option<&[u8]>,
+        new: &[u8],
+        ttl: Option<Duration>,
+    ) -> Result<bool> {
+        use dashmap::mapref::entry::Entry as DmEntry;
+        let expires_at = ttl.map(|t| Instant::now() + t);
+        match self.kv.entry(key.to_string()) {
+            DmEntry::Occupied(mut o) => {
+                // An expired entry is treated as absent → matches `None`.
+                let matches = if o.get().is_expired() {
+                    expected.is_none()
+                } else {
+                    expected == Some(o.get().value.as_slice())
+                };
+                if matches {
+                    o.insert(Entry {
+                        value: new.to_vec(),
+                        expires_at,
+                    });
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            DmEntry::Vacant(v) => {
+                if expected.is_none() {
+                    v.insert(Entry {
+                        value: new.to_vec(),
+                        expires_at,
+                    });
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+    }
+
     /// 2026-05-20 — `/__waf_control/reset_state` ephemeral wipe.
     /// The in-memory backend stores ONLY ephemeral state (risk
     /// keys, auto-block entries, nonces, rate-limit windows, and
@@ -627,5 +708,49 @@ mod tests {
         b.set("k2", b"v", Duration::from_secs(60)).await.unwrap();
         let h = b.health().await;
         assert_eq!(h.key_count, Some(2));
+    }
+
+    // ---------------- 2026-05-27 generic KV primitives ----------------
+
+    #[tokio::test]
+    async fn incrby_accumulates_and_starts_from_zero() {
+        let b = backend();
+        assert_eq!(b.incrby("c", 5).await.unwrap(), 5);
+        assert_eq!(b.incrby("c", 3).await.unwrap(), 8);
+        assert_eq!(b.incrby("fresh", 1).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn scan_prefix_returns_only_matching_keys() {
+        let b = backend();
+        b.set("waf:hits:a", b"1", Duration::from_secs(60)).await.unwrap();
+        b.set("waf:hits:b", b"1", Duration::from_secs(60)).await.unwrap();
+        b.set("other:x", b"1", Duration::from_secs(60)).await.unwrap();
+        let mut got = b.scan_prefix("waf:hits:").await.unwrap();
+        got.sort();
+        assert_eq!(got, vec!["waf:hits:a".to_string(), "waf:hits:b".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn cas_set_inserts_when_absent_and_rejects_wrong_expectation() {
+        let b = backend();
+        // expected = None → write only if absent. Succeeds first time.
+        assert!(b.cas_set("cfg", None, b"v1", None).await.unwrap());
+        // A second "expect absent" must now fail (key is present).
+        assert!(!b.cas_set("cfg", None, b"v2", None).await.unwrap());
+        // CAS on the correct current value swaps.
+        assert!(b.cas_set("cfg", Some(b"v1"), b"v2", None).await.unwrap());
+        // CAS on a stale value is rejected (optimistic-concurrency conflict).
+        assert!(!b.cas_set("cfg", Some(b"v1"), b"v3", None).await.unwrap());
+        assert_eq!(b.get("cfg").await.unwrap(), Some(b"v2".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn cas_set_with_none_ttl_persists() {
+        let b = backend();
+        assert!(b.cas_set("persistent", None, b"x", None).await.unwrap());
+        // No expiry was set — still present after a beat.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(b.get("persistent").await.unwrap(), Some(b"x".to_vec()));
     }
 }
