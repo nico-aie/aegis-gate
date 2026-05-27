@@ -267,9 +267,12 @@ These are existing `ha-clustering.md` roadmap items; promote to P1:
 1. **Redis HA** — Sentinel or managed (ElastiCache/MemoryDB) with automatic
    failover. Verify `state/redis.rs` reconnects on primary swap (add a
    `tests/cluster/07-redis-failover.sh`). Kills the #1 SPOF.
-2. **Stable `node.id` config knob** — replace hostname+PID. Surfaces in
-   `/api/cluster.our_node`, lease holder strings, audit. Needed so lease
-   ownership + config-write attribution survive pod restarts.
+2. ~~**Stable `node.id` config knob**~~ — **already implemented** (HA-T3,
+   verified 2026-05-27): `aegis-bin::lease_select::derive_node_id` resolves
+   `cfg.node.id` → `AEGIS_NODE_ID` → `${HOSTNAME}-${PID}-${NANOS}`. Set
+   `node.id: "${POD_NAME}"` in YAML for a restart-stable identity. The
+   config-plane watcher already reuses this via `lease_store.self_id()`.
+   (Both this plan and `ha-clustering.md` Roadmap #3 understated it.)
 3. **Cluster roster** — populate `/api/cluster.peers`: each node registers
    `node:<id>` with a TTL heartbeat in Redis; `/api/cluster` reads the set.
    Drives a real roster + "applied config version per node" view in console.
