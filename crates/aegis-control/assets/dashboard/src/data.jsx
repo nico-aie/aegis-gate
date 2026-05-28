@@ -648,8 +648,25 @@ async function csrfMutate(url, { method = 'POST', body = null } = {}) {
     headers['content-type'] = 'application/json';
     init.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
-  const r = await fetch(url, init);
-  const parsed = await r.json().catch(() => ({}));
+  // 2026-05-28 — config-plane writes (folded console toggles + PUT
+  // /api/config) can return 409 {ok:false, error:"version_conflict"}
+  // when a concurrent edit bumped the shared config version between the
+  // server reading it and the CAS activate. The folded toggle handlers
+  // re-read the current version server-side, so simply re-issuing the
+  // same request converges. Bounded auto-retry with small backoff; a
+  // persistent conflict (e.g. a full-doc PUT against a stale base)
+  // surfaces to the caller after the retries are exhausted.
+  let r;
+  let parsed;
+  for (let attempt = 0; ; attempt++) {
+    r = await fetch(url, init);
+    parsed = await r.json().catch(() => ({}));
+    if (r.status === 409 && parsed && parsed.error === 'version_conflict' && attempt < 2) {
+      await new Promise((res) => setTimeout(res, 150 * (attempt + 1)));
+      continue;
+    }
+    break;
+  }
   // Detect session-expired CSRF reject. The server returns
   // {ok: false, reason: "csrf_missing_cookie" | "csrf_missing_header"
   // | "csrf_mismatch"} with HTTP 403 (see

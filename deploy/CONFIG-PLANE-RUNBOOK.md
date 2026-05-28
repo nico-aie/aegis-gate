@@ -342,7 +342,7 @@ replicas — no HAProxy sidecar needed.
 |---|---|
 | Fold returns `400 "publish a baseline via PUT /api/config first"` | Node booted without a file config and no baseline activated. Boot with `--config <file>` or do step 7 once. |
 | Fold returns `500 "config plane unavailable: no state backend wired"` | No `StateBackend` at all (shouldn't happen on a normal boot). Check `state:` block parsed. |
-| `PUT` returns `409 {current: X}` | Optimistic-concurrency conflict — another editor activated first. Re-read `GET /api/config`, rebuild on the new version, retry. |
+| `409 {error: "version_conflict", current: X}` | Optimistic-concurrency conflict — another writer activated between this request's read and its CAS. **Folded toggles** (detectors/rules/tiers/upstreams/AI/response-filter) re-read the version server-side, so just **re-issue the same request** (the dashboard auto-retries these). A **full-doc `PUT /api/config`** carries your stale `expected_version` — re-read `GET /api/config`, rebuild on the new version, resend. |
 | Edit doesn't reach other nodes | Confirm `state.backend: redis` (not `in_memory`) on **all** nodes + same `state.redis.urls`. Check `GET /api/config` `.applied[]` for a node stuck on an old version → read its logs for `config_reload_failed` (bad blob → node keeps last-good, fail-static). |
 | One node shows an old version forever | Its last activation failed validation; it's serving last-good. Activate a valid version; the node converges. |
 | `route-activity` / `hits` still look node-local | `state.backend` is `in_memory` (metrics aggregation is redis-only), or no traffic yet (flush cadence ~10 s). |
