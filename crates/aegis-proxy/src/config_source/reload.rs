@@ -1,6 +1,6 @@
 //! Shared on-reload helpers used by both the file-watcher
-//! (`supervisor::watch_loop`) and the etcd-watcher
-//! (`etcd_source::watch_loop`).
+//! (`supervisor::watch_loop`) and the redis config-plane watcher
+//! (`redis_source::watch_loop`).
 //!
 //! A "config reload" lands a new [`WafConfig`] into the data
 //! plane. Two side effects must happen atomically with the swap:

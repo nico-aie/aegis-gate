@@ -206,7 +206,7 @@ reflects without restart.
 | Feature | Verify | Expected |
 |---|---|---|
 | ✅ Hot config reload (file) | Edit `config/dev.yaml` (e.g. add a route under `routes:`), save | notify-watcher picks up the change; the proxy hot-swaps within ~100 ms. Verify in Audit Trail. |
-| 🟦 Hot config reload (etcd) | Build with `--features etcd`, `AEGIS_CONFIG_SOURCE=etcd ./target/release/waf run` | Polls etcd every ~5 s; same hot-swap behaviour. |
+| ✅ Cluster config plane (multi-node) | `state.backend: redis`; edit via the dashboard / admin API on any node | Console edits write `config:waf:doc` + converge on every node within ~3 s; survive restart + leader failover. See `docs/operations/cluster-config-distribution.md`. |
 | ✅ HA mode (Redis-shared state) | `make redis-up` (auto), profile uses `state.backend: redis` | Two WAF replicas share rate-limit counters + leader leases; one acquires the ACME lease. |
 | ✅ Distributed lock (lease) | Two replicas + a leader-only task (ACME renewal) | Only one replica drives the leader-only task; the other is idle until the leader's lease expires. |
 | ✅ Graceful drain | Topbar drain button or `kill -TERM <pid>` | `/healthz/ready` returns 503; in-flight requests finish; LB stops sending new traffic. |

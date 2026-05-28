@@ -13,7 +13,7 @@
 | Tier | Backing store | Latency | Durability | Cluster role |
 |---|---|---|---|---|
 | **Hot state** | Redis | ~1 ms | volatile (optional AOF) | shared across N nodes |
-| **Config / control plane** | etcd | ~10 ms | Raft-replicated | shared, strongly consistent |
+| **Config / control plane** | local YAML file + Redis (`config:waf:doc`) | ~1 ms | versioned (CAS) | shared via the config plane |
 | **Audit trail** | Local disk (JSONL) | <1 ms (buffered) | persistent, node-local | **per-node** |
 
 The split is deliberate. Hot state needs sub-ms shared reads/writes
@@ -46,24 +46,36 @@ That endpoint clears rate-limit state, risk state, cache state,
 challenge/session state, and temporary enforcement state — all of
 which map 1:1 to keys above. See **Reset-state coverage** below.
 
-## Config / control plane — etcd
+## Config / control plane — local file + redis config plane
 
-`aegis_proxy::config_source::etcd_source`
-([`crates/aegis-proxy/src/config_source/etcd_source.rs`](../../crates/aegis-proxy/src/config_source/etcd_source.rs)).
-Opt-in via `AEGIS_CONFIG_SOURCE=etcd`.
+The base config is a local YAML file, loaded at boot
+(`aegis_core::load_config`) and hot-reloaded on change
+([`supervisor`](../../crates/aegis-proxy/src/supervisor.rs)). Runtime
+console edits propagate fleet-wide through the **redis config plane** —
+a single versioned document activated by an optimistic-concurrency
+compare-and-set:
+`aegis_proxy::config_source::config_store`
+([`config_store.rs`](../../crates/aegis-proxy/src/config_source/config_store.rs))
++ the `redis_source` watcher
+([`redis_source.rs`](../../crates/aegis-proxy/src/config_source/redis_source.rs)).
 
-| Data | Key shape | Why etcd |
+| Data | Key shape | Why |
 |---|---|---|
-| `WafConfig` YAML blob | `/aegis/config/waf` (single key) | read once at boot + watch; must be identical across nodes |
-| Service discovery | per-pool member keys ([`sd/etcd.rs`](../../crates/aegis-proxy/src/sd/etcd.rs)) | Raft-backed membership |
-| Admin sessions | `admin_auth/session.rs` | linearizable history needed for audit |
-| Config version history | `api/config_versions.rs` | linearizable history needed for audit |
+| Active `WafConfig` (YAML blob) | `config:waf:doc` (versioned JSON) | CAS activation; every node converges in ~3 s + survives leader failover |
+| Per-version snapshot | `config:waf:v:<n>` (write-once) | rollback source |
+| Per-node applied version | `config:waf:applied:<node>` (TTL'd) | drift view (`GET /api/config`) |
+| Admin sessions | `admin_auth/session.rs` (in-process) | per-node |
+| Config version history | `api/config_versions.rs` | audit-chain backed |
 
-**Why YAML-as-blob.** The same YAML the file loader accepts, verbatim.
-Single validation surface (`WafConfig::validate`), and operators can
-move between file ↔ etcd by copying the contents. A future split into
-`/aegis/config/rules/<id>` keys is documented in
-`deploy/etcd/README.md` but not implemented.
+Full model: [`../operations/cluster-config-distribution.md`](../operations/cluster-config-distribution.md).
+
+> 2026-05-28 — the etcd config *source* (`AEGIS_CONFIG_SOURCE=etcd`) was
+> removed: redundant with file delivery (image / ConfigMap / GitOps) plus
+> the redis config plane, and a maintenance multiplier (every reload-path
+> change had to be mirrored into it). etcd remains an optional
+> **service-discovery** adapter for upstream pools
+> ([`sd/etcd.rs`](../../crates/aegis-proxy/src/sd/etcd.rs)), alongside
+> consul / k8s / file.
 
 ## Audit trail — local disk
 

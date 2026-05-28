@@ -1,38 +1,25 @@
-//! ETCD-T1 — alternate config sources beyond a local YAML file.
+//! Config sources + the cluster config plane.
 //!
-//! Today the WAF boots from a local YAML file via
-//! `aegis_core::load_config(path)`. This module adds opt-in
-//! sources that fetch the same `WafConfig` shape from a remote
-//! key-value store, so multi-node deployments don't have to
-//! ship a YAML file to every node and operators can centralise
-//! configuration changes.
+//! The WAF boots from a local YAML file (`aegis_core::load_config`)
+//! and hot-reloads it on change ([`crate::supervisor`]). Runtime
+//! console edits propagate fleet-wide through the redis-backed config
+//! plane (versioned `config:waf:doc`).
 //!
-//! ## Why YAML-as-blob, not a richer schema
+//! 2026-05-28 — the etcd config *source* (`AEGIS_CONFIG_SOURCE=etcd`)
+//! was removed: it was redundant with file delivery (image / ConfigMap
+//! / GitOps) plus the redis config plane, and every reload-path change
+//! had to be mirrored into it. Distributing a `waf.yaml` + the config
+//! plane is the supported path. (etcd is still available as a *service-
+//! discovery* adapter for upstream pools — see [`crate::sd::etcd`].)
 //!
-//! The etcd value is the *same* YAML the file loader accepts —
-//! verbatim. This keeps the validation surface single-sourced
-//! (every config still flows through `WafConfig::validate`) and
-//! lets operators move between sources by copying the file's
-//! contents into the etcd key. A future enhancement could split
-//! `/aegis/config/rules/<id>` into separate keys per the
-//! `deploy/etcd/README.md` design, but the single-blob form is
-//! the smallest valid first slice.
+//! ## Modules
 //!
-//! ## Sources
-//!
-//! - [`etcd_source`] — etcd v3 REST gateway (`/v3/kv/range`).
-//!   Reuses the auth + TLS plumbing pattern from `sd::etcd`.
-//!
-//! ## Boot path
-//!
-//! `aegis-bin::main::run_gateway` checks `AEGIS_CONFIG_SOURCE`:
-//! when unset (default) it loads YAML; when `etcd` it pulls the
-//! initial config from `AEGIS_CONFIG_ETCD_KEY` (default
-//! `/aegis/config/waf`) before falling through to the same boot
-//! sequence.
-
-#[cfg(feature = "etcd")]
-pub mod etcd_source;
+//! - [`config_store`] — versioned `config:waf:doc` (CAS activation,
+//!   immutable snapshots, rollback, per-node applied-version ACK).
+//! - [`redis_source`] — the shared-store watcher that converges every
+//!   node on the active config version.
+//! - [`reload`] — the on-reload apply helpers shared by the file
+//!   watcher and the config-plane watcher.
 
 pub mod config_store;
 pub mod redis_source;

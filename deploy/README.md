@@ -15,14 +15,11 @@ For multi-node production deployment see [`./GUIDE.md`](./GUIDE.md).
 | File | Purpose |
 |---|---|
 | `STAGING-BENCHMARK.md` | **Single-Linux-host staging deploy** — Docker infra + native WAF, mechanical step-by-step (Verify / Expected pairs), AI-assistant-driveable |
-| `GUIDE.md` | **Production deploy** — multi-node, image, Helm, etcd hot-reload |
+| `GUIDE.md` | **Production deploy** — multi-node, image, Helm, config plane |
 | `docker-compose.dev.yml` | Default dev stack — etcd, Prometheus, Grafana, Jaeger, Redis (+exporter), httpbin |
 | `grafana/` | Grafana provisioning + dashboards (datasources auto-loaded, three dashboards file-provisioned) |
 | `docker-compose.test.yml` | Adds attacker / k6 / nuclei / etcdctl for the test pyramid |
 | `prometheus/prometheus.yml` | Scrape config — both planes labelled `plane=control|data` |
-| `etcd/bootstrap.sh` | Idempotently seeds `/aegis/config/waf` from `seed.yaml` |
-| `etcd/seed.yaml` | Minimal valid `WafConfig` for dev bring-up |
-| `etcd/README.md` | etcd key layout, CAS semantics, DR |
 | `haproxy/haproxy.cfg` | Reference LB config for the HA cluster fixture (HA-T1) |
 | `pebble/` | ACME test server for cert issuance tests |
 | `Dockerfile` | **Production container image** (B6-T1) — multi-stage, distroless `cc`, runs as `nonroot` (uid 65532). Build with `bash deploy/docker-build.sh`. |
@@ -36,7 +33,7 @@ For multi-node production deployment see [`./GUIDE.md`](./GUIDE.md).
 | WAF data | data | 8080 / 8443 | plaintext / TLS data plane |
 | WAF admin | control | 9443 | dashboard + admin API |
 | WAF metrics | data | 9100 | Prometheus `/metrics` |
-| etcd | control | 2379 | config source of truth |
+| etcd | control | 2379 | optional service-discovery store (`sd::etcd`) |
 | Redis | data | 6379 | optional state store |
 | Prometheus | control | 9090 | UI + query API |
 | Grafana | control | 3000 | dashboards UI (anonymous editor in dev; admin / admin) |

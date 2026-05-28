@@ -4,8 +4,8 @@
 //! ## Scope
 //!
 //! - [`ConfigReloadSource`] — public enum describing the
-//!   config-reload source for the boot path (None / File /
-//!   Etcd). Re-exported from `lib.rs` for `aegis-bin`.
+//!   config-reload source for the boot path (None / File).
+//!   Re-exported from `lib.rs` for `aegis-bin`.
 //! - [`run`] — the public boot entry point. ~700 lines that
 //!   wire every long-running task: detector mask + compliance
 //!   clamp + persistence rehydrate, identity tracker, risk
@@ -47,8 +47,6 @@ use aegis_core::ReadinessSignal;
 
 use crate::accept::{accept_loop, admin_accept_loop};
 use crate::admin_dispatch::handle_force_https_request;
-#[cfg(feature = "etcd")]
-use crate::config_source;
 use crate::supervisor;
 
 /// Source of hot-reloadable configuration. The boot snapshot is
@@ -72,11 +70,6 @@ pub enum ConfigReloadSource {
     None,
     /// Filesystem watcher rooted at the given YAML path.
     File(std::path::PathBuf),
-    /// etcd v3 REST gateway watcher. Available under
-    /// `--features etcd`; without the feature the variant is
-    /// inaccessible.
-    #[cfg(feature = "etcd")]
-    Etcd(crate::config_source::etcd_source::EtcdConfigSource),
 }
 
 /// Boot the data-plane proxy + admin (control-plane) listener.
@@ -1154,24 +1147,6 @@ pub async fn run(
                 tls_resolver.clone(),
                 client_trust.clone(),
                 Some(risk.clone()),
-                folded_targets.clone(),
-            ));
-        }
-        #[cfg(feature = "etcd")]
-        ConfigReloadSource::Etcd(src) => {
-            tracing::info!(
-                endpoints = ?src.endpoints,
-                key = %src.key,
-                "config reload watcher: etcd",
-            );
-            std::mem::drop(config_source::etcd_source::spawn_watcher(
-                src,
-                cfg_swap.clone(),
-                bus.clone(),
-                Some(mask.clone()),
-                Some(upstream_ctx.clone()),
-                Some(ip_rate_limiter.clone()),
-                tls_resolver.clone(),
                 folded_targets.clone(),
             ));
         }

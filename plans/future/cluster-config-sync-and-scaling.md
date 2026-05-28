@@ -90,7 +90,7 @@ Trade-off vs etcd / Raft, for the record:
 | Option | Pros | Cons | Verdict |
 |---|---|---|---|
 | **Redis config plane** (this plan) | reuse infra, simple, failover-safe with Sentinel | not linearizable; needs CAS for concurrent edits; SPOF until Sentinel | **chosen** |
-| etcd config source (`etcd_source.rs`, exists) | linearizable, native watch+lease | extra cluster to run; team explicitly avoiding it | keep as opt-in only |
+| etcd config source (`etcd_source.rs`) | linearizable, native watch+lease | extra cluster to run; team explicitly avoiding it | ~~opt-in~~ **removed 2026-05-28** — redundant with file + the redis config plane; was a reload-path maintenance multiplier. (etcd kept only as a service-discovery adapter, `sd/etcd.rs`.) |
 | Raft (`openraft`, unbuilt) | no external store, linearizable | large build; new failure modes | §8 stretch |
 
 > **Implementation reality check:** the real `StateBackend` trait

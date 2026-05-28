@@ -105,24 +105,26 @@ fn parse_flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 // ---------------------------------------------------------------------------
 
 fn run_gateway(config_path: &std::path::Path) -> aegis_core::Result<()> {
-    // ETCD-T1 — `AEGIS_CONFIG_SOURCE=etcd` switches the boot path
-    // to fetch `WafConfig` from an etcd v3 key (default
-    // `/aegis/config/waf`) instead of reading the local YAML
-    // file. Falls through to the file loader for the default
-    // (unset / `file`) case.
-    let cfg = match resolve_config_source() {
-        ConfigSource::File => aegis_core::load_config(config_path)?,
-        #[cfg(feature = "etcd")]
-        ConfigSource::Etcd => load_config_from_etcd()?,
-        #[cfg(not(feature = "etcd"))]
-        ConfigSource::Etcd => {
-            return Err(aegis_core::WafError::Config(
-                "AEGIS_CONFIG_SOURCE=etcd requires `--features etcd` build"
-                    .into(),
-            ));
-        }
-    };
-    let cfg = Arc::new(cfg);
+    // 2026-05-28 — config loads from the local YAML file. The etcd
+    // config source (`AEGIS_CONFIG_SOURCE=etcd`) was removed: it was
+    // redundant with file delivery (image / ConfigMap / GitOps) plus the
+    // redis config plane. Reject a stale `=etcd` so an operator's intent
+    // isn't silently ignored. (etcd remains a service-discovery adapter
+    // for upstream pools — unrelated to config loading.)
+    if std::env::var("AEGIS_CONFIG_SOURCE")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        == Some("etcd")
+    {
+        return Err(aegis_core::WafError::Config(
+            "AEGIS_CONFIG_SOURCE=etcd is no longer supported — distribute a \
+             config file (--config) and use the redis config plane for runtime \
+             edits"
+                .into(),
+        ));
+    }
+    let cfg = Arc::new(aegis_core::load_config(config_path)?);
 
     // Layer-1 — build the tokio runtime from `runtime:` config.
     // Restart-only by design: tokio's worker_threads is fixed at
@@ -130,53 +132,6 @@ fn run_gateway(config_path: &std::path::Path) -> aegis_core::Result<()> {
     // for these fields.
     let rt = build_runtime(&cfg.runtime)?;
     rt.block_on(run_gateway_inner(cfg, config_path))
-}
-
-/// What the `AEGIS_CONFIG_SOURCE` env var resolves to. `file`
-/// (or unset) keeps the existing YAML-from-disk path; `etcd`
-/// switches to the etcd v3 loader (requires `--features etcd`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigSource {
-    File,
-    Etcd,
-}
-
-fn resolve_config_source() -> ConfigSource {
-    match std::env::var("AEGIS_CONFIG_SOURCE")
-        .ok()
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some("etcd") => ConfigSource::Etcd,
-        _ => ConfigSource::File,
-    }
-}
-
-#[cfg(feature = "etcd")]
-fn load_config_from_etcd() -> aegis_core::Result<aegis_core::config::WafConfig> {
-    use aegis_proxy::config_source::etcd_source::EtcdConfigSource;
-
-    let src = EtcdConfigSource::from_env();
-    tracing::info!(
-        endpoints = ?src.endpoints,
-        key = %src.key,
-        "loading config from etcd",
-    );
-
-    // Build a small bootstrap runtime just for the fetch; the
-    // real `runtime:`-shaped runtime is built afterwards from
-    // the loaded config.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(aegis_core::WafError::Io)?;
-
-    rt.block_on(async {
-        src.load()
-            .await
-            .map_err(|e| aegis_core::WafError::Config(format!("{e}")))
-    })
 }
 
 /// Async portion of `run_gateway`. Split out so the OTel
@@ -267,31 +222,14 @@ async fn run_gateway_inner(
     .await
 }
 
-/// Pick the [`aegis_proxy::ConfigReloadSource`] for `run_gateway`
-/// based on `AEGIS_CONFIG_SOURCE`. The file path is used both for
-/// the initial load (in `run_gateway`) and as the watcher root
-/// here. The etcd source mirrors `load_config_from_etcd`'s env
-/// resolution so a single set of vars drives both initial fetch
-/// and ongoing watch.
+/// Pick the [`aegis_proxy::ConfigReloadSource`] for `run_gateway`.
+/// Config is always loaded + watched from the local YAML file; the
+/// `config_path` is both the initial-load source (in `run_gateway`)
+/// and the watcher root here.
 fn resolve_reload_source(
     config_path: &std::path::Path,
 ) -> aegis_proxy::ConfigReloadSource {
-    match resolve_config_source() {
-        ConfigSource::File => {
-            aegis_proxy::ConfigReloadSource::File(config_path.to_path_buf())
-        }
-        #[cfg(feature = "etcd")]
-        ConfigSource::Etcd => aegis_proxy::ConfigReloadSource::Etcd(
-            aegis_proxy::config_source::etcd_source::EtcdConfigSource::from_env(),
-        ),
-        #[cfg(not(feature = "etcd"))]
-        ConfigSource::Etcd => {
-            // Should be unreachable — `load_config_from_etcd`
-            // would have already errored at boot. Fall through
-            // to no watcher just in case.
-            aegis_proxy::ConfigReloadSource::None
-        }
-    }
+    aegis_proxy::ConfigReloadSource::File(config_path.to_path_buf())
 }
 
 /// Construct the tokio runtime from the validated [`RuntimeConfig`].
@@ -730,59 +668,3 @@ fn print_help() {
     println!("See docs/operator/cli.md for the full subcommand reference.");
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Process-wide mutex serialising tests that mutate
-    /// `AEGIS_CONFIG_SOURCE`.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_env<F: FnOnce()>(value: Option<&str>, f: F) {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let prior = std::env::var("AEGIS_CONFIG_SOURCE").ok();
-        match value {
-            Some(v) => std::env::set_var("AEGIS_CONFIG_SOURCE", v),
-            None => std::env::remove_var("AEGIS_CONFIG_SOURCE"),
-        }
-        f();
-        match prior {
-            Some(v) => std::env::set_var("AEGIS_CONFIG_SOURCE", v),
-            None => std::env::remove_var("AEGIS_CONFIG_SOURCE"),
-        }
-    }
-
-    #[test]
-    fn config_source_defaults_to_file_when_unset() {
-        with_env(None, || {
-            assert_eq!(resolve_config_source(), ConfigSource::File);
-        });
-    }
-
-    #[test]
-    fn config_source_defaults_to_file_when_empty() {
-        with_env(Some(""), || {
-            assert_eq!(resolve_config_source(), ConfigSource::File);
-        });
-        with_env(Some("   "), || {
-            assert_eq!(resolve_config_source(), ConfigSource::File);
-        });
-    }
-
-    #[test]
-    fn config_source_resolves_etcd() {
-        with_env(Some("etcd"), || {
-            assert_eq!(resolve_config_source(), ConfigSource::Etcd);
-        });
-    }
-
-    #[test]
-    fn config_source_unknown_value_falls_back_to_file() {
-        with_env(Some("redis"), || {
-            assert_eq!(resolve_config_source(), ConfigSource::File);
-        });
-        with_env(Some("file"), || {
-            assert_eq!(resolve_config_source(), ConfigSource::File);
-        });
-    }
-}

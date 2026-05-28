@@ -25,7 +25,7 @@ SOC-first dashboard.
   gRPC, raw TCP tunneling via `CONNECT`.
 - **Routing** — host + path + method matching trie with
   regex / glob / prefix / exact match, hot-swappable from YAML
-  or etcd.
+  (and the cluster config plane).
 - **Upstreams** — pool registry with 5 LB strategies
   (`round_robin`, `weighted_round_robin`, `least_conn`,
   `consistent_hash`, `p2c`), pooled HTTP/1.1 keep-alive,
@@ -109,11 +109,11 @@ SOC-first dashboard.
 - **Audit chain** — SHA-256 hash-chained NDJSON sink with
   daily rotation + retention TTL, 8 SIEM sink formats,
   tamper-evident, witness export, CLI verifier.
-- **Hot-reload** — six surfaces reload from disk (notify
-  watcher, ~100 ms) or etcd (REST poll, ~5 s) without a
-  restart: `cfg.routes`, `cfg.detectors`, `cfg.rate_limit`,
-  `cfg.tls.certificates`, `cfg.compliance.modes`,
-  `cfg.upstreams` (via the audit-mutated PUT path).
+- **Hot-reload** — config reloads from disk (notify watcher,
+  ~100 ms) without a restart, or fleet-wide via the cluster
+  config plane (`config:waf:doc`): `cfg.routes`, `cfg.detectors`,
+  `cfg.rate_limit`, `cfg.tls.certificates`, `cfg.compliance.modes`,
+  `cfg.upstreams`, `cfg.rules`, `cfg.tiers`.
 - **Audit-mutated CRUD** — every config change goes through
   the audit chain + CSRF gate + capability check; rule edits,
   mode toggles, alert receivers, upstream pools, risk
@@ -244,7 +244,6 @@ more at build time:
 | `ai` | ML-based detector (operator-supplied ONNX, `ort` runtime) |
 | `taxii` | STIX/TAXII threat-intel auto-fetch |
 | `http3` | QUIC listener (quinn + h3) |
-| `etcd` | `AEGIS_CONFIG_SOURCE=etcd` boot path |
 | `otel` | OpenTelemetry OTLP exporter |
 | `vault` / `aws` / `gcp` / `azure` | cloud-secret resolvers |
 | `consul` / `etcd` / `k8s` | service-discovery watchers |
@@ -293,7 +292,7 @@ helm upgrade --install aegis deploy/helm/aegis-gate \
   --set image.tag=0.x --set redis.url=redis://prod-redis:6379
 ```
 
-Full walkthrough (image, systemd, Helm, etcd hot-reload, prod
+Full walkthrough (image, systemd, Helm, config plane, prod
 checklist): [`deploy/GUIDE.md`](deploy/GUIDE.md).
 
 ---

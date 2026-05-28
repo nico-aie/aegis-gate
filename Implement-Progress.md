@@ -224,6 +224,22 @@ shipped as HA-T1). Full plan + per-fold technical notes in
 keyspace-notification fast path, Console fleet-view, `redis_cluster` backend.
 Pick the next track from "Tracks in flight" / the deferred backlog below.
 
+**Follow-ups since (post-track):**
+- **File/etcd reload parity** (`8be7c14`) — the file watcher now re-derives the
+  folded stores (rules/upstreams/tiers/ai/response-filter) via
+  `reload::apply_folded_stores`, matching the config plane.
+- **Dashboard 409 auto-retry** (`38d6fb2`) — `csrfMutate` retries on
+  `version_conflict`.
+- **etcd config *source* removed** (this session) — `config_source/etcd_source.rs`,
+  the `ConfigReloadSource::Etcd` variant, `AEGIS_CONFIG_SOURCE=etcd`, and
+  `deploy/etcd/` deleted; redundant with file + the redis config plane. Config
+  now loads only from the YAML file (+ config plane). **etcd remains a
+  service-discovery adapter** (`sd/etcd.rs`, under the same `etcd` feature) —
+  untouched.
+- *Pre-existing, not ours:* `aegis-bin state_select::in_memory_selects_in_memory_backend`
+  panics (reaper `tokio::spawn` outside a runtime) — fails on clean HEAD too; and
+  the 2 `dashboard_polish` JS-bundle-size budget tests (bundle already > 444 KB).
+
 **DONE (all on `develop`, green):**
 - **Phase 0** — `StateBackend` KV primitives (`incrby`/`expire`/`scan_prefix`/`cas_set`) `dcdd96f`.
 - **Phase A** — full config plane: `ConfigStore` (versioned `config:waf:doc`,
