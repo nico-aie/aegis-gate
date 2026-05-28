@@ -210,6 +210,7 @@ impl std::error::Error for EtcdLoadError {}
 /// The watcher exits when `cfg`'s last strong reference is
 /// dropped — wrap it in an `Arc<ArcSwap<…>>` you also keep alive
 /// in the proxy runtime.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_watcher(
     src: EtcdConfigSource,
     cfg: Arc<ArcSwap<WafConfig>>,
@@ -218,6 +219,10 @@ pub fn spawn_watcher(
     proxy_ctx: Option<Arc<crate::proxy::ProxyContext>>,
     ip_rate_limiter: Option<Arc<aegis_security::rate_limit::IpRateLimiter>>,
     tls_resolver: Option<Arc<crate::listener::tls::DynamicResolver>>,
+    // 2026-05-28 (Phase B fold parity) — folded-store handles so an
+    // etcd-delivered config re-derives them too (parity with the redis
+    // config-plane watcher).
+    folded: crate::config_source::reload::FoldedReloadTargets,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = watch_loop(
@@ -228,6 +233,7 @@ pub fn spawn_watcher(
             proxy_ctx,
             ip_rate_limiter,
             tls_resolver,
+            folded,
         )
         .await
         {
@@ -236,6 +242,7 @@ pub fn spawn_watcher(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn watch_loop(
     src: EtcdConfigSource,
     cfg: Arc<ArcSwap<WafConfig>>,
@@ -244,6 +251,7 @@ async fn watch_loop(
     proxy_ctx: Option<Arc<crate::proxy::ProxyContext>>,
     ip_rate_limiter: Option<Arc<aegis_security::rate_limit::IpRateLimiter>>,
     tls_resolver: Option<Arc<crate::listener::tls::DynamicResolver>>,
+    folded: crate::config_source::reload::FoldedReloadTargets,
 ) -> Result<(), String> {
     let http = build_client(&src)?;
     let mut last_yaml: Option<String> = None;
@@ -467,6 +475,11 @@ async fn watch_loop(
                             }
                         }
 
+                        // 2026-05-28 (Phase B fold parity) — re-derive
+                        // the folded stores (AI / response-filter / tiers
+                        // / rules / upstream pools) from the etcd-delivered
+                        // config, matching the redis config-plane watcher.
+                        crate::config_source::reload::apply_folded_stores(&new_cfg, &folded).await;
                         cfg.store(Arc::new(new_cfg));
                         last_yaml = Some(yaml);
                         bus.emit(AuditEvent {

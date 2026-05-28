@@ -1113,6 +1113,25 @@ pub async fn run(
         ConfigReloadSource::File(p) => Some(p.clone()),
         _ => None,
     };
+    // 2026-05-28 (Phase B fold parity) — the folded-store handles the
+    // file/etcd watchers re-derive on reload (AI / response-filter /
+    // tiers / rules / upstream pools), matching the redis config-plane
+    // watcher's ApplyTargets. Same handles, bundled once.
+    let folded_targets = crate::config_source::reload::FoldedReloadTargets {
+        detector_mask: Some(mask.clone()),
+        ai_toggle: ai_runtime_toggle.clone(),
+        response_filter_writer: Some(
+            pipeline.clone()
+                as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
+        ),
+        tiers: Some(tier_store.clone()),
+        rules: Some(rule_store.clone()),
+        active_ruleset: Some(pipeline.rules_arc()),
+        upstream_writer: Some(
+            Arc::new(upstream_ctx.pools.clone())
+                as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>,
+        ),
+    };
     match reload_source {
         ConfigReloadSource::None => {
             tracing::info!("config reload watcher: disabled (ConfigReloadSource::None)");
@@ -1135,6 +1154,7 @@ pub async fn run(
                 tls_resolver.clone(),
                 client_trust.clone(),
                 Some(risk.clone()),
+                folded_targets.clone(),
             ));
         }
         #[cfg(feature = "etcd")]
@@ -1152,6 +1172,7 @@ pub async fn run(
                 Some(upstream_ctx.clone()),
                 Some(ip_rate_limiter.clone()),
                 tls_resolver.clone(),
+                folded_targets.clone(),
             ));
         }
     }

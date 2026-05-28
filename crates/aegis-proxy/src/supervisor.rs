@@ -132,7 +132,6 @@ impl DrainHandle {
 /// TLS handshakes that already loaded the old store finish on
 /// it; new handshakes pick up the rotated certs immediately.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub fn spawn_config_watcher(
     path: PathBuf,
     cfg: Arc<ArcSwap<WafConfig>>,
@@ -156,6 +155,10 @@ pub fn spawn_config_watcher(
     // is internally `Arc<...>` + `Clone`, so passing by value is
     // cheap (matches the rest of run.rs's risk-passing pattern).
     risk_tracker: Option<aegis_security::risk::RiskTracker>,
+    // 2026-05-28 (Phase B fold parity) — handles for the folded stores
+    // (AI / response-filter / tiers / rules / upstream pools) so a file
+    // reload re-derives them too, matching the redis config-plane watcher.
+    folded: crate::config_source::reload::FoldedReloadTargets,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = watch_loop(
@@ -168,6 +171,7 @@ pub fn spawn_config_watcher(
             tls_resolver,
             client_trust,
             risk_tracker,
+            folded,
         )
         .await
         {
@@ -187,6 +191,7 @@ async fn watch_loop(
     tls_resolver: Option<Arc<crate::listener::tls::DynamicResolver>>,
     client_trust: Option<crate::listener::client_trust::ClientTrustStore>,
     risk_tracker: Option<aegis_security::risk::RiskTracker>,
+    folded: crate::config_source::reload::FoldedReloadTargets,
 ) -> aegis_core::Result<()> {
     let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(64);
 
@@ -645,6 +650,12 @@ async fn watch_loop(
                         });
                     }
                 }
+                // 2026-05-28 (Phase B fold parity) — re-derive the
+                // folded stores (AI / response-filter / tiers / rules /
+                // upstream pools) from the new file config, matching the
+                // redis config-plane watcher. Without this a file reload
+                // of those fields needed a restart.
+                crate::config_source::reload::apply_folded_stores(&new_cfg, &folded).await;
                 cfg.store(Arc::new(new_cfg));
                 tracing::info!("config reloaded successfully");
                 bus.emit(AuditEvent {
@@ -730,7 +741,7 @@ state:
         let bus = AuditBus::new(16);
         let mut rx = bus.subscribe();
 
-        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None, None);
+        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None, None, Default::default());
 
         // Give watcher time to register.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -772,7 +783,7 @@ state:
         let bus = AuditBus::new(16);
         let mut rx = bus.subscribe();
 
-        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None, None);
+        let handle = spawn_config_watcher(config_path.clone(), cfg.clone(), bus, None, None, None, None, None, None, Default::default());
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Drain any spurious events from watcher startup.
@@ -870,6 +881,7 @@ compliance:
             None,
             None,
             None,
+            Default::default(),
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -973,6 +985,7 @@ state:
             None,
             None,
             None,
+            Default::default(),
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1073,6 +1086,7 @@ state:
             None,
             None,
             None,
+            Default::default(),
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1171,6 +1185,7 @@ rate_limit:
             None,
             None,
             None,
+            Default::default(),
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1261,6 +1276,7 @@ risk:
             None,
             None,
             Some(tracker.clone()),
+            Default::default(),
         );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -1325,6 +1341,7 @@ risk:
             None,
             None,
             Some(tracker.clone()),
+            Default::default(),
         );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -1450,6 +1467,7 @@ tls:
             Some(resolver.clone()),
             None,
             None,
+            Default::default(),
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1541,6 +1559,7 @@ tls:
             Some(resolver.clone()),
             None,
             None,
+            Default::default(),
         );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 

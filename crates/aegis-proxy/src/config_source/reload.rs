@@ -482,6 +482,46 @@ pub async fn apply_cfg_change_to_upstreams(
     }
 }
 
+/// 2026-05-28 (Phase B fold parity) — handles for the folded stores
+/// (AI gate, response-filter rungs, tiers, rules, upstream pools) that
+/// the **file + etcd** watchers re-derive on reload. The redis
+/// config-plane watcher does this inline via its `ApplyTargets`; this
+/// bundle lets the other config sources reach
+/// [`apply_folded_stores`] with one parameter instead of six. All
+/// fields default to `None` (the helper short-circuits each).
+#[derive(Clone, Default)]
+pub struct FoldedReloadTargets {
+    /// The live detector mask — passed only so the AI helper can OR its
+    /// bit onto the base. The base itself is re-derived separately by
+    /// [`apply_cfg_change_to_mask`], which each watcher calls first.
+    pub detector_mask: Option<SharedDetectorMask>,
+    pub ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub response_filter_writer:
+        Option<Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>>,
+    pub tiers: Option<Arc<aegis_control::api::tiers::TierStore>>,
+    pub rules: Option<Arc<aegis_control::api::rules::RuleStore>>,
+    pub active_ruleset: Option<Arc<aegis_security::RuleSet>>,
+    pub upstream_writer:
+        Option<Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>>,
+}
+
+/// 2026-05-28 (Phase B fold parity) — re-derive the folded stores from
+/// `new_cfg` on a config swap. Closes the gap where a config delivered
+/// via **file** or **etcd** reload only re-derived routes / mask /
+/// rate-limit / TLS, leaving rules / upstreams / tiers / AI /
+/// response-filter to need a restart (the redis config-plane watcher
+/// already re-derived them). Call this AFTER
+/// [`apply_cfg_change_to_mask`] (so the AI helper ORs onto a fresh base)
+/// and before the `ArcSwap` swap. Each helper is a no-op when its handle
+/// is `None`.
+pub async fn apply_folded_stores(new_cfg: &WafConfig, t: &FoldedReloadTargets) {
+    let _ = apply_cfg_change_to_ai(new_cfg, t.ai_toggle.as_ref(), t.detector_mask.as_ref());
+    let _ = apply_cfg_change_to_response_filter(new_cfg, t.response_filter_writer.as_ref());
+    let _ = apply_cfg_change_to_tiers(new_cfg, t.tiers.as_ref());
+    let _ = apply_cfg_change_to_rules(new_cfg, t.rules.as_ref(), t.active_ruleset.as_ref());
+    let _ = apply_cfg_change_to_upstreams(new_cfg, t.upstream_writer.as_ref()).await;
+}
+
 /// Pure: derive the IP rate-limit config the boot path uses
 /// from a `WafConfig`. Shared between `aegis-proxy::run` (boot)
 /// and the watchers (hot-reload) so the selection rule stays
@@ -1072,6 +1112,32 @@ rules:
         assert_eq!(store.list().len(), 2, "both inline rules in the store");
         assert!(store.get("stale").is_none(), "stale rule dropped — cfg is source of truth");
         assert_eq!(ruleset.len(), 1, "only the enabled rule compiled into the engine");
+    }
+
+    #[tokio::test]
+    async fn apply_folded_stores_threads_handles_to_helpers() {
+        // 2026-05-28 (fold parity) — the orchestration the file/etcd
+        // watchers call. Prove it threads through to the helpers: rules
+        // seed into the store + engine, and the AI toggle is re-derived
+        // from cfg.ai.enabled.
+        let cfg = parse(&yaml_with_inline_rules()); // 2 inline rules (1 enabled), no `ai:` block
+        let rules = Arc::new(aegis_control::api::rules::RuleStore::new());
+        let ruleset = Arc::new(aegis_security::RuleSet::new());
+        let ai = Arc::new(std::sync::atomic::AtomicBool::new(true)); // starts true → must flip to false
+        let targets = FoldedReloadTargets {
+            detector_mask: Some(SharedDetectorMask::default()),
+            ai_toggle: Some(ai.clone()),
+            rules: Some(rules.clone()),
+            active_ruleset: Some(ruleset.clone()),
+            ..Default::default()
+        };
+        apply_folded_stores(&cfg, &targets).await;
+        assert_eq!(rules.list().len(), 2, "both inline rules seeded into the store");
+        assert_eq!(ruleset.len(), 1, "only the enabled rule compiled");
+        assert!(
+            !ai.load(std::sync::atomic::Ordering::Relaxed),
+            "AI toggle re-derived from cfg.ai.enabled (false here)",
+        );
     }
 
     // ---- apply_cfg_change_to_routes ----
