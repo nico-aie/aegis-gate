@@ -1,5 +1,17 @@
 # Unwired-stubs catalogue (2026-05-11)
 
+> ⚠️ **Staleness note (2026-05-28):** this catalogue is dated 2026-05-11.
+> Some entries have since been **wired** and are no longer stubs — verify
+> against the current code before trusting any "zero callers" claim
+> (see [memory: docs drift both ways]). Known corrections applied this
+> date: **`rules::evaluate` is now wired** (`data_plane.rs:1630`, guarded
+> by `ctx.active_ruleset`) — custom rules DO run on live traffic;
+> **HTTP/2 rapid-reset mitigation shipped** (`proto/h2.rs`
+> `max_resets_per_window`); **JA4-light landed** (2026-05-18, see the JA4
+> entry below). The roadmap in
+> [`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md) treats this
+> file as the Tier-0/Ops wire-up backlog.
+
 > **Status:** Drafted 2026-05-11 as Phase 4 of the
 > `plans/issue-fix/2026-05-11-policy-qa-and-audits` triage.
 >
@@ -243,28 +255,25 @@ restart. Today the choice is boot-time (env-driven).
 
 ---
 
-## Rules engine — `aegis_security::rules::evaluate`
+## Rules engine — `aegis_security::rules::evaluate` ✅ WIRED (no longer a stub)
 
-**Status:** Implemented at
-`crates/aegis-security/src/rules/eval.rs` with full unit-test
-coverage (35 tests including LT-RUN-6 EVAL-01 + EVAL-02
-regression coverage landed 2026-05-14). Zero production
-callers in `aegis-proxy/src/` today — only path is
-`aegis-security::pipeline::Pipeline::inbound`, which itself
-has zero callers from the proxy data plane (see "Legacy
-SecurityPipeline trait surface" below).
+**Status (corrected 2026-05-28):** **Wired into the live data plane.**
+`crates/aegis-proxy/src/data_plane.rs:1630` calls
+`aegis_security::rules::evaluate(&snapshot, &view, &route_ctx)`, guarded by
+`ctx.active_ruleset.get()`. The `Arc<RuleSet>` is shared with
+`DashboardServices`; admin CRUD calls `RuleSet::replace_rules` via
+`rebuild_active_ruleset` after each successful mutation (now also durable +
+cluster-propagated through the config plane). Custom operator rules **do
+fire on live traffic** — the FEATURES.md "Custom rule engine" row is
+accurate.
 
-**Contract status:** Not required.  The data plane reaches
-detector signals directly through `run_all_filtered_timed`
-at `crates/aegis-proxy/src/data_plane.rs:507`; rule-engine
-decisions are an additive layer for operator-authored YAML
-rules, planned for the dashboard simulator surface.
+*(The 2026-05-11 entry below was correct at the time — the engine had
+zero proxy callers then — but has since been superseded. Kept for history;
+this stub should be removed from the catalogue on the next trim.)*
 
-**Action if wired:** thread `aegis_security::rules::RuleSet`
-+ `EvalContext` through `ProxyContext`, call `rules::evaluate`
-between detector aggregation and the upstream-forward step.
-Operators get audit-mutated rule create/update/delete via the
-existing `/api/rules` admin surface (already shipped).
+> ~~**Status:** Implemented at `crates/aegis-security/src/rules/eval.rs`
+> with full unit-test coverage. Zero production callers in
+> `aegis-proxy/src/` today.~~ — **stale, see above.**
 
 ---
 

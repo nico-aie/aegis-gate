@@ -39,7 +39,7 @@
   re-measurement required.
 - **Active track:** **Cluster config sync & scaling** (multi-node
   next-round). Plan:
-  [`plans/future/cluster-config-sync-and-scaling.md`](./plans/future/cluster-config-sync-and-scaling.md);
+  [`plans/archive/cluster-config-sync-and-scaling.md`](./plans/archive/cluster-config-sync-and-scaling.md);
   design doc
   [`docs/operations/cluster-config-distribution.md`](./docs/operations/cluster-config-distribution.md).
   **Done on `develop`:** Phase 0 — `StateBackend` generic KV primitives
@@ -219,7 +219,7 @@ For full chronological detail see `git log` and the
 toggles/CRUD: AI, response_filter, tier, detectors, rules, upstreams) + Phase C
 (multi-node metrics aggregation) + Phase D (HAProxy single-VIP — was already
 shipped as HA-T1). Full plan + per-fold technical notes in
-[`plans/future/cluster-config-sync-and-scaling.md`](./plans/future/cluster-config-sync-and-scaling.md).
+[`plans/archive/cluster-config-sync-and-scaling.md`](./plans/archive/cluster-config-sync-and-scaling.md).
 **No remaining work on this track.** Optional polish backlog (P2): Redis
 keyspace-notification fast path, Console fleet-view, `redis_cluster` backend.
 Pick the next track from "Tracks in flight" / the deferred backlog below.

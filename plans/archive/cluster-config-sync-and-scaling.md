@@ -1,16 +1,23 @@
 # Cluster Config Sync & Scaling (next round)
 
-> **Status:** In progress (2026-05-27). **Phase A wired end-to-end:**
-> Phase 0 KV primitives (`dcdd96f`), `ConfigStore` + `redis_source`
-> watcher (`e9691d1`), boot-site watcher spawn (`e4bc458`), and
-> `PUT /api/config` + rollback via the new async `AuditedMutate::apply_async`
-> (`912b16e`). Edit → shared store → every node converges, survives leader
-> failover. **Phase A complete** — `GET /api/config` drift view (`312ab8d`)
-> + Scaling-page `ConfigVersionCard` (`30d22f9`) landed. **Next:** Phases
-> B–D. Target:
-> each team runs N WAF nodes behind a VIP; security state AND configuration
-> are shared and survive leader failover; config is editable from the
-> console and converges on every node.
+> **Status:** ✅ **COMPLETE / ARCHIVED (2026-05-28).** All phases shipped
+> on `develop`: Phase 0 (KV primitives `dcdd96f`), Phase A (full config
+> plane — `ConfigStore` + `redis_source` watcher, `PUT/POST /api/config`
+> + rollback via async `AuditedMutate::apply_async`, drift view, Scaling
+> `ConfigVersionCard`), Phase B (folded ALL console toggles/CRUD through
+> the plane: AI, response_filter, tier, detectors, rules, upstreams),
+> Phase C (multi-node metrics aggregation — see
+> [`multi-node-metrics-aggregation.md`](./multi-node-metrics-aggregation.md)),
+> Phase D (HAProxy single-VIP, shipped as HA-T1). Follow-ups: file/etcd
+> reload parity (`8be7c14`), dashboard 409 auto-retry (`38d6fb2`), etcd
+> config-source removed (`7cb4bd2`, etcd kept only as a service-discovery
+> adapter). Per-fold landing log in `Implement-Progress.md` → "Next Task".
+> P2 polish (NOT done, optional): Redis keyspace-notification fast path,
+> Console fleet-view, `redis_cluster` backend.
+>
+> Target achieved: each team runs N WAF nodes behind a VIP; security state
+> AND configuration are shared and survive leader failover; config is
+> editable from the console and converges on every node within ~3 s.
 >
 > Author context: written 2026-05-26 after auditing the current HA story
 > (see [`../../docs/operations/ha-clustering.md`](../../docs/operations/ha-clustering.md)).

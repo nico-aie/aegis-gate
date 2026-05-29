@@ -350,5 +350,5 @@ When this plan is picked up:
   bot-token SSRF; that work stays load-bearing here.
 - `future/audit-cold-tier-export.md` — alert history could
   feed the cold-tier export once it ships.
-- `future/multi-node-metrics-aggregation.md` — cluster-wide
+- `archive/multi-node-metrics-aggregation.md` — cluster-wide
   silence sync depends on the same Redis layer.

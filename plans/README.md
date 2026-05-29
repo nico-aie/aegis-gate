@@ -32,58 +32,70 @@ Future plan / Restoration checklist).
 
 ## `future/`
 
-Features we've decided to defer. Each plan captures the
-restoration spec so a future revisit doesn't have to recompose
-context from scattered comments.
+> **Start here:**
+> [`world-class-waf-roadmap.md`](./future/world-class-waf-roadmap.md) —
+> the **ordering document**. It grades Aegis against the 2025–2026 WAAP
+> leaders (Cloudflare / Akamai / Imperva), names the code-verified gaps,
+> and sequences them into Tiers 0–6. The files below are the per-feature
+> specs; the roadmap says which to do next and why. **Read it before
+> picking up anything in `future/`.**
 
-- [`alerts-refactor.md`](./future/alerts-refactor.md) —
-  Operator-useful alerting; VipTalk-first. Adds non-SLO event
-  classes (DDoS mode, strike-block surge, upstream degraded,
-  cert expiry, leader lost, hot-reload fail, GitOps drift,
-  audit-chain break), rich chat payload + dashboard deep-link,
-  5-min dedup, per-severity receiver routing, ack/silence
-  history. Phase 1 (event router) ≈ 2d. **Drafted 2026-05-20,
-  designed only.**
-- [`audit-log-disk-growth.md`](./future/audit-log-disk-growth.md) —
-  `./waf_audit.log` grows ~6 GB/min under a high-RPS attack flood
-  (soak-measured). Contract §6 forbids in-run rotation/truncation,
-  so the fix is disk-sizing guidance + boot disk guard + between-run
-  rotation tooling, NOT in-run rotation. **Drafted 2026-05-20,
-  designed only.**
-- [`smart-caching.md`](./future/smart-caching.md) — opt-in
-  in-memory LRU response cache; flips `X-WAF-Cache: HIT/MISS`
-  from the always-`BYPASS` baseline. Phase 1 (in-memory + GET
-  allow-list) ≈ 3d. **Drafted 2026-05-19, designed only.**
-- [`compliance-profiles.md`](./future/compliance-profiles.md) —
-  per-regime detector pinning + clamp enforcement (FIPS / PCI /
-  SOC 2 / GDPR / HIPAA). Modes still parse and surface as
-  documentation tags today; the lock is a no-op until the pin
-  list is repopulated. **Status: Deferred 2026-05-10.**
-- [`audit-cold-tier-export.md`](./future/audit-cold-tier-export.md) —
-  scheduled long-tail audit exports (S3 / SFTP) beyond the
-  200-event ring cap. **Drafted, not started.**
-- [`multi-node-metrics-aggregation.md`](./future/multi-node-metrics-aggregation.md) —
-  cluster-wide Prometheus rollup once the multi-node deploy
-  lands. **Drafted, not started.**
-- [`risk-composite-key-data-plane.md`](./future/risk-composite-key-data-plane.md) —
-  remaining JA4 device-FP fold-in for the composite-key risk
-  bucket. Storage + most data-plane sites already landed.
-  **Tracked, partial.**
-- [`rule-non-block-actions.md`](./future/rule-non-block-actions.md) —
-  rule actions beyond block/log (challenge, tarpit, mirror).
+The roadmap groups the work as (effort: S ≤ ~3 d · M ~1–2 wk · L ~3 wk+):
+
+| Tier | Theme | Existing spec(s) here |
+|---|---|---|
+| **0** | Hygiene (2 red tests; H3 wire-up before enabling) | `unwired-stubs-catalog.md` |
+| **1** | **API security** (Gartner #1 — guards wired → schema → discovery → BOLA/BFLA) | *new* |
+| **2** | **AI/LLM firewall** (prompt-injection / output inspection) | *new* |
+| **3** | **Client-side protection** (Page Shield, PCI DSS 4.0.1) | `compliance-profiles.md` |
+| **4** | **Bot enforcement + ATO** | `bot-classifier-enforcement.md`, `rule-non-block-actions.md`, `risk-composite-key-data-plane.md` |
+| **5** | ML positive-security learning | *new* |
+| **6** | Managed ruleset / virtual patching | *new* |
+| **Ops** | Operator value, interleave by capacity | `alerts-refactor.md`, `audit-log-disk-growth.md`, `audit-cold-tier-export.md`, `smart-caching.md` |
+
+Per-feature specs (each captures Status / Why deferred / Code anchor /
+plan / checklist):
+
+- [`bot-classifier-enforcement.md`](./future/bot-classifier-enforcement.md)
+  *(Tier 4A)* — wire the dead classifier buckets (reverse-DNS → `verified`,
+  JS-pass → `human`) + per-class `action_mapping`. **Drafted 2026-05-21,
+  not started.**
+- [`risk-composite-key-data-plane.md`](./future/risk-composite-key-data-plane.md)
+  *(Tier 4, support)* — finish the JA4 device-FP axis of the composite-key
+  risk bucket. Storage + most sites landed. **Tracked, partial.**
+- [`rule-non-block-actions.md`](./future/rule-non-block-actions.md)
+  *(Tier 4, support)* — rule actions beyond block/log (challenge, tarpit,
+  mirror). **Drafted, not started.**
+- [`compliance-profiles.md`](./future/compliance-profiles.md) *(Tier 3,
+  support)* — per-regime detector pinning + clamp enforcement
+  (FIPS / PCI / SOC 2 / GDPR / HIPAA). Modes parse + surface as doc tags
+  today; the lock is a no-op until the pin list is repopulated.
+  **Deferred 2026-05-10.**
+- [`alerts-refactor.md`](./future/alerts-refactor.md) *(Ops)* —
+  operator-useful alerting; VipTalk-first. Non-SLO event classes, rich
+  chat payload + deep-link, dedup, per-severity routing, ack/silence.
+  Phase 1 ≈ 2 d. **Drafted 2026-05-20, designed only.**
+- [`audit-log-disk-growth.md`](./future/audit-log-disk-growth.md) *(Ops)* —
+  `./waf_audit.log` grows ~6 GB/min under attack flood (soak-measured).
+  Contract §6 forbids in-run rotation, so the fix is disk guard +
+  between-run rotation tooling. **Drafted 2026-05-20, designed only.**
+- [`audit-cold-tier-export.md`](./future/audit-cold-tier-export.md) *(Ops)* —
+  scheduled long-tail audit exports (S3 / SFTP) beyond the 200-event ring.
   **Drafted, not started.**
-- [`bot-classifier-enforcement.md`](./future/bot-classifier-enforcement.md) —
-  bot classifier ships observational + opt-in (UA+ASN → mix/audit).
-  Plan to wire the dead buckets (reverse-DNS → `verified`, JS-pass →
-  `human`) and add per-class enforcement (`action_mapping`). JA4
-  baseline explicitly out of scope. **Drafted 2026-05-21, not started.**
-- [`unwired-stubs-catalog.md`](./future/unwired-stubs-catalog.md) —
-  running catalogue of types / traits the rule engine declares
-  but doesn't yet evaluate.
+- [`smart-caching.md`](./future/smart-caching.md) *(Ops)* — opt-in
+  in-memory LRU response cache; flips `X-WAF-Cache: HIT/MISS` from the
+  always-`BYPASS` baseline. Phase 1 ≈ 3 d. **Drafted 2026-05-19,
+  designed only.**
+- [`unwired-stubs-catalog.md`](./future/unwired-stubs-catalog.md)
+  *(reference)* — running catalogue of types/traits built but not yet
+  wired to the data plane (ICAP, per-route quota, traffic mirror, JWT,
+  OPA, vendor CAPTCHA, H3, …). The Tier-0/Ops wire-up backlog.
 
 > **Adding a future plan**: new file in `future/<short-slug>.md`
 > with sections "Status / Why deferred / Code anchor / Future
-> plan / Restoration checklist". Mirror `smart-caching.md`.
+> plan / Restoration checklist". Mirror `smart-caching.md`. If it's a
+> net-new capability, also slot it into a tier in
+> `world-class-waf-roadmap.md`.
 
 ## `archive/`
 
@@ -134,6 +146,14 @@ When picking up new work:
 
 ## Recent cleanups
 
+- 2026-05-28 — added `future/world-class-waf-roadmap.md` (market scan
+  vs WAAP leaders + code-verified gap analysis + Tier 0–6 ordering);
+  reordered the `future/` index by tier; archived two **completed**
+  tracks — `cluster-config-sync-and-scaling.md` (Phases 0/A/B/C/D all
+  shipped) and `multi-node-metrics-aggregation.md` (Phase C shipped) —
+  into `archive/`, repointing the live links. Refreshed stale entries in
+  `unwired-stubs-catalog.md` (`rules::evaluate` is now wired at
+  `data_plane.rs:1630`; HTTP/2 rapid-reset cap shipped).
 - 2026-05-20 — memory soak (73k RPS): fixed AttacksAggregator
   count cap (`MAX_EVENTS`) in code; drafted
   `future/audit-log-disk-growth.md` for the 9 GB/90s audit-log

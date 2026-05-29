@@ -10,7 +10,7 @@
 > runbook an AI assistant can drive, see
 > [`../../deploy/CONFIG-PLANE-RUNBOOK.md`](../../deploy/CONFIG-PLANE-RUNBOOK.md).
 > Design history + per-fold notes:
-> [`../../plans/future/cluster-config-sync-and-scaling.md`](../../plans/future/cluster-config-sync-and-scaling.md);
+> [`../../plans/archive/cluster-config-sync-and-scaling.md`](../../plans/archive/cluster-config-sync-and-scaling.md);
 > surrounding HA model: [`./ha-clustering.md`](./ha-clustering.md).
 
 ## Why
