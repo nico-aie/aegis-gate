@@ -63,6 +63,17 @@ pub(crate) async fn admin_accept_loop(
     // `PUT /api/ai/enabled` handler in `admin_mutate.rs` reads
     // it from `services.ai_toggle` (set further down).
     ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
+    // 2026-05-29 — parallel handle for the AI detector's
+    // `confidence_threshold`. Stores the `f32` gate as
+    // `to_bits` in an `AtomicU32`; updated by the audit-mutated
+    // `PUT /api/ai/confidence` handler and read per-inference
+    // via `AiDetector::threshold()`. Same `None` rules as
+    // `ai_toggle`.
+    ai_threshold: Option<Arc<std::sync::atomic::AtomicU32>>,
+    // The `cfg.ai.confidence_threshold` value loaded at boot —
+    // surfaced as `default` in the GET so the dashboard can
+    // show "current vs. config" without re-parsing YAML.
+    ai_threshold_default: f32,
     // 2026-05-11 PR #7 — live `Pipeline` whose `ResponseFilterConfig`
     // the audit-mutated `PUT /api/response-filter` handler flips.
     // Same `Arc<Pipeline>` instance the data plane reads
@@ -577,6 +588,19 @@ pub(crate) async fn admin_accept_loop(
     if let Some(toggle) = ai_toggle {
         services.ai_toggle = Some(
             toggle as Arc<dyn aegis_control::api::ai_toggle::AiToggleWriter>,
+        );
+    }
+    // 2026-05-29 — same coercion shape as `ai_toggle`: the
+    // `Arc<AtomicU32>` returned by `AiDetector::runtime_threshold()`
+    // coerces to `Arc<dyn AiThresholdWriter>` because the writer
+    // trait is implemented on the bare `AtomicU32`. The
+    // `ai_threshold_default` (cfg value) is always surfaced even
+    // when the writer is `None`, so the dashboard can render a
+    // sensible value before the operator changes anything.
+    services.ai_threshold_default = ai_threshold_default;
+    if let Some(holder) = ai_threshold {
+        services.ai_threshold = Some(
+            holder as Arc<dyn aegis_control::api::ai_threshold::AiThresholdWriter>,
         );
     }
     // 2026-05-11 PR #7 — surface the live `Pipeline` as the

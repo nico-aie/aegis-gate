@@ -348,6 +348,19 @@ pub(crate) async fn handle_admin_request(
         }
     }
 
+    // 2026-05-29 — runtime `confidence_threshold` adjustment for the AI
+    // detector. Same shape as `/api/ai/enabled`: audit-mutated PUT
+    // through the cluster config plane; GET is open-on-session so the
+    // dashboard can render current + the cfg-loaded default.
+    if path == "/api/ai/confidence" {
+        if method == hyper::Method::GET {
+            return crate::admin_mutate::handle_ai_confidence_get(services).await;
+        }
+        if method == hyper::Method::PUT {
+            return crate::admin_mutate::handle_ai_confidence_put(req, services).await;
+        }
+    }
+
     // 2026-05-11 PR #7 — response-filter rung toggles. Audit-mutated
     // PUT; CSRF-gated. GET is open-on-session so the dashboard's
     // Security Engine tile can render the toggle state. Defaults are

@@ -473,6 +473,15 @@ pub async fn run(
     let ai_runtime_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>;
     #[cfg(not(feature = "ai"))]
     let ai_runtime_toggle: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+    // 2026-05-29 — parallel handle for `cfg.ai.confidence_threshold`.
+    // Captured inside the Ok arms of the AI-detector branches below
+    // (same shape as `toggle` capture) into this `mut` Option so the
+    // existing `ai_runtime_toggle = match {...}` structure stays
+    // surgical. Audit-mutated `PUT /api/ai/confidence` reads the
+    // shared atomic from `services.ai_threshold` and updates the same
+    // backing store the data plane reads per inference.
+    let mut ai_runtime_threshold_inner: Option<std::sync::Arc<std::sync::atomic::AtomicU32>> =
+        None;
     #[cfg(feature = "ai")]
     {
         if cfg.ai.batch_enabled {
@@ -507,6 +516,12 @@ pub async fn run(
                             .with_metrics(ai_metrics);
                             let toggle = detector.runtime_toggle();
                             toggle.store(cfg.ai.enabled, std::sync::atomic::Ordering::Relaxed);
+                            // 2026-05-29 — stash the runtime-threshold handle
+                            // BEFORE boxing the detector. The dashboard's
+                            // `PUT /api/ai/confidence` updates this same
+                            // AtomicU32; per-inference reads happen via
+                            // `BatchAiDetector::threshold()`.
+                            ai_runtime_threshold_inner = Some(detector.runtime_threshold());
                             tracing::info!(
                                 model_path = %model_path.display(),
                                 threshold = cfg.ai.confidence_threshold,
@@ -597,6 +612,11 @@ pub async fn run(
                         // we box the detector. Both the data plane and
                         // the control plane read the same `AtomicBool`.
                         let toggle = detector.runtime_toggle();
+                        // 2026-05-29 — same idea for `confidence_threshold`:
+                        // stash the shared AtomicU32 the dashboard's
+                        // `PUT /api/ai/confidence` will flip and the data
+                        // plane reads via `AiDetector::threshold()`.
+                        ai_runtime_threshold_inner = Some(detector.runtime_threshold());
                         // Seed the toggle from `cfg.ai.enabled`. The
                         // detector's default is `true`; we override here
                         // so `enabled: false` in YAML still boots with
@@ -663,6 +683,11 @@ pub async fn run(
         };
         }
     }
+    // 2026-05-29 — surface the threshold handle captured inside the AI
+    // branches above (or `None` when the binary lacks `--features ai` /
+    // the detector wasn't installed). From here it travels alongside
+    // `ai_runtime_toggle` into the ProxyContext / DashboardServices.
+    let ai_runtime_threshold = ai_runtime_threshold_inner;
     let detectors: std::sync::Arc<Vec<Box<dyn aegis_security::detectors::Detector>>> =
         std::sync::Arc::new(detector_vec);
     // Phase-3 per-route latency. Cardinality bounded by the
@@ -1675,6 +1700,11 @@ pub async fn run(
         admin_upstream_writer,
         admin_route_writer,
         ai_runtime_toggle.clone(),
+        // 2026-05-29 — new positional args for the AI confidence-
+        // threshold fold (matches `admin_accept_loop`'s `ai_threshold`
+        // + `ai_threshold_default` parameters added below).
+        ai_runtime_threshold.clone(),
+        cfg.ai.confidence_threshold,
         pipeline.clone(),
         admin_state_backend,
         admin_identity_tracker,

@@ -12,7 +12,7 @@
 //! overload so a burst can't park unbounded worker threads (see
 //! `super::batch` for the load-safety rationale).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use aegis_core::pipeline::RequestView;
@@ -29,8 +29,11 @@ use super::{
 pub struct BatchAiDetector {
     batch: BatchService,
     /// Minimum `P(Attack)` for the verdict to count — same meaning as
-    /// [`super::AiDetector`]'s threshold.
-    threshold: f32,
+    /// [`super::AiDetector`]'s threshold. Stored as `f32::to_bits` in an
+    /// `AtomicU32` so the dashboard's `PUT /api/ai/confidence` can adjust
+    /// it hot without rebuilding the batch service. Read per-inference
+    /// with a single relaxed load.
+    runtime_threshold: Arc<AtomicU32>,
     /// Per-hit score added to the request's risk total.
     score: u32,
     /// When true, scale the emitted score by `prob_attack`.
@@ -47,12 +50,32 @@ impl BatchAiDetector {
     pub fn new(batch: BatchService, threshold: f32, score: u32) -> Self {
         Self {
             batch,
-            threshold,
+            runtime_threshold: Arc::new(AtomicU32::new(threshold.to_bits())),
             score,
             scale_score_by_prob: false,
             metrics: Arc::new(NoopAiMetricsSink),
             runtime_enabled: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Current `P(Attack)` gate (single relaxed load — same shape as
+    /// `runtime_enabled.load`). Mirrors [`super::AiDetector::threshold`].
+    pub fn threshold(&self) -> f32 {
+        f32::from_bits(self.runtime_threshold.load(Ordering::Relaxed))
+    }
+
+    /// Clone of the runtime-threshold handle — the same atomic the
+    /// dashboard's `PUT /api/ai/confidence` handler updates. Mirrors
+    /// [`super::AiDetector::runtime_threshold`].
+    pub fn runtime_threshold(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.runtime_threshold)
+    }
+
+    /// Override the initial runtime-threshold value (tests).
+    pub fn with_runtime_threshold(self, threshold: f32) -> Self {
+        self.runtime_threshold
+            .store(threshold.to_bits(), Ordering::Relaxed);
+        self
     }
 
     /// Enable proportional signal-score scaling (`score * prob_attack`).
@@ -114,7 +137,7 @@ impl Detector for BatchAiDetector {
                 // AiDetector (see `super::signals_from_prediction`).
                 signals_from_prediction(
                     &p,
-                    self.threshold,
+                    self.threshold(),
                     self.score,
                     self.scale_score_by_prob,
                     self.metrics.as_ref(),

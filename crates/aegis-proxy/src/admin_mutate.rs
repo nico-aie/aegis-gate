@@ -4133,6 +4133,230 @@ fn patch_ai_enabled(base: &str, enabled: bool) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// 2026-05-29 — runtime `confidence_threshold` for the AI detector
+// ---------------------------------------------------------------------------
+//
+// Sibling of `handle_ai_enabled_put`: same config-plane fold (patch the
+// shared YAML doc + activate so every node re-derives on its next poll
+// or restart), plus a local in-process write to the shared `AtomicU32`
+// so the active node's AiDetector picks up the new gate immediately —
+// without waiting for the watcher round-trip. Validation rejects values
+// outside [0.0, 1.0] (the model's `prob_attack` is a probability).
+
+pub(crate) async fn handle_ai_confidence_put(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::ai_threshold::AiConfidencePatch;
+    use http_body_util::BodyExt;
+
+    let pre = mutation_preamble(&req, "ai-confidence-put");
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
+            )
+        }
+    };
+    let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
+    let patch: AiConfidencePatch = match serde_json::from_str(body_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
+
+    // Validate up front so we never persist (or surface) a nonsensical
+    // gate. `confidence_threshold` is a probability — out-of-range or
+    // non-finite values would silently misclassify every request.
+    if !patch.confidence_threshold.is_finite()
+        || patch.confidence_threshold < 0.0
+        || patch.confidence_threshold > 1.0
+    {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "confidence_threshold must be a finite value in [0.0, 1.0]; got {}",
+                patch.confidence_threshold
+            )),
+        );
+    }
+
+    let Some(backend) = services.state_backend.as_ref() else {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Internal(
+                "config plane unavailable: no state backend wired".into(),
+            ),
+        );
+    };
+    let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
+
+    let (base_blob, expected) = match store.load().await {
+        Ok(Some(doc)) => (doc.blob, doc.version),
+        Ok(None) => match services.config_yaml_path.as_ref() {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(s) => (s, 0u64),
+                Err(e) => {
+                    return mutation_error_response(
+                        aegis_control::api::mutation::MutationError::Internal(format!(
+                            "cannot read boot config {} to seed the config plane: {e}",
+                            path.display()
+                        )),
+                    )
+                }
+            },
+            None => {
+                return mutation_error_response(
+                    aegis_control::api::mutation::MutationError::Validation(
+                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
+                    ),
+                )
+            }
+        },
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Internal(format!(
+                    "config store read failed: {e}"
+                )),
+            )
+        }
+    };
+
+    let new_blob = match patch_ai_confidence(&base_blob, patch.confidence_threshold) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
+    };
+    if let Err(e) = aegis_core::load_config_str(&new_blob) {
+        return mutation_error_response(
+            aegis_control::api::mutation::MutationError::Validation(format!(
+                "patched config failed validation: {e}"
+            )),
+        );
+    }
+
+    let before = serde_json::json!({ "version": expected });
+    let after = serde_json::json!({ "ai_confidence_threshold": patch.confidence_threshold });
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "PUT",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/ai/confidence",
+        action: "ai_confidence_put",
+        reason: "operator adjusted AI confidence_threshold",
+    };
+
+    let store_for_apply = store.clone();
+    let blob = new_blob;
+    let actor = pre.actor.clone();
+    let summary = "adjust AI confidence_threshold";
+    let new_threshold = patch.confidence_threshold;
+    let writer = services.ai_threshold.clone();
+    let outcome = services
+        .mutate
+        .apply_async(&req_ctx, before, after, move || async move {
+            let res = store_for_apply.activate(expected, blob, &actor, summary).await;
+            // On successful activation, update the local shared atomic so
+            // this node's AiDetector reads the new gate immediately
+            // instead of waiting for the watcher's next poll. Remote
+            // nodes pick it up via the persisted config doc.
+            if let Ok(crate::config_source::config_store::Activate::Applied { .. }) = &res {
+                if let Some(w) = writer.as_ref() {
+                    w.set(new_threshold);
+                }
+            }
+            res
+        })
+        .await;
+
+    match outcome {
+        Ok(mo) => match mo.value {
+            crate::config_source::config_store::Activate::Applied { version } => json_response(
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "confidence_threshold": patch.confidence_threshold,
+                    "version": version,
+                    "note": "config activated; propagates to all nodes within a few seconds",
+                    "request_id": pre.request_id,
+                }),
+            ),
+            crate::config_source::config_store::Activate::Conflict { current } => json_response(
+                409,
+                &serde_json::json!({
+                    "ok": false,
+                    "error": "version_conflict",
+                    "current": current,
+                    "request_id": pre.request_id,
+                }),
+            ),
+        },
+        Err(e) => mutation_error_response(e),
+    }
+}
+
+/// Patch `ai.confidence_threshold` on a YAML config blob — mirrors
+/// `patch_ai_enabled`. Caller is expected to have already range-checked
+/// the value; this just edits the YAML mapping.
+fn patch_ai_confidence(base: &str, threshold: f32) -> Result<String, String> {
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
+    let serde_yaml::Value::Mapping(map) = &mut doc else {
+        return Err("base config is not a YAML mapping".into());
+    };
+    let ai = map
+        .entry(serde_yaml::Value::String("ai".into()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let serde_yaml::Value::Mapping(ai_map) = ai else {
+        return Err("`ai` config is not a mapping".into());
+    };
+    ai_map.insert(
+        serde_yaml::Value::String("confidence_threshold".into()),
+        serde_yaml::Value::Number(serde_yaml::Number::from(threshold as f64)),
+    );
+    serde_yaml::to_string(&doc).map_err(|e| format!("re-serialize config: {e}"))
+}
+
+#[cfg(test)]
+mod ai_confidence_patch_tests {
+    use super::patch_ai_confidence;
+
+    #[test]
+    fn patches_existing_ai_block() {
+        let base = "ai:\n  enabled: true\n  confidence_threshold: 0.85\n";
+        let out = patch_ai_confidence(base, 0.50).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let v = &parsed["ai"]["confidence_threshold"];
+        // serde_yaml round-trips f64; just check it's the right number.
+        assert!((v.as_f64().unwrap() - 0.50).abs() < 1e-6);
+        // Existing `enabled: true` survives the patch.
+        assert_eq!(parsed["ai"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn creates_ai_block_when_absent() {
+        let base = "proxy:\n  bind: 127.0.0.1:8080\n";
+        let out = patch_ai_confidence(base, 0.7).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert!((parsed["ai"]["confidence_threshold"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rejects_non_mapping_base() {
+        let err = patch_ai_confidence("- not a map\n", 0.5).unwrap_err();
+        assert!(err.contains("not a YAML mapping"), "got {err}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 2026-05-11 PR #7 — runtime toggle for the response-filter rungs
 // ---------------------------------------------------------------------------
 
@@ -4353,6 +4577,32 @@ pub(crate) async fn handle_ai_enabled_get(
         Some(t) => serde_json::json!({ "enabled": t.get(), "feature_present": true }),
         None    => serde_json::json!({ "enabled": false,    "feature_present": false }),
     };
+    json_response(200, &body)
+}
+
+/// `GET /api/ai/confidence` — the live `confidence_threshold` the data
+/// plane is reading right now (from the shared `AtomicU32`), the
+/// `default` loaded from `cfg.ai.confidence_threshold` at boot, and
+/// whether the AI detector is actually in the chain. The dashboard
+/// surfaces both numbers so operators see what config says and what
+/// they've adjusted it to without re-parsing YAML on the frontend.
+pub(crate) async fn handle_ai_confidence_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let default = services.ai_threshold_default;
+    let (current, feature_present) = match services.ai_threshold.as_ref() {
+        Some(w) => (w.get(), true),
+        // No writer wired → the cfg-loaded default is the only value
+        // the dashboard can show. `feature_present: false` lets the UI
+        // render a "feature off" banner instead of pretending the
+        // input is live.
+        None => (default, false),
+    };
+    let body = serde_json::json!({
+        "confidence_threshold": current,
+        "default": default,
+        "feature_present": feature_present,
+    });
     json_response(200, &body)
 }
 

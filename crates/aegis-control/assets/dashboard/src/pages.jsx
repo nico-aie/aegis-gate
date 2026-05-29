@@ -3807,9 +3807,25 @@ function DetectorDetailModal({ cls, rows, onClose }) {
 // reveal the detailed metrics tiles.
 function AiDetectorRow() {
   const aiEnabledApi = window.useAiEnabledApi();
+  // 2026-05-29 — live + default confidence_threshold. GET surfaces
+  // both so the operator sees what config says and what they (or a
+  // previous operator) have adjusted it to.
+  const aiConfidenceApi = window.useAiConfidenceApi
+    ? window.useAiConfidenceApi()
+    : { data: null, reload: () => {} };
   const [busy, setBusy] = useStateP(false);
   const [expanded, setExpanded] = useStateP(false);
   const [metrics, setMetrics] = useStateP(null);
+  // Draft value for the threshold input. Stays null until the GET
+  // resolves, then seeds from the live value so the input shows the
+  // current gate (not the cfg default) — operators see what's live.
+  const [draftThreshold, setDraftThreshold] = useStateP(null);
+  const [savingThreshold, setSavingThreshold] = useStateP(false);
+  useEffectP(() => {
+    if (draftThreshold === null && typeof aiConfidenceApi.data?.confidence_threshold === 'number') {
+      setDraftThreshold(aiConfidenceApi.data.confidence_threshold);
+    }
+  }, [aiConfidenceApi.data?.confidence_threshold]);
 
   // Lazy-load the metrics only when the row is expanded — saves
   // a /metrics scrape per 5 s for operators who never expand it.
@@ -3889,6 +3905,42 @@ function AiDetectorRow() {
     }
   }
 
+  // 2026-05-29 — save the adjusted confidence_threshold. Routes
+  // through the cluster config plane so the value persists across
+  // restarts and propagates to every node. Validation matches the
+  // server: finite + [0.0, 1.0].
+  async function saveThreshold() {
+    if (savingThreshold) return;
+    const v = Number(draftThreshold);
+    if (!Number.isFinite(v) || v < 0 || v > 1) {
+      window.aegisToast('Threshold must be a number in [0.0, 1.0]', 'err');
+      return;
+    }
+    setSavingThreshold(true);
+    try {
+      const r = await window.aiConfidencePut(v);
+      if (r.status === 200 && r.ok) {
+        window.aegisToast(`Confidence threshold set to ${v}`, 'ok');
+        aiConfidenceApi.reload && aiConfidenceApi.reload();
+      } else if (r.status === 409 && r.error === 'version_conflict') {
+        window.aegisToast(`Config version conflict (current=${r.current}); reloading…`, 'warn');
+        aiConfidenceApi.reload && aiConfidenceApi.reload();
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Save failed: ${msg}`, 'err');
+      }
+    } finally {
+      setSavingThreshold(false);
+    }
+  }
+
+  const liveThreshold = aiConfidenceApi.data?.confidence_threshold;
+  const defaultThreshold = aiConfidenceApi.data?.default;
+  const thresholdDirty =
+    draftThreshold !== null &&
+    typeof liveThreshold === 'number' &&
+    Number(draftThreshold) !== Number(liveThreshold);
+
   return (
     <>
       <div style={{ borderTop: '1px solid var(--hairline)', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -3935,6 +3987,54 @@ function AiDetectorRow() {
       </div>
       {expanded && featurePresent && (
         <div style={{ borderTop: '1px solid var(--hairline)', padding: '12px 16px', background: 'var(--canvas-2)' }}>
+          {/* 2026-05-29 — confidence_threshold tuning. Input shows the
+              live value (the gate the data plane is actually reading);
+              the label states the cfg-loaded default so the operator
+              knows where to reset. PUT routes through the cluster
+              config plane → persists + propagates. */}
+          <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
+            <div style={{ minWidth: 160 }}>
+              <div className="field-label">Confidence threshold</div>
+              <div style={{ fontSize: 10, color: 'var(--ink-dim)' }}>
+                P(Attack) gate · default <span className="num">{typeof defaultThreshold === 'number' ? defaultThreshold.toFixed(2) : '—'}</span>
+              </div>
+            </div>
+            <input
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              value={draftThreshold === null ? '' : draftThreshold}
+              onChange={(e) => setDraftThreshold(e.target.value === '' ? '' : Number(e.target.value))}
+              disabled={savingThreshold || draftThreshold === null}
+              style={{ width: 90, fontSize: 12, padding: '4px 6px' }}
+            />
+            <button
+              type="button"
+              className="btn"
+              onClick={saveThreshold}
+              disabled={savingThreshold || !thresholdDirty}
+              style={{ fontSize: 11, padding: '4px 10px' }}
+              title={thresholdDirty ? 'Save and activate cluster-wide' : 'No change vs. live value'}
+            >
+              {savingThreshold ? '…' : 'Save'}
+            </button>
+            {thresholdDirty && (
+              <button
+                type="button"
+                onClick={() => setDraftThreshold(liveThreshold)}
+                disabled={savingThreshold}
+                style={{ background: 'transparent', border: 'none', color: 'var(--ink-dim)', cursor: 'pointer', fontSize: 11 }}
+              >
+                reset
+              </button>
+            )}
+            <div style={{ flex: 1, fontSize: 10, color: 'var(--ink-mute)' }}>
+              live <span className="num">{typeof liveThreshold === 'number' ? liveThreshold.toFixed(2) : '—'}</span>
+              {' · '}lower = more sensitive (catches more, may FP)
+              {' · '}higher = stricter (fewer FPs, may miss)
+            </div>
+          </div>
           {metrics && metrics.present ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
               <div>

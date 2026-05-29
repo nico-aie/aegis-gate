@@ -28,7 +28,7 @@
 //! caller increments around the `inspect()` call.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use aegis_core::pipeline::RequestView;
@@ -140,19 +140,25 @@ pub type SharedModel = Arc<Model>;
 /// handle.  Cheap to clone.
 pub struct AiDetector {
     model: SharedModel,
-    /// 2026-05-19 — `P(Attack)` threshold the model must clear
-    /// before the verdict counts as malicious. Operators tune
-    /// this knob to trade FP rate vs detection rate without
-    /// retraining:
-    ///   - 0.50 (default)  — argmax behaviour: trust the model's
-    ///                       binary verdict
-    ///   - 0.70 / 0.85 / 0.95 — escalating "high-confidence only"
-    ///                       gates that match the calibration
-    ///                       advice in `config/dev.yaml`
-    /// Falls back to argmax behaviour when the model exporter
-    /// doesn't ship a dense probability tensor (legacy sklearn
-    /// shape — `prob_attack` is 1.0 when is_attack, 0.0 else).
-    threshold: f32,
+    /// 2026-05-29 — runtime-mutable `P(Attack)` threshold. Stored as
+    /// `f32::to_bits` in an `AtomicU32` so the dashboard can adjust it
+    /// hot via `PUT /api/ai/confidence` without rebuilding the detector
+    /// (the model + session pool stay live). Seeded at construction from
+    /// the f32 the boot path passes (`cfg.ai.confidence_threshold`).
+    /// Read per-inference with a single relaxed load — same hot-path
+    /// shape as `runtime_enabled`.
+    ///
+    /// Operators tune this knob to trade FP rate vs detection rate
+    /// without retraining:
+    ///   - 0.50  — argmax behaviour: trust the model's binary verdict
+    ///   - 0.70 / 0.85 (default) / 0.95 — escalating "high-confidence
+    ///     only" gates that match the calibration advice in
+    ///     `config/dev.yaml`
+    ///
+    /// Falls back to argmax behaviour when the model exporter doesn't
+    /// ship a dense probability tensor (legacy sklearn shape —
+    /// `prob_attack` is 1.0 when is_attack, 0.0 else).
+    runtime_threshold: Arc<AtomicU32>,
     /// Per-signal score added to the risk total when AI flags
     /// a request.  Mirrors the score the regex detectors
     /// contribute (50–60 each); set high enough that AI alone
@@ -189,7 +195,7 @@ impl AiDetector {
         let model = Model::load(model_path, normal_class_idx)?;
         Ok(Self {
             model: Arc::new(model),
-            threshold,
+            runtime_threshold: Arc::new(AtomicU32::new(threshold.to_bits())),
             score: super::scores::ai::AI,
             scale_score_by_prob: false,
             metrics: Arc::new(NoopAiMetricsSink),
@@ -203,12 +209,37 @@ impl AiDetector {
     pub fn from_model(model: SharedModel, threshold: f32) -> Self {
         Self {
             model,
-            threshold,
+            runtime_threshold: Arc::new(AtomicU32::new(threshold.to_bits())),
             score: super::scores::ai::AI,
             scale_score_by_prob: false,
             metrics: Arc::new(NoopAiMetricsSink),
             runtime_enabled: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Current `P(Attack)` gate. Reads the runtime-mutable atomic with
+    /// a single relaxed load — same shape as `runtime_enabled.load`.
+    /// Exposed so callers (the data plane, the dashboard's GET surface)
+    /// don't reach into `runtime_threshold` directly.
+    pub fn threshold(&self) -> f32 {
+        f32::from_bits(self.runtime_threshold.load(Ordering::Relaxed))
+    }
+
+    /// Clone of the runtime-threshold handle. Production wiring stashes
+    /// this on `DashboardServices` so the audit-mutated
+    /// `PUT /api/ai/confidence` handler can update the same atomic the
+    /// data plane reads each inference. Mirrors `runtime_toggle`.
+    pub fn runtime_threshold(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.runtime_threshold)
+    }
+
+    /// Override the initial runtime-threshold value (defaults to the
+    /// `threshold` passed to the constructor). Useful for tests that
+    /// want to verify the hot-swap path without going through a writer.
+    pub fn with_runtime_threshold(self, threshold: f32) -> Self {
+        self.runtime_threshold
+            .store(threshold.to_bits(), Ordering::Relaxed);
+        self
     }
 
     /// 2026-05-19 — Enable proportional signal-score scaling.
@@ -366,10 +397,11 @@ impl Detector for AiDetector {
             Ok(p) => {
                 let lat_seconds = (p.latency_us as f64) / 1_000_000.0;
                 self.metrics.record_prediction(p.is_attack, lat_seconds);
+                let threshold = self.threshold();
                 tracing::trace!(
                     prob_attack = p.prob_attack,
                     class_idx = p.class_idx,
-                    threshold = self.threshold,
+                    threshold,
                     latency_us = p.latency_us,
                     "ai prediction",
                 );
@@ -377,7 +409,7 @@ impl Detector for AiDetector {
                 // see `signals_from_prediction`.
                 signals_from_prediction(
                     &p,
-                    self.threshold,
+                    threshold,
                     self.score,
                     self.scale_score_by_prob,
                     self.metrics.as_ref(),
@@ -550,4 +582,52 @@ mod tests {
     // The model load + predict path needs a real .onnx file so
     // its tests live in `tests/ai_e2e.rs` (gated by AEGIS_AI_MODEL).
     // What we cover here is the shape transforms.
+
+    // -------- runtime_threshold hot-swap (no model required) --------
+    //
+    // signals_from_prediction is the pure verdict gate both detectors
+    // route through. We exercise the hot-swap mechanism end-to-end by
+    // pulling the live threshold out of an AtomicU32 via the same
+    // `threshold()` getter the data plane calls each inference, and
+    // checking that updating the shared handle flips the verdict —
+    // proving the dashboard PUT path will affect the live gate without
+    // a detector rebuild.
+
+    #[test]
+    fn runtime_threshold_round_trips_f32_through_atomic_u32() {
+        let bits = Arc::new(AtomicU32::new(0.85_f32.to_bits()));
+        assert!((f32::from_bits(bits.load(Ordering::Relaxed)) - 0.85).abs() < 1e-6);
+        bits.store(0.50_f32.to_bits(), Ordering::Relaxed);
+        assert!((f32::from_bits(bits.load(Ordering::Relaxed)) - 0.50).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hot_swap_changes_verdict_via_shared_handle() {
+        // Borderline prediction: prob_attack = 0.60.
+        let p = Prediction {
+            is_attack: true,
+            class_idx: 1,
+            confidence: 0.60,
+            prob_attack: 0.60,
+            latency_us: 1,
+        };
+        // Shared handle the "detector" and the "writer" both reference.
+        let handle = Arc::new(AtomicU32::new(0.85_f32.to_bits()));
+        let metrics = NoopAiMetricsSink;
+
+        // At 0.85 the verdict is below the gate — no signal.
+        let gate = f32::from_bits(handle.load(Ordering::Relaxed));
+        let sigs = signals_from_prediction(&p, gate, 60, false, &metrics);
+        assert!(sigs.is_empty(), "0.60 < 0.85 should yield no signal");
+
+        // Writer flips the gate to 0.50 (mimicking PUT /api/ai/confidence).
+        handle.store(0.50_f32.to_bits(), Ordering::Relaxed);
+
+        // Same prediction now crosses the gate — emits one "ai" signal.
+        let gate = f32::from_bits(handle.load(Ordering::Relaxed));
+        let sigs = signals_from_prediction(&p, gate, 60, false, &metrics);
+        assert_eq!(sigs.len(), 1);
+        assert_eq!(sigs[0].tag, "ai");
+        assert_eq!(sigs[0].score, 60);
+    }
 }

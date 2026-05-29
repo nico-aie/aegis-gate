@@ -171,6 +171,20 @@ pub struct DashboardServices {
     /// "feature not present" banner instead of a misleading 500.
     pub ai_toggle:
         Option<std::sync::Arc<dyn crate::api::ai_toggle::AiToggleWriter>>,
+    /// AI runtime `confidence_threshold` (2026-05-29) — adjusted by
+    /// `PUT /api/ai/confidence`, read by the AiDetector on every
+    /// inference via the same shared `Arc<AtomicU32>`. Same `None`
+    /// rules + handler behaviour as `ai_toggle`: when the binary lacks
+    /// the `ai` feature, the GET still surfaces the persisted config
+    /// default and the PUT still patches the config doc so a later
+    /// feature-rebuild picks the operator's choice up.
+    pub ai_threshold:
+        Option<std::sync::Arc<dyn crate::api::ai_threshold::AiThresholdWriter>>,
+    /// The `cfg.ai.confidence_threshold` value read at boot — surfaced
+    /// in the GET as `default` so the dashboard can show "current vs.
+    /// config" without re-parsing YAML. Always populated even when the
+    /// `ai_threshold` writer is `None`.
+    pub ai_threshold_default: f32,
     /// PR #7 (2026-05-11) — writer handle for the live
     /// `Pipeline`'s `ResponseFilterConfig`. The bin crate stashes
     /// the same `Arc<Pipeline>` instance the data plane reads
@@ -584,6 +598,12 @@ impl DashboardServices {
                 // `ai` feature is on AND `cfg.ai.enabled` is
                 // true).
                 ai_toggle: None,
+                // 2026-05-29 — wired by the proxy boot path alongside
+                // `ai_toggle`. Default 0.85 here matches
+                // `default_ai_confidence_threshold()`; the real boot
+                // path overrides it from `cfg.ai.confidence_threshold`.
+                ai_threshold: None,
+                ai_threshold_default: 0.85,
                 // PR #7 — wired by `aegis-bin` once the live
                 // `Pipeline` is built. Until then the GET handler
                 // returns `wired: false` so the dashboard renders

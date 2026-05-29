@@ -1070,6 +1070,31 @@ async function aiEnabledPut(enabled) {
   return { status: r.status, ...json };
 }
 
+// 2026-05-29 — runtime `confidence_threshold` for the AI detector.
+// Same shape as useAiEnabledApi/aiEnabledPut: GET surfaces the LIVE
+// value (from the shared AtomicU32) plus `default` (the cfg-loaded
+// value at boot) so the dashboard can show "current vs. config"
+// without re-parsing YAML. PUT is audit-mutated + CSRF-gated and
+// routes through the cluster config plane, so the value persists
+// and propagates to every node.
+function useAiConfidenceApi() {
+  return useApi('/api/ai/confidence', {
+    intervalMs: 10000,
+    fallback: { confidence_threshold: 0.85, default: 0.85, feature_present: false },
+  });
+}
+async function aiConfidencePut(confidenceThreshold) {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/ai/confidence', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+    body: JSON.stringify({ confidence_threshold: Number(confidenceThreshold) }),
+  });
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
+
 // 2026-05-11 PR #7 — runtime toggle for the three-rung
 // response-filter (`Pipeline::on_body_frame`). GET is open-on-
 // session; PUT is audit-mutated + CSRF-gated.
@@ -1347,6 +1372,8 @@ Object.assign(window, {
   routeUpsert, routeDelete, routeTest,
   // AI-T10 — AI detector runtime on/off
   useAiEnabledApi, aiEnabledPut,
+  // 2026-05-29 — AI runtime confidence_threshold
+  useAiConfidenceApi, aiConfidencePut,
   // 2026-05-11 PR #7 — response-filter rung toggles
   useResponseFilterApi, responseFilterPut,
   // TI-T — audit-mutated tier edits
