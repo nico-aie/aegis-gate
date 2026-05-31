@@ -259,7 +259,19 @@ pub fn apply_cfg_change_to_ai(
     new_cfg: &WafConfig,
     ai_toggle: Option<&Arc<std::sync::atomic::AtomicBool>>,
     mask: Option<&SharedDetectorMask>,
+    ai_threshold: Option<&Arc<std::sync::atomic::AtomicU32>>,
 ) -> AiReloadOutcome {
+    // 2026-05-30 — write the threshold FIRST so that even when no
+    // toggle is wired (e.g. a binary without `--features ai` that
+    // still surfaces the config-plane), a cluster-pushed threshold
+    // change still reaches whatever does read the atomic later
+    // (e.g. a future reader). Independent of `enabled`.
+    if let Some(t) = ai_threshold {
+        t.store(
+            new_cfg.ai.confidence_threshold.to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
     let Some(toggle) = ai_toggle else {
         return AiReloadOutcome::NoToggle;
     };
@@ -496,6 +508,16 @@ pub struct FoldedReloadTargets {
     /// [`apply_cfg_change_to_mask`], which each watcher calls first.
     pub detector_mask: Option<SharedDetectorMask>,
     pub ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// 2026-05-30 (NT-07 / R2-006) — closes the live-propagate gap for
+    /// the AI `confidence_threshold` fold. Same shape as `ai_toggle`:
+    /// the watcher pushes `new_cfg.ai.confidence_threshold` into this
+    /// shared `AtomicU32` (storing `f32::to_bits`) so every node's
+    /// AiDetector reads the updated gate on its next inference. Until
+    /// this was wired the threshold value persisted in the cluster doc
+    /// but only the *originating* node's atomic updated (the PUT
+    /// handler writes locally); restarts and other nodes regressed to
+    /// `cfg.ai.confidence_threshold` from waf.yaml.
+    pub ai_threshold: Option<Arc<std::sync::atomic::AtomicU32>>,
     pub response_filter_writer:
         Option<Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>>,
     pub tiers: Option<Arc<aegis_control::api::tiers::TierStore>>,
@@ -515,7 +537,12 @@ pub struct FoldedReloadTargets {
 /// and before the `ArcSwap` swap. Each helper is a no-op when its handle
 /// is `None`.
 pub async fn apply_folded_stores(new_cfg: &WafConfig, t: &FoldedReloadTargets) {
-    let _ = apply_cfg_change_to_ai(new_cfg, t.ai_toggle.as_ref(), t.detector_mask.as_ref());
+    let _ = apply_cfg_change_to_ai(
+        new_cfg,
+        t.ai_toggle.as_ref(),
+        t.detector_mask.as_ref(),
+        t.ai_threshold.as_ref(),
+    );
     let _ = apply_cfg_change_to_response_filter(new_cfg, t.response_filter_writer.as_ref());
     let _ = apply_cfg_change_to_tiers(new_cfg, t.tiers.as_ref());
     let _ = apply_cfg_change_to_rules(new_cfg, t.rules.as_ref(), t.active_ruleset.as_ref());
@@ -762,7 +789,7 @@ ai:
     fn ai_reload_no_toggle_handle_is_noop() {
         let cfg = parse(&yaml_with_ai(true));
         assert_eq!(
-            apply_cfg_change_to_ai(&cfg, None, None),
+            apply_cfg_change_to_ai(&cfg, None, None, None),
             AiReloadOutcome::NoToggle,
         );
     }
@@ -776,7 +803,7 @@ ai:
         // cfg.ai.enabled = true → atomic on + mask Ai bit on.
         let cfg_on = parse(&yaml_with_ai(true));
         assert_eq!(
-            apply_cfg_change_to_ai(&cfg_on, Some(&toggle), Some(&mask)),
+            apply_cfg_change_to_ai(&cfg_on, Some(&toggle), Some(&mask), None),
             AiReloadOutcome::Applied { enabled: true },
         );
         assert!(toggle.load(Ordering::Relaxed));
@@ -785,7 +812,7 @@ ai:
         // cfg.ai.enabled = false → atomic off + mask Ai bit off.
         let cfg_off = parse(&yaml_with_ai(false));
         assert_eq!(
-            apply_cfg_change_to_ai(&cfg_off, Some(&toggle), Some(&mask)),
+            apply_cfg_change_to_ai(&cfg_off, Some(&toggle), Some(&mask), None),
             AiReloadOutcome::Applied { enabled: false },
         );
         assert!(!toggle.load(Ordering::Relaxed));

@@ -1138,6 +1138,9 @@ pub async fn run(
     let folded_targets = crate::config_source::reload::FoldedReloadTargets {
         detector_mask: Some(mask.clone()),
         ai_toggle: ai_runtime_toggle.clone(),
+        // 2026-05-30 — propagate AI threshold via the file/etcd watchers
+        // too (the redis watcher gets it via ApplyTargets below).
+        ai_threshold: ai_runtime_threshold.clone(),
         response_filter_writer: Some(
             pipeline.clone()
                 as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
@@ -1195,6 +1198,8 @@ pub async fn run(
             ip_rate_limiter: Some(ip_rate_limiter.clone()),
             tls_resolver: tls_resolver.clone(),
             ai_toggle: ai_runtime_toggle.clone(),
+            // 2026-05-30 (NT-07 fix) — closes the live-propagate gap.
+            ai_threshold: ai_runtime_threshold.clone(),
             response_filter_writer: Some(
                 pipeline.clone()
                     as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,

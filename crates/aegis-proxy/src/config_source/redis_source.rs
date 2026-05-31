@@ -46,6 +46,11 @@ pub struct ApplyTargets {
     /// 2026-05-27 (Phase B) — AI detector runtime gate, re-derived from
     /// `cfg.ai.enabled` on each swap so a folded AI toggle propagates.
     pub ai_toggle: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// 2026-05-30 (NT-07 / R2-006) — AI `confidence_threshold` atomic,
+    /// re-derived from `cfg.ai.confidence_threshold` on each swap so
+    /// the threshold actually propagates to every node's AiDetector,
+    /// not just the originator. Closes the TODO(live-propagate) gap.
+    pub ai_threshold: Option<Arc<std::sync::atomic::AtomicU32>>,
     /// 2026-05-27 (Phase B) — response-filter rungs, re-derived from
     /// `cfg.response_filter` so a folded response-filter toggle propagates.
     pub response_filter_writer:
@@ -206,6 +211,7 @@ async fn apply_and_swap(
         new_cfg,
         targets.ai_toggle.as_ref(),
         targets.detector_mask.as_ref(),
+        targets.ai_threshold.as_ref(),
     );
     let _ = reload::apply_cfg_change_to_response_filter(
         new_cfg,

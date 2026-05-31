@@ -613,6 +613,28 @@ async fn handle_rollback(
                 "error": format!("audit version {s} not found"),
             }),
         ),
+        Err(RollbackError::NotRollbackable(action)) => {
+            // 2026-05-30 (QC R2-004): point operators at the
+            // config-plane rollback path for folded actions. The
+            // audit-ring whitelist only covers in-process state
+            // mutations (mode_set, risk_thresholds_set, …); folded
+            // toggles (response_filter_put, ai_confidence_put, …)
+            // ride the versioned config doc and roll back via
+            // ConfigStore::rollback, which is what
+            // POST /api/config/rollback exposes.
+            json_response(
+                422,
+                &serde_json::json!({
+                    "error": format!(
+                        "action `{action}` is not rollback-able via the audit-ring path"
+                    ),
+                    "hint": "this action rides the cluster config plane — \
+                             use POST /api/config/rollback with `{\"target_version\": N}` to \
+                             re-activate an earlier version of the cluster config",
+                    "config_plane_endpoint": "POST /api/config/rollback",
+                }),
+            )
+        }
         Err(e) => json_response(
             422,
             &serde_json::json!({

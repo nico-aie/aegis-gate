@@ -3966,10 +3966,24 @@ pub(crate) async fn handle_ai_enabled_put(
     // false at boot), we want the dashboard to render a clear
     // "feature off" banner — not a generic 500.
     if services.ai_toggle.is_none() {
+        // 2026-05-30 (QC R2-009 sub-C): the gate is
+        // `services.ai_toggle == None`, which happens for **two**
+        // reasons: (1) binary built without `--features ai`, OR
+        // (2) feature present but `cfg.ai.model_path` is unset / the
+        // ONNX file failed to load. The old wording only named (1)
+        // and told the operator to flip `cfg.ai.enabled`, which is
+        // misleading and wastes time on a working-feature binary.
+        // The dashboard's row hint already names the right knobs;
+        // mirror it here.
         let body = serde_json::json!({
             "ok": false,
             "reason": "feature_off",
-            "message": "AI detector not wired — rebuild with FEATURES=\"… ai\" and set cfg.ai.enabled = true",
+            "message": "AI detector not in chain. Either: (1) rebuild with \
+                        `--features ai`, OR (2) set `cfg.ai.model_path` to a \
+                        valid ONNX file (e.g. `make ai-link MODEL=<path>`) and \
+                        set `cfg.ai.enabled: true`.",
+            "ai_feature_built": cfg!(feature = "ai"),
+            "hint_check": "GET /api/ai/confidence -- feature_present field tells you which gate is closed",
         });
         return json_body_response(409, body.to_string(), "private, no-store");
     };
