@@ -1,0 +1,3 @@
+# Test run artifacts — don't commit. Re-create on every run.
+reports/run-*.json
+reports/ui-*.md

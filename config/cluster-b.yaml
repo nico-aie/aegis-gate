@@ -15,6 +15,26 @@ listeners:
   admin:
     bind: "127.0.0.1:9543"
 
+# 2026-05-29 — see cluster-a.yaml for the same block + rationale.
+# Both nodes must accept the same admin creds so cluster-wide tests
+# can log into either side. Hash is for `aegis-test-1234`.
+admin:
+  dashboard_auth:
+    password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
+    csrf_secret_ref:   "test-csrf-secret-do-not-use-in-production-32b"
+    session_ttl_idle: "30m"
+    session_ttl_absolute: "8h"
+    ip_allowlist:
+      - "127.0.0.1/32"
+      - "::1/128"
+    totp_enabled: false
+
+# 2026-05-30 — see cluster-a.yaml for the same block + rationale.
+ai:
+  enabled: true
+  model_path: "data/ai_model/waf_model.onnx"
+  confidence_threshold: 0.85
+
 routes:
   - id: catch-all
     path: "/"

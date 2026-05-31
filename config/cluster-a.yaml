@@ -34,6 +34,38 @@ listeners:
   admin:
     bind: "127.0.0.1:9443"
 
+# 2026-05-29 — top-level `admin:` block holds `dashboard_auth` (the
+# argon2 password hash + CSRF secret + session TTLs). Without it
+# `DashboardAuthConfig::default()` ships with an empty hash and
+# every POST /admin/login returns 401 invalid_credentials — which
+# blocks tests/n-tester/_common.sh `login()` and silently aborts
+# every cluster test.
+#
+# Hash is for the password `aegis-test-1234` (same as dev.yaml).
+# DO NOT use these values in production; they're hardcoded for the
+# HA test fixture only.
+admin:
+  dashboard_auth:
+    password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
+    csrf_secret_ref:   "test-csrf-secret-do-not-use-in-production-32b"
+    session_ttl_idle: "30m"
+    session_ttl_absolute: "8h"
+    ip_allowlist:
+      - "127.0.0.1/32"
+      - "::1/128"
+    totp_enabled: false
+
+# 2026-05-30 — AI detector enabled in the cluster fixture so NT-AI
+# tests (incl. nt-11 live-effect) exercise the real model, not the
+# feature-off path. The dashboard's Detectors → AI row will show
+# `feature_present: true` and a green "enabled" pill. Tests that
+# need the feature-off path now have to flip cfg.ai.enabled or
+# unset model_path explicitly (none of NT-01..12 do).
+ai:
+  enabled: true
+  model_path: "data/ai_model/waf_model.onnx"
+  confidence_threshold: 0.85
+
 routes:
   - id: catch-all
     path: "/"
