@@ -8,7 +8,7 @@ specified in `docs/`". Each doc carries a one-line `> **Status:**`
 banner that mirrors a row here; the banner is generated from this
 table — keep them in sync.
 
-**As of:** 2026-05-19 (post v2.5 interop contract — challenge wire shape, `/challenge/verify` public mount, loopback-gated `/__waf_control/*`, composite-key risk + IpRateLimiter data-plane wire-up, dashboard mockup sweep, prod-balanced.yaml judging-ready). Earlier baseline: HACK-T1..T5 + rollback v6 + MTLS-T7..T11 + TCP-T1..T6 + FDP-T1..T6 + AI-T + geoip XFF.
+**As of:** 2026-06-01 (cluster config-plane + multi-node metrics track CLOSED 2026-05-27; AI `confidence_threshold` adjust + live-propagate shipped; Tier A hygiene sweep closed — reaper-spawn + bundle-budget red tests fixed, JA4 device_fp axis test, threat_intel subdomain walk. **Next active track:** AI Operator Copilot — see §8. **Deprioritized:** API-security guard wire-up, pending a WAF-vs-gateway concept call). Earlier baseline (2026-05-19): v2.5 interop contract — challenge wire shape, `/challenge/verify` public mount, loopback-gated `/__waf_control/*`, composite-key risk + IpRateLimiter data-plane wire-up; HACK-T1..T5 + rollback v6 + MTLS-T7..T11 + TCP-T1..T6 + FDP-T1..T6 + AI-T + geoip XFF.
 
 > **Verify before relying on a row.** Codebase moves; before acting
 > on any "Implemented" claim, check the named module path. When
@@ -73,7 +73,7 @@ table — keep them in sync.
 | [`behavioral-analysis.md`](../docs/security/behavioral-analysis.md) | **Implemented** | `aegis-security/src/behavior.rs`. |
 | [`transaction-velocity.md`](../docs/security/transaction-velocity.md) | **Implemented** | `aegis-security/src/velocity.rs`. |
 | [`threat-intelligence.md`](../docs/security/threat-intelligence.md) | **Implemented** | `threat_intel/mod.rs` (store) + `threat_intel/taxii.rs` (TAXII 2.1 client + fetcher loop, gated by `aegis-security/taxii`). |
-| [`api-security.md`](../docs/security/api-security.md) | **Implemented** | `api_security/{api_keys,graphql,hmac_sign,mod}.rs`. |
+| [`api-security.md`](../docs/security/api-security.md) | **Partial (built, dormant)** | Modules exist + unit-tested (`api_security/{api_keys,graphql,hmac_sign,mod}.rs`) but **NOT wired into the request path** — no per-route policy, no data-plane call site (verified 2026-06-01). Wire-up (roadmap "Tier 1A / B1") **deprioritized 2026-06-01** on an open concept question: API-key verification + HMAC + business-rule/schema validation arguably belong in the **API gateway / router** layer, not the WAF. GraphQL depth/complexity/introspection limits are more clearly WAF-shaped (resource-exhaustion). Revisit the WAF-vs-gateway boundary before building. |
 | [`content-scanning.md`](../docs/security/content-scanning.md) | **Implemented** | `content/icap/{mod,codec,tcp}.rs` — RFC 3507 TCP client + pure framing helpers + decision table covering 5 vendor infection-header forms. |
 | [`dlp.md`](../docs/security/dlp.md) | **Implemented** | `dlp/{fpe,mod}.rs` — pattern matching + AES-FF1 FPE. |
 | [`response-filtering.md`](../docs/security/response-filtering.md) | **Implemented** | `aegis-security/src/response_filter.rs`. |
@@ -132,7 +132,7 @@ table — keep them in sync.
 | Doc | Status | Notes |
 |---|---|---|
 | [`advanced-features.md`](../docs/future/advanced-features.md) | **Intake template** | Open process for proposals NOT covered by Phase B. |
-| [`rbac-sso.md`](../docs/future/rbac-sso.md) | **Deferred** | No production code; OIDC / SAML / RBAC retained as future reference. |
+| [`plans/future/ai-operator-copilot.md`](./future/ai-operator-copilot.md) | **Designed only — next active track** | LLM operator copilot: (a) plain-language situational summaries and (b) smart-catch triage over the WAF's own telemetry (audit chain + metrics + risk buckets). Advisory-only, off the request hot path, PII-redacted before egress, off by default. Distinct from the inline ONNX detector and from the Tier 2 customer-LLM firewall. |
 
 ---
 

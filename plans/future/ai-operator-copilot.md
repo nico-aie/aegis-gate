@@ -1,0 +1,171 @@
+# AI Operator Copilot — LLM situational summary + smart-catch triage
+
+> **Status:** Drafted 2026-06-01. **Next active track** (replaces the
+> Tier 1A / B1 API-security wire-up as the chosen focus). No production
+> code yet — types/design only.
+>
+> **One-liner:** a generative-LLM layer that reads the WAF's own
+> telemetry (audit chain, metrics, risk buckets, detector hits) and
+> turns it into (a) plain-language situational summaries operators can
+> read at a glance, and (b) reasoning-assisted triage of borderline /
+> clustered events with human-in-the-loop rule suggestions.
+
+## What this is — and what it is NOT
+
+| | This feature | Not this feature |
+|---|---|---|
+| **Model kind** | Generative LLM (Claude API), reasoning over *aggregated* data | The existing ONNX **attack classifier** (`detectors/ai/`) — a fast per-request binary verdict |
+| **Where it runs** | **Off** the request hot path — async, reads stored telemetry | The ONNX detector runs inline per request |
+| **Latency budget** | Seconds; on-demand or scheduled | Sub-millisecond inline |
+| **Authority** | **Advisory only** — never auto-blocks; operator promotes suggestions | Detectors can block inline |
+| **Egress** | Calls an external LLM API (operator opt-in, PII-redacted) | Local, no egress |
+
+It is **also not** Tier 2 of the roadmap ("LLM firewall" — *protecting*
+customer LLM endpoints from prompt injection). That defends a tenant's
+AI app; **this** is an operator-facing copilot for the WAF itself. They
+share the `llm` provider plumbing but nothing else.
+
+## Why now
+
+- The cluster config-plane + multi-node metrics aggregation just landed,
+  so there's a **cluster-wide, queryable telemetry surface** worth
+  summarizing (audit chain, `RouteActivityWindow`, risk buckets,
+  detector-hit counters, DDoS / rate-limit events).
+- Operators today read raw audit rows + Prometheus panels and
+  reconstruct the story by hand. "What is happening right now, in one
+  paragraph?" is the single most common SOC ask and nothing answers it.
+- The `dlp::redact` module already exists — we can scrub PII **before**
+  any egress, which is the gating safety requirement for sending WAF
+  data to an external model.
+
+## Two capabilities
+
+### 1. Situational summary ("AI summary")
+
+On demand (and optionally on a schedule), digest the last *N* minutes of
+telemetry into a briefing:
+
+> *"Elevated SQLi probing in the last 15 min: 412 blocks, 90% from
+> 3 ASNs (AS-1234 leading). Top target `/api/v2/search`. One IP
+> (203.0.113.10) escalated to strike-block. Rate-limit gate fired 1.8k
+> times — within normal range. No upstream health degradation."*
+
+- Inputs (all **read-only**, no hot-path coupling): audit events since
+  `t`, risk `top()` buckets, detector-hit deltas, DDoS / rate-limit
+  counters, upstream health, traffic RPS.
+- Output: a short structured brief (headline + bullet findings +
+  suggested next action), rendered in the dashboard and optionally
+  pushed into the **alerts** pipeline (`plans/future/alerts-refactor.md`)
+  as an `OperatorBriefing` event class.
+
+### 2. Smart-catch triage assist
+
+The deterministic engine flags some traffic with **low confidence** or
+in **clusters** that no single rule explains. The copilot reasons over a
+bundle of related events and:
+
+- **Explains** — "these 30 requests share a crafted `Referer` + a
+  rotating JA4; looks like a single actor behind a proxy pool."
+- **Suggests** — proposes a candidate rule (in the existing rule DSL)
+  the operator can preview in `POST /api/rules/simulate` and promote.
+  **Never auto-applied.**
+- **Clusters** — groups the noisy long-tail into a handful of
+  named "campaigns" for the Investigation page.
+
+This is decision *support*, not a detector. The fast path stays
+deterministic; the LLM adds a slow reasoning layer an operator drives.
+
+## Architecture
+
+```
+            read-only
+ audit chain  ─┐
+ metrics       ├─▶  TelemetrySnapshot  ─▶  dlp::redact  ─▶  LlmProvider  ─▶  Brief / Suggestion
+ risk top()    │      (aggregator)         (PII scrub)      (trait)          (advisory)
+ detector hits ┘                                              │
+                                                     Anthropic adapter (default)
+                                                     [OpenAI / local pluggable]
+```
+
+- **New crate or module**, feature-gated `llm` (off by default):
+  `aegis-control/src/copilot/` is the likely home (it already owns the
+  dashboard + audit read surface). A standalone `aegis-llm` crate is the
+  alternative if Tier 2 wants to share it.
+- **`LlmProvider` trait** — `async fn complete(&self, prompt) -> Result<Completion>`.
+  First adapter: **Anthropic Claude** (matches the build environment;
+  see the `claude-api` skill — include prompt caching). Pluggable so a
+  local/self-hosted model can be dropped in for air-gapped deploys.
+- **Secrets** — API key via the existing secrets resolver
+  (`env`/`file`/`vault`/`aws`/`gcp`/`azure`), validated at boot when the
+  feature is on.
+- **`TelemetrySnapshot` aggregator** — read-only adapters over the audit
+  store, metrics, and `RiskTracker`. No new data-plane code; zero
+  regression risk to live traffic.
+
+## Hard guardrails (a WAF sending data to an external model)
+
+1. **Off by default.** Enabling is an explicit opt-in that documents the
+   external egress (network policy + CSP `connect-src`).
+2. **PII redaction before egress** — every snapshot passes through
+   `dlp::redact` (cards/SSN/emails/tokens) **and** header/cookie
+   masking before it reaches a prompt. Unit-tested as a hard gate.
+3. **Advisory only** — no copilot output can block traffic or mutate
+   config without an operator action. Rule suggestions land in a
+   review queue, not the live ruleset.
+4. **Cost + rate budget** — per-window token cap, request rate limit,
+   and a kill-switch; every call audited (prompt hash, tokens, cost,
+   model, latency).
+5. **Audit + reproducibility** — the redacted prompt hash + the model
+   response are written to the audit chain so a summary is explainable
+   after the fact.
+
+## Surfaces
+
+- `GET /api/copilot/summary?since=15m` — on-demand brief (CSRF-gated,
+  admin-only).
+- `POST /api/copilot/ask` — free-form operator question over the
+  current snapshot.
+- Dashboard **Copilot** panel — summary card + "ask" box + suggestion
+  review queue.
+- Optional scheduled brief → `alerts` pipeline as `OperatorBriefing`.
+
+## Phases
+
+| Phase | Scope | Est. |
+|---|---|---|
+| **P0** | `LlmProvider` trait + Anthropic adapter + secret wiring + cost/rate guard + `dlp` egress gate. No UI. | M |
+| **P1** | `TelemetrySnapshot` aggregator + `GET /api/copilot/summary` (read → redact → prompt → structured brief). | M |
+| **P2** | Dashboard Copilot panel (summary card + ask box). | M |
+| **P3** | Smart-catch triage: event clustering + explain + rule-suggestion review queue (human-in-the-loop, promote via `/api/rules/simulate`). | L |
+| **P4** | Scheduled briefs → alerts pipeline (`OperatorBriefing` event class + dedup). | S |
+
+## Risks / open questions
+
+- **Hallucination** — the brief must cite the underlying counts (every
+  claim links back to an audit query); the UI shows the numbers beside
+  the prose so an operator can verify. Suggestions are always preview-
+  then-promote.
+- **Egress in regulated deploys** — air-gapped / FIPS / data-residency
+  tenants can't call an external API. The provider trait + a local-model
+  adapter is the answer; the feature stays off where egress is barred.
+- **Cost drift** — caching + budget cap + scheduled-vs-on-demand toggle;
+  summaries are cached per snapshot window.
+- **Snapshot fidelity** — start with audit + metrics + risk; expand
+  inputs only as the brief proves useful.
+
+## Coupling with other tracks
+
+- **B1 / API-security** (deferred): when those guards land, their block
+  events become another `TelemetrySnapshot` input — design the copilot's
+  event taxonomy to absorb new event classes without schema churn.
+- **`alerts-refactor.md`**: P4 reuses the `AlertEvent` router + dedup.
+- **`dlp`**: the egress redaction gate is a hard dependency.
+- **`claude-api` skill**: the Anthropic adapter should follow it
+  (Messages API + prompt caching).
+
+## Non-goals (v1)
+
+- No auto-blocking or auto-rule-application from LLM output.
+- No fine-tuning / training — inference against a hosted model only.
+- Not a replacement for the ONNX inline detector or the rule engine.
+- Not the Tier 2 customer-LLM-endpoint firewall (separate track).

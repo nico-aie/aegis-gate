@@ -11,7 +11,14 @@ Two flavours of "not in scope today":
 | Doc | Status | Summary |
 |---|---|---|
 | [advanced-features.md](./advanced-features.md) | Phase B intake | Template + scoring rubric for proposing future work |
-| [rbac-sso.md](./rbac-sso.md) | Deferred | OIDC / SAML / RBAC |
+
+The **next active track** is the AI Operator Copilot — plan lives in
+[`../../plans/future/ai-operator-copilot.md`](../../plans/future/ai-operator-copilot.md).
+
+> **Dropped 2026-06-01:** `rbac-sso.md` (OIDC / SAML / RBAC) is no
+> longer a tracked future item. The file is retained only as a design
+> reference anchored from the auth docs (`dashboard-auth.md`,
+> `external-auth.md`) — not a roadmap commitment.
 
 When a deferred design becomes scheduled, move its file into the
 appropriate category folder and link its plan from `../../plans/`.

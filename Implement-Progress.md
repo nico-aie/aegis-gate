@@ -214,12 +214,23 @@ For full chronological detail see `git log` and the
 
 ## Next Task
 
-**▶ NEXT: B1 · Tier 1A — wire the existing API-security guards**
-(`api_keys`, `hmac_sign`, GraphQL guard) onto the request path behind a
-per-route `api_security` policy. The code is built and dormant; this is
-Gartner's #1 WAAP buyer priority and lays the call-site for Tier 1B/1C/1D.
-See [`plans/future/world-class-waf-roadmap.md`](./plans/future/world-class-waf-roadmap.md)
-Tier 1A.
+**▶ NEXT: AI Operator Copilot — LLM situational summary + smart-catch
+triage.** A generative-LLM layer that reads the WAF's own telemetry
+(audit chain, metrics, risk buckets, detector hits) and turns it into
+(a) plain-language "what's happening now" summaries and (b) reasoning-
+assisted triage of borderline/clustered events with human-in-the-loop
+rule suggestions. Advisory-only, **off the request hot path**, PII-
+redacted before egress (reuses `dlp::redact`), off by default. Plan:
+[`plans/future/ai-operator-copilot.md`](./plans/future/ai-operator-copilot.md).
+
+**⏸ DEPRIORITIZED: B1 · Tier 1A — wire the API-security guards.** The
+`api_keys` / `hmac_sign` / GraphQL modules are built + unit-tested but
+dormant. Wire-up is parked on an open **concept question**: API-key
+verification + HMAC + business-rule/schema validation arguably belong in
+the **API gateway / router** layer, not the WAF. (GraphQL depth/
+complexity limits are more clearly WAF-shaped — resource-exhaustion.)
+Revisit the WAF-vs-gateway boundary before building. Matrix row
+`api-security.md` is marked **Partial (built, dormant)**, not Implemented.
 
 **✅ Tier A "completionist warmup" — CLOSED 2026-06-01.** Four sub-day
 debts swept (all on `develop`, green): **A1** R2-009 sub-A+sub-B AI-row
