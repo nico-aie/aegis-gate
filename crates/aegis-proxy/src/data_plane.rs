@@ -583,11 +583,11 @@ pub(crate) async fn handle_data_request_inner(
     if !rate_decision.allowed {
         // 2026-05-18 (QC TLS-wiring batch — Phase E activation):
         // record the malicious event under the composite RiskKey
-        // (IP + session + tenant). The session axis activates the
-        // F-CRITICAL-001 mandate from §5.5 — two distinct
-        // sessions on the same NAT'd IP no longer share a risk
-        // bucket. device_fp stays None until the JA4-capture
-        // wire-up lands. Pre-Phase-E this was IP-only.
+        // (IP + session + device_fp). The session axis activates the
+        // F-CRITICAL-001 mandate from §5.5 — two distinct sessions on
+        // the same NAT'd IP no longer share a risk bucket. device_fp
+        // is the JA4-derived TLS fingerprint hash (None on plain HTTP);
+        // see build_risk_key. Pre-Phase-E this was IP-only.
         let post_state = risk.record_malicious_with_key(
             build_risk_key(peer_ip, req.headers(), tls_fingerprint),
             30,
@@ -2617,6 +2617,36 @@ mod session_extraction_tests {
         );
         let c = build_risk_key(ip, &h2, Some(&fp));
         assert_ne!(a.device_fp, c.device_fp, "different UA → different hash");
+    }
+
+    /// Same IP + same UA (+ no session) but a DIFFERENT JA4 must land
+    /// on a different composite key — the device_fp axis is what
+    /// separates two TLS clients NAT'd behind one address. Holds every
+    /// other axis constant so only the JA4 varies.
+    #[test]
+    fn build_risk_key_different_ja4_same_ip_buckets_apart() {
+        use http::HeaderValue;
+        let ip: std::net::IpAddr = "203.0.113.10".parse().unwrap();
+        let mut h = HeaderMap::new();
+        h.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static("Mozilla/5.0 (Macintosh)"),
+        );
+        let fp_a = aegis_core::TlsFingerprint {
+            ja3: "abc".into(),
+            ja4: "t13d1516h2_8daaf6152771_b0da82dd1658".into(),
+        };
+        let fp_b = aegis_core::TlsFingerprint {
+            ja3: "abc".into(),
+            ja4: "t13d1517h2_8daaf6152771_deadbeef0000".into(),
+        };
+
+        let a = build_risk_key(ip, &h, Some(&fp_a));
+        let b = build_risk_key(ip, &h, Some(&fp_b));
+        assert_eq!(a.ip, b.ip, "same IP");
+        assert_eq!(a.session, b.session, "no session cookie on either");
+        assert_ne!(a.device_fp, b.device_fp, "different JA4 → different device_fp");
+        assert_ne!(a, b, "composite keys differ on the device_fp axis alone");
     }
 
     /// Same IP + same JA4 + same UA but different session cookies
