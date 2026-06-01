@@ -3965,33 +3965,53 @@ function AiDetectorRow() {
               rebuild with <code>--features ai</code> and set <code>cfg.ai.model_path</code> to a valid ONNX file (run <code>make ai-link MODEL=&lt;path&gt;</code>)
             </span>
           )}
+          {/* R2-009 sub-A (2026-06-01) — expandable even feature-off so
+              the operator can see the disabled threshold input + the
+              configured default, rather than the row being a dead end. */}
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
-            disabled={!featurePresent}
-            style={{ background: 'transparent', border: 'none', color: 'var(--ink-dim)', cursor: featurePresent ? 'pointer' : 'default', fontSize: 11, padding: 0 }}
+            style={{ background: 'transparent', border: 'none', color: 'var(--ink-dim)', cursor: 'pointer', fontSize: 11, padding: 0 }}
           >
             {expanded ? '▾ hide details' : '▸ details'}
           </button>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
+          {/* R2-009 sub-B (2026-06-01) — feature-off a11y. Native
+              `disabled` suppresses both the title tooltip and a
+              not-allowed cursor and drops the control from the focus
+              order, so a screen reader can't announce *why* the button
+              is dead. For the feature-off case we use aria-disabled
+              instead (flip() already early-returns on !featurePresent,
+              so the click is a safe no-op) — the button stays
+              hoverable/focusable, announces its disabled state, shows
+              the rebuild hint on hover, and renders cursor:not-allowed.
+              The transient `busy` state is only reachable feature-on,
+              so it keeps the real native `disabled`. */}
           <button
             className="btn"
             onClick={flip}
-            disabled={!featurePresent || busy}
-            style={{ fontSize: 11, padding: '4px 10px' }}
+            disabled={featurePresent && busy}
+            aria-disabled={!featurePresent || busy ? 'true' : undefined}
+            title={!featurePresent ? 'AI feature not built — see hint below' : undefined}
+            style={{ fontSize: 11, padding: '4px 10px', cursor: (!featurePresent || busy) ? 'not-allowed' : 'pointer' }}
           >
             {busy ? '…' : (runtimeOn ? 'Disable' : 'Enable')}
           </button>
         </div>
       </div>
-      {expanded && featurePresent && (
+      {expanded && (
         <div style={{ borderTop: '1px solid var(--hairline)', padding: '12px 16px', background: 'var(--canvas-2)' }}>
           {/* 2026-05-29 — confidence_threshold tuning. Input shows the
               live value (the gate the data plane is actually reading);
               the label states the cfg-loaded default so the operator
               knows where to reset. PUT routes through the cluster
-              config plane → persists + propagates. */}
+              config plane → persists + propagates.
+              R2-009 sub-A (2026-06-01) — feature-off renders the input
+              disabled showing the configured default rather than hiding
+              it, so the control is visible-but-inert (NT-UI-06). The
+              Save/reset/live caption + metrics only make sense when the
+              detector is actually in the chain, so they stay gated. */}
           <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
             <div style={{ minWidth: 160 }}>
               <div className="field-label">Confidence threshold</div>
@@ -4004,38 +4024,51 @@ function AiDetectorRow() {
               min="0"
               max="1"
               step="0.01"
-              value={draftThreshold === null ? '' : draftThreshold}
+              aria-label="Confidence threshold"
+              value={featurePresent
+                ? (draftThreshold === null ? '' : draftThreshold)
+                : (typeof defaultThreshold === 'number' ? defaultThreshold : '')}
               onChange={(e) => setDraftThreshold(e.target.value === '' ? '' : Number(e.target.value))}
-              disabled={savingThreshold || draftThreshold === null}
-              style={{ width: 90, fontSize: 12, padding: '4px 6px' }}
+              disabled={!featurePresent || savingThreshold || draftThreshold === null}
+              aria-disabled={!featurePresent ? 'true' : undefined}
+              title={!featurePresent ? 'AI feature not built — value shown is the configured default' : undefined}
+              style={{ width: 90, fontSize: 12, padding: '4px 6px', cursor: !featurePresent ? 'not-allowed' : undefined }}
             />
-            <button
-              type="button"
-              className="btn"
-              onClick={saveThreshold}
-              disabled={savingThreshold || !thresholdDirty}
-              style={{ fontSize: 11, padding: '4px 10px' }}
-              title={thresholdDirty ? 'Save and activate cluster-wide' : 'No change vs. live value'}
-            >
-              {savingThreshold ? '…' : 'Save'}
-            </button>
-            {thresholdDirty && (
-              <button
-                type="button"
-                onClick={() => setDraftThreshold(liveThreshold)}
-                disabled={savingThreshold}
-                style={{ background: 'transparent', border: 'none', color: 'var(--ink-dim)', cursor: 'pointer', fontSize: 11 }}
-              >
-                reset
-              </button>
+            {featurePresent ? (
+              <>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={saveThreshold}
+                  disabled={savingThreshold || !thresholdDirty}
+                  style={{ fontSize: 11, padding: '4px 10px' }}
+                  title={thresholdDirty ? 'Save and activate cluster-wide' : 'No change vs. live value'}
+                >
+                  {savingThreshold ? '…' : 'Save'}
+                </button>
+                {thresholdDirty && (
+                  <button
+                    type="button"
+                    onClick={() => setDraftThreshold(liveThreshold)}
+                    disabled={savingThreshold}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--ink-dim)', cursor: 'pointer', fontSize: 11 }}
+                  >
+                    reset
+                  </button>
+                )}
+                <div style={{ flex: 1, fontSize: 10, color: 'var(--ink-mute)' }}>
+                  live <span className="num">{typeof liveThreshold === 'number' ? liveThreshold.toFixed(2) : '—'}</span>
+                  {' · '}lower = more sensitive (catches more, may FP)
+                  {' · '}higher = stricter (fewer FPs, may miss)
+                </div>
+              </>
+            ) : (
+              <div style={{ flex: 1, fontSize: 10, color: 'var(--ink-mute)' }}>
+                read-only — AI detector not built into this binary; rebuild with <code>--features ai</code> to adjust the gate
+              </div>
             )}
-            <div style={{ flex: 1, fontSize: 10, color: 'var(--ink-mute)' }}>
-              live <span className="num">{typeof liveThreshold === 'number' ? liveThreshold.toFixed(2) : '—'}</span>
-              {' · '}lower = more sensitive (catches more, may FP)
-              {' · '}higher = stricter (fewer FPs, may miss)
-            </div>
           </div>
-          {metrics && metrics.present ? (
+          {featurePresent && (metrics && metrics.present ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, fontSize: 12 }}>
               <div>
                 <div className="field-label">Predictions</div>
@@ -4064,8 +4097,8 @@ function AiDetectorRow() {
             <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
               {runtimeOn ? 'No traffic yet — drive a request through the data plane to see metrics.' : 'Detector is disabled. Enable to start collecting metrics.'}
             </div>
-          )}
-          {metrics && fbTotal > 0 && (
+          ))}
+          {featurePresent && metrics && fbTotal > 0 && (
             <div style={{ marginTop: 10, fontSize: 11, color: 'var(--ink-mute)' }}>
               Fallbacks by reason: {Object.entries(metrics.fallback).filter(([, n]) => n > 0).map(([k, n]) => `${k}=${n}`).join(' · ')}
             </div>
