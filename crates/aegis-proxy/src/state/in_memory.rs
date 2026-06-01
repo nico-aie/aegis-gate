@@ -35,15 +35,29 @@ impl InMemoryBackend {
     }
 
     /// Spawn a background task that periodically sweeps expired entries.
-    pub fn spawn_reaper(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
+    ///
+    /// Returns `None` when called outside a Tokio runtime. In production
+    /// `select()` runs inside the proxy runtime so the sweep always
+    /// starts; the guard exists so synchronous unit tests (which build
+    /// the backend without a reactor) don't panic in `tokio::spawn`.
+    /// Without the periodic sweep, expired entries still fall back to
+    /// lazy filter-on-read, so a runtime-less context stays correct —
+    /// just without proactive eviction.
+    pub fn spawn_reaper(
+        &self,
+        interval: Duration,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return None;
+        }
         let kv = self.kv.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);
             loop {
                 tick.tick().await;
                 kv.retain(|_, entry| !entry.is_expired());
             }
-        })
+        }))
     }
 
     /// Number of entries currently stored (including possibly expired).

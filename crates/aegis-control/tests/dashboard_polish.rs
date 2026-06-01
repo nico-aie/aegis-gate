@@ -101,7 +101,12 @@ fn bundle_under_documented_budget() {
     // placeholders, PolicyPostureCard on 5 Policy pages, Traffic
     // Gates flow diagram, PageTitleRefresh, audit RULE extractor,
     // modal-anchored save error, MED/LOW polish).
-    const RAW_BUDGET_BYTES: usize = 624_000;
+    // Bumped 2026-06-01 from 624 → 720 KB — raw total reached 682 KB
+    // after the AI confidence-threshold row, cluster config-plane
+    // version card + Scaling page, multi-node metrics UI, and the
+    // R2-009 feature-off AI-row polish. Rationale + bump policy:
+    // assets/dashboard/bundle-budget.md.
+    const RAW_BUDGET_BYTES: usize = 720_000;
     let mut total = 0usize;
     for path in ["index.html", "app.js", "aegis.css", "react.min.js", "react-dom.min.js", "i18n.json"] {
         let asset: EmbeddedAsset = lookup(path).unwrap_or_else(|| panic!("{path} must resolve"));
@@ -138,9 +143,17 @@ fn app_js_under_per_bundle_budget() {
     // Cumulative IP risk thresholds into card #3, and added the
     // shared GateExplain "how does it work" strip to all five
     // Traffic Gates cards.
+    // Bumped 2026-06-01 from 444 → 540 KB. app.js reached 506 KB from
+    // cumulative feature growth since 2026-05-10: the AI
+    // confidence_threshold tuning row, the cluster config-plane
+    // version card + Scaling page, the multi-node metrics aggregation
+    // UI, and the R2-009 feature-off AI-row polish. Already minified
+    // (whitespace + syntax); identifier-minify stays off because the
+    // hash-router resolves page symbols off `window` by name. Bump
+    // policy + the why-not-code-split note: assets/dashboard/bundle-budget.md.
     // Real dependency growth (new React lib, etc.) needs an
     // explicit budget bump + comment here, not a silent overrun.
-    const APP_JS_BUDGET: usize = 444_000;
+    const APP_JS_BUDGET: usize = 540_000;
     let bytes = lookup("app.js").unwrap().bytes.len();
     assert!(
         bytes < APP_JS_BUDGET,
