@@ -131,7 +131,7 @@ table — keep them in sync.
 
 | Doc | Status | Notes |
 |---|---|---|
-| [`advanced-features.md`](../docs/future/advanced-features.md) | **Intake template** | Open process for proposals NOT covered by Phase B. |
+| [`advanced-features.md`](./future/advanced-features.md) | **Intake template** | Open process for proposals NOT covered by Phase B. |
 | [`plans/future/ai-operator-copilot.md`](./future/ai-operator-copilot.md) | **Designed only — next active track** | LLM operator copilot: (a) plain-language situational summaries and (b) smart-catch triage over the WAF's own telemetry (audit chain + metrics + risk buckets). Advisory-only, off the request hot path, PII-redacted before egress, off by default. Distinct from the inline ONNX detector and from the Tier 2 customer-LLM firewall. |
 
 ---

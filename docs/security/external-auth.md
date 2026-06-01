@@ -8,7 +8,7 @@
 > **ForwardAuth** subrequests (nginx `auth_request` / Traefik ForwardAuth),
 > **JWT validation** with JWKS cache, **OIDC** session cookies, HTTP
 > Basic, and per-route IP allowlists. Distinct from control-plane auth
-> ([`rbac-sso.md`](../future/rbac-sso.md)).
+> ([`dashboard-auth.md`](../control-plane/dashboard-auth.md)).
 
 ## Purpose
 

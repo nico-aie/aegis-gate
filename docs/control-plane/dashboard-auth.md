@@ -19,8 +19,8 @@ Local authentication for the Aegis-Gate dashboard and admin API.
 
 **Out of scope — deferred to future work:**
 
-- SSO / OIDC / SAML / LDAP federation → [`future/rbac-sso.md`](../future/rbac-sso.md)
-- RBAC and multi-user accounts → [`future/rbac-sso.md`](../future/rbac-sso.md)
+- SSO / OIDC / SAML / LDAP federation — out of scope
+- RBAC and multi-user accounts — out of scope
 
 v1 has **one admin principal**. Every successful login is that
 principal. Role separation and identity federation arrive with the
@@ -316,8 +316,7 @@ local-auth path:
 - `SessionRecord` reserves room for a `roles: Vec<Role>` field;
   v1 always sets it to `[admin]`.
 
-See [`future/rbac-sso.md`](../future/rbac-sso.md) for the
-future design. It is not on any v1 milestone.
+SSO / RBAC federation is out of scope — not on any v1 milestone.
 
 ## Implementation Pointers
 

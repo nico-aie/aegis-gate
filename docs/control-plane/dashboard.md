@@ -18,8 +18,7 @@
 > (separate from data-plane traffic). Authentication is local
 > (argon2id password + HMAC session + CSRF + IP allowlist, optional
 > TOTP/mTLS) — see [`dashboard-auth.md`](./dashboard-auth.md). OIDC/SSO
-> and RBAC roles are deferred (see
-> [`future/rbac-sso.md`](../future/rbac-sso.md)). The listener also
+> and RBAC roles are out of scope. The listener also
 > exposes Prometheus `/metrics`, `/healthz/{live,ready,startup}`, and
 > the full admin API. See
 > [`observability-prometheus-otel.md`](../observability/prometheus-otel.md).
@@ -103,8 +102,7 @@ session cookie + matching CSRF token for mutating methods. See
 ## Authorization model (v1)
 
 One principal: `admin`. Every authenticated request is treated as fully
-privileged. A future RBAC migration (see
-[`future/rbac-sso.md`](../future/rbac-sso.md)) will slot in beside
+privileged. A future RBAC migration would slot in beside
 this without breaking the handler signatures — the session-layer traits
 are designed to carry roles later.
 

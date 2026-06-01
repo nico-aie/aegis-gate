@@ -1,6 +1,6 @@
 # Phase B — advanced-features intake
 
-> **Status:** Intake template — see [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+> **Status:** Intake template — see [`../plan.md`](../plan.md#1-doc-by-doc-implementation-status) for the full matrix.
 
 **Status:** open. Use this doc to propose, score, and triage candidate
 features for the next major scope expansion. The current scope (P1–P8
@@ -11,7 +11,7 @@ If a request is accepted, it graduates out of this file:
 
 1. A spec doc lands in the appropriate category folder
    (`data-plane/`, `security/`, `observability/`, etc.)
-2. A planning track lands in [`../../plans/`](../../plans/)
+2. A planning track lands in [`../`](../)
 3. `Implement-Progress.md` picks up its task IDs
 
 ## Proposing a feature
@@ -86,22 +86,11 @@ business case attached:
 
 - "AI-detect anything" without a defined corpus + measurable lift
 - Any change that breaks the FIPS / PCI / HIPAA mode invariants in
-  [`../operations/compliance.md`](../operations/compliance.md)
+  [`../../docs/operations/compliance.md`](../../docs/operations/compliance.md)
 - Features that require eBPF or kernel modules (consider an
   out-of-process agent instead)
 - Anything that lands data in a third-party SaaS by default (see
-  [`../operations/data-residency-retention.md`](../operations/data-residency-retention.md))
-
-## Already-deferred designs
-
-These are NOT candidates — they have full specs and are waiting on
-prerequisites:
-
-- [`rbac-sso.md`](./rbac-sso.md) — needs an SSO target customer +
-  OIDC integration spec sign-off
-
-If a candidate below would need it, mark it under **Dependencies**
-rather than re-litigating the design.
+  [`../../docs/operations/data-residency-retention.md`](../../docs/operations/data-residency-retention.md))
 
 ## Candidates
 

@@ -7,8 +7,7 @@
 > **v1 → v2:** audit events are now **tamper-evident** via a hash chain,
 > **forwarded to SIEM** in standard formats (syslog RFC 5424, CEF, LEEF, OCSF,
 > Kafka), and a separate **admin change log** tracks every control-plane
-> mutation for SOC 2 evidence. See [`siem-log-forwarding.md`](./siem-log-forwarding.md)
-> and [`rbac-sso.md`](../future/rbac-sso.md).
+> mutation for SOC 2 evidence. See [`siem-log-forwarding.md`](./siem-log-forwarding.md).
 
 ## Purpose
 

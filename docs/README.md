@@ -50,7 +50,7 @@ each category.
 | **Control plane** | Dashboard, admin API, hot-reload | [`control-plane/README.md`](./control-plane/README.md) |
 | **Observability** | Metrics, audit, SIEM, SLO | [`observability/README.md`](./observability/README.md) |
 | **Operations** | HA, compliance, DR, residency | [`operations/README.md`](./operations/README.md) |
-| **Future** | Phase-B intake + deferred designs | [`future/README.md`](./future/README.md) |
+| **Future** | Roadmap + active plans + Phase-B intake | [`../plans/future/`](../plans/future/) |
 
 ---
 
@@ -155,10 +155,11 @@ each category.
 
 ## Future
 
-| Doc | Status | Summary |
-|---|---|---|
-| [advanced-features.md](./future/advanced-features.md) | Phase B intake | Template for collecting + scoring future feature requests |
-| [rbac-sso.md](./future/rbac-sso.md) | Deferred | OIDC / SAML / RBAC |
+Forward-looking work lives in [`../plans/future/`](../plans/future/) —
+the roadmap, active plans, and the Phase-B intake template
+([`advanced-features.md`](../plans/future/advanced-features.md)). The
+next active track is the AI Operator Copilot
+([`ai-operator-copilot.md`](../plans/future/ai-operator-copilot.md)).
 
 ---
 
@@ -201,6 +202,6 @@ Tracks landing here:
 2. **AI Detector** — closed 2026-05-03 (AI-T1..T9). See
    [`security/detectors/ai-detector.md`](./security/detectors/ai-detector.md).
 3. **Phase B (advanced features)** — open intake. Use
-   [`future/advanced-features.md`](./future/advanced-features.md) to
+   [`../plans/future/advanced-features.md`](../plans/future/advanced-features.md) to
    propose, score, and triage requests. Once a feature is accepted it
    moves into the appropriate category folder with its own doc.

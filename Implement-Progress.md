@@ -464,7 +464,7 @@ Order is execution priority — earlier rows run first.
 | — | Benchmark mode (B-T1..B-T6) | [`plans/benchmark-mode.md`](./plans/archive/benchmark-mode.md) | folded into Phase B as B5-T2 |
 | — | Security toggles (P1..P8) + post-k6 (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/archive/post-k6-followup.md) | closed |
 | — | Enterprise dashboard (D-M1..D-M6) | [`plans/archive/dashboard-enterprise/`](./plans/archive/dashboard-enterprise/) | closed — superseded by DD-T0..T8 |
-| — | Phase B intake | [`docs/future/advanced-features.md`](./docs/future/advanced-features.md) | open — for items NOT covered by `plans/phase-b/` |
+| — | Phase B intake | [`plans/future/advanced-features.md`](./plans/future/advanced-features.md) | open — for items NOT covered by `plans/phase-b/` |
 
 ---
 
@@ -674,9 +674,9 @@ Order is execution priority — earlier phases run first.
    The earlier milestone-paced plan was superseded and archived
    under [`plans/archive/dashboard-enterprise/`](./plans/archive/dashboard-enterprise/).
 3. **Open intake.**
-   [`docs/future/advanced-features.md`](./docs/future/advanced-features.md)
+   [`plans/future/advanced-features.md`](./plans/future/advanced-features.md)
    for proposals NOT covered by Phase B (e.g. multi-tenancy,
-   RBAC/SSO, anything new). Scored against the Impact / Reach /
+   anything new). Scored against the Impact / Reach /
    Cost / Confidence rubric.
 
 ---
