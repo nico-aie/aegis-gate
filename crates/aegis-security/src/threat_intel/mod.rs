@@ -251,14 +251,28 @@ impl ThreatIntelStore {
             };
         }
 
+        // Suffix walk: a feed entry for `evil.com` must also catch
+        // `c2.evil.com` / `a.b.evil.com`. Check the full domain first
+        // (most specific wins), then drop the leftmost label one at a
+        // time. Stops before the bare public-suffix label so a feed
+        // entry for a TLD can't blanket-match. Matching is on label
+        // boundaries, so `notevil.com` never matches `evil.com`.
         let map = self.domain_indicators.lock().unwrap();
-        if let Some(ind) = map.get(domain) {
-            if ind.expires_at > Instant::now() {
-                let action = severity_to_action(ind.severity, ind.confidence);
-                return Some(ThreatMatch {
-                    indicator: ind.clone(),
-                    action,
-                });
+        let now = Instant::now();
+        let mut candidate = domain;
+        loop {
+            if let Some(ind) = map.get(candidate) {
+                if ind.expires_at > now {
+                    let action = severity_to_action(ind.severity, ind.confidence);
+                    return Some(ThreatMatch {
+                        indicator: ind.clone(),
+                        action,
+                    });
+                }
+            }
+            match candidate.split_once('.') {
+                Some((_, rest)) if rest.contains('.') => candidate = rest,
+                _ => break,
             }
         }
 
@@ -409,6 +423,49 @@ mod tests {
         });
         let m = store.check_domain("evil.example.com").unwrap();
         assert_eq!(m.action, ThreatAction::Block);
+    }
+
+    fn ingest_domain(store: &ThreatIntelStore, domain: &str, feed: &str) {
+        store.ingest(Indicator {
+            value: domain.into(),
+            indicator_type: IndicatorType::Domain,
+            confidence: 95,
+            severity: Severity::High,
+            feed_id: feed.into(),
+            expires_at: Instant::now() + Duration::from_secs(3600),
+        });
+    }
+
+    #[test]
+    fn domain_feed_matches_subdomain() {
+        // A feed entry for the parent domain should also catch its
+        // subdomains — `evil.com` blocks `c2.evil.com`, `a.b.evil.com`.
+        let store = ThreatIntelStore::default();
+        ingest_domain(&store, "evil.com", "feed-3");
+
+        let m = store.check_domain("c2.evil.com").expect("subdomain must hit parent feed entry");
+        assert_eq!(m.action, ThreatAction::Block);
+        assert_eq!(m.indicator.value, "evil.com", "matched indicator is the feed entry");
+
+        assert!(store.check_domain("a.b.evil.com").is_some(), "deep subdomain still hits");
+        assert!(store.check_domain("evil.com").is_some(), "exact match still hits");
+    }
+
+    #[test]
+    fn domain_feed_subdomain_walk_respects_label_boundaries() {
+        // The walk drops whole labels — it must not match on a bare
+        // substring (`notevil.com`) or a sibling (`good.com`), and a
+        // domain that merely *contains* the feed entry as a prefix
+        // (`evil.com.attacker.net`) is not a subdomain of it.
+        let store = ThreatIntelStore::default();
+        ingest_domain(&store, "evil.com", "feed-3");
+
+        assert!(store.check_domain("notevil.com").is_none(), "substring is not a label suffix");
+        assert!(store.check_domain("good.com").is_none(), "sibling domain must not match");
+        assert!(
+            store.check_domain("evil.com.attacker.net").is_none(),
+            "feed entry as a prefix is not a suffix match",
+        );
     }
 
     #[test]
