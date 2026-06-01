@@ -214,6 +214,25 @@ For full chronological detail see `git log` and the
 
 ## Next Task
 
+**▶ NEXT: B1 · Tier 1A — wire the existing API-security guards**
+(`api_keys`, `hmac_sign`, GraphQL guard) onto the request path behind a
+per-route `api_security` policy. The code is built and dormant; this is
+Gartner's #1 WAAP buyer priority and lays the call-site for Tier 1B/1C/1D.
+See [`plans/future/world-class-waf-roadmap.md`](./plans/future/world-class-waf-roadmap.md)
+Tier 1A.
+
+**✅ Tier A "completionist warmup" — CLOSED 2026-06-01.** Four sub-day
+debts swept (all on `develop`, green): **A1** R2-009 sub-A+sub-B AI-row
+feature-off polish; **A2** both pre-existing red tests fixed
+(`spawn_reaper` runtime-guard + documented bundle-budget bump,
+`assets/dashboard/bundle-budget.md`); **A3** JA4 `device_fp` axis (was
+already wired — added the missing isolation test + fixed a stale
+comment); **A4** `threat_intel::check_domain` subdomain suffix walk.
+Candidate trail archived at
+[`plans/archive/next-step-candidates-2026-06-01.md`](./plans/archive/next-step-candidates-2026-06-01.md).
+
+---
+
 **Cluster config sync & scaling — ✅ TRACK COMPLETE** (2026-05-27): Phase 0
 (KV primitives) + Phase A (config plane) + Phase B (folded ALL console
 toggles/CRUD: AI, response_filter, tier, detectors, rules, upstreams) + Phase C
@@ -236,9 +255,12 @@ Pick the next track from "Tracks in flight" / the deferred backlog below.
   now loads only from the YAML file (+ config plane). **etcd remains a
   service-discovery adapter** (`sd/etcd.rs`, under the same `etcd` feature) —
   untouched.
-- *Pre-existing, not ours:* `aegis-bin state_select::in_memory_selects_in_memory_backend`
-  panics (reaper `tokio::spawn` outside a runtime) — fails on clean HEAD too; and
-  the 2 `dashboard_polish` JS-bundle-size budget tests (bundle already > 444 KB).
+- *Pre-existing red tests — ✅ FIXED 2026-06-01 (Tier A · A2):*
+  `aegis-bin state_select::in_memory_selects_in_memory_backend` (reaper
+  `tokio::spawn` outside a runtime — now guarded via `Handle::try_current`)
+  and the 2 `dashboard_polish` JS-bundle-size budget tests (honest budget
+  bump 444→540 KB / 624→720 KB raw, documented in
+  `crates/aegis-control/assets/dashboard/bundle-budget.md`).
 
 **DONE (all on `develop`, green):**
 - **Phase 0** — `StateBackend` KV primitives (`incrby`/`expire`/`scan_prefix`/`cas_set`) `dcdd96f`.

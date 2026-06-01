@@ -1,5 +1,25 @@
 # Next-step candidates — 2026-06-01
 
+> **Status:** ✅ **DONE / ARCHIVED 2026-06-01.** Tier A
+> ("completionist warmup": A1 → A2 → A3 → A4) was chosen and all four
+> items shipped on `develop`:
+> - **A1** — R2-009 sub-A + sub-B AI-row feature-off polish (threshold
+>   input rendered disabled-with-default; `aria-disabled`/`title`/
+>   `cursor:not-allowed` + input `aria-label`).
+> - **A2** — both pre-existing red tests fixed: `spawn_reaper`
+>   runtime-guard, and a documented bundle-budget bump
+>   (`assets/dashboard/bundle-budget.md`).
+> - **A3** — JA4 `device_fp` axis was **already wired** in
+>   `build_risk_key` (the "Partial" framing below was stale — verified
+>   in code); closed the missing JA4-isolation unit test + fixed a
+>   stale inline comment.
+> - **A4** — `threat_intel::check_domain` subdomain suffix walk.
+>
+> Next bucket: **B1 · Tier 1A — wire the API-security guards** (see
+> `world-class-waf-roadmap.md`), now the `Implement-Progress.md` →
+> "Next Task". Kept for the decision trail; the live backlog is the
+> roadmap.
+
 > **Purpose:** a shared snapshot of what we could pick up next, with
 > enough trade-off context for a team discussion. Underlying ordering
 > doc: [`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md).
