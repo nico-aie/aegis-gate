@@ -371,6 +371,15 @@ observability:
   access_log:
     format: json
     sink: stdout
+  # OTLP trace export → SigNoz. Commented because it only takes effect
+  # when the binary is built with `--features otel`; uncomment after
+  # bringing SigNoz up (deploy/signoz/README.md) so its collector is
+  # listening on :4317. sample_ratio 1.0 = export every span (fine for
+  # dev; lower it in prod). NOTE: don't also run the dev-stack Jaeger on
+  # :4317 — pick one OTLP target.
+  # otel:
+  #   endpoint: "http://127.0.0.1:4317"
+  #   sample_ratio: 1.0
 
 # ---------------------------------------------------------------------------
 # GeoIP — MaxMind .mmdb readers. Both fields optional; this block is a

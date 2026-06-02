@@ -219,6 +219,38 @@ node's slice (automatic; no config knob).
 | `GET /api/cluster` | Peers + leader info | JSON with `peers[]`, `is_leader`, `our_node` |
 | `GET /api/runtime` | Runtime sizing snapshot | JSON with effective worker count |
 
+### Metrics (Prometheus) vs traces (OTLP → SigNoz)
+
+Two separate paths:
+
+- **Metrics** — scraped from `GET /metrics` by Prometheus (+ Grafana
+  dashboards). Local stack: `make obs-up` (Prometheus + Grafana).
+- **Traces** — exported over **OTLP gRPC** to **SigNoz** (the chosen
+  trace backend) when the binary is built with `--features otel`:
+
+  ```bash
+  cargo build -p aegis-bin --features "redis geoip alerts ai affinity otel"
+  ```
+  ```yaml
+  observability:
+    otel:
+      endpoint: "http://<signoz-host>:4317"   # SigNoz collector OTLP gRPC
+      sample_ratio: 0.1                         # 10% in prod; 1.0 in dev
+      # headers: { "signoz-access-token": "${secret:signoz_token}" }  # SigNoz Cloud
+  ```
+
+  Bring SigNoz up locally with `make signoz-up` (clone SigNoz first —
+  see [`signoz/README.md`](./signoz/README.md)); UI at `:3301`. For
+  production, put an OTel Collector between the WAF and SigNoz to redact
+  PII + fan out — config in [`otel/collector.yaml`](./otel/collector.yaml).
+
+  **Migration note (2026-06):** SigNoz supersedes the older Jaeger
+  trace path. `make obs-up` no longer starts Jaeger (it's metrics-only
+  now); the dev-compose Jaeger service remains for anyone who still
+  wants it, but the Grafana "Jaeger" datasource is legacy. OTLP metrics
+  + logs export to SigNoz are the next phases (still Prometheus-scrape
+  today) — see `plans/future/observability-otel-and-alerts.md`.
+
 ---
 
 ## 5. Log rotation

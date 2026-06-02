@@ -91,7 +91,7 @@ SMOKE_ADMIN      ?= http://localhost:9443
 
 .PHONY: help setup cert build build-debug run run-dev run-strict run-throughput \
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
-        dashboard redis-up redis-down obs-up obs-down urls logs login-reset \
+        dashboard redis-up redis-down obs-up obs-down signoz-up signoz-down urls logs login-reset \
         upstream-build upstream-up upstream-down \
         juice-up juice-down juice-logs \
         mock-load mock-load-attacks mock-load-mix \
@@ -409,13 +409,37 @@ mock-load-mix: ## High-volume mix (~5 k RPS) — see how the dashboard looks und
 	@echo
 	@echo "==> dashboard: http://localhost:9443/"
 
-obs-up: redis-up ## Start the full observability stack (Redis + Prometheus + Grafana + Jaeger)
-	@docker compose -f deploy/docker-compose.dev.yml up -d prometheus grafana jaeger 2>&1 | grep -v "Network\|orphan" || true
+# 2026-06-02 — traces moved to SigNoz (deploy/signoz/). `obs-up` now
+# brings up the METRICS stack only (Prometheus + Grafana); the trace
+# backend is `make signoz-up`. The dev-stack Jaeger remains in the
+# compose as a legacy option but is no longer started by `obs-up`.
+obs-up: redis-up ## Start the metrics observability stack (Redis + Prometheus + Grafana)
+	@docker compose -f deploy/docker-compose.dev.yml up -d prometheus grafana 2>&1 | grep -v "Network\|orphan" || true
 	@echo
+	@echo "==> metrics up. Traces → SigNoz: run 'make signoz-up' (see deploy/signoz/README.md)."
 	@$(MAKE) --no-print-directory urls
 
-obs-down: ## Stop the observability stack (keeps Redis)
+obs-down: ## Stop the metrics observability stack (keeps Redis)
 	@docker compose -f deploy/docker-compose.dev.yml stop prometheus grafana jaeger 2>/dev/null || true
+
+# SigNoz runs from its OWN maintained compose (large, version-sensitive),
+# so we don't fork it here — clone it and point SIGNOZ_DIR at it.
+# See deploy/signoz/README.md.
+SIGNOZ_DIR ?= ../signoz
+SIGNOZ_COMPOSE := $(SIGNOZ_DIR)/deploy/docker/docker-compose.yaml
+
+signoz-up: ## Start the SigNoz OTLP trace backend (clone SigNoz first — deploy/signoz/README.md)
+	@test -f "$(SIGNOZ_COMPOSE)" || { \
+	  echo "SigNoz compose not found at $(SIGNOZ_COMPOSE)."; \
+	  echo "Clone it:  git clone https://github.com/SigNoz/signoz.git $(SIGNOZ_DIR)"; \
+	  echo "Or point:  make signoz-up SIGNOZ_DIR=/path/to/signoz"; \
+	  exit 1; }
+	@docker compose -f "$(SIGNOZ_COMPOSE)" up -d
+	@echo "==> SigNoz UI: http://localhost:3301/   ·   OTLP gRPC: :4317"
+	@echo "==> WAF: set observability.otel.endpoint: http://127.0.0.1:4317 and build with --features otel"
+
+signoz-down: ## Stop the SigNoz backend
+	@test -f "$(SIGNOZ_COMPOSE)" && docker compose -f "$(SIGNOZ_COMPOSE)" stop 2>/dev/null || true
 
 urls: ## Print where to find every UI / endpoint / log file
 	@echo "== Aegis-Gate URLs =="
@@ -426,11 +450,12 @@ urls: ## Print where to find every UI / endpoint / log file
 	@echo "  Admin Prometheus scrape  http://localhost:9443/metrics"
 	@echo "  Runtime sizing           http://localhost:9443/api/runtime"
 	@echo
-	@echo "== Observability stack (after 'make obs-up') =="
-	@echo "  Prometheus UI            http://localhost:9090/"
-	@echo "  Grafana UI               http://localhost:3000/    (admin/admin on first login)"
+	@echo "== Observability stack =="
+	@echo "  Prometheus UI            http://localhost:9090/    (after 'make obs-up')"
+	@echo "  Grafana UI               http://localhost:3000/    (admin/admin; metrics dashboards)"
 	@echo "    └─ pre-loaded boards   Aegis WAF Overview · Runtime · Redis"
-	@echo "  Jaeger UI (traces)       http://localhost:16686/"
+	@echo "  SigNoz UI (traces)       http://localhost:3301/    (after 'make signoz-up' — OTLP :4317)"
+	@echo "  Jaeger UI (legacy)       http://localhost:16686/   (only if started manually)"
 	@echo "  redis-exporter           http://localhost:9121/metrics"
 	@echo
 	@echo "== Logs / state =="

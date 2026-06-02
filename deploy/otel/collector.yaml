@@ -1,0 +1,73 @@
+# OpenTelemetry Collector — optional middle layer between Aegis-Gate
+# and SigNoz. Use this when you want PII redaction before egress and/or
+# fan-out to more than one backend. For a simple dev setup the WAF can
+# point straight at SigNoz's bundled collector instead (see
+# ../signoz/README.md).
+#
+# Architecture:
+#   WAF  --OTLP :4317-->  this Collector  --OTLP-->  SigNoz
+#                           (scrape /metrics)
+#
+# Requires the otelcol-contrib distribution (the `redaction` and
+# `prometheus` receiver/processors are contrib components).
+#   docker run -v $PWD/collector.yaml:/etc/otelcol-contrib/config.yaml \
+#     -p 4317:4317 -p 4318:4318 otel/opentelemetry-collector-contrib:0.103.0
+
+receivers:
+  # OTLP from the WAF (traces; metrics/logs once those phases land).
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  # Pull the WAF's existing Prometheus /metrics — no app change needed
+  # to get metrics into the same backend (P2).
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: aegis-waf
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["host.docker.internal:9090"] # WAF /metrics bind
+
+processors:
+  # PII guardrail: drop request attributes that may carry secrets/PII.
+  # The WAF should also redact at source (dlp), but defence-in-depth.
+  redaction:
+    allow_all_keys: true
+    blocked_values:
+      - "(?i)bearer\\s+[a-z0-9._-]+"        # auth tokens
+      - "[0-9]{13,19}"                       # PAN-like digit runs
+      - "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}" # emails
+  attributes/scrub:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: url.query
+        action: delete
+  batch:
+    timeout: 5s
+
+exporters:
+  # SigNoz's OTLP ingest. Self-hosted: the signoz-otel-collector svc.
+  # SigNoz Cloud: set endpoint to the region URL + the access-token header.
+  otlp/signoz:
+    endpoint: "signoz-otel-collector:4317"
+    tls:
+      insecure: true
+    # headers:
+    #   signoz-access-token: "${env:SIGNOZ_ACCESS_TOKEN}"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [redaction, attributes/scrub, batch]
+      exporters: [otlp/signoz]
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [batch]
+      exporters: [otlp/signoz]

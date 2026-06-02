@@ -13,31 +13,30 @@
 //! caller invokes [`init_or_default`] exactly once at process
 //! start, before any tokio runtime spawns spans.
 //!
-//! ## Why structural-only today
+//! ## Status (2026-06-02) — live
 //!
-//! The OTel Rust ecosystem (`opentelemetry`, `opentelemetry_sdk`,
-//! `opentelemetry-otlp`, `tracing-opentelemetry`) is well-maintained
-//! but version-compat between the four crates is famously finicky;
-//! every minor bump tends to ripple. Per the project rule "if a
-//! new dependency is needed → list it, do not add it"
-//! (`plans/plan.md` § 0.2), the deps stay out of `Cargo.toml` until
-//! the operator explicitly approves them. This module ships the
-//! Cargo feature flag, the init-or-default boot wiring, and a
-//! complete drop-in implementation in a comment block —
-//! uncommenting + adding the deps is a single mechanical step.
+//! The four OTel crates (`opentelemetry` 0.24, `opentelemetry_sdk`
+//! 0.24, `opentelemetry-otlp` 0.17, `tracing-opentelemetry` 0.25) are
+//! in `aegis-bin/Cargo.toml` behind the optional `otel` feature, and
+//! [`install_with_otel`] below is the **real exporter** —
+//! `cargo build -p aegis-bin --features otel` ships every `tracing`
+//! span over OTLP gRPC to `cfg.observability.otel.endpoint`.
 //!
-//! Until then `--features otel` enables the gate but the actual
-//! exporter call returns false with a clear warning so operators
-//! who flip the flag without adding deps see why traces aren't
-//! reaching their collector.
+//! **Backend: SigNoz.** Its bundled OTel collector listens on
+//! `:4317`; point `endpoint` there (see `deploy/signoz/`). An optional
+//! in-between OTel Collector (`deploy/otel/collector.yaml`) adds PII
+//! redaction + fan-out. **Traces only today** — OTLP metrics + logs
+//! are the next phases (`plans/future/observability-otel-and-alerts.md`).
+//!
+//! The four crate versions are pinned together because the OTel-Rust
+//! API breaks on minor bumps; bump all four in lockstep.
 
 use aegis_core::config::WafConfig;
 
-/// Required deps to flip from "structural" to "live". Pinned to
-/// the latest stable line that's been API-stable across two
-/// minor releases. Add to `aegis-bin/Cargo.toml` under
-/// `[dependencies]` with `optional = true` and reference from
-/// the `otel` feature.
+/// The pinned OTel dep set — **already wired** in
+/// `aegis-bin/Cargo.toml` under the optional `otel` feature. Kept as
+/// a documented record (and pinned by a test) so a future refactor
+/// bumps all four in lockstep rather than one at a time.
 ///
 /// ```toml
 /// opentelemetry           = { version = "0.24", optional = true }

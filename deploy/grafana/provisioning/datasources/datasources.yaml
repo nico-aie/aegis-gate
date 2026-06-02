@@ -7,9 +7,12 @@
 # Two sources today:
 #   - Prometheus (default) — scrapes both planes per
 #     deploy/prometheus/prometheus.yml
-#   - Jaeger              — OTLP-fed traces from the WAF
-#                           (once OTel exporter is wired; see
-#                           docs/observability-prometheus-otel.md)
+#   - Jaeger              — OTLP-fed traces from the WAF. LEGACY as of
+#                           2026-06: traces now go to SigNoz, which has
+#                           its own UI (:3301) — see deploy/signoz/. This
+#                           datasource only resolves if jaeger is started
+#                           manually; kept so the Prometheus exemplar
+#                           trace-id link below doesn't dangle.
 
 apiVersion: 1
 

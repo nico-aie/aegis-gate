@@ -5,7 +5,11 @@
 #   CONTROL PLANE (required)
 #     - etcd         source of truth for config + secrets + leases
 #     - prometheus   scrapes both planes, alerts on staleness
-#     - jaeger       OTLP collector for distributed tracing
+#     - jaeger       OTLP trace collector — LEGACY. Traces now go to
+#                    SigNoz (deploy/signoz/, `make signoz-up`); `make
+#                    obs-up` no longer starts jaeger. Kept for anyone
+#                    who still wants a lightweight local trace sink:
+#                    `docker compose -f deploy/docker-compose.dev.yml up -d jaeger`
 #
 #   DATA PLANE (optional add-ons)
 #     - redis        shared rate-limit counters + response cache

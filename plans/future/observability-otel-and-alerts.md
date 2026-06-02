@@ -19,14 +19,20 @@ Two gaps in how Aegis-Gate is *observed today*:
 
 ### Where we stand (verified in code)
 
-- `crates/aegis-bin/src/otel.rs` ships a **complete OTLP trace exporter**
-  behind `--features otel`, but per the "list deps, don't add them" rule
-  the four `opentelemetry*` crates are **not in `Cargo.toml`** — the
-  feature compiles a warning-only stub. So: **0 spans actually leave the
-  process today.**
-- It exports **traces only**. Metrics are exposed as a **Prometheus
-  scrape** endpoint (`metrics/exporter.rs`); logs go to **stdout JSON**.
+- `crates/aegis-bin/src/otel.rs` ships a **real OTLP trace exporter**
+  behind `--features otel`. **Correction (2026-06-02):** the four
+  `opentelemetry*` crates (0.24/0.17) ARE in `aegis-bin/Cargo.toml` +
+  the lockfile, and `cargo build -p aegis-bin --features otel` compiles
+  the live exporter — the earlier "deps not added / 0 spans leave the
+  process" framing (and the old `otel.rs` module comment) was stale.
+  Spans export to `cfg.observability.otel.endpoint` when the feature is on.
+- It exports **traces only**. Metrics are a **Prometheus scrape**
+  endpoint (`metrics/exporter.rs`); logs go to **stdout JSON**.
 - `cfg.observability.otel = { endpoint, headers, sample_ratio }` exists.
+- **Backend chosen: SigNoz** (`deploy/signoz/README.md`) + an optional
+  redaction Collector (`deploy/otel/collector.yaml`). The repo also
+  ships a Jaeger+Grafana+Prometheus dev stack; SigNoz supersedes Jaeger
+  as the OTLP target (don't run both on `:4317`).
 
 ### Goal
 
@@ -83,7 +89,7 @@ Collector config + a compose profile so it's runnable out of the box.
 
 | Phase | Scope | Est. |
 |---|---|---|
-| **P1** | Add the `opentelemetry*` deps (operator-approved), flip `otel.rs` from stub → live OTLP **trace** export; `deploy/otel/collector.yaml` + compose profile pointing at SigNoz. | S–M |
+| **P1** | ✅ **DONE 2026-06-02.** OTLP **trace** export confirmed live (deps were already in `Cargo.toml`; `--features otel` compiles the real exporter — corrected the stale "stub" docs). Backend wired to **SigNoz**: `deploy/signoz/README.md` (run + endpoint), optional `deploy/otel/collector.yaml` (redaction + `/metrics` scrape + fan-out), `observability.otel` config block added to `dev.yaml` + fixed `prod-strict.yaml`. Remaining for full P1 polish: a runtime end-to-end smoke against a live SigNoz (needs the stack up). | S–M |
 | **P2** | **Metrics** to the Collector — easiest via the Collector's `prometheus` receiver scraping `/metrics`; optional OTLP metric push. | S |
 | **P3** | **Logs** via an OTLP log exporter (or ship stdout JSON → Collector `filelog` receiver). | M |
 | **P4** | Redaction processor + tail-sampling + a documented backend matrix; `shutdown_tracer_provider` flush on SIGTERM (the `OTEL_PROVIDER` OnceLock is already parked for this). | M |

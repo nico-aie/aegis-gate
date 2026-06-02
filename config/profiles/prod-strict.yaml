@@ -194,8 +194,12 @@ observability:
     bind: "127.0.0.1:9090"
     enabled: true
   otel:
+    # SigNoz collector OTLP gRPC endpoint (deploy/signoz/). Takes effect
+    # only when the binary is built with `--features otel`.
     endpoint: "${secret:otel_endpoint}"
-    service_name: "aegis-waf"
+    sample_ratio: 0.1   # 10% trace sampling in strict/prod
+    # NB: service.name is set by the exporter to "aegis-gate"; OtelConfig
+    # has no `service_name` field (an unknown key would be silently ignored).
 
 admin:
   bind: "127.0.0.1:9443"
