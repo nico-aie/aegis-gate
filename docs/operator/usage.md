@@ -387,7 +387,7 @@ curl -s -X PUT -b cookies.txt -H "x-csrf-token: $CSRF" \
 > Compliance lock-by-mode (auto-pinning detector classes when a
 > mode is active) is **deferred for now** — operators may freely
 > enable or disable any class regardless of `compliance.modes`.
-> See [`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md)
+> See [`plans/future/compliance-profiles.md`](../../plans/archive/compliance-profiles.md)
 > for the restoration plan.
 
 #### Load-mode override
@@ -513,7 +513,7 @@ which modes are set.
 
 The full per-regime restoration plan (including the historical
 detector pin baseline `sqli, xss, path_traversal, ssrf`) lives at
-[`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md).
+[`plans/future/compliance-profiles.md`](../../plans/archive/compliance-profiles.md).
 
 ### Data Residency & Erasure
 

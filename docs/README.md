@@ -157,7 +157,7 @@ each category.
 
 Forward-looking work lives in [`../plans/future/`](../plans/future/) —
 the roadmap, active plans, and the Phase-B intake template
-([`advanced-features.md`](../plans/future/advanced-features.md)). The
+([`advanced-features.md`](../plans/archive/advanced-features.md)). The
 next active track is the AI Operator Copilot
 ([`ai-operator-copilot.md`](../plans/future/ai-operator-copilot.md)).
 
@@ -202,6 +202,6 @@ Tracks landing here:
 2. **AI Detector** — closed 2026-05-03 (AI-T1..T9). See
    [`security/detectors/ai-detector.md`](./security/detectors/ai-detector.md).
 3. **Phase B (advanced features)** — open intake. Use
-   [`../plans/future/advanced-features.md`](../plans/future/advanced-features.md) to
+   [`../plans/future/advanced-features.md`](../plans/archive/advanced-features.md) to
    propose, score, and triage requests. Once a feature is accepted it
    moves into the appropriate category folder with its own doc.

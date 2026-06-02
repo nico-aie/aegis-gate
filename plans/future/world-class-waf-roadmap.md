@@ -89,7 +89,7 @@ existing code) ÷ effort**. Effort: **S** ≤ ~3 d, **M** ~1–2 wk, **L** ~3 wk
   bypasses detectors + the 6 `X-WAF-*` headers + audit. It's `--features
   http3`-gated and off by default, so it's not a live exposure, but wire it
   (or keep it gated) **before** anyone enables H3. See
-  [`unwired-stubs-catalog.md`](./unwired-stubs-catalog.md) → "HTTP/3".
+  [`unwired-stubs-catalog.md`](../archive/unwired-stubs-catalog.md) → "HTTP/3".
 
 ### Tier 1 — API security · Gartner #1 priority · partial head start
 
@@ -134,7 +134,7 @@ Every leader shipped a "Firewall for AI" in 2024–2025. Reuses the existing
 
 PCI DSS 4.0.1 §6.4.3 (script authorization + integrity) and §11.6.1
 (payment-page tamper detection) are **mandatory since 2025-03-31**. Net-new
-surface; pairs with [`compliance-profiles.md`](./compliance-profiles.md)
+surface; pairs with [`compliance-profiles.md`](../archive/compliance-profiles.md)
 (PCI mode).
 
 - **3A · CSP report collection** *(M)* — inject `Content-Security-Policy-
@@ -149,7 +149,7 @@ surface; pairs with [`compliance-profiles.md`](./compliance-profiles.md)
 ### Tier 4 — Advanced bot management + ATO defense · scaffolding exists · M
 
 - **4A · Bot-classifier enforcement** *(S, plan exists)* — implement
-  [`bot-classifier-enforcement.md`](./bot-classifier-enforcement.md):
+  [`bot-classifier-enforcement.md`](../archive/bot-classifier-enforcement.md):
   FCrDNS `reverse_dns` → `verified`, JS-pass → `human`, per-class
   `action_mapping`. Also closes the `bots.rs` `reverse_dns`-never-populated
   gap (`unwired-stubs-catalog.md` → "BotClassifier").
@@ -159,9 +159,9 @@ surface; pairs with [`compliance-profiles.md`](./compliance-profiles.md)
   protection: breached-credential check (k-anonymity range API),
   impossible-travel, per-account velocity. Builds on brute_force +
   velocity_sequence + the risk tracker.
-- Supporting: [`rule-non-block-actions.md`](./rule-non-block-actions.md)
+- Supporting: [`rule-non-block-actions.md`](../archive/rule-non-block-actions.md)
   (challenge / tarpit / mirror) gives 4A/4C richer responses than block/log;
-  [`risk-composite-key-data-plane.md`](./risk-composite-key-data-plane.md)
+  [`risk-composite-key-data-plane.md`](../archive/risk-composite-key-data-plane.md)
   finishes the JA4 device-FP axis (S, partial).
 
 ### Tier 5 — ML positive-security learning · L
@@ -185,13 +185,13 @@ surface; pairs with [`compliance-profiles.md`](./compliance-profiles.md)
 These aren't "world-class gaps" but are real operator value; slot between
 tiers:
 
-- [`alerts-refactor.md`](./alerts-refactor.md) — non-SLO event classes +
+- [`alerts-refactor.md`](../archive/alerts-refactor.md) — non-SLO event classes +
   rich chat payload + dedup (high operator value; ~2 d Phase 1).
-- [`audit-log-disk-growth.md`](./audit-log-disk-growth.md) — boot disk
+- [`audit-log-disk-growth.md`](../archive/audit-log-disk-growth.md) — boot disk
   guard + between-run rotation (the 6 GB/min soak finding).
-- [`audit-cold-tier-export.md`](./audit-cold-tier-export.md) — persist
+- [`audit-cold-tier-export.md`](../archive/audit-cold-tier-export.md) — persist
   beyond the 200-event ring (v1 JSONL ~30 LoC).
-- [`smart-caching.md`](./smart-caching.md) — opt-in LRU response cache.
+- [`smart-caching.md`](../archive/smart-caching.md) — opt-in LRU response cache.
 - Wire-up backlog (`unwired-stubs-catalog.md`): ICAP content scanning,
   per-route quota enforcement, traffic mirroring, `dr.rs` runtime
   snapshot, JWT validator, OPA client, vendor CAPTCHA, threat-intel

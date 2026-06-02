@@ -22,7 +22,7 @@
 
 > **Purpose:** a shared snapshot of what we could pick up next, with
 > enough trade-off context for a team discussion. Underlying ordering
-> doc: [`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md).
+> doc: [`world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md).
 > This doc is the **tactical "this week"** view; the roadmap is the
 > **strategic "this quarter"** view.
 >
@@ -60,7 +60,7 @@ Tier-0 hygiene is **partly** clear — the two pre-existing red tests (`state_se
 
 | ID | Candidate | Where it lives | Effort | Why pick |
 |---|---|---|---|---|
-| **B1** | **Tier 1A — wire existing API-security guards** (`api_keys`, `hmac_sign`, GraphQL guard) onto the request path behind a per-route `api_security` policy | [`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md) Tier 1A | M (mostly wire-up) | **Gartner #1 buyer priority** for WAAP; code is built and dormant; lays the call-site for 1B / 1C / 1D. Highest leverage on the board. |
+| **B1** | **Tier 1A — wire existing API-security guards** (`api_keys`, `hmac_sign`, GraphQL guard) onto the request path behind a per-route `api_security` policy | [`world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) Tier 1A | M (mostly wire-up) | **Gartner #1 buyer priority** for WAAP; code is built and dormant; lays the call-site for 1B / 1C / 1D. Highest leverage on the board. |
 | **B2** | **Tier 2A — prompt-injection / jailbreak detection** on bodies routed to LLM endpoints; heuristic-first, then embedding-based via the existing `ai` model infra | Tier 2A | M | Hot 2025–2026 category; **net-new differentiator**; reuses AI infra already shipped |
 | **B3** | **Bot-classifier enforcement** — FCrDNS reverse-DNS → `verified`, JS-pass → `human`, per-class `action_mapping` | [`bot-classifier-enforcement.md`](./bot-classifier-enforcement.md) | S–M | Plan already written; classifier ships observational; this puts it on the request path |
 | **B4** | **`alerts-refactor` Phase 1** — non-SLO event classes (DDoS mode, leader lost, hot-reload fail, …), rich chat payload + dedup, per-severity receiver routing | [`alerts-refactor.md`](./alerts-refactor.md) | M (~2 d Phase 1) | High operator value; pure ops polish; no product-shape risk |
@@ -129,5 +129,5 @@ Alternative shape for different appetites:
 3. Once agreed, the chosen ID becomes the next `Implement-Progress.md` → "Next Task" header. This doc gets archived when the work starts.
 
 If nothing here lands well, the bigger backlog is in
-[`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md) — these
+[`world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) — these
 candidates are the subset that look right *this week*.

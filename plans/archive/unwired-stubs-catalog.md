@@ -9,7 +9,7 @@
 > **HTTP/2 rapid-reset mitigation shipped** (`proto/h2.rs`
 > `max_resets_per_window`); **JA4-light landed** (2026-05-18, see the JA4
 > entry below). The roadmap in
-> [`world-class-waf-roadmap.md`](./world-class-waf-roadmap.md) treats this
+> [`world-class-waf-roadmap.md`](../future/world-class-waf-roadmap.md) treats this
 > file as the Tier-0/Ops wire-up backlog.
 
 > **Status:** Drafted 2026-05-11 as Phase 4 of the

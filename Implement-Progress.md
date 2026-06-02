@@ -57,7 +57,7 @@
   data-plane wire-up + dashboard view). `RiskKey { ip,
   device_fp?, session? }`. `tenant_id` axis retired 2026-05-19.
   Remaining JA4 device-FP populate work tracked at
-  [`plans/future/risk-composite-key-data-plane.md`](./plans/future/risk-composite-key-data-plane.md).
+  [`plans/archive/risk-composite-key-data-plane.md`](plans/archive/risk-composite-key-data-plane.md).
 - **AI detector:** **shipped** (AI-T1..T9, see history). Live on
   Detectors page; metrics back `AiDetectorRow`. Default OFF
   pending per-deploy calibration (current ONNX over-fires
@@ -68,7 +68,7 @@
   RFC 1918 mask + DLP redact rungs over every upstream response.
 - **TierCache:** **removed 2026-05-11**; `X-WAF-Cache` stamps
   `BYPASS` per contract §9. Restoration spec in
-  [`plans/future/smart-caching.md`](./plans/future/smart-caching.md).
+  [`plans/archive/smart-caching.md`](plans/archive/smart-caching.md).
 - **Operator UX:** every config defaults to **Redis state**; the
   Makefile auto-starts the dev Redis on `run-*` targets.
   `make build && make stage && ./waf run` is the v2.5 §8 binary-
@@ -144,7 +144,7 @@ without operator edits.
    shipped `dns-upstream-resolution.md` (hickory-resolver +
    multi-A expansion in deps); flipped smart-caching matrix
    row from Implemented → Deferred (TierCache removed
-   2026-05-11); drafted `plans/future/smart-caching.md`
+   2026-05-11); drafted `plans/archive/smart-caching.md`
    restoration spec.
 
 ### Verification
@@ -417,19 +417,19 @@ Pick the next track from "Tracks in flight" / the deferred backlog below.
 Deferred backlog (pick up after the above) from `plans/future/`:
 
 - **Smart caching** —
-  [`plans/future/smart-caching.md`](./plans/future/smart-caching.md).
+  [`plans/archive/smart-caching.md`](plans/archive/smart-caching.md).
   Flips `X-WAF-Cache: BYPASS` (always today) to `HIT`/`MISS` for
   allow-listed GET routes. Phase 1 in-memory LRU is ~3 days,
   Phase 4 (Redis-backed + bypass intelligence) closes the spec.
 - **JA4 device-FP populate** —
-  [`plans/future/risk-composite-key-data-plane.md`](./plans/future/risk-composite-key-data-plane.md).
+  [`plans/archive/risk-composite-key-data-plane.md`](plans/archive/risk-composite-key-data-plane.md).
   Storage + most call sites landed; `device_fp` axis still set
   to `None` in `build_risk_key`. ~50 LoC + a JA4 hash helper.
 - **Audit cold-tier export** —
-  [`plans/future/audit-cold-tier-export.md`](./plans/future/audit-cold-tier-export.md).
+  [`plans/archive/audit-cold-tier-export.md`](plans/archive/audit-cold-tier-export.md).
   Beyond the 200-event ring cap; scheduled S3/SFTP delivery.
 - **Rule non-block actions** —
-  [`plans/future/rule-non-block-actions.md`](./plans/future/rule-non-block-actions.md).
+  [`plans/archive/rule-non-block-actions.md`](plans/archive/rule-non-block-actions.md).
   Tarpit / mirror / challenge actions beyond block/log.
 
 ### Parked tracks (long-lived; pick up only on request)
@@ -464,7 +464,7 @@ Order is execution priority — earlier rows run first.
 | — | Benchmark mode (B-T1..B-T6) | [`plans/benchmark-mode.md`](./plans/archive/benchmark-mode.md) | folded into Phase B as B5-T2 |
 | — | Security toggles (P1..P8) + post-k6 (F-T1..F-T10) | [`plans/post-k6-followup.md`](./plans/archive/post-k6-followup.md) | closed |
 | — | Enterprise dashboard (D-M1..D-M6) | [`plans/archive/dashboard-enterprise/`](./plans/archive/dashboard-enterprise/) | closed — superseded by DD-T0..T8 |
-| — | Phase B intake | [`plans/future/advanced-features.md`](./plans/future/advanced-features.md) | open — for items NOT covered by `plans/phase-b/` |
+| — | Phase B intake | [`plans/archive/advanced-features.md`](plans/archive/advanced-features.md) | open — for items NOT covered by `plans/phase-b/` |
 
 ---
 
@@ -674,7 +674,7 @@ Order is execution priority — earlier phases run first.
    The earlier milestone-paced plan was superseded and archived
    under [`plans/archive/dashboard-enterprise/`](./plans/archive/dashboard-enterprise/).
 3. **Open intake.**
-   [`plans/future/advanced-features.md`](./plans/future/advanced-features.md)
+   [`plans/archive/advanced-features.md`](plans/archive/advanced-features.md)
    for proposals NOT covered by Phase B (e.g. multi-tenancy,
    anything new). Scored against the Impact / Reach /
    Cost / Confidence rubric.

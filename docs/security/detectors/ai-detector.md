@@ -319,4 +319,4 @@ report is calibrated against.
 - Perf + p99 report (old 11-class model) — [`tests/results/run-ai-compare-2026-05-03/`](../../../tests/results/run-ai-compare-2026-05-03/)
 - Detector chain semantics — [`./README.md`](./README.md)
 - Tier mask — [`../tiered-protection.md`](../tiered-protection.md)
-  (compliance lock-by-mode is deferred; see [`plans/future/compliance-profiles.md`](../../../plans/future/compliance-profiles.md))
+  (compliance lock-by-mode is deferred; see [`plans/future/compliance-profiles.md`](../../../plans/archive/compliance-profiles.md))

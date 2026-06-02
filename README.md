@@ -134,7 +134,7 @@ SOC-first dashboard.
   documentation tags (`fips`, `pci`, `soc2`, `gdpr`, `hipaa`)
   that surface on the dashboard's Compliance page. Lock-by-mode
   (auto-pinning detector classes when a mode is active) is
-  deferred — see [`plans/future/compliance-profiles.md`](plans/future/compliance-profiles.md).
+  deferred — see [`plans/future/compliance-profiles.md`](plans/archive/compliance-profiles.md).
   Operators may freely enable or disable any detector class
   today.
 

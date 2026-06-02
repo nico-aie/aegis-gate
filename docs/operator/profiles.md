@@ -59,7 +59,7 @@ Bold = the profile's distinctive choice.
 
 \* `compliance.modes` is accepted as a documentation tag today;
 auto-pinning detector classes when a mode is active is **deferred**
-— see [`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md).
+— see [`plans/future/compliance-profiles.md`](../../plans/archive/compliance-profiles.md).
 
 ---
 
@@ -102,7 +102,7 @@ retention. Designed for compliance-driven deployments.
 - TLS 1.3 baseline (HSTS preload-eligible)
 - `compliance.modes` placeholder ready to populate per regime
   (currently a documentation tag — lock-by-mode is deferred,
-  see [`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md))
+  see [`plans/future/compliance-profiles.md`](../../plans/archive/compliance-profiles.md))
 
 Use when: you have a regulatory audit mandate. Pick the
 specific `compliance.modes` from your regime
@@ -145,7 +145,7 @@ target/release/waf run --config config/profiles/prod-balanced.yaml
 `validate` exits 0 when the YAML parses and the structural lint
 passes. Compliance lock-by-mode (which would refuse a mask that
 disabled a pinned class) is currently deferred — see
-[`plans/future/compliance-profiles.md`](../../plans/future/compliance-profiles.md).
+[`plans/future/compliance-profiles.md`](../../plans/archive/compliance-profiles.md).
 
 ---
 

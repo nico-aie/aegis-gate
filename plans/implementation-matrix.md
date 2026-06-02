@@ -52,7 +52,7 @@ table — keep them in sync.
 | [`per-route-quotas.md`](../docs/data-plane/per-route-quotas.md) | **Implemented** | `aegis-proxy/src/quota.rs`. |
 | [`transformations-cors.md`](../docs/data-plane/transformations-cors.md) | **Implemented** | `aegis-proxy/src/transform/{cors,vars,mod}.rs`. |
 | [`service-discovery.md`](../docs/data-plane/service-discovery.md) | **Implemented** | B2 closed (T5..T7): `sd/mod.rs` (file + diff + churn) + feature-gated `consul` / `etcd` / `k8s` watchers. DNS SRV remains designed-only. |
-| [`smart-caching.md`](../docs/data-plane/smart-caching.md) | **Deferred** | TierCache removed 2026-05-11 (PROXY-08/09 — zero callers); `X-WAF-Cache` header still stamped as `BYPASS` per contract. Restoration spec: [`plans/future/smart-caching.md`](./future/smart-caching.md). |
+| [`smart-caching.md`](../docs/data-plane/smart-caching.md) | **Deferred** | TierCache removed 2026-05-11 (PROXY-08/09 — zero callers); `X-WAF-Cache` header still stamped as `BYPASS` per contract. Restoration spec: [`plans/archive/smart-caching.md`](archive/smart-caching.md). |
 | [`adaptive-load-shedding.md`](../docs/data-plane/adaptive-load-shedding.md) | **Implemented** | `aegis-proxy/src/shed.rs` + `aegis-core/src/load_mode.rs` (P7). |
 | [`graceful-degradation.md`](../docs/data-plane/graceful-degradation.md) | **Implemented** | Circuit breaker (`upstream/circuit.rs`) + load shedder (`shed.rs`) + cache fallback. |
 
@@ -115,7 +115,7 @@ table — keep them in sync.
 | [`prometheus-otel.md`](../docs/observability/prometheus-otel.md) | **Implemented** | `metrics/{exporter,request_duration,mod}.rs` + `tracing_init.rs` + `access_log.rs`. Per-stage WAF latency landed F-T10. |
 | [`audit-logging.md`](../docs/observability/audit-logging.md) | **Implemented** | `audit/{chain,verify,witness,state_snapshot,mod}.rs`. SHA-256 hash chain + `audit verify` CLI + verbosity gating (P8). |
 | [`siem-log-forwarding.md`](../docs/observability/siem-log-forwarding.md) | **Implemented** | All 8 sinks: `audit/sinks/{cef,ecs,jsonl,kafka,leef,ocsf,splunk_hec,syslog}.rs`. Cold-tier surface @ `/api/cold-tier`. |
-| [`slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) | **Implemented** | `slo.rs` — 5 SLI kinds, multi-burn windows, 5 receiver kinds. 2026-05-20 alerts refactor added `AlertEvent` router + `AlertDedupCache` + per-severity `AlertReceiver.severities` routing + `dispatch_event`; producers for the 9 non-SLO event classes + dashboard severity UI remain (see [`plans/future/alerts-refactor.md`](./future/alerts-refactor.md)). |
+| [`slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) | **Implemented** | `slo.rs` — 5 SLI kinds, multi-burn windows, 5 receiver kinds. 2026-05-20 alerts refactor added `AlertEvent` router + `AlertDedupCache` + per-severity `AlertReceiver.severities` routing + `dispatch_event`; producers for the 9 non-SLO event classes + dashboard severity UI remain (see [`plans/archive/alerts-refactor.md`](archive/alerts-refactor.md)). |
 
 ## 7. Operations
 
@@ -131,7 +131,7 @@ table — keep them in sync.
 
 | Doc | Status | Notes |
 |---|---|---|
-| [`advanced-features.md`](./future/advanced-features.md) | **Intake template** | Open process for proposals NOT covered by Phase B. |
+| [`advanced-features.md`](archive/advanced-features.md) | **Intake template** | Open process for proposals NOT covered by Phase B. |
 | [`plans/future/ai-operator-copilot.md`](./future/ai-operator-copilot.md) | **Designed only — next active track** | LLM operator copilot: (a) plain-language situational summaries and (b) smart-catch triage over the WAF's own telemetry (audit chain + metrics + risk buckets). Advisory-only, off the request hot path, PII-redacted before egress, off by default. Distinct from the inline ONNX detector and from the Tier 2 customer-LLM firewall. |
 
 ---
