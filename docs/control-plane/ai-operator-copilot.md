@@ -7,7 +7,8 @@
 > behind the `llm` feature). **Live-verified end-to-end 2026-06-02**
 > against an OpenAI-compatible vLLM endpoint (Qwen3.6-35B): the endpoint
 > returned an accurate situational brief over live telemetry. Pending:
-> the dashboard panel (P2) + smart-catch triage (P3).
+> the dashboard panel (P2) + smart-catch triage (P3) — all shipped +
+> live-verified 2026-06-02. Pending: P4 (scheduled briefs → alerts).
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status)
 > for the full matrix and
@@ -83,7 +84,7 @@ operator-facing copilot for the WAF itself.
 |---|---|---|
 | `GET /api/copilot/summary?minutes=15` | ✅ P1 | On-demand situational brief (admin-only; 503 when disabled) |
 | `GET /api/copilot/ask?q=…` | ✅ P2 | Free-form operator question over the current snapshot (400 on empty `q`) |
-| `GET /api/copilot/suggestions` | P3 | Smart-catch rule-suggestion review queue |
+| `GET /api/copilot/suggestions` | ✅ P3 | Smart-catch triage — campaign clusters + candidate rules (advisory review queue) |
 
 All under the admin listener auth (see [`dashboard-auth.md`](./dashboard-auth.md)).
 
@@ -114,7 +115,7 @@ Anthropic adapter alternatively reads `ANTHROPIC_API_KEY`.
 | **P0** | Provider core: trait + `CostGuard` + redaction gate + OpenAI-compatible & Anthropic adapters | ✅ shipped 2026-06-02 |
 | **P1** | `summarize()` core + snapshot adapter (RiskTracker/SloEngine/detectors) + `GET /api/copilot/summary` endpoint; live-verified end-to-end | ✅ shipped 2026-06-02 |
 | **P2** | Dashboard Copilot panel — summary card + ask box (Security Ops → Copilot); `GET /api/copilot/summary` + `GET /api/copilot/ask`. Live-verified. | ✅ shipped 2026-06-02 |
-| **P3** | Smart-catch triage: event clustering + rule-suggestion review queue | planned |
+| **P3** | Smart-catch triage: campaign clustering + rule-suggestion queue (`GET /api/copilot/suggestions` + panel card); live-verified | ✅ shipped 2026-06-02 |
 | **P4** | Scheduled briefs → alerts pipeline (`OperatorBriefing` event class) | planned |
 
 ## Related
