@@ -345,9 +345,12 @@ fn humanize_ago(t: chrono::DateTime<chrono::Utc>) -> String {
 /// 2026-06-02 alert P1 — replaces the terse one-number-per-line
 /// format. Adds a severity glyph + deployment identity, a plain-
 /// language impact line, measured-vs-target, a **clamped** error
-/// budget (the old format printed nonsense like `97727%`),
-/// human-readable local timestamps with a relative "(N ago)", and
-/// the runbook link.
+/// budget (the old format printed nonsense like `97727%`), and
+/// human-readable local timestamps with a relative "(N ago)".
+///
+/// The runbook line was dropped 2026-06-02 — the engine's runbook
+/// URL was a hardcoded `runbooks.aegis.local` placeholder that
+/// resolves nowhere; a real configurable link can return in P2.
 pub fn format_alert_text(alert: &SloAlert, identity: Option<&AlertIdentity>) -> String {
     let glyph = severity_glyph(alert.severity);
     let sev = format!("{:?}", alert.severity).to_uppercase();
@@ -388,16 +391,15 @@ pub fn format_alert_text(alert: &SloAlert, identity: Option<&AlertIdentity>) -> 
         "  Error budget   {budget:.0}% consumed   ({window}h window)\n\n"
     ));
     s.push_str(&format!(
-        "Started  {started}  ({})\n",
+        "Started  {started}  ({})",
         humanize_ago(alert.fired_at)
     ));
     if let Some(r) = alert.resolved_at {
         let r_local = r
             .with_timezone(&chrono::Local)
             .format("%Y-%m-%d %H:%M:%S %z");
-        s.push_str(&format!("Resolved {r_local}  ({})\n", humanize_ago(r)));
+        s.push_str(&format!("\nResolved {r_local}  ({})", humanize_ago(r)));
     }
-    s.push_str(&format!("Runbook  {}", alert.runbook_url));
     s
 }
 
@@ -540,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn format_alert_text_includes_severity_sli_burn_rate_and_runbook() {
+    fn format_alert_text_includes_severity_sli_burn_rate_and_target() {
         let alert = fake_alert();
         let text = format_alert_text(&alert, None);
         // Title: glyph + uppercase severity + SLI.
@@ -556,9 +558,14 @@ mod tests {
         // measured-vs-target line.
         assert!(text.contains("Measured       99.8%"), "got: {text}");
         assert!(text.contains("(target 99.90%)"), "got: {text}");
+        // Runbook line was dropped (placeholder URL); must not appear.
         assert!(
-            text.contains("https://runbooks.example.com/slo/data-plane"),
-            "got: {text}"
+            !text.contains("Runbook"),
+            "runbook line should be gone: {text}"
+        );
+        assert!(
+            !text.contains("runbooks."),
+            "no placeholder runbook URL: {text}"
         );
         // Relative "started" line.
         assert!(text.contains("Started"), "got: {text}");
