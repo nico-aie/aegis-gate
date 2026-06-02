@@ -44,13 +44,29 @@ cd signoz/deploy/docker
 docker compose up -d
 ```
 
-This exposes:
+This exposes (ports vary by SigNoz version):
 
 | Port | Purpose |
 |---|---|
 | `4317` | OTLP gRPC (point the WAF here) |
 | `4318` | OTLP HTTP |
-| `3301` | SigNoz UI |
+| `8080` or `3301` | SigNoz UI (v0.126+ uses `:8080`) |
+
+> **⚠ First-run onboarding is REQUIRED before any telemetry ingests.**
+> Newer SigNoz (v0.126+) has the otel-collector register with the
+> query-service over `opamp`, and **registration fails until an
+> organization/admin account exists** — the query-service logs
+> `cannot create agent without orgId` and the collector **rejects all
+> OTLP** (even a direct `curl` to `:4318` resets; ClickHouse stays
+> empty). Open the SigNoz UI and create the first admin account/org
+> FIRST; ~30s later the collector picks up its config and starts
+> ingesting. This is a SigNoz setup step, not a WAF issue.
+
+> **⚠ Port clash:** SigNoz v0.126's UI binds `:8080`, which collides
+> with the WAF's default data-plane port. To run both, remap one — e.g.
+> change the `signoz` service's published port to `8090:8080` in
+> SigNoz's compose, or move the WAF data-plane bind. (`make run-copilot`
+> uses `dev.yaml` which binds `:8080`.)
 
 Then point the WAF's `observability.otel.endpoint` at
 `http://<signoz-host>:4317`, build with `--features otel`, drive
