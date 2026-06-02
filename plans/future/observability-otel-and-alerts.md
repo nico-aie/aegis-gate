@@ -171,7 +171,7 @@ messages too.
 | Phase | Scope | Est. |
 |---|---|---|
 | **P1** | ✅ **DONE 2026-06-02.** Rewrote `format_alert_text`: severity glyph + uppercase label, deployment identity line (`service · node · env` via `set_alert_identity`, installed at boot in `run.rs`), plain-language impact, **clamped** budget (kills `97727%`), measured-vs-target (new `SloAlert.measured` + `target` fields from the engine's `avg`/`obj.target`), and human local timestamps with a relative `(N ago)`. Pure formatters take identity explicitly so they stay unit-tested. (Raw request counts deferred — the SLI buffer stores averages, not counts.) | S |
-| **P2** | Extend the identity/timestamp/links treatment to all `AlertEvent` variants in `format_event_text`; add a dashboard + trace deep-link builder (needs base URLs in config). | S–M |
+| **P2** | ✅ **variant unification DONE 2026-06-02.** Every `AlertEvent` variant (DDoS, cert-expiry, strike surge, upstream degraded/recovered, leader-lost, hot-reload-fail, GitOps drift, audit-chain-break) now shares the SLO shape: `glyph SEV · title`, deployment identity line, detail body, and an `At <local time> (<N ago>)` footer. **Deep-links deferred** — the runbook link was dropped (placeholder URL); dashboard + trace deep-links need real config base URLs, so they pair with the OTel/SigNoz step (which provides the trace base URL) rather than shipping more placeholders. | S–M |
 | **P3** | Per-channel renderers — markdown/rich-card for chat, structured JSON for PagerDuty/Alertmanager. | M |
 | **P4** | "Likely cause" correlation — thread recent `AlertEvent`s / active config version into the message. | M |
 

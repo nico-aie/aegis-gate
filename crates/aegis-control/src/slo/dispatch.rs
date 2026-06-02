@@ -414,48 +414,59 @@ pub fn format_event_text(
     identity: Option<&AlertIdentity>,
 ) -> String {
     let sev = event.severity();
-    let body = match event {
+    let glyph = severity_glyph(sev);
+    let sev_label = format!("{sev:?}").to_uppercase();
+
+    // 2026-06-02 alert P2 — every variant now shares the SLO message's
+    // shape: `glyph SEV · <title>`, the deployment identity line, the
+    // detail body, then an `At <local time> (<N ago>)` footer. Each arm
+    // yields just `(title, body)`; the SLO arm delegates to the richer
+    // `format_alert_text` (it has measured-vs-target + its own footer).
+    let (title, body): (&str, String) = match event {
         AlertEvent::Slo(a) => return append_suppressed(format_alert_text(a, identity), suppressed),
         AlertEvent::DdosModeEntered {
             trigger,
             observed_rps,
             ..
-        } => format!(
-            "[{sev:?}] DDoS gate entered ENFORCE\n\
-             Trigger: {trigger}\n\
-             Observed: {observed_rps} rps"
+        } => (
+            "DDoS gate entered ENFORCE",
+            format!("Trigger: {trigger}\nObserved: {observed_rps} rps"),
         ),
         AlertEvent::DdosModeCleared {
             duration_seconds, ..
-        } => format!(
-            "[{sev:?}] DDoS gate cleared — back to NORMAL\n\
-             Enforce duration: {duration_seconds}s"
+        } => (
+            "DDoS gate cleared — back to NORMAL",
+            format!("Enforce duration: {duration_seconds}s"),
         ),
         AlertEvent::CertExpiringSoon {
             host,
             days_remaining,
             not_after,
             ..
-        } => format!(
-            "[{sev:?}] TLS cert expiring soon\n\
-             Host: {host}\n\
-             Expires: {not_after} ({days_remaining} days)",
-            not_after = not_after.to_rfc3339(),
+        } => (
+            "TLS cert expiring soon",
+            format!(
+                "Host: {host}\nExpires: {} ({days_remaining} days)",
+                not_after
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S %z"),
+            ),
         ),
         AlertEvent::StrikeBlockSurge {
             unique_ips,
             window_seconds,
             top_rule_ids,
             ..
-        } => format!(
-            "[{sev:?}] Strike-block surge\n\
-             {unique_ips} unique IPs blocked in {window_seconds}s\n\
-             Top rules: {rules}",
-            rules = if top_rule_ids.is_empty() {
-                "—".to_string()
-            } else {
-                top_rule_ids.join(", ")
-            },
+        } => (
+            "Strike-block surge",
+            format!(
+                "{unique_ips} unique IPs blocked in {window_seconds}s\nTop rules: {rules}",
+                rules = if top_rule_ids.is_empty() {
+                    "—".to_string()
+                } else {
+                    top_rule_ids.join(", ")
+                },
+            ),
         ),
         AlertEvent::UpstreamPoolDegraded {
             pool,
@@ -463,54 +474,64 @@ pub fn format_event_text(
             total,
             first_down,
             ..
-        } => format!(
-            "[{sev:?}] Upstream pool degraded\n\
-             Pool: {pool} ({healthy}/{total} healthy)\n\
-             First down: {first_down}"
+        } => (
+            "Upstream pool degraded",
+            format!("Pool: {pool} ({healthy}/{total} healthy)\nFirst down: {first_down}"),
         ),
         AlertEvent::UpstreamPoolRecovered { pool, .. } => {
-            format!("[{sev:?}] Upstream pool recovered — {pool} fully healthy")
+            ("Upstream pool recovered", format!("{pool} fully healthy"))
         }
         AlertEvent::LeaderLost {
             previous_leader,
             our_node,
             ..
-        } => format!(
-            "[{sev:?}] Cluster leader lost\n\
-             Previous: {previous_leader}\n\
-             This node: {our_node}"
+        } => (
+            "Cluster leader lost",
+            format!("Previous: {previous_leader}\nThis node: {our_node}"),
         ),
         AlertEvent::HotReloadFailed {
             reason,
             last_known_good_version,
             ..
-        } => format!(
-            "[{sev:?}] Hot-reload FAILED — last-known-good still live\n\
-             Reason: {reason}\n\
-             LKG config version: {last_known_good_version}"
+        } => (
+            "Hot-reload FAILED — last-known-good still live",
+            format!("Reason: {reason}\nLKG config version: {last_known_good_version}"),
         ),
         AlertEvent::GitOpsDrift {
             repo,
             expected,
             observed,
             ..
-        } => format!(
-            "[{sev:?}] GitOps drift detected\n\
-             Repo: {repo}\n\
-             Expected: {expected}\n\
-             Observed: {observed}"
+        } => (
+            "GitOps drift detected",
+            format!("Repo: {repo}\nExpected: {expected}\nObserved: {observed}"),
         ),
         AlertEvent::AuditChainBreak {
             last_good_seq,
             observed_seq,
             ..
-        } => format!(
-            "[{sev:?}] AUDIT CHAIN BREAK\n\
-             Last good seq: {last_good_seq}\n\
-             Observed seq: {observed_seq}"
+        } => (
+            "AUDIT CHAIN BREAK",
+            format!("Last good seq: {last_good_seq}\nObserved seq: {observed_seq}"),
         ),
     };
-    append_suppressed(body, suppressed)
+
+    let mut s = format!("{glyph} {sev_label} · {title}\n");
+    if let Some(line) = identity_line(identity) {
+        s.push_str(&line);
+        s.push('\n');
+    }
+    s.push('\n');
+    s.push_str(&body);
+    let fired = event.fired_at();
+    s.push_str(&format!(
+        "\n\nAt  {}  ({})",
+        fired
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S %z"),
+        humanize_ago(fired),
+    ));
+    append_suppressed(s, suppressed)
 }
 
 fn append_suppressed(body: String, suppressed: u32) -> String {
@@ -928,9 +949,15 @@ mod tests {
     #[test]
     fn format_event_text_covers_variants_and_suppressed_suffix() {
         let text = format_event_text(&ddos_event(), 0, None);
-        assert!(text.contains("[Page]"), "got: {text}");
-        assert!(text.contains("DDoS gate entered ENFORCE"), "got: {text}");
+        // P2 header: glyph + uppercase severity + title (was `[Page]`).
+        assert!(
+            text.contains("🔴 PAGE · DDoS gate entered ENFORCE"),
+            "got: {text}"
+        );
         assert!(text.contains("1840 rps"), "got: {text}");
+        // P2 footer: every variant gets an "At <time> (<ago>)" line.
+        assert!(text.contains("\nAt  "), "missing timestamp footer: {text}");
+        assert!(text.contains("just now"), "got: {text}");
         assert!(!text.contains("suppressed"), "no suffix at 0: {text}");
 
         let with_suffix = format_event_text(&ddos_event(), 9, None);
@@ -946,7 +973,28 @@ mod tests {
             top_rule_ids: vec!["sqli".into(), "ai".into()],
         };
         let stext = format_event_text(&surge, 0, None);
+        assert!(
+            stext.contains("🔴 PAGE · Strike-block surge"),
+            "got: {stext}"
+        );
         assert!(stext.contains("27 unique IPs"), "got: {stext}");
         assert!(stext.contains("sqli, ai"), "got: {stext}");
+    }
+
+    #[test]
+    fn format_event_text_renders_identity_for_non_slo_variants() {
+        let id = AlertIdentity {
+            service: "aegis-gate".into(),
+            node: Some("aegis-prod-2".into()),
+            environment: Some("production".into()),
+        };
+        let text = format_event_text(&ddos_event(), 0, Some(&id));
+        assert!(
+            text.contains("aegis-gate · node aegis-prod-2 · env production"),
+            "identity line missing on non-SLO variant: {text}",
+        );
+        // No identity → no identity line.
+        let plain = format_event_text(&ddos_event(), 0, None);
+        assert!(!plain.contains("node "), "got: {plain}");
     }
 }
