@@ -1249,7 +1249,7 @@ fn csv_escape(s: &str) -> String {
 /// Assemble the copilot's [`TelemetrySnapshot`] from the live services:
 /// top risk buckets, per-detector hit counts (→ blocked total + top
 /// detectors), and the currently-firing SLO alerts. Read-only.
-fn build_copilot_snapshot(
+pub(crate) fn build_copilot_snapshot(
     services: &aegis_control::dashboard_services::DashboardServices,
     window_minutes: u32,
 ) -> aegis_control::copilot::summary::TelemetrySnapshot {

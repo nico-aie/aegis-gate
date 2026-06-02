@@ -224,6 +224,14 @@ pub enum AlertEvent {
         last_good_seq: u64,
         observed_seq: u64,
     },
+    /// A scheduled AI-copilot situational briefing pushed into the
+    /// alerts pipeline (Copilot P4). Informational; `body` is the
+    /// copilot's brief text. Produced by the briefing scheduler when
+    /// the copilot is enabled and a briefing interval is configured.
+    OperatorBriefing {
+        fired_at: DateTime<Utc>,
+        body: String,
+    },
 }
 
 impl AlertEvent {
@@ -250,6 +258,7 @@ impl AlertEvent {
             AlertEvent::HotReloadFailed { .. } => AlertSeverity::Ticket,
             AlertEvent::GitOpsDrift { .. } => AlertSeverity::Ticket,
             AlertEvent::AuditChainBreak { .. } => AlertSeverity::Page,
+            AlertEvent::OperatorBriefing { .. } => AlertSeverity::Info,
         }
     }
 
@@ -267,6 +276,7 @@ impl AlertEvent {
             AlertEvent::HotReloadFailed { fired_at, .. } => *fired_at,
             AlertEvent::GitOpsDrift { fired_at, .. } => *fired_at,
             AlertEvent::AuditChainBreak { fired_at, .. } => *fired_at,
+            AlertEvent::OperatorBriefing { fired_at, .. } => *fired_at,
         }
     }
 
@@ -335,6 +345,12 @@ impl AlertEvent {
             AlertEvent::AuditChainBreak { observed_seq, .. } => {
                 "audit_chain_break".hash(&mut h);
                 observed_seq.hash(&mut h);
+            }
+            // Each scheduled briefing is distinct content — key on the
+            // fire time so two briefings never dedup against each other.
+            AlertEvent::OperatorBriefing { fired_at, .. } => {
+                "operator_briefing".hash(&mut h);
+                fired_at.timestamp().hash(&mut h);
             }
         }
         h.finish()

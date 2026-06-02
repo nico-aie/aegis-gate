@@ -1024,6 +1024,51 @@ pub(crate) async fn admin_accept_loop(
         });
     }
 
+    // Copilot P4 — scheduled situational briefing. Off unless the copilot
+    // is enabled AND `LLM_BRIEFING_INTERVAL_SECS` > 0. Every interval it
+    // builds a telemetry snapshot, asks the copilot for a brief, and pushes
+    // it into the alerts pipeline as an `OperatorBriefing` (Info) event so
+    // it lands in the operator's chat next to SLO / DDoS alerts. Dispatched
+    // WITHOUT the dedup cache — each scheduled brief is distinct content.
+    {
+        let interval_secs = std::env::var("LLM_BRIEFING_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        if interval_secs > 0 && aegis_control::copilot::service::global().enabled() {
+            // Floor at 60s — briefings are billable LLM calls.
+            let period = std::time::Duration::from_secs(interval_secs.max(60));
+            let services = services.clone();
+            let shared = Arc::clone(&shared_receivers);
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(period);
+                tick.tick().await; // skip the immediate first tick
+                loop {
+                    tick.tick().await;
+                    let snapshot = crate::admin_get::build_copilot_snapshot(&services, 60);
+                    match aegis_control::copilot::service::global().summary(snapshot).await {
+                        Ok(brief) => {
+                            let event = aegis_control::slo::AlertEvent::OperatorBriefing {
+                                fired_at: chrono::Utc::now(),
+                                body: brief.text,
+                            };
+                            let receivers = (**shared.load()).clone();
+                            let _ = aegis_control::slo::dispatch::dispatch_event(
+                                &event, &receivers, None,
+                            )
+                            .await;
+                            tracing::info!("copilot briefing dispatched");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "copilot briefing generation failed");
+                        }
+                    }
+                }
+            });
+            tracing::info!(interval_secs, "copilot briefing scheduler started");
+        }
+    }
+
     loop {
         let (stream, peer) = match tcp.accept().await {
             Ok(conn) => conn,

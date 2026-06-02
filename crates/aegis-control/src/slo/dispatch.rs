@@ -514,6 +514,7 @@ pub fn format_event_text(
             "AUDIT CHAIN BREAK",
             format!("Last good seq: {last_good_seq}\nObserved seq: {observed_seq}"),
         ),
+        AlertEvent::OperatorBriefing { body, .. } => ("Copilot briefing", body.clone()),
     };
 
     let mut s = format!("{glyph} {sev_label} · {title}\n");
@@ -996,5 +997,17 @@ mod tests {
         // No identity → no identity line.
         let plain = format_event_text(&ddos_event(), 0, None);
         assert!(!plain.contains("node "), "got: {plain}");
+    }
+
+    #[test]
+    fn format_event_text_renders_operator_briefing() {
+        let ev = AlertEvent::OperatorBriefing {
+            fired_at: chrono::Utc::now(),
+            body: "All quiet: 6 blocks, no SLO alerts.".into(),
+        };
+        let text = format_event_text(&ev, 0, None);
+        assert!(text.contains("🔵 INFO · Copilot briefing"), "got: {text}");
+        assert!(text.contains("All quiet: 6 blocks"), "body missing: {text}");
+        assert!(text.contains("\nAt  "), "timestamp footer missing: {text}");
     }
 }
