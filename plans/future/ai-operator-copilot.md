@@ -133,7 +133,7 @@ deterministic; the LLM adds a slow reasoning layer an operator drives.
 
 | Phase | Scope | Est. |
 |---|---|---|
-| **P0** | `LlmProvider` trait + Anthropic adapter + secret wiring + cost/rate guard + `dlp` egress gate. No UI. | M |
+| **P0** | ✅ **DONE 2026-06-02.** `crates/aegis-control/src/copilot/`: `LlmProvider` trait + `LlmRequest`/`LlmResponse`/`LlmError`; `CostGuard` (per-window token + request budget, true-up on actual usage); `redact_for_egress` mandatory gate (reuses `aegis_security::dlp::redact`); `MockProvider` for tests. Anthropic Claude Messages-API adapter behind the `llm` feature (`copilot::anthropic`, key from `ANTHROPIC_API_KEY` → `Disabled` when unset, default model `claude-haiku-4-5`). 7 unit tests (budget/rate/true-up, redaction gate, provider id/disabled, mock receives pre-redacted prompt); builds clean with + without `llm`. **No UI / no endpoint yet** (P1). | M |
 | **P1** | `TelemetrySnapshot` aggregator + `GET /api/copilot/summary` (read → redact → prompt → structured brief). | M |
 | **P2** | Dashboard Copilot panel (summary card + ask box). | M |
 | **P3** | Smart-catch triage: event clustering + explain + rule-suggestion review queue (human-in-the-loop, promote via `/api/rules/simulate`). | L |

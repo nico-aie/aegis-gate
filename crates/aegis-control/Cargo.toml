@@ -11,6 +11,12 @@ rust-version.workspace = true
 # operator-side dispatcher can read the config.
 default = []
 alerts = ["dep:reqwest"]
+# AI Operator Copilot — Phase 0. With `llm`, the Anthropic adapter
+# (`copilot::anthropic`) is compiled and does real HTTP to the Claude
+# Messages API. Without it the copilot core (trait + CostGuard +
+# redaction egress gate) still builds; only the concrete provider is
+# absent. Pulls `reqwest` (shared with `alerts`).
+llm = ["dep:reqwest"]
 # AI-T6 — surfaces the `metrics::ai::AiMetrics` impl that
 # implements the cross-crate `AiMetricsSink` trait.  Pulled
 # transitively when `aegis-bin/ai` or `aegis-proxy/ai` is on.

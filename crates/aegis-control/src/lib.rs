@@ -7,6 +7,7 @@
 pub mod access_log;
 pub mod api;
 pub mod audit;
+pub mod copilot;
 pub mod dashboard;
 pub mod dashboard_services;
 pub mod health;
