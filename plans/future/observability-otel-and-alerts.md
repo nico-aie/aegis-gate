@@ -90,8 +90,8 @@ Collector config + a compose profile so it's runnable out of the box.
 | Phase | Scope | Est. |
 |---|---|---|
 | **P1** | ✅ **DONE 2026-06-02.** OTLP **trace** export confirmed live (deps were already in `Cargo.toml`; `--features otel` compiles the real exporter — corrected the stale "stub" docs). Backend wired to **SigNoz**: `deploy/signoz/README.md` (run + endpoint), optional `deploy/otel/collector.yaml` (redaction + `/metrics` scrape + fan-out), `observability.otel` config block added to `dev.yaml` + fixed `prod-strict.yaml`. Remaining for full P1 polish: a runtime end-to-end smoke against a live SigNoz (needs the stack up). | S–M |
-| **P2** | **Metrics** to the Collector — easiest via the Collector's `prometheus` receiver scraping `/metrics`; optional OTLP metric push. | S |
-| **P3** | **Logs** via an OTLP log exporter (or ship stdout JSON → Collector `filelog` receiver). | M |
+| **P2** | ✅ **Collector path wired 2026-06-02.** `deploy/otel/collector.yaml` `prometheus` receiver scrapes the WAF's `/metrics` (admin `:9443`, matched labels) → OTLP → SigNoz. No app change; Prometheus stays available. *Optional* app-side OTLP metric push deferred (only if retiring the scrape). Open: live smoke. | S |
+| **P3** | ✅ **Collector path wired 2026-06-02.** `filelog` receiver tails the WAF's JSON log (stdout redirected to a file) → json-parsed (timestamp+severity) → OTLP logs → SigNoz, through the redaction/scrub processors. *Optional* app-side OTLP log exporter (`opentelemetry-appender-tracing`) deferred. Open: live smoke + log-file routing per deploy. | M |
 | **P4** | Redaction processor + tail-sampling + a documented backend matrix; `shutdown_tracer_provider` flush on SIGTERM (the `OTEL_PROVIDER` OnceLock is already parked for this). | M |
 
 ---

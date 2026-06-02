@@ -244,6 +244,20 @@ Two separate paths:
   production, put an OTel Collector between the WAF and SigNoz to redact
   PII + fan out — config in [`otel/collector.yaml`](./otel/collector.yaml).
 
+**All three signals in SigNoz (via the Collector).** Run
+`otel/collector.yaml` and point the WAF's `otel.endpoint` at the
+Collector (`:4317`):
+
+- **Metrics** — the Collector scrapes the WAF's existing `/metrics`
+  (admin `:9443`) and forwards as OTLP. No app change; Prometheus stays
+  available too.
+- **Logs** — the Collector tails the WAF's JSON log via `filelog`.
+  Redirect stdout to a file it can read:
+  `./waf run --config … >> /var/log/aegis/waf.json 2>&1`.
+
+The Collector redacts log/span attributes before egress; keep secrets
+out of log *fields* (the WAF's `dlp` handles body-level redaction).
+
   **Migration note (2026-06):** SigNoz supersedes the older Jaeger
   trace path. `make obs-up` no longer starts Jaeger (it's metrics-only
   now); the dev-compose Jaeger service remains for anyone who still

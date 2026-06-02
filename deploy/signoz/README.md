@@ -69,12 +69,35 @@ Collector between the WAF and SigNoz using
 Collector (`:4317`), the Collector redacts + exports to SigNoz. This is
 the recommended posture for production; direct-to-SigNoz is fine for dev.
 
+## All three signals via the Collector
+
+To get **metrics + logs** into SigNoz alongside traces, run the
+in-between Collector ([`../otel/collector.yaml`](../otel/collector.yaml)) —
+it's wired for all three:
+
+- **Traces (P1)** — OTLP from the WAF → SigNoz.
+- **Metrics (P2)** — the Collector's `prometheus` receiver scrapes the
+  WAF's `/metrics` (admin listener `:9443`) and converts to OTLP. **No
+  app change** — the existing Prometheus endpoint is reused.
+- **Logs (P3)** — the Collector's `filelog` receiver tails the WAF's
+  JSON log and converts to OTLP logs. Redirect the WAF's stdout to a
+  file the collector can read:
+  ```bash
+  ./waf run --config config/dev.yaml >> /var/log/aegis/waf.json 2>&1
+  ```
+  (bind-mount that path into the collector; adjust `filelog.include`).
+
+Point the WAF's `observability.otel.endpoint` at the **Collector**
+(`:4317`) instead of SigNoz directly; the Collector redacts + forwards
+all three signals to SigNoz.
+
 ## Status / roadmap
 
-- ✅ **Traces** over OTLP (this).
-- ⏳ **Metrics** — easiest via the Collector's `prometheus` receiver
-  scraping the WAF's existing `/metrics` (P2).
-- ⏳ **Logs** — OTLP log exporter (P3).
+- ✅ **Traces** over OTLP (app exporter, `--features otel`).
+- ✅ **Metrics + Logs** via the Collector (config above) — pending a
+  live end-to-end smoke against a running SigNoz.
+- ⏳ *Optional* app-side OTLP push for metrics/logs (drops the
+  Prometheus scrape / filelog tail) — only if you want to retire those.
 - ⏳ SIGTERM flush of the in-flight span batch (`OTEL_PROVIDER` OnceLock
   in `otel.rs` is parked for the shutdown hook).
 

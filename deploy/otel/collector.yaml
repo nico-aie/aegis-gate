@@ -21,15 +21,39 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
-  # Pull the WAF's existing Prometheus /metrics — no app change needed
-  # to get metrics into the same backend (P2).
+  # P2 — METRICS. Pull the WAF's existing Prometheus /metrics and
+  # convert to OTLP; no app change. The WAF serves /metrics on the
+  # ADMIN listener (default :9443, see deploy/prometheus/prometheus.yml),
+  # NOT a separate metrics port — match that target + the same labels.
   prometheus:
     config:
       scrape_configs:
         - job_name: aegis-waf
+          metrics_path: /metrics
           scrape_interval: 15s
           static_configs:
-            - targets: ["host.docker.internal:9090"] # WAF /metrics bind
+            - targets: ["host.docker.internal:9443"]  # WAF admin /metrics
+              labels:
+                service: aegis-gate
+                plane: data
+
+  # P3 — LOGS. Tail the WAF's structured JSON log and convert to OTLP
+  # log records. The WAF writes tracing logs as JSON to stdout; redirect
+  # them to a file the collector can read, e.g.:
+  #   ./waf run --config config/dev.yaml >> /var/log/aegis/waf.json 2>&1
+  # (bind-mount that path into the collector container). Adjust `include`.
+  filelog:
+    include: ["/var/log/aegis/waf.json"]
+    start_at: end
+    operators:
+      # Each line is a tracing-json record: { timestamp, level, fields, ... }
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.timestamp
+          layout_type: gotime
+          layout: "2006-01-02T15:04:05.999999Z07:00"
+        severity:
+          parse_from: attributes.level
 
 processors:
   # PII guardrail: drop request attributes that may carry secrets/PII.
@@ -70,4 +94,13 @@ service:
     metrics:
       receivers: [otlp, prometheus]
       processors: [batch]
+      exporters: [otlp/signoz]
+    logs:
+      # `redaction`/`attributes` scrub log *attributes*; body-level PII
+      # (e.g. a token inside a message string) is best redacted at the
+      # source via the WAF's `dlp` — keep sensitive values out of log
+      # fields. The OTLP receiver also accepts logs if the app ever
+      # switches to an app-side OTLP log exporter (P3 option 2).
+      receivers: [otlp, filelog]
+      processors: [redaction, attributes/scrub, batch]
       exporters: [otlp/signoz]
