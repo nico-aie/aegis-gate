@@ -2990,6 +2990,11 @@ pub struct ObservabilityConfig {
     pub otel: Option<OtelConfig>,
     #[serde(default)]
     pub access_log: AccessLogConfig,
+    /// AI Operator Copilot (advisory LLM layer). Off by default; the
+    /// API key is a `${secret:...}` reference resolved at boot/apply,
+    /// never inline. Hot-reloadable via the config plane.
+    #[serde(default)]
+    pub copilot: CopilotConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3021,6 +3026,76 @@ pub struct OtelConfig {
 
 fn default_sample_ratio() -> f32 {
     1.0
+}
+
+/// AI Operator Copilot provider config (advisory LLM layer).
+///
+/// Centralized here so the copilot is configured like every other
+/// subsystem (YAML + the config plane) instead of raw `LLM_*` env. The
+/// API key is **never** inline: `api_key_ref` is a `${secret:...}`
+/// reference the node resolves at boot/apply (env / file / vault / cloud).
+/// The config plane stores the ref un-resolved and each node resolves it
+/// locally — the secret never transits the cluster doc.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CopilotConfig {
+    /// Master switch. When false the copilot is disabled regardless of
+    /// the other fields (and never calls the provider).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Which adapter to build. `openai_compatible` (vLLM/Ollama/OpenAI)
+    /// or `anthropic`.
+    #[serde(default)]
+    pub provider: CopilotProvider,
+    /// Base URL for the OpenAI-compatible endpoint (`/chat/completions`
+    /// is appended). Ignored by the Anthropic adapter.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Model name the endpoint serves.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Per-request timeout in milliseconds.
+    #[serde(default = "default_copilot_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Scheduled-briefing cadence in seconds. `0` disables; the runtime
+    /// floors any positive value at 60s (briefings are billable calls).
+    #[serde(default)]
+    pub briefing_interval_secs: u64,
+    /// Secret reference for the API key, e.g.
+    /// `${secret:env:LLM_API_KEY}`. Resolved at boot/apply; never stored
+    /// or logged in the clear.
+    #[serde(default)]
+    pub api_key_ref: Option<String>,
+}
+
+fn default_copilot_timeout_ms() -> u64 {
+    20_000
+}
+
+impl Default for CopilotConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: CopilotProvider::default(),
+            base_url: None,
+            model: None,
+            timeout_ms: default_copilot_timeout_ms(),
+            briefing_interval_secs: 0,
+            api_key_ref: None,
+        }
+    }
+}
+
+/// Copilot LLM adapter selector.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CopilotProvider {
+    /// OpenAI-compatible `/v1/chat/completions` (vLLM, Ollama, LiteLLM,
+    /// OpenAI). The default.
+    #[default]
+    #[serde(rename = "openai_compatible", alias = "open_ai_compatible", alias = "openai")]
+    OpenAiCompatible,
+    /// Anthropic Messages API.
+    Anthropic,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -5003,5 +5078,60 @@ canary_paths:
         // Default (no canary_paths key) is an empty vec, not an error.
         let cfg: RiskConfig = serde_yaml::from_str("{}").unwrap();
         assert!(cfg.canary_paths.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod copilot_config_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_disabled_and_safe() {
+        let cfg = CopilotConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.provider, CopilotProvider::OpenAiCompatible);
+        assert_eq!(cfg.timeout_ms, 20_000);
+        assert_eq!(cfg.briefing_interval_secs, 0);
+        assert!(cfg.api_key_ref.is_none());
+        assert!(cfg.base_url.is_none());
+        assert!(cfg.model.is_none());
+    }
+
+    #[test]
+    fn observability_copilot_defaults_when_absent() {
+        // No `copilot:` key → default (disabled) sub-config, not an error.
+        let obs: ObservabilityConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(!obs.copilot.enabled);
+    }
+
+    #[test]
+    fn deserializes_full_copilot_block_with_secret_ref() {
+        let yaml = r#"
+copilot:
+  enabled: true
+  provider: openai_compatible
+  base_url: "https://host/v1"
+  model: "Qwen3.6-35B-A3B"
+  timeout_ms: 4000
+  briefing_interval_secs: 900
+  api_key_ref: "${secret:env:LLM_API_KEY}"
+"#;
+        let obs: ObservabilityConfig = serde_yaml::from_str(yaml).unwrap();
+        let c = &obs.copilot;
+        assert!(c.enabled);
+        assert_eq!(c.provider, CopilotProvider::OpenAiCompatible);
+        assert_eq!(c.base_url.as_deref(), Some("https://host/v1"));
+        assert_eq!(c.model.as_deref(), Some("Qwen3.6-35B-A3B"));
+        assert_eq!(c.timeout_ms, 4000);
+        assert_eq!(c.briefing_interval_secs, 900);
+        // The key is preserved as a ref — NOT resolved at parse time.
+        assert_eq!(c.api_key_ref.as_deref(), Some("${secret:env:LLM_API_KEY}"));
+    }
+
+    #[test]
+    fn provider_anthropic_parses() {
+        let obs: ObservabilityConfig =
+            serde_yaml::from_str("copilot:\n  provider: anthropic\n").unwrap();
+        assert_eq!(obs.copilot.provider, CopilotProvider::Anthropic);
     }
 }
