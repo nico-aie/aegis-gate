@@ -12823,7 +12823,189 @@ function DeleteRouteModal({ id, blocker, onCancel, onConfirm, busy }) {
   );
 }
 
+// ===========================================================================
+// Copilot (P2) — on-demand LLM situational brief over the WAF's own
+// telemetry. Advisory only; never auto-runs (each brief is a billable LLM
+// call). Renders the brief text + the snapshot it was derived from so the
+// operator verifies the numbers beside the prose. Backend:
+// GET /api/copilot/summary (aegis-control::copilot).
+// ===========================================================================
+function PageCopilot() {
+  const [loading, setLoading] = useStateP(false);
+  const [brief, setBrief] = useStateP(null);
+  const [err, setErr] = useStateP(null);
+  const [disabled, setDisabled] = useStateP(false);
+  const [minutes, setMinutes] = useStateP('60');
+
+  async function generate() {
+    if (loading) return;
+    setLoading(true);
+    setErr(null);
+    try {
+      const r = await fetch(
+        `/api/copilot/summary?minutes=${encodeURIComponent(minutes)}`,
+        { credentials: 'same-origin' }
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 503) {
+        setDisabled(true);
+        setBrief(null);
+        setErr(j.hint || j.error || 'Copilot is disabled.');
+        return;
+      }
+      setDisabled(false);
+      if (!r.ok) {
+        setErr(j.error || `HTTP ${r.status}`);
+        setBrief(null);
+        return;
+      }
+      setBrief(j);
+    } catch (e) {
+      setErr(String(e && e.message ? e.message : e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const snap = brief && brief.snapshot;
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Copilot</h1>
+          <p className="page-subtitle">
+            LLM situational brief over the WAF's own telemetry · advisory
+            only · on-demand
+          </p>
+        </div>
+        <div className="page-actions">
+          <select
+            className="input select"
+            value={minutes}
+            onChange={(e) => setMinutes(e.target.value)}
+            style={{ width: 120 }}
+          >
+            <option value="15">last 15 min</option>
+            <option value="60">last 60 min</option>
+            <option value="360">last 6 h</option>
+            <option value="1440">last 24 h</option>
+          </select>
+          <button className="btn" onClick={generate} disabled={loading}>
+            {loading ? 'Generating…' : 'Generate brief'}
+          </button>
+        </div>
+      </div>
+
+      {disabled && (
+        <div className="card" style={{ borderLeft: '3px solid var(--warn)' }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>
+            🔒 Copilot is disabled
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>{err}</div>
+        </div>
+      )}
+
+      {!disabled && err && (
+        <div className="card" style={{ borderLeft: '3px solid var(--down)' }}>
+          <div style={{ fontWeight: 600 }}>Couldn't generate a brief</div>
+          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>{err}</div>
+        </div>
+      )}
+
+      {!brief && !disabled && !err && !loading && (
+        <div className="card" style={{ color: 'var(--ink-dim)', fontSize: 13 }}>
+          Press <strong>Generate brief</strong> to summarise the last {minutes}{' '}
+          minutes of WAF telemetry. Each brief is an on-demand LLM call (it
+          costs tokens) — it never runs automatically.
+        </div>
+      )}
+
+      {brief && (
+        <div className="section-row">
+          <div className="card" style={{ flex: 2 }}>
+            <window.SectionHeader
+              title="Situational brief"
+              sub={`${brief.model} · ${
+                (brief.input_tokens || 0) + (brief.output_tokens || 0)
+              } tokens`}
+            />
+            {/* LLM output rendered as plain text (white-space: pre-wrap) —
+                NEVER as HTML, so an untrusted model response can't inject
+                markup. */}
+            <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>
+              {brief.text}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 10, color: 'var(--ink-mute)' }}>
+              Advisory only — verify against the numbers before acting.
+            </div>
+          </div>
+          {snap && (
+            <div className="card" style={{ flex: 1 }}>
+              <window.SectionHeader
+                title="Snapshot"
+                sub={`window ${snap.window_minutes} min`}
+              />
+              <div className="field-label">Blocked (window)</div>
+              <div className="num" style={{ fontSize: 18 }}>
+                {(snap.blocked || 0).toLocaleString()}
+              </div>
+              <div className="field-label" style={{ marginTop: 10 }}>
+                Top detectors
+              </div>
+              {(snap.top_detectors || []).length ? (
+                snap.top_detectors.map(([name, n]) => (
+                  <div
+                    key={name}
+                    style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}
+                  >
+                    <span>{name}</span>
+                    <span className="num">{n}</span>
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
+              )}
+              <div className="field-label" style={{ marginTop: 10 }}>
+                Top attackers
+              </div>
+              {(snap.top_attackers || []).length ? (
+                snap.top_attackers.slice(0, 5).map((a) => (
+                  <div
+                    key={a.ip}
+                    style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}
+                  >
+                    <span>{a.ip}</span>
+                    <span className={`pill ${a.level === 'block' ? 'down' : 'neutral'}`}>
+                      {a.score}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
+              )}
+              <div className="field-label" style={{ marginTop: 10 }}>
+                Active SLO alerts
+              </div>
+              {(snap.active_slo_alerts || []).length ? (
+                snap.active_slo_alerts.map((s, i) => (
+                  <div key={i} style={{ fontSize: 12 }}>
+                    {s}
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 Object.assign(window, {
+  PageCopilot,
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
   PageUpstreams,

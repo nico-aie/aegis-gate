@@ -18,6 +18,7 @@ const { useState, useEffect } = React;
 const NAV = [
   { group: 'Security Ops', items: [
     { id: 'overview',      label: 'Overview',         icon: <window.I.Shield />,   badge: null },
+    { id: 'copilot',       label: 'Copilot',          icon: <window.I.Sparkles />, badge: 'AI', tone: 'warn' },
     { id: 'live',          label: 'Live Feed',        icon: <window.I.Activity />, badge: 'LIVE', tone: 'live' },
     { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: 'NEW', tone: 'warn' },
     { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: 'NEW', tone: 'warn' },
@@ -597,6 +598,7 @@ function App() {
     case 'attack-analytics': page = <window.PageInvestigation />; break;
     // Threat-intel + Compliance pages retired 2026-05-10. Stale
     // deep links fall through to the default `PageOverview` below.
+    case 'copilot':          page = <window.PageCopilot />; break;
     case 'rules':            page = <window.PageRuleManager />; break;
     case 'detectors':        page = <window.PageTierConfig />; break;
     case 'access-lists':     page = <window.PageAccessLists />; break;
