@@ -113,7 +113,7 @@ Anthropic adapter alternatively reads `ANTHROPIC_API_KEY`.
 |---|---|---|
 | **P0** | Provider core: trait + `CostGuard` + redaction gate + OpenAI-compatible & Anthropic adapters | ✅ shipped 2026-06-02 |
 | **P1** | `summarize()` core + snapshot adapter (RiskTracker/SloEngine/detectors) + `GET /api/copilot/summary` endpoint; live-verified end-to-end | ✅ shipped 2026-06-02 |
-| **P2** | Dashboard Copilot panel (summary card + ask box) | planned |
+| **P2** | Dashboard Copilot panel — summary card ✅ (Security Ops → Copilot); ask box pending (needs `/api/copilot/ask`) | 🟡 partial 2026-06-02 |
 | **P3** | Smart-catch triage: event clustering + rule-suggestion review queue | planned |
 | **P4** | Scheduled briefs → alerts pipeline (`OperatorBriefing` event class) | planned |
 
