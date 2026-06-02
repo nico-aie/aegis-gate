@@ -1,9 +1,13 @@
 # AI Operator Copilot
 
-> **Status:** Partial (Phase 0 shipped) — `aegis-control/src/copilot/`
-> (`LlmProvider` trait + `CostGuard` + `redact_for_egress` gate +
-> Anthropic adapter behind the `llm` feature). Telemetry aggregator +
-> `/api/copilot/*` endpoints + dashboard panel are pending (P1–P3).
+> **Status:** Partial — `aegis-control/src/copilot/`. **Phase 0 + P1
+> summary core shipped** (`LlmProvider` trait + `CostGuard` +
+> `redact_for_egress` gate + `summarize()` orchestrator +
+> OpenAI-compatible and Anthropic adapters behind the `llm` feature).
+> **Live-verified 2026-06-02** against an OpenAI-compatible vLLM endpoint
+> (Qwen3.6-35B): a synthetic snapshot produced an accurate situational
+> brief. Pending: the telemetry adapter (RiskTracker/SloEngine →
+> snapshot) + `GET /api/copilot/summary` endpoint + dashboard panel.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status)
 > for the full matrix and
@@ -46,9 +50,13 @@ operator-facing copilot for the WAF itself.
   core. Lives in the control plane because it owns the admin-API surface
   and the audit/metrics read access.
 - **`LlmProvider` trait** — `async fn complete(LlmRequest) -> LlmResponse`.
-  First adapter: **Anthropic Claude** (Messages API), behind the `llm`
-  Cargo feature. Pluggable for a local/self-hosted model in air-gapped
-  deploys.
+  Default adapter: **OpenAI-compatible** (`/v1/chat/completions` — works
+  with vLLM, Ollama, LiteLLM, OpenAI). An **Anthropic** Messages-API
+  adapter is also available. Both behind the `llm` Cargo feature;
+  pluggable for a local/self-hosted model in air-gapped deploys.
+- **`summarize()`** — the orchestrator: render prompt → `redact_for_egress`
+  → `CostGuard.try_admit` → `provider.complete` → record actual usage →
+  `Brief` (prose + the snapshot echoed for operator verification).
 - **`CostGuard`** — per-window token + request budget; reserve-on-estimate,
   true-up on the provider's actual usage.
 - **`redact_for_egress`** — the **mandatory** PII/secret scrub
@@ -79,30 +87,32 @@ operator-facing copilot for the WAF itself.
 
 All under the admin listener auth (see [`dashboard-auth.md`](./dashboard-auth.md)).
 
-## Configuration (planned)
+## Configuration
 
-```yaml
-copilot:
-  enabled: false                 # off by default
-  provider: anthropic            # | local
-  model: "claude-haiku-4-5"      # cost/latency sweet spot for summaries
-  api_key: "${secret:anthropic_api_key}"
-  budget:
-    max_tokens_per_window: 200000
-    max_requests_per_window: 60
-    window_seconds: 3600
+The OpenAI-compatible adapter reads `LLM_*` environment variables
+(operators wire these from their secret manager — the key is read at
+runtime, never persisted):
+
+```bash
+LLM_ENABLED=true
+LLM_BASE_URL=https://host/v1        # /chat/completions is appended
+LLM_API_KEY=sk-...                  # sent as: Authorization: Bearer
+LLM_MODEL=Qwen3.6-35B-A3B           # any model the endpoint serves
+LLM_TIMEOUT_MS=4000
 ```
 
-The Anthropic key resolves through the standard secret resolver
-([`secrets-management.md`](./secrets-management.md)); when unset the
-provider reports `Disabled` and the copilot degrades to off.
+When `LLM_ENABLED` isn't `true`, or the base URL / key / model are
+missing, the provider reports `Disabled` and the copilot degrades to
+off (never errors the WAF). The per-window cost/rate budget is set on
+the `CostGuard` at construction (token cap, request cap, window). The
+Anthropic adapter alternatively reads `ANTHROPIC_API_KEY`.
 
 ## Phases
 
 | Phase | Scope | Status |
 |---|---|---|
-| **P0** | Provider core: trait + `CostGuard` + redaction gate + Anthropic adapter | ✅ shipped 2026-06-02 |
-| **P1** | `TelemetrySnapshot` aggregator + `GET /api/copilot/summary` (read → redact → prompt → structured brief) | next |
+| **P0** | Provider core: trait + `CostGuard` + redaction gate + OpenAI-compatible & Anthropic adapters | ✅ shipped 2026-06-02 |
+| **P1** | `summarize()` orchestration core (snapshot → redact → budget → provider → brief) ✅ + live-verified; **remaining:** snapshot adapter (RiskTracker/SloEngine) + `GET /api/copilot/summary` endpoint | in progress |
 | **P2** | Dashboard Copilot panel (summary card + ask box) | planned |
 | **P3** | Smart-catch triage: event clustering + rule-suggestion review queue | planned |
 | **P4** | Scheduled briefs → alerts pipeline (`OperatorBriefing` event class) | planned |
