@@ -19,6 +19,9 @@
 
 #[cfg(feature = "llm")]
 pub mod anthropic;
+#[cfg(feature = "llm")]
+pub mod openai;
+pub mod summary;
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
