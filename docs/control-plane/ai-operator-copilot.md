@@ -8,7 +8,9 @@
 > against an OpenAI-compatible vLLM endpoint (Qwen3.6-35B): the endpoint
 > returned an accurate situational brief over live telemetry. Pending:
 > the dashboard panel (P2) + smart-catch triage (P3) — all shipped +
-> live-verified 2026-06-02. Pending: P4 (scheduled briefs → alerts).
+> all live-verified 2026-06-02 — including P4 (scheduled briefings →
+> alerts pipeline). The copilot track (P0–P4) is complete; per-event
+> clustering (vs the aggregate snapshot) is the documented follow-up.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status)
 > for the full matrix and
@@ -100,6 +102,7 @@ LLM_BASE_URL=https://host/v1        # /chat/completions is appended
 LLM_API_KEY=sk-...                  # sent as: Authorization: Bearer
 LLM_MODEL=Qwen3.6-35B-A3B           # any model the endpoint serves
 LLM_TIMEOUT_MS=4000
+LLM_BRIEFING_INTERVAL_SECS=0   # >0 (≥60) enables scheduled briefings → alerts
 ```
 
 When `LLM_ENABLED` isn't `true`, or the base URL / key / model are
@@ -116,7 +119,7 @@ Anthropic adapter alternatively reads `ANTHROPIC_API_KEY`.
 | **P1** | `summarize()` core + snapshot adapter (RiskTracker/SloEngine/detectors) + `GET /api/copilot/summary` endpoint; live-verified end-to-end | ✅ shipped 2026-06-02 |
 | **P2** | Dashboard Copilot panel — summary card + ask box (Security Ops → Copilot); `GET /api/copilot/summary` + `GET /api/copilot/ask`. Live-verified. | ✅ shipped 2026-06-02 |
 | **P3** | Smart-catch triage: campaign clustering + rule-suggestion queue (`GET /api/copilot/suggestions` + panel card); live-verified | ✅ shipped 2026-06-02 |
-| **P4** | Scheduled briefs → alerts pipeline (`OperatorBriefing` event class) | planned |
+| **P4** | Scheduled briefings → alerts pipeline (`AlertEvent::OperatorBriefing`, Info; `LLM_BRIEFING_INTERVAL_SECS`, floor 60s, off by default); live-verified | ✅ shipped 2026-06-02 |
 
 ## Related
 

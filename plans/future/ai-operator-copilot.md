@@ -1,8 +1,11 @@
 # AI Operator Copilot — LLM situational summary + smart-catch triage
 
-> **Status:** Drafted 2026-06-01. **Next active track** (replaces the
-> Tier 1A / B1 API-security wire-up as the chosen focus). No production
-> code yet — types/design only.
+> **Status:** ✅ **P0–P4 SHIPPED + live-verified 2026-06-02** (behind
+> `--features llm`). Implementation lives in `aegis-control/src/copilot/`
+> + the `/api/copilot/*` endpoints + the dashboard Copilot panel; feature
+> spec at `docs/control-plane/ai-operator-copilot.md`. Remaining
+> follow-up: per-event clustering (the snapshot is aggregate today).
+> This doc is the build plan kept for the decision trail.
 >
 > **One-liner:** a generative-LLM layer that reads the WAF's own
 > telemetry (audit chain, metrics, risk buckets, detector hits) and
@@ -137,7 +140,7 @@ deterministic; the LLM adds a slow reasoning layer an operator drives.
 | **P1** | ✅ **DONE + live-verified end-to-end 2026-06-02.** `summary.rs` orchestration (render → redact → budget-admit → provider → record-usage → `Brief`); snapshot adapter (`admin_get::build_copilot_snapshot` — `risk.top` + `attacks_agg.by_detector` + `tracking.active_slo_alert_labels`); `CopilotService` global (env-built provider + `CostGuard`); `GET /api/copilot/summary?minutes=N` async admin endpoint (`llm` feature; 503 disabled / 502 provider-error). 14 unit tests. **Live e2e:** logged in, drove attack traffic, the endpoint returned an accurate brief from the vLLM endpoint (Qwen3.6-35B). Fixed a UX bug found in the smoke (omit `total_requests` when unknown so the model doesn't read 0 as an outage). | M |
 | **P2** | ✅ **DONE + live-verified 2026-06-02.** Dashboard `PageCopilot` (Security Ops → Copilot): on-demand "Generate brief" + window selector (brief prose beside snapshot numbers) **and** an "Ask the copilot" box (free-form Q&A). Backend `GET /api/copilot/summary` + `GET /api/copilot/ask?q=…` (shared `run()` pipeline; question redacted too; 400 on empty q). LLM text rendered as plain text (no HTML injection). 15 unit tests; bundle under budget; both endpoints live-verified against the vLLM endpoint. | M |
 | **P3** | ✅ **DONE + live-verified 2026-06-02.** `triage.rs`: `triage()` asks the LLM to cluster the snapshot into campaigns + ONE candidate rule each (strict JSON; lenient parse tolerant of prose/fences; raw-text fallback when unparseable). `GET /api/copilot/suggestions` + dashboard "Smart-catch triage" card (clusters + confidence + suggested rule in `<code>`, advisory/human-in-the-loop). 4 triage unit tests. Live: `[]` on a thin snapshot; 5 grounded suggestions on a richer one. v1 reasons over the aggregate snapshot — per-event clustering over the audit ring is a follow-up. Promote stays manual (operator previews via Rules → simulate). | L |
-| **P4** | Scheduled briefs → alerts pipeline (`OperatorBriefing` event class + dedup). | S |
+| **P4** | ✅ **DONE + live-verified 2026-06-02.** `AlertEvent::OperatorBriefing` (Info) + format arm; a scheduler task in `accept.rs` (next to the SLO eval loop) builds a snapshot every `LLM_BRIEFING_INTERVAL_SECS` (floor 60s, off by default), asks the copilot for a brief, and `dispatch_event`s it into the alerts pipeline (no dedup — distinct content). Live: "scheduler started" at boot → "briefing dispatched" one tick later. | S |
 
 ## Risks / open questions
 
