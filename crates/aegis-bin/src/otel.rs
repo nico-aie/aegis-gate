@@ -98,6 +98,27 @@ pub fn init_or_default(cfg: &WafConfig) -> bool {
     }
 }
 
+/// Flush the in-flight OTLP span batch on graceful shutdown so the last
+/// spans (e.g. requests served during the drain window) aren't dropped
+/// by the batch processor when the process exits. Call once after the
+/// server loop returns, while the tokio runtime is still alive.
+///
+/// No-op without `--features otel` or when the exporter was never wired
+/// (no endpoint configured / init failed). Best-effort: flush errors are
+/// logged, never propagated — shutdown must not fail on telemetry.
+pub fn shutdown() {
+    #[cfg(feature = "otel")]
+    {
+        if let Some(provider) = OTEL_PROVIDER.get() {
+            for res in provider.force_flush() {
+                if let Err(e) = res {
+                    tracing::warn!(error = ?e, "otel span flush on shutdown failed");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(feature = "otel")]
 fn install_with_otel(otel_cfg: &aegis_core::config::OtelConfig) -> bool {
     use opentelemetry::trace::TracerProvider;

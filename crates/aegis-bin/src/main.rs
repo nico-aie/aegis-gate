@@ -210,7 +210,7 @@ async fn run_gateway_inner(
     let cfg_swap = Arc::new(arc_swap::ArcSwap::from(cfg));
 
     let reload_source = resolve_reload_source(config_path);
-    aegis_proxy::run(
+    let result = aegis_proxy::run(
         cfg_swap,
         pipeline,
         state,
@@ -219,7 +219,15 @@ async fn run_gateway_inner(
         readiness,
         reload_source,
     )
-    .await
+    .await;
+
+    // P4 (2026-06-02) — flush the in-flight OTLP span batch before exit
+    // so spans from requests served during the drain window aren't lost.
+    // Runs after the server loop returns, while the runtime is still
+    // alive (we're inside the runtime's block_on). No-op without `otel`.
+    otel::shutdown();
+
+    result
 }
 
 /// Pick the [`aegis_proxy::ConfigReloadSource`] for `run_gateway`.
