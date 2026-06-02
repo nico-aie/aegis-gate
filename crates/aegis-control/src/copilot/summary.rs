@@ -24,7 +24,11 @@ pub struct AttackerRow {
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct TelemetrySnapshot {
     pub window_minutes: u32,
-    pub total_requests: u64,
+    /// Total requests in the window. `None` when no windowed request
+    /// counter is available — omitted from the prompt so the model
+    /// doesn't misread a placeholder `0` as a total outage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_requests: Option<u64>,
     pub blocked: u64,
     pub top_attackers: Vec<AttackerRow>,
     /// detector class → hit count, highest first.
@@ -119,7 +123,7 @@ mod tests {
     fn snap() -> TelemetrySnapshot {
         TelemetrySnapshot {
             window_minutes: 15,
-            total_requests: 9600,
+            total_requests: Some(9600),
             blocked: 412,
             top_attackers: vec![AttackerRow {
                 ip: "203.0.113.10".into(),

@@ -1275,7 +1275,9 @@ fn build_copilot_snapshot(
         .collect();
     TelemetrySnapshot {
         window_minutes,
-        total_requests: 0, // request-volume counter not surfaced here yet
+        // No windowed request-volume counter available — leave None so
+        // the model doesn't read a placeholder 0 as a total outage.
+        total_requests: None,
         blocked,
         top_attackers,
         top_detectors,
