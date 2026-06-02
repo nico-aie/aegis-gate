@@ -76,34 +76,33 @@ pub(crate) async fn handle_mode_put(
     let pre = mutation_preamble(&req, "mode-put");
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
-        Err(_) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-        ),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
     let parsed: serde_json::Value =
         serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str })
             .unwrap_or(serde_json::Value::Null);
-    let mode_str = parsed
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let mode_str = parsed.get("mode").and_then(|v| v.as_str()).unwrap_or("");
     let new_mode = match mode_str {
         "enforce" => aegis_control::interop::headers::Mode::Enforce,
         "log_only" | "shadow" => aegis_control::interop::headers::Mode::LogOnly,
-        _ => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(
-                "mode must be 'enforce' or 'log_only'".into(),
-            ),
-        ),
+        _ => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "mode must be 'enforce' or 'log_only'".into(),
+                ),
+            )
+        }
     };
 
     let Some(rt) = services.interop.as_ref() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "interop runtime not wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "interop runtime not wired".into(),
+        ));
     };
     let before = serde_json::json!({"mode": rt.modes.current().default.as_str()});
     let req_ctx = aegis_control::api::mutation::MutationRequest {
@@ -117,15 +116,17 @@ pub(crate) async fn handle_mode_put(
         reason: "operator pins global mode",
     };
     let modes = rt.modes.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before,
-        serde_json::json!({"mode": new_mode.as_str()}),
-        || {
-            modes.set_all(new_mode);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            serde_json::json!({"mode": new_mode.as_str()}),
+            || {
+                modes.set_all(new_mode);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -172,10 +173,7 @@ fn redact_receivers_for_audit(
 /// raw request JSON; `PoolConfig` isn't `Serialize` so we route the
 /// operator's authored value straight through JSON → YAML, preserving
 /// hostnames). The apply-side resolves them per-node at activation.
-fn patch_upstreams_replace(
-    base: &str,
-    pools_json: &serde_json::Value,
-) -> Result<String, String> {
+fn patch_upstreams_replace(base: &str, pools_json: &serde_json::Value) -> Result<String, String> {
     let mut doc: serde_yaml::Value =
         serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
     let serde_yaml::Value::Mapping(map) = &mut doc else {
@@ -242,21 +240,24 @@ pub(crate) async fn handle_upstreams_config_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
-    let body_json: serde_json::Value =
-        match serde_json::from_str(if body_str.is_empty() { "{\"pools\":{}}" } else { body_str }) {
-            Ok(v) => v,
-            Err(e) => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-                )
-            }
-        };
+    let body_json: serde_json::Value = match serde_json::from_str(if body_str.is_empty() {
+        "{\"pools\":{}}"
+    } else {
+        body_str
+    }) {
+        Ok(v) => v,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
     let pools_json = body_json
         .get("pools")
         .cloned()
@@ -299,11 +300,9 @@ pub(crate) async fn handle_upstreams_config_put(
         }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -324,7 +323,9 @@ pub(crate) async fn handle_upstreams_config_put(
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            store_for_apply.activate(expected, blob, &actor, "replace upstream pools").await
+            store_for_apply
+                .activate(expected, blob, &actor, "replace upstream pools")
+                .await
         })
         .await;
     match outcome {
@@ -366,9 +367,9 @@ pub(crate) async fn handle_pool_upsert(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -380,15 +381,15 @@ pub(crate) async fn handle_pool_upsert(
             )
         }
     };
-    let pool_typed: aegis_core::config::PoolConfig =
-        match serde_json::from_value(pool_json.clone()) {
-            Ok(p) => p,
-            Err(e) => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-                )
-            }
-        };
+    let pool_typed: aegis_core::config::PoolConfig = match serde_json::from_value(pool_json.clone())
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
     let mut one = std::collections::HashMap::new();
     one.insert(pool_id.to_string(), pool_typed);
     if let Err(e) = validate_upstream_resolvable(one).await {
@@ -408,11 +409,9 @@ pub(crate) async fn handle_pool_upsert(
         }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -435,7 +434,9 @@ pub(crate) async fn handle_pool_upsert(
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            store_for_apply.activate(expected, blob, &actor, "upsert upstream pool").await
+            store_for_apply
+                .activate(expected, blob, &actor, "upsert upstream pool")
+                .await
         })
         .await;
     match outcome {
@@ -478,19 +479,15 @@ pub(crate) async fn handle_pool_delete(
     let doc_cfg = match aegis_core::load_config_str(&base_blob) {
         Ok(c) => c,
         Err(e) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(format!(
-                    "active config doc failed to parse: {e}"
-                )),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("active config doc failed to parse: {e}"),
+            ))
         }
     };
     if !doc_cfg.upstreams.contains_key(pool_id) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "no pool named '{pool_id}'"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("no pool named '{pool_id}'"),
+        ));
     }
     // Refuse with the route-reference list (checked against the doc —
     // the source of truth) so the dashboard's delete confirm modal can
@@ -518,11 +515,9 @@ pub(crate) async fn handle_pool_delete(
         }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -545,7 +540,9 @@ pub(crate) async fn handle_pool_delete(
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            store_for_apply.activate(expected, blob, &actor, "delete upstream pool").await
+            store_for_apply
+                .activate(expected, blob, &actor, "delete upstream pool")
+                .await
         })
         .await;
     match outcome {
@@ -583,22 +580,18 @@ pub(crate) async fn handle_alert_receivers_put(
     let pre = mutation_preamble(&req, "alert-receivers-put");
 
     let Some(store) = services.alert_receivers_store.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "alert receivers store not wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "alert receivers store not wired".into(),
+        ));
     };
     let ring = services.alert_receivers_ring.clone();
 
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -620,12 +613,10 @@ pub(crate) async fn handle_alert_receivers_put(
         }
     };
 
-    if let Err(e) =
-        aegis_control::api::alert_receivers::validate_receivers(&parsed.receivers)
-    {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-        );
+    if let Err(e) = aegis_control::api::alert_receivers::validate_receivers(&parsed.receivers) {
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            e.to_string(),
+        ));
     }
 
     let current = (**store.load()).clone();
@@ -646,25 +637,15 @@ pub(crate) async fn handle_alert_receivers_put(
     let store_for_apply = Arc::clone(&store);
     let next_for_apply = parsed.receivers;
     let ring_for_apply = ring.clone();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        after,
-        || {
-            // Delegate to the pure helper in aegis-control so the
-            // validate→swap→prune sequence is unit-tested in one
-            // place. Validation already ran above; this call
-            // returns Ok in all reachable paths.
-            let placeholder_ring =
-                aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
-            let r = ring_for_apply.as_ref().unwrap_or(&placeholder_ring);
-            aegis_control::api::alert_receivers::apply_replace(
-                &store_for_apply,
-                r,
-                next_for_apply,
-            )
-        },
-    );
+    let outcome = services.mutate.apply(&req_ctx, before, after, || {
+        // Delegate to the pure helper in aegis-control so the
+        // validate→swap→prune sequence is unit-tested in one
+        // place. Validation already ran above; this call
+        // returns Ok in all reachable paths.
+        let placeholder_ring = aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
+        let r = ring_for_apply.as_ref().unwrap_or(&placeholder_ring);
+        aegis_control::api::alert_receivers::apply_replace(&store_for_apply, r, next_for_apply)
+    });
     match outcome {
         Ok(out) => json_response(
             200,
@@ -687,28 +668,21 @@ pub(crate) async fn handle_alert_receiver_delete(
     let pre = mutation_preamble(&req, "alert-receiver-delete");
 
     let Some(store) = services.alert_receivers_store.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "alert receivers store not wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "alert receivers store not wired".into(),
+        ));
     };
     let ring = services.alert_receivers_ring.clone();
 
     let current = (**store.load()).clone();
-    let next: Vec<aegis_control::slo::AlertReceiver> = current
-        .iter()
-        .filter(|r| r.name != name)
-        .cloned()
-        .collect();
+    let next: Vec<aegis_control::slo::AlertReceiver> =
+        current.iter().filter(|r| r.name != name).cloned().collect();
     if next.len() == current.len() {
         // Name not found — surface a validation-class error so the
         // dashboard can show "no such receiver" without 500-ing.
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "no receiver named '{name}'"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("no receiver named '{name}'"),
+        ));
     }
 
     let before = redact_receivers_for_audit(&current);
@@ -728,21 +702,11 @@ pub(crate) async fn handle_alert_receiver_delete(
     let store_for_apply = Arc::clone(&store);
     let ring_for_apply = ring.clone();
     let target_name = name.to_string();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        after,
-        move || {
-            let placeholder_ring =
-                aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
-            let r = ring_for_apply.as_ref().unwrap_or(&placeholder_ring);
-            aegis_control::api::alert_receivers::apply_delete(
-                &store_for_apply,
-                r,
-                &target_name,
-            )
-        },
-    );
+    let outcome = services.mutate.apply(&req_ctx, before, after, move || {
+        let placeholder_ring = aegis_control::api::alert_receivers::DispatchOutcomeRing::new();
+        let r = ring_for_apply.as_ref().unwrap_or(&placeholder_ring);
+        aegis_control::api::alert_receivers::apply_delete(&store_for_apply, r, &target_name)
+    });
     match outcome {
         Ok(o) => json_response(
             200,
@@ -765,11 +729,9 @@ pub(crate) async fn handle_alert_receiver_test(
     let pre = mutation_preamble(&req, "alert-receiver-test");
 
     let Some(store) = services.alert_receivers_store.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "alert receivers store not wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "alert receivers store not wired".into(),
+        ));
     };
 
     // Resolve the receiver by name. Done *before* CSRF validation
@@ -798,6 +760,8 @@ pub(crate) async fn handle_alert_receiver_test(
         budget_consumed_pct: 0.0,
         window_hours: 1,
         runbook_url: "https://runbooks.aegis.local/test".into(),
+        measured: 1.0,
+        target: 0.999,
     };
 
     // Audit-mutate envelope first (CSRF + chain entry), then run
@@ -822,23 +786,22 @@ pub(crate) async fn handle_alert_receiver_test(
         action: "alert_receiver_test",
         reason: "operator fired test alert",
     };
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before,
-        after,
-        || Ok(()),
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            after,
+            || Ok(()),
+        );
     if let Err(e) = outcome {
         return mutation_error_response(e);
     }
 
     // Deliver the synthetic alert against the targeted receiver
     // (length-1 slice — only this channel fires).
-    let summary = aegis_control::slo::dispatch::send_alert(
-        &synthetic,
-        std::slice::from_ref(&receiver),
-    )
-    .await;
+    let summary =
+        aegis_control::slo::dispatch::send_alert(&synthetic, std::slice::from_ref(&receiver)).await;
 
     if let Some(ring) = services.alert_receivers_ring.as_ref() {
         let now = chrono::Utc::now().timestamp();
@@ -899,15 +862,17 @@ pub(crate) async fn handle_alert_ack(
     };
     let tracking = services.tracking.clone();
     let alert_id_owned = alert_id.to_string();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        serde_json::Value::Null,
-        serde_json::json!({"alert_id": alert_id, "acked": true}),
-        || {
-            tracking.ack(&alert_id_owned);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            serde_json::Value::Null,
+            serde_json::json!({"alert_id": alert_id, "acked": true}),
+            || {
+                tracking.ack(&alert_id_owned);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -988,10 +953,7 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
     }
 
     let now = chrono::Utc::now().timestamp();
-    let preview = aegis_control::api::mtls_ca_bundle::parse_and_preview(
-        body_bytes.as_ref(),
-        now,
-    );
+    let preview = aegis_control::api::mtls_ca_bundle::parse_and_preview(body_bytes.as_ref(), now);
 
     if !preview.valid {
         return json_response(
@@ -1020,12 +982,14 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
             action: "mtls_ca_bundle_validated",
             reason: "operator previewed CA bundle (no swap)",
         };
-        let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-            &req_ctx,
-            serde_json::Value::Null,
-            after_payload,
-            || Ok(()),
-        );
+        let outcome = services
+            .mutate
+            .apply::<_, (), aegis_control::api::mutation::MutationError>(
+                &req_ctx,
+                serde_json::Value::Null,
+                after_payload,
+                || Ok(()),
+            );
         return match outcome {
             Ok(_) => json_response(
                 200,
@@ -1061,13 +1025,10 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
     let before_preview = if before_pem.is_empty() {
         Vec::new()
     } else {
-        aegis_control::api::mtls_ca_bundle::parse_and_preview(&before_pem, now)
-            .certificates
+        aegis_control::api::mtls_ca_bundle::parse_and_preview(&before_pem, now).certificates
     };
-    let diff = aegis_control::api::mtls_ca_bundle::diff_previews(
-        &before_preview,
-        &preview.certificates,
-    );
+    let diff =
+        aegis_control::api::mtls_ca_bundle::diff_previews(&before_preview, &preview.certificates);
 
     let before_payload = serde_json::json!({
         "blocks_seen": before_preview.len(),
@@ -1096,16 +1057,14 @@ pub(crate) async fn handle_mtls_ca_bundle_put(
         reason: "operator hot-swapped CA bundle",
     };
 
-    let outcome = services.mutate.apply::<_, usize, String>(
-        &req_ctx,
-        before_payload,
-        after_payload,
-        || {
-            writer_cl
-                .swap_pem(body_for_swap.as_ref())
-                .map_err(|e| format!("trust anchor swap failed: {e}"))
-        },
-    );
+    let outcome =
+        services
+            .mutate
+            .apply::<_, usize, String>(&req_ctx, before_payload, after_payload, || {
+                writer_cl
+                    .swap_pem(body_for_swap.as_ref())
+                    .map_err(|e| format!("trust anchor swap failed: {e}"))
+            });
 
     match outcome {
         Ok(out) => json_response(
@@ -1219,21 +1178,21 @@ pub(crate) async fn handle_mtls_mode_put(
         reason: "operator changed mtls mode override",
     };
 
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before_payload,
-        after_payload.clone(),
-        applier,
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before_payload,
+            after_payload.clone(),
+            applier,
+        );
 
     match outcome {
         Ok(_) => {
             // Echo the new effective state in the response so the
             // dashboard doesn't need an immediate GET round-trip.
-            let body = aegis_control::api::mtls_mode::render_mode_response(
-                configured,
-                store.current(),
-            );
+            let body =
+                aegis_control::api::mtls_mode::render_mode_response(configured, store.current());
             json_response(
                 200,
                 &serde_json::json!({
@@ -1285,18 +1244,20 @@ pub(crate) async fn handle_incident_ack(
     let incidents = services.incidents.clone();
     let alert_id_owned = alert_id.to_string();
     let actor_owned = pre.actor.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        serde_json::Value::Null,
-        serde_json::json!({"alert_id": alert_id, "status": "acknowledged"}),
-        || {
-            // Keep the legacy tracking.ack store in sync so
-            // /api/alerts continues to return the same view.
-            tracking.ack(&alert_id_owned);
-            incidents.ack(&alert_id_owned, Some(actor_owned.clone()), note.clone());
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            serde_json::Value::Null,
+            serde_json::json!({"alert_id": alert_id, "status": "acknowledged"}),
+            || {
+                // Keep the legacy tracking.ack store in sync so
+                // /api/alerts continues to return the same view.
+                tracking.ack(&alert_id_owned);
+                incidents.ack(&alert_id_owned, Some(actor_owned.clone()), note.clone());
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -1325,10 +1286,7 @@ pub(crate) async fn handle_incident_snooze(
     let body: serde_json::Value =
         serde_json::from_slice(&body_bytes).unwrap_or(serde_json::Value::Null);
     // Default to 15-minute snooze when no field provided.
-    let minutes = body
-        .get("minutes")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(15);
+    let minutes = body.get("minutes").and_then(|v| v.as_u64()).unwrap_or(15);
     let note = body.get("note").and_then(|v| v.as_str()).map(String::from);
     let until = chrono::Utc::now() + chrono::Duration::minutes(minutes as i64);
 
@@ -1397,15 +1355,17 @@ pub(crate) async fn handle_incident_resolve(
     let incidents = services.incidents.clone();
     let alert_id_owned = alert_id.to_string();
     let actor_owned = pre.actor.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        serde_json::Value::Null,
-        serde_json::json!({"alert_id": alert_id, "status": "resolved"}),
-        || {
-            incidents.resolve(&alert_id_owned, Some(actor_owned.clone()), note.clone());
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            serde_json::Value::Null,
+            serde_json::json!({"alert_id": alert_id, "status": "resolved"}),
+            || {
+                incidents.resolve(&alert_id_owned, Some(actor_owned.clone()), note.clone());
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -1471,26 +1431,23 @@ pub(crate) async fn handle_logging_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "failed to read request body".into(),
-                ),
-            );
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "failed to read request body".into(),
+            ));
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
-    let parsed: aegis_control::api::logging::LoggingPutBody =
-        match serde_json::from_str(body_str) {
-            Ok(b) => b,
-            Err(e) => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-                );
-            }
-        };
+    let parsed: aegis_control::api::logging::LoggingPutBody = match serde_json::from_str(body_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            );
+        }
+    };
 
-    let before = serde_json::to_value(services.verbosity.snapshot())
-        .unwrap_or(serde_json::Value::Null);
+    let before =
+        serde_json::to_value(services.verbosity.snapshot()).unwrap_or(serde_json::Value::Null);
     let after = serde_json::json!({"level": parsed.level});
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
@@ -1568,11 +1525,9 @@ pub(crate) async fn handle_loadmode_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "failed to read request body".into(),
-                ),
-            );
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "failed to read request body".into(),
+            ));
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -1586,8 +1541,8 @@ pub(crate) async fn handle_loadmode_put(
             }
         };
 
-    let before = serde_json::to_value(services.load_gauge.snapshot())
-        .unwrap_or(serde_json::Value::Null);
+    let before =
+        serde_json::to_value(services.load_gauge.snapshot()).unwrap_or(serde_json::Value::Null);
     let req_ctx = aegis_control::api::mutation::MutationRequest {
         method: "PUT",
         csrf_cookie: csrf_cookie.as_deref(),
@@ -1599,12 +1554,11 @@ pub(crate) async fn handle_loadmode_put(
         reason: "operator pins load mode",
     };
     let gauge = services.load_gauge.clone();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        serde_json::Value::Null,
-        || aegis_control::api::load_mode::apply_put_body(&gauge, parsed),
-    );
+    let outcome = services
+        .mutate
+        .apply(&req_ctx, before, serde_json::Value::Null, || {
+            aegis_control::api::load_mode::apply_put_body(&gauge, parsed)
+        });
 
     match outcome {
         Ok(_) => json_body_response(
@@ -1673,11 +1627,9 @@ pub(crate) async fn handle_config_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "failed to read request body".into(),
-                ),
-            );
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "failed to read request body".into(),
+            ));
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -1693,19 +1645,15 @@ pub(crate) async fn handle_config_put(
     // Single validation surface: the blob must parse as a WafConfig
     // before it can be activated. Reject early — nothing is written.
     if let Err(e) = aegis_core::load_config_str(&parsed.blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "config blob failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("config blob failed validation: {e}"),
+        ));
     }
 
     let Some(backend) = services.state_backend.as_ref() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "config plane unavailable: no state backend wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "config plane unavailable: no state backend wired".into(),
+        ));
     };
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
@@ -1777,11 +1725,9 @@ pub(crate) async fn handle_config_rollback(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "failed to read request body".into(),
-                ),
-            );
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "failed to read request body".into(),
+            ));
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -1795,11 +1741,9 @@ pub(crate) async fn handle_config_rollback(
     };
 
     let Some(backend) = services.state_backend.as_ref() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "config plane unavailable: no state backend wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "config plane unavailable: no state backend wired".into(),
+        ));
     };
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
@@ -1863,7 +1807,10 @@ struct MutationPreamble {
     request_id: String,
 }
 
-fn mutation_preamble(req: &hyper::Request<hyper::body::Incoming>, prefix: &str) -> MutationPreamble {
+fn mutation_preamble(
+    req: &hyper::Request<hyper::body::Incoming>,
+    prefix: &str,
+) -> MutationPreamble {
     let csrf_cookie = req
         .headers()
         .get_all(hyper::header::COOKIE)
@@ -1905,7 +1852,12 @@ fn mutation_preamble(req: &hyper::Request<hyper::body::Incoming>, prefix: &str) 
             .to_hex()
             .to_string()
         });
-    MutationPreamble { csrf_cookie, csrf_header, actor, request_id }
+    MutationPreamble {
+        csrf_cookie,
+        csrf_header,
+        actor,
+        request_id,
+    }
 }
 
 /// 2026-05-27 (Phase B rules fold) — get-or-create the
@@ -1943,12 +1895,7 @@ fn rule_def_yaml(id: &str, body: &str, enabled: bool) -> serde_yaml::Value {
 /// Upsert one rule into `cfg.rules.inline` on a YAML config blob:
 /// replace the entry with matching `id` in place, or append a new one.
 /// Used by the folded `POST`/`PUT`/toggle rule handlers.
-fn patch_rule_upsert(
-    base: &str,
-    id: &str,
-    body: &str,
-    enabled: bool,
-) -> Result<String, String> {
+fn patch_rule_upsert(base: &str, id: &str, body: &str, enabled: bool) -> Result<String, String> {
     let mut doc: serde_yaml::Value =
         serde_yaml::from_str(base).map_err(|e| format!("base config not YAML: {e}"))?;
     let serde_yaml::Value::Mapping(map) = &mut doc else {
@@ -1987,10 +1934,7 @@ fn patch_rule_remove(base: &str, id: &str) -> Result<String, String> {
 /// source of truth), not the eventually-consistent local store.
 async fn load_active_config_doc(
     services: &aegis_control::dashboard_services::DashboardServices,
-) -> Result<
-    (crate::config_source::config_store::ConfigStore, String, u64),
-    Response<Full<Bytes>>,
-> {
+) -> Result<(crate::config_source::config_store::ConfigStore, String, u64), Response<Full<Bytes>>> {
     let Some(backend) = services.state_backend.as_ref() else {
         return Err(mutation_error_response(
             aegis_control::api::mutation::MutationError::Internal(
@@ -2013,7 +1957,8 @@ async fn load_active_config_doc(
             },
             None => Err(mutation_error_response(
                 aegis_control::api::mutation::MutationError::Validation(
-                    "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
+                    "no shared config activated yet — publish a baseline via PUT /api/config first"
+                        .into(),
                 ),
             )),
         },
@@ -2047,15 +1992,19 @@ pub(crate) async fn handle_rules_post(
     let pre = mutation_preamble(&req, "rules-post");
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
-        Err(_) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-        ),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
     };
     let parsed: RulePostBody = match serde_json::from_slice(&body_bytes) {
         Ok(p) => p,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
     };
 
     // Validate id + body up front — `load_config_str` on the patched
@@ -2082,11 +2031,11 @@ pub(crate) async fn handle_rules_post(
     // create-then-edit before the watcher polls behaves correctly.
     let doc_cfg = match aegis_core::load_config_str(&base_blob) {
         Ok(c) => c,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(format!(
-                "active config doc failed to parse: {e}"
-            )),
-        ),
+        Err(e) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("active config doc failed to parse: {e}"),
+            ))
+        }
     };
     if doc_cfg.rules.inline.iter().any(|r| r.id == parsed.id) {
         return json_response(
@@ -2097,16 +2046,16 @@ pub(crate) async fn handle_rules_post(
 
     let new_blob = match patch_rule_upsert(&base_blob, &parsed.id, &parsed.body, parsed.enabled) {
         Ok(b) => b,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -2127,7 +2076,9 @@ pub(crate) async fn handle_rules_post(
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            store_for_apply.activate(expected, blob, &actor, "create rule").await
+            store_for_apply
+                .activate(expected, blob, &actor, "create rule")
+                .await
         })
         .await;
     match outcome {
@@ -2166,15 +2117,19 @@ pub(crate) async fn handle_rules_put(
     let pre = mutation_preamble(&req, "rules-put");
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
-        Err(_) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-        ),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
     };
     let parsed: RulePutBody = match serde_json::from_slice(&body_bytes) {
         Ok(p) => p,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
     };
 
     let mut v = aegis_control::api::rules::validate_rule_body(&parsed.body);
@@ -2192,11 +2147,11 @@ pub(crate) async fn handle_rules_put(
     };
     let doc_cfg = match aegis_core::load_config_str(&base_blob) {
         Ok(c) => c,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(format!(
-                "active config doc failed to parse: {e}"
-            )),
-        ),
+        Err(e) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("active config doc failed to parse: {e}"),
+            ))
+        }
     };
     if !doc_cfg.rules.inline.iter().any(|r| r.id == rule_id) {
         return json_response(
@@ -2207,16 +2162,16 @@ pub(crate) async fn handle_rules_put(
 
     let new_blob = match patch_rule_upsert(&base_blob, rule_id, &parsed.body, parsed.enabled) {
         Ok(b) => b,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -2238,7 +2193,9 @@ pub(crate) async fn handle_rules_put(
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            store_for_apply.activate(expected, blob, &actor, "update rule").await
+            store_for_apply
+                .activate(expected, blob, &actor, "update rule")
+                .await
         })
         .await;
     match outcome {
@@ -2280,11 +2237,11 @@ pub(crate) async fn handle_rules_delete(
     };
     let doc_cfg = match aegis_core::load_config_str(&base_blob) {
         Ok(c) => c,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(format!(
-                "active config doc failed to parse: {e}"
-            )),
-        ),
+        Err(e) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("active config doc failed to parse: {e}"),
+            ))
+        }
     };
     if !doc_cfg.rules.inline.iter().any(|r| r.id == rule_id) {
         return json_response(
@@ -2295,16 +2252,16 @@ pub(crate) async fn handle_rules_delete(
 
     let new_blob = match patch_rule_remove(&base_blob, rule_id) {
         Ok(b) => b,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -2326,7 +2283,9 @@ pub(crate) async fn handle_rules_delete(
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            store_for_apply.activate(expected, blob, &actor, "delete rule").await
+            store_for_apply
+                .activate(expected, blob, &actor, "delete rule")
+                .await
         })
         .await;
     match outcome {
@@ -2368,11 +2327,11 @@ pub(crate) async fn handle_rules_toggle(
     };
     let doc_cfg = match aegis_core::load_config_str(&base_blob) {
         Ok(c) => c,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(format!(
-                "active config doc failed to parse: {e}"
-            )),
-        ),
+        Err(e) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("active config doc failed to parse: {e}"),
+            ))
+        }
     };
     // Read the current rule from the doc (source of truth) so the flip
     // is against the authoritative state, not the lagging local store.
@@ -2386,16 +2345,16 @@ pub(crate) async fn handle_rules_toggle(
 
     let new_blob = match patch_rule_upsert(&base_blob, rule_id, &current.body, next_enabled) {
         Ok(b) => b,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e),
+            )
+        }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected, "enabled": current.enabled });
@@ -2417,7 +2376,9 @@ pub(crate) async fn handle_rules_toggle(
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            store_for_apply.activate(expected, blob, &actor, "toggle rule").await
+            store_for_apply
+                .activate(expected, blob, &actor, "toggle rule")
+                .await
         })
         .await;
     match outcome {
@@ -2456,9 +2417,11 @@ pub(crate) async fn handle_risk_thresholds_put(
     let pre = mutation_preamble(&req, "risk-thresholds-put");
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
-        Err(_) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-        ),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
 
@@ -2469,11 +2432,14 @@ pub(crate) async fn handle_risk_thresholds_put(
         block_at: Option<u32>,
         max: Option<u32>,
     }
-    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str }) {
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str })
+    {
         Ok(b) => b,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
     };
 
     let current = services.risk.thresholds();
@@ -2481,26 +2447,25 @@ pub(crate) async fn handle_risk_thresholds_put(
         // 2026-05-21 — cumulative-gate master toggle. Numeric
         // thresholds stay valid even when disabled (so re-enabling is
         // a one-flag change), so we keep the ordering checks below.
-        enabled:      parsed.enabled.unwrap_or(current.enabled),
+        enabled: parsed.enabled.unwrap_or(current.enabled),
         challenge_at: parsed.challenge_at.unwrap_or(current.challenge_at),
-        block_at:     parsed.block_at.unwrap_or(current.block_at),
-        max:          parsed.max.unwrap_or(current.max),
+        block_at: parsed.block_at.unwrap_or(current.block_at),
+        max: parsed.max.unwrap_or(current.max),
     };
 
     // Sanity: enforce ordering invariants the rule engine assumes.
     if next.challenge_at >= next.block_at {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(
-                format!("challenge_at ({}) must be < block_at ({})", next.challenge_at, next.block_at),
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!(
+                "challenge_at ({}) must be < block_at ({})",
+                next.challenge_at, next.block_at
             ),
-        );
+        ));
     }
     if next.block_at > next.max {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(
-                format!("block_at ({}) must be <= max ({})", next.block_at, next.max),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("block_at ({}) must be <= max ({})", next.block_at, next.max),
+        ));
     }
 
     let before = serde_json::json!({
@@ -2527,15 +2492,17 @@ pub(crate) async fn handle_risk_thresholds_put(
     };
     let tracker = services.risk.clone();
     let next_for_apply = next.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before,
-        after,
-        || {
-            tracker.set_thresholds(next_for_apply.clone());
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            after,
+            || {
+                tracker.set_thresholds(next_for_apply.clone());
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -2576,9 +2543,11 @@ pub(crate) async fn handle_risk_canary_paths_put(
     let pre = mutation_preamble(&req, "risk-canary-paths-put");
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
-        Err(_) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-        ),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
 
@@ -2586,13 +2555,16 @@ pub(crate) async fn handle_risk_canary_paths_put(
     struct Body {
         paths: Vec<String>,
     }
-    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str }) {
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str })
+    {
         Ok(b) => b,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "expected {{\"paths\": [\"/wp-admin\", ...]}}: {e}"
-            )),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "expected {{\"paths\": [\"/wp-admin\", ...]}}: {e}"
+                )),
+            )
+        }
     };
 
     // Normalize: trim, drop blanks, dedupe (first occurrence wins,
@@ -2624,12 +2596,12 @@ pub(crate) async fn handle_risk_canary_paths_put(
         }
     }
     if normalized.len() > MAX_CANARY_PATHS {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!(
                 "too many canary paths ({}); max is {MAX_CANARY_PATHS}",
                 normalized.len()
-            )),
-        );
+            ),
+        ));
     }
 
     let current = services.canary_paths.raw();
@@ -2647,15 +2619,17 @@ pub(crate) async fn handle_risk_canary_paths_put(
     };
     let handle = services.canary_paths.clone();
     let to_apply = normalized.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before,
-        after,
-        || {
-            handle.set(&to_apply);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            after,
+            || {
+                handle.set(&to_apply);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -2685,9 +2659,11 @@ pub(crate) async fn handle_bots_put(
     let pre = mutation_preamble(&req, "bots-gate-put");
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
-        Err(_) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-        ),
+        Err(_) => {
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
+        }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
 
@@ -2695,13 +2671,16 @@ pub(crate) async fn handle_bots_put(
     struct Body {
         enabled: bool,
     }
-    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str }) {
+    let parsed: Body = match serde_json::from_str(if body_str.is_empty() { "{}" } else { body_str })
+    {
         Ok(b) => b,
-        Err(e) => return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "expected {{\"enabled\": true|false}}: {e}"
-            )),
-        ),
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(format!(
+                    "expected {{\"enabled\": true|false}}: {e}"
+                )),
+            )
+        }
     };
 
     let current = services.bots_enabled.load(Ordering::Relaxed);
@@ -2719,15 +2698,17 @@ pub(crate) async fn handle_bots_put(
         reason: "operator toggled the bot classifier gate",
     };
     let toggle = services.bots_enabled.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before,
-        after,
-        || {
-            toggle.store(next, Ordering::Relaxed);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            after,
+            || {
+                toggle.store(next, Ordering::Relaxed);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -2903,11 +2884,9 @@ pub(crate) async fn handle_risk_reset_key(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
-            );
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ));
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -3112,11 +3091,9 @@ pub(crate) async fn handle_detectors_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "failed to read request body".into(),
-                ),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "failed to read request body".into(),
+            ))
         }
     };
     let body_str = match std::str::from_utf8(body_bytes.as_ref()) {
@@ -3149,11 +3126,9 @@ pub(crate) async fn handle_detectors_put(
     // eventually-consistent across the fleet. This retires the per-node
     // local-snapshot model: per-tier overrides now live in the doc.
     let Some(backend) = services.state_backend.as_ref() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "config plane unavailable: no state backend wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "config plane unavailable: no state backend wired".into(),
+        ));
     };
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
@@ -3171,20 +3146,17 @@ pub(crate) async fn handle_detectors_put(
                     )
                 }
             },
-            None => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(
-                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
-                    ),
-                )
-            }
+            None => return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "no shared config activated yet — publish a baseline via PUT /api/config first"
+                        .into(),
+                ),
+            ),
         },
         Err(e) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(format!(
-                    "config store read failed: {e}"
-                )),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("config store read failed: {e}"),
+            ))
         }
     };
 
@@ -3197,11 +3169,9 @@ pub(crate) async fn handle_detectors_put(
         }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let touched_tiers: Vec<&str> = put_body.overrides.keys().map(|k| k.as_str()).collect();
@@ -3293,20 +3263,16 @@ pub(crate) async fn handle_admin_drain(
     // without managing a session cookie.
     let no_admin_configured = services.admin_identity.password_hash.is_empty();
     let token_ok = match std::env::var("AEGIS_DRAIN_TOKEN").ok() {
-        Some(expected) if !expected.is_empty() => {
-            req.headers()
-                .get("x-aegis-drain-token")
-                .and_then(|h| h.to_str().ok())
-                .map(|h| h == expected)
-                .unwrap_or(false)
-        }
+        Some(expected) if !expected.is_empty() => req
+            .headers()
+            .get("x-aegis-drain-token")
+            .and_then(|h| h.to_str().ok())
+            .map(|h| h == expected)
+            .unwrap_or(false),
         _ => false,
     };
     if !session_ok && !no_admin_configured && !token_ok {
-        return json_response(
-            401,
-            &serde_json::json!({"error": "auth_required"}),
-        );
+        return json_response(401, &serde_json::json!({"error": "auth_required"}));
     }
 
     let already = readiness.draining.swap(true, Ordering::Release);
@@ -3334,7 +3300,10 @@ pub(crate) async fn handle_admin_drain(
 fn access_list_store(
     kind: &str,
     services: &aegis_control::dashboard_services::DashboardServices,
-) -> Option<(std::sync::Arc<aegis_control::api::blacklist::AccessListStore>, &'static str)> {
+) -> Option<(
+    std::sync::Arc<aegis_control::api::blacklist::AccessListStore>,
+    &'static str,
+)> {
     match kind {
         "blacklist" => Some((services.blacklist.clone(), "blacklist")),
         "whitelist" => Some((services.whitelist.clone(), "whitelist")),
@@ -3358,21 +3327,17 @@ pub(crate) async fn handle_access_list_post(
     let pre = mutation_preamble(&req, "access-list-post");
 
     let Some((store, label)) = access_list_store(kind, services) else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(
-                format!("unknown access list kind '{kind}'"),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("unknown access list kind '{kind}'"),
+        ));
     };
 
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -3381,16 +3346,15 @@ pub(crate) async fn handle_access_list_post(
             Ok(e) => e,
             Err(e) => {
                 return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(
-                        format!("invalid {label} entry: {e}"),
-                    ),
+                    aegis_control::api::mutation::MutationError::Validation(format!(
+                        "invalid {label} entry: {e}"
+                    )),
                 );
             }
         };
 
     let before = serde_json::Value::Null;
-    let after = serde_json::to_value(&parsed)
-        .unwrap_or(serde_json::Value::Null);
+    let after = serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null);
     let resource = format!("/api/{label}");
     let action = format!("{label}_add");
     let req_ctx = aegis_control::api::mutation::MutationRequest {
@@ -3441,24 +3405,19 @@ pub(crate) async fn handle_access_list_delete(
     let pre = mutation_preamble(&req, "access-list-delete");
 
     let Some((store, label)) = access_list_store(kind, services) else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(
-                format!("unknown access list kind '{kind}'"),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("unknown access list kind '{kind}'"),
+        ));
     };
 
     let existing = store.get(id);
     let Some(existing) = existing else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(
-                format!("no {label} entry with id '{id}'"),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("no {label} entry with id '{id}'"),
+        ));
     };
 
-    let before = serde_json::to_value(&existing)
-        .unwrap_or(serde_json::Value::Null);
+    let before = serde_json::to_value(&existing).unwrap_or(serde_json::Value::Null);
     let after = serde_json::Value::Null;
     let resource = format!("/api/{label}/{id}");
     let action = format!("{label}_remove");
@@ -3475,15 +3434,17 @@ pub(crate) async fn handle_access_list_delete(
 
     let store_for_apply = store.clone();
     let id_owned = id.to_string();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before,
-        after,
-        move || {
-            store_for_apply.delete(&id_owned);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            after,
+            move || {
+                store_for_apply.delete(&id_owned);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -3514,21 +3475,17 @@ pub(crate) async fn handle_mtls_sans_put(
     let pre = mutation_preamble(&req, "mtls-sans-put");
 
     let Some(store) = services.allowed_sans.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "allowed-SANs store not wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "allowed-SANs store not wired".into(),
+        ));
     };
 
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -3607,15 +3564,17 @@ pub(crate) async fn handle_mtls_sans_put(
 
     let store_for_apply = store.clone();
     let next_for_apply = next.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before,
-        after,
-        move || {
-            store_for_apply.store(next_for_apply);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            after,
+            move || {
+                store_for_apply.store(next_for_apply);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -3642,20 +3601,16 @@ pub(crate) async fn handle_mtls_sans_delete(
     let pre = mutation_preamble(&req, "mtls-sans-delete");
 
     let Some(store) = services.allowed_sans.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "allowed-SANs store not wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "allowed-SANs store not wired".into(),
+        ));
     };
 
     let current = store.current();
     if !current.iter().any(|s| s == san) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "no SAN entry '{san}'"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("no SAN entry '{san}'"),
+        ));
     }
     let next: Vec<String> = current.iter().filter(|s| *s != san).cloned().collect();
 
@@ -3675,15 +3630,17 @@ pub(crate) async fn handle_mtls_sans_delete(
 
     let store_for_apply = store.clone();
     let target = san.to_string();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before,
-        after,
-        move || {
-            store_for_apply.remove(&target);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before,
+            after,
+            move || {
+                store_for_apply.remove(&target);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -3729,7 +3686,6 @@ pub(crate) async fn handle_mtls_sans_test(
     )
 }
 
-
 // FIX 2026-05-04 — convert a `&[RouteConfig]` to the
 // `RouteSummary` shape `services.routes` exposes via
 // `/api/routes`. The boot path does this from `accept.rs`; we
@@ -3764,9 +3720,9 @@ pub(crate) async fn handle_tier_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -3784,11 +3740,9 @@ pub(crate) async fn handle_tier_put(
     // re-derives the tier via `apply_cfg_change_to_tiers` on its next
     // watcher poll.
     let Some(backend) = services.state_backend.as_ref() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "config plane unavailable: no state backend wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "config plane unavailable: no state backend wired".into(),
+        ));
     };
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
@@ -3806,20 +3760,17 @@ pub(crate) async fn handle_tier_put(
                     )
                 }
             },
-            None => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(
-                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
-                    ),
-                )
-            }
+            None => return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "no shared config activated yet — publish a baseline via PUT /api/config first"
+                        .into(),
+                ),
+            ),
         },
         Err(e) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(format!(
-                    "config store read failed: {e}"
-                )),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("config store read failed: {e}"),
+            ))
         }
     };
 
@@ -3832,11 +3783,9 @@ pub(crate) async fn handle_tier_put(
         }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -3991,9 +3940,9 @@ pub(crate) async fn handle_ai_enabled_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -4015,11 +3964,9 @@ pub(crate) async fn handle_ai_enabled_put(
     // the change is eventually-consistent across the fleet rather than
     // instant-local.
     let Some(backend) = services.state_backend.as_ref() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "config plane unavailable: no state backend wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "config plane unavailable: no state backend wired".into(),
+        ));
     };
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
@@ -4041,20 +3988,17 @@ pub(crate) async fn handle_ai_enabled_put(
                     )
                 }
             },
-            None => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(
-                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
-                    ),
-                )
-            }
+            None => return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "no shared config activated yet — publish a baseline via PUT /api/config first"
+                        .into(),
+                ),
+            ),
         },
         Err(e) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(format!(
-                    "config store read failed: {e}"
-                )),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("config store read failed: {e}"),
+            ))
         }
     };
 
@@ -4067,11 +4011,9 @@ pub(crate) async fn handle_ai_enabled_put(
         }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -4084,17 +4026,27 @@ pub(crate) async fn handle_ai_enabled_put(
         request_id: &pre.request_id,
         resource: "/api/ai/enabled",
         action: "ai_enabled_put",
-        reason: if patch.enabled { "operator enabled AI detector" } else { "operator disabled AI detector" },
+        reason: if patch.enabled {
+            "operator enabled AI detector"
+        } else {
+            "operator disabled AI detector"
+        },
     };
 
     let store_for_apply = store.clone();
     let blob = new_blob;
     let actor = pre.actor.clone();
-    let summary = if patch.enabled { "enable AI detector" } else { "disable AI detector" };
+    let summary = if patch.enabled {
+        "enable AI detector"
+    } else {
+        "disable AI detector"
+    };
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            store_for_apply.activate(expected, blob, &actor, summary).await
+            store_for_apply
+                .activate(expected, blob, &actor, summary)
+                .await
         })
         .await;
 
@@ -4169,9 +4121,9 @@ pub(crate) async fn handle_ai_confidence_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -4191,20 +4143,18 @@ pub(crate) async fn handle_ai_confidence_put(
         || patch.confidence_threshold < 0.0
         || patch.confidence_threshold > 1.0
     {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!(
                 "confidence_threshold must be a finite value in [0.0, 1.0]; got {}",
                 patch.confidence_threshold
-            )),
-        );
+            ),
+        ));
     }
 
     let Some(backend) = services.state_backend.as_ref() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "config plane unavailable: no state backend wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "config plane unavailable: no state backend wired".into(),
+        ));
     };
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
@@ -4222,20 +4172,17 @@ pub(crate) async fn handle_ai_confidence_put(
                     )
                 }
             },
-            None => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(
-                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
-                    ),
-                )
-            }
+            None => return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "no shared config activated yet — publish a baseline via PUT /api/config first"
+                        .into(),
+                ),
+            ),
         },
         Err(e) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(format!(
-                    "config store read failed: {e}"
-                )),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("config store read failed: {e}"),
+            ))
         }
     };
 
@@ -4248,11 +4195,9 @@ pub(crate) async fn handle_ai_confidence_put(
         }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -4277,7 +4222,9 @@ pub(crate) async fn handle_ai_confidence_put(
     let outcome = services
         .mutate
         .apply_async(&req_ctx, before, after, move || async move {
-            let res = store_for_apply.activate(expected, blob, &actor, summary).await;
+            let res = store_for_apply
+                .activate(expected, blob, &actor, summary)
+                .await;
             // On successful activation, update the local shared atomic so
             // this node's AiDetector reads the new gate immediately
             // instead of waiting for the watcher's next poll. Remote
@@ -4399,9 +4346,9 @@ pub(crate) async fn handle_response_filter_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -4419,11 +4366,9 @@ pub(crate) async fn handle_response_filter_put(
     // shared doc + activate. Every node's watcher re-derives the rungs via
     // `apply_cfg_change_to_response_filter` on its next poll.
     let Some(backend) = services.state_backend.as_ref() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "config plane unavailable: no state backend wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "config plane unavailable: no state backend wired".into(),
+        ));
     };
     let store = crate::config_source::config_store::ConfigStore::new(backend.clone());
 
@@ -4441,20 +4386,17 @@ pub(crate) async fn handle_response_filter_put(
                     )
                 }
             },
-            None => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(
-                        "no shared config activated yet — publish a baseline via PUT /api/config first".into(),
-                    ),
-                )
-            }
+            None => return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(
+                    "no shared config activated yet — publish a baseline via PUT /api/config first"
+                        .into(),
+                ),
+            ),
         },
         Err(e) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(format!(
-                    "config store read failed: {e}"
-                )),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                format!("config store read failed: {e}"),
+            ))
         }
     };
 
@@ -4467,11 +4409,9 @@ pub(crate) async fn handle_response_filter_put(
         }
     };
     if let Err(e) = aegis_core::load_config_str(&new_blob) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "patched config failed validation: {e}"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("patched config failed validation: {e}"),
+        ));
     }
 
     let before = serde_json::json!({ "version": expected });
@@ -4589,7 +4529,7 @@ pub(crate) async fn handle_ai_enabled_get(
 ) -> Response<Full<Bytes>> {
     let body = match services.ai_toggle.as_ref() {
         Some(t) => serde_json::json!({ "enabled": t.get(), "feature_present": true }),
-        None    => serde_json::json!({ "enabled": false,    "feature_present": false }),
+        None => serde_json::json!({ "enabled": false,    "feature_present": false }),
     };
     json_response(200, &body)
 }
@@ -4647,19 +4587,17 @@ pub(crate) async fn handle_route_upsert(
 
     let pre = mutation_preamble(&req, "route-upsert");
     let Some(writer) = services.route_writer.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "route writer not wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "route writer not wired".into(),
+        ));
     };
 
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal("body read failed".into()),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -4692,9 +4630,9 @@ pub(crate) async fn handle_route_upsert(
     }
 
     if let Err(e) = validate_route(&patch, &effective_cfg) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            e.to_string(),
+        ));
     }
 
     let new_route = match patch.into_route() {
@@ -4752,12 +4690,9 @@ pub(crate) async fn handle_route_upsert(
     // so we can seed `services.routes` once apply succeeds — keeps
     // the GET /api/routes cache in sync with the live table.
     let next_routes_for_cache = next_cfg.routes.clone();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        after,
-        move || writer_for_apply.apply(&next_cfg),
-    );
+    let outcome = services.mutate.apply(&req_ctx, before, after, move || {
+        writer_for_apply.apply(&next_cfg)
+    });
     match outcome {
         Ok(_) => {
             services.routes.set(route_summaries(&next_routes_for_cache));
@@ -4784,23 +4719,23 @@ pub(crate) async fn handle_route_delete(
 
     let pre = mutation_preamble(&req, "route-delete");
     let Some(writer) = services.route_writer.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "route writer not wired".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "route writer not wired".into(),
+        ));
     };
 
     // FIX 2026-05-04 — read from live writer state, not the
     // boot snapshot, so route deletes work after runtime upserts.
     let live_routes = writer.current_routes();
-    let live_routes = if live_routes.is_empty() { cfg.routes.clone() } else { live_routes };
+    let live_routes = if live_routes.is_empty() {
+        cfg.routes.clone()
+    } else {
+        live_routes
+    };
     if !live_routes.iter().any(|r| r.id == route_id) {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Validation(format!(
-                "no route with id '{route_id}'"
-            )),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Validation(
+            format!("no route with id '{route_id}'"),
+        ));
     }
 
     // Refuse to remove the last catch-all — it would brick
@@ -4848,12 +4783,9 @@ pub(crate) async fn handle_route_delete(
     let writer_for_apply = Arc::clone(&writer);
     let route_id_owned = route_id.to_string();
     let next_routes_for_cache = next_cfg.routes.clone();
-    let outcome = services.mutate.apply(
-        &req_ctx,
-        before,
-        after,
-        move || writer_for_apply.apply(&next_cfg),
-    );
+    let outcome = services.mutate.apply(&req_ctx, before, after, move || {
+        writer_for_apply.apply(&next_cfg)
+    });
     match outcome {
         Ok(_) => {
             services.routes.set(route_summaries(&next_routes_for_cache));
@@ -4892,20 +4824,16 @@ pub(crate) async fn handle_ddos_put(
     // handler is invoked against a test-bundle `DashboardServices`
     // built without the proxy wired in.
     let Some(runtime) = services.ddos.as_ref().cloned() else {
-        return mutation_error_response(
-            aegis_control::api::mutation::MutationError::Internal(
-                "ddos runtime not wired by proxy boot (test bundle?)".into(),
-            ),
-        );
+        return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+            "ddos runtime not wired by proxy boot (test bundle?)".into(),
+        ));
     };
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
@@ -4951,15 +4879,17 @@ pub(crate) async fn handle_ddos_put(
     };
     let runtime_for_apply = runtime.clone();
     let new_cfg_for_apply = new_cfg.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        serde_json::to_value(&before_view).unwrap_or(serde_json::Value::Null),
-        serde_json::to_value(&after_view).unwrap_or(serde_json::Value::Null),
-        move || {
-            runtime_for_apply.set_config(new_cfg_for_apply);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            serde_json::to_value(&before_view).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&after_view).unwrap_or(serde_json::Value::Null),
+            move || {
+                runtime_for_apply.set_config(new_cfg_for_apply);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -4986,23 +4916,21 @@ pub(crate) async fn handle_rate_limit_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
-    let put_body: aegis_control::api::gates::RateLimitPutBody =
-        match serde_json::from_str(body_str) {
-            Ok(b) => b,
-            Err(e) => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-                )
-            }
-        };
+    let put_body: aegis_control::api::gates::RateLimitPutBody = match serde_json::from_str(body_str)
+    {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
     let new_cfg = match put_body.validate() {
         Ok(c) => c,
         Err(errs) => {
@@ -5032,15 +4960,17 @@ pub(crate) async fn handle_rate_limit_put(
         reason: "operator updated per-IP rate-limit config",
     };
     let limiter = services.ip_rate_limiter.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before_json,
-        after_json.clone(),
-        move || {
-            limiter.set_config(new_cfg);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before_json,
+            after_json.clone(),
+            move || {
+                limiter.set_config(new_cfg);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -5070,23 +5000,20 @@ pub(crate) async fn handle_strikes_put(
     let body_bytes = match req.into_body().collect().await {
         Ok(c) => c.to_bytes(),
         Err(_) => {
-            return mutation_error_response(
-                aegis_control::api::mutation::MutationError::Internal(
-                    "body read failed".into(),
-                ),
-            )
+            return mutation_error_response(aegis_control::api::mutation::MutationError::Internal(
+                "body read failed".into(),
+            ))
         }
     };
     let body_str = std::str::from_utf8(body_bytes.as_ref()).unwrap_or("");
-    let put_body: aegis_control::api::gates::StrikesPutBody =
-        match serde_json::from_str(body_str) {
-            Ok(b) => b,
-            Err(e) => {
-                return mutation_error_response(
-                    aegis_control::api::mutation::MutationError::Validation(e.to_string()),
-                )
-            }
-        };
+    let put_body: aegis_control::api::gates::StrikesPutBody = match serde_json::from_str(body_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return mutation_error_response(
+                aegis_control::api::mutation::MutationError::Validation(e.to_string()),
+            )
+        }
+    };
     let new_cfg = match put_body.validate() {
         Ok(c) => c,
         Err(errs) => {
@@ -5117,15 +5044,17 @@ pub(crate) async fn handle_strikes_put(
     };
     let risk = services.risk.clone();
     let new_cfg_apply = new_cfg.clone();
-    let outcome = services.mutate.apply::<_, (), aegis_control::api::mutation::MutationError>(
-        &req_ctx,
-        before_json,
-        after_json.clone(),
-        move || {
-            risk.set_strike_config(new_cfg_apply);
-            Ok(())
-        },
-    );
+    let outcome = services
+        .mutate
+        .apply::<_, (), aegis_control::api::mutation::MutationError>(
+            &req_ctx,
+            before_json,
+            after_json.clone(),
+            move || {
+                risk.set_strike_config(new_cfg_apply);
+                Ok(())
+            },
+        );
     match outcome {
         Ok(_) => json_response(
             200,
@@ -5165,7 +5094,10 @@ mod tests {
         let out = patch_ai_enabled(base, false).unwrap();
         let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
         assert_eq!(v["ai"]["enabled"], serde_yaml::Value::Bool(false));
-        assert_eq!(v["state"]["backend"], serde_yaml::Value::String("redis".into()));
+        assert_eq!(
+            v["state"]["backend"],
+            serde_yaml::Value::String("redis".into())
+        );
     }
 
     #[test]
@@ -5179,9 +5111,18 @@ mod tests {
         };
         let out = patch_response_filter(base, &patch).unwrap();
         let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
-        assert_eq!(v["response_filter"]["scrub_stack_traces"], serde_yaml::Value::Bool(false));
-        assert_eq!(v["response_filter"]["mask_internal_ips"], serde_yaml::Value::Bool(true));
-        assert_eq!(v["response_filter"]["redact_dlp"], serde_yaml::Value::Bool(false));
+        assert_eq!(
+            v["response_filter"]["scrub_stack_traces"],
+            serde_yaml::Value::Bool(false)
+        );
+        assert_eq!(
+            v["response_filter"]["mask_internal_ips"],
+            serde_yaml::Value::Bool(true)
+        );
+        assert_eq!(
+            v["response_filter"]["redact_dlp"],
+            serde_yaml::Value::Bool(false)
+        );
     }
 
     #[test]
@@ -5199,8 +5140,14 @@ mod tests {
         let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
         assert_eq!(v["tiers"]["high"]["risk_threshold"].as_u64(), Some(60));
         assert_eq!(v["tiers"]["high"]["block_threshold"].as_u64(), Some(80));
-        assert_eq!(v["tiers"]["high"]["challenges_enabled"].as_bool(), Some(true));
-        assert_eq!(v["tiers"]["high"]["cumulative_challenge_at"].as_u64(), Some(40));
+        assert_eq!(
+            v["tiers"]["high"]["challenges_enabled"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            v["tiers"]["high"]["cumulative_challenge_at"].as_u64(),
+            Some(40)
+        );
         assert!(v["tiers"]["high"]["cumulative_block_at"].is_null());
         assert_eq!(v["tiers"]["high"]["pipeline"][0].as_str(), Some("sqli"));
     }
@@ -5230,7 +5177,10 @@ mod tests {
         );
         // open_redirect is an OpenRedirectConfig (has `.enabled`), so it
         // patches the same way as the DetectorToggle classes.
-        assert_eq!(v["detectors"]["open_redirect"]["enabled"].as_bool(), Some(true));
+        assert_eq!(
+            v["detectors"]["open_redirect"]["enabled"].as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -5238,9 +5188,8 @@ mod tests {
         use aegis_control::api::detectors::DetectorsPutBody;
         use aegis_security::detectors::{DetectorClass, DetectorMask, DetectorMaskBody};
         let base = "listeners:\n  data:\n    - bind: \"127.0.0.1:8080\"\n";
-        let ov = DetectorMaskBody::from(
-            DetectorMask::all_enabled().with(DetectorClass::Recon, false),
-        );
+        let ov =
+            DetectorMaskBody::from(DetectorMask::all_enabled().with(DetectorClass::Recon, false));
         let mut body = DetectorsPutBody::default();
         body.overrides.insert("medium".into(), Some(ov));
         let out = patch_detectors(base, &body).unwrap();
@@ -5327,14 +5276,20 @@ state:
         let out = patch_rule_upsert(base, "r1", "rule r1 { allow }", true).unwrap();
         let v: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
         assert_eq!(v["rules"]["inline"][0]["id"].as_str(), Some("r1"));
-        assert_eq!(v["rules"]["inline"][0]["body"].as_str(), Some("rule r1 { allow }"));
+        assert_eq!(
+            v["rules"]["inline"][0]["body"].as_str(),
+            Some("rule r1 { allow }")
+        );
         assert_eq!(v["rules"]["inline"][0]["enabled"].as_bool(), Some(true));
 
         // Upserting the same id replaces in place (no duplicate).
         let out2 = patch_rule_upsert(&out, "r1", "rule r1 { block }", false).unwrap();
         let v2: serde_yaml::Value = serde_yaml::from_str(&out2).unwrap();
         assert_eq!(v2["rules"]["inline"].as_sequence().unwrap().len(), 1);
-        assert_eq!(v2["rules"]["inline"][0]["body"].as_str(), Some("rule r1 { block }"));
+        assert_eq!(
+            v2["rules"]["inline"][0]["body"].as_str(),
+            Some("rule r1 { block }")
+        );
         assert_eq!(v2["rules"]["inline"][0]["enabled"].as_bool(), Some(false));
     }
 

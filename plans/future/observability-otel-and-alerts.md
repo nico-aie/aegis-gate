@@ -170,8 +170,8 @@ messages too.
 
 | Phase | Scope | Est. |
 |---|---|---|
-| **P1** | Fix the embarrassing bits in `format_alert_text`: clamp budget %, humanize timestamps (local tz + relative), add service/node/env line, add measured-vs-target + raw counts. Pure function → unit-test the exact wire format. | S |
-| **P2** | Extend the identity/timestamp/links treatment to all `AlertEvent` variants in `format_event_text`; add a dashboard deep-link builder. | S–M |
+| **P1** | ✅ **DONE 2026-06-02.** Rewrote `format_alert_text`: severity glyph + uppercase label, deployment identity line (`service · node · env` via `set_alert_identity`, installed at boot in `run.rs`), plain-language impact, **clamped** budget (kills `97727%`), measured-vs-target (new `SloAlert.measured` + `target` fields from the engine's `avg`/`obj.target`), and human local timestamps with a relative `(N ago)`. Pure formatters take identity explicitly so they stay unit-tested. (Raw request counts deferred — the SLI buffer stores averages, not counts.) | S |
+| **P2** | Extend the identity/timestamp/links treatment to all `AlertEvent` variants in `format_event_text`; add a dashboard + trace deep-link builder (needs base URLs in config). | S–M |
 | **P3** | Per-channel renderers — markdown/rich-card for chat, structured JSON for PagerDuty/Alertmanager. | M |
 | **P4** | "Likely cause" correlation — thread recent `AlertEvent`s / active config version into the message. | M |
 

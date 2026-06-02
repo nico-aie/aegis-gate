@@ -66,10 +66,7 @@ pub const DEFAULT_VIPTALK_API_BASE: &str = "https://api.viptalk.org";
 /// existing call sites that hold a `&SloAlert` keep working. New
 /// code should build an [`AlertEvent`] and call `dispatch_event`
 /// (which adds dedup + severity routing).
-pub async fn send_alert(
-    alert: &SloAlert,
-    receivers: &[AlertReceiver],
-) -> DispatchSummary {
+pub async fn send_alert(alert: &SloAlert, receivers: &[AlertReceiver]) -> DispatchSummary {
     dispatch_event(&AlertEvent::Slo(alert.clone()), receivers, None).await
 }
 
@@ -115,7 +112,7 @@ pub async fn dispatch_event(
     // `text` is consumed only in the `alerts`-feature VipTalk
     // branch; without the feature the dispatch no-ops.
     #[cfg_attr(not(feature = "alerts"), allow(unused_variables))]
-    let text = format_event_text(event, suppressed);
+    let text = format_event_text(event, suppressed, current_identity());
 
     for r in receivers {
         if !r.accepts(severity) {
@@ -127,7 +124,10 @@ pub async fn dispatch_event(
             continue;
         }
         match &r.kind {
-            ReceiverKind::VipTalk { bot_token, room_ids } => {
+            ReceiverKind::VipTalk {
+                bot_token,
+                room_ids,
+            } => {
                 #[cfg(feature = "alerts")]
                 {
                     match send_viptalk(bot_token, room_ids, &text).await {
@@ -180,11 +180,7 @@ pub async fn dispatch_event(
 }
 
 #[cfg(feature = "alerts")]
-async fn send_viptalk(
-    bot_token: &str,
-    room_ids: &[String],
-    text: &str,
-) -> Result<(), String> {
+async fn send_viptalk(bot_token: &str, room_ids: &[String], text: &str) -> Result<(), String> {
     use std::time::Duration;
 
     // F-CRITICAL-015 (2026-05-17 control audit): pre-fix
@@ -215,8 +211,7 @@ async fn send_viptalk(
         || bot_token.contains("..")
     {
         return Err(
-            "viptalk bot_token contains unsafe characters; reject to prevent SSRF"
-                .to_string(),
+            "viptalk bot_token contains unsafe characters; reject to prevent SSRF".to_string(),
         );
     }
 
@@ -258,28 +253,152 @@ async fn send_viptalk(
     Ok(())
 }
 
-/// Format an [`SloAlert`] as a single chat message. Kept in a
-/// pure function so tests assert on the exact wire format.
-pub fn format_alert_text(alert: &SloAlert) -> String {
-    let resolved = alert
-        .resolved_at
-        .map(|t| format!("\nResolved at: {}", t.to_rfc3339()))
-        .unwrap_or_default();
-    format!(
-        "[{severity:?}] SLO breach: {sli:?}\n\
-         Burn rate: {burn:.2}× over {window}h window\n\
-         Budget consumed: {budget:.1}%\n\
-         Fired at: {fired}{resolved}\n\
-         Runbook: {runbook}",
-        severity = alert.severity,
-        sli = alert.sli,
-        burn = alert.burn_rate,
-        window = alert.window_hours,
-        budget = alert.budget_consumed_pct,
-        fired = alert.fired_at.to_rfc3339(),
-        resolved = resolved,
-        runbook = alert.runbook_url,
-    )
+/// Process-wide alert identity (service / node / environment), set
+/// once at boot via [`set_alert_identity`] and rendered as the
+/// second line of every SLO alert so an operator reading a chat
+/// message knows WHICH deployment fired it. 2026-06-02 alert P1.
+#[derive(Clone, Debug, Default)]
+pub struct AlertIdentity {
+    /// Service name, e.g. `aegis-gate`.
+    pub service: String,
+    /// Stable node id (`cfg.node.id`).
+    pub node: Option<String>,
+    /// Deployment environment label (`cfg.admin.environment`).
+    pub environment: Option<String>,
+}
+
+static ALERT_IDENTITY: std::sync::OnceLock<AlertIdentity> = std::sync::OnceLock::new();
+
+/// Install the process alert identity. First call wins (OnceLock);
+/// later calls are ignored. Call once at boot from config so every
+/// alert message names the deployment it came from.
+pub fn set_alert_identity(id: AlertIdentity) {
+    let _ = ALERT_IDENTITY.set(id);
+}
+
+/// The installed identity, if any. `dispatch_event` reads this and
+/// threads it into the formatters so the pure formatters stay
+/// unit-testable (they take the identity as an explicit argument).
+pub(crate) fn current_identity() -> Option<&'static AlertIdentity> {
+    ALERT_IDENTITY.get()
+}
+
+fn severity_glyph(sev: crate::slo::AlertSeverity) -> &'static str {
+    use crate::slo::AlertSeverity::*;
+    match sev {
+        Page => "🔴",
+        Ticket => "🟠",
+        Info => "🔵",
+    }
+}
+
+/// Render the identity as `service · node X · env Y`, omitting any
+/// piece that's unset. Returns `None` when nothing is known so the
+/// caller drops the line entirely.
+fn identity_line(identity: Option<&AlertIdentity>) -> Option<String> {
+    let id = identity?;
+    let mut parts = Vec::new();
+    if !id.service.is_empty() {
+        parts.push(id.service.clone());
+    }
+    if let Some(n) = id.node.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("node {n}"));
+    }
+    if let Some(e) = id.environment.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(format!("env {e}"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+/// Humanize "time since `t`" as a coarse relative string. Coarse on
+/// purpose — operators want "6 minutes ago", not "6m 12s".
+fn humanize_ago(t: chrono::DateTime<chrono::Utc>) -> String {
+    let secs = (chrono::Utc::now() - t).num_seconds();
+    if secs < 0 {
+        return "just now".to_string();
+    }
+    let plural = |n: i64| if n == 1 { "" } else { "s" };
+    match secs {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3600 => {
+            let m = s / 60;
+            format!("{m} minute{} ago", plural(m))
+        }
+        s if s < 86_400 => {
+            let h = s / 3600;
+            format!("{h} hour{} ago", plural(h))
+        }
+        s => {
+            let d = s / 86_400;
+            format!("{d} day{} ago", plural(d))
+        }
+    }
+}
+
+/// Format an [`SloAlert`] as a single chat message. Pure function
+/// (identity passed in) so tests assert the exact wire format.
+///
+/// 2026-06-02 alert P1 — replaces the terse one-number-per-line
+/// format. Adds a severity glyph + deployment identity, a plain-
+/// language impact line, measured-vs-target, a **clamped** error
+/// budget (the old format printed nonsense like `97727%`),
+/// human-readable local timestamps with a relative "(N ago)", and
+/// the runbook link.
+pub fn format_alert_text(alert: &SloAlert, identity: Option<&AlertIdentity>) -> String {
+    let glyph = severity_glyph(alert.severity);
+    let sev = format!("{:?}", alert.severity).to_uppercase();
+    let sli = format!("{:?}", alert.sli);
+    // Clamp the consumed budget to [0, 100] — over a finite window it
+    // can't meaningfully exceed 100%, and the raw "how fast" lives in
+    // the burn rate. This kills the `Budget consumed: 97727.3%` wart.
+    let budget = alert.budget_consumed_pct.clamp(0.0, 100.0);
+    let burn = if alert.burn_rate >= 10.0 {
+        format!("{:.0}×", alert.burn_rate)
+    } else {
+        format!("{:.1}×", alert.burn_rate)
+    };
+    let measured_pct = alert.measured * 100.0;
+    let target_pct = alert.target * 100.0;
+    let window = alert.window_hours;
+    let started = alert
+        .fired_at
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S %z");
+
+    let mut s = String::new();
+    s.push_str(&format!("{glyph} {sev} · SLO breach — {sli}\n"));
+    if let Some(line) = identity_line(identity) {
+        s.push_str(&line);
+        s.push('\n');
+    }
+    s.push('\n');
+    s.push_str(&format!(
+        "{sli} is below target — the {window}h error budget is {budget:.0}% consumed \
+         (burning ~{burn} faster than sustainable).\n\n"
+    ));
+    s.push_str(&format!(
+        "  Measured       {measured_pct:.1}%   (target {target_pct:.2}%)\n"
+    ));
+    s.push_str(&format!("  Burn rate      {burn}   over {window}h\n"));
+    s.push_str(&format!(
+        "  Error budget   {budget:.0}% consumed   ({window}h window)\n\n"
+    ));
+    s.push_str(&format!(
+        "Started  {started}  ({})\n",
+        humanize_ago(alert.fired_at)
+    ));
+    if let Some(r) = alert.resolved_at {
+        let r_local = r
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S %z");
+        s.push_str(&format!("Resolved {r_local}  ({})\n", humanize_ago(r)));
+    }
+    s.push_str(&format!("Runbook  {}", alert.runbook_url));
+    s
 }
 
 /// Format any [`AlertEvent`] as a single VipTalk chat message
@@ -287,26 +406,46 @@ pub fn format_alert_text(alert: &SloAlert) -> String {
 /// the exact wire format. `suppressed` is the dedup-window count
 /// of fires we dropped since the last emission — appended as a
 /// `(+N suppressed since last alert)` note when non-zero.
-pub fn format_event_text(event: &AlertEvent, suppressed: u32) -> String {
+pub fn format_event_text(
+    event: &AlertEvent,
+    suppressed: u32,
+    identity: Option<&AlertIdentity>,
+) -> String {
     let sev = event.severity();
     let body = match event {
-        AlertEvent::Slo(a) => return append_suppressed(format_alert_text(a), suppressed),
-        AlertEvent::DdosModeEntered { trigger, observed_rps, .. } => format!(
+        AlertEvent::Slo(a) => return append_suppressed(format_alert_text(a, identity), suppressed),
+        AlertEvent::DdosModeEntered {
+            trigger,
+            observed_rps,
+            ..
+        } => format!(
             "[{sev:?}] DDoS gate entered ENFORCE\n\
              Trigger: {trigger}\n\
              Observed: {observed_rps} rps"
         ),
-        AlertEvent::DdosModeCleared { duration_seconds, .. } => format!(
+        AlertEvent::DdosModeCleared {
+            duration_seconds, ..
+        } => format!(
             "[{sev:?}] DDoS gate cleared — back to NORMAL\n\
              Enforce duration: {duration_seconds}s"
         ),
-        AlertEvent::CertExpiringSoon { host, days_remaining, not_after, .. } => format!(
+        AlertEvent::CertExpiringSoon {
+            host,
+            days_remaining,
+            not_after,
+            ..
+        } => format!(
             "[{sev:?}] TLS cert expiring soon\n\
              Host: {host}\n\
              Expires: {not_after} ({days_remaining} days)",
             not_after = not_after.to_rfc3339(),
         ),
-        AlertEvent::StrikeBlockSurge { unique_ips, window_seconds, top_rule_ids, .. } => format!(
+        AlertEvent::StrikeBlockSurge {
+            unique_ips,
+            window_seconds,
+            top_rule_ids,
+            ..
+        } => format!(
             "[{sev:?}] Strike-block surge\n\
              {unique_ips} unique IPs blocked in {window_seconds}s\n\
              Top rules: {rules}",
@@ -316,7 +455,13 @@ pub fn format_event_text(event: &AlertEvent, suppressed: u32) -> String {
                 top_rule_ids.join(", ")
             },
         ),
-        AlertEvent::UpstreamPoolDegraded { pool, healthy, total, first_down, .. } => format!(
+        AlertEvent::UpstreamPoolDegraded {
+            pool,
+            healthy,
+            total,
+            first_down,
+            ..
+        } => format!(
             "[{sev:?}] Upstream pool degraded\n\
              Pool: {pool} ({healthy}/{total} healthy)\n\
              First down: {first_down}"
@@ -324,23 +469,40 @@ pub fn format_event_text(event: &AlertEvent, suppressed: u32) -> String {
         AlertEvent::UpstreamPoolRecovered { pool, .. } => {
             format!("[{sev:?}] Upstream pool recovered — {pool} fully healthy")
         }
-        AlertEvent::LeaderLost { previous_leader, our_node, .. } => format!(
+        AlertEvent::LeaderLost {
+            previous_leader,
+            our_node,
+            ..
+        } => format!(
             "[{sev:?}] Cluster leader lost\n\
              Previous: {previous_leader}\n\
              This node: {our_node}"
         ),
-        AlertEvent::HotReloadFailed { reason, last_known_good_version, .. } => format!(
+        AlertEvent::HotReloadFailed {
+            reason,
+            last_known_good_version,
+            ..
+        } => format!(
             "[{sev:?}] Hot-reload FAILED — last-known-good still live\n\
              Reason: {reason}\n\
              LKG config version: {last_known_good_version}"
         ),
-        AlertEvent::GitOpsDrift { repo, expected, observed, .. } => format!(
+        AlertEvent::GitOpsDrift {
+            repo,
+            expected,
+            observed,
+            ..
+        } => format!(
             "[{sev:?}] GitOps drift detected\n\
              Repo: {repo}\n\
              Expected: {expected}\n\
              Observed: {observed}"
         ),
-        AlertEvent::AuditChainBreak { last_good_seq, observed_seq, .. } => format!(
+        AlertEvent::AuditChainBreak {
+            last_good_seq,
+            observed_seq,
+            ..
+        } => format!(
             "[{sev:?}] AUDIT CHAIN BREAK\n\
              Last good seq: {last_good_seq}\n\
              Observed seq: {observed_seq}"
@@ -372,24 +534,105 @@ mod tests {
             budget_consumed_pct: 2.0,
             window_hours: 1,
             runbook_url: "https://runbooks.example.com/slo/data-plane".into(),
+            measured: 0.998,
+            target: 0.999,
         }
     }
 
     #[test]
     fn format_alert_text_includes_severity_sli_burn_rate_and_runbook() {
         let alert = fake_alert();
-        let text = format_alert_text(&alert);
-        assert!(text.contains("Page"), "got: {text}");
-        assert!(text.contains("DataPlaneAvailability"), "got: {text}");
-        assert!(text.contains("14.00×"), "got: {text}");
-        assert!(text.contains("1h window"), "got: {text}");
-        assert!(text.contains("Budget consumed: 2.0%"), "got: {text}");
-        assert!(text.contains("https://runbooks.example.com/slo/data-plane"), "got: {text}");
-        // Resolved alerts append the resolution timestamp.
+        let text = format_alert_text(&alert, None);
+        // Title: glyph + uppercase severity + SLI.
+        assert!(
+            text.contains("🔴 PAGE · SLO breach — DataPlaneAvailability"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("14×"),
+            "burn rate ≥10 rounds to integer: {text}"
+        );
+        assert!(text.contains("over 1h"), "got: {text}");
+        // measured-vs-target line.
+        assert!(text.contains("Measured       99.8%"), "got: {text}");
+        assert!(text.contains("(target 99.90%)"), "got: {text}");
+        assert!(
+            text.contains("https://runbooks.example.com/slo/data-plane"),
+            "got: {text}"
+        );
+        // Relative "started" line.
+        assert!(text.contains("Started"), "got: {text}");
+        // Resolved alerts append a resolution line.
         let mut resolved = alert.clone();
         resolved.resolved_at = Some(chrono::Utc::now());
-        let resolved_text = format_alert_text(&resolved);
-        assert!(resolved_text.contains("Resolved at:"), "got: {resolved_text}");
+        let resolved_text = format_alert_text(&resolved, None);
+        assert!(resolved_text.contains("Resolved"), "got: {resolved_text}");
+    }
+
+    #[test]
+    fn format_alert_text_clamps_absurd_budget_to_100() {
+        // The production wart: budget_consumed_pct of 97727.3% must
+        // render as a sane "100% consumed", never the raw number.
+        let mut alert = fake_alert();
+        alert.burn_rate = 977.27;
+        alert.budget_consumed_pct = 97727.3;
+        alert.measured = 0.123;
+        let text = format_alert_text(&alert, None);
+        assert!(!text.contains("97727"), "raw absurd budget leaked: {text}");
+        assert!(text.contains("100% consumed"), "got: {text}");
+        assert!(
+            text.contains("977×"),
+            "burn rate carries the real magnitude: {text}"
+        );
+        assert!(text.contains("Measured       12.3%"), "got: {text}");
+    }
+
+    #[test]
+    fn format_alert_text_renders_identity_when_set_and_omits_when_not() {
+        let alert = fake_alert();
+        // No identity → no identity line, straight from title to blank.
+        let plain = format_alert_text(&alert, None);
+        assert!(!plain.contains("node "), "got: {plain}");
+        assert!(!plain.contains("env "), "got: {plain}");
+
+        let id = AlertIdentity {
+            service: "aegis-gate".into(),
+            node: Some("aegis-prod-2".into()),
+            environment: Some("production".into()),
+        };
+        let with_id = format_alert_text(&alert, Some(&id));
+        assert!(
+            with_id.contains("aegis-gate · node aegis-prod-2 · env production"),
+            "identity line missing: {with_id}",
+        );
+
+        // Partial identity (service only) renders just the service.
+        let svc_only = AlertIdentity {
+            service: "aegis-gate".into(),
+            ..Default::default()
+        };
+        let t = format_alert_text(&alert, Some(&svc_only));
+        assert!(t.contains("\naegis-gate\n"), "got: {t}");
+        assert!(!t.contains("node "), "got: {t}");
+    }
+
+    #[test]
+    fn humanize_ago_buckets() {
+        let now = chrono::Utc::now();
+        assert_eq!(humanize_ago(now), "just now");
+        assert_eq!(
+            humanize_ago(now - chrono::Duration::minutes(6)),
+            "6 minutes ago"
+        );
+        assert_eq!(
+            humanize_ago(now - chrono::Duration::minutes(1)),
+            "1 minute ago"
+        );
+        assert_eq!(
+            humanize_ago(now - chrono::Duration::hours(3)),
+            "3 hours ago"
+        );
+        assert_eq!(humanize_ago(now - chrono::Duration::days(2)), "2 days ago");
     }
 
     #[tokio::test]
@@ -445,7 +688,7 @@ mod tests {
         // or `?` would let an attacker compose a different
         // upstream URL via path-traversal. Reject pre-dispatch
         // so the reqwest client never sees the dirty value.
-        let text = format_alert_text(&fake_alert());
+        let text = format_alert_text(&fake_alert(), None);
         for bad in [
             "..%2F169.254.169.254%2F",
             "evil@attacker.com",
@@ -491,14 +734,19 @@ mod tests {
         }];
         let summary = send_alert(&fake_alert(), &receivers).await;
         assert!(
-            summary.skipped_feature_off.contains(&"vt-no-feat".to_string()),
+            summary
+                .skipped_feature_off
+                .contains(&"vt-no-feat".to_string()),
             "expected receiver in skipped_feature_off, got: {summary:?}",
         );
         assert!(
             !summary.delivered.contains(&"vt-no-feat".to_string()),
             "feature-off path must not push to delivered (the production lie)",
         );
-        assert!(!summary.is_clean(), "skipped_feature_off counts as not-clean");
+        assert!(
+            !summary.is_clean(),
+            "skipped_feature_off counts as not-clean"
+        );
     }
 
     #[cfg(feature = "alerts")]
@@ -552,8 +800,11 @@ mod tests {
     fn event_severity_routing_matrix() {
         assert_eq!(ddos_event().severity(), AlertSeverity::Page);
         assert_eq!(
-            AlertEvent::DdosModeCleared { fired_at: chrono::Utc::now(), duration_seconds: 12 }
-                .severity(),
+            AlertEvent::DdosModeCleared {
+                fired_at: chrono::Utc::now(),
+                duration_seconds: 12
+            }
+            .severity(),
             AlertSeverity::Info,
         );
         // Cert < 7 days → Page; ≥ 7 days → Ticket.
@@ -605,8 +856,14 @@ mod tests {
         // First fire emits with zero suppressed.
         assert_eq!(cache.check(fp, t0), DedupDecision::Emit { suppressed: 0 });
         // Two more inside the window → suppressed.
-        assert_eq!(cache.check(fp, t0 + chrono::Duration::seconds(10)), DedupDecision::Suppress);
-        assert_eq!(cache.check(fp, t0 + chrono::Duration::seconds(20)), DedupDecision::Suppress);
+        assert_eq!(
+            cache.check(fp, t0 + chrono::Duration::seconds(10)),
+            DedupDecision::Suppress
+        );
+        assert_eq!(
+            cache.check(fp, t0 + chrono::Duration::seconds(20)),
+            DedupDecision::Suppress
+        );
         // Past the window → emit, carrying the suppressed count.
         assert_eq!(
             cache.check(fp, t0 + chrono::Duration::seconds(400)),
@@ -651,19 +908,25 @@ mod tests {
         .fingerprint();
         assert_ne!(ddos, cert);
         // Each fingerprint emits independently on first sight.
-        assert_eq!(cache.check(ddos, now), DedupDecision::Emit { suppressed: 0 });
-        assert_eq!(cache.check(cert, now), DedupDecision::Emit { suppressed: 0 });
+        assert_eq!(
+            cache.check(ddos, now),
+            DedupDecision::Emit { suppressed: 0 }
+        );
+        assert_eq!(
+            cache.check(cert, now),
+            DedupDecision::Emit { suppressed: 0 }
+        );
     }
 
     #[test]
     fn format_event_text_covers_variants_and_suppressed_suffix() {
-        let text = format_event_text(&ddos_event(), 0);
+        let text = format_event_text(&ddos_event(), 0, None);
         assert!(text.contains("[Page]"), "got: {text}");
         assert!(text.contains("DDoS gate entered ENFORCE"), "got: {text}");
         assert!(text.contains("1840 rps"), "got: {text}");
         assert!(!text.contains("suppressed"), "no suffix at 0: {text}");
 
-        let with_suffix = format_event_text(&ddos_event(), 9);
+        let with_suffix = format_event_text(&ddos_event(), 9, None);
         assert!(
             with_suffix.contains("(+9 suppressed since last alert)"),
             "got: {with_suffix}",
@@ -675,7 +938,7 @@ mod tests {
             window_seconds: 60,
             top_rule_ids: vec!["sqli".into(), "ai".into()],
         };
-        let stext = format_event_text(&surge, 0);
+        let stext = format_event_text(&surge, 0, None);
         assert!(stext.contains("27 unique IPs"), "got: {stext}");
         assert!(stext.contains("sqli, ai"), "got: {stext}");
     }

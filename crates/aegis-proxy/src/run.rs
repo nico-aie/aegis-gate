@@ -143,6 +143,15 @@ pub async fn run(
     let cfg: Arc<WafConfig> = cfg_swap.load_full();
     let mut handles = Vec::new();
 
+    // 2026-06-02 (observability alert P1) — install the process alert
+    // identity once so every SLO alert message names the deployment it
+    // fired from (service · node · env) instead of being anonymous.
+    aegis_control::slo::dispatch::set_alert_identity(aegis_control::slo::dispatch::AlertIdentity {
+        service: "aegis-gate".to_string(),
+        node: cfg.node.id.clone(),
+        environment: cfg.admin.environment.clone(),
+    });
+
     // 2026-05-27 (Phase B) — seed the response-filter rungs from
     // `cfg.response_filter` at boot so an operator-authored YAML value
     // (e.g. `redact_dlp: false`) is honored. Defaults are all-true, so a
@@ -229,8 +238,7 @@ pub async fn run(
     // (which holds the FD); we only read the value here for
     // dup2 in the post-fork child.
     #[cfg(unix)]
-    let mut listener_fd_registry: Vec<(String, std::os::fd::RawFd)> =
-        Vec::new();
+    let mut listener_fd_registry: Vec<(String, std::os::fd::RawFd)> = Vec::new();
 
     // MTLS-T9 — capture break-glass env-var state at boot.
     // Boot-only by design (a runtime override would defeat the
@@ -315,13 +323,10 @@ pub async fn run(
     // /api/risk/canary-paths. We seed it from `cfg.risk.canary_paths`
     // and clone the handle into `DashboardServices` further down so
     // the admin mutation and the data-plane detector share state.
-    let canary_paths =
-        aegis_security::detectors::canary::CanaryPaths::new(&cfg.risk.canary_paths);
+    let canary_paths = aegis_security::detectors::canary::CanaryPaths::new(&cfg.risk.canary_paths);
     #[allow(unused_mut)]
-    let mut detector_vec = aegis_security::detectors::default_detectors_with_canary(
-        &cfg.detectors,
-        &canary_paths,
-    );
+    let mut detector_vec =
+        aegis_security::detectors::default_detectors_with_canary(&cfg.detectors, &canary_paths);
     #[cfg(not(feature = "ai"))]
     {
         if cfg.ai.enabled {
@@ -346,10 +351,7 @@ pub async fn run(
     // after the first reload. The existing `Arc<AtomicBool>` (set
     // further down) stays as the global AI kill-switch.
     let mask = aegis_security::detectors::SharedDetectorMask::from_state(
-        aegis_security::detectors::MaskState::from_detectors_config(
-            &cfg.detectors,
-            cfg.ai.enabled,
-        ),
+        aegis_security::detectors::MaskState::from_detectors_config(&cfg.detectors, cfg.ai.enabled),
     );
 
     // CC-T (compliance-on-boot) — `cfg.detectors.<class>.enabled:
@@ -394,12 +396,11 @@ pub async fn run(
         match aegis_control::api::detectors_persist::load_snapshot(&persist_cfg.path).await {
             Ok(snap) => {
                 use aegis_control::api::detectors_persist::ApplyOutcome;
-                let outcome =
-                    aegis_control::api::detectors_persist::apply_snapshot_with_compliance(
-                        snap,
-                        &mask,
-                        &compliance_modes,
-                    );
+                let outcome = aegis_control::api::detectors_persist::apply_snapshot_with_compliance(
+                    snap,
+                    &mask,
+                    &compliance_modes,
+                );
                 match outcome {
                     ApplyOutcome::Applied => {
                         tracing::info!(
@@ -449,11 +450,9 @@ pub async fn run(
     // (1 000 req / 60 s) when no `scope: Global, key: Ip`
     // bucket is configured — safer than running with no
     // volumetric guard at all.
-    let ip_rate_limiter = Arc::new(
-        aegis_security::rate_limit::IpRateLimiter::new(
-            crate::config_source::reload::derive_ip_rate_cfg(&cfg),
-        ),
-    );
+    let ip_rate_limiter = Arc::new(aegis_security::rate_limit::IpRateLimiter::new(
+        crate::config_source::reload::derive_ip_rate_cfg(&cfg),
+    ));
 
     // F-T10 — per-stage latency histogram. Build the metrics
     // registry once here so both the data plane (which now
@@ -480,8 +479,7 @@ pub async fn run(
     // surgical. Audit-mutated `PUT /api/ai/confidence` reads the
     // shared atomic from `services.ai_threshold` and updates the same
     // backing store the data plane reads per inference.
-    let mut ai_runtime_threshold_inner: Option<std::sync::Arc<std::sync::atomic::AtomicU32>> =
-        None;
+    let mut ai_runtime_threshold_inner: Option<std::sync::Arc<std::sync::atomic::AtomicU32>> = None;
     #[cfg(feature = "ai")]
     {
         if cfg.ai.batch_enabled {
@@ -573,114 +571,114 @@ pub async fn run(
                 }
             };
         } else {
-        // 2026-05-10 — AI detector now loads whenever
-        // `cfg.ai.model_path` points at an existing file, regardless
-        // of `cfg.ai.enabled`. The detector's runtime toggle
-        // controls request-time evaluation; the YAML `enabled` flag
-        // only seeds the *initial* toggle state. This lets operators
-        // flip AI on from Detectors & Tiers → AI row → Enable
-        // without a restart (previously the dashboard's Enable
-        // button was inert in the common dev case where
-        // `enabled: false` left the runtime un-installed).
-        ai_runtime_toggle = match cfg.ai.model_path.as_ref() {
-            Some(model_path) if model_path.exists() => {
-                let normal_idx = aegis_security::detectors::ai::DEFAULT_NORMAL_CLASS_IDX;
-                let ai_metrics = std::sync::Arc::new(
-                    aegis_control::metrics::ai::AiMetrics::register(&metrics).map_err(|e| {
-                        aegis_core::WafError::Config(format!(
-                            "ai metrics registration failed: {e}"
-                        ))
-                    })?,
-                );
-                // 2026-05-23 — load a session pool of `cfg.ai.sessions`
-                // (1 = single session, the default). N > 1 parallelises
-                // inference across N sessions via the synchronous
-                // round-robin path — no batching, no async bridge.
-                match aegis_security::detectors::ai::Model::load_pool(
-                    model_path,
-                    normal_idx,
-                    cfg.ai.sessions,
-                ) {
-                    Ok(model) => {
-                        let sessions = model.session_count();
-                        let detector = aegis_security::detectors::ai::AiDetector::from_model(
-                            std::sync::Arc::new(model),
-                            cfg.ai.confidence_threshold,
-                        )
-                        .with_metrics(ai_metrics);
-                        // AI-T10 — grab the runtime-toggle handle BEFORE
-                        // we box the detector. Both the data plane and
-                        // the control plane read the same `AtomicBool`.
-                        let toggle = detector.runtime_toggle();
-                        // 2026-05-29 — same idea for `confidence_threshold`:
-                        // stash the shared AtomicU32 the dashboard's
-                        // `PUT /api/ai/confidence` will flip and the data
-                        // plane reads via `AiDetector::threshold()`.
-                        ai_runtime_threshold_inner = Some(detector.runtime_threshold());
-                        // Seed the toggle from `cfg.ai.enabled`. The
-                        // detector's default is `true`; we override here
-                        // so `enabled: false` in YAML still boots with
-                        // AI off (operator opts in via dashboard).
-                        toggle.store(cfg.ai.enabled, std::sync::atomic::Ordering::Relaxed);
-                        tracing::info!(
-                            model_path = %model_path.display(),
-                            threshold = cfg.ai.confidence_threshold,
-                            sessions,
-                            initial_enabled = cfg.ai.enabled,
-                            "AI detector loaded; runtime toggle wired",
-                        );
-                        detector_vec.push(Box::new(detector));
-                        Some(toggle)
-                    }
-                    Err(e) => {
-                        // Fail-soft when the model is malformed:
-                        // log + leave AI un-installed so the boot
-                        // path doesn't trip on a corrupt artifact.
-                        // Dashboard will show "feature off" until
-                        // the operator fixes the model and restarts.
-                        // 2026-05-10 — operator-confirmed: a broken
-                        // model shouldn't block boot in dev / CI.
-                        if cfg.ai.enabled {
-                            // If the YAML asked for AI explicitly,
-                            // surface the failure as a hard config
-                            // error so prod doesn't silently drop AI.
-                            return Err(aegis_core::WafError::Config(format!(
-                                "ai.enabled = true but model load from {} failed: {e}",
-                                model_path.display(),
-                            )));
+            // 2026-05-10 — AI detector now loads whenever
+            // `cfg.ai.model_path` points at an existing file, regardless
+            // of `cfg.ai.enabled`. The detector's runtime toggle
+            // controls request-time evaluation; the YAML `enabled` flag
+            // only seeds the *initial* toggle state. This lets operators
+            // flip AI on from Detectors & Tiers → AI row → Enable
+            // without a restart (previously the dashboard's Enable
+            // button was inert in the common dev case where
+            // `enabled: false` left the runtime un-installed).
+            ai_runtime_toggle = match cfg.ai.model_path.as_ref() {
+                Some(model_path) if model_path.exists() => {
+                    let normal_idx = aegis_security::detectors::ai::DEFAULT_NORMAL_CLASS_IDX;
+                    let ai_metrics = std::sync::Arc::new(
+                        aegis_control::metrics::ai::AiMetrics::register(&metrics).map_err(|e| {
+                            aegis_core::WafError::Config(format!(
+                                "ai metrics registration failed: {e}"
+                            ))
+                        })?,
+                    );
+                    // 2026-05-23 — load a session pool of `cfg.ai.sessions`
+                    // (1 = single session, the default). N > 1 parallelises
+                    // inference across N sessions via the synchronous
+                    // round-robin path — no batching, no async bridge.
+                    match aegis_security::detectors::ai::Model::load_pool(
+                        model_path,
+                        normal_idx,
+                        cfg.ai.sessions,
+                    ) {
+                        Ok(model) => {
+                            let sessions = model.session_count();
+                            let detector = aegis_security::detectors::ai::AiDetector::from_model(
+                                std::sync::Arc::new(model),
+                                cfg.ai.confidence_threshold,
+                            )
+                            .with_metrics(ai_metrics);
+                            // AI-T10 — grab the runtime-toggle handle BEFORE
+                            // we box the detector. Both the data plane and
+                            // the control plane read the same `AtomicBool`.
+                            let toggle = detector.runtime_toggle();
+                            // 2026-05-29 — same idea for `confidence_threshold`:
+                            // stash the shared AtomicU32 the dashboard's
+                            // `PUT /api/ai/confidence` will flip and the data
+                            // plane reads via `AiDetector::threshold()`.
+                            ai_runtime_threshold_inner = Some(detector.runtime_threshold());
+                            // Seed the toggle from `cfg.ai.enabled`. The
+                            // detector's default is `true`; we override here
+                            // so `enabled: false` in YAML still boots with
+                            // AI off (operator opts in via dashboard).
+                            toggle.store(cfg.ai.enabled, std::sync::atomic::Ordering::Relaxed);
+                            tracing::info!(
+                                model_path = %model_path.display(),
+                                threshold = cfg.ai.confidence_threshold,
+                                sessions,
+                                initial_enabled = cfg.ai.enabled,
+                                "AI detector loaded; runtime toggle wired",
+                            );
+                            detector_vec.push(Box::new(detector));
+                            Some(toggle)
                         }
-                        tracing::warn!(
-                            model_path = %model_path.display(),
-                            error = %e,
-                            "ai.enabled = false and model load failed — \
-                             AI detector skipped (operator can't enable from dashboard \
-                             until the model loads cleanly)",
-                        );
-                        None
+                        Err(e) => {
+                            // Fail-soft when the model is malformed:
+                            // log + leave AI un-installed so the boot
+                            // path doesn't trip on a corrupt artifact.
+                            // Dashboard will show "feature off" until
+                            // the operator fixes the model and restarts.
+                            // 2026-05-10 — operator-confirmed: a broken
+                            // model shouldn't block boot in dev / CI.
+                            if cfg.ai.enabled {
+                                // If the YAML asked for AI explicitly,
+                                // surface the failure as a hard config
+                                // error so prod doesn't silently drop AI.
+                                return Err(aegis_core::WafError::Config(format!(
+                                    "ai.enabled = true but model load from {} failed: {e}",
+                                    model_path.display(),
+                                )));
+                            }
+                            tracing::warn!(
+                                model_path = %model_path.display(),
+                                error = %e,
+                                "ai.enabled = false and model load failed — \
+                                 AI detector skipped (operator can't enable from dashboard \
+                                 until the model loads cleanly)",
+                            );
+                            None
+                        }
                     }
                 }
-            }
-            Some(model_path) => {
-                // model_path set but file missing.
-                if cfg.ai.enabled {
-                    return Err(aegis_core::WafError::Config(format!(
-                        "ai.enabled = true but model file does not exist at {}",
-                        model_path.display(),
-                    )));
+                Some(model_path) => {
+                    // model_path set but file missing.
+                    if cfg.ai.enabled {
+                        return Err(aegis_core::WafError::Config(format!(
+                            "ai.enabled = true but model file does not exist at {}",
+                            model_path.display(),
+                        )));
+                    }
+                    tracing::warn!(
+                        model_path = %model_path.display(),
+                        "ai.model_path set but file missing — AI detector skipped \
+                         (run `make ai-link MODEL=<path>` or set a valid path)",
+                    );
+                    None
                 }
-                tracing::warn!(
-                    model_path = %model_path.display(),
-                    "ai.model_path set but file missing — AI detector skipped \
-                     (run `make ai-link MODEL=<path>` or set a valid path)",
-                );
-                None
-            }
-            None => {
-                // No model_path configured. Dashboard will show
-                // "feature off" with the rebuild-and-configure hint.
-                None
-            }
-        };
+                None => {
+                    // No model_path configured. Dashboard will show
+                    // "feature off" with the rebuild-and-configure hint.
+                    None
+                }
+            };
         }
     }
     // 2026-05-29 — surface the threshold handle captured inside the AI
@@ -702,8 +700,7 @@ pub async fn run(
     // (for `record`) and the admin endpoint (`GET /api/analytics/
     // route-activity`). Cheap to clone — the inner `DashMap` is
     // `Arc`-shared.
-    let route_activity =
-        aegis_control::metrics::route_activity::RouteActivityWindow::new();
+    let route_activity = aegis_control::metrics::route_activity::RouteActivityWindow::new();
     // Per-detector evaluation-duration histogram. Same wiring
     // pattern as `route_latency_hist`; data plane records around
     // each `Detector::inspect` call.
@@ -750,23 +747,18 @@ pub async fn run(
     // background sampler ticks every 5 s — same cadence as the
     // upstream-pool sync — so the cost is negligible (one
     // atomic-loads-and-set every 5 s).
-    let runtime_metrics =
-        aegis_control::metrics::runtime::RuntimeMetrics::register(&metrics)
-            .expect("runtime metrics registration failed");
+    let runtime_metrics = aegis_control::metrics::runtime::RuntimeMetrics::register(&metrics)
+        .expect("runtime metrics registration failed");
     runtime_metrics.spawn_sampler(std::time::Duration::from_secs(5));
     // PROM-T3 — per-op state-backend counter
     // `waf_state_backend_ops_total{op,outcome}`. Wraps the
     // resolved state backend with a delegating impl that
     // records every dispatch — every downstream consumer of
     // `state` is automatically instrumented.
-    let state_op_metrics =
-        aegis_control::metrics::state_ops::StateOpMetrics::register(&metrics)
-            .expect("state op metrics registration failed");
+    let state_op_metrics = aegis_control::metrics::state_ops::StateOpMetrics::register(&metrics)
+        .expect("state op metrics registration failed");
     let state: Arc<dyn aegis_core::state::StateBackend> = Arc::new(
-        aegis_control::metrics::state_ops::MeteredStateBackend::new(
-            state,
-            state_op_metrics,
-        ),
+        aegis_control::metrics::state_ops::MeteredStateBackend::new(state, state_op_metrics),
     );
     // PROM-T3 — audit event counter `waf_audit_events_total{class}`.
     // Recorded by a metrics-only AuditBus subscriber spawned
@@ -786,10 +778,7 @@ pub async fn run(
                 match rx.recv().await {
                     Ok(ev) => m.record(ev.class),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(
-                            dropped = n,
-                            "audit event metrics subscriber lagged",
-                        );
+                        tracing::warn!(dropped = n, "audit event metrics subscriber lagged",);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -816,10 +805,7 @@ pub async fn run(
     // `NoopPipeline` here, silently dropping the response-filter
     // wire-up that landed in `data_plane.rs` two commits ago.
     let upstream_ctx = Arc::new({
-        let mut ctx = crate::proxy::ProxyContext::build(
-            &cfg,
-            pipeline.clone(),
-        )?;
+        let mut ctx = crate::proxy::ProxyContext::build(&cfg, pipeline.clone())?;
         // WS-T6 — share the registered metrics with the data-
         // plane bridge code.  Done before Arc-wrap so the field
         // can stay non-OnceLock (it never changes after boot).
@@ -841,8 +827,7 @@ pub async fn run(
     // runtime regardless of handle ownership. Mirrors the
     // `config-watcher` pattern below.
     if !dns_refresh_specs.is_empty() {
-        let resolver = hickory_resolver::TokioResolver::builder_tokio()
-            .and_then(|b| b.build());
+        let resolver = hickory_resolver::TokioResolver::builder_tokio().and_then(|b| b.build());
         match resolver {
             Ok(resolver) => {
                 let resolver = Arc::new(resolver);
@@ -852,11 +837,7 @@ pub async fn run(
                     // refresh tick skips a no-op audit event when
                     // the resolution matches what Phase 1 already
                     // applied at boot.
-                    let seed = derive_applied_dns_seed(
-                        &upstream_ctx.pools,
-                        &pool_name,
-                        &spec,
-                    );
+                    let seed = derive_applied_dns_seed(&upstream_ctx.pools, &pool_name, &spec);
                     let handle = crate::upstream::dns_refresh::spawn_pool_refresh(
                         pool_name.clone(),
                         spec,
@@ -941,8 +922,7 @@ pub async fn run(
     // already encodes that, so an empty map preserves the
     // mandate; the per-tier YAML override lets operators
     // tune posture per-deployment.
-    let mut ddos_runtime_cfg: aegis_security::ddos::DdosConfig =
-        cfg.ddos.clone().into();
+    let mut ddos_runtime_cfg: aegis_security::ddos::DdosConfig = cfg.ddos.clone().into();
     for (tier, mode) in &cfg.fail_mode_by_tier {
         let runtime_mode = match mode {
             aegis_core::config::FailureModeConfig::FailClose => {
@@ -1020,18 +1000,21 @@ pub async fn run(
                 .iter()
                 .map(|c| {
                     let hosts: &[String] = &c.hosts;
-                    (c.cert_path.clone(), std::path::PathBuf::from(&c.key_ref), hosts)
+                    (
+                        c.cert_path.clone(),
+                        std::path::PathBuf::from(&c.key_ref),
+                        hosts,
+                    )
                 })
                 .collect();
-            let store = crate::listener::tls::CertStore::load(&entries)
-                .map_err(|e| {
-                    aegis_core::WafError::Config(format!(
-                        "tls.certificates: failed to load cert/key pairs: {e}"
-                    ))
-                })?;
-            let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(
-                Arc::new(arc_swap::ArcSwap::from_pointee(store)),
-            ));
+            let store = crate::listener::tls::CertStore::load(&entries).map_err(|e| {
+                aegis_core::WafError::Config(format!(
+                    "tls.certificates: failed to load cert/key pairs: {e}"
+                ))
+            })?;
+            let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(Arc::new(
+                arc_swap::ArcSwap::from_pointee(store),
+            )));
 
             // MTLS-T2 — when `cfg.tls.client_auth` is set and its
             // `apply_to` includes `Data`, build a
@@ -1044,40 +1027,44 @@ pub async fn run(
             // no-client-auth would be a security regression).
             let client_auth_for_data = tls_cfg.client_auth.as_ref().filter(|ca| {
                 ca.mode != aegis_core::config::ClientAuthMode::Disabled
-                    && ca.apply_to.contains(&aegis_core::config::ClientAuthScope::Data)
+                    && ca
+                        .apply_to
+                        .contains(&aegis_core::config::ClientAuthScope::Data)
             });
 
             // MTLS-T5 — keep the parsed `ClientTrustStore`
             // around so the cfg-reload watcher can swap it on
             // future cfg changes. `None` when client auth is
             // disabled or scoped to admin only.
-            let mut client_trust_for_reload: Option<crate::listener::client_trust::ClientTrustStore> =
-                None;
+            let mut client_trust_for_reload: Option<
+                crate::listener::client_trust::ClientTrustStore,
+            > = None;
             let mut server_cfg = if let Some(ca) = client_auth_for_data {
                 let bundle = ca.ca_bundle.as_ref().ok_or_else(|| {
                     aegis_core::WafError::Config(
-                        "tls.client_auth.ca_bundle is required when mode != disabled"
-                            .into(),
+                        "tls.client_auth.ca_bundle is required when mode != disabled".into(),
                     )
                 })?;
-                let trust = crate::listener::client_trust::ClientTrustStore::load_from_pem_file(bundle)?;
+                let trust =
+                    crate::listener::client_trust::ClientTrustStore::load_from_pem_file(bundle)?;
                 tracing::info!(
                     mode = ?ca.mode,
                     apply_to = ?ca.apply_to,
                     ca_bundle = %bundle.display(),
                     "mtls inbound client auth enabled (data plane)",
                 );
-                let server_cfg = crate::listener::tls_policy::build_hardened_server_config_with_client_auth(
-                    resolver.clone(),
-                    tls_cfg.min_version.as_deref(),
-                    &trust,
-                    ca.mode,
-                )
-                .map_err(|e| {
-                    aegis_core::WafError::Config(format!(
-                        "tls: rustls (with client auth) config build failed: {e}"
-                    ))
-                })?;
+                let server_cfg =
+                    crate::listener::tls_policy::build_hardened_server_config_with_client_auth(
+                        resolver.clone(),
+                        tls_cfg.min_version.as_deref(),
+                        &trust,
+                        ca.mode,
+                    )
+                    .map_err(|e| {
+                        aegis_core::WafError::Config(format!(
+                            "tls: rustls (with client auth) config build failed: {e}"
+                        ))
+                    })?;
                 client_trust_for_reload = Some(trust);
                 server_cfg
             } else {
@@ -1086,9 +1073,7 @@ pub async fn run(
                     tls_cfg.min_version.as_deref(),
                 )
                 .map_err(|e| {
-                    aegis_core::WafError::Config(format!(
-                        "tls: rustls config build failed: {e}"
-                    ))
+                    aegis_core::WafError::Config(format!("tls: rustls config build failed: {e}"))
                 })?
             };
             // CI-T10 — the data-plane TLS branch in
@@ -1099,8 +1084,7 @@ pub async fn run(
             // outcome. (`build_hardened_server_config` already
             // sets this list — keep it explicit here so a
             // future refactor can't accidentally regress.)
-            server_cfg.alpn_protocols =
-                vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
             (
                 Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(
                     server_cfg,
@@ -1142,16 +1126,13 @@ pub async fn run(
         // too (the redis watcher gets it via ApplyTargets below).
         ai_threshold: ai_runtime_threshold.clone(),
         response_filter_writer: Some(
-            pipeline.clone()
-                as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
+            pipeline.clone() as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>
         ),
         tiers: Some(tier_store.clone()),
         rules: Some(rule_store.clone()),
         active_ruleset: Some(pipeline.rules_arc()),
-        upstream_writer: Some(
-            Arc::new(upstream_ctx.pools.clone())
-                as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>,
-        ),
+        upstream_writer: Some(Arc::new(upstream_ctx.pools.clone())
+            as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
     };
     match reload_source {
         ConfigReloadSource::None => {
@@ -1200,17 +1181,13 @@ pub async fn run(
             ai_toggle: ai_runtime_toggle.clone(),
             // 2026-05-30 (NT-07 fix) — closes the live-propagate gap.
             ai_threshold: ai_runtime_threshold.clone(),
-            response_filter_writer: Some(
-                pipeline.clone()
-                    as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>,
-            ),
+            response_filter_writer: Some(pipeline.clone()
+                as Arc<dyn aegis_control::api::response_filter::ResponseFilterWriter>),
             tiers: Some(tier_store.clone()),
             rules: Some(rule_store.clone()),
             active_ruleset: Some(pipeline.rules_arc()),
-            upstream_writer: Some(
-                Arc::new(upstream_ctx.pools.clone())
-                    as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>,
-            ),
+            upstream_writer: Some(Arc::new(upstream_ctx.pools.clone())
+                as Arc<dyn aegis_control::api::upstreams_config::UpstreamWriter>),
         };
         tracing::info!(
             node_id = %node_id,
@@ -1233,19 +1210,14 @@ pub async fn run(
     // `services.identity_tracker` for `/api/mtls/*` to read.
     // CA-bundle summary loading stays inside `admin_accept_loop`
     // (it knows when boot is "settled").
-    let identity_tracker = std::sync::Arc::new(
-        aegis_control::identity_tracker::IdentityTracker::new(),
-    );
+    let identity_tracker =
+        std::sync::Arc::new(aegis_control::identity_tracker::IdentityTracker::new());
 
     // external interop contract surface . Built
     // here so it's available to the data-plane accept_loop and
     // later threaded into `DashboardServices` for the admin
     // control plane. Opted in via `cfg.interop.enabled`.
-    let interop_runtime = build_interop_runtime(
-        &cfg,
-        &risk,
-        &ip_rate_limiter,
-    );
+    let interop_runtime = build_interop_runtime(&cfg, &risk, &ip_rate_limiter);
     if let Some(rt) = interop_runtime.as_ref() {
         if let Some(sink) = rt.audit.as_ref() {
             tracing::info!(
@@ -1253,9 +1225,7 @@ pub async fn run(
                 "external interop contract enabled — control plane on /__waf_control",
             );
         } else {
-            tracing::info!(
-                "external interop contract enabled (audit log path not configured)",
-            );
+            tracing::info!("external interop contract enabled (audit log path not configured)",);
         }
         // v2.3 §2.5 — install the ModeStore back into the
         // already-constructed ProxyContext so the data-plane
@@ -1267,7 +1237,9 @@ pub async fn run(
         // plane consults at request entry to short-circuit with 503
         // during a reset_state window. Same one-shot semantics as
         // interop_modes.
-        let _ = upstream_ctx.reset_in_progress.set(rt.reset_in_progress.clone());
+        let _ = upstream_ctx
+            .reset_in_progress
+            .set(rt.reset_in_progress.clone());
 
         // v2.3 §3 + NEW-2 (2026-05-08) — install the PoW issuer
         // so the data-plane challenge body carries
@@ -1278,13 +1250,11 @@ pub async fn run(
         // (relevant once multi-node ships — see
         // plans/multi-node-deployment/).
         let pow_key = derive_pow_key(&rt.control.secret);
-        let pow_issuer = std::sync::Arc::new(
-            aegis_security::challenge::PowIssuer::new(
-                pow_key,
-                16,                                            // ~65k hashes to solve
-                std::time::Duration::from_secs(60),            // 60s validity window
-            ),
-        );
+        let pow_issuer = std::sync::Arc::new(aegis_security::challenge::PowIssuer::new(
+            pow_key,
+            16,                                 // ~65k hashes to solve
+            std::time::Duration::from_secs(60), // 60s validity window
+        ));
         let _ = upstream_ctx.pow_issuer.set(pow_issuer);
 
         // 2026-05-20 reset_state full-clear — late-register the
@@ -1294,34 +1264,36 @@ pub async fn run(
         //   item 6: DDoS spike-state atomics (config preserved)
         if let Some(ddos_rt) = upstream_ctx.ddos.get() {
             let ddos_for_reset = ddos_rt.clone();
-            rt.control.register_reset_callback(std::sync::Arc::new(move || {
-                ddos_for_reset.reset();
-            }));
+            rt.control
+                .register_reset_callback(std::sync::Arc::new(move || {
+                    ddos_for_reset.reset();
+                }));
         }
         //   item 5: device→IP fingerprint tracker metadata
         let device_tracker_for_reset = upstream_ctx.device_ip_tracker.clone();
-        rt.control.register_reset_callback(std::sync::Arc::new(move || {
-            device_tracker_for_reset.clear();
-        }));
+        rt.control
+            .register_reset_callback(std::sync::Arc::new(move || {
+                device_tracker_for_reset.clear();
+            }));
         //   items 2/4/6 (StateBackend half): async ephemeral wipe of
         //   rate-limit windows + nonces + auto-block + backend risk
         //   keys, scoped to the `g:*` prefixes (leader lease survives).
         let state_for_reset = std::sync::Arc::clone(&state);
-        rt.control.register_async_reset_callback(std::sync::Arc::new(move || {
-            let backend = std::sync::Arc::clone(&state_for_reset);
-            Box::pin(async move {
-                match backend.reset_ephemeral().await {
-                    Ok(n) => tracing::info!(
-                        cleared = n,
-                        "reset_state: StateBackend ephemeral wipe",
-                    ),
-                    Err(e) => tracing::warn!(
-                        error = %e,
-                        "reset_state: StateBackend ephemeral wipe failed",
-                    ),
-                }
-            })
-        }));
+        rt.control
+            .register_async_reset_callback(std::sync::Arc::new(move || {
+                let backend = std::sync::Arc::clone(&state_for_reset);
+                Box::pin(async move {
+                    match backend.reset_ephemeral().await {
+                        Ok(n) => {
+                            tracing::info!(cleared = n, "reset_state: StateBackend ephemeral wipe",)
+                        }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "reset_state: StateBackend ephemeral wipe failed",
+                        ),
+                    }
+                })
+            }));
     }
 
     // Data-plane listeners.
@@ -1339,10 +1311,7 @@ pub async fn run(
             listener_fd_registry.push((name.clone(), tcp.as_raw_fd()));
         }
         let listener_tls = listener_cfg.tls;
-        tracing::info!(
-            "data-plane listening on {addr} (tls={})",
-            listener_tls
-        );
+        tracing::info!("data-plane listening on {addr} (tls={})", listener_tls);
         if listener_tls && tls_acceptor.is_none() {
             return Err(aegis_core::WafError::Config(format!(
                 "listener {addr} has tls: true but no `tls.certificates` configured"
@@ -1361,7 +1330,11 @@ pub async fn run(
         let detector_latency_hist_l = detector_latency_hist.clone();
         let bus = bus.clone();
         let upstream_ctx_l = upstream_ctx.clone();
-        let acceptor = if listener_tls { tls_acceptor.clone() } else { None };
+        let acceptor = if listener_tls {
+            tls_acceptor.clone()
+        } else {
+            None
+        };
         // B5 — Alt-Svc auto-stamp only on TLS listeners. Plain
         // HTTP listeners never advertise h3 (UA may follow it
         // and downgrade-misroute).
@@ -1533,12 +1506,8 @@ pub async fn run(
     if let Some(redirect_cfg) = cfg.listeners.force_https.as_ref() {
         let addr = redirect_cfg.bind;
         let status = redirect_cfg.status;
-        let tcp = crate::hotbin::adopt_or_bind(
-            &mut inherited_listeners,
-            "force-https",
-            addr,
-        )
-        .await?;
+        let tcp =
+            crate::hotbin::adopt_or_bind(&mut inherited_listeners, "force-https", addr).await?;
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
@@ -1571,12 +1540,8 @@ pub async fn run(
             );
         }
     }
-    let admin_tcp = crate::hotbin::adopt_or_bind(
-        &mut inherited_listeners,
-        "admin",
-        admin_addr,
-    )
-    .await?;
+    let admin_tcp =
+        crate::hotbin::adopt_or_bind(&mut inherited_listeners, "admin", admin_addr).await?;
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
@@ -1591,51 +1556,52 @@ pub async fn run(
     // the data-plane does and hand the acceptor to the admin
     // accept loop. Operators wanting plain HTTP in dev leave
     // `admin.tls` unset → None → existing behaviour.
-    let admin_tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>> =
-        match cfg.admin.tls.as_ref() {
-            None => None,
-            Some(tls_cfg) if tls_cfg.certificates.is_empty() => None,
-            Some(tls_cfg) => {
-                let entries: Vec<(_, _, &[String])> = tls_cfg
-                    .certificates
-                    .iter()
-                    .map(|c| {
-                        let hosts: &[String] = &c.hosts;
-                        (
-                            c.cert_path.clone(),
-                            std::path::PathBuf::from(&c.key_ref),
-                            hosts,
-                        )
-                    })
-                    .collect();
-                let store =
-                    crate::listener::tls::CertStore::load(&entries).map_err(|e| {
-                        aegis_core::WafError::Config(format!(
-                            "admin.tls.certificates: failed to load cert/key pairs: {e}"
-                        ))
-                    })?;
-                let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(
-                    Arc::new(arc_swap::ArcSwap::from_pointee(store)),
-                ));
-                let mut server_cfg =
-                    crate::listener::tls_policy::build_hardened_server_config(
-                        resolver,
-                        tls_cfg.min_version.as_deref(),
+    let admin_tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>> = match cfg.admin.tls.as_ref() {
+        None => None,
+        Some(tls_cfg) if tls_cfg.certificates.is_empty() => None,
+        Some(tls_cfg) => {
+            let entries: Vec<(_, _, &[String])> = tls_cfg
+                .certificates
+                .iter()
+                .map(|c| {
+                    let hosts: &[String] = &c.hosts;
+                    (
+                        c.cert_path.clone(),
+                        std::path::PathBuf::from(&c.key_ref),
+                        hosts,
                     )
-                    .map_err(|e| {
-                        aegis_core::WafError::Config(format!(
-                            "admin.tls: rustls server config build failed: {e}"
-                        ))
-                    })?;
-                // Admin is HTTP/1.1 only — dashboard SPA is
-                // h1-served. Force ALPN to skip h2.
-                server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-                Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(
-                    server_cfg,
-                ))))
-            }
-        };
-    let admin_scheme = if admin_tls_acceptor.is_some() { "https" } else { "http" };
+                })
+                .collect();
+            let store = crate::listener::tls::CertStore::load(&entries).map_err(|e| {
+                aegis_core::WafError::Config(format!(
+                    "admin.tls.certificates: failed to load cert/key pairs: {e}"
+                ))
+            })?;
+            let resolver = Arc::new(crate::listener::tls::DynamicResolver::new(Arc::new(
+                arc_swap::ArcSwap::from_pointee(store),
+            )));
+            let mut server_cfg = crate::listener::tls_policy::build_hardened_server_config(
+                resolver,
+                tls_cfg.min_version.as_deref(),
+            )
+            .map_err(|e| {
+                aegis_core::WafError::Config(format!(
+                    "admin.tls: rustls server config build failed: {e}"
+                ))
+            })?;
+            // Admin is HTTP/1.1 only — dashboard SPA is
+            // h1-served. Force ALPN to skip h2.
+            server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+            Some(Arc::new(tokio_rustls::TlsAcceptor::from(Arc::new(
+                server_cfg,
+            ))))
+        }
+    };
+    let admin_scheme = if admin_tls_acceptor.is_some() {
+        "https"
+    } else {
+        "http"
+    };
     tracing::info!("admin-plane listening on {admin_addr} ({admin_scheme})");
 
     // Boot-time visibility into cookie hardening — a missed-cookie
@@ -1646,9 +1612,7 @@ pub async fn run(
              Use only on plain-HTTP dev admin listeners; never in production."
         );
     } else {
-        tracing::info!(
-            "session + CSRF cookies issued with HttpOnly + Secure + SameSite=Strict"
-        );
+        tracing::info!("session + CSRF cookies issued with HttpOnly + Secure + SameSite=Strict");
     }
 
     let admin_cfg = cfg.clone();
@@ -1740,8 +1704,7 @@ pub async fn run(
     let hot_reloader = std::sync::Arc::new(crate::hotbin::HotReloader::new(
         std::time::Duration::from_secs(30),
     ));
-    let _sigusr2_handle =
-        crate::hotbin::spawn_sigusr2_listener(hot_reloader.clone());
+    let _sigusr2_handle = crate::hotbin::spawn_sigusr2_listener(hot_reloader.clone());
 
     // FDP drain refactor — polling task that watches
     // `hot_reloader.take_signal()` and orchestrates the actual
@@ -1760,23 +1723,14 @@ pub async fn run(
         let bus_for_poll = bus.clone();
         let fd_registry = listener_fd_registry.clone();
         handles.push(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(
-                std::time::Duration::from_millis(500),
-            );
-            tick.set_missed_tick_behavior(
-                tokio::time::MissedTickBehavior::Skip,
-            );
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
                 if !reloader_for_poll.take_signal() {
                     continue;
                 }
-                run_handover(
-                    &fd_registry,
-                    inflight_for_poll.clone(),
-                    &bus_for_poll,
-                )
-                .await;
+                run_handover(&fd_registry, inflight_for_poll.clone(), &bus_for_poll).await;
                 // run_handover() either calls process::exit on
                 // Drained / DrainTimeout or logs the rollback
                 // and returns. On rollback we resume polling so
@@ -1848,15 +1802,14 @@ pub async fn run(
         let ctrl_c = tokio::signal::ctrl_c();
         #[cfg(unix)]
         {
-            let mut term = match tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate(),
-            ) {
-                Ok(s) => s,
-                Err(_) => {
-                    ctrl_c.await.ok();
-                    return;
-                }
-            };
+            let mut term =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        ctrl_c.await.ok();
+                        return;
+                    }
+                };
             tokio::select! {
                 _ = ctrl_c => {}
                 _ = term.recv() => {}
@@ -1878,7 +1831,10 @@ pub async fn run(
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(5_000),
     );
-    tracing::info!(grace_ms = grace.as_millis() as u64, "draining; awaiting grace");
+    tracing::info!(
+        grace_ms = grace.as_millis() as u64,
+        "draining; awaiting grace"
+    );
     tokio::time::sleep(grace).await;
     tracing::info!("grace expired; aborting listeners");
 
@@ -1908,9 +1864,7 @@ pub(crate) async fn force_https_loop(
             let challenges = challenges.clone();
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let challenges = challenges.clone();
-                async move {
-                    Ok::<_, Infallible>(handle_force_https_request(req, status, &challenges))
-                }
+                async move { Ok::<_, Infallible>(handle_force_https_request(req, status, &challenges)) }
             });
             if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
                 tracing::debug!("force-https connection from {peer} closed: {e}");
@@ -1952,8 +1906,7 @@ fn derive_applied_dns_seed(
         Some(p) => p.clone(),
         None => return HashSet::new(),
     };
-    let hostnames: HashSet<&str> =
-        spec.hostnames.iter().map(|h| h.host.as_str()).collect();
+    let hostnames: HashSet<&str> = spec.hostnames.iter().map(|h| h.host.as_str()).collect();
     pool.members
         .iter()
         .filter_map(|m| {
@@ -2097,8 +2050,7 @@ pub(crate) fn build_interop_runtime(
     // `ModeStore` (operator-set enforce/log_only) is durable config,
     // NOT temporary — preserved per §2.4. Audit log: append-only,
     // NOT touched by reset.
-    let mut reset_callbacks: Vec<aegis_control::interop::control::ResetCallback> =
-        Vec::new();
+    let mut reset_callbacks: Vec<aegis_control::interop::control::ResetCallback> = Vec::new();
     let risk_for_reset = risk.clone();
     reset_callbacks.push(Arc::new(move || {
         risk_for_reset.reset_all();
@@ -2176,9 +2128,7 @@ pub(crate) fn build_interop_runtime(
             .interop
             .control_secret
             .clone()
-            .unwrap_or_else(|| {
-                aegis_control::interop::DEFAULT_CONTROL_SECRET.to_string()
-            }),
+            .unwrap_or_else(|| aegis_control::interop::DEFAULT_CONTROL_SECRET.to_string()),
     };
 
     Some(Arc::new(InteropRuntime {

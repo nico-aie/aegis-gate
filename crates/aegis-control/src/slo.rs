@@ -127,6 +127,16 @@ pub struct SloAlert {
     pub budget_consumed_pct: f64,
     pub window_hours: u64,
     pub runbook_url: String,
+    /// Measured SLI value over the window (a ratio in `[0, 1]`,
+    /// e.g. `0.123` = 12.3% availability). Carried so the alert
+    /// message can show measured-vs-target instead of only the
+    /// derived burn rate. 2026-06-02 — observability alert P1.
+    #[serde(default)]
+    pub measured: f64,
+    /// The objective's target value (ratio in `[0, 1]`, e.g.
+    /// `0.999`). 2026-06-02 — observability alert P1.
+    #[serde(default)]
+    pub target: f64,
 }
 
 /// Multi-source operator alert (2026-05-20 alerts refactor).
@@ -286,7 +296,9 @@ impl AlertEvent {
             AlertEvent::DdosModeCleared { .. } => {
                 "ddos_cleared".hash(&mut h);
             }
-            AlertEvent::CertExpiringSoon { host, not_after, .. } => {
+            AlertEvent::CertExpiringSoon {
+                host, not_after, ..
+            } => {
                 "cert_expiring".hash(&mut h);
                 host.hash(&mut h);
                 not_after.date_naive().to_string().hash(&mut h);
@@ -303,11 +315,16 @@ impl AlertEvent {
                 "pool_recovered".hash(&mut h);
                 pool.hash(&mut h);
             }
-            AlertEvent::LeaderLost { previous_leader, .. } => {
+            AlertEvent::LeaderLost {
+                previous_leader, ..
+            } => {
                 "leader_lost".hash(&mut h);
                 previous_leader.hash(&mut h);
             }
-            AlertEvent::HotReloadFailed { last_known_good_version, .. } => {
+            AlertEvent::HotReloadFailed {
+                last_known_good_version,
+                ..
+            } => {
                 "hot_reload_failed".hash(&mut h);
                 last_known_good_version.hash(&mut h);
             }
@@ -391,7 +408,9 @@ impl AlertDedupCache {
                     let drained = *suppressed;
                     *last_emit = now;
                     *suppressed = 0;
-                    DedupDecision::Emit { suppressed: drained }
+                    DedupDecision::Emit {
+                        suppressed: drained,
+                    }
                 }
             }
             None => {
@@ -461,11 +480,23 @@ impl AlertReceiver {
 /// dispatcher (Alertmanager / a sidecar / a CronJob).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ReceiverKind {
-    AlertmanagerWebhook { url: String },
-    Slack { webhook_url: String },
-    PagerDuty { routing_key: String },
-    ServiceNow { instance: String, table: String },
-    Jira { base_url: String, project: String },
+    AlertmanagerWebhook {
+        url: String,
+    },
+    Slack {
+        webhook_url: String,
+    },
+    PagerDuty {
+        routing_key: String,
+    },
+    ServiceNow {
+        instance: String,
+        table: String,
+    },
+    Jira {
+        base_url: String,
+        project: String,
+    },
     /// VipTalk Bot routing — the project's default chat
     /// receiver. Token is the bot identity slug from
     /// `https://api.viptalk.org/v1/bot/<token>/sendMessage`;
@@ -507,11 +538,13 @@ pub fn default_receivers() -> Vec<AlertReceiver> {
 
     match (bot_token, room_ids_raw) {
         (Some(bot_token), Some(rooms)) => {
-            let room_ids: Vec<String> =
-                rooms.split(',').map(|r| r.trim().to_string()).collect();
+            let room_ids: Vec<String> = rooms.split(',').map(|r| r.trim().to_string()).collect();
             vec![AlertReceiver {
                 name: "default-viptalk".to_string(),
-                kind: ReceiverKind::VipTalk { bot_token, room_ids },
+                kind: ReceiverKind::VipTalk {
+                    bot_token,
+                    room_ids,
+                },
                 severities: Vec::new(),
             }]
         }
@@ -661,6 +694,12 @@ impl SloEngine {
                             "https://runbooks.aegis.local/slo/{:?}/{}h",
                             obj.sli, burn.window_hours
                         ),
+                        // `avg` is the measured SLI value over the
+                        // window; `obj.target` is the objective. Both
+                        // carried so the message renders measured-vs-
+                        // target (alert P1).
+                        measured: avg,
+                        target: obj.target,
                     };
                     active.push(alert.clone());
                     history.push(alert.clone());
@@ -1009,18 +1048,17 @@ mod tests {
 
     #[test]
     fn sli_kind_equality() {
-        assert_eq!(SliKind::DataPlaneAvailability, SliKind::DataPlaneAvailability);
+        assert_eq!(
+            SliKind::DataPlaneAvailability,
+            SliKind::DataPlaneAvailability
+        );
         assert_ne!(SliKind::DataPlaneAvailability, SliKind::AuditDeliveryRate);
     }
 
     #[test]
     fn sli_kind_upstream_pool() {
-        let a = SliKind::UpstreamAvailability {
-            pool: "api".into(),
-        };
-        let b = SliKind::UpstreamAvailability {
-            pool: "web".into(),
-        };
+        let a = SliKind::UpstreamAvailability { pool: "api".into() };
+        let b = SliKind::UpstreamAvailability { pool: "web".into() };
         assert_ne!(a, b);
     }
 
@@ -1079,13 +1117,9 @@ mod tests {
     /// Process-wide mutex serialising tests that mutate
     /// `AEGIS_VIPTALK_*` env vars. Same pattern as the secret
     /// resolvers' tests.
-    static VIPTALK_ENV_LOCK: parking_lot::Mutex<()> =
-        parking_lot::Mutex::new(());
+    static VIPTALK_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-    fn with_viptalk_env<R>(
-        pairs: &[(&str, Option<&str>)],
-        f: impl FnOnce() -> R,
-    ) -> R {
+    fn with_viptalk_env<R>(pairs: &[(&str, Option<&str>)], f: impl FnOnce() -> R) -> R {
         let _lock = VIPTALK_ENV_LOCK.lock();
         let prior: Vec<(String, Option<String>)> = pairs
             .iter()
@@ -1149,7 +1183,10 @@ mod tests {
             ],
             default_receivers,
         );
-        assert!(receivers.is_empty(), "token-only → no receivers (need room IDs too)");
+        assert!(
+            receivers.is_empty(),
+            "token-only → no receivers (need room IDs too)"
+        );
     }
 
     #[test]
@@ -1166,7 +1203,10 @@ mod tests {
         );
         assert_eq!(receivers.len(), 1);
         match &receivers[0].kind {
-            ReceiverKind::VipTalk { bot_token, room_ids } => {
+            ReceiverKind::VipTalk {
+                bot_token,
+                room_ids,
+            } => {
                 assert_eq!(bot_token, "real-token");
                 assert_eq!(
                     room_ids,
@@ -1189,7 +1229,10 @@ mod tests {
             target: 0.999,
             current: 0.998,
             budget_remaining_pct: 50.0,
-            burn_rates: vec![BurnRate { window_hours: 1, rate: 0.4 }],
+            burn_rates: vec![BurnRate {
+                window_hours: 1,
+                rate: 0.4,
+            }],
         };
         let json = serde_json::to_string(&bs).unwrap();
         assert!(json.contains("CertFreshnessDays"));
@@ -1275,6 +1318,8 @@ mod tests {
             budget_consumed_pct: 10.0,
             window_hours: 1,
             runbook_url: "https://example.com".into(),
+            measured: 0.995,
+            target: 0.999,
         };
         let json = serde_json::to_string(&alert).unwrap();
         let parsed: SloAlert = serde_json::from_str(&json).unwrap();

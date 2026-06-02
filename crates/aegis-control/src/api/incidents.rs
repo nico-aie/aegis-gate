@@ -105,11 +105,15 @@ impl IncidentTracker {
     /// Idempotent — re-acking just refreshes the timestamp.
     pub fn ack(&self, id: &str, by: Option<String>, note: Option<String>) -> IncidentState {
         let mut s = self.state.lock().expect("incident state poisoned");
-        let entry = s.entry(id.to_string()).or_insert_with(|| IncidentState::new(id.to_string()));
+        let entry = s
+            .entry(id.to_string())
+            .or_insert_with(|| IncidentState::new(id.to_string()));
         entry.status = IncidentStatus::Acknowledged;
         entry.acked_at = Some(Utc::now());
         entry.acked_by = by.or(entry.acked_by.take());
-        if let Some(n) = note { entry.note = Some(n); }
+        if let Some(n) = note {
+            entry.note = Some(n);
+        }
         entry.clone()
     }
 
@@ -117,10 +121,14 @@ impl IncidentTracker {
     /// incidents until the deadline passes.
     pub fn snooze(&self, id: &str, until: DateTime<Utc>, note: Option<String>) -> IncidentState {
         let mut s = self.state.lock().expect("incident state poisoned");
-        let entry = s.entry(id.to_string()).or_insert_with(|| IncidentState::new(id.to_string()));
+        let entry = s
+            .entry(id.to_string())
+            .or_insert_with(|| IncidentState::new(id.to_string()));
         entry.status = IncidentStatus::Snoozed;
         entry.snoozed_until = Some(until);
-        if let Some(n) = note { entry.note = Some(n); }
+        if let Some(n) = note {
+            entry.note = Some(n);
+        }
         entry.clone()
     }
 
@@ -129,11 +137,17 @@ impl IncidentTracker {
     /// operator's "I'm done with this one" intent.
     pub fn resolve(&self, id: &str, by: Option<String>, note: Option<String>) -> IncidentState {
         let mut s = self.state.lock().expect("incident state poisoned");
-        let entry = s.entry(id.to_string()).or_insert_with(|| IncidentState::new(id.to_string()));
+        let entry = s
+            .entry(id.to_string())
+            .or_insert_with(|| IncidentState::new(id.to_string()));
         entry.status = IncidentStatus::Resolved;
         entry.resolved_at = Some(Utc::now());
-        if entry.acked_by.is_none() { entry.acked_by = by; }
-        if let Some(n) = note { entry.note = Some(n); }
+        if entry.acked_by.is_none() {
+            entry.acked_by = by;
+        }
+        if let Some(n) = note {
+            entry.note = Some(n);
+        }
         entry.clone()
     }
 
@@ -225,6 +239,8 @@ mod tests {
             budget_consumed_pct: 25.0,
             window_hours: 1,
             runbook_url: "".into(),
+            measured: 0.9985,
+            target: 0.999,
         }
     }
 
@@ -317,6 +333,8 @@ mod tests {
             budget_consumed_pct: 99999.99,
             window_hours,
             runbook_url: "".into(),
+            measured: 0.0,
+            target: 0.999,
         }
     }
 
