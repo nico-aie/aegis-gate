@@ -104,8 +104,10 @@ fn install_with_otel(otel_cfg: &aegis_core::config::OtelConfig) -> bool {
     use opentelemetry::KeyValue;
     use opentelemetry_otlp::WithExportConfig;
     use opentelemetry_sdk::{runtime, trace as sdk_trace, Resource};
+    use tracing_subscriber::filter::{LevelFilter, Targets};
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::Layer;
 
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
@@ -139,15 +141,28 @@ fn install_with_otel(otel_cfg: &aegis_core::config::OtelConfig) -> bool {
             // the batch on SIGTERM. We park it in a OnceLock at
             // module scope so a future shutdown hook can grab it.
             let _ = OTEL_PROVIDER.set(provider);
-            // Note: EnvFilter (RUST_LOG support) needs the
-            // `env-filter` feature on tracing-subscriber which
-            // the workspace doesn't enable today. Spans flow at
-            // their native level; operators who want filtering
-            // can enable the feature later. JSON layer + OTel
-            // layer are sufficient for the bring-up.
+            // 2026-06-02 — span-noise filter. Without this the OTLP
+            // export is dominated by `h2`/hyper/tower TRACE-level
+            // internals (`reserve_capacity`, `send_data`, `hpack::*`…)
+            // that drown the useful `waf.*` request spans (confirmed by
+            // the Jaeger smoke test). A per-layer `Targets` filter keeps
+            // only the WAF's own crates and drops everything else, so a
+            // trace shows the request path — not the HTTP/2 plumbing.
+            // This filter is scoped to the OTLP layer ONLY; the stdout
+            // JSON log layer below stays unfiltered (operators still get
+            // full logs). RUST_LOG/EnvFilter is a separate concern (needs
+            // the `env-filter` feature, not enabled).
+            let otel_filter = Targets::new()
+                .with_target("aegis_proxy", LevelFilter::TRACE)
+                .with_target("aegis_security", LevelFilter::TRACE)
+                .with_target("aegis_control", LevelFilter::TRACE)
+                .with_target("aegis_core", LevelFilter::TRACE)
+                .with_target("aegis_bin", LevelFilter::TRACE)
+                .with_target("waf", LevelFilter::TRACE)
+                .with_default(LevelFilter::OFF);
             let registry = tracing_subscriber::registry()
                 .with(tracing_subscriber::fmt::layer().json())
-                .with(otel_layer);
+                .with(otel_layer.with_filter(otel_filter));
             if registry.try_init().is_err() {
                 // Subscribers are install-once. If something else
                 // already set a global subscriber (tests / library
