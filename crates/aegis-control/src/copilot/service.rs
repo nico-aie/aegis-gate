@@ -10,7 +10,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use super::summary::{summarize, Brief, TelemetrySnapshot};
+use super::summary::{self, summarize, Brief, TelemetrySnapshot};
 use super::{CostGuard, LlmError, LlmProvider};
 
 /// Default per-window budget. Conservative so an idle copilot can't
@@ -45,6 +45,19 @@ impl CopilotService {
     pub async fn summary(&self, snapshot: TelemetrySnapshot) -> Result<Brief, LlmError> {
         match self.provider.as_deref() {
             Some(p) => summarize(p, &self.guard, snapshot).await,
+            None => Err(LlmError::Disabled),
+        }
+    }
+
+    /// Answer a free-form operator question grounded in the snapshot.
+    /// `Err(Disabled)` when no provider is configured.
+    pub async fn ask(
+        &self,
+        snapshot: TelemetrySnapshot,
+        question: &str,
+    ) -> Result<Brief, LlmError> {
+        match self.provider.as_deref() {
+            Some(p) => summary::ask(p, &self.guard, snapshot, question).await,
             None => Err(LlmError::Disabled),
         }
     }

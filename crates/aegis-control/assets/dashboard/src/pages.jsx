@@ -12836,6 +12836,41 @@ function PageCopilot() {
   const [err, setErr] = useStateP(null);
   const [disabled, setDisabled] = useStateP(false);
   const [minutes, setMinutes] = useStateP('60');
+  // Ask box (free-form question over the same snapshot window).
+  const [q, setQ] = useStateP('');
+  const [asking, setAsking] = useStateP(false);
+  const [answer, setAnswer] = useStateP(null);
+  const [askErr, setAskErr] = useStateP(null);
+
+  async function ask() {
+    const question = q.trim();
+    if (!question || asking) return;
+    setAsking(true);
+    setAskErr(null);
+    try {
+      const r = await fetch(
+        `/api/copilot/ask?q=${encodeURIComponent(question)}&minutes=${encodeURIComponent(minutes)}`,
+        { credentials: 'same-origin' }
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 503) {
+        setDisabled(true);
+        setAnswer(null);
+        setAskErr(j.hint || j.error || 'Copilot is disabled.');
+        return;
+      }
+      if (!r.ok) {
+        setAskErr(j.error || `HTTP ${r.status}`);
+        setAnswer(null);
+        return;
+      }
+      setAnswer(j);
+    } catch (e) {
+      setAskErr(String(e && e.message ? e.message : e));
+    } finally {
+      setAsking(false);
+    }
+  }
 
   async function generate() {
     if (loading) return;
@@ -12996,6 +13031,46 @@ function PageCopilot() {
               ) : (
                 <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Ask box — free-form question over the same snapshot window. */}
+      {!disabled && (
+        <div className="card">
+          <window.SectionHeader
+            title="Ask the copilot"
+            sub="grounded in the current snapshot window · advisory"
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              className="input"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') ask();
+              }}
+              placeholder="e.g. which IP is hitting us hardest, and why?"
+              style={{ flex: 1 }}
+            />
+            <button className="btn" onClick={ask} disabled={asking || !q.trim()}>
+              {asking ? 'Asking…' : 'Ask'}
+            </button>
+          </div>
+          {askErr && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--down)' }}>{askErr}</div>
+          )}
+          {answer && (
+            <div style={{ marginTop: 10 }}>
+              {/* Plain text only — never HTML (untrusted model output). */}
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>
+                {answer.text}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--ink-mute)' }}>
+                {answer.model} · {(answer.input_tokens || 0) + (answer.output_tokens || 0)} tokens
+                · advisory — verify before acting
+              </div>
             </div>
           )}
         </div>

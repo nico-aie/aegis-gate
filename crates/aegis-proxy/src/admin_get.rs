@@ -1319,6 +1319,50 @@ pub(crate) async fn handle_copilot_summary(
     }
 }
 
+/// `GET /api/copilot/ask?q=<question>&minutes=15` — answer a free-form
+/// operator question grounded in the current telemetry snapshot. GET (no
+/// CSRF, mirrors the summary endpoint); the question is operator input so
+/// it's redacted before egress like everything else. 400 on empty `q`.
+pub(crate) async fn handle_copilot_ask(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let copilot = aegis_control::copilot::service::global();
+    if !copilot.enabled() {
+        let body = serde_json::json!({
+            "error": "copilot disabled",
+            "hint": "set LLM_ENABLED=true + LLM_BASE_URL/LLM_API_KEY/LLM_MODEL and build with --features llm",
+        })
+        .to_string();
+        return json_body_response(503, body, "no-store");
+    }
+    let query = req.uri().query().unwrap_or("").to_string();
+    let question = parse_query_str(&query, "q")
+        .map(percent_decode)
+        .unwrap_or_default();
+    let question = question.trim();
+    if question.is_empty() {
+        let body =
+            serde_json::json!({ "error": "missing question; pass ?q=<question>" }).to_string();
+        return json_body_response(400, body, "no-store");
+    }
+    // Bound the question so a pasted wall of text can't blow up the prompt
+    // / token cost.
+    let question: String = question.chars().take(500).collect();
+    let window_minutes = parse_query_u32(&query, "minutes", 60).clamp(1, 1440);
+    let snapshot = build_copilot_snapshot(services, window_minutes);
+    match copilot.ask(snapshot, &question).await {
+        Ok(brief) => {
+            let body = serde_json::to_string(&brief).unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "no-store")
+        }
+        Err(e) => {
+            let body = serde_json::json!({ "error": e.to_string() }).to_string();
+            json_body_response(502, body, "no-store")
+        }
+    }
+}
+
 #[cfg(test)]
 mod percent_decode_tests {
     use super::percent_decode;

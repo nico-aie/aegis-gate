@@ -82,18 +82,36 @@ fn estimate_tokens(req: &LlmRequest) -> u64 {
     (chars / 4) as u64 + req.max_tokens as u64
 }
 
-/// Produce an advisory brief from a snapshot:
-/// render → **redact_for_egress** → `CostGuard::try_admit` →
-/// `provider.complete` → `CostGuard::record_usage`.
-///
-/// Errors (`Disabled`, `BudgetExceeded`, `RateLimited`, `Provider`)
-/// surface to the caller; nothing is acted on automatically.
-pub async fn summarize(
+const ASK_SYSTEM: &str = "You are a security-operations copilot for a Web \
+Application Firewall. Answer the operator's question using ONLY the JSON \
+telemetry snapshot provided. Cite the numbers from the snapshot. If the \
+snapshot doesn't contain enough to answer, say so plainly rather than \
+guessing. Be concise.";
+
+/// Build the (un-redacted) prompt for a free-form operator question over
+/// the snapshot. Pure.
+pub fn render_ask_prompt(snap: &TelemetrySnapshot, question: &str) -> LlmRequest {
+    let json = serde_json::to_string_pretty(snap).unwrap_or_else(|_| "{}".to_string());
+    LlmRequest {
+        system: Some(ASK_SYSTEM.to_string()),
+        prompt: format!(
+            "Operator question: {question}\n\nTelemetry snapshot (last {} minutes):\n{json}",
+            snap.window_minutes
+        ),
+        max_tokens: MAX_OUTPUT_TOKENS,
+    }
+}
+
+/// Shared pipeline: **redact_for_egress** → `CostGuard::try_admit` →
+/// `provider.complete` → `CostGuard::record_usage` → `Brief`. Both
+/// [`summarize`] and [`ask`] go through here, so the egress gate +
+/// budget can never be bypassed.
+async fn run(
     provider: &dyn LlmProvider,
     guard: &CostGuard,
+    mut req: LlmRequest,
     snapshot: TelemetrySnapshot,
 ) -> Result<Brief, LlmError> {
-    let mut req = render_prompt(&snapshot);
     // MANDATORY egress gate — scrub before anything leaves the process.
     req.prompt = redact_for_egress(&req.prompt);
 
@@ -111,6 +129,30 @@ pub async fn summarize(
         output_tokens: resp.output_tokens,
         snapshot,
     })
+}
+
+/// Produce an advisory situational brief from a snapshot.
+///
+/// Errors (`Disabled`, `BudgetExceeded`, `RateLimited`, `Provider`)
+/// surface to the caller; nothing is acted on automatically.
+pub async fn summarize(
+    provider: &dyn LlmProvider,
+    guard: &CostGuard,
+    snapshot: TelemetrySnapshot,
+) -> Result<Brief, LlmError> {
+    run(provider, guard, render_prompt(&snapshot), snapshot).await
+}
+
+/// Answer a free-form operator question grounded in the snapshot. Same
+/// redaction + budget guarantees as [`summarize`] (the question is
+/// operator input, so it's redacted too before egress).
+pub async fn ask(
+    provider: &dyn LlmProvider,
+    guard: &CostGuard,
+    snapshot: TelemetrySnapshot,
+    question: &str,
+) -> Result<Brief, LlmError> {
+    run(provider, guard, render_ask_prompt(&snapshot, question), snapshot).await
 }
 
 #[cfg(test)]
@@ -181,6 +223,22 @@ mod tests {
             !seen.contains("alice@example.com"),
             "provider saw un-redacted PII: {seen}"
         );
+    }
+
+    #[tokio::test]
+    async fn ask_includes_question_and_redacts_it() {
+        let p = MockProvider {
+            canned: "Yes — 412 blocks.".into(),
+            last_prompt: Mutex::new(None),
+        };
+        // Operator question carries PII that must be scrubbed before egress.
+        let brief = ask(&p, &guard(), snap(), "is bob@evil.com attacking?")
+            .await
+            .unwrap();
+        assert_eq!(brief.text, "Yes — 412 blocks.");
+        let seen = p.last_prompt.lock().unwrap().clone().unwrap();
+        assert!(seen.contains("Operator question:"), "question not in prompt: {seen}");
+        assert!(!seen.contains("bob@evil.com"), "question PII not redacted: {seen}");
     }
 
     #[tokio::test]
