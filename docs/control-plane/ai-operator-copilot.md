@@ -10,7 +10,8 @@
 > the dashboard panel (P2) + smart-catch triage (P3) — all shipped +
 > all live-verified 2026-06-02 — including P4 (scheduled briefings →
 > alerts pipeline). The copilot track (P0–P4) is complete; per-event
-> clustering (vs the aggregate snapshot) is the documented follow-up.
+> clustering of audit-ring events (detector → connected IPs + paths,
+> fed into triage) also shipped.
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status)
 > for the full matrix and
