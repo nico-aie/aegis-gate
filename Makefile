@@ -89,7 +89,7 @@ SMOKE_ADMIN      ?= http://localhost:9443
 
 # --- Phony targets ----------------------------------------------------------
 
-.PHONY: help setup cert build build-debug run run-dev run-strict run-throughput \
+.PHONY: help setup cert build build-debug run run-dev run-copilot run-strict run-throughput \
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
         dashboard redis-up redis-down obs-up obs-down signoz-up signoz-down urls logs login-reset \
         upstream-build upstream-up upstream-down \
@@ -217,6 +217,30 @@ run: $(WAF_BIN) cert redis-up ## Boot against $(CONFIG) — default: prod-balanc
 
 run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts Redis + mock upstream)
 	@AEGIS_INSECURE_COOKIES=1 $(WAF_BIN) run --config $(CONFIG_DEV)
+
+# 2026-06-02 — dev profile WITH the AI Operator Copilot + OTLP traces to
+# SigNoz. Builds with `otel llm` on top of $(FEATURES) (explicit cargo
+# build — feature changes don't bump the binary's mtime, so we can't rely
+# on the $(WAF_BIN) file rule). OTLP endpoint defaults to the local SigNoz
+# collector :4317 via the WAF_ env overlay (override
+# WAF_OBSERVABILITY__OTEL__ENDPOINT for a remote collector / SigNoz Cloud).
+# The copilot reads its provider from LLM_* env — export those first; the
+# WAF inherits them:
+#   export LLM_ENABLED=true LLM_BASE_URL=https://host/v1 \
+#          LLM_API_KEY=sk-... LLM_MODEL=<model>
+#   [optional] export LLM_BRIEFING_INTERVAL_SECS=900   # scheduled briefings
+# Bring the trace backend up first: `make signoz-up` (stop the dev-stack
+# Jaeger first — both want :4317). Traces land in the SigNoz UI (:3301);
+# the copilot is at the dashboard's Security Ops → Copilot.
+run-copilot: cert redis-up upstream-up ## Boot dev + AI copilot + OTLP→SigNoz (export LLM_* first; run 'make signoz-up')
+	@echo "==> building with features: $(FEATURES) otel llm"
+	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES) otel llm"
+	@[ -n "$$LLM_API_KEY" ] || echo "  ! LLM_API_KEY not set — copilot will report 'disabled'. export LLM_ENABLED/LLM_BASE_URL/LLM_API_KEY/LLM_MODEL."
+	@echo "==> OTLP endpoint: $${WAF_OBSERVABILITY__OTEL__ENDPOINT:-http://127.0.0.1:4317}  (SigNoz :4317)"
+	@AEGIS_INSECURE_COOKIES=1 \
+	 WAF_OBSERVABILITY__OTEL__ENDPOINT=$${WAF_OBSERVABILITY__OTEL__ENDPOINT:-http://127.0.0.1:4317} \
+	 WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO=$${WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO:-1.0} \
+	 $(WAF_BIN) run --config $(CONFIG_DEV)
 
 bench-dev: build cert redis-up upstream-up ## Boot dev with v2.3 benchmark binary contract (FORCE=1 to refresh waf.yaml, KEEP=1 to acknowledge drift)
 	@# 1. Stage `./waf` + `./waf.yaml` per v2.3 §8 binary contract.
