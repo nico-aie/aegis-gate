@@ -107,6 +107,7 @@ table — keep them in sync.
 | [`secrets-management.md`](../docs/control-plane/secrets-management.md) | **Implemented** (cloud quartet) | B2-T1..T4 closed: `env` + `file` (sync) + feature-gated `vault` / `aws` / `gcp` / `azure` resolvers. **HSM** still returns `NotImplemented` — B6-T4. |
 | [`zero-downtime-ops.md`](../docs/control-plane/zero-downtime-ops.md) | **Partial** | `supervisor.rs` + `hotbin.rs` + drain. **B6-T5 fd-pass library shipped 2026-05-03** (FDP-T1..T6: `adopt_inherited_listeners` / `spawn_successor` / `bridge_tunnel` / `InFlightCounter` / `perform_handover` / `ReadinessPipe` / SIGUSR2 listener / systemd `LISTEN_FDS` compat — 26 new tests). One gap: accept-loop drain refactor that lets SIGUSR2 actually invoke `perform_handover` — see [`binary-handover-fd-pass.md`](./archive/binary-handover-fd-pass.md) §11. |
 | [`enterprise/`](../docs/control-plane/enterprise/) | **Implemented** | D-M1..D-M6 closed; SPA bundled into the binary, served from `/dashboard/`. Dashboard-redesign track is queued behind Phase B. |
+| [`ai-operator-copilot.md`](../docs/control-plane/ai-operator-copilot.md) | **Partial (Phase 0)** | LLM operator copilot — situational summaries + smart-catch triage over the WAF's own telemetry. Advisory-only, off the hot path, PII-redacted before egress, off by default. **Phase 0 (2026-06-02):** `aegis-control/src/copilot/` — `LlmProvider` trait + `CostGuard` + `redact_for_egress` (dlp) gate + Anthropic Messages-API adapter behind the `llm` feature; 7 unit tests. **Remaining:** telemetry aggregator + `GET /api/copilot/summary` (P1), dashboard panel (P2), triage queue (P3). Plan: [`plans/future/ai-operator-copilot.md`](./future/ai-operator-copilot.md). Distinct from the inline ONNX detector + the Tier 2 customer-LLM firewall. |
 
 ## 6. Observability
 
@@ -132,7 +133,6 @@ table — keep them in sync.
 | Doc | Status | Notes |
 |---|---|---|
 | [`advanced-features.md`](archive/advanced-features.md) | **Intake template** | Open process for proposals NOT covered by Phase B. |
-| [`plans/future/ai-operator-copilot.md`](./future/ai-operator-copilot.md) | **Partial (Phase 0 shipped)** | LLM operator copilot: situational summaries + smart-catch triage over the WAF's own telemetry. Advisory-only, off the request hot path, PII-redacted before egress, off by default. **Phase 0 (2026-06-02):** `aegis-control/src/copilot/` — `LlmProvider` trait + `CostGuard` (token/rate budget) + `redact_for_egress` (dlp) gate + Anthropic Messages-API adapter behind the `llm` feature; 7 unit tests. **Remaining:** telemetry aggregator + `/api/copilot/summary` endpoint (P1), dashboard panel (P2), smart-catch triage (P3). Distinct from the inline ONNX detector and the Tier 2 customer-LLM firewall. |
 | [`plans/future/observability-otel-and-alerts.md`](./future/observability-otel-and-alerts.md) | **Designed only** | Observability improvements: (1) real OTLP→OTel-Collector export of all three signals (flip the structural trace stub live + metrics + logs; suggested backends: SigNoz / Grafana LGTM / managed); (2) richer, "full" alert messages (service identity, clamped numbers, humanized timestamps, impact, dashboard/trace links). |
 
 ---

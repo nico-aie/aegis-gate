@@ -15,6 +15,7 @@ Owner: **M3** —
 | [gitops-change-management.md](./gitops-change-management.md) | Git source of truth, signed commits |
 | [secrets-management.md](./secrets-management.md) | Vault / AWS SM / GCP SM / Azure KV / HSM |
 | [zero-downtime-ops.md](./zero-downtime-ops.md) | SO_REUSEPORT, drain, hot reload |
+| [ai-operator-copilot.md](./ai-operator-copilot.md) | LLM situational summaries + smart-catch triage (advisory, off hot path, PII-redacted) |
 
 ## Enterprise dashboard
 

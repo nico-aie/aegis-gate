@@ -132,6 +132,7 @@ each category.
 | [gitops-change-management.md](./control-plane/gitops-change-management.md) | Git source of truth, signed commits |
 | [secrets-management.md](./control-plane/secrets-management.md) | Vault / AWS SM / GCP SM / Azure KV / HSM |
 | [zero-downtime-ops.md](./control-plane/zero-downtime-ops.md) | SO_REUSEPORT, drain, hot reload |
+| [ai-operator-copilot.md](./control-plane/ai-operator-copilot.md) | LLM situational summaries + smart-catch triage (advisory, off hot path, PII-redacted) |
 | [enterprise/](./control-plane/enterprise/) | Aegis WAF Console — live page inventory + REST/SSE contract + front-end CSP |
 
 ## Observability
