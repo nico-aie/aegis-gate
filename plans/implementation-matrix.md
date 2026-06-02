@@ -112,10 +112,10 @@ table — keep them in sync.
 
 | Doc | Status | Notes / module path |
 |---|---|---|
-| [`prometheus-otel.md`](../docs/observability/prometheus-otel.md) | **Implemented** | `metrics/{exporter,request_duration,mod}.rs` + `tracing_init.rs` + `access_log.rs`. Per-stage WAF latency landed F-T10. |
+| [`prometheus-otel.md`](../docs/observability/prometheus-otel.md) | **Partial** | Prometheus scrape (`metrics/{exporter,request_duration,mod}.rs`, per-stage WAF latency F-T10) + stdout-JSON tracing (`access_log.rs`) are live. **OTLP-to-Collector export is structural-only** (`aegis-bin/src/otel.rs`): feature-gated `--features otel`, deps NOT in `Cargo.toml` (warning-only stub), and **traces only** — no OTLP metrics/logs. Real Collector integration tracked in [`observability-otel-and-alerts.md`](./future/observability-otel-and-alerts.md). |
 | [`audit-logging.md`](../docs/observability/audit-logging.md) | **Implemented** | `audit/{chain,verify,witness,state_snapshot,mod}.rs`. SHA-256 hash chain + `audit verify` CLI + verbosity gating (P8). |
 | [`siem-log-forwarding.md`](../docs/observability/siem-log-forwarding.md) | **Implemented** | All 8 sinks: `audit/sinks/{cef,ecs,jsonl,kafka,leef,ocsf,splunk_hec,syslog}.rs`. Cold-tier surface @ `/api/cold-tier`. |
-| [`slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) | **Implemented** | `slo.rs` — 5 SLI kinds, multi-burn windows, 5 receiver kinds. 2026-05-20 alerts refactor added `AlertEvent` router + `AlertDedupCache` + per-severity `AlertReceiver.severities` routing + `dispatch_event`; producers for the 9 non-SLO event classes + dashboard severity UI remain (see [`plans/archive/alerts-refactor.md`](archive/alerts-refactor.md)). |
+| [`slo-sli-alerting.md`](../docs/observability/slo-sli-alerting.md) | **Implemented** | `slo.rs` — 5 SLI kinds, multi-burn windows, 5 receiver kinds. 2026-05-20 alerts refactor added `AlertEvent` router + `AlertDedupCache` + per-severity `AlertReceiver.severities` routing + `dispatch_event`; producers for the 9 non-SLO event classes + dashboard severity UI remain (see [`plans/archive/alerts-refactor.md`](archive/alerts-refactor.md)). **Message content is terse** (raw nanosecond timestamps, unclamped `97727%` budget, no service identity / impact / dashboard link) — richer-message plan: [`observability-otel-and-alerts.md`](./future/observability-otel-and-alerts.md). |
 
 ## 7. Operations
 
@@ -133,6 +133,7 @@ table — keep them in sync.
 |---|---|---|
 | [`advanced-features.md`](archive/advanced-features.md) | **Intake template** | Open process for proposals NOT covered by Phase B. |
 | [`plans/future/ai-operator-copilot.md`](./future/ai-operator-copilot.md) | **Designed only — next active track** | LLM operator copilot: (a) plain-language situational summaries and (b) smart-catch triage over the WAF's own telemetry (audit chain + metrics + risk buckets). Advisory-only, off the request hot path, PII-redacted before egress, off by default. Distinct from the inline ONNX detector and from the Tier 2 customer-LLM firewall. |
+| [`plans/future/observability-otel-and-alerts.md`](./future/observability-otel-and-alerts.md) | **Designed only** | Observability improvements: (1) real OTLP→OTel-Collector export of all three signals (flip the structural trace stub live + metrics + logs; suggested backends: SigNoz / Grafana LGTM / managed); (2) richer, "full" alert messages (service identity, clamped numbers, humanized timestamps, impact, dashboard/trace links). |
 
 ---
 

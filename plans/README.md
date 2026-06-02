@@ -13,8 +13,9 @@ plans/
 ├── plan.md                    ← MAIN PLAN — assistant protocol + repo conventions
 ├── implementation-matrix.md   ← doc-by-doc Implemented / Partial / Designed / Deferred
 ├── future/
-│   ├── world-class-waf-roadmap.md   ← strategic ordering (Tiers 0–6)
-│   └── ai-operator-copilot.md       ← next active track
+│   ├── world-class-waf-roadmap.md       ← strategic ordering (Tiers 0–6)
+│   ├── ai-operator-copilot.md           ← next active track
+│   └── observability-otel-and-alerts.md ← OTel export + richer alerts
 ├── archive/                   ← closed / shipped / parked plans (read-only history)
 └── issue-fix/                 ← active QA-driven fix plans
 ```
@@ -38,6 +39,10 @@ plans/
   **next active track**: LLM situational summaries + smart-catch triage
   over the WAF's own telemetry (advisory-only, off the hot path,
   PII-redacted egress).
+- **[`observability-otel-and-alerts.md`](./future/observability-otel-and-alerts.md)** —
+  improve observation: (1) real OTLP export to an OTel Collector (traces
+  + metrics + logs; backend suggestions inside) and (2) richer, "full"
+  alert messages.
 
 > **Trimmed 2026-06-01.** The per-feature backlog specs (alerts-refactor,
 > bot-classifier-enforcement, compliance-profiles, smart-caching,
