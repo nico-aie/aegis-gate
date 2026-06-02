@@ -1,13 +1,13 @@
 # AI Operator Copilot
 
 > **Status:** Partial — `aegis-control/src/copilot/`. **Phase 0 + P1
-> summary core shipped** (`LlmProvider` trait + `CostGuard` +
-> `redact_for_egress` gate + `summarize()` orchestrator +
-> OpenAI-compatible and Anthropic adapters behind the `llm` feature).
-> **Live-verified 2026-06-02** against an OpenAI-compatible vLLM endpoint
-> (Qwen3.6-35B): a synthetic snapshot produced an accurate situational
-> brief. Pending: the telemetry adapter (RiskTracker/SloEngine →
-> snapshot) + `GET /api/copilot/summary` endpoint + dashboard panel.
+> shipped** (`LlmProvider` trait + `CostGuard` + `redact_for_egress`
+> gate + `summarize()` orchestrator + OpenAI-compatible & Anthropic
+> adapters + snapshot adapter + `GET /api/copilot/summary` endpoint,
+> behind the `llm` feature). **Live-verified end-to-end 2026-06-02**
+> against an OpenAI-compatible vLLM endpoint (Qwen3.6-35B): the endpoint
+> returned an accurate situational brief over live telemetry. Pending:
+> the dashboard panel (P2) + smart-catch triage (P3).
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status)
 > for the full matrix and
@@ -81,7 +81,7 @@ operator-facing copilot for the WAF itself.
 
 | Endpoint | Phase | Purpose |
 |---|---|---|
-| `GET /api/copilot/summary?since=15m` | P1 | On-demand situational brief (CSRF-gated, admin-only) |
+| `GET /api/copilot/summary?minutes=15` | ✅ P1 | On-demand situational brief (admin-only; 503 when disabled) |
 | `POST /api/copilot/ask` | P2 | Free-form operator question over the current snapshot |
 | `GET /api/copilot/suggestions` | P3 | Smart-catch rule-suggestion review queue |
 
@@ -112,7 +112,7 @@ Anthropic adapter alternatively reads `ANTHROPIC_API_KEY`.
 | Phase | Scope | Status |
 |---|---|---|
 | **P0** | Provider core: trait + `CostGuard` + redaction gate + OpenAI-compatible & Anthropic adapters | ✅ shipped 2026-06-02 |
-| **P1** | `summarize()` orchestration core (snapshot → redact → budget → provider → brief) ✅ + live-verified; **remaining:** snapshot adapter (RiskTracker/SloEngine) + `GET /api/copilot/summary` endpoint | in progress |
+| **P1** | `summarize()` core + snapshot adapter (RiskTracker/SloEngine/detectors) + `GET /api/copilot/summary` endpoint; live-verified end-to-end | ✅ shipped 2026-06-02 |
 | **P2** | Dashboard Copilot panel (summary card + ask box) | planned |
 | **P3** | Smart-catch triage: event clustering + rule-suggestion review queue | planned |
 | **P4** | Scheduled briefs → alerts pipeline (`OperatorBriefing` event class) | planned |
