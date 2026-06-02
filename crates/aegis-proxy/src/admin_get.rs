@@ -1282,6 +1282,11 @@ pub(crate) fn build_copilot_snapshot(
         top_attackers,
         top_detectors,
         active_slo_alerts: services.tracking.active_slo_alert_labels(),
+        // Per-event clusters from the audit ring (detector → connected
+        // IPs + paths) — the cross-correlation the aggregate rows lose.
+        clusters: aegis_control::copilot::cluster::cluster_events(
+            &services.audit_ring.recent(500),
+        ),
     }
 }
 

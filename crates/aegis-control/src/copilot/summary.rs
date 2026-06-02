@@ -35,6 +35,11 @@ pub struct TelemetrySnapshot {
     pub top_detectors: Vec<(String, u64)>,
     /// e.g. "DataPlaneAvailability (Page, 977x over 1h)".
     pub active_slo_alerts: Vec<String>,
+    /// Per-event clusters (detector → connected IPs + paths) derived
+    /// from the audit ring. Richer campaign signal than the aggregate
+    /// rows above; omitted from the prompt when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clusters: Vec<crate::copilot::cluster::EventCluster>,
 }
 
 /// The advisory brief returned to the operator. Carries the prose AND
@@ -185,6 +190,7 @@ mod tests {
             }],
             top_detectors: vec![("sqli".into(), 300), ("xss".into(), 90)],
             active_slo_alerts: vec!["DataPlaneAvailability (Page, 977x over 1h)".into()],
+            clusters: vec![],
         }
     }
 

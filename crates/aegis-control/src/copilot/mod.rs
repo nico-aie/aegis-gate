@@ -21,6 +21,7 @@
 pub mod anthropic;
 #[cfg(feature = "llm")]
 pub mod openai;
+pub mod cluster;
 pub mod service;
 pub mod summary;
 pub mod triage;

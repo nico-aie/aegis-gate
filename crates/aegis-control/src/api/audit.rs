@@ -323,6 +323,20 @@ impl AuditRing {
         }
     }
 
+    /// 2026-06-02 (copilot per-event clustering) — clone the most-recent
+    /// `limit` audit events for deterministic clustering. Newest-first
+    /// (order doesn't matter to the clusterer); bounded by ring capacity.
+    pub fn recent(&self, limit: usize) -> Vec<AuditEvent> {
+        let state = self.inner.lock().expect("audit ring poisoned");
+        state
+            .entries
+            .iter()
+            .rev()
+            .take(limit)
+            .map(|(_, ev)| ev.clone())
+            .collect()
+    }
+
     /// Current high-water-mark sequence (next seq about to be
     /// assigned, minus one). Useful for tests + monitoring.
     /// Phase-3 per-route stats — walks the ring and aggregates by

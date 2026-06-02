@@ -154,6 +154,7 @@ mod tests {
             }],
             top_detectors: vec![("sqli".into(), 6)],
             active_slo_alerts: vec![],
+            clusters: vec![],
         }
     }
 
