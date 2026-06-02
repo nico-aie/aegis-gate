@@ -232,12 +232,16 @@ run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts R
 # Bring the trace backend up first: `make signoz-up` (stop the dev-stack
 # Jaeger first — both want :4317). Traces land in the SigNoz UI (:3301);
 # the copilot is at the dashboard's Security Ops → Copilot.
-run-copilot: cert redis-up upstream-up ## Boot dev + AI copilot + OTLP→SigNoz (export LLM_* first; run 'make signoz-up')
+run-copilot: cert redis-up upstream-up ## Boot dev + AI copilot + OTLP→SigNoz (put LLM_* in .env; run 'make signoz-up')
 	@echo "==> building with features: $(FEATURES) otel llm"
 	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES) otel llm"
-	@[ -n "$$LLM_API_KEY" ] || echo "  ! LLM_API_KEY not set — copilot will report 'disabled'. export LLM_ENABLED/LLM_BASE_URL/LLM_API_KEY/LLM_MODEL."
-	@echo "==> OTLP endpoint: $${WAF_OBSERVABILITY__OTEL__ENDPOINT:-http://127.0.0.1:4317}  (SigNoz :4317)"
-	@AEGIS_INSECURE_COOKIES=1 \
+	@# Source the gitignored .env (LLM_API_KEY etc.) if present — keeps the
+	@# key off the command line / out of `ps`. Falls back to inherited env.
+	@[ -f .env ] && echo "==> sourcing .env" || echo "  ! no .env — copy .env.example to .env and fill LLM_API_KEY (else copilot is 'disabled')."
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	 [ -n "$$LLM_API_KEY" ] && [ "$$LLM_API_KEY" != "sk-REPLACE_ME" ] || echo "  ! LLM_API_KEY unset/placeholder — copilot will report 'disabled'."; \
+	 echo "==> OTLP endpoint: $${WAF_OBSERVABILITY__OTEL__ENDPOINT:-http://127.0.0.1:4317}  (SigNoz :4317)"; \
+	 AEGIS_INSECURE_COOKIES=1 \
 	 WAF_OBSERVABILITY__OTEL__ENDPOINT=$${WAF_OBSERVABILITY__OTEL__ENDPOINT:-http://127.0.0.1:4317} \
 	 WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO=$${WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO:-1.0} \
 	 $(WAF_BIN) run --config $(CONFIG_DEV)
