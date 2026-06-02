@@ -82,7 +82,7 @@ operator-facing copilot for the WAF itself.
 | Endpoint | Phase | Purpose |
 |---|---|---|
 | `GET /api/copilot/summary?minutes=15` | ✅ P1 | On-demand situational brief (admin-only; 503 when disabled) |
-| `POST /api/copilot/ask` | P2 | Free-form operator question over the current snapshot |
+| `GET /api/copilot/ask?q=…` | ✅ P2 | Free-form operator question over the current snapshot (400 on empty `q`) |
 | `GET /api/copilot/suggestions` | P3 | Smart-catch rule-suggestion review queue |
 
 All under the admin listener auth (see [`dashboard-auth.md`](./dashboard-auth.md)).
@@ -113,7 +113,7 @@ Anthropic adapter alternatively reads `ANTHROPIC_API_KEY`.
 |---|---|---|
 | **P0** | Provider core: trait + `CostGuard` + redaction gate + OpenAI-compatible & Anthropic adapters | ✅ shipped 2026-06-02 |
 | **P1** | `summarize()` core + snapshot adapter (RiskTracker/SloEngine/detectors) + `GET /api/copilot/summary` endpoint; live-verified end-to-end | ✅ shipped 2026-06-02 |
-| **P2** | Dashboard Copilot panel — summary card ✅ (Security Ops → Copilot); ask box pending (needs `/api/copilot/ask`) | 🟡 partial 2026-06-02 |
+| **P2** | Dashboard Copilot panel — summary card + ask box (Security Ops → Copilot); `GET /api/copilot/summary` + `GET /api/copilot/ask`. Live-verified. | ✅ shipped 2026-06-02 |
 | **P3** | Smart-catch triage: event clustering + rule-suggestion review queue | planned |
 | **P4** | Scheduled briefs → alerts pipeline (`OperatorBriefing` event class) | planned |
 
