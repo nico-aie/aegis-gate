@@ -21,6 +21,7 @@
 pub mod anthropic;
 #[cfg(feature = "llm")]
 pub mod openai;
+pub mod service;
 pub mod summary;
 
 use std::sync::Mutex;

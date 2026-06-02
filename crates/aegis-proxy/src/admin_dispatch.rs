@@ -482,6 +482,13 @@ pub(crate) async fn handle_admin_request(
         return handle_config_get(services).await;
     }
 
+    // 2026-06-02 (copilot P1) — GET /api/copilot/summary. Async because
+    // it calls the LLM provider, so it can't run on the sync
+    // `admin_router`. Admin-auth gated by the upstream middleware.
+    if method == hyper::Method::GET && path == "/api/copilot/summary" {
+        return crate::admin_get::handle_copilot_summary(req, services).await;
+    }
+
     admin_router(req, cfg, readiness, startup, metrics, services)
 }
 

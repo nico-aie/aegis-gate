@@ -23,6 +23,10 @@ geoip = ["aegis-security/geoip"]
 # aegis-security so the boot path in src/run.rs can wire it
 # into the chain when `cfg.ai.enabled = true`.
 ai = ["aegis-security/ai", "aegis-control/ai"]
+# `llm` — AI Operator Copilot provider adapters (OpenAI-compatible /
+# Anthropic) in aegis-control. Without it the copilot endpoint still
+# exists but reports "disabled".
+llm = ["aegis-control/llm"]
 # `vault` enables resolution of `${secret:vault:<path>#<field>}`
 # config references against a HashiCorp Vault server. Off by
 # default so single-node + non-Vault deployments stay slim.

@@ -472,6 +472,26 @@ impl TrackingHandler {
         serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())
     }
 
+    /// 2026-06-02 (copilot P1) — short human labels for the currently
+    /// firing SLO alerts, e.g. `DataPlaneAvailability (Page, 977x over
+    /// 1h)`. Empty when no engine is wired or nothing is firing. Feeds
+    /// the copilot's `TelemetrySnapshot`.
+    pub fn active_slo_alert_labels(&self) -> Vec<String> {
+        let Some(engine) = self.slo() else {
+            return Vec::new();
+        };
+        engine
+            .active_alerts()
+            .into_iter()
+            .map(|a| {
+                format!(
+                    "{:?} ({:?}, {:.0}x over {}h)",
+                    a.sli, a.severity, a.burn_rate, a.window_hours
+                )
+            })
+            .collect()
+    }
+
     pub fn render_cluster(&self) -> String {
         serde_json::to_string(&self.cluster_response())
             .unwrap_or_else(|_| "{}".into())

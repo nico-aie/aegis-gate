@@ -1242,6 +1242,81 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// AI Operator Copilot — GET /api/copilot/summary (P1)
+// ---------------------------------------------------------------------------
+
+/// Assemble the copilot's [`TelemetrySnapshot`] from the live services:
+/// top risk buckets, per-detector hit counts (→ blocked total + top
+/// detectors), and the currently-firing SLO alerts. Read-only.
+fn build_copilot_snapshot(
+    services: &aegis_control::dashboard_services::DashboardServices,
+    window_minutes: u32,
+) -> aegis_control::copilot::summary::TelemetrySnapshot {
+    use aegis_control::copilot::summary::{AttackerRow, TelemetrySnapshot};
+    let window_seconds = window_minutes.saturating_mul(60);
+    let top_attackers = services
+        .risk
+        .top(8)
+        .into_iter()
+        .map(|r| AttackerRow {
+            ip: r.ip,
+            score: r.score,
+            level: r.level.to_string(),
+        })
+        .collect();
+    let by_det = services.attacks_agg.by_detector(window_seconds);
+    let blocked: u64 = by_det.detectors.iter().map(|d| d.count).sum();
+    let top_detectors = by_det
+        .detectors
+        .into_iter()
+        .take(8)
+        .map(|d| (d.name, d.count))
+        .collect();
+    TelemetrySnapshot {
+        window_minutes,
+        total_requests: 0, // request-volume counter not surfaced here yet
+        blocked,
+        top_attackers,
+        top_detectors,
+        active_slo_alerts: services.tracking.active_slo_alert_labels(),
+    }
+}
+
+/// `GET /api/copilot/summary?minutes=15` — an LLM situational brief over
+/// the WAF's own telemetry. Async (the LLM call) so it's dispatched on
+/// the async admin path, not the sync [`admin_router`]. Admin-auth gated
+/// upstream. Returns 503 when the copilot is disabled (no provider
+/// configured / built without `--features llm`) and 502 on a provider
+/// error — the WAF itself never fails because the copilot does.
+pub(crate) async fn handle_copilot_summary(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let copilot = aegis_control::copilot::service::global();
+    if !copilot.enabled() {
+        let body = serde_json::json!({
+            "error": "copilot disabled",
+            "hint": "set LLM_ENABLED=true + LLM_BASE_URL/LLM_API_KEY/LLM_MODEL and build with --features llm",
+        })
+        .to_string();
+        return json_body_response(503, body, "no-store");
+    }
+    let query = req.uri().query().unwrap_or("").to_string();
+    let window_minutes = parse_query_u32(&query, "minutes", 15).clamp(1, 1440);
+    let snapshot = build_copilot_snapshot(services, window_minutes);
+    match copilot.summary(snapshot).await {
+        Ok(brief) => {
+            let body = serde_json::to_string(&brief).unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "no-store")
+        }
+        Err(e) => {
+            let body = serde_json::json!({ "error": e.to_string() }).to_string();
+            json_body_response(502, body, "no-store")
+        }
+    }
+}
+
 #[cfg(test)]
 mod percent_decode_tests {
     use super::percent_decode;

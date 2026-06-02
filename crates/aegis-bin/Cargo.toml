@@ -36,6 +36,10 @@ geoip = ["aegis-proxy/geoip"]
 # at boot. Off by default — enabling adds ~50 MB to the binary
 # and requires the operator to ship a model artifact. AI-T1.
 ai = ["aegis-security/ai", "aegis-proxy/ai", "aegis-control/ai"]
+# `llm` — AI Operator Copilot provider adapters (OpenAI-compatible /
+# Anthropic). Without it the GET /api/copilot/summary endpoint exists
+# but reports "disabled". Configure via LLM_* env at runtime.
+llm = ["aegis-proxy/llm", "aegis-control/llm"]
 # `vault`, `aws`, `gcp`, `azure` — cloud secret-resolver
 # adapters. Each opts in to a single-cloud SDK. Combine freely.
 vault = ["aegis-proxy/vault"]
