@@ -7,7 +7,7 @@
 //! snapshot *adapter* (reading `RiskTracker`/`SloEngine`) and the
 //! `GET /api/copilot/summary` endpoint are the P1 integration layers.
 
-use super::{redact_for_egress, CostGuard, LlmError, LlmProvider, LlmRequest};
+use super::{redact_for_egress, CostGuard, LlmError, LlmProvider, LlmRequest, LlmResponse};
 
 /// One attacker row in the snapshot (from `RiskTracker::top`).
 #[derive(Clone, Debug, serde::Serialize)]
@@ -106,22 +106,33 @@ pub fn render_ask_prompt(snap: &TelemetrySnapshot, question: &str) -> LlmRequest
 /// `provider.complete` → `CostGuard::record_usage` → `Brief`. Both
 /// [`summarize`] and [`ask`] go through here, so the egress gate +
 /// budget can never be bypassed.
-async fn run(
+/// Lowest-level guarded call: **redact** → `try_admit` → `complete` →
+/// `record_usage`. Returns the raw [`LlmResponse`] so callers can wrap
+/// it (a `Brief`) or parse it (triage suggestions). Shared so the egress
+/// gate + budget can never be bypassed. `pub(crate)` for the triage
+/// module.
+pub(crate) async fn complete_guarded(
     provider: &dyn LlmProvider,
     guard: &CostGuard,
     mut req: LlmRequest,
-    snapshot: TelemetrySnapshot,
-) -> Result<Brief, LlmError> {
+) -> Result<LlmResponse, LlmError> {
     // MANDATORY egress gate — scrub before anything leaves the process.
     req.prompt = redact_for_egress(&req.prompt);
-
     let estimate = estimate_tokens(&req);
     guard.try_admit(estimate)?;
-
     let resp = provider.complete(req).await?;
     let actual = (resp.input_tokens + resp.output_tokens) as u64;
     guard.record_usage(estimate, actual);
+    Ok(resp)
+}
 
+async fn run(
+    provider: &dyn LlmProvider,
+    guard: &CostGuard,
+    req: LlmRequest,
+    snapshot: TelemetrySnapshot,
+) -> Result<Brief, LlmError> {
+    let resp = complete_guarded(provider, guard, req).await?;
     Ok(Brief {
         text: resp.text,
         model: provider.id().to_string(),

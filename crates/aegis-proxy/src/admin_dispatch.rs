@@ -491,6 +491,9 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::GET && path == "/api/copilot/ask" {
         return crate::admin_get::handle_copilot_ask(req, services).await;
     }
+    if method == hyper::Method::GET && path == "/api/copilot/suggestions" {
+        return crate::admin_get::handle_copilot_suggestions(req, services).await;
+    }
 
     admin_router(req, cfg, readiness, startup, metrics, services)
 }

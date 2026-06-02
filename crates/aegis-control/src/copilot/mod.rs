@@ -23,6 +23,7 @@ pub mod anthropic;
 pub mod openai;
 pub mod service;
 pub mod summary;
+pub mod triage;
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

@@ -61,6 +61,18 @@ impl CopilotService {
             None => Err(LlmError::Disabled),
         }
     }
+
+    /// Smart-catch triage: cluster the snapshot into campaigns + rule
+    /// suggestions (advisory). `Err(Disabled)` when no provider.
+    pub async fn triage(
+        &self,
+        snapshot: TelemetrySnapshot,
+    ) -> Result<super::triage::TriageResult, LlmError> {
+        match self.provider.as_deref() {
+            Some(p) => super::triage::triage(p, &self.guard, snapshot).await,
+            None => Err(LlmError::Disabled),
+        }
+    }
 }
 
 #[cfg(feature = "llm")]

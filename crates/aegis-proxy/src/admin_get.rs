@@ -1363,6 +1363,38 @@ pub(crate) async fn handle_copilot_ask(
     }
 }
 
+/// `GET /api/copilot/suggestions?minutes=60` — smart-catch triage:
+/// cluster the snapshot into campaigns + candidate rules. **Advisory** —
+/// the response is a review queue; nothing is applied. 503 disabled /
+/// 502 provider-error.
+pub(crate) async fn handle_copilot_suggestions(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let copilot = aegis_control::copilot::service::global();
+    if !copilot.enabled() {
+        let body = serde_json::json!({
+            "error": "copilot disabled",
+            "hint": "set LLM_ENABLED=true + LLM_BASE_URL/LLM_API_KEY/LLM_MODEL and build with --features llm",
+        })
+        .to_string();
+        return json_body_response(503, body, "no-store");
+    }
+    let query = req.uri().query().unwrap_or("").to_string();
+    let window_minutes = parse_query_u32(&query, "minutes", 60).clamp(1, 1440);
+    let snapshot = build_copilot_snapshot(services, window_minutes);
+    match copilot.triage(snapshot).await {
+        Ok(result) => {
+            let body = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
+            json_body_response(200, body, "no-store")
+        }
+        Err(e) => {
+            let body = serde_json::json!({ "error": e.to_string() }).to_string();
+            json_body_response(502, body, "no-store")
+        }
+    }
+}
+
 #[cfg(test)]
 mod percent_decode_tests {
     use super::percent_decode;

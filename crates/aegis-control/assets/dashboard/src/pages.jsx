@@ -12841,6 +12841,39 @@ function PageCopilot() {
   const [asking, setAsking] = useStateP(false);
   const [answer, setAnswer] = useStateP(null);
   const [askErr, setAskErr] = useStateP(null);
+  // Smart-catch triage (P3) — campaign clustering + rule suggestions.
+  const [sugLoading, setSugLoading] = useStateP(false);
+  const [triageRes, setTriageRes] = useStateP(null);
+  const [sugErr, setSugErr] = useStateP(null);
+
+  async function findCampaigns() {
+    if (sugLoading) return;
+    setSugLoading(true);
+    setSugErr(null);
+    try {
+      const r = await fetch(
+        `/api/copilot/suggestions?minutes=${encodeURIComponent(minutes)}`,
+        { credentials: 'same-origin' }
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 503) {
+        setDisabled(true);
+        setTriageRes(null);
+        setSugErr(j.hint || j.error || 'Copilot is disabled.');
+        return;
+      }
+      if (!r.ok) {
+        setSugErr(j.error || `HTTP ${r.status}`);
+        setTriageRes(null);
+        return;
+      }
+      setTriageRes(j);
+    } catch (e) {
+      setSugErr(String(e && e.message ? e.message : e));
+    } finally {
+      setSugLoading(false);
+    }
+  }
 
   async function ask() {
     const question = q.trim();
@@ -13070,6 +13103,83 @@ function PageCopilot() {
               <div style={{ marginTop: 8, fontSize: 10, color: 'var(--ink-mute)' }}>
                 {answer.model} · {(answer.input_tokens || 0) + (answer.output_tokens || 0)} tokens
                 · advisory — verify before acting
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Smart-catch triage (P3) — campaign clusters + candidate rules. */}
+      {!disabled && (
+        <div className="card">
+          <window.SectionHeader
+            title="Smart-catch triage"
+            sub="cluster recent events into campaigns + candidate rules · advisory — review before promoting"
+          />
+          <button className="btn" onClick={findCampaigns} disabled={sugLoading}>
+            {sugLoading ? 'Analysing…' : 'Find campaigns'}
+          </button>
+          {sugErr && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--down)' }}>{sugErr}</div>
+          )}
+          {triageRes && (
+            <div style={{ marginTop: 10 }}>
+              {(triageRes.suggestions || []).length ? (
+                triageRes.suggestions.map((s) => (
+                  <div
+                    key={s.id}
+                    style={{ borderTop: '1px solid var(--hairline)', padding: '10px 0' }}
+                  >
+                    <div
+                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                    >
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{s.cluster}</span>
+                      <span
+                        className={`pill ${
+                          s.confidence === 'high'
+                            ? 'down'
+                            : s.confidence === 'medium'
+                            ? 'warn'
+                            : 'neutral'
+                        }`}
+                      >
+                        {s.confidence || '?'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 4 }}>
+                      {s.explanation}
+                    </div>
+                    <div className="field-label" style={{ marginTop: 6 }}>
+                      Suggested rule (review + promote manually)
+                    </div>
+                    {/* LLM-authored rule shown as text in <code> — React
+                        escapes it, so no HTML/markup injection. */}
+                    <code
+                      style={{
+                        display: 'block',
+                        whiteSpace: 'pre-wrap',
+                        background: 'var(--canvas-2)',
+                        padding: '6px 8px',
+                        borderRadius: 4,
+                        marginTop: 2,
+                        fontSize: 12,
+                      }}
+                    >
+                      {s.suggested_rule}
+                    </code>
+                  </div>
+                ))
+              ) : triageRes.unparsed ? (
+                <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{triageRes.unparsed}</div>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+                  No notable campaigns in this window.
+                </div>
+              )}
+              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--ink-mute)' }}>
+                {triageRes.model} ·{' '}
+                {(triageRes.input_tokens || 0) + (triageRes.output_tokens || 0)} tokens · advisory
+                — preview a rule (Rules → simulate) before promoting it
               </div>
             </div>
           )}
