@@ -547,6 +547,31 @@ pub async fn apply_folded_stores(new_cfg: &WafConfig, t: &FoldedReloadTargets) {
     let _ = apply_cfg_change_to_tiers(new_cfg, t.tiers.as_ref());
     let _ = apply_cfg_change_to_rules(new_cfg, t.rules.as_ref(), t.active_ruleset.as_ref());
     let _ = apply_cfg_change_to_upstreams(new_cfg, t.upstream_writer.as_ref()).await;
+    let _ = apply_cfg_change_to_copilot(new_cfg).await;
+}
+
+/// 2026-06-03 (config-plane fold) — rebuild the AI Operator Copilot from
+/// `new_cfg.observability.copilot` and hot-swap the live service on a
+/// config activation, so a cluster-wide change (enable/disable, model,
+/// base_url, timeout, or a key rotation behind the secret ref) takes
+/// effect on every node without a restart (eventual — applied on the
+/// watcher's next poll). The `api_key_ref` is resolved per-node here
+/// (env / file / vault / cloud); the secret never transits the stored
+/// config doc. Mirrors the boot wiring in `run()`: an enabled block
+/// builds from config; a disabled/absent block falls back to the legacy
+/// `LLM_*` env build so pure-env deployments survive unrelated config
+/// pushes. Returns the copilot's enabled state after the swap.
+pub async fn apply_cfg_change_to_copilot(new_cfg: &WafConfig) -> bool {
+    let cc = &new_cfg.observability.copilot;
+    let svc = if cc.enabled {
+        let api_key = crate::run::resolve_copilot_api_key(cc).await;
+        aegis_control::copilot::service::CopilotService::from_config(cc, api_key)
+    } else {
+        aegis_control::copilot::service::CopilotService::from_env()
+    };
+    let enabled = svc.enabled();
+    aegis_control::copilot::service::set_global(svc);
+    enabled
 }
 
 /// Pure: derive the IP rate-limit config the boot path uses
@@ -1735,5 +1760,81 @@ state:
         // Live store stays — operators don't lose trust on a
         // bad reload.
         assert!(trust.current().len() >= 1);
+    }
+
+    // 2026-06-03 (copilot config-plane fold) — minimal config carrying an
+    // `observability.copilot` block.
+    fn yaml_with_copilot(
+        enabled: bool,
+        key_ref: Option<&str>,
+        base_url: Option<&str>,
+        model: Option<&str>,
+    ) -> String {
+        let mut block = format!("\nobservability:\n  copilot:\n    enabled: {enabled}\n");
+        if let Some(k) = key_ref {
+            block.push_str(&format!("    api_key_ref: \"{k}\"\n"));
+        }
+        if let Some(b) = base_url {
+            block.push_str(&format!("    base_url: \"{b}\"\n"));
+        }
+        if let Some(m) = model {
+            block.push_str(&format!("    model: \"{m}\"\n"));
+        }
+        format!(
+            r#"
+listeners:
+  data:
+    - bind: "127.0.0.1:8080"
+  admin:
+    bind: "127.0.0.1:9090"
+routes:
+  - id: catch-all
+    path: "/"
+    upstream: default
+upstreams:
+  default:
+    members:
+      - addr: "127.0.0.1:3000"
+state:
+  backend: in_memory
+{block}"#
+        )
+    }
+
+    // The fold is deterministic from config (it ignores `LLM_*` env on the
+    // enabled path), so we assert on the returned enabled state — not the
+    // process global, which other tests in this binary may also swap.
+    #[cfg(feature = "llm")]
+    #[tokio::test]
+    async fn copilot_fold_enables_from_full_block() {
+        let cfg = yaml_with_copilot(true, Some("sk-test"), Some("https://h/v1"), Some("m"));
+        let cfg = parse(&cfg);
+        assert!(apply_cfg_change_to_copilot(&cfg).await);
+    }
+
+    #[cfg(feature = "llm")]
+    #[tokio::test]
+    async fn copilot_fold_disabled_without_resolved_key() {
+        // enabled, but no api_key_ref → no key resolves → disabled.
+        let cfg = yaml_with_copilot(true, None, Some("https://h/v1"), Some("m"));
+        let cfg = parse(&cfg);
+        assert!(!apply_cfg_change_to_copilot(&cfg).await);
+    }
+
+    #[cfg(feature = "llm")]
+    #[tokio::test]
+    async fn copilot_fold_resolves_secret_ref_via_env() {
+        // api_key_ref is a ${secret:env:...} reference — the fold resolves
+        // it per-node through the secrets resolver.
+        std::env::set_var("AEGIS_TEST_COPILOT_KEY", "sk-from-env");
+        let cfg = yaml_with_copilot(
+            true,
+            Some("${secret:env:AEGIS_TEST_COPILOT_KEY}"),
+            Some("https://h/v1"),
+            Some("m"),
+        );
+        let cfg = parse(&cfg);
+        assert!(apply_cfg_change_to_copilot(&cfg).await);
+        std::env::remove_var("AEGIS_TEST_COPILOT_KEY");
     }
 }
