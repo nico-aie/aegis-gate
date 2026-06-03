@@ -18,7 +18,6 @@ const { useState, useEffect } = React;
 const NAV = [
   { group: 'Security Ops', items: [
     { id: 'overview',      label: 'Overview',         icon: <window.I.Shield />,   badge: null },
-    { id: 'copilot',       label: 'Copilot',          icon: <window.I.Sparkles />, badge: 'AI', tone: 'warn' },
     { id: 'live',          label: 'Live Feed',        icon: <window.I.Activity />, badge: 'LIVE', tone: 'live' },
     { id: 'incidents',     label: 'Incidents',        icon: <window.I.Siren />,    badge: 'NEW', tone: 'warn' },
     { id: 'investigation', label: 'Investigation',    icon: <window.I.Search />,   badge: 'NEW', tone: 'warn' },
@@ -49,6 +48,7 @@ const NAV = [
     { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
   ]},
   { group: 'Observability', items: [
+    { id: 'copilot',       label: 'Copilot',          icon: <window.I.Sparkles />, badge: 'AI', tone: 'warn' },
     { id: 'performance',   label: 'Performance',      icon: <window.I.Gauge />,    badge: 'NEW', tone: 'warn' },
     { id: 'health',        label: 'Health & SLOs',    icon: <window.I.Heart />,    badge: 'SLO', tone: 'warn' },
     { id: 'audit',         label: 'Audit Trail',      icon: <window.I.Book />,     badge: null },
