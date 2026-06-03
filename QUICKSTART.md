@@ -162,6 +162,8 @@ Decision tree + measured perf comparison: [`docs/operator/profiles.md`](docs/ope
 
 ## 7 · Observability stack (optional)
 
+### Prometheus + Grafana + Jaeger
+
 ```sh
 make obs-up      # Prometheus + Grafana + Jaeger
 make obs-down    # tear down
@@ -172,6 +174,64 @@ make obs-down    # tear down
 | <http://localhost:9090/> | Prometheus |
 | <http://localhost:3000/> | Grafana (`admin` / `admin` first login). 3 boards pre-loaded: WAF Overview · Runtime · Redis. |
 | <http://localhost:16686/> | Jaeger (per-request OTel spans — needs `make build FEATURES="redis ai otel"`) |
+
+### SigNoz (OTLP-native — traces today, metrics + logs next)
+
+SigNoz is the primary OTLP backend (single OTel-native pane). Don't run
+it **and** the dev-stack Jaeger on `:4317` — pick one.
+
+```sh
+make signoz-up    # bring SigNoz up (clone it first; see deploy/signoz/README.md)
+make run-copilot  # WAF built with otel+llm, exporting traces → SigNoz :4317
+```
+
+Then in the SigNoz UI: **Dashboards → Import JSON →**
+`deploy/signoz/dashboards/waf-overview.json` (action breakdown, decision
+latency, top paths/clients, upstream health — all from `service.name =
+aegis-gate` spans). Full setup + gotchas:
+[`deploy/signoz/README.md`](deploy/signoz/README.md).
+
+### AI Operator Copilot (advisory LLM over the WAF's own telemetry)
+
+An LLM layer that turns audit / metrics / risk / detector data into
+plain-language **situational briefs** + **smart-catch triage** (campaign
+clustering + candidate rules). Advisory only, off the hot path, off by
+default, PII-redacted before egress. Lives at **Observability → Copilot**
+in the dashboard.
+
+Enable it in YAML (the API key is a `${secret:...}` reference — never
+inline; the config plane stores the ref, each node resolves it locally):
+
+```yaml
+# config/dev.yaml → observability.copilot
+observability:
+  copilot:
+    enabled: true
+    provider: openai_compatible          # or: anthropic
+    base_url: "https://host/v1"          # /chat/completions is appended
+    model: "your-model"
+    api_key_ref: "${secret:env:LLM_API_KEY}"
+```
+
+Put the actual key in a gitignored `.env` (copy `.env.example`):
+
+```sh
+cp .env.example .env       # then set LLM_API_KEY=sk-...
+make run-copilot           # sources .env + builds with --features "otel llm"
+```
+
+Verify (logged in as `admin`):
+
+```sh
+curl -sk --cookie cookies.txt "https://127.0.0.1:9443/api/copilot/summary?minutes=15" | jq .text
+# /api/copilot/ask?q=… and /api/copilot/suggestions are the other two
+```
+
+It hot-reloads via the config plane (`PUT /api/config`) — toggling
+`enabled`, model, or rotating a `file:`/`vault:`-backed key applies
+cluster-wide with no restart (an `env:`-backed key needs a restart, since
+process env is snapshotted at launch). Full guide:
+[`docs/control-plane/ai-operator-copilot.md`](docs/control-plane/ai-operator-copilot.md).
 
 ---
 

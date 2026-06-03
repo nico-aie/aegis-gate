@@ -97,11 +97,12 @@ SOC-first dashboard.
 ### Control plane (admin / dashboard)
 - **Aegis WAF Console** — pre-compiled React 18 SPA at
   `/dashboard/`, CSP `script-src 'self'`, no CDN, no
-  `unsafe-eval`. 17+ pages — Overview, Live Feed, Investigation,
+  `unsafe-eval`. 18+ pages — Overview, Live Feed, Investigation,
   Top Attackers, Threat Intel, Rules, Detectors, Access Lists,
-  Routing & Upstreams, Compliance, Performance, Health & SLOs,
-  Audit Trail, Scaling, Settings, Reports, Help. Error-bounded
-  per-page so a single component crash never blanks the shell.
+  Routing & Upstreams, Compliance, Copilot (AI), Performance,
+  Health & SLOs, Audit Trail, Scaling, Settings, Reports, Help.
+  Error-bounded per-page so a single component crash never blanks
+  the shell.
 - **Auth** — defense-in-depth: IP allow-list → optional mTLS
   → argon2id password → TOTP (RFC 6238) → HMAC session cookie
   (`HttpOnly; Secure; SameSite=Strict`) → CSRF double-submit
@@ -144,15 +145,30 @@ SOC-first dashboard.
   hits, audit-event counter, upstream pool health gauges,
   WebSocket bridge counters, runtime gauges (workers, blocking
   pool, I/O fds).
-- **OpenTelemetry** (`otel` feature) — OTLP gRPC exporter,
-  `#[tracing::instrument]` on every hot-path span, Jaeger
-  parent-child traces per request.
+- **OpenTelemetry** (`otel` feature) — live OTLP gRPC exporter,
+  `#[tracing::instrument]` on every hot-path span, span-noise
+  filter (only `waf.*` spans export). Backends: SigNoz (primary,
+  OTLP-native) or the dev-stack Jaeger.
+- **SigNoz** — chosen OTLP backend (`make signoz-up` +
+  `make run-copilot`). Importable WAF Overview dashboard at
+  [`deploy/signoz/dashboards/waf-overview.json`](deploy/signoz/dashboards/waf-overview.json)
+  (action breakdown, decision latency, top paths/clients, upstream
+  health). Setup + gotchas: [`deploy/signoz/README.md`](deploy/signoz/README.md).
 - **Grafana** — three file-provisioned dashboards (WAF
   Overview / Redis / Runtime). `make obs-up` brings up the full
   Prometheus + Grafana + Jaeger stack via
   [`deploy/docker-compose.dev.yml`](deploy/docker-compose.dev.yml);
   if dashboards render empty, see the diagnostic checklist in
   [`docs/observability/README.md`](docs/observability/README.md#empty-grafana-panels--diagnostic-checklist).
+- **AI Operator Copilot** (`llm` feature) — advisory LLM layer
+  over the WAF's **own** telemetry: plain-language situational
+  briefs + smart-catch triage (campaign clustering + candidate
+  rules). Off the hot path, advisory-only, PII-redacted before
+  egress, off by default. Configured under `observability.copilot`
+  (key via `${secret:...}` ref) and hot-reloadable via the config
+  plane; OpenAI-compatible (vLLM/Ollama/OpenAI) + Anthropic
+  adapters. Dashboard: **Observability → Copilot**. Guide:
+  [`docs/control-plane/ai-operator-copilot.md`](docs/control-plane/ai-operator-copilot.md).
 - **Live Feed** — `/dashboard/sse` streams every audit event;
   proto pill on each row distinguishes `http` / `ws-open` /
   `ws-close` / `tcp-open` / `tcp-close` events.
@@ -244,7 +260,8 @@ more at build time:
 | `ai` | ML-based detector (operator-supplied ONNX, `ort` runtime) |
 | `taxii` | STIX/TAXII threat-intel auto-fetch |
 | `http3` | QUIC listener (quinn + h3) |
-| `otel` | OpenTelemetry OTLP exporter |
+| `otel` | OpenTelemetry OTLP exporter (→ SigNoz / Jaeger) |
+| `llm` | AI Operator Copilot (situational briefs + smart-catch triage) |
 | `vault` / `aws` / `gcp` / `azure` | cloud-secret resolvers |
 | `consul` / `etcd` / `k8s` | service-discovery watchers |
 
@@ -332,6 +349,8 @@ waf help
 | **API contract** (OpenAPI) | [`docs/control-plane/api.openapi.yaml`](docs/control-plane/api.openapi.yaml) |
 | **Dashboard reference** (page inventory + REST/SSE) | [`docs/control-plane/enterprise/`](docs/control-plane/enterprise/) |
 | **AI Detector** (perf, config, observability) | [`docs/security/detectors/ai-detector.md`](docs/security/detectors/ai-detector.md) |
+| **AI Operator Copilot** (LLM briefs + triage; config + use) | [`docs/control-plane/ai-operator-copilot.md`](docs/control-plane/ai-operator-copilot.md) |
+| **SigNoz / OTLP observability** (backend + dashboard import) | [`deploy/signoz/README.md`](deploy/signoz/README.md) |
 | **HA clustering** | [`docs/operations/ha-clustering.md`](docs/operations/ha-clustering.md) |
 | **Runtime tuning** | [`docs/operations/runtime-tuning.md`](docs/operations/runtime-tuning.md) |
 | **Deployment guide** (production multi-node) | [`deploy/GUIDE.md`](deploy/GUIDE.md) |
