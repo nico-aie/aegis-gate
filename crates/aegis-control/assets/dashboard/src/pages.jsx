@@ -347,15 +347,21 @@ function PageOverview() {
         </div>
       )}
 
-      {/* AI insights — coming soon */}
-      <div className="ai-card ai-soon" style={{ marginBottom: 12 }}>
+      {/* AI insights — Operator Copilot (shipped; Observability → Copilot) */}
+      <div className="ai-card" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="ai-tag"><window.I.Sparkles /> AI INSIGHTS</span>
-          <span className="pill warn">Coming soon</span>
+          <span className="pill ok">Available</span>
           <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
-            Automated threat triage &amp; suggested rules — early access in v1.5
+            Situational briefs &amp; smart-catch triage over the WAF&apos;s own telemetry — advisory only.
           </span>
-          <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled>Notify me →</button>
+          <a
+            href="#/copilot"
+            className="btn sm"
+            style={{ marginLeft: 'auto', textDecoration: 'none' }}
+          >
+            Open Copilot →
+          </a>
         </div>
       </div>
 
