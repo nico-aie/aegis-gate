@@ -107,6 +107,14 @@ Point the WAF's `observability.otel.endpoint` at the **Collector**
 (`:4317`) instead of SigNoz directly; the Collector redacts + forwards
 all three signals to SigNoz.
 
+## Dashboards
+
+Importable dashboards live in [`dashboards/`](./dashboards/) — start with
+`waf-overview.json` (trace-based: action breakdown, decision latency,
+top paths/clients, upstream health). Import via SigNoz → **Dashboards** →
+**Import JSON**, or the API one-liner in
+[`dashboards/README.md`](./dashboards/README.md).
+
 ## Status / roadmap
 
 - ✅ **Traces** over OTLP (app exporter, `--features otel`).
