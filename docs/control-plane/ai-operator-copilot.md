@@ -13,6 +13,13 @@
 > clustering of audit-ring events (detector → connected IPs + paths,
 > fed into triage) also shipped.
 >
+> **Config centralized into YAML (2026-06-03):** the copilot is now
+> configured under `observability.copilot` (`CopilotConfig` in
+> `aegis-core`) with the API key as a `${secret:...}` reference resolved
+> per-node, and is **hot-reloadable via the config plane** (the
+> `apply_cfg_change_to_copilot` fold swaps the live service on apply —
+> no restart). Legacy `LLM_*` env stays as a back-compat fallback.
+>
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status)
 > for the full matrix and
 > [`../../plans/future/ai-operator-copilot.md`](../../plans/future/ai-operator-copilot.md)
@@ -93,24 +100,43 @@ All under the admin listener auth (see [`dashboard-auth.md`](./dashboard-auth.md
 
 ## Configuration
 
-The OpenAI-compatible adapter reads `LLM_*` environment variables
-(operators wire these from their secret manager — the key is read at
-runtime, never persisted):
+The copilot is configured in YAML under `observability.copilot`, like
+every other subsystem — and it is **hot-reloadable via the config plane**
+(`PUT /api/config` / cluster activation; no restart). The API key is
+**never inline**: `api_key_ref` is a `${secret:...}` reference each node
+resolves at boot/apply (env / file / vault / aws / gcp / azure), so the
+secret never sits in the config file or transits the cluster doc.
 
-```bash
-LLM_ENABLED=true
-LLM_BASE_URL=https://host/v1        # /chat/completions is appended
-LLM_API_KEY=sk-...                  # sent as: Authorization: Bearer
-LLM_MODEL=Qwen3.6-35B-A3B           # any model the endpoint serves
-LLM_TIMEOUT_MS=4000
-LLM_BRIEFING_INTERVAL_SECS=0   # >0 (≥60) enables scheduled briefings → alerts
+```yaml
+observability:
+  copilot:
+    enabled: true
+    provider: openai_compatible          # or: anthropic
+    base_url: "https://host/v1"          # /chat/completions is appended
+    model: "Qwen3.6-35B-A3B"             # any model the endpoint serves
+    timeout_ms: 20000
+    briefing_interval_secs: 0            # >0 (≥60) enables scheduled briefings → alerts
+    api_key_ref: "${secret:env:LLM_API_KEY}"   # resolved per-node; never inline
 ```
 
-When `LLM_ENABLED` isn't `true`, or the base URL / key / model are
-missing, the provider reports `Disabled` and the copilot degrades to
-off (never errors the WAF). The per-window cost/rate budget is set on
-the `CostGuard` at construction (token cap, request cap, window). The
-Anthropic adapter alternatively reads `ANTHROPIC_API_KEY`.
+The referenced secret is supplied out-of-band — e.g. `LLM_API_KEY` in the
+gitignored `.env` (sourced by `make run-copilot`) for the `env:` backend,
+or a vault path for `${secret:vault:...}`. Rotating the key is then a
+secret-store update + a config re-apply (the fold re-resolves the ref on
+every node); the WAF never needs the raw key in config.
+
+When `enabled` is false, or the key / model (and `base_url` for the
+OpenAI-compatible provider) don't resolve, the provider reports
+`Disabled` and the copilot degrades to off (never errors the WAF). The
+per-window cost/rate budget is set on the `CostGuard` at construction
+(token cap, request cap, window).
+
+**Back-compat:** if `observability.copilot.enabled` is not set, the
+copilot falls back to the legacy `LLM_*` env vars (`LLM_ENABLED`,
+`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_MS`,
+`LLM_BRIEFING_INTERVAL_SECS`) — and the Anthropic adapter to
+`ANTHROPIC_API_KEY` — so pure-env deployments keep working. New
+deployments should prefer the YAML model above.
 
 ## Phases
 

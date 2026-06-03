@@ -23,7 +23,8 @@
 
 ## Status (snapshot)
 
-- **As of:** 2026-05-19 (post v2.5 contract compliance sprint).
+- **As of:** 2026-06-02 (AI Operator Copilot P0–P4 + Observability
+  OTel→SigNoz + SLO-message-quality P1 — all shipped + live-verified).
 - **Workspace tests:** **~3 350 across 18 binaries** (all green;
   prior 3 300 baseline + composite-key RiskKey suite + v2.5
   PoW token roundtrip + loopback control-gate tests). `cargo
@@ -37,16 +38,13 @@
   for 2 min with **legit p99 1.03 ms, legit median 0.13 ms, legit OK 100 %,
   detection 80 %**. v2.5 changes are header-only on the hot path; no
   re-measurement required.
-- **Active track:** **Cluster config sync & scaling** (multi-node
-  next-round). Plan:
-  [`plans/archive/cluster-config-sync-and-scaling.md`](./plans/archive/cluster-config-sync-and-scaling.md);
-  design doc
-  [`docs/operations/cluster-config-distribution.md`](./docs/operations/cluster-config-distribution.md).
-  **Done on `develop`:** Phase 0 — `StateBackend` generic KV primitives
-  (`incrby`/`expire`/`scan_prefix`/`cas_set`, `dcdd96f`); Phase A core —
-  `ConfigStore` (versioned `config:waf:doc` + CAS activation + immutable
-  snapshots + rollback + per-node ACK) and the `redis_source` watcher
-  (`e9691d1`). **Next:** see Next Task.
+- **Active track:** **none mid-build.** AI Operator Copilot (P0–P4) +
+  Observability (OTel→SigNoz traces + SLO-message-quality P1) both
+  closed 2026-06-02. The prior **Cluster config sync & scaling** track
+  closed 2026-05-27 (Phase 0+A+B+C+D). Pick the next track from
+  "Next Task" / the deferred backlog. Plans:
+  [`plans/future/ai-operator-copilot.md`](./plans/future/ai-operator-copilot.md),
+  [`plans/future/observability-otel-and-alerts.md`](./plans/future/observability-otel-and-alerts.md).
 - **v2.5 interop contract:** **shipped** —
   `challenge_token`/`submit_url`/`submit_method` wire shape,
   public `/challenge/verify` on data plane, loopback-gated
@@ -78,121 +76,71 @@
 
 ## Last Completed
 
-**Task:** 2026-05-19 v2.5 contract compliance + final-round
-committee bind hardening + dashboard mockup sweep + plans
-folder cleanup. Branch
-`fix/v2.5-contract-compliance-and-cleanup` →
-develop @ `fd587db`.
+**Task:** 2026-06-03 — Centralize AI Operator Copilot config into
+YAML (`observability.copilot`) with a `${secret:...}` key reference
+and config-plane hot-reload. On `develop`, green (5 commits).
 
-**Headline:** the v2.5 interop contract surface is fully
-conformant. `/__waf_control/*` is invisible from outside the
-host (loopback peer-IP gate on both admin + data-plane mounts).
-`/challenge/verify` is a public data-plane endpoint with the
-contract-shape JSON. `prod-balanced.yaml` ships judging-ready
-without operator edits.
+**Headline:** the copilot was the only subsystem still configured by
+raw `LLM_*` env. It now lives under `observability.copilot` like every
+other subsystem, the API key is a `${secret:...}` reference resolved
+per-node (never inline, never in the cluster doc), and the live service
+hot-reloads via the config plane — enable/disable/model/key-rotation
+take effect cluster-wide with no restart. Legacy `LLM_*` env stays as a
+back-compat fallback.
 
 ### What shipped
 
-1. **Committee loopback bind contract** (merge `150f3cb`).
-   `should_dispatch_data_plane_control(path, peer)` gates
-   `/__waf_control/*` on the public data plane; admin-mount
-   `is_open_endpoint(method, path, peer)` only admits the
-   namespace when `peer.is_loopback()`. Non-loopback callers
-   fall through to standard pipelines (404 / login redirect).
-   Benchmarker reaches the namespace via SSH tunnel from
-   loopback. Boot-time NOTICE on stderr when `interop.enabled`
-   AND admin bind is non-loopback (defence-in-depth reminder,
-   not a hard fail — keeps dev Prometheus scrape working).
+1. **Config schema** (`aegis-core/config.rs`, Phase 1). `CopilotConfig`
+   under `ObservabilityConfig` — `enabled` / `provider`
+   (`openai_compatible` | `anthropic`) / `base_url` / `model` /
+   `timeout_ms` / `briefing_interval_secs` / `api_key_ref`. 4 unit tests
+   (defaults, absent-key default, full block with the secret-ref
+   preserved un-resolved, anthropic variant).
 
-2. **Challenge wire shape (v2.5 §4 Format A)** (merge
-   `fd587db`). Issue body emits `challenge_token` (packed
-   `nonce.difficulty.expires_at_ms.mac`), `submit_url:
-   /challenge/verify`, `submit_method: POST`. Verify body
-   accepts `{challenge_token, nonce}`; returns `200 {ok:true,
-   action:"challenge_verified"}` (was 204). `PowChallenge`
-   gets `challenge_token()` / `unpack_token()` helpers with
-   round-trip + malformed-input regression tests.
+2. **`CopilotService::from_config` + live-swap global** (`aegis-control
+   copilot/service.rs`, Phase 2). Builds the provider from config (key
+   passed in by the caller — the secrets resolver stays out of
+   aegis-control). `OnceLock<CopilotService>` → `ArcSwap`; `global()`
+   returns an `Arc` (safe across `.await`) + `set_global()` for hot-swap.
+   `from_env` retained as the lazy fallback. 5 unit tests.
 
-3. **Public `/challenge/verify` mount on data plane**
-   (`accept.rs`). POST short-circuits the verify handler before
-   the loopback control gate so the external benchmarker can
-   POST solutions without an SSH tunnel. Old
-   `/__waf_control/challenge_verify` branch removed; dispatcher
-   signature trimmed (no more `pow_issuer`/`state` plumb-through).
+3. **Boot wiring + secret resolution + briefing-from-cfg** (`aegis-proxy
+   run.rs` / `accept.rs`, Phase 3). `run()` resolves
+   `observability.copilot.api_key_ref` via `resolve_copilot_api_key`
+   (env / file / vault / cloud) and installs the config-built service;
+   disabled block → `from_env` fallback. The P4 briefing scheduler reads
+   `observability.copilot.briefing_interval_secs` (env only as fallback).
 
-4. **`prod-balanced.yaml` v2.5 fixes.** `audit_path:
-   ./waf_audit.log` (was `/var/log/aegis/contract-audit.jsonl` —
-   not where the benchmarker looks). `control_secret:
-   waf-hackathon-2026-ctrl` (was `"REPLACE FROM SECRET MANAGER"`
-   — failed every request with 403).
+4. **Config-plane fold** (`aegis-proxy config_source/reload.rs`,
+   Phase 4). `apply_cfg_change_to_copilot(new_cfg)` re-resolves the key +
+   rebuilds + `set_global`, wired into `apply_folded_stores` so both the
+   redis-source watcher and file-reload paths hot-swap the copilot on
+   apply. 3 llm-gated tests incl. `${secret:env:...}` resolution.
 
-5. **Dashboard mockup sweep.** Removed `SSE (demo)` +
-   `Audit chain demo` pills (status bar), Live Feed CSV button,
-   Overview Export + Open Grafana buttons. Wired "View all →"
-   on Overview to `#/top-attackers`. Bundle now 479 485 bytes.
-
-6. **Docs.** New `deploy/STAGING-BENCHMARK.md` v2.5 delta block
-   + SSH tunnel walkthrough + `/challenge/verify` smoke test;
-   contract-default audit path applied throughout. README
-   gained a hackathon-submission deploy call-out documenting
-   `make build && make stage` as mandatory. Architecture.md +
-   Requirement.md picked up the composite-key axis change and
-   v2.5 contract coverage table.
-
-7. **Plans folder cleanup (2026-05-19).** Moved 13 closed
-   issue-fix sprints into `plans/archive/issue-fix/`; archived
-   shipped `dns-upstream-resolution.md` (hickory-resolver +
-   multi-A expansion in deps); flipped smart-caching matrix
-   row from Implemented → Deferred (TierCache removed
-   2026-05-11); drafted `plans/archive/smart-caching.md`
-   restoration spec.
+5. **Docs + config** (Phase 5). `observability.copilot` example in
+   `config/dev.yaml`; `ai-operator-copilot.md` Configuration section
+   rewritten YAML-first; `.env`/`.env.example` reduced to just the
+   key (backing the `${secret:env:LLM_API_KEY}` ref) sourced by
+   `make run-copilot`; matrix + this file updated.
 
 ### Verification
 
-- `cargo test -p aegis-proxy --lib` → 679 passed, 0 failed,
-  1 ignored.
-- `cargo test -p aegis-security --lib` → 1467 passed.
-- `cargo test -p aegis-core --lib` → 262 passed.
-- `cargo check -p aegis-proxy -p aegis-core -p aegis-security`
-  clean.
-- 5 new control-gate unit tests in `accept::control_gate_tests`,
-  1 added in `admin_auth_middleware::tests`, 3 new in
-  `challenge::pow::tests` (challenge_token roundtrip + 2
-  malformed-input variants).
-- Manual: `make build && make stage && ./waf run` boots
-  against `prod-balanced.yaml`; `curl -k -H "X-Benchmark-Secret:
-  waf-hackathon-2026-ctrl" https://127.0.0.1:9443/__waf_control/capabilities`
-  returns features payload. External
-  `curl https://<public>:9443/__waf_control/capabilities`
-  returns login redirect (loopback gate verified).
+- `cargo test -p aegis-core --lib copilot_config` → 4 passed.
+- `cargo test -p aegis-control --features llm --lib copilot::service`
+  → 6 passed (4 without `llm`).
+- `cargo test -p aegis-proxy --features "redis geoip ai affinity llm"
+  --lib config_source::reload::tests::copilot` → 3 passed.
+- Builds clean: aegis-proxy with/without `llm`; `aegis-bin` with
+  `redis geoip alerts ai affinity otel llm`.
 
-### Next-session hand-off
+### Prior milestone (2026-06-02)
 
-The full 2026-05-11 sprint is closed (now including PR-DNS-1 +
-PR-DNS-2 — hostname-addressed upstreams shipped end-to-end with
-background DNS refresh on TTL).
-
-Two stale "open thread" notes were retired here on 2026-05-11:
-- **AI-T2..T9** — flagged as "waiting on the operator's .onnx
-  file" but actually shipped on 2026-05-03 PM in `80362e8`
-  (operator handed over the model that day; AI-T1..T5 landed
-  end-to-end). T6 metrics, T7 `make ai-link`, T8 integration
-  test, and T9 dashboard `AiDetectorRow` all in tree. The
-  hot-enable PUT (`f2ae002`, 2026-05-09) closed the only
-  follow-up. Genuinely-open AI work is the §8 "out of scope"
-  list (model hot-reload, drift detection, per-route threshold,
-  SHAP/LIME, ensembles, GPU) — none required for v1.
-- **FDP accept-loop drain refactor** — flagged as "the one
-  durable open thread" but actually shipped on 2026-05-03 PM
-  in `362c366` + `6fc56c1`. SIGUSR2 → `perform_handover` is
-  wired end-to-end via the polling task in `run.rs:1366`;
-  `InFlightCounter::admit` is wired on both planes
-  (`accept.rs:848` admin, `accept.rs:987` data).
-
-Nothing else is mid-flight. Future tracks beyond the two
-retired notes: DNS Phase 3 (dashboard "Resolved IPs"
-expandable, ~1 day) and AI model hot-reload (~½–1 day) are the
-two smallest visible follow-ups.
+AI Operator Copilot P0–P4 shipped + live-verified end-to-end against a
+vLLM endpoint (Qwen3.6-35B): summary, ask, smart-catch triage (5
+grounded campaigns), scheduled briefings, per-event clustering.
+Observability: OTel→SigNoz traces smoke-verified (full action spread in
+ClickHouse) + SLO-message-quality P1 (`slo/dispatch.rs`). Secure-env
+`.env` workflow added to `make run-copilot`.
 
 ---
 
@@ -200,12 +148,11 @@ two smallest visible follow-ups.
 
 | Date | Task | Outcome |
 |---|---|---|
-| 2026-05-19 | v2.5 contract compliance + bind hardening + dashboard mockup sweep + plans cleanup | See Last Completed. Two merges: `150f3cb` (loopback gate) + `fd587db` (challenge wire shape, prod-balanced, dashboard sweep, SUBMISSION/STAGING docs). 13 issue-fix sprints + `dns-upstream-resolution.md` archived. |
-| 2026-05-18..19 | Composite-key RiskKey data-plane wire-up (Phase E) + Top Attackers Composite view | Storage layer + 8 data-plane `*_with_key` swaps + `RiskSnapshot` extension + dashboard "Composite RiskKey" tab + per-bucket surgical reset (`POST /api/risk/reset_key`). `tenant_id` axis retired. |
-| 2026-05-18 | Detector-recall fix plan (ML rules-binary eval + juice-shop) | 4 sprints triaged in `plans/archive/issue-fix/2026-05-18-detector-recall-from-ml-eval/`. Recall 63.9 → target ≥ 95% scoped; juice-shop manual eval at 45/45 audit correlation. |
-| 2026-05-17 | aegis-control + aegis-core security audits (16 commits) | F-CRITICAL bundles closed across rules CRUD, AuditAction enum, JA4-light fingerprint, ASN-class wire-up, bots ladder. "All issue-fix phases now closed." |
-| 2026-05-14 | LT-RUN-6/7 fix plan execution | 25 audit findings triaged; 4 regraded as false positives (auditor read dead trait surfaces). 9 unit tests added; EVAL-01 CIDR + EVAL-02 RateLimit bugs fixed in unused-but-tested rule-engine code. |
-| 2026-05-11 | Policy QA + crate audit triage (9 PRs) | 72 raw findings → 9 PRs landed across `2f50176` → PR #9. TierCache removed (PROXY-08/09). PR #7 response-filter wire-up (`Pipeline::on_body_frame`). PR #8 SEC-18/SEC-21/CTL-20 correctness. |
+| 2026-06-03 | Copilot config centralized into YAML + config-plane hot-reload | See Last Completed. `observability.copilot` (`CopilotConfig`) + `${secret:...}` key ref + `ArcSwap` live-swap + `apply_cfg_change_to_copilot` fold. 5 commits, 12 new tests. Legacy `LLM_*` env back-compat retained. |
+| 2026-06-02 | AI Operator Copilot P0–P4 + Observability (OTel→SigNoz, SLO msg P1) | Copilot summary/ask/triage/briefings/clustering shipped + live-verified (vLLM Qwen3.6-35B). OTel traces → SigNoz smoke-verified; SLO alert messages P1; secure `.env` workflow in `make run-copilot`. |
+| 2026-06-01 | Tier A "completionist warmup" (A1–A4) | AI-row feature-off UI polish (R2-009 sub-A/B); 2 pre-existing red tests fixed (reaper runtime-guard + bundle-budget); JA4 `device_fp` axis test; `threat_intel` subdomain walk. Candidates doc archived. |
+| 2026-05-19 | v2.5 contract compliance + bind hardening + dashboard mockup sweep + plans cleanup | Two merges: `150f3cb` (loopback gate) + `fd587db` (challenge wire shape, prod-balanced, dashboard sweep, SUBMISSION/STAGING docs). 13 issue-fix sprints + `dns-upstream-resolution.md` archived. |
+| 2026-05-18..19 | Composite-key RiskKey data-plane wire-up (Phase E) + Top Attackers Composite view | Storage layer + 8 data-plane `*_with_key` swaps + dashboard "Composite RiskKey" tab + per-bucket reset (`POST /api/risk/reset_key`). `tenant_id` axis retired. |
 
 For full chronological detail see `git log` and the
 `plans/archive/issue-fix/` sprint READMEs.
@@ -214,14 +161,19 @@ For full chronological detail see `git log` and the
 
 ## Next Task
 
-**▶ NEXT: AI Operator Copilot — LLM situational summary + smart-catch
-triage.** A generative-LLM layer that reads the WAF's own telemetry
-(audit chain, metrics, risk buckets, detector hits) and turns it into
-(a) plain-language "what's happening now" summaries and (b) reasoning-
-assisted triage of borderline/clustered events with human-in-the-loop
-rule suggestions. Advisory-only, **off the request hot path**, PII-
-redacted before egress (reuses `dlp::redact`), off by default. Plan:
-[`plans/future/ai-operator-copilot.md`](./plans/future/ai-operator-copilot.md).
+**▶ NEXT: pick a track — no build in flight.** The AI Operator Copilot
+(P0–P4 + YAML-config centralization + config-plane hot-reload) and the
+Observability P1 (OTel→SigNoz traces + SLO message quality) are both
+closed. Candidate next tracks, smallest-first:
+- **Observability P2–P4** (`plans/future/observability-otel-and-alerts.md`):
+  remaining `AlertEvent` variants beyond SLO, dashboard/trace deep-links,
+  likely-cause hints; metrics+logs live smoke through the Collector;
+  optional app-side OTLP push; SIGTERM batch flush.
+- **✅ AI Operator Copilot — SHIPPED 2026-06-02/03.** P0–P4 live-verified;
+  config now YAML + `${secret:...}` ref + hot-reload. Plan:
+  [`plans/future/ai-operator-copilot.md`](./plans/future/ai-operator-copilot.md).
+- Cluster polish backlog (Redis keyspace-notify fast path, Console
+  fleet-view, `redis_cluster` backend) — all optional.
 
 **⏸ DEPRIORITIZED: B1 · Tier 1A — wire the API-security guards.** The
 `api_keys` / `hmac_sign` / GraphQL modules are built + unit-tested but
