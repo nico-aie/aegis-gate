@@ -1025,16 +1025,23 @@ pub(crate) async fn admin_accept_loop(
     }
 
     // Copilot P4 — scheduled situational briefing. Off unless the copilot
-    // is enabled AND `LLM_BRIEFING_INTERVAL_SECS` > 0. Every interval it
+    // is enabled AND the briefing cadence is > 0. The cadence comes from
+    // `observability.copilot.briefing_interval_secs` (centralized config);
+    // the legacy `LLM_BRIEFING_INTERVAL_SECS` env var is honored only as a
+    // fallback when the config value is 0 (back-compat). Every interval it
     // builds a telemetry snapshot, asks the copilot for a brief, and pushes
     // it into the alerts pipeline as an `OperatorBriefing` (Info) event so
     // it lands in the operator's chat next to SLO / DDoS alerts. Dispatched
     // WITHOUT the dedup cache — each scheduled brief is distinct content.
     {
-        let interval_secs = std::env::var("LLM_BRIEFING_INTERVAL_SECS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
+        let interval_secs = if cfg.observability.copilot.briefing_interval_secs > 0 {
+            cfg.observability.copilot.briefing_interval_secs
+        } else {
+            std::env::var("LLM_BRIEFING_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
         if interval_secs > 0 && aegis_control::copilot::service::global().enabled() {
             // Floor at 60s — briefings are billable LLM calls.
             let period = std::time::Duration::from_secs(interval_secs.max(60));

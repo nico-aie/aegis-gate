@@ -84,6 +84,26 @@ pub enum ConfigReloadSource {
 /// `aegis-bin` passes an `InProcessLease`; for multi-node it
 /// passes a `RedisLease`.
 ///
+/// Resolve the copilot's `api_key_ref` (`${secret:env:…}` /
+/// `${secret:vault:…}` / etc.) to the actual key, or `None` when the
+/// ref is unset / empty / fails to resolve. Shared by boot wiring and
+/// the config-plane fold so the secret is resolved per-node and never
+/// stored in the clear. Resolution failure logs a warning and disables
+/// the copilot rather than erroring the WAF.
+pub(crate) async fn resolve_copilot_api_key(
+    cc: &aegis_core::config::CopilotConfig,
+) -> Option<String> {
+    let raw = cc.api_key_ref.as_deref().map(str::trim).filter(|r| !r.is_empty())?;
+    match crate::secrets::expand_secrets_async(raw).await {
+        Ok(v) if !v.trim().is_empty() => Some(v),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, "copilot api_key_ref failed to resolve — copilot disabled");
+            None
+        }
+    }
+}
+
 /// `reload_source` selects the config-reload watcher (file /
 /// etcd / none). The boot snapshot is taken from `cfg_swap.load_full()`;
 /// subsequent watcher events atomic-swap into `cfg_swap` and run
@@ -151,6 +171,26 @@ pub async fn run(
         node: cfg.node.id.clone(),
         environment: cfg.admin.environment.clone(),
     });
+
+    // 2026-06-03 — build the AI Operator Copilot from
+    // `observability.copilot` and install it as the live service. The API
+    // key is a `${secret:...}` reference resolved here (env / file / vault
+    // / cloud) so it never sits inline in config or transits the cluster
+    // doc; the config plane later hot-swaps the service via
+    // `apply_cfg_change_to_copilot`. When the copilot block is absent /
+    // disabled we fall back to the legacy `LLM_*` env build so pure-env
+    // deployments keep working; an absent provider just means the copilot
+    // endpoints return 503.
+    {
+        let cc = &cfg.observability.copilot;
+        let svc = if cc.enabled {
+            let api_key = resolve_copilot_api_key(cc).await;
+            aegis_control::copilot::service::CopilotService::from_config(cc, api_key)
+        } else {
+            aegis_control::copilot::service::CopilotService::from_env()
+        };
+        aegis_control::copilot::service::set_global(svc);
+    }
 
     // 2026-05-27 (Phase B) — seed the response-filter rungs from
     // `cfg.response_filter` at boot so an operator-authored YAML value
