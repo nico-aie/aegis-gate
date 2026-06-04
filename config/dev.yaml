@@ -382,20 +382,22 @@ observability:
   #   sample_ratio: 1.0
 
   # AI Operator Copilot — advisory LLM layer over the WAF's own telemetry
-  # (situational briefs + smart-catch triage). Off by default; only does
-  # anything when the binary is built with `--features llm`. The API key
-  # is NEVER inline — `api_key_ref` is a `${secret:...}` reference the node
-  # resolves at boot/apply (env / file / vault / cloud). Put the actual key
-  # in the gitignored `.env` (LLM_API_KEY) and reference it here. This
-  # block is hot-reloadable via the config plane (PUT /api/config).
-  # copilot:
-  #   enabled: true
-  #   provider: openai_compatible        # or: anthropic
-  #   base_url: "https://console.bizbrain.app/v1"   # /chat/completions appended
-  #   model: "Qwen3.6-35B-A3B"
-  #   timeout_ms: 20000
-  #   briefing_interval_secs: 0          # >0 (floored 60s) → scheduled briefings
-  #   api_key_ref: "${secret:env:LLM_API_KEY}"
+  # (situational briefs + smart-catch triage). Enabled here for the dev
+  # profile, but INERT unless BOTH (a) the binary is built with
+  # `--features llm` (e.g. `make run-copilot`) AND (b) `api_key_ref`
+  # resolves — the key is NEVER inline; it's a `${secret:...}` reference
+  # the node resolves at boot/apply. Put the actual key in the gitignored
+  # `.env` (LLM_API_KEY). Without the feature or the key the copilot
+  # reports "disabled" and never calls out. Hot-reloadable via the config
+  # plane (PUT /api/config). Production profiles keep this off.
+  copilot:
+    enabled: true
+    provider: openai_compatible        # or: anthropic
+    base_url: "https://console.bizbrain.app/v1"   # /chat/completions appended
+    model: "Qwen3.6-35B-A3B"
+    timeout_ms: 20000
+    briefing_interval_secs: 0          # >0 (floored 60s) → scheduled briefings
+    api_key_ref: "${secret:env:LLM_API_KEY}"
 
 # ---------------------------------------------------------------------------
 # GeoIP — MaxMind .mmdb readers. Both fields optional; this block is a

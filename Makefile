@@ -89,7 +89,7 @@ SMOKE_ADMIN      ?= http://localhost:9443
 
 # --- Phony targets ----------------------------------------------------------
 
-.PHONY: help setup cert build build-debug run run-dev run-copilot run-strict run-throughput \
+.PHONY: help setup cert build build-debug run run-dev run-copilot restart-copilot run-strict run-throughput \
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
         dashboard redis-up redis-down obs-up obs-down signoz-up signoz-down urls logs login-reset \
         upstream-build upstream-up upstream-down \
@@ -232,7 +232,7 @@ run-dev: $(WAF_BIN) cert redis-up upstream-up ## Boot dev profile (auto-starts R
 # Bring the trace backend up first: `make signoz-up` (stop the dev-stack
 # Jaeger first — both want :4317). Traces land in the SigNoz UI (:3301);
 # the copilot is at the dashboard's Security Ops → Copilot.
-run-copilot: cert redis-up upstream-up ## Boot dev + AI copilot + OTLP→SigNoz (put LLM_* in .env; run 'make signoz-up')
+run-copilot: dashboard cert redis-up upstream-up ## Boot dev + AI copilot + OTLP→SigNoz (put LLM_* in .env; run 'make signoz-up')
 	@echo "==> building with features: $(FEATURES) otel llm"
 	@$(CARGO) build -p aegis-bin --release --features "$(FEATURES) otel llm"
 	@# Source the gitignored .env (LLM_API_KEY etc.) if present — keeps the
@@ -245,6 +245,14 @@ run-copilot: cert redis-up upstream-up ## Boot dev + AI copilot + OTLP→SigNoz 
 	 WAF_OBSERVABILITY__OTEL__ENDPOINT=$${WAF_OBSERVABILITY__OTEL__ENDPOINT:-http://127.0.0.1:4317} \
 	 WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO=$${WAF_OBSERVABILITY__OTEL__SAMPLE_RATIO:-1.0} \
 	 $(WAF_BIN) run --config $(CONFIG_DEV)
+
+restart-copilot: ## Stop any running WAF, then rebuild (dashboard+binary) + reboot via run-copilot
+	@PID=$$(lsof -nP -iTCP:9443 -sTCP:LISTEN -t 2>/dev/null | head -1); \
+	 if [ -n "$$PID" ]; then \
+	   echo "==> stopping running WAF (pid $$PID)"; kill $$PID; sleep 2; \
+	   kill -0 $$PID 2>/dev/null && kill -9 $$PID 2>/dev/null || true; \
+	 else echo "==> no WAF running on :9443"; fi
+	@$(MAKE) run-copilot
 
 bench-dev: build cert redis-up upstream-up ## Boot dev with v2.3 benchmark binary contract (FORCE=1 to refresh waf.yaml, KEEP=1 to acknowledge drift)
 	@# 1. Stage `./waf` + `./waf.yaml` per v2.3 §8 binary contract.
@@ -327,7 +335,9 @@ validate-all: $(WAF_BIN) ## Validate dev + all three production profiles
 	done
 
 redis-up: ## Start the local dev Redis (idempotent — auto-invoked by all run-* targets)
-	@if docker ps --filter "name=^aegis-redis$$" --format '{{.Status}}' | grep -q "^Up"; then \
+	@if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:6379 -sTCP:LISTEN >/dev/null 2>&1; then \
+	    echo "==> redis: 6379 already serving — reusing the running instance"; \
+	elif docker ps --filter "name=^aegis-redis$$" --format '{{.Status}}' | grep -q "^Up"; then \
 	    : ;\
 	elif docker ps -a --filter "name=^aegis-redis$$" --format '{{.Names}}' | grep -q .; then \
 	    docker start aegis-redis >/dev/null; \
