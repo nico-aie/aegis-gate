@@ -11927,8 +11927,75 @@ function memberHealth(h, addr) {
   return m ? m.healthy : undefined;
 }
 
+// routing-upstream #3 — route priority + shadow detection. Compare the
+// `<host>.<path-kind>.<segs>.<method>.<declared>.<yaml-pos>` priority
+// tuple numerically (component-wise), highest first = evaluated first.
+function cmpPriorityDesc(a, b) {
+  const pa = (a.priority || '').split('.').map(Number);
+  const pb = (b.priority || '').split('.').map(Number);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return y - x;
+  }
+  return 0;
+}
+
+// A route R is "shadowed" when a higher-priority (earlier-evaluated)
+// enabled route E already matches every request R would — so R is
+// unreachable. Conservative: only flags genuine coverage (catch-all,
+// prefix that covers R's path at a segment boundary, or an exact
+// duplicate) with a host superset + method superset. regex/glob routes
+// are never treated as shadowers (can't reason about them safely).
+function computeShadowMap(allRoutes) {
+  const sorted = [...(allRoutes || [])].sort(cmpPriorityDesc);
+  const norm = s => (s || '').trim().toLowerCase();
+  const hostSuperset = (E, R) => {
+    const eh = norm(E.host);
+    return !eh || eh === '*' || eh === 'any' || eh === norm(R.host);
+  };
+  const methodSuperset = (E, R) => {
+    const em = E.methods || [];
+    const rm = R.methods || [];
+    if (em.length === 0) return true;     // E accepts any method
+    if (rm.length === 0) return false;    // R accepts any but E doesn't
+    return rm.every(m => em.includes(m));
+  };
+  const pathCovers = (E, R) => {
+    if (E.default) return true;           // catch-all for its host scope
+    const ep = E.path || '/';
+    const rp = R.path || '/';
+    if (E.match_type === 'prefix') {
+      return rp === ep || rp.startsWith(ep.endsWith('/') ? ep : ep + '/');
+    }
+    if (E.match_type === 'exact') {
+      return R.match_type === 'exact' && rp === ep; // true duplicate
+    }
+    return false;                          // regex / glob — don't reason
+  };
+  const shadow = {};
+  for (let i = 0; i < sorted.length; i++) {
+    const R = sorted[i];
+    if (R.enabled === false) continue;     // disabled rows are "off", not "shadowed"
+    for (let j = 0; j < i; j++) {
+      const E = sorted[j];
+      if (E.enabled === false) continue;
+      if (hostSuperset(E, R) && pathCovers(E, R) && methodSuperset(E, R)) {
+        shadow[R.id] = E.id;
+        break;
+      }
+    }
+  }
+  return shadow;
+}
+
 function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDeletePool, cfgReload }) {
   const routes = routesApi.data?.routes || [];
+  // routing-upstream #3 — map of shadowed route id → the higher-priority
+  // route that already matches its traffic (computed over ALL routes, not
+  // just the filtered view).
+  const shadowMap = computeShadowMap(routes);
   const [editor, setEditor] = useStateP(null);
   const [deleteModal, setDeleteModal] = useStateP(null);
   const [busy, setBusy] = useStateP(false);
@@ -12241,6 +12308,14 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
                         {isCatchall && <span className="pill" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }}>catch-all</span>}
                         {r.default && <span className="pill ok" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Catches unmatched traffic for this host">fallback</span>}
                         {r.enabled === false && <span className="pill warn" style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }} title="Skipped from request matching">paused</span>}
+                        {/* routing-upstream #3 — unreachable: a higher-priority route already matches this traffic. */}
+                        {r.enabled !== false && shadowMap[r.id] && (
+                          <span
+                            className="pill err"
+                            style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px' }}
+                            title={`Unreachable: the higher-priority route "${shadowMap[r.id]}" already matches every request this route would. Re-scope the host/path/method or remove the duplicate.`}
+                          >⚠ shadowed</span>
+                        )}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
                         <span className="mono">{r.id}</span> · <span className="pill neutral" style={{ fontSize: 9, padding: '0 6px' }}>{r.match_type}</span>
