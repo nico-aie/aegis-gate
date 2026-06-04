@@ -9,6 +9,9 @@ For a benchmark-ready single Linux host (Docker infra + native
 WAF, AI-assistant-driven) see
 [`./STAGING-BENCHMARK.md`](./STAGING-BENCHMARK.md).
 For multi-node production deployment see [`./GUIDE.md`](./GUIDE.md).
+For a **fleet simulation** — one infra host (Redis + multi-protocol mock +
+SigNoz + nginx LB) fronting **N WAF nodes**, AI-assistant-driveable — see
+[`./HACKATHON-FLEET.md`](./HACKATHON-FLEET.md).
 
 ## Contents
 
@@ -16,6 +19,7 @@ For multi-node production deployment see [`./GUIDE.md`](./GUIDE.md).
 |---|---|
 | `STAGING-BENCHMARK.md` | **Single-Linux-host staging deploy** — Docker infra + native WAF, mechanical step-by-step (Verify / Expected pairs), AI-assistant-driveable |
 | `GUIDE.md` | **Production deploy** — multi-node, image, Helm, config plane |
+| `HACKATHON-FLEET.md` | **Multi-node fleet sim** — infra host (Redis + multi-protocol mock + SigNoz + nginx LB) + N WAF nodes; topology decisions, per-node config, client-IP/XFF + TLS caveats, per-protocol verification |
 | `docker-compose.dev.yml` | Default dev stack — etcd, Prometheus, Grafana, Jaeger, Redis (+exporter), httpbin |
 | `grafana/` | Grafana provisioning + dashboards (datasources auto-loaded, three dashboards file-provisioned) |
 | `docker-compose.test.yml` | Adds attacker / k6 / nuclei / etcdctl for the test pyramid |
