@@ -102,17 +102,68 @@ html[data-theme="light"] {
   --brand-yellow-line: rgba(240, 185, 11, 0.55);
 }
 
+/* ──────────────────────────────────────────────────────────────────────
+   Alternate palettes (2026-06-04) — softer variants for operators who
+   find "Midnight" (near-black) too dark or "Daylight" (near-white) too
+   bright. Selectable via the topbar theme toggle (cycles Midnight → Dim
+   → Daylight → Paper). The brand, trading semantics, and tier colours
+   are unchanged so dashboards keep their meaning across every theme.
+   ────────────────────────────────────────────────────────────────────── */
+
+/* "Dim" — a softer dark. Lifts the canvas off pure black to a slate
+   charcoal; surfaces step up gently. Ink inherits the dark defaults
+   (still WCAG AA on the lighter canvas). */
+html[data-theme="dim"] {
+  --canvas:         #14181F;
+  --canvas-2:       #191E26;
+  --surface:        #1F2630;
+  --surface-2:      #28303B;
+  --surface-3:      #333C49;
+  --surface-hover:  #2C3540;
+  --surface-active: #2E2918;   /* brand-tinted selected row, lifted */
+  --hairline:        #2B333E;
+  --hairline-strong: #3A4350;
+}
+
+/* "Paper" — a calmer light. Drops the canvas off near-white to a soft
+   cool grey and makes cards a touch lighter than the canvas, so light
+   mode gets real surface depth instead of a flat white wash. Carries
+   the light-mode ink flip (it's a light theme). */
+html[data-theme="paper"] {
+  --canvas:         #E9ECF1;
+  --canvas-2:       #E1E5EC;
+  --surface:        #F6F8FB;   /* cards lighter than canvas → depth */
+  --surface-2:      #EAEEF4;
+  --surface-3:      #DCE1EA;
+  --surface-hover:  #E3E8EF;
+  --surface-active: #FBF3C9;   /* soft brand-yellow tint */
+  --hairline:        #D2D8E2;
+  --hairline-strong: #BAC2CE;
+
+  --ink:        #14181D;
+  --ink-strong: #000000;
+  --ink-mute:   #3A4250;
+  --ink-dim:    #5E6673;
+  --ink-faint:  #8A93A0;
+
+  --brand-yellow-soft: rgba(252, 213, 53, 0.22);
+  --brand-yellow-line: rgba(240, 185, 11, 0.55);
+}
+
 /* Light-mode niceties — these classes use specific dark literals
    in a few places; lift them via `var(...)` defaults in the rule
    block below so a future contributor can tune one place. */
-html[data-theme="light"] body {
+html[data-theme="light"] body,
+html[data-theme="paper"] body {
   background: var(--canvas);
   color: var(--ink);
 }
-html[data-theme="light"] .modal-backdrop {
+html[data-theme="light"] .modal-backdrop,
+html[data-theme="paper"] .modal-backdrop {
   background: rgba(20, 24, 29, 0.45);
 }
-html[data-theme="light"] .modal {
+html[data-theme="light"] .modal,
+html[data-theme="paper"] .modal {
   box-shadow: 0 16px 40px rgba(20, 24, 29, 0.18);
 }
 
