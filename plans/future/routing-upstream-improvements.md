@@ -4,8 +4,13 @@
 > **Routing & Upstreams** dashboard page (`PageUpstreams` in
 > `crates/aegis-control/assets/dashboard/src/pages.jsx`) and its backing
 > config-plane CRUD (`aegis-control/src/api/{routes_config,upstreams_config}.rs`,
-> `aegis-proxy/src/admin_mutate.rs`). Independent items — ship in any
-> order. Slots under the roadmap's data-plane track.
+> `aegis-proxy/src/admin_mutate.rs`). Slots under the roadmap's
+> data-plane track.
+>
+> **Selected for first implementation (2026-06-04):** #1 **live member
+> health on the page**, #2 **member connectivity probe**, #3 **route
+> priority + shadow detection**. Everything else (#4–#9) is deferred to
+> **far future** — see [Sequencing](#sequencing).
 
 ## Where it stands today (code-verified 2026-06-04)
 
@@ -106,14 +111,37 @@ The page is already mature. **Don't re-build what exists:**
 
 ## Sequencing
 
-- **Phase 1 (UX, no/low backend):** #1 live health, #3 priority +
-  shadow flags, #5 weight bar — all from existing APIs.
-- **Phase 2 (small backend):** #2 probe-member endpoint, #9 member drain
-  state, #7 per-route quota.
-- **Phase 3 (RouteDef extension + fold):** #6 canary/retry/mirror, #8
-  transforms, #4 import/export. These extend the folded `RouteDef`
-  schema — design the wire shape so old configs still parse (all new
-  fields `#[serde(default)]`), mirroring the detectors/rules fold.
+### Near-term — selected for first implementation (2026-06-04)
+
+The chosen batch. All three are low-risk (no `RouteDef` schema change),
+reuse existing APIs/health data, and directly improve day-one operability.
+
+1. **#1 Live member health on the page** — health dot + "N/M healthy"
+   chip per pool + circuit state per member, from the existing
+   `useUpstreamsApi()` summary. UI-only.
+2. **#2 Member connectivity probe** — per-member "Test" → a read-only
+   admin endpoint doing a one-shot DNS/TCP/TLS/HTTP probe. Small backend
+   endpoint + a button.
+3. **#3 Route priority + shadow detection** — show the priority tuple
+   inline (already in `RouteView.priority`) and flag unreachable
+   (shadowed) routes, computed client-side from the sorted set. UI-only.
+
+   *Suggested order:* #1 → #3 (both UI, ship together) → #2 (adds the
+   probe endpoint).
+
+### Far future — deferred (not scheduled)
+
+Kept as valid designs; revisit after the near-term batch lands.
+
+- **#4** Import / export (routes+pools YAML).
+- **#5** Weighted-LB traffic-split visual.
+- **#6** Per-route traffic management (canary / retry / shadow mirror) —
+  **requires extending the folded `RouteDef`** (new fields all
+  `#[serde(default)]` so old configs still parse, mirroring the
+  detectors/rules fold).
+- **#7** Per-route rate-limit / quota binding.
+- **#8** Per-route request/response header transforms + CORS preset.
+- **#9** Member drain / soft-disable.
 
 ## Risks / notes
 

@@ -1,29 +1,26 @@
 # AI Operator Copilot
 
-> **Status:** Partial — `aegis-control/src/copilot/`. **Phase 0 + P1
-> shipped** (`LlmProvider` trait + `CostGuard` + `redact_for_egress`
-> gate + `summarize()` orchestrator + OpenAI-compatible & Anthropic
-> adapters + snapshot adapter + `GET /api/copilot/summary` endpoint,
-> behind the `llm` feature). **Live-verified end-to-end 2026-06-02**
-> against an OpenAI-compatible vLLM endpoint (Qwen3.6-35B): the endpoint
-> returned an accurate situational brief over live telemetry. Pending:
-> the dashboard panel (P2) + smart-catch triage (P3) — all shipped +
-> all live-verified 2026-06-02 — including P4 (scheduled briefings →
-> alerts pipeline). The copilot track (P0–P4) is complete; per-event
-> clustering of audit-ring events (detector → connected IPs + paths,
-> fed into triage) also shipped.
+> **Status:** ✅ **Implemented (P0–P4)** — `aegis-control/src/copilot/`,
+> behind the `llm` feature. The full track shipped + was live-verified
+> end-to-end **2026-06-02** against an OpenAI-compatible vLLM endpoint
+> (Qwen3.6-35B): provider core + `redact_for_egress` gate + `CostGuard`
+> (P0); `summarize()` + snapshot adapter + `GET /api/copilot/summary`
+> (P1); dashboard Copilot panel + `GET /api/copilot/ask` (P2);
+> smart-catch triage + `GET /api/copilot/suggestions` (P3); scheduled
+> briefings → alerts pipeline (P4); plus per-event clustering of
+> audit-ring events (detector → connected IPs + paths) fed into triage.
 >
-> **Config centralized into YAML (2026-06-03):** the copilot is now
-> configured under `observability.copilot` (`CopilotConfig` in
-> `aegis-core`) with the API key as a `${secret:...}` reference resolved
-> per-node, and is **hot-reloadable via the config plane** (the
-> `apply_cfg_change_to_copilot` fold swaps the live service on apply —
-> no restart). Legacy `LLM_*` env stays as a back-compat fallback.
+> **Config centralized into YAML (2026-06-03):** configured under
+> `observability.copilot` (`CopilotConfig` in `aegis-core`) with the API
+> key as a `${secret:...}` reference resolved per-node, and
+> **hot-reloadable via the config plane** (the `apply_cfg_change_to_copilot`
+> fold swaps the live service on apply — no restart). Legacy `LLM_*` env
+> stays as a back-compat fallback.
 >
-> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status)
-> for the full matrix and
+> See [`../../plans/implementation-matrix.md`](../../plans/implementation-matrix.md)
+> for the full status matrix and
 > [`../../plans/archive/ai-operator-copilot.md`](../../plans/archive/ai-operator-copilot.md)
-> for the build plan.
+> for the (archived) build plan.
 
 A generative-LLM layer that reads the WAF's **own telemetry** (audit
 chain, metrics, risk buckets, detector hits) and turns it into:
@@ -88,7 +85,7 @@ operator-facing copilot for the WAF itself.
 5. **Reproducible** — the redacted prompt hash + response are written to
    the audit chain so a summary is explainable after the fact.
 
-## API surface (planned)
+## API surface
 
 | Endpoint | Phase | Purpose |
 |---|---|---|
