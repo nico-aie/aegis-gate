@@ -212,6 +212,40 @@ reach for HAProxy if you want active health checks with minimal config. If
 JA3/JA4 or raw-TCP client-IP is scored, put those WAF nodes at the **edge**
 (§0.2) rather than behind any LB.
 
+### 2.6 If not nginx — LB options (and why L4 often beats L7 for a WAF)
+
+**Key insight:** Aegis-Gate is *itself* a full L7 security reverse proxy that
+wants to terminate TLS (for JA3/JA4) and inspect every protocol. Putting an
+**L7** LB (nginx/Envoy/ALB) in front means it re-terminates — obscuring
+JA3/JA4, downgrading h2, and forcing per-protocol config. An **L4 /
+TCP-passthrough** LB that **preserves the client source IP** is usually the
+better fit: the WAF sits at the edge and transparently gets **real client IPs
++ JA3/JA4 + every protocol** with *zero* per-protocol LB config.
+
+But beware the client-IP rule (§0.1): the WAF has **no PROXY-protocol** and
+trusts XFF only from RFC1918. So an L4 LB must **preserve the source IP at L3**
+(DSR / direct-routing / `externalTrafficPolicy: Local` / cloud client-IP
+preservation) — an L4 LB that SNATs hides the client and breaks per-IP
+security just like a misconfigured L7 hop.
+
+| Option | Layer | Client IP to WAF | JA3/JA4 | Multi-proto | Notes |
+|---|---|---|---|---|---|
+| **Cloud L4 NLB** (AWS NLB / GCP TCP LB / Azure LB) w/ client-IP preservation | L4 | ✅ real | ✅ (WAF at edge) | ✅ transparent | **Best on cloud** — simple, robust, all protocols pass through |
+| **IPVS/LVS (DR)** or **Cilium eBPF (DSR)** | L4 | ✅ real | ✅ | ✅ | Best bare-metal; high perf; preserves source IP |
+| **HAProxy `mode tcp` + transparent (TPROXY)** | L4 | ✅ (needs TPROXY) | ✅ | ✅ | Shipped config is `mode http`; switch to tcp + transparent for edge-WAF |
+| **DNS round-robin** (no LB in path) | — | ✅ real | ✅ | ✅ | Dead simple for a sim; coarse balance; failover = DNS TTL |
+| **HAProxy `mode http`** (shipped) | L7 | ⚠ XFF (private hop) | ❌ | h1/ws/gRPC | Active health checks, clean h2; raw-TCP needs a `mode tcp` block |
+| **Envoy** | L7 | ⚠ XFF | ❌ | best L7 (h2/gRPC/h3) | Most capable L7; heavier config |
+| **Traefik** | L7 | ⚠ XFF | ❌ | h1/h2/ws/gRPC | k8s-native, easy; no raw TCP without entrypoints |
+| **nginx** | L7 | ⚠ XFF | ❌ | per-family blocks (§2.5) | Fine; the limitations in §2.5 apply |
+| **nginx `stream{}` / L4 SNAT** | L4 | ❌ LB IP | ✅ | ✅ | SNATs → **client IP lost** (no PROXY-proto in WAF). Avoid |
+
+**Recommendation:**
+- **Cloud:** an **L4 NLB with client-IP preservation** → WAF at the edge. Cleanest; everything just works.
+- **Bare metal / VM sim:** **IPVS-DR / Cilium**, or **HAProxy `mode tcp` transparent**; or **DNS round-robin** for the simplest sim.
+- **Only choose an L7 LB** (nginx/HAProxy-http/Envoy/Traefik) if you specifically want L7 routing/WAF-behind-gateway and can live without JA3/JA4 — and keep the hop RFC1918 for XFF.
+- **Avoid** any L4 LB that SNATs (incl. nginx `stream{}` default) — it hides the client IP and the WAF can't recover it.
+
 ---
 
 ## 3. Phase 2 — WAF nodes
