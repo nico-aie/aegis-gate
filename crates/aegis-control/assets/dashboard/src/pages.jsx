@@ -7677,6 +7677,14 @@ function PageUpstreams() {
   const summary = summaryApi.data?.pools || [];
   const routes = routesApi.data?.routes || [];
 
+  // routing-upstream #1 — index the live health summary by pool name so
+  // the routes table + pool rows can show per-pool / per-member health.
+  const healthByPool = (() => {
+    const m = {};
+    for (const p of summary) m[p.name] = p;
+    return m;
+  })();
+
   const [editor, setEditor] = useStateP(null); // null | { kind: 'pool', mode: 'add'|'edit', ... }
   const [deleteModal, setDeleteModal] = useStateP(null); // pool delete only — route delete lives in RoutesTable
   const [busy, setBusy] = useStateP(false);
@@ -7824,6 +7832,7 @@ function PageUpstreams() {
         poolNames={names}
         routesApi={routesApi}
         pools={pools}
+        health={healthByPool}
         onEditPool={openPoolEdit}
         onDeletePool={(n) => setDeleteModal({ name: n, refs: pools[n]?.referenced_by_routes || [] })}
         cfgReload={cfgApi.reload}
@@ -11784,7 +11793,78 @@ function PageTopAttackers() {
 // `poolNames` is passed in from the parent page so the upstream
 // dropdown stays consistent with the live pool list.
 // ---------------------------------------------------------------------------
-function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cfgReload }) {
+// routing-upstream #1 (2026-06-04) — live member health helpers. The
+// /api/upstreams summary carries per-pool { healthy, total,
+// members:[{addr,healthy}], circuit } (api/upstreams.rs). These render
+// that as dots / chips / a circuit badge.
+const HEALTH_COLOR = { ok: 'var(--up)', warn: '#d6a700', down: 'var(--down)' };
+
+function healthTone(healthy, total) {
+  if (!total || healthy === 0) return 'down';
+  if (healthy < total) return 'warn';
+  return 'ok';
+}
+
+function MemberDot({ healthy }) {
+  return (
+    <span
+      title={healthy ? 'healthy (passing health checks)' : 'unhealthy / down'}
+      style={{
+        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+        background: healthy ? HEALTH_COLOR.ok : HEALTH_COLOR.down,
+        marginRight: 6, verticalAlign: 'middle',
+      }}
+    />
+  );
+}
+
+function PoolHealthChip({ h }) {
+  if (!h || typeof h.total !== 'number') return null;
+  const tone = healthTone(h.healthy, h.total);
+  return (
+    <span
+      title="live healthy / total members (from active health checks)"
+      style={{
+        display: 'inline-flex', alignItems: 'center', fontSize: 10,
+        padding: '1px 6px', borderRadius: 10, marginLeft: 6,
+        border: '1px solid var(--hairline)', color: HEALTH_COLOR[tone],
+      }}
+    >
+      <span style={{
+        display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+        background: HEALTH_COLOR[tone], marginRight: 5,
+      }} />
+      {h.healthy}/{h.total} up
+    </span>
+  );
+}
+
+function CircuitBadge({ state }) {
+  if (!state || state === 'closed') return null;
+  const tone = state === 'open' ? 'down' : 'warn';
+  return (
+    <span
+      title={`circuit breaker ${state}`}
+      style={{
+        fontSize: 9, marginLeft: 6, padding: '0 6px', borderRadius: 10,
+        border: `1px solid ${HEALTH_COLOR[tone]}`, color: HEALTH_COLOR[tone],
+      }}
+    >
+      ⚡ {state === 'half_open' ? 'half-open' : 'open'}
+    </span>
+  );
+}
+
+// Look up a member's live health within a pool summary entry (matched by
+// addr). Returns undefined when the summary has no per-member detail
+// (e.g. the static fallback provider) — the UI then shows no dot.
+function memberHealth(h, addr) {
+  if (!h || !Array.isArray(h.members)) return undefined;
+  const m = h.members.find(x => x.addr === addr);
+  return m ? m.healthy : undefined;
+}
+
+function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDeletePool, cfgReload }) {
   const routes = routesApi.data?.routes || [];
   const [editor, setEditor] = useStateP(null);
   const [deleteModal, setDeleteModal] = useStateP(null);
@@ -12109,7 +12189,7 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                     <td>
                       <div className="mono" style={{ fontSize: 12 }}>
                         {poolNames.includes(r.upstream)
-                          ? <>{r.upstream}{' '}<span style={{ color: 'var(--ink-dim)', fontSize: 11 }}>({scheme} · {members.length} member{members.length === 1 ? '' : 's'})</span></>
+                          ? <>{r.upstream}{' '}<span style={{ color: 'var(--ink-dim)', fontSize: 11 }}>({scheme} · {members.length} member{members.length === 1 ? '' : 's'})</span><PoolHealthChip h={health?.[r.upstream]} /><CircuitBadge state={health?.[r.upstream]?.circuit} /></>
                           : <span title="Pool not found" style={{ color: 'var(--down)' }}>{r.upstream} ⚠</span>}
                       </div>
                       {!isExpanded && members.length > 0 && (
@@ -12153,6 +12233,8 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                               <span style={{ color: 'var(--ink-dim)', fontWeight: 400, marginLeft: 8 }}>
                                 · scheme <code>{scheme}</code> · lb <code>{pool?.lb || '—'}</code>
                               </span>
+                              <PoolHealthChip h={health?.[r.upstream]} />
+                              <CircuitBadge state={health?.[r.upstream]?.circuit} />
                             </div>
                             {pool && (
                               <div style={{ display: 'flex', gap: 6 }}>
@@ -12176,6 +12258,7 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                             <table className="tbl tbl-compact" style={{ background: 'var(--canvas)' }}>
                               <thead>
                                 <tr>
+                                  <th style={{ width: 90 }}>Status</th>
                                   <th>Member</th>
                                   <th title="`host_header:` override drives outbound Host + TLS SNI">Host header</th>
                                   <th style={{ width: 60 }}>Weight</th>
@@ -12183,8 +12266,20 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                                 </tr>
                               </thead>
                               <tbody>
-                                {members.map((m, i) => (
+                                {members.map((m, i) => {
+                                  // routing-upstream #1 — live health for this
+                                  // member (undefined when the summary carries
+                                  // no per-member detail).
+                                  const mh = memberHealth(health?.[r.upstream], m.addr);
+                                  return (
                                   <tr key={`${m.addr}-${i}`}>
+                                    <td style={{ fontSize: 11 }}>
+                                      {mh === undefined
+                                        ? <span style={{ color: 'var(--ink-dim)' }}>—</span>
+                                        : <><MemberDot healthy={mh} />{mh
+                                            ? <span style={{ color: 'var(--up)' }}>up</span>
+                                            : <span style={{ color: 'var(--down)' }}>down</span>}</>}
+                                    </td>
                                     <td className="mono" style={{ fontSize: 12 }}>{m.addr}</td>
                                     <td className="mono" style={{ fontSize: 11, color: m.host_header ? 'inherit' : 'var(--ink-dim)' }}>
                                       {m.host_header || '—'}
@@ -12192,7 +12287,8 @@ function RoutesTable({ poolNames, routesApi, pools, onEditPool, onDeletePool, cf
                                     <td className="num">{m.weight ?? 1}</td>
                                     <td style={{ color: 'var(--ink-dim)', fontSize: 11 }}>{m.zone || '—'}</td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           )}

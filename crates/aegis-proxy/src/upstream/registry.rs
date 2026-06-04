@@ -289,20 +289,38 @@ impl aegis_control::api::upstreams_config::UpstreamWriter for PoolRegistry {
     fn live_snapshot(
         &self,
     ) -> aegis_control::api::upstreams::PoolHealthSnapshot {
+        use crate::upstream::circuit::State;
         let snap = self.snapshot();
+        let breakers = self.breakers.load();
         let pools = snap
             .iter()
             .map(|(name, pool)| {
                 let total = pool.members.len() as u32;
-                let healthy = pool
+                let members: Vec<_> = pool
                     .members
                     .iter()
-                    .filter(|m| m.is_healthy())
-                    .count() as u32;
+                    .map(|m| aegis_control::api::upstreams::MemberHealth {
+                        addr: m.addr.to_string(),
+                        healthy: m.is_healthy(),
+                    })
+                    .collect();
+                let healthy = members.iter().filter(|m| m.healthy).count() as u32;
+                // Circuit state is per-pool (the registry keys breakers
+                // by pool name). Absent when no breaker is configured.
+                let circuit = breakers.get(name).map(|cb| {
+                    match cb.state() {
+                        State::Closed => "closed",
+                        State::Open => "open",
+                        State::HalfOpen => "half_open",
+                    }
+                    .to_string()
+                });
                 aegis_control::api::upstreams::PoolHealthEntry {
                     name: name.clone(),
                     healthy,
                     total,
+                    members,
+                    circuit,
                 }
             })
             .collect();

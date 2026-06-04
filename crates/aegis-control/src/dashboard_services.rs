@@ -719,6 +719,7 @@ pub fn pool_snapshot_provider(cfg: &aegis_core::config::WafConfig) -> PoolSnapsh
                 name: name.clone(),
                 healthy: total,
                 total,
+                ..Default::default()
             }
         })
         .collect();
@@ -763,6 +764,7 @@ mod tests {
                 name: "api-pool".into(),
                 healthy: 3,
                 total: 4,
+                ..Default::default()
             }],
         })
     }

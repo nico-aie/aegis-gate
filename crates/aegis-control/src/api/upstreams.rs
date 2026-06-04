@@ -26,14 +26,31 @@ use serde::{Deserialize, Serialize};
 /// tracking-snapshot family.
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(2);
 
+/// Per-member health line. Additive detail for the Routing & Upstreams
+/// page so operators see *which* backend is down, not just a count.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemberHealth {
+    pub addr: String,
+    pub healthy: bool,
+}
+
 /// Snapshot of one upstream pool. Cheap value type so the `aegis-proxy`
 /// side can build it from `Pool::members.iter().map(|m| m.is_healthy())`
 /// without exposing its internal types upward.
+///
+/// `members` + `circuit` are additive (2026-06-04, routing-upstream #1):
+/// per-member health + the pool's circuit-breaker state
+/// (`closed`/`open`/`half_open`, absent when no breaker is configured).
+/// Both `#[serde(default)]` so older snapshots still deserialize.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PoolHealthEntry {
     pub name: String,
     pub healthy: u32,
     pub total: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<MemberHealth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit: Option<String>,
 }
 
 /// Input to [`compute_summary`]. A list of `PoolHealthEntry`. The
@@ -169,11 +186,48 @@ mod tests {
             name: name.into(),
             healthy,
             total,
+            ..Default::default()
         }
     }
 
     fn snap(pools: Vec<PoolHealthEntry>) -> PoolHealthSnapshot {
         PoolHealthSnapshot { pools }
+    }
+
+    #[test]
+    fn per_member_health_and_circuit_round_trip_through_summary() {
+        // routing-upstream #1 — the additive members[] + circuit fields
+        // survive compute_summary (which clones pools into the response).
+        let entry = PoolHealthEntry {
+            name: "api".into(),
+            healthy: 1,
+            total: 2,
+            members: vec![
+                MemberHealth { addr: "10.0.0.1:80".into(), healthy: true },
+                MemberHealth { addr: "10.0.0.2:80".into(), healthy: false },
+            ],
+            circuit: Some("open".into()),
+        };
+        let resp = compute_summary(&snap(vec![entry]));
+        assert_eq!(resp.state, "Degraded"); // 1 of 2 healthy
+        let p = &resp.pools[0];
+        assert_eq!(p.members.len(), 2);
+        assert!(p.members[0].healthy && !p.members[1].healthy);
+        assert_eq!(p.circuit.as_deref(), Some("open"));
+        // The fields serialize for the dashboard.
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"10.0.0.2:80\"") && json.contains("\"circuit\":\"open\""));
+    }
+
+    #[test]
+    fn legacy_snapshot_without_members_still_deserializes() {
+        // Old snapshots (no members/circuit keys) must still parse —
+        // both fields are #[serde(default)].
+        let e: PoolHealthEntry =
+            serde_json::from_str(r#"{"name":"p","healthy":2,"total":2}"#).unwrap();
+        assert_eq!(e.total, 2);
+        assert!(e.members.is_empty());
+        assert!(e.circuit.is_none());
     }
 
     #[test]
