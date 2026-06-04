@@ -1400,6 +1400,46 @@ pub(crate) async fn handle_copilot_suggestions(
     }
 }
 
+/// `GET /api/upstreams/probe?addr=host:port&scheme=https&host_header=…&health_path=/healthz`
+/// — routing-upstream #2. One-shot DNS/TCP/TLS/(optional)HTTP probe of an
+/// upstream member. Read-only (no audit, no config change); admin-auth
+/// gated by the upstream middleware. GET so it needs no CSRF, mirroring the
+/// copilot endpoints (which also do network I/O off the sync router).
+pub(crate) async fn handle_upstream_probe(
+    req: hyper::Request<hyper::body::Incoming>,
+    _services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let query = req.uri().query().unwrap_or("").to_string();
+    let addr_owned = parse_query_str(&query, "addr").map(percent_decode).unwrap_or_default();
+    let addr = addr_owned.trim();
+    if addr.is_empty() || !addr.contains(':') {
+        let body = serde_json::json!({
+            "error": "missing or malformed addr; pass ?addr=host:port",
+        })
+        .to_string();
+        return json_body_response(400, body, "no-store");
+    }
+    let scheme = parse_query_str(&query, "scheme")
+        .map(percent_decode)
+        .unwrap_or_else(|| "http".into());
+    let host_header = parse_query_str(&query, "host_header")
+        .map(percent_decode)
+        .filter(|s| !s.trim().is_empty());
+    let health_path = parse_query_str(&query, "health_path")
+        .map(percent_decode)
+        .filter(|s| !s.trim().is_empty());
+
+    let result = crate::upstream::probe::probe_member(
+        addr,
+        &scheme,
+        host_header.as_deref(),
+        health_path.as_deref(),
+    )
+    .await;
+    let body = serde_json::to_string(&result).unwrap_or_else(|_| "{}".into());
+    json_body_response(200, body, "no-store")
+}
+
 #[cfg(test)]
 mod percent_decode_tests {
     use super::percent_decode;

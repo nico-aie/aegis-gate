@@ -5,6 +5,7 @@ pub mod dns_refresh;
 pub mod dns_resolve;
 pub mod forward;
 pub mod pinned_resolver;
+pub mod probe;
 pub mod registry;
 pub mod tls;
 

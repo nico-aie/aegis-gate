@@ -1147,6 +1147,17 @@ async function routeTest(host, method, path) {
   const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
   return { status: r.status, ...json };
 }
+
+// routing-upstream #2 — one-shot upstream member connectivity probe.
+// Read-only GET (no CSRF); returns { ok, dns, tcp, tls, http } stages.
+async function probeMember(addr, scheme, hostHeader, healthPath) {
+  const qs = new URLSearchParams({ addr: addr || '', scheme: scheme || 'http' });
+  if (hostHeader) qs.set('host_header', hostHeader);
+  if (healthPath) qs.set('health_path', healthPath);
+  const r = await fetch(`/api/upstreams/probe?${qs.toString()}`, { credentials: 'same-origin' });
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
 async function routeDelete(id) {
   const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
   const r = await fetch(`/api/routes/${encodeURIComponent(id)}`, {
@@ -1369,7 +1380,7 @@ Object.assign(window, {
   // CC-T1.1 — upstream-pool config view + CC-T1.1.b mutation helpers
   useUpstreamsConfigApi, upstreamsConfigPut, poolUpsert, poolDelete,
   // RT-T6 — route mutations
-  routeUpsert, routeDelete, routeTest,
+  routeUpsert, routeDelete, routeTest, probeMember,
   // AI-T10 — AI detector runtime on/off
   useAiEnabledApi, aiEnabledPut,
   // 2026-05-29 — AI runtime confidence_threshold

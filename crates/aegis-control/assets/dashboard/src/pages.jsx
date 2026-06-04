@@ -8074,9 +8074,57 @@ function poolFormFromView(view) {
 // either (a) authored via "+ Add pool" deliberately, (b) left
 // over from a route that was later deleted, or (c) seeded by
 // the YAML at boot — never from a stray cancel here.
+// routing-upstream #2 — render a connectivity-probe result as compact
+// per-stage chips (DNS / TCP / TLS / HTTP) with timings + details.
+function ProbeResultLine({ result }) {
+  if (!result) return null;
+  if (result.error) {
+    return <span style={{ fontSize: 11, color: 'var(--down)' }}>Probe failed: {result.error}</span>;
+  }
+  const stages = [['DNS', result.dns], ['TCP', result.tcp], ['TLS', result.tls], ['HTTP', result.http]];
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 11 }}>
+      <span style={{ fontWeight: 600, color: result.ok ? 'var(--up)' : 'var(--down)' }}>
+        {result.ok ? '✓ reachable' : '✗ failed'}
+      </span>
+      {stages.map(([label, s]) => {
+        if (!s) return null;
+        const color = s.skipped ? 'var(--ink-dim)' : (s.ok ? 'var(--up)' : 'var(--down)');
+        const icon = s.skipped ? '–' : (s.ok ? '✓' : '✗');
+        return (
+          <span key={label} title={s.detail || ''} style={{ color }}>
+            {icon} {label}{!s.skipped && typeof s.ms === 'number' ? ` ${s.ms}ms` : ''}
+          </span>
+        );
+      })}
+      <span className="mono" style={{ color: 'var(--ink-dim)', flexBasis: '100%', marginTop: 2 }}>
+        {stages.filter(([, s]) => s && !s.skipped && s.detail).map(([l, s]) => `${l}: ${s.detail}`).join('  ·  ')}
+      </span>
+    </div>
+  );
+}
+
 function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel, onSave, busy }) {
   const [name, setName] = useStateP(initialName || '');
   const [d, setD] = useStateP(() => poolFormFromView(initialPool));
+  // routing-upstream #2 — per-member connectivity-probe state (keyed by
+  // member index): { result } and a busy flag.
+  const [probes, setProbes] = useStateP({});
+  const [probing, setProbing] = useStateP({});
+
+  async function runProbe(i) {
+    const m = d.members[i];
+    if (!m || !(m.addr || '').trim()) return;
+    setProbing(p => ({ ...p, [i]: true }));
+    try {
+      const scheme = d.connection?.scheme || 'http';
+      const healthPath = d.health_enabled ? (d.health?.path || '/healthz') : undefined;
+      const res = await window.probeMember(m.addr.trim(), scheme, (m.host_header || '').trim() || undefined, healthPath);
+      setProbes(p => ({ ...p, [i]: res }));
+    } finally {
+      setProbing(p => ({ ...p, [i]: false }));
+    }
+  }
 
   const isEdit = mode === 'edit';
   const trimmedName = (name || '').trim();
@@ -8232,7 +8280,8 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
               </thead>
               <tbody>
                 {d.members.map((m, i) => (
-                  <tr key={i}>
+                  <React.Fragment key={i}>
+                  <tr>
                     <td>
                       <input
                         className="input mono"
@@ -8266,15 +8315,29 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                         placeholder="example.com"
                       />
                     </td>
-                    <td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
                       <button
-                        className="btn"
+                        className="btn btn-sm"
+                        onClick={() => runProbe(i)}
+                        disabled={probing[i] || !(m.addr || '').trim()}
+                        title="DNS → TCP → TLS → health-path probe of this member (read-only; uses the pool's scheme)"
+                      >{probing[i] ? '…' : 'Test'}</button>{' '}
+                      <button
+                        className="btn btn-sm"
                         onClick={() => removeMember(i)}
                         disabled={busy || d.members.length === 1}
                         title={d.members.length === 1 ? 'A pool needs at least one member' : 'Remove this member'}
                       >×</button>
                     </td>
                   </tr>
+                  {probes[i] && (
+                    <tr>
+                      <td colSpan={5} style={{ padding: '4px 8px 8px', background: 'var(--canvas-2)' }}>
+                        <ProbeResultLine result={probes[i]} />
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>

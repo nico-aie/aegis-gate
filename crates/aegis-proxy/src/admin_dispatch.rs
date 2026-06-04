@@ -494,6 +494,11 @@ pub(crate) async fn handle_admin_request(
     if method == hyper::Method::GET && path == "/api/copilot/suggestions" {
         return crate::admin_get::handle_copilot_suggestions(req, services).await;
     }
+    // routing-upstream #2 — one-shot member connectivity probe. Async
+    // (DNS/TCP/TLS/HTTP I/O), read-only, admin-auth gated upstream.
+    if method == hyper::Method::GET && path == "/api/upstreams/probe" {
+        return crate::admin_get::handle_upstream_probe(req, services).await;
+    }
 
     admin_router(req, cfg, readiness, startup, metrics, services)
 }
