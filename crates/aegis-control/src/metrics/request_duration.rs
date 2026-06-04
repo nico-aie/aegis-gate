@@ -15,9 +15,12 @@
 //! | `waf_overhead` | WAF processing only — entry up to the upstream forward (== `total` for blocked/early-exit requests that never forward). Excludes the backend round-trip, so this is the WAF's own cost. |
 //! | `total`        | entry to response built, **incl. upstream forward** — one sample per request |
 //!
-//! Buckets cover the realistic WAF-internal range (0.05 ms → 250 ms).
-//! Anything beyond that is host noise — see
-//! `tests/load/README-perf.md`.
+//! Buckets keep dense sub-10 ms resolution for the WAF-internal stages
+//! (`waf_overhead` / `detect` / `rate_limit`; p99 ≤ 5 ms contract) **and**
+//! extend to 10 s so the `total` stage — which includes the upstream
+//! forward — doesn't saturate its top bucket when a slow backend pushes
+//! end-to-end latency past 250 ms (otherwise every `total` percentile
+//! clamps to the old 250 ms top bound). See `tests/load/README-perf.md`.
 
 use std::time::Duration;
 
@@ -39,13 +42,17 @@ pub mod stage {
     pub const TOTAL: &str = "total";
 }
 
-/// Histogram bucket layout in **milliseconds**. Same shape as
-/// the standard prometheus `DEFAULT_BUCKETS` but shifted
-/// downward — the WAF p99 contract is `≤ 5 ms` on dedicated
-/// hardware, so the resolution under 10 ms matters most.
+/// Histogram bucket layout in **milliseconds**. Dense under 10 ms (the
+/// WAF p99 ≤ 5 ms contract is what matters most for the WAF-internal
+/// stages), then a coarse tail out to 10 s. The tail (≥ 500 ms) exists
+/// for the `total` stage, which includes the upstream forward: without
+/// it, a slow backend overflows the top bucket and `histogram_quantile`
+/// clamps every `total` percentile to the last finite bound (the old
+/// 250 ms ceiling). Adding high buckets costs nothing for the
+/// sub-millisecond stages — their samples never reach them.
 pub const BUCKETS_MS: &[f64] = &[
     0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0,
-    100.0, 250.0,
+    100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0,
 ];
 
 /// Wrapper around the registered `HistogramVec`. Cheap to
@@ -217,6 +224,43 @@ mod tests {
         assert!(
             under_ten >= 7,
             "must keep dense buckets under 10ms, got {under_ten}"
+        );
+    }
+
+    #[test]
+    fn total_stage_does_not_saturate_above_250ms() {
+        // Regression (2026-06-04): the `total` stage includes the
+        // upstream forward. Before the bucket tail extended past 250ms,
+        // a ~400ms end-to-end request overflowed the top bucket and
+        // every percentile clamped to 250. With the wider tail it
+        // interpolates above 250 instead.
+        let reg = MetricsRegistry::init();
+        let h = RequestStageHistogram::register(&reg).unwrap();
+        for _ in 0..100 {
+            h.record(stage::TOTAL, Duration::from_millis(400));
+        }
+        let p = h.percentiles_ms(stage::TOTAL).unwrap();
+        assert!(
+            p.p50_ms > 250.0,
+            "p50 must exceed the old 250ms ceiling, got {}",
+            p.p50_ms
+        );
+        assert!(
+            p.p99_ms > 250.0 && p.p99_ms <= 1000.0,
+            "p99 should land in the (250, 1000]ms band (the 250→500 bucket), got {}",
+            p.p99_ms
+        );
+    }
+
+    #[test]
+    fn buckets_extend_past_250ms_for_end_to_end_total() {
+        // The tail must cover end-to-end latencies so `total` (incl.
+        // upstream) doesn't saturate at the WAF-internal ceiling.
+        let max = BUCKETS_MS.last().copied().unwrap_or(0.0);
+        assert!(max >= 5000.0, "top bucket must reach multi-second, got {max}");
+        assert!(
+            BUCKETS_MS.iter().any(|&b| b > 250.0),
+            "must have buckets above the old 250ms ceiling"
         );
     }
 
