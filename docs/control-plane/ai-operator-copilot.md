@@ -22,7 +22,7 @@
 >
 > See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status)
 > for the full matrix and
-> [`../../plans/future/ai-operator-copilot.md`](../../plans/future/ai-operator-copilot.md)
+> [`../../plans/archive/ai-operator-copilot.md`](../../plans/archive/ai-operator-copilot.md)
 > for the build plan.
 
 A generative-LLM layer that reads the WAF's **own telemetry** (audit
@@ -150,7 +150,7 @@ deployments should prefer the YAML model above.
 
 ## Related
 
-- Build plan + risks: [`../../plans/future/ai-operator-copilot.md`](../../plans/future/ai-operator-copilot.md)
+- Build plan + risks: [`../../plans/archive/ai-operator-copilot.md`](../../plans/archive/ai-operator-copilot.md)
 - Observability inputs: [`../observability/audit-logging.md`](../observability/audit-logging.md),
   [`../observability/prometheus-otel.md`](../observability/prometheus-otel.md)
 - Egress redaction: [`../security/dlp.md`](../security/dlp.md)

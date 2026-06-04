@@ -37,7 +37,7 @@ What shipped this past week:
 - **Cluster config plane** — track CLOSED 2026-05-27 (Phase 0+A+B+C+D)
 - **AI `confidence_threshold` adjust** — shipped 2026-05-28 (`e77d379`)
 - **AI threshold live-propagate** — shipped 2026-05-31 (`6db09b1`), closes the cross-node + post-restart gap
-- **n-tester QC suite** — shipped 2026-05-31 (`3b5c350`); 12 tests, 9 pass / 0 fail / 3 expected skips; QC rounds 1–2 closed (note: `plans/issue-fix/n-tester-2026-05-29-cluster-ai-rounds-1-2/`)
+- **n-tester QC suite** — shipped 2026-05-31 (`3b5c350`); 12 tests, 9 pass / 0 fail / 3 expected skips; QC rounds 1–2 closed (note: `plans/archive/issue-fix/n-tester-2026-05-29-cluster-ai-rounds-1-2/`)
 
 Implication for picking next: the **test safety net is hot** for the cluster + AI surfaces, and the team has momentum on test infra. That favours either capitalising on the test infra (sweep deferred polish) or starting a new feature now that there's a regression net.
 
@@ -51,7 +51,7 @@ Tier-0 hygiene is **partly** clear — the two pre-existing red tests (`state_se
 
 | ID | Candidate | Where it lives | Effort | Why pick |
 |---|---|---|---|---|
-| **A1** | Close R2-009 sub-A + sub-B (deferred UI polish from QC): render the AI-row threshold input read-only with cfg default in feature-off state; add `aria-disabled` + `title=` + `cursor:not-allowed` on the disabled Enable button | `plans/issue-fix/n-tester-2026-05-29-cluster-ai-rounds-1-2/README.md` → "Deferred" section | S | Closes the last open QC items; keeps the suite honest at 9/0/3 |
+| **A1** | Close R2-009 sub-A + sub-B (deferred UI polish from QC): render the AI-row threshold input read-only with cfg default in feature-off state; add `aria-disabled` + `title=` + `cursor:not-allowed` on the disabled Enable button | `plans/archive/issue-fix/n-tester-2026-05-29-cluster-ai-rounds-1-2/README.md` → "Deferred" section | S | Closes the last open QC items; keeps the suite honest at 9/0/3 |
 | **A2** | Fix the 2 pre-existing red tests — `state_select::in_memory_selects_in_memory_backend` reaper panic (`crates/aegis-proxy/src/state/in_memory.rs:40`); `dashboard_polish` JS-bundle-budget (app.js > 444 KB) | Tier 0 of roadmap | S–M | Gets `cargo test -p aegis-bin` fully green; unblocks Tier-0 sign-off |
 | **A3** | Finish JA4 device-FP axis in the composite-key risk bucket (~50 LoC + a JA4 hash helper) | [`risk-composite-key-data-plane.md`](./risk-composite-key-data-plane.md) | S | Partial since boot; tiny finishing move; lifts a "Partial" row in the implementation matrix |
 | **A4** | `threat_intel::check_domain` subdomain walk — ~6 LoC, makes feed entries for `evil.com` actually catch `c2.evil.com` | [`unwired-stubs-catalog.md`](./unwired-stubs-catalog.md) → "Domain threat-intel" | S | Smallest real correctness win on the books |

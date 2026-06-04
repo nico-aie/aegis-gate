@@ -43,7 +43,7 @@
   closed 2026-06-02. The prior **Cluster config sync & scaling** track
   closed 2026-05-27 (Phase 0+A+B+C+D). Pick the next track from
   "Next Task" / the deferred backlog. Plans:
-  [`plans/future/ai-operator-copilot.md`](./plans/future/ai-operator-copilot.md),
+  [`plans/archive/ai-operator-copilot.md`](./plans/archive/ai-operator-copilot.md),
   [`plans/future/observability-otel-and-alerts.md`](./plans/future/observability-otel-and-alerts.md).
 - **v2.5 interop contract:** **shipped** —
   `challenge_token`/`submit_url`/`submit_method` wire shape,
@@ -171,7 +171,7 @@ closed. Candidate next tracks, smallest-first:
   optional app-side OTLP push; SIGTERM batch flush.
 - **✅ AI Operator Copilot — SHIPPED 2026-06-02/03.** P0–P4 live-verified;
   config now YAML + `${secret:...}` ref + hot-reload. Plan:
-  [`plans/future/ai-operator-copilot.md`](./plans/future/ai-operator-copilot.md).
+  [`plans/archive/ai-operator-copilot.md`](./plans/archive/ai-operator-copilot.md).
 - Cluster polish backlog (Redis keyspace-notify fast path, Console
   fleet-view, `redis_cluster` backend) — all optional.
 

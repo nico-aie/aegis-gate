@@ -160,7 +160,7 @@ Forward-looking work lives in [`../plans/future/`](../plans/future/) —
 the roadmap, active plans, and the Phase-B intake template
 ([`advanced-features.md`](../plans/archive/advanced-features.md)). The
 next active track is the AI Operator Copilot
-([`ai-operator-copilot.md`](../plans/future/ai-operator-copilot.md)).
+([`ai-operator-copilot.md`](../plans/archive/ai-operator-copilot.md)).
 
 ---
 

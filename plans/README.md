@@ -2,8 +2,9 @@
 
 Simplified 2026-06-01 to focus on the **main plan**. The top level
 holds the operating plan + the status matrix; forward-looking work is
-the roadmap + the one active next track; everything closed or parked
-lives in [`archive/`](./archive/).
+the roadmap + the open backlog; everything closed or parked lives in
+[`archive/`](./archive/). (Updated 2026-06-04: the AI Operator Copilot
+shipped and moved to `archive/`; no track is mid-build.)
 
 ## Layout
 
@@ -13,11 +14,11 @@ plans/
 ├── plan.md                    ← MAIN PLAN — assistant protocol + repo conventions
 ├── implementation-matrix.md   ← doc-by-doc Implemented / Partial / Designed / Deferred
 ├── future/
-│   ├── world-class-waf-roadmap.md       ← strategic ordering (Tiers 0–6)
-│   ├── ai-operator-copilot.md           ← next active track
-│   └── observability-otel-and-alerts.md ← OTel export + richer alerts
-├── archive/                   ← closed / shipped / parked plans (read-only history)
-└── issue-fix/                 ← active QA-driven fix plans
+│   ├── world-class-waf-roadmap.md         ← strategic ordering (Tiers 0–6)
+│   ├── observability-otel-and-alerts.md   ← OTel export (P1 done) + richer alerts
+│   └── routing-upstream-improvements.md   ← Routing & Upstreams UX + feature backlog
+└── archive/                   ← closed / shipped / parked plans (read-only history,
+                                  incl. issue-fix/ QA sprints)
 ```
 
 ## Start here
@@ -35,14 +36,21 @@ plans/
   the ordering document: grades Aegis against the 2025–2026 WAAP leaders,
   names code-verified gaps, sequences them into Tiers 0–6. Read it before
   picking up new capability work.
-- **[`ai-operator-copilot.md`](./future/ai-operator-copilot.md)** — the
-  **next active track**: LLM situational summaries + smart-catch triage
-  over the WAF's own telemetry (advisory-only, off the hot path,
-  PII-redacted egress).
 - **[`observability-otel-and-alerts.md`](./future/observability-otel-and-alerts.md)** —
-  improve observation: (1) real OTLP export to an OTel Collector (traces
-  + metrics + logs; backend suggestions inside) and (2) richer, "full"
-  alert messages.
+  improve observation: (1) OTLP export to an OTel Collector — **traces
+  + SLO-message-quality P1 shipped 2026-06-02**; metrics/logs live smoke,
+  app-side push, and SIGTERM flush remain — and (2) the remaining alert
+  message work (P2–P4).
+- **[`routing-upstream-improvements.md`](./future/routing-upstream-improvements.md)** —
+  Routing & Upstreams dashboard UX + feature backlog (live member health,
+  route shadow detection, per-route canary/retry/transforms, member
+  drain, import/export). Drafted 2026-06-04.
+
+> **AI Operator Copilot — ✅ SHIPPED (P0–P4 + YAML-config centralization),
+> 2026-06-02/03.** The build plan moved to
+> [`archive/ai-operator-copilot.md`](./archive/ai-operator-copilot.md);
+> the feature spec lives at
+> [`../docs/control-plane/ai-operator-copilot.md`](../docs/control-plane/ai-operator-copilot.md).
 
 > **Trimmed 2026-06-01.** The per-feature backlog specs (alerts-refactor,
 > bot-classifier-enforcement, compliance-profiles, smart-caching,
