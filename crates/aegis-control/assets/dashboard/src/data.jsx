@@ -1331,6 +1331,21 @@ async function alertReceiverTest(name) {
 // `expectedVersion` is the version returned by a successful mutation;
 // the hook polls /api/config/version every 250ms until version moves
 // past `expectedVersion` or `timeoutMs` elapses.
+// Current activated config-plane version (0 on error). Read BEFORE a
+// mutation so the caller can waitForVersion(before + 1) — config-plane
+// mutations (rules, detectors, upstreams, routes) apply asynchronously
+// on the watcher's next poll, so reloading immediately races the apply.
+async function currentConfigVersion() {
+  try {
+    const r = await fetch('/api/config/version', { credentials: 'same-origin', cache: 'no-store' });
+    if (!r.ok) return 0;
+    const j = await r.json();
+    return Number(j.version) || 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
 async function waitForVersion(expectedVersion, timeoutMs = 10000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -1390,7 +1405,7 @@ Object.assign(window, {
   // TI-T — audit-mutated tier edits
   tierPut,
   useRoutesApi, useTiersApi,
-  rulesPost, rulesPut, rulesDelete, rulesToggle, waitForVersion,
+  rulesPost, rulesPut, rulesDelete, rulesToggle, waitForVersion, currentConfigVersion,
   // CI-T6 — settings mutations
   useModeApi, settingsModePut,
   // CI-T12 — risk thresholds (read + audit-mutated PUT)

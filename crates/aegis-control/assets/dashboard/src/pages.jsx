@@ -7711,14 +7711,26 @@ function PageUpstreams() {
   const openPoolEdit = (name, pool) => setEditor({ kind: 'pool', mode: 'edit', name, pool });
   const openPoolAdd  = () => setEditor({ kind: 'pool', mode: 'add' });
 
+  // Reload the config + health views, but only AFTER the config-plane
+  // applies the new version — pool/route mutations land via the async
+  // apply pipeline (watcher's next poll), so reloading immediately reads
+  // the pre-apply config and the UI looks unchanged until a manual
+  // refresh. waitForVersion(before + 1) closes that gap.
+  async function reloadAfterApply(before) {
+    if (before != null) await window.waitForVersion(before + 1, 10000);
+    cfgApi.reload && cfgApi.reload();
+    summaryApi.reload && summaryApi.reload();
+  }
+
   async function savePool({ name, body }) {
     setBusy(true);
     try {
+      const before = await window.currentConfigVersion();
       const r = await window.poolUpsert(name, body);
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Pool "${name}" saved`, 'ok');
-        cfgApi.reload && cfgApi.reload();
         setEditor(null);
+        await reloadAfterApply(before);
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         window.aegisToast(`Save failed: ${msg}`, 'err');
@@ -7737,11 +7749,12 @@ function PageUpstreams() {
     const { name } = deleteModal;
     setBusy(true);
     try {
+      const before = await window.currentConfigVersion();
       const r = await window.poolDelete(name);
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Pool "${name}" removed`, 'ok');
-        cfgApi.reload && cfgApi.reload();
         setDeleteModal(null);
+        await reloadAfterApply(before);
       } else if (r.status === 409 && Array.isArray(r.referenced_by_routes)) {
         setDeleteModal({ name, refs: r.referenced_by_routes });
         window.aegisToast(`Pool "${name}" has ${r.referenced_by_routes.length} route reference(s)`, 'warn');
@@ -12075,12 +12088,17 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
       // inline-backend path; if the operator wants to clean up an
       // unused pool they use "Pools without routes" → Delete.
       const body = routeBodyFromDraft(draft);
+      const before = await window.currentConfigVersion();
       const r = await window.routeUpsert(draft.id, body);
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Route "${draft.id}" saved`, 'ok');
-        routesApi.reload && routesApi.reload();
         setSaveError(null);
         setEditor(null);
+        // Wait for the async config-plane apply before reloading, else
+        // the table re-reads the pre-apply config and looks unchanged.
+        await window.waitForVersion(before + 1, 10000);
+        routesApi.reload && routesApi.reload();
+        cfgReload && cfgReload();
       } else {
         const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
         setSaveError(`Save failed: ${msg}`);
@@ -12095,11 +12113,14 @@ function RoutesTable({ poolNames, routesApi, pools, health, onEditPool, onDelete
     const { id } = deleteModal;
     setBusy(true);
     try {
+      const before = await window.currentConfigVersion();
       const r = await window.routeDelete(id);
       if (r.status === 200 && r.ok) {
         window.aegisToast(`Route "${id}" removed`, 'ok');
-        routesApi.reload && routesApi.reload();
         setDeleteModal(null);
+        await window.waitForVersion(before + 1, 10000);
+        routesApi.reload && routesApi.reload();
+        cfgReload && cfgReload();
       } else if (r.status === 409 && r.reason === 'last_catchall') {
         setDeleteModal({ id, blocker: r.message || 'last catch-all' });
         window.aegisToast(`Cannot delete "${id}": last catch-all`, 'warn');
