@@ -458,7 +458,9 @@ function ToastContainer() {
   }, []);
   return (
     <div style={{
-      position: 'fixed', bottom: 32, right: 16, zIndex: 9999,
+      // bottom: 92 clears the Copilot FAB (52px @ bottom:24) so toasts
+      // stack above it rather than landing under the launcher.
+      position: 'fixed', bottom: 92, right: 16, zIndex: 9999,
       display: 'flex', flexDirection: 'column', gap: 6,
       pointerEvents: 'none',
     }}>

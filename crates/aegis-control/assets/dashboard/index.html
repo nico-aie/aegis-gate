@@ -1,23 +1,23 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" data-density="compact" data-accent="yellow">
+<html lang="en" data-theme="dim" data-density="compact" data-accent="yellow">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Aegis WAF · Control Plane</title>
   <link rel="stylesheet" href="/dashboard/assets/aegis.css">
   <!-- Theme bootstrap — runs before paint to avoid a flash of
-       wrong theme. Reads `aegis_theme` from localStorage; falls
-       back to the OS preference (`prefers-color-scheme`). Inline
-       because the SPA bundle hasn't loaded yet at this point. -->
+       wrong theme. Reads `aegis_theme` from localStorage; falls back
+       to "dim" (the product default since 2026-06-05 — a softer dark
+       that's easier to read than Midnight). Inline because the SPA
+       bundle hasn't loaded yet at this point. -->
   <script>
     (function () {
       try {
         var stored = localStorage.getItem('aegis_theme');
-        var os = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
-        document.documentElement.dataset.theme = stored || os;
+        document.documentElement.dataset.theme = stored || 'dim';
       } catch (_) {
-        // localStorage unavailable — keep the dark default
-        // already on <html data-theme="dark">.
+        // localStorage unavailable — keep the dim default already
+        // on <html data-theme="dim">.
       }
     })();
   </script>

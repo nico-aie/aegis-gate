@@ -355,13 +355,14 @@ function PageOverview() {
           <span style={{ fontSize: 12, color: 'var(--ink-mute)' }}>
             Situational briefs &amp; smart-catch triage over the WAF&apos;s own telemetry — advisory only.
           </span>
-          <a
-            href="#/copilot"
+          <button
+            type="button"
             className="btn sm"
-            style={{ marginLeft: 'auto', textDecoration: 'none' }}
+            style={{ marginLeft: 'auto' }}
+            onClick={() => window.openCopilot && window.openCopilot()}
           >
             Open Copilot →
-          </a>
+          </button>
         </div>
       </div>
 
@@ -13166,424 +13167,452 @@ function DeleteRouteModal({ id, blocker, onCancel, onConfirm, busy }) {
 }
 
 // ===========================================================================
-// Copilot (P2) — on-demand LLM situational brief over the WAF's own
-// telemetry. Advisory only; never auto-runs (each brief is a billable LLM
-// call). Renders the brief text + the snapshot it was derived from so the
-// operator verifies the numbers beside the prose. Backend:
-// GET /api/copilot/summary (aegis-control::copilot).
 // ===========================================================================
-function PageCopilot() {
-  const [loading, setLoading] = useStateP(false);
-  const [brief, setBrief] = useStateP(null);
-  const [err, setErr] = useStateP(null);
-  const [disabled, setDisabled] = useStateP(false);
-  const [minutes, setMinutes] = useStateP('60');
-  // Ask box (free-form question over the same snapshot window).
-  const [q, setQ] = useStateP('');
-  const [asking, setAsking] = useStateP(false);
-  const [answer, setAnswer] = useStateP(null);
-  const [askErr, setAskErr] = useStateP(null);
-  // The question that produced `answer` — echoed above the reply so the
-  // input can be cleared on submit without losing what was asked.
-  const [askedQ, setAskedQ] = useStateP(null);
-  // Smart-catch triage (P3) — campaign clustering + rule suggestions.
-  const [sugLoading, setSugLoading] = useStateP(false);
-  const [triageRes, setTriageRes] = useStateP(null);
-  const [sugErr, setSugErr] = useStateP(null);
-
-  async function findCampaigns() {
-    if (sugLoading) return;
-    setSugLoading(true);
-    setSugErr(null);
-    try {
-      const r = await fetch(
-        `/api/copilot/suggestions?minutes=${encodeURIComponent(minutes)}`,
-        { credentials: 'same-origin' }
-      );
-      const j = await r.json().catch(() => ({}));
-      if (r.status === 503) {
-        setDisabled(true);
-        setTriageRes(null);
-        setSugErr(j.hint || j.error || 'Copilot is disabled.');
-        return;
+// Copilot chat widget (2026-06-05) — a floating launcher + big popup that
+// brings the Copilot to every page. Mounted globally in App. The launcher
+// only renders when the copilot is actually enabled; enablement is probed
+// for FREE via `GET /api/copilot/ask` with no `q` — the handler returns 503
+// when disabled and 400 (missing question) when enabled, so we learn the
+// state without spending a token. The popup hosts: a live WAF posture panel
+// (sourced from existing free telemetry APIs, never a billable call), quick
+// actions (Generate brief / Find campaigns — the same LLM calls as the
+// Copilot page), and a free-form chat thread (the ask endpoint).
+// ===========================================================================
+// Minimal, XSS-safe Markdown → React nodes for model output. We BUILD
+// elements (React escapes all text children) and never touch innerHTML, so
+// an untrusted LLM response can't inject markup. Supports the shapes the
+// copilot actually emits: headings, bold/italic, inline + fenced code,
+// links (http/https only), and unordered/ordered lists.
+function renderInline(text, keyPrefix) {
+  const nodes = [];
+  let rest = String(text);
+  let k = 0;
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*|_[^_]+_)|(\[[^\]]+\]\([^)]+\))/;
+  let guard = 0;
+  while (rest && guard++ < 2000) {
+    const m = re.exec(rest);
+    if (!m) { nodes.push(rest); break; }
+    if (m.index > 0) nodes.push(rest.slice(0, m.index));
+    const tok = m[0];
+    if (tok.startsWith('`')) {
+      nodes.push(<code key={`${keyPrefix}-${k++}`} className="md-code">{tok.slice(1, -1)}</code>);
+    } else if (tok.startsWith('**')) {
+      nodes.push(<strong key={`${keyPrefix}-${k++}`}>{tok.slice(2, -2)}</strong>);
+    } else if (tok.startsWith('[')) {
+      const mm = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(tok);
+      const label = mm ? mm[1] : tok;
+      const url = mm ? mm[2] : '';
+      if (/^https?:\/\//i.test(url) || url.startsWith('#/')) {
+        nodes.push(<a key={`${keyPrefix}-${k++}`} href={url} target="_blank" rel="noreferrer">{label}</a>);
+      } else {
+        nodes.push(label);
       }
-      if (!r.ok) {
-        setSugErr(j.error || `HTTP ${r.status}`);
-        setTriageRes(null);
-        return;
-      }
-      setTriageRes(j);
-    } catch (e) {
-      setSugErr(String(e && e.message ? e.message : e));
-    } finally {
-      setSugLoading(false);
+    } else {
+      nodes.push(<em key={`${keyPrefix}-${k++}`}>{tok.replace(/^[*_]/, '').replace(/[*_]$/, '')}</em>);
     }
+    rest = rest.slice(m.index + tok.length);
+  }
+  return nodes;
+}
+
+function renderMarkdown(text) {
+  if (!text) return null;
+  const lines = String(text).replace(/\r\n/g, '\n').split('\n');
+  const out = [];
+  let i = 0, key = 0;
+  let list = null; // { ordered, items: [] }
+  const flushList = () => {
+    if (!list) return;
+    const Tag = list.ordered ? 'ol' : 'ul';
+    const items = list.items;
+    out.push(
+      <Tag key={`md-${key++}`} className="md-list">
+        {items.map((it, idx) => <li key={idx}>{renderInline(it, `li-${key}-${idx}`)}</li>)}
+      </Tag>,
+    );
+    list = null;
+  };
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line.trim())) {
+      flushList();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i].trim())) { buf.push(lines[i]); i++; }
+      i++;
+      out.push(<pre key={`md-${key++}`} className="md-pre"><code>{buf.join('\n')}</code></pre>);
+      continue;
+    }
+    const h = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (h) {
+      flushList();
+      out.push(<div key={`md-${key++}`} className={`md-h md-h${h[1].length}`}>{renderInline(h[2], `h-${key}`)}</div>);
+      i++; continue;
+    }
+    const ul = /^\s*[-*•]\s+(.*)$/.exec(line);
+    const ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (ul || ol) {
+      const ordered = !!ol;
+      if (!list || list.ordered !== ordered) { flushList(); list = { ordered, items: [] }; }
+      list.items.push(ul ? ul[1] : ol[1]);
+      i++; continue;
+    }
+    if (line.trim() === '') { flushList(); i++; continue; }
+    flushList();
+    out.push(<p key={`md-${key++}`} className="md-p">{renderInline(line, `p-${key}`)}</p>);
+    i++;
+  }
+  flushList();
+  return out;
+}
+
+function CopilotWidget() {
+  // null = unknown (probing), true = enabled, false = disabled/absent.
+  const [enabled, setEnabled] = useStateP(null);
+  const [open, setOpen] = useStateP(false);
+  const [minutes, setMinutes] = useStateP('60');
+  // Chat thread persists across open/close. Each turn:
+  //   { role: 'user'|'assistant'|'brief'|'campaigns'|'error', ... }
+  const [messages, setMessages] = useStateP([]);
+  const [input, setInput] = useStateP('');
+  // Which LLM action is in flight ('ask'|'brief'|'campaigns') or null.
+  const [busy, setBusy] = useStateP(null);
+
+  // Free enablement probe — no token spend (see header note).
+  useEffectP(() => {
+    let cancelled = false;
+    fetch('/api/copilot/ask', { credentials: 'same-origin' })
+      .then(r => { if (!cancelled) setEnabled(r.status !== 503); })
+      .catch(() => { if (!cancelled) setEnabled(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Global open hook so anything (e.g. Overview's "Open Copilot" button)
+  // can pop the chat: `window.openCopilot()`. The listener is registered
+  // unconditionally (before the enabled early-return) so the hook exists
+  // while probing; if the copilot is disabled it nudges with a toast
+  // instead of opening a panel that can't answer.
+  useEffectP(() => {
+    window.openCopilot = () => window.dispatchEvent(new CustomEvent('aegis:copilot-open'));
+    const onOpen = () => {
+      if (enabled === true) setOpen(true);
+      else if (enabled === false) {
+        window.aegisToast && window.aegisToast(
+          'Copilot is disabled — set LLM_ENABLED + provider keys to enable', 'warn',
+        );
+      }
+    };
+    window.addEventListener('aegis:copilot-open', onOpen);
+    return () => window.removeEventListener('aegis:copilot-open', onOpen);
+  }, [enabled]);
+
+  function pushMsg(msg) {
+    setMessages(m => [...m, { id: Math.random().toString(36).slice(2), ...msg }]);
   }
 
-  async function ask() {
-    const question = q.trim();
-    if (!question || asking) return;
-    setAsking(true);
-    setAskErr(null);
+  // Shared 503 handler — if the copilot got disabled out from under us,
+  // flip the widget off rather than spamming errors.
+  function handleDisabled() {
+    setEnabled(false);
+    setOpen(false);
+  }
+
+  async function runAsk(raw) {
+    const question = (raw ?? input).trim();
+    if (!question || busy) return;
+    pushMsg({ role: 'user', text: question });
+    setInput('');
+    setBusy('ask');
     try {
       const r = await fetch(
         `/api/copilot/ask?q=${encodeURIComponent(question)}&minutes=${encodeURIComponent(minutes)}`,
-        { credentials: 'same-origin' }
+        { credentials: 'same-origin' },
       );
       const j = await r.json().catch(() => ({}));
-      if (r.status === 503) {
-        setDisabled(true);
-        setAnswer(null);
-        setAskErr(j.hint || j.error || 'Copilot is disabled.');
-        return;
-      }
-      if (!r.ok) {
-        setAskErr(j.error || `HTTP ${r.status}`);
-        setAnswer(null);
-        return;
-      }
-      setAnswer(j);
-      // Submitted successfully — echo the question above the answer and
-      // clear the box so Enter visibly "sends" and the next question
-      // starts fresh.
-      setAskedQ(question);
-      setQ('');
+      if (r.status === 503) { handleDisabled(); return; }
+      if (!r.ok) { pushMsg({ role: 'error', text: j.error || `HTTP ${r.status}` }); return; }
+      pushMsg({
+        role: 'assistant', text: j.text,
+        meta: `${j.model} · ${(j.input_tokens || 0) + (j.output_tokens || 0)} tokens`,
+      });
     } catch (e) {
-      setAskErr(String(e && e.message ? e.message : e));
+      pushMsg({ role: 'error', text: String(e && e.message ? e.message : e) });
     } finally {
-      setAsking(false);
+      setBusy(null);
     }
   }
 
-  async function generate() {
-    if (loading) return;
-    setLoading(true);
-    setErr(null);
+  async function runBrief() {
+    if (busy) return;
+    pushMsg({ role: 'user', text: `Generate brief · last ${minutes} min`, kind: 'action' });
+    setBusy('brief');
     try {
       const r = await fetch(
         `/api/copilot/summary?minutes=${encodeURIComponent(minutes)}`,
-        { credentials: 'same-origin' }
+        { credentials: 'same-origin' },
       );
       const j = await r.json().catch(() => ({}));
-      if (r.status === 503) {
-        setDisabled(true);
-        setBrief(null);
-        setErr(j.hint || j.error || 'Copilot is disabled.');
-        return;
-      }
-      setDisabled(false);
-      if (!r.ok) {
-        setErr(j.error || `HTTP ${r.status}`);
-        setBrief(null);
-        return;
-      }
-      setBrief(j);
+      if (r.status === 503) { handleDisabled(); return; }
+      if (!r.ok) { pushMsg({ role: 'error', text: j.error || `HTTP ${r.status}` }); return; }
+      pushMsg({
+        role: 'brief', text: j.text, snapshot: j.snapshot,
+        meta: `${j.model} · ${(j.input_tokens || 0) + (j.output_tokens || 0)} tokens`,
+      });
     } catch (e) {
-      setErr(String(e && e.message ? e.message : e));
+      pushMsg({ role: 'error', text: String(e && e.message ? e.message : e) });
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
-  const snap = brief && brief.snapshot;
+  async function runCampaigns() {
+    if (busy) return;
+    pushMsg({ role: 'user', text: `Find campaigns · last ${minutes} min`, kind: 'action' });
+    setBusy('campaigns');
+    try {
+      const r = await fetch(
+        `/api/copilot/suggestions?minutes=${encodeURIComponent(minutes)}`,
+        { credentials: 'same-origin' },
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 503) { handleDisabled(); return; }
+      if (!r.ok) { pushMsg({ role: 'error', text: j.error || `HTTP ${r.status}` }); return; }
+      pushMsg({ role: 'campaigns', data: j, meta: `${j.model} · ${(j.input_tokens || 0) + (j.output_tokens || 0)} tokens` });
+    } catch (e) {
+      pushMsg({ role: 'error', text: String(e && e.message ? e.message : e) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Hidden entirely until we confirm the copilot is enabled.
+  if (enabled !== true) return null;
 
   return (
     <>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">Copilot</h1>
-          <p className="page-subtitle">
-            LLM situational brief over the WAF's own telemetry · advisory
-            only · on-demand · every action is a billable LLM call
-          </p>
-        </div>
-        <div className="page-actions">
-          <label
-            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-dim)' }}
-            title="Time window for every Copilot action — brief, triage, and ask"
-          >
-            Window
-            <select
-              className="input select"
-              value={minutes}
-              onChange={(e) => setMinutes(e.target.value)}
-              style={{ width: 120 }}
-            >
-              <option value="15">last 15 min</option>
-              <option value="60">last 60 min</option>
-              <option value="360">last 6 h</option>
-              <option value="1440">last 24 h</option>
-            </select>
-          </label>
-          <button className="btn primary" onClick={generate} disabled={loading}>
-            {loading ? 'Generating…' : 'Generate brief'}
-          </button>
-        </div>
-      </div>
-
-      {disabled && (
-        <div className="card" style={{ borderLeft: '3px solid var(--warn)' }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>
-            🔒 Copilot is disabled
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>{err}</div>
-        </div>
-      )}
-
-      {!disabled && err && (
-        <div className="card" style={{ borderLeft: '3px solid var(--down)' }}>
-          <div style={{ fontWeight: 600 }}>Couldn't generate a brief</div>
-          <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>{err}</div>
-        </div>
-      )}
-
-      {!brief && !disabled && !err && !loading && (
-        <div className="card" style={{ color: 'var(--ink-dim)', fontSize: 13 }}>
-          Press <strong>Generate brief</strong> to summarise the last {minutes}{' '}
-          minutes of WAF telemetry. Each brief is an on-demand LLM call (it
-          costs tokens) — it never runs automatically.
-        </div>
-      )}
-
-      {brief && (
-        <div className="section-row">
-          <div className="card" style={{ flex: 2 }}>
-            <window.SectionHeader
-              title="Situational brief"
-              sub={`${brief.model} · ${
-                (brief.input_tokens || 0) + (brief.output_tokens || 0)
-              } tokens`}
-            />
-            {/* LLM output rendered as plain text (white-space: pre-wrap) —
-                NEVER as HTML, so an untrusted model response can't inject
-                markup. */}
-            <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>
-              {brief.text}
-            </div>
-            <div style={{ marginTop: 10, fontSize: 10, color: 'var(--ink-mute)' }}>
-              Advisory only — verify against the numbers before acting.
-            </div>
-          </div>
-          {snap && (
-            <div className="card" style={{ flex: 1 }}>
-              <window.SectionHeader
-                title="Snapshot"
-                sub={`window ${snap.window_minutes} min`}
-              />
-              <div className="field-label">Blocked (window)</div>
-              <div className="num" style={{ fontSize: 18 }}>
-                {(snap.blocked || 0).toLocaleString()}
-              </div>
-              <div className="field-label" style={{ marginTop: 10 }}>
-                Top detectors
-              </div>
-              {(snap.top_detectors || []).length ? (
-                snap.top_detectors.map(([name, n]) => (
-                  <div
-                    key={name}
-                    style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}
-                  >
-                    <span>{name}</span>
-                    <span className="num">{n}</span>
-                  </div>
-                ))
-              ) : (
-                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
-              )}
-              <div className="field-label" style={{ marginTop: 10 }}>
-                Top attackers
-              </div>
-              {(snap.top_attackers || []).length ? (
-                snap.top_attackers.slice(0, 5).map((a) => (
-                  <div
-                    key={a.ip}
-                    style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}
-                  >
-                    <span>{a.ip}</span>
-                    <span className={`pill ${a.level === 'block' ? 'down' : 'neutral'}`}>
-                      {a.score}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
-              )}
-              <div className="field-label" style={{ marginTop: 10 }}>
-                Active SLO alerts
-              </div>
-              {(snap.active_slo_alerts || []).length ? (
-                snap.active_slo_alerts.map((s, i) => (
-                  <div key={i} style={{ fontSize: 12 }}>
-                    {s}
-                  </div>
-                ))
-              ) : (
-                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none</div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Copilot tools — secondary on-demand actions below the brief.
-          2026-06-05 — Smart-catch triage first, then "Ask the copilot"
-          last: the free-form ask is the open-ended fallback after the
-          structured brief + triage, so it anchors the bottom of the page. */}
-      {!disabled && (
-        <div style={{ fontSize: 11, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '4px 2px 0' }}>
-          Copilot tools
-        </div>
-      )}
-
-      {/* Smart-catch triage (P3) — campaign clusters + candidate rules. */}
-      {!disabled && (
-        <div className="card">
-          <window.SectionHeader
-            title="Smart-catch triage"
-            sub="cluster recent events into campaigns + candidate rules · advisory · billable LLM call"
-          />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <button className="btn" onClick={findCampaigns} disabled={sugLoading}>
-              {sugLoading ? 'Analysing…' : 'Find campaigns'}
-            </button>
-            {!triageRes && !sugErr && !sugLoading && (
-              <span style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-                Groups the last {minutes} min of blocks into likely campaigns and drafts candidate rules to review.
-              </span>
-            )}
-          </div>
-          {sugErr && (
-            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--down)' }}>{sugErr}</div>
-          )}
-          {triageRes && (
-            <div style={{ marginTop: 10 }}>
-              {(triageRes.suggestions || []).length ? (
-                triageRes.suggestions.map((s) => (
-                  <div
-                    key={s.id}
-                    style={{ borderTop: '1px solid var(--hairline)', padding: '10px 0' }}
-                  >
-                    <div
-                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                    >
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{s.cluster}</span>
-                      <span
-                        className={`pill ${
-                          s.confidence === 'high'
-                            ? 'down'
-                            : s.confidence === 'medium'
-                            ? 'warn'
-                            : 'neutral'
-                        }`}
-                      >
-                        {s.confidence || '?'}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 4 }}>
-                      {s.explanation}
-                    </div>
-                    <div className="field-label" style={{ marginTop: 6 }}>
-                      Suggested rule (review + promote manually)
-                    </div>
-                    {/* LLM-authored rule shown as text in <code> — React
-                        escapes it, so no HTML/markup injection. */}
-                    <code
-                      style={{
-                        display: 'block',
-                        whiteSpace: 'pre-wrap',
-                        background: 'var(--canvas-2)',
-                        padding: '6px 8px',
-                        borderRadius: 4,
-                        marginTop: 2,
-                        fontSize: 12,
-                      }}
-                    >
-                      {s.suggested_rule}
-                    </code>
-                  </div>
-                ))
-              ) : triageRes.unparsed ? (
-                <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{triageRes.unparsed}</div>
-              ) : (
-                <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
-                  No notable campaigns in this window.
-                </div>
-              )}
-              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--ink-mute)' }}>
-                {triageRes.model} ·{' '}
-                {(triageRes.input_tokens || 0) + (triageRes.output_tokens || 0)} tokens · advisory
-                — preview a rule (Rules → simulate) before promoting it
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Ask the copilot — free-form question over the same snapshot
-          window. Kept LAST: the open-ended fallback after the structured
-          brief + triage. */}
-      {!disabled && (
-        <div className="card">
-          <window.SectionHeader
-            title="Ask the copilot"
-            sub="free-form question grounded in the current snapshot window · advisory · billable LLM call"
-          />
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input
-              className="input"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') ask();
-              }}
-              placeholder="e.g. which IP is hitting us hardest, and why?"
-              aria-label="Ask the copilot a question"
-              style={{ flex: 1 }}
-            />
-            <button className="btn" onClick={ask} disabled={asking || !q.trim()}>
-              {asking ? 'Asking…' : 'Ask'}
-            </button>
-          </div>
-          {!answer && !askErr && !asking && (
-            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ink-dim)' }}>
-              Answers from the last {minutes} min of telemetry only — it can't see traffic outside the window. Press Enter to ask.
-            </div>
-          )}
-          {askErr && (
-            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--down)' }}>{askErr}</div>
-          )}
-          {answer && (
-            <div style={{ marginTop: 10 }}>
-              {askedQ && (
-                <div
-                  style={{
-                    fontSize: 13, fontWeight: 600, color: 'var(--ink)',
-                    paddingBottom: 8, marginBottom: 8,
-                    borderBottom: '1px solid var(--hairline)',
-                  }}
-                >
-                  <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>You asked · </span>
-                  {askedQ}
-                </div>
-              )}
-              {/* Plain text only — never HTML (untrusted model output). */}
-              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>
-                {answer.text}
-              </div>
-              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--ink-mute)' }}>
-                {answer.model} · {(answer.input_tokens || 0) + (answer.output_tokens || 0)} tokens
-                · advisory — verify before acting
-              </div>
-            </div>
-          )}
-        </div>
+      <button
+        type="button"
+        className="copilot-fab"
+        aria-label={open ? 'Close Copilot' : 'Open Copilot'}
+        title="Copilot — ask, brief, and triage from anywhere"
+        onClick={() => setOpen(o => !o)}
+      >
+        {open ? '×' : <window.I.Sparkles />}
+      </button>
+      {open && (
+        <CopilotPanel
+          minutes={minutes}
+          setMinutes={setMinutes}
+          messages={messages}
+          input={input}
+          setInput={setInput}
+          busy={busy}
+          onAsk={runAsk}
+          onBrief={runBrief}
+          onCampaigns={runCampaigns}
+          onClear={() => setMessages([])}
+          onClose={() => setOpen(false)}
+        />
       )}
     </>
   );
 }
 
+// Live WAF posture — free telemetry only (no LLM). Mounted inside the open
+// panel so its polling hooks only run while the popup is visible.
+function CopilotPosture({ minutes }) {
+  const win = Math.max(60, Number(minutes) * 60 || 900);
+  const stats = window.useStatsApi ? window.useStatsApi() : { data: null };
+  const byDet = window.useAttacksByDetectorApi ? window.useAttacksByDetectorApi(win) : { data: null };
+  const top = window.useAttacksTopApi ? window.useAttacksTopApi(win, 5) : { data: null };
+  const incidents = window.useIncidentsApi ? window.useIncidentsApi() : { data: null };
+
+  const s = stats.data || {};
+  const detectors = (byDet.data?.detectors || []).slice(0, 5);
+  const attackers = (top.data?.attackers || []).slice(0, 5);
+  const firing = Array.isArray(incidents.data?.incidents)
+    ? incidents.data.incidents.filter(i => i.status === 'firing').length
+    : (incidents.data?.raw_alerts?.firing?.length || 0);
+
+  const Stat = ({ label, value, tone }) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)' }}>{label}</div>
+      <div className="num" style={{ fontSize: 18, color: tone || 'var(--ink)' }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div className="copilot-posture">
+      <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', marginBottom: 10 }}>
+        Live posture
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <Stat label="Req rate" value={s.request_rate != null ? `${s.request_rate}/s` : '—'} />
+        <Stat label="Block rate" value={s.block_rate_pct != null ? `${s.block_rate_pct}%` : '—'} tone={Number(s.block_rate_pct) > 20 ? 'var(--down)' : undefined} />
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <Stat label="Blocked" value={(s.blocks_total ?? 0).toLocaleString()} />
+        <Stat label="Active alerts" value={firing} tone={firing > 0 ? 'var(--down)' : undefined} />
+      </div>
+
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', margin: '4px 0 6px' }}>Top attack types</div>
+      {detectors.length ? detectors.map(d => (
+        <div key={d.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+          <span className="num" style={{ color: 'var(--ink-mute)' }}>{d.value}</span>
+        </div>
+      )) : <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none in window</div>}
+
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', margin: '14px 0 6px' }}>Top attackers</div>
+      {attackers.length ? attackers.map(a => (
+        <div key={a.identifier} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '3px 0' }}>
+          <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {a.identifier}{a.country ? ` · ${a.country}` : ''}
+          </span>
+          <span className={`pill ${Number(a.risk) >= 80 ? 'down' : 'neutral'}`} style={{ fontSize: 10, flexShrink: 0 }}>{a.risk ?? a.hits ?? '—'}</span>
+        </div>
+      )) : <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>none in window</div>}
+    </div>
+  );
+}
+
+// The big popup: posture (left) + chat thread with quick actions (right).
+function CopilotPanel({ minutes, setMinutes, messages, input, setInput, busy, onAsk, onBrief, onCampaigns, onClear, onClose }) {
+  const threadRef = useRefP(null);
+  // Auto-scroll the thread to the newest message.
+  useEffectP(() => {
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, busy]);
+  // Esc closes.
+  useEffectP(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="copilot-panel" onClick={e => e.stopPropagation()}>
+        <div className="copilot-panel-head">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="copilot-spark"><window.I.Sparkles /></span>
+            <span style={{ fontWeight: 600 }}>Copilot</span>
+            <span style={{ fontSize: 10, color: 'var(--ink-dim)' }}>advisory · billable LLM calls</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--ink-dim)' }}>
+              Window
+              <select className="input select" value={minutes} onChange={e => setMinutes(e.target.value)} style={{ width: 104 }}>
+                <option value="15">15 min</option>
+                <option value="60">60 min</option>
+                <option value="360">6 h</option>
+                <option value="1440">24 h</option>
+              </select>
+            </label>
+            <button type="button" className="btn" style={{ fontSize: 11, padding: '4px 10px' }} onClick={onClear} disabled={messages.length === 0}>Clear</button>
+            <button type="button" className="icon-btn" aria-label="Close Copilot" onClick={onClose}>×</button>
+          </div>
+        </div>
+
+        <div className="copilot-panel-body">
+          <CopilotPosture minutes={minutes} />
+
+          <div className="copilot-chat">
+            <div className="copilot-thread" ref={threadRef}>
+              {messages.length === 0 && (
+                <div style={{ color: 'var(--ink-dim)', fontSize: 13, lineHeight: 1.6, maxWidth: 460, margin: '24px auto', textAlign: 'center' }}>
+                  Ask anything about the last {minutes} minutes of traffic, or use a quick action below.
+                  Every reply is grounded in this WAF's own telemetry and is advisory — verify before acting.
+                </div>
+              )}
+              {messages.map(m => <CopilotMessage key={m.id} m={m} />)}
+              {busy && (
+                <div className="copilot-bubble assistant" style={{ color: 'var(--ink-dim)', fontStyle: 'italic' }}>
+                  {busy === 'brief' ? 'Generating brief…' : busy === 'campaigns' ? 'Finding campaigns…' : 'Thinking…'}
+                </div>
+              )}
+            </div>
+
+            <div className="copilot-actions">
+              <button type="button" className="chip-btn" onClick={onBrief} disabled={!!busy} title="LLM situational brief over the window">
+                <window.I.Sparkles /> Generate brief
+              </button>
+              <button type="button" className="chip-btn" onClick={onCampaigns} disabled={!!busy} title="Cluster recent events into campaigns + candidate rules">
+                <window.I.Search /> Find campaigns
+              </button>
+            </div>
+
+            <div className="copilot-input">
+              <input
+                className="input"
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') onAsk(); }}
+                placeholder="Ask the copilot… e.g. which IP is hitting us hardest, and why?"
+                aria-label="Ask the copilot"
+                disabled={!!busy}
+                style={{ flex: 1 }}
+              />
+              <button type="button" className="btn primary" onClick={() => onAsk()} disabled={!!busy || !input.trim()}>
+                {busy === 'ask' ? '…' : 'Ask'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One rendered chat turn. Plain text only for any model output (never HTML).
+function CopilotMessage({ m }) {
+  if (m.role === 'user') {
+    return <div className="copilot-bubble user">{m.text}</div>;
+  }
+  if (m.role === 'error') {
+    return <div className="copilot-bubble assistant" style={{ color: 'var(--down)' }}>{m.text}</div>;
+  }
+  if (m.role === 'campaigns') {
+    const sugg = m.data?.suggestions || [];
+    return (
+      <div className="copilot-bubble assistant">
+        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', marginBottom: 6 }}>Smart-catch triage</div>
+        {sugg.length ? sugg.map(s => (
+          <div key={s.id} style={{ borderTop: '1px solid var(--hairline)', paddingTop: 8, marginTop: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>{s.cluster}</span>
+              <span className={`pill ${s.confidence === 'high' ? 'down' : s.confidence === 'medium' ? 'warn' : 'neutral'}`}>{s.confidence || '?'}</span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--ink-dim)', marginTop: 4 }}>{s.explanation}</div>
+            {s.suggested_rule && (
+              <code style={{ display: 'block', whiteSpace: 'pre-wrap', background: 'var(--canvas-2)', padding: '6px 8px', borderRadius: 4, marginTop: 6, fontSize: 11 }}>
+                {s.suggested_rule}
+              </code>
+            )}
+          </div>
+        )) : (m.data?.unparsed
+          ? <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{m.data.unparsed}</div>
+          : <div style={{ fontSize: 12, color: 'var(--ink-dim)' }}>No notable campaigns in this window.</div>)}
+        {m.meta && <div style={{ marginTop: 8, fontSize: 10, color: 'var(--ink-mute)' }}>{m.meta} · review before promoting</div>}
+      </div>
+    );
+  }
+  // assistant + brief
+  return (
+    <div className="copilot-bubble assistant">
+      {m.role === 'brief' && (
+        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)', marginBottom: 6 }}>Situational brief</div>
+      )}
+      <div className="md-body">{renderMarkdown(m.text)}</div>
+      {m.meta && <div style={{ marginTop: 6, fontSize: 10, color: 'var(--ink-mute)' }}>{m.meta} · verify before acting</div>}
+    </div>
+  );
+}
+
 Object.assign(window, {
-  PageCopilot,
+  CopilotWidget,
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
   PageUpstreams,

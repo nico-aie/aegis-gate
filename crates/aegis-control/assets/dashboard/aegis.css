@@ -123,6 +123,18 @@ html[data-theme="dim"] {
   --surface-active: #2E2918;   /* brand-tinted selected row, lifted */
   --hairline:        #2B333E;
   --hairline-strong: #3A4350;
+
+  /* 2026-06-05 — Dim's canvas is ~2 stops lighter than Midnight, so the
+     Midnight secondary inks it used to inherit (ink-dim #707A8A, faint
+     #5E6673) lost contrast against the brighter surfaces — captions and
+     subtitles read as muddy. Lift the whole secondary-ink ramp so
+     supporting text stays legible on Dim's lighter backdrop. Primary
+     `--ink`/`--ink-strong` are already bright enough; only the muted end
+     of the ramp needs help. */
+  --ink:        #ECEEF1;   /* was #EAECEF — a hair brighter for the lift */
+  --ink-mute:   #C5CBD4;   /* was #B7BDC6 */
+  --ink-dim:    #949CA9;   /* was #707A8A — the big readability win */
+  --ink-faint:  #7B8492;   /* was #5E6673 — faint captions now legible */
 }
 
 /* "Paper" — a calmer light. Drops the canvas off near-white to a soft
@@ -1008,3 +1020,108 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; }
   padding: 2px 6px;
   border-radius: 3px;
 }
+
+/* ===== Copilot chat widget (2026-06-05) ===== */
+.copilot-fab {
+  position: fixed; bottom: 24px; right: 24px;
+  width: 52px; height: 52px; border-radius: 50%;
+  border: 1px solid var(--brand-yellow-line);
+  background: var(--brand-yellow); color: var(--on-yellow);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; z-index: 1001;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  font-size: 24px; line-height: 1;
+  transition: transform 120ms, box-shadow 120ms;
+}
+.copilot-fab:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5); }
+.copilot-fab svg { width: 22px; height: 22px; }
+
+.copilot-panel {
+  width: min(960px, 94vw);
+  height: min(82vh, 760px);
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.copilot-panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 16px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+.copilot-spark { color: var(--brand-yellow); display: inline-flex; }
+.copilot-spark svg { width: 18px; height: 18px; }
+.copilot-panel-body { flex: 1; display: flex; min-height: 0; }
+.copilot-posture {
+  width: 280px; flex-shrink: 0;
+  border-right: 1px solid var(--hairline);
+  background: var(--canvas-2);
+  padding: 16px; overflow-y: auto;
+}
+.copilot-chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.copilot-thread {
+  flex: 1; overflow-y: auto; padding: 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.copilot-bubble {
+  max-width: 88%; padding: 10px 12px; border-radius: 12px;
+  font-size: 13px; line-height: 1.5; word-break: break-word;
+}
+.copilot-bubble.user {
+  align-self: flex-end;
+  background: var(--brand-yellow-soft);
+  border: 1px solid var(--brand-yellow-line);
+  color: var(--ink);
+}
+.copilot-bubble.assistant {
+  align-self: flex-start;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+}
+.copilot-actions {
+  display: flex; gap: 8px; padding: 8px 16px; flex-wrap: wrap;
+  border-top: 1px solid var(--hairline);
+}
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 6px 12px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--hairline-strong);
+  color: var(--ink); cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.chip-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--brand-yellow-line); }
+.chip-btn:disabled { opacity: 0.5; cursor: default; }
+.chip-btn svg { width: 14px; height: 14px; }
+.copilot-input {
+  display: flex; gap: 8px; padding: 12px 16px;
+  border-top: 1px solid var(--hairline);
+}
+
+/* Rendered Markdown for model output (safe element tree, never innerHTML). */
+.md-body { font-size: 13px; line-height: 1.55; }
+.md-body .md-p { margin: 0 0 8px; }
+.md-body .md-p:last-child { margin-bottom: 0; }
+.md-body .md-h { font-weight: 700; color: var(--ink); margin: 10px 0 6px; }
+.md-body .md-h1 { font-size: 15px; }
+.md-body .md-h2 { font-size: 14px; }
+.md-body .md-h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-dim); }
+.md-body .md-list { margin: 4px 0 8px; padding-left: 20px; }
+.md-body .md-list li { margin: 2px 0; }
+.md-body .md-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; padding: 1px 5px; border-radius: 4px;
+  background: var(--surface-3); color: var(--ink);
+}
+.md-body .md-pre {
+  margin: 8px 0; padding: 10px 12px; border-radius: 6px;
+  background: var(--canvas-2); border: 1px solid var(--hairline);
+  overflow-x: auto;
+}
+.md-body .md-pre code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.5; white-space: pre; background: none;
+}
+.md-body a { color: var(--brand-yellow); text-decoration: underline; }
+.md-body strong { font-weight: 700; color: var(--ink); }

@@ -48,7 +48,10 @@ const NAV = [
     { id: 'rules',         label: 'Rules',            icon: <window.I.Layers />,   badge: null },
   ]},
   { group: 'Observability', items: [
-    { id: 'copilot',       label: 'Copilot',          icon: <window.I.Sparkles />, badge: 'AI', tone: 'warn' },
+    // 2026-06-05 — Copilot is no longer a page; it's a global chat widget
+    // (floating launcher, bottom-right) reachable from anywhere, including
+    // the Overview "Open Copilot" button. Old #/copilot links redirect to
+    // Overview (see ROUTE_REDIRECTS).
     { id: 'performance',   label: 'Performance',      icon: <window.I.Gauge />,    badge: 'NEW', tone: 'warn' },
     { id: 'health',        label: 'Health & SLOs',    icon: <window.I.Heart />,    badge: 'SLO', tone: 'warn' },
     { id: 'audit',         label: 'Audit Trail',      icon: <window.I.Book />,     badge: null },
@@ -82,6 +85,10 @@ const ROUTE_REDIRECTS = {
   // "Health & SLOs" but the route is `#/health`. Alias the
   // longer guess.
   'health-slos': 'health',
+  // 2026-06-05 — Copilot page removed; it's a global chat widget now.
+  // Old bookmarks / the prior sidebar route land on Overview, where the
+  // "Open Copilot" button pops the widget.
+  'copilot': 'overview',
 };
 
 // 2026-05-07 — H002 fix. `location.hash.slice(2)` returns
@@ -292,12 +299,12 @@ const THEME_ORDER = ['dark', 'dim', 'light', 'paper'];
 const THEME_LABELS = { dark: 'Midnight', dim: 'Dim', light: 'Daylight', paper: 'Paper' };
 function ThemeToggle() {
   const [theme, setTheme] = useState(() => {
-    try { return document.documentElement.dataset.theme || 'dark'; }
-    catch (_) { return 'dark'; }
+    try { return document.documentElement.dataset.theme || 'dim'; }
+    catch (_) { return 'dim'; }
   });
   const cycle = () => {
     const idx = THEME_ORDER.indexOf(theme);
-    const next = THEME_ORDER[(idx + 1) % THEME_ORDER.length] || 'dark';
+    const next = THEME_ORDER[(idx + 1) % THEME_ORDER.length] || 'dim';
     document.documentElement.dataset.theme = next;
     try { localStorage.setItem('aegis_theme', next); } catch (_) {}
     setTheme(next);
@@ -605,7 +612,8 @@ function App() {
     case 'attack-analytics': page = <window.PageInvestigation />; break;
     // Threat-intel + Compliance pages retired 2026-05-10. Stale
     // deep links fall through to the default `PageOverview` below.
-    case 'copilot':          page = <window.PageCopilot />; break;
+    // Copilot page retired 2026-06-05 → global chat widget; #/copilot
+    // redirects to overview (see ROUTE_REDIRECTS).
     case 'rules':            page = <window.PageRuleManager />; break;
     case 'detectors':        page = <window.PageTierConfig />; break;
     case 'access-lists':     page = <window.PageAccessLists />; break;
@@ -632,6 +640,10 @@ function App() {
         <PageErrorBoundary route={route}>{page}</PageErrorBoundary>
       </main>
       <StatusBar tick={tick} />
+      {/* Floating Copilot chat widget — self-hides unless the copilot
+          is enabled (probed for free on mount). Lives above the toast
+          layer so it's reachable from every page. */}
+      <window.CopilotWidget />
       <window.ToastContainer />
     </div>
   );
