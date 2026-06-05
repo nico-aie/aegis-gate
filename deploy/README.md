@@ -12,6 +12,9 @@ For multi-node production deployment see [`./GUIDE.md`](./GUIDE.md).
 For a **fleet simulation** — one infra host (Redis + multi-protocol mock +
 SigNoz + **HAProxy L4/TPROXY** LB) fronting **N WAF nodes**, AI-assistant-
 driveable — see [`./HACKATHON-FLEET.md`](./HACKATHON-FLEET.md).
+For a **concrete 3-VM deployment** (Cloudflare **DNS-only** + DNS round-robin,
+WAF nodes at the TLS edge, shared-Redis cluster, all protocols + full feature
+set) see [`./HACKATHON-DEPLOY.md`](./HACKATHON-DEPLOY.md).
 
 ## Contents
 
@@ -19,7 +22,8 @@ driveable — see [`./HACKATHON-FLEET.md`](./HACKATHON-FLEET.md).
 |---|---|
 | `STAGING-BENCHMARK.md` | **Single-Linux-host staging deploy** — Docker infra + native WAF, mechanical step-by-step (Verify / Expected pairs), AI-assistant-driveable |
 | `GUIDE.md` | **Production deploy** — multi-node, image, Helm, config plane |
-| `HACKATHON-FLEET.md` | **Multi-node fleet sim** — infra host (Redis + multi-protocol mock + SigNoz + **HAProxy L4/TPROXY** LB) + N WAF nodes at the TLS edge; TPROXY return-routing, per-node config, per-protocol verification, LB-options appendix |
+| `HACKATHON-FLEET.md` | **Multi-node fleet sim (generic)** — infra host (Redis + multi-protocol mock + SigNoz + **HAProxy L4/TPROXY** LB) + N WAF nodes at the TLS edge; TPROXY return-routing, per-node config, per-protocol verification, LB-options appendix |
+| `HACKATHON-DEPLOY.md` | **Concrete 3-VM deployment** — Cloudflare **DNS-only** + DNS round-robin (no LB box), 2 WAF nodes at the TLS edge + 1 infra VM; DNS-01 wildcard certs, shared-Redis cluster, all protocols, full feature set (JA3/JA4 + per-IP). AI-driveable checklist |
 | `docker-compose.dev.yml` | Default dev stack — etcd, Prometheus, Grafana, Jaeger, Redis (+exporter), httpbin |
 | `grafana/` | Grafana provisioning + dashboards (datasources auto-loaded, three dashboards file-provisioned) |
 | `docker-compose.test.yml` | Adds attacker / k6 / nuclei / etcdctl for the test pyramid |
