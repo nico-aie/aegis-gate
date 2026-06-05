@@ -47,11 +47,15 @@ fn fake_pools() -> PoolSnapshotProvider {
                 name: "api-pool".into(),
                 healthy: 4,
                 total: 4,
+                members: Vec::new(),
+                circuit: None,
             },
             PoolHealthEntry {
                 name: "static-pool".into(),
                 healthy: 2,
                 total: 2,
+                members: Vec::new(),
+                circuit: None,
             },
         ],
     })
