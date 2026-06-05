@@ -7,9 +7,9 @@ with `--features otel` and exporting to a SigNoz collector (see
 
 ## `waf-overview.json` — WAF Overview
 
-Schema `v4` (SigNoz v0.126+). Ten panels, all **trace-based** (no
-metrics/logs pipeline required), grounded in the spans the WAF actually
-emits:
+Schema `v4` (SigNoz v0.126+). 16 panels — the core set is **trace-based**
+(no metrics/logs pipeline required), plus a **per-node** section, grounded
+in the spans the WAF actually emits:
 
 | Panel | Span / attribute |
 |---|---|
@@ -22,6 +22,35 @@ emits:
 | Top clients / peer (table) | `peer` |
 | Upstream forward outcome | `waf.forward_upstream`, `outcome` |
 | Upstream forward latency p95 | `waf.forward_upstream` span duration, `upstream` |
+
+### Per-node section (multi-node clusters)
+
+Traffic panels group by the `host.name` **resource** attribute the WAF
+stamps on every span (`service.instance.id` is also available — see
+`crates/aegis-bin/src/otel.rs`). System panels read the otel
+**hostmetrics** receiver and join to traffic on the same `host.name`.
+
+| Panel | Source |
+|---|---|
+| Request rate by node | traces, group by resource `host.name` |
+| Blocked by node | traces, `action=block`, group by `host.name` |
+| Traffic share by node (table) | traces, group by `host.name` |
+| CPU load (1m) by node | metric `system.cpu.load_average.1m`, group by `host.name` |
+| Memory used by node | metric `system.memory.usage` (`state=used`), group by `host.name` |
+
+> **⚠ System panels need a per-node hostmetrics agent.** CPU/memory are
+> empty until an otel collector with the `hostmetrics` receiver runs **on
+> each node** (one agent per VM) — see
+> [`../../otel/collector.yaml`](../../otel/collector.yaml). A single
+> central collector reports only its own host. The trace-based traffic
+> panels work as soon as nodes export with the per-node resource attrs.
+> Single-node clusters render one series per panel.
+>
+> The metric queries (`system.cpu.load_average.1m` Gauge,
+> `system.memory.usage` Sum) are best-effort for the hostmetrics naming;
+> if a series doesn't resolve, confirm the metric name/type in SigNoz
+> *Metrics Explorer* and adjust the panel (or `mdata(...)` in the
+> generator) — the trace panels are unaffected.
 
 > **⚠ Latency semantics.** `waf.handle_data_request` span duration is
 > **end-to-end** — it wraps the upstream forward (`waf.forward_upstream`),

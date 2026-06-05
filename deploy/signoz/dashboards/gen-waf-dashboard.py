@@ -28,6 +28,25 @@ def tag(key, dtype="string", is_col=False):
         "id": f"{key}--{dtype}--tag--{'true' if is_col else 'false'}",
     }
 
+def resource(key, dtype="string"):
+    """A RESOURCE attribute key (not a span/point attribute). Used to group
+    by node — the WAF stamps `host.name` + `service.instance.id` on the OTLP
+    resource (see crates/aegis-bin/src/otel.rs), and the hostmetrics agent
+    stamps `host.name` too, so `host.name` is the common per-node join key
+    across traffic (traces) and system metrics."""
+    return {
+        "key": key, "dataType": dtype, "type": "resource",
+        "isColumn": False, "isJSON": False,
+        "id": f"{key}--{dtype}--resource--false",
+    }
+
+def metric_attr(name, mtype="Gauge", dtype="float64"):
+    return {
+        "key": name, "dataType": dtype, "type": mtype,
+        "isColumn": True, "isJSON": False,
+        "id": f"{name}--{dtype}--{mtype}--true",
+    }
+
 EMPTY_AGG = {"dataType": "", "id": "------false", "isColumn": False,
              "isJSON": False, "key": "", "type": ""}
 DURATION = {"key": "durationNano", "dataType": "float64", "type": "tag",
@@ -89,6 +108,32 @@ def widget(title, desc, panel, qdatas, yunit="none", cols=None):
             "promql": [{"disabled": False, "legend": "", "name": "A", "query": ""}],
             "id": uid(), "queryType": "builder",
         },
+    }
+
+def mdata(query_name, metric, op="avg", time_agg="avg", space_agg="avg",
+          mtype="Gauge", group=None, extra_filters=None, legend=""):
+    """A SigNoz v4 METRICS query (dataSource=metrics) — for the per-node
+    system panels backed by the otel hostmetrics receiver. `mtype` is the
+    metric type (Gauge / Sum); tweak in the UI if the discovered metric
+    reports a different temporality."""
+    return {
+        "aggregateAttribute": metric_attr(metric, mtype),
+        "aggregateOperator": op,
+        "dataSource": "metrics",
+        "disabled": False,
+        "expression": query_name,
+        "filters": {"items": extra_filters or [], "op": "AND"},
+        "functions": [],
+        "groupBy": group or [],
+        "having": [],
+        "legend": legend,
+        "limit": None,
+        "orderBy": [],
+        "queryName": query_name,
+        "reduceTo": "avg",
+        "stepInterval": 60,
+        "spaceAggregation": space_agg,
+        "timeAggregation": time_agg,
     }
 
 widgets = []
@@ -165,6 +210,50 @@ widgets.append(widget(
     "graph", [qdata("A", FORWARD, op="p95", agg=DURATION,
                     group=[tag("upstream")], legend="{{upstream}}")], yunit="ns"))
 
+# --- PER-NODE (multi-node clusters) -----------------------------------
+# Traffic panels group traces by the `host.name` RESOURCE attribute the WAF
+# stamps on every span; single-node clusters show one series, multi-node
+# show one per node. System panels read the otel hostmetrics receiver —
+# they only populate when a per-node otel agent is running
+# (deploy/otel/collector.yaml), and join to traffic on the same host.name.
+NODE = resource("host.name")
+
+widgets.append(widget(
+    "Request rate by node",
+    "WAF decisions per interval, split by node (resource host.name). "
+    "One series per node in a multi-node cluster.",
+    "graph", [qdata("A", HANDLE, group=[NODE], legend="{{host.name}}")]))
+
+widgets.append(widget(
+    "Blocked by node",
+    "Blocked requests (action=block) per interval, split by node.",
+    "graph", [qdata("A", HANDLE, extra_filters=[kv_filter("action", "block")],
+                    group=[NODE], legend="{{host.name}}")]))
+
+widgets.append(widget(
+    "Traffic share by node",
+    "Total WAF decisions per node over the window.",
+    "table", [qdata("A", HANDLE, group=[NODE], legend="{{host.name}}",
+                    order_desc_count=True, limit=20)]))
+
+widgets.append(widget(
+    "CPU load (1m) by node",
+    "System 1-minute load average per node "
+    "(hostmetrics system.cpu.load_average.1m). Requires a per-node otel "
+    "agent with the hostmetrics receiver (deploy/otel/collector.yaml).",
+    "graph", [mdata("A", "system.cpu.load_average.1m", mtype="Gauge",
+                    group=[resource("host.name")], legend="{{host.name}}")]))
+
+widgets.append(widget(
+    "Memory used by node",
+    "Used system memory per node (hostmetrics system.memory.usage, "
+    "state=used). Requires a per-node otel agent with the hostmetrics "
+    "receiver.",
+    "graph", [mdata("A", "system.memory.usage", op="sum", space_agg="sum",
+                    mtype="Sum", extra_filters=[kv_filter("state", "used")],
+                    group=[resource("host.name")], legend="{{host.name}}")],
+    yunit="bytes"))
+
 # --- Layout (12-col grid) ---
 layout = []
 def place(i, x, y, w, h):
@@ -181,11 +270,17 @@ place(7, 6, 16, 6, 6)   # top paths
 place(8, 0, 22, 6, 6)   # top clients
 place(9, 6, 22, 6, 6)   # upstream outcome
 place(10, 0, 28, 6, 6)  # upstream latency
+# Per-node section
+place(11, 0, 34, 12, 6)  # request rate by node
+place(12, 0, 40, 6, 6)   # blocked by node
+place(13, 6, 40, 6, 6)   # traffic share by node
+place(14, 0, 46, 6, 6)   # CPU load by node
+place(15, 6, 46, 6, 6)   # memory used by node
 
 dashboard = {
     "title": "Aegis-Gate — WAF Overview",
-    "description": "WAF traffic, decisions, latency and upstream health from OTLP traces (service.name=aegis-gate). Generated by gen-waf-dashboard.py from real span attributes; edit panels freely in the UI.",
-    "tags": ["aegis-gate", "waf", "traces"],
+    "description": "WAF traffic, decisions, latency and upstream health from OTLP traces (service.name=aegis-gate), plus per-node traffic + system (CPU/mem) panels. Generated by gen-waf-dashboard.py; edit panels freely in the UI. Per-node system panels need a per-node otel hostmetrics agent (deploy/otel/collector.yaml).",
+    "tags": ["aegis-gate", "waf", "traces", "per-node"],
     "layout": layout,
     "widgets": widgets,
     "variables": {},
