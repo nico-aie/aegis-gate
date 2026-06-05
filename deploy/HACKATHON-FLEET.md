@@ -43,6 +43,26 @@
               mock upstream (infra host)
 ```
 
+> ### ⭐ If JA3/JA4 is a hard requirement (with or without an LB)
+> JA3/JA4 are computed from the **client's TLS ClientHello**, so **the WAF
+> must terminate TLS itself** — anything that terminates TLS *before* the WAF
+> (any L7 LB: nginx, Caddy, Traefik, HAProxy `mode http`, cloud ALB,
+> Cloudflare) makes the WAF see the LB's TLS and **fingerprinting is gone**.
+> The WAF cannot currently read a fingerprint from a header either.
+>
+> **Therefore, to keep JA3/JA4:**
+> - **No LB** (single node, or **DNS round-robin** across WAF IPs) — the WAF
+>   is the edge → JA3/JA4 + real client IP **natively**. Simplest.
+> - **With an LB** — use an **L4 / TCP-passthrough LB that preserves the
+>   client source IP**: **HAProxy `mode tcp` + TPROXY** (this guide), a
+>   **cloud L4 NLB** with client-IP preservation, or **IPVS-DR / Cilium**.
+>   The LB forwards raw TLS bytes → the WAF terminates TLS → JA3/JA4 works.
+> - **Never an L7 LB** here, and **don't** let the LB "handle ACME" by
+>   terminating TLS (that's the L7 path). The cost of staying at the edge is
+>   the cert story: the WAF terminates TLS on every node, so **provision certs
+>   out-of-band + set `tls.acme.auto_renew: false`** (§3.1) — or single-node
+>   ACME when there's no LB.
+
 ### Why this topology (and what changes vs an L7 LB)
 
 Aegis-Gate is *itself* a full L7 security reverse proxy. With an **L4
