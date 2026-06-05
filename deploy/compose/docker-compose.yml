@@ -1,0 +1,78 @@
+# Local fleet dry-run — the whole HACKATHON-DEPLOY topology on one machine:
+# Redis + multi-protocol mock + a 2-node WAF cluster sharing state.
+# Lets you exercise the cluster (shared state + config plane), every
+# protocol, and the full feature set before touching real VMs.
+#
+#   cd deploy/compose
+#   docker compose up --build         # first build is a long Rust compile
+#   # then: deploy/compose/README.md for the verification commands
+#
+# SigNoz is NOT embedded here (it's a heavy separate stack). For traces,
+# run `make signoz-up` on the host first; the WAF nodes export to
+# host.docker.internal:4317 (image is built with `otel`).
+name: aegis-fleet
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    networks: [aegis]
+
+  mock:
+    build:
+      context: ../mock
+    # default CMD serves --http :9991 --ws :9992 --grpc :9993 --tcp :9994
+    networks: [aegis]
+
+  waf-a:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+      args:
+        CARGO_FEATURES: "production otel"   # add JA3/JA4 stays in `production`; otel for SigNoz
+    image: aegis-gate:compose               # built here, reused by waf-b
+    depends_on:
+      redis: { condition: service_healthy }
+      mock:  { condition: service_started }
+    environment:
+      WAF_NODE__ID: "waf-a"
+      AEGIS_INSECURE_COOKIES: "1"           # admin over http in the dry-run
+      WAF_OBSERVABILITY__OTEL__ENDPOINT: "http://host.docker.internal:4317"
+    volumes:
+      - ./waf.yaml:/etc/aegis/waf.yaml:ro
+      - ../../config/certs:/etc/aegis/certs:ro
+    ports:
+      - "18080:8080"    # data plaintext
+      - "18443:8443"    # data TLS (WAF terminates → JA3/JA4)
+      - "19443:9443"    # admin / dashboard
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [aegis]
+
+  waf-b:
+    image: aegis-gate:compose               # reuse waf-a's build
+    depends_on:
+      waf-a: { condition: service_started }
+      redis: { condition: service_healthy }
+    environment:
+      WAF_NODE__ID: "waf-b"
+      AEGIS_INSECURE_COOKIES: "1"
+      WAF_OBSERVABILITY__OTEL__ENDPOINT: "http://host.docker.internal:4317"
+    volumes:
+      - ./waf.yaml:/etc/aegis/waf.yaml:ro
+      - ../../config/certs:/etc/aegis/certs:ro
+    ports:
+      - "28080:8080"
+      - "28443:8443"
+      - "29443:9443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [aegis]
+
+networks:
+  aegis: {}

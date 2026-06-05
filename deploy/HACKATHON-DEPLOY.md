@@ -19,6 +19,11 @@
 
 ---
 
+> **Dry-run it locally first.** [`compose/`](./compose/README.md) brings up
+> this exact cluster (Redis + multi-protocol mock + 2 WAF nodes) on one machine
+> via `docker compose up --build` — verify the cluster, config plane, and every
+> protocol before you provision the VMs.
+
 ## 0. Topology
 
 ```

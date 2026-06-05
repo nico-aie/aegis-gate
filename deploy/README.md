@@ -15,6 +15,9 @@ driveable — see [`./HACKATHON-FLEET.md`](./HACKATHON-FLEET.md).
 For a **concrete 3-VM deployment** (Cloudflare **DNS-only** + DNS round-robin,
 WAF nodes at the TLS edge, shared-Redis cluster, all protocols + full feature
 set) see [`./HACKATHON-DEPLOY.md`](./HACKATHON-DEPLOY.md).
+To **dry-run that whole cluster locally** (Redis + multi-protocol mock + 2 WAF
+nodes via docker compose) before touching VMs, see
+[`./compose/`](./compose/README.md).
 
 ## Contents
 
@@ -24,6 +27,8 @@ set) see [`./HACKATHON-DEPLOY.md`](./HACKATHON-DEPLOY.md).
 | `GUIDE.md` | **Production deploy** — multi-node, image, Helm, config plane |
 | `HACKATHON-FLEET.md` | **Multi-node fleet sim (generic)** — infra host (Redis + multi-protocol mock + SigNoz + **HAProxy L4/TPROXY** LB) + N WAF nodes at the TLS edge; TPROXY return-routing, per-node config, per-protocol verification, LB-options appendix |
 | `HACKATHON-DEPLOY.md` | **Concrete 3-VM deployment** — Cloudflare **DNS-only** + DNS round-robin (no LB box), 2 WAF nodes at the TLS edge + 1 infra VM; DNS-01 wildcard certs, shared-Redis cluster, all protocols, full feature set (JA3/JA4 + per-IP). AI-driveable checklist |
+| `compose/` | **Local fleet dry-run** — docker compose: Redis + multi-protocol mock + 2-node WAF cluster on one machine; verify cluster + config plane + all protocols before touching VMs |
+| `mock/` | **Multi-protocol mock upstream** — one Go binary (http/ws/grpc/tcp) so every WAF forwarding path is testable. `make mock-build` |
 | `docker-compose.dev.yml` | Default dev stack — etcd, Prometheus, Grafana, Jaeger, Redis (+exporter), httpbin |
 | `grafana/` | Grafana provisioning + dashboards (datasources auto-loaded, three dashboards file-provisioned) |
 | `docker-compose.test.yml` | Adds attacker / k6 / nuclei / etcdctl for the test pyramid |

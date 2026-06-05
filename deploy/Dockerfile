@@ -67,8 +67,12 @@ COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates
 COPY config ./config
 
-# Production build with the umbrella feature set.
-RUN cargo build -p aegis-bin --release --features production \
+# Production build with the umbrella feature set. Override CARGO_FEATURES
+# to add opt-in features not in `production` (e.g. "production otel" for
+# OTLP traces, or "production otel llm" for the copilot) — used by the
+# fleet compose. Defaults to `production` (unchanged behaviour).
+ARG CARGO_FEATURES=production
+RUN cargo build -p aegis-bin --release --features "${CARGO_FEATURES}" \
     && strip target/release/waf \
     && /work/target/release/waf version || true
 
