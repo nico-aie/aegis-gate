@@ -3182,6 +3182,55 @@ const CLASS_DESCRIPTIONS = {
   ai: 'ONNX machine-learning classifier. Heavy per request; per-tier overrides are recommended (e.g. on for Critical, off for Low to skip inference on static-asset traffic). Hot-flippable globally via the AI Detector card too.',
 };
 
+// 2026-06-05 — human-readable row titles for the detector list. The
+// raw `class` slug still renders beneath as a mono sub-label so the
+// API name stays discoverable; this just gives each row a heading an
+// operator reads at a glance instead of decoding `nosql_injection`.
+const CLASS_LABELS = {
+  sqli: 'SQL injection',
+  xss: 'Cross-site scripting',
+  path_traversal: 'Path traversal',
+  ssrf: 'Server-side request forgery',
+  header_injection: 'Header injection',
+  body_abuse: 'Body abuse',
+  recon: 'Recon & scanners',
+  brute_force: 'Brute force',
+  command_injection: 'Command injection',
+  template_injection: 'Template injection',
+  nosql_injection: 'NoSQL injection',
+  open_redirect: 'Open redirect',
+  behavior_signals: 'Behavior signals',
+  velocity: 'Velocity sequences',
+  canary: 'Canary tripwire',
+  ai: 'AI classifier',
+};
+
+// localStorage key for the Base detector mask card's collapsed state.
+const DETECTOR_CARD_COLLAPSE_KEY = 'aegis_detector_mask_collapsed';
+
+// Accessible on/off switch for a detector class. Wraps the shared
+// `.toggle` CSS pill in a real <button role="switch"> so keyboard +
+// screen-reader users get a proper control (the bare `.toggle` divs
+// elsewhere are click-only). Locked classes render inert with a
+// not-allowed cursor; the in-flight `busy` state shows a wait cursor.
+function MaskSwitch({ on, locked, busy, onToggle, label }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on ? 'true' : 'false'}
+      aria-label={label}
+      disabled={locked || busy}
+      onClick={(locked || busy) ? undefined : onToggle}
+      className={`toggle ${on ? 'on' : ''}`}
+      style={{
+        cursor: locked ? 'not-allowed' : busy ? 'wait' : 'pointer',
+        opacity: locked ? 0.45 : 1,
+      }}
+    />
+  );
+}
+
 // 5-tier framework chip palette — keeps the score chip colour
 // in sync with the docs in `plans/issue-fix/tester-n-2026-05-08-
 // run5/README.md` and `docs/operator/risk-tuning.md`. Uses the
@@ -3205,9 +3254,29 @@ function DetectorMaskCard() {
   const complianceModes = api.data?.compliance_modes || [];
   const scoreTable = api.data?.score_table || [];
 
-  const [busy, setBusy] = useStateP(false);
-  const [editing, setEditing] = useStateP(null);
-  const [draft, setDraft] = useStateP({});
+  // 2026-06-05 — redesign: the Base mask is now a list of rows, each
+  // with an inline on/off switch that commits immediately (one PUT per
+  // flip) with an Undo affordance on the success toast. The old
+  // Edit→click-chips→Save mode is gone. `rowBusy` tracks the class with
+  // an in-flight PUT (for the wait cursor); `optimistic` holds the
+  // flipped value until the reload reconciles it against server state;
+  // `detailClass` drives the shared per-class details modal, opened
+  // from either a row's "details" link or the reference table below.
+  const [rowBusy, setRowBusy] = useStateP(null);
+  const [optimistic, setOptimistic] = useStateP({});
+  const [detailClass, setDetailClass] = useStateP(null);
+  // 2026-06-05 — whole-card collapse, persisted to localStorage so the
+  // operator's choice survives reloads (mirrors the theme-pref pattern).
+  // Defaults to expanded; collapsing folds the list + AI row + score
+  // reference behind the header, leaving the enabled-count summary.
+  const [collapsed, setCollapsed] = useStateP(() => {
+    try { return localStorage.getItem(DETECTOR_CARD_COLLAPSE_KEY) === '1'; }
+    catch (_) { return false; }
+  });
+  useEffectP(() => {
+    try { localStorage.setItem(DETECTOR_CARD_COLLAPSE_KEY, collapsed ? '1' : '0'); }
+    catch (_) { /* storage disabled / quota — non-fatal */ }
+  }, [collapsed]);
 
   // 2026-05-10 — compute the dominant score + tier per class so
   // each chip in the mask grid carries a small score badge tinted
@@ -3223,6 +3292,30 @@ function DetectorMaskCard() {
     }
   }
 
+  // Group the score catalogue by class → drives the "N signals" count
+  // on each row and the per-class details modal.
+  const byClass = {};
+  for (const row of scoreTable) {
+    if (!byClass[row.class]) byClass[row.class] = [];
+    byClass[row.class].push(row);
+  }
+
+  // Reconcile optimistic flips against fresh server state on every
+  // reload: drop any optimistic entry that now matches the mask (the
+  // PUT landed) and keep only those still mid-flight, so a slow PUT
+  // never snaps the switch back before the server confirms.
+  useEffectP(() => {
+    const mask = api.data?.mask;
+    if (!mask) return;
+    setOptimistic(prev => {
+      const next = {};
+      for (const cls of Object.keys(prev)) {
+        if (!!mask[cls] !== prev[cls]) next[cls] = prev[cls];
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [api.data]);
+
   if (!baseMask) {
     return (
       <div className="card" style={{ marginBottom: 12, padding: 12 }}>
@@ -3236,232 +3329,215 @@ function DetectorMaskCard() {
     );
   }
 
-  function startEdit(target, current) {
-    setEditing(target);
-    setDraft({ ...current });
-  }
-
-  // FIX 2026-05-04 — the old code checked `r.ok` after a PUT,
-  // but `/api/detectors` responds with the NEW MASK STATE on
-  // success (not an `{ok: true}` envelope like routes/pools),
-  // so `r.ok` was always undefined and every save toasted
-  // "Save failed: status 200". Switch the success criterion to
-  // a 2xx HTTP status. Same fix in `clearOverride`.
+  // FIX 2026-05-04 — `/api/detectors` responds with the NEW MASK STATE
+  // on success (not an `{ok: true}` envelope), so check a 2xx status.
   function isHttpOk(r) {
     return r && typeof r.status === 'number' && r.status >= 200 && r.status < 300;
   }
 
-  async function saveEdit() {
-    if (busy) return;
-    setBusy(true);
+  function errMsg(r) {
+    return (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
+  }
+
+  // Commit a full base-mask PUT (the API always takes the whole mask)
+  // with `cls` flipped to `next`. Optimistic: the switch reflects the
+  // new state immediately and only reverts if the PUT fails. On
+  // success the toast carries an Undo that re-PUTs the prior mask.
+  async function commitToggle(cls, next, { undoable = true } = {}) {
+    if (rowBusy || lockedClasses.includes(cls)) return;
+    const prevMask = baseMask;
+    const nextMask = { ...baseMask, [cls]: next };
+    const label = CLASS_LABELS[cls] || cls;
+    setOptimistic(o => ({ ...o, [cls]: next }));
+    setRowBusy(cls);
     try {
-      const body = editing === 'base'
-        ? { mask: draft }
-        : { overrides: { [editing]: draft } };
-      const r = await window.detectorsPut(body);
+      const r = await window.detectorsPut({ mask: nextMask });
       if (isHttpOk(r)) {
-        window.aegisToast(`Saved detector mask · ${editing}`, 'ok');
-        setEditing(null);
+        window.aegisToast(
+          `${label} ${next ? 'enabled' : 'disabled'}`,
+          'ok',
+          null,
+          undoable ? {
+            ttl: 6000,
+            action: { label: 'Undo', onClick: () => commitToggle(cls, !next, { undoable: false }) },
+          } : null,
+        );
         api.reload && api.reload();
       } else {
-        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
-        window.aegisToast(`Save failed: ${msg}`, 'err');
+        setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
+        window.aegisToast(`Toggle failed: ${errMsg(r)}`, 'err');
       }
     } catch (e) {
-      window.aegisToast(`Save error: ${e.message || e}`, 'err');
+      setOptimistic(o => { const n = { ...o }; delete n[cls]; return n; });
+      window.aegisToast(`Toggle error: ${e.message || e}`, 'err');
     } finally {
-      setBusy(false);
+      setRowBusy(null);
     }
   }
 
-  async function clearOverride(tierName) {
-    if (busy) return;
-    if (!confirm(`Clear ${tierName} override and inherit from base?`)) return;
-    setBusy(true);
-    try {
-      const r = await window.detectorsPut({ overrides: { [tierName]: null } });
-      if (isHttpOk(r)) {
-        window.aegisToast(`Cleared ${tierName} override`, 'ok');
-        api.reload && api.reload();
-      } else {
-        const msg = (r && (r.message || r.error || r.reason)) || `status ${r?.status ?? '?'}`;
-        window.aegisToast(`Clear failed: ${msg}`, 'err');
-      }
-    } catch (e) {
-      window.aegisToast(`Clear error: ${e.message || e}`, 'err');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // 2026-05-10 — `isInherited` flag drives a visual + behavioral
-  // distinction for tier rows that have no explicit override set.
-  // The row still renders (so operators can see "this tier exists,
-  // currently inheriting Base") with the Base mask greyed out;
-  // clicking Edit creates the override on save.
-  const renderRow = (label, mask, target, isInherited = false) => {
-    const isEditing = editing === target;
-    const view = isEditing ? draft : mask;
+  // One detector row: switch · name + slug · dominant score badge ·
+  // description · signal count + details link. Replaces the old
+  // chip-grid-with-hidden-edit-mode.
+  const renderDetectorRow = (cls) => {
+    const enabled = cls in optimistic ? optimistic[cls] : !!baseMask[cls];
+    const locked = lockedClasses.includes(cls);
+    const busyRow = rowBusy === cls;
+    const dominant = dominantByClass[cls];
+    const tierStyle = dominant ? (SCORE_TIER_STYLE[dominant.tier] || SCORE_TIER_STYLE.probe) : null;
+    const desc = CLASS_DESCRIPTIONS[cls];
+    const sigCount = (byClass[cls] || []).length;
+    const label = CLASS_LABELS[cls] || cls;
     return (
       <div
-        key={target}
+        key={cls}
         style={{
           borderTop: '1px solid var(--hairline)',
           padding: '10px 12px',
           display: 'flex',
           alignItems: 'center',
           gap: 12,
-          opacity: isInherited && !isEditing ? 0.65 : 1,
         }}
       >
-        <div style={{ minWidth: 110, fontWeight: 600, fontSize: 12 }}>
-          {label}
-          {isInherited && !isEditing && (
-            <div style={{ fontSize: 9, color: 'var(--ink-dim)', fontWeight: 400, fontStyle: 'italic', marginTop: 2 }}>
-              inheriting Base
-            </div>
+        <MaskSwitch
+          on={enabled}
+          locked={locked}
+          busy={busyRow}
+          onToggle={() => commitToggle(cls, !enabled)}
+          label={`${label} detector — ${enabled ? 'on' : 'off'}`}
+        />
+        <div style={{ minWidth: 168, display: 'flex', flexDirection: 'column', gap: 1, opacity: enabled ? 1 : 0.6 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{label}</span>
+            {locked && <span title="pinned by active compliance mode" aria-label="locked">🔒</span>}
+          </div>
+          <span className="mono" style={{ fontSize: 10, color: 'var(--ink-dim)' }}>{cls}</span>
+        </div>
+        {dominant && (
+          <span
+            title={`Top signal: ${dominant.tag} → score ${dominant.score} (${tierStyle.label})`}
+            style={{
+              fontSize: 10, padding: '2px 8px', borderRadius: 4,
+              background: tierStyle.bg, color: tierStyle.fg, fontWeight: 600,
+              fontFamily: 'monospace', flexShrink: 0,
+              opacity: enabled ? 1 : 0.6,
+            }}
+          >
+            {dominant.tag} · {dominant.score}
+          </span>
+        )}
+        <div
+          style={{
+            flex: 1, fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.4,
+            opacity: enabled ? 1 : 0.6,
+            overflow: 'hidden', textOverflow: 'ellipsis',
+            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+          }}
+        >
+          {desc}
+          {cls === 'ai' && (
+            <span style={{ color: 'var(--ink-faint)' }}> · runtime &amp; tuning below ↓</span>
           )}
         </div>
-        <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {MASK_CLASSES.map(cls => {
-            const enabled = !!view[cls];
-            const locked = lockedClasses.includes(cls);
-            // Each class has a dominant score + tier (highest-weight
-            // signal that class can emit). Render that score inline
-            // so operators see "sqli · 60" instead of just "sqli" —
-            // the calibrated tier tint backs each enabled chip so
-            // posture is readable at a glance without expanding the
-            // reference table below.
-            const dominant = dominantByClass[cls];
-            const tierStyle = dominant ? (SCORE_TIER_STYLE[dominant.tier] || SCORE_TIER_STYLE.probe) : null;
-            const description = CLASS_DESCRIPTIONS[cls];
-            const baseTitle = dominant
-              ? `${cls} → top score ${dominant.score} (${tierStyle.label}) via tag ${dominant.tag}`
-              : cls;
-            const descBlock = description ? `\n\n${description}` : '';
-            const titleText = locked
-              ? `${baseTitle}${descBlock}\n\n🔒 pinned by active compliance mode`
-              : `${baseTitle}${descBlock}\n\n${enabled ? 'enabled — click to disable' : 'disabled — click to enable'}`;
-            const chipBg = enabled && tierStyle ? tierStyle.bg : 'transparent';
-            const chipFg = enabled && tierStyle ? tierStyle.fg : 'var(--ink-dim)';
-            return (
-              <button
-                key={cls}
-                onClick={() => {
-                  if (!isEditing || locked) return;
-                  setDraft(d => ({ ...d, [cls]: !d[cls] }));
-                }}
-                disabled={!isEditing || locked || busy}
-                title={titleText}
-                style={{
-                  fontSize: 10,
-                  cursor: isEditing && !locked ? 'pointer' : 'default',
-                  opacity: locked ? 0.6 : (enabled ? 1 : 0.55),
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  background: chipBg,
-                  color: chipFg,
-                  fontWeight: enabled ? 600 : 500,
-                  border: isEditing && !locked ? '1px dashed var(--hairline)' : '1px solid transparent',
-                  textDecoration: enabled ? 'none' : 'line-through',
-                }}
-              >
-                {locked && '🔒 '}{cls}{dominant ? ` · ${dominant.score}` : ''}
-              </button>
-            );
-          })}
-        </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {isEditing ? (
-            <>
-              {/* P8 (2026-05-11) — diff summary right next to Save so
-                  operators see exactly what's about to land. Each
-                  chip click during Edit mode is a silent toggle;
-                  this is the only place the about-to-save delta
-                  becomes visible before commit. */}
-              {(() => {
-                const turningOff = MASK_CLASSES.filter(c => mask[c] && !draft[c]);
-                const turningOn  = MASK_CLASSES.filter(c => !mask[c] && draft[c]);
-                if (turningOff.length === 0 && turningOn.length === 0) {
-                  return (
-                    <span style={{ fontSize: 10, color: 'var(--ink-dim)', fontStyle: 'italic' }}>
-                      no changes yet
-                    </span>
-                  );
-                }
-                return (
-                  <span style={{ fontSize: 10, color: 'var(--ink-mute)' }}>
-                    {turningOff.length > 0 && (
-                      <span style={{ color: 'var(--down)' }}>
-                        disable {turningOff.join(', ')}
-                      </span>
-                    )}
-                    {turningOff.length > 0 && turningOn.length > 0 && ' · '}
-                    {turningOn.length > 0 && (
-                      <span style={{ color: 'var(--up)' }}>
-                        enable {turningOn.join(', ')}
-                      </span>
-                    )}
-                  </span>
-                );
-              })()}
-              <button className="btn primary" disabled={busy} onClick={saveEdit} style={{ fontSize: 11, padding: '4px 10px' }}>Save</button>
-              <button className="btn" disabled={busy} onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '4px 10px' }}>Cancel</button>
-            </>
-          ) : (
-            <button
-              className="btn"
-              disabled={busy || editing !== null}
-              onClick={() => startEdit(target, mask)}
-              style={{ fontSize: 11, padding: '4px 10px' }}
-            >
-              Edit
-            </button>
-          )}
-        </div>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setDetailClass(cls)}
+          title={`Full signal breakdown for ${label}`}
+          style={{ fontSize: 11, padding: '4px 10px', flexShrink: 0, whiteSpace: 'nowrap' }}
+        >
+          {sigCount > 0 ? `${sigCount} signal${sigCount === 1 ? '' : 's'} · details ›` : 'details ›'}
+        </button>
       </div>
     );
   };
 
+
+  const enabledCount = MASK_CLASSES.filter(
+    cls => (cls in optimistic ? optimistic[cls] : !!baseMask[cls])
+  ).length;
+
   return (
     <div data-component="detector-mask-card" className="card" style={{ marginBottom: 12, padding: 0 }}>
-      <div className="card-head" style={{ padding: 12 }}>
-        <div>
-          <div className="card-title">
-            Base detector mask
-            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              default for all tiers
-            </span>
-          </div>
-          <div className="card-subtitle">
-            Per-class on/off baseline. Each chip shows the dominant
-            score for that class, tinted by the 5-tier framework.
-            Operators may freely enable or disable any class —
-            compliance lock-by-mode is deferred for now.
-            {' '}Audit-mutated; takes effect within one hot-reload tick.
+      {/* Header doubles as the collapse toggle. A real <button> wraps the
+          title block so it's keyboard-operable and announces expanded
+          state; the enabled-count summary stays on the right so the card
+          is still informative when folded. */}
+      <button
+        type="button"
+        onClick={() => setCollapsed(c => !c)}
+        aria-expanded={collapsed ? 'false' : 'true'}
+        className="card-head"
+        style={{
+          padding: 12, width: '100%', textAlign: 'left',
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          font: 'inherit', color: 'inherit',
+          // `.card-head` carries a 12px bottom margin meant to sit
+          // between the header and the first row; drop it when folded.
+          marginBottom: collapsed ? 0 : undefined,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <span
+            aria-hidden="true"
+            style={{
+              fontSize: 10, color: 'var(--ink-dim)', lineHeight: 1,
+              transform: collapsed ? 'rotate(-90deg)' : 'none',
+              transition: 'transform 120ms', display: 'inline-block',
+            }}
+          >
+            ▼
+          </span>
+          <div>
+            <div className="card-title">
+              Base detector mask
+              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                default for all tiers
+              </span>
+            </div>
+            {!collapsed && (
+              <div className="card-subtitle">
+                Toggle any detector on or off. Each flip saves immediately
+                (one audit event) and takes effect within a hot-reload tick;
+                the confirmation toast offers an Undo. Per-tier overrides live
+                in the Edit Tier modal; score calibration is read-only below.
+              </div>
+            )}
           </div>
         </div>
-      </div>
+        <div style={{ fontSize: 11, color: 'var(--ink-dim)', whiteSpace: 'nowrap', alignSelf: collapsed ? 'center' : 'flex-start' }}>
+          <span className="num" style={{ color: 'var(--ink)', fontWeight: 600 }}>{enabledCount}</span>
+          {' / '}{MASK_CLASSES.length} enabled
+        </div>
+      </button>
 
-      {/* 2026-05-10 R2 — Risk score reference moved ABOVE the Base
-          row so operators see the calibrated 5-tier framework
-          (probe / phishing / header / broad / high / critical) FIRST,
-          which makes the score badges on the chips below
-          self-explaining. Per-tier override summary line removed
-          entirely — per-tier customization happens in the Edit
-          Tier modal, no inline summary needed. */}
-      <DetectorScorePanel scoreTable={api.data?.score_table || []} />
+      {!collapsed && (
+        <>
+          {/* Detector list — one inline-toggle row per class. Replaces the
+              prior chip grid + hidden Edit mode. `ai` is the base-mask bit;
+              its runtime on/off + confidence tuning is the AiDetectorRow
+              immediately below. */}
+          {MASK_CLASSES.map(renderDetectorRow)}
 
-      {/* Base row — the only mask edited on this card. Per-tier
-          overrides moved into the Edit Tier modal so operators
-          have one focused surface per tier. */}
-      {renderRow('Base mask', baseMask, 'base')}
+          {/* AI runtime detector — separate AtomicBool (PUT /api/ai/enabled)
+              + confidence threshold + live metrics. Distinct from the `ai`
+              mask bit above, which only gates the dispatcher per tier. */}
+          <AiDetectorRow />
 
-      {/* AI detector — folded into the same card. AI lives outside
-          the bitmask (separate AtomicBool flipped via PUT
-          /api/ai/enabled) but operators read this whole page as
-          "the detector inventory", so it slots in here. */}
-      <AiDetectorRow />
+          {/* Risk score reference — read-only calibration table. Moved BELOW
+              the controls: each row already carries its dominant score badge,
+              so the full per-tag catalogue is reference material, not the
+              primary surface. Shares the detail modal via `onDetails`. */}
+          <DetectorScorePanel scoreTable={api.data?.score_table || []} onDetails={setDetailClass} />
+        </>
+      )}
+
+      {detailClass && (
+        <DetectorDetailModal
+          cls={detailClass}
+          rows={byClass[detailClass] || []}
+          onClose={() => setDetailClass(null)}
+        />
+      )}
     </div>
   );
 }
@@ -3541,13 +3617,18 @@ function LoadShedGateCard() {
 // score↔threshold contract. To tune posture, operators reach for
 // `set_profile log_only`, the threshold knobs, RaiseRisk rules,
 // or per-tier overrides above (all surfaced on this same page).
-function DetectorScorePanel({ scoreTable }) {
+function DetectorScorePanel({ scoreTable, onDetails }) {
   const [expanded, setExpanded] = useStateP(false);
   // 2026-05-19 — clickable class detail. The help-cursor chips +
   // class labels in the full table open a modal showing the full
   // description + every sub-tag with score / tier / note. Replaces
   // the prior "hover-only tooltip with no follow-through" UX.
-  const [detailClass, setDetailClass] = useStateP(null);
+  // 2026-06-05 — when the parent passes `onDetails`, defer the modal
+  // to it (the Detectors card owns one shared modal for both the rows
+  // and this table); otherwise fall back to a local modal so the panel
+  // still works standalone.
+  const [detailClassLocal, setDetailClassLocal] = useStateP(null);
+  const openDetail = onDetails || setDetailClassLocal;
   // 2026-05-10 — read live thresholds from /api/risk/thresholds
   // so the explanatory text shows the operator's *current* values,
   // not the hardcoded defaults. The Cumulative IP risk thresholds
@@ -3654,7 +3735,7 @@ function DetectorScorePanel({ scoreTable }) {
                   hinted at help without follow-through. */}
               <button
                 type="button"
-                onClick={() => setDetailClass(cls)}
+                onClick={() => openDetail(cls)}
                 title={`Open full details for ${cls}`}
                 style={{
                   fontSize: 11, fontWeight: 600, color: 'var(--ink)',
@@ -3673,7 +3754,7 @@ function DetectorScorePanel({ scoreTable }) {
                     <button
                       type="button"
                       key={`${row.class}-${row.tag}`}
-                      onClick={() => setDetailClass(row.class)}
+                      onClick={() => openDetail(row.class)}
                       title={`${row.tag} → ${row.score} · ${tierStyle.label} tier\n\n${row.note}\n\nClick for full details.`}
                       style={{
                         fontSize: 10, padding: '2px 8px', borderRadius: 4,
@@ -3692,11 +3773,11 @@ function DetectorScorePanel({ scoreTable }) {
         </div>
       )}
 
-      {detailClass && (
+      {!onDetails && detailClassLocal && (
         <DetectorDetailModal
-          cls={detailClass}
-          rows={byClass[detailClass] || []}
-          onClose={() => setDetailClass(null)}
+          cls={detailClassLocal}
+          rows={byClass[detailClassLocal] || []}
+          onClose={() => setDetailClassLocal(null)}
         />
       )}
     </div>
@@ -13102,6 +13183,9 @@ function PageCopilot() {
   const [asking, setAsking] = useStateP(false);
   const [answer, setAnswer] = useStateP(null);
   const [askErr, setAskErr] = useStateP(null);
+  // The question that produced `answer` — echoed above the reply so the
+  // input can be cleared on submit without losing what was asked.
+  const [askedQ, setAskedQ] = useStateP(null);
   // Smart-catch triage (P3) — campaign clustering + rule suggestions.
   const [sugLoading, setSugLoading] = useStateP(false);
   const [triageRes, setTriageRes] = useStateP(null);
@@ -13159,6 +13243,11 @@ function PageCopilot() {
         return;
       }
       setAnswer(j);
+      // Submitted successfully — echo the question above the answer and
+      // clear the box so Enter visibly "sends" and the next question
+      // starts fresh.
+      setAskedQ(question);
+      setQ('');
     } catch (e) {
       setAskErr(String(e && e.message ? e.message : e));
     } finally {
@@ -13205,22 +13294,28 @@ function PageCopilot() {
           <h1 className="page-title">Copilot</h1>
           <p className="page-subtitle">
             LLM situational brief over the WAF's own telemetry · advisory
-            only · on-demand
+            only · on-demand · every action is a billable LLM call
           </p>
         </div>
         <div className="page-actions">
-          <select
-            className="input select"
-            value={minutes}
-            onChange={(e) => setMinutes(e.target.value)}
-            style={{ width: 120 }}
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-dim)' }}
+            title="Time window for every Copilot action — brief, triage, and ask"
           >
-            <option value="15">last 15 min</option>
-            <option value="60">last 60 min</option>
-            <option value="360">last 6 h</option>
-            <option value="1440">last 24 h</option>
-          </select>
-          <button className="btn" onClick={generate} disabled={loading}>
+            Window
+            <select
+              className="input select"
+              value={minutes}
+              onChange={(e) => setMinutes(e.target.value)}
+              style={{ width: 120 }}
+            >
+              <option value="15">last 15 min</option>
+              <option value="60">last 60 min</option>
+              <option value="360">last 6 h</option>
+              <option value="1440">last 24 h</option>
+            </select>
+          </label>
+          <button className="btn primary" onClick={generate} disabled={loading}>
             {loading ? 'Generating…' : 'Generate brief'}
           </button>
         </div>
@@ -13330,43 +13425,13 @@ function PageCopilot() {
         </div>
       )}
 
-      {/* Ask box — free-form question over the same snapshot window. */}
+      {/* Copilot tools — secondary on-demand actions below the brief.
+          2026-06-05 — Smart-catch triage first, then "Ask the copilot"
+          last: the free-form ask is the open-ended fallback after the
+          structured brief + triage, so it anchors the bottom of the page. */}
       {!disabled && (
-        <div className="card">
-          <window.SectionHeader
-            title="Ask the copilot"
-            sub="grounded in the current snapshot window · advisory"
-          />
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input
-              className="input"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') ask();
-              }}
-              placeholder="e.g. which IP is hitting us hardest, and why?"
-              style={{ flex: 1 }}
-            />
-            <button className="btn" onClick={ask} disabled={asking || !q.trim()}>
-              {asking ? 'Asking…' : 'Ask'}
-            </button>
-          </div>
-          {askErr && (
-            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--down)' }}>{askErr}</div>
-          )}
-          {answer && (
-            <div style={{ marginTop: 10 }}>
-              {/* Plain text only — never HTML (untrusted model output). */}
-              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>
-                {answer.text}
-              </div>
-              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--ink-mute)' }}>
-                {answer.model} · {(answer.input_tokens || 0) + (answer.output_tokens || 0)} tokens
-                · advisory — verify before acting
-              </div>
-            </div>
-          )}
+        <div style={{ fontSize: 11, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '4px 2px 0' }}>
+          Copilot tools
         </div>
       )}
 
@@ -13375,11 +13440,18 @@ function PageCopilot() {
         <div className="card">
           <window.SectionHeader
             title="Smart-catch triage"
-            sub="cluster recent events into campaigns + candidate rules · advisory — review before promoting"
+            sub="cluster recent events into campaigns + candidate rules · advisory · billable LLM call"
           />
-          <button className="btn" onClick={findCampaigns} disabled={sugLoading}>
-            {sugLoading ? 'Analysing…' : 'Find campaigns'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button className="btn" onClick={findCampaigns} disabled={sugLoading}>
+              {sugLoading ? 'Analysing…' : 'Find campaigns'}
+            </button>
+            {!triageRes && !sugErr && !sugLoading && (
+              <span style={{ fontSize: 12, color: 'var(--ink-dim)' }}>
+                Groups the last {minutes} min of blocks into likely campaigns and drafts candidate rules to review.
+              </span>
+            )}
+          </div>
           {sugErr && (
             <div style={{ marginTop: 8, fontSize: 12, color: 'var(--down)' }}>{sugErr}</div>
           )}
@@ -13441,6 +13513,66 @@ function PageCopilot() {
                 {triageRes.model} ·{' '}
                 {(triageRes.input_tokens || 0) + (triageRes.output_tokens || 0)} tokens · advisory
                 — preview a rule (Rules → simulate) before promoting it
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Ask the copilot — free-form question over the same snapshot
+          window. Kept LAST: the open-ended fallback after the structured
+          brief + triage. */}
+      {!disabled && (
+        <div className="card">
+          <window.SectionHeader
+            title="Ask the copilot"
+            sub="free-form question grounded in the current snapshot window · advisory · billable LLM call"
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              className="input"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') ask();
+              }}
+              placeholder="e.g. which IP is hitting us hardest, and why?"
+              aria-label="Ask the copilot a question"
+              style={{ flex: 1 }}
+            />
+            <button className="btn" onClick={ask} disabled={asking || !q.trim()}>
+              {asking ? 'Asking…' : 'Ask'}
+            </button>
+          </div>
+          {!answer && !askErr && !asking && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ink-dim)' }}>
+              Answers from the last {minutes} min of telemetry only — it can't see traffic outside the window. Press Enter to ask.
+            </div>
+          )}
+          {askErr && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--down)' }}>{askErr}</div>
+          )}
+          {answer && (
+            <div style={{ marginTop: 10 }}>
+              {askedQ && (
+                <div
+                  style={{
+                    fontSize: 13, fontWeight: 600, color: 'var(--ink)',
+                    paddingBottom: 8, marginBottom: 8,
+                    borderBottom: '1px solid var(--hairline)',
+                  }}
+                >
+                  <span style={{ color: 'var(--ink-dim)', fontWeight: 400 }}>You asked · </span>
+                  {askedQ}
+                </div>
+              )}
+              {/* Plain text only — never HTML (untrusted model output). */}
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5 }}>
+                {answer.text}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--ink-mute)' }}>
+                {answer.model} · {(answer.input_tokens || 0) + (answer.output_tokens || 0)} tokens
+                · advisory — verify before acting
               </div>
             </div>
           )}

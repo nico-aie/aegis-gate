@@ -446,7 +446,11 @@ function ToastContainer() {
       const id = Math.random().toString(36).slice(2);
       const t = { id, ts: Date.now(), ...e.detail };
       setToasts(prev => [...prev.slice(-4), t]);
-      const ttl = t.kind === 'err' ? 8000 : t.kind === 'ok' ? 2500 : 5000;
+      // An explicit `ttl` (e.g. an undoable action that wants a longer
+      // grace window) wins over the per-kind defaults below.
+      const ttl = (typeof t.ttl === 'number' && t.ttl > 0)
+        ? t.ttl
+        : (t.kind === 'err' ? 8000 : t.kind === 'ok' ? 2500 : 5000);
       setTimeout(() => setToasts(prev => prev.filter(x => x.id !== id)), ttl);
     };
     window.addEventListener('aegis:toast', onAdd);
@@ -483,16 +487,34 @@ function ToastContainer() {
         }}>
           <div style={{ flex: 1 }}>{t.message}</div>
           {t.detail && <span className="dim mono" style={{ fontSize: 10 }}>{t.detail}</span>}
+          {t.action && (
+            <button
+              type="button"
+              className="btn"
+              style={{ fontSize: 11, padding: '2px 10px', flexShrink: 0 }}
+              onClick={() => {
+                // Dismiss first so a slow handler can't double-fire,
+                // then run the caller's action (e.g. revert a toggle).
+                setToasts(prev => prev.filter(x => x.id !== t.id));
+                try { t.action.onClick && t.action.onClick(); } catch (_) {}
+              }}
+            >
+              {t.action.label || 'Undo'}
+            </button>
+          )}
         </div>
       ))}
     </div>
   );
 }
 
-// Pages call `window.aegisToast(message, kind, detail)`.
-function aegisToast(message, kind = 'info', detail = null) {
+// Pages call `window.aegisToast(message, kind, detail, opts)`.
+// `opts` is optional and may carry:
+//   - action: { label, onClick }  → renders an inline button (e.g. "Undo")
+//   - ttl: number (ms)            → overrides the per-kind auto-dismiss
+function aegisToast(message, kind = 'info', detail = null, opts = null) {
   window.dispatchEvent(new CustomEvent('aegis:toast', {
-    detail: { message, kind, detail },
+    detail: { message, kind, detail, ...(opts || {}) },
   }));
 }
 
