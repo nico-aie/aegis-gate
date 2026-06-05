@@ -1,90 +1,99 @@
-# Aegis-Gate — Multi-Node Fleet Deployment (nginx LB + WAF fleet)
+# Aegis-Gate — Multi-Node Fleet Deployment (HAProxy L4/TPROXY + WAF fleet)
 
 > **Audience:** an AI assistant (or operator) standing up a production-shaped
 > Aegis-Gate deployment — one **infra host** (Redis, multi-protocol mock
-> upstream, observability, nginx load balancer) and **N WAF nodes** behind
-> the LB, sharing state via Redis. Built for the hackathon next-round
-> simulation, but the topology is the real production one.
+> upstream, SigNoz, **HAProxy load balancer**) and **N WAF nodes** behind the
+> LB, sharing state via Redis. Built for the hackathon next-round simulation;
+> the topology is the real production one.
 >
-> **Read first:** [`GUIDE.md`](./GUIDE.md) §3 (multi-node), [`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md),
-> [`../docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md).
-> This doc is the *fleet* layer on top of those. **Verify every claim against
-> the running binary** — config schema moves.
+> **LB choice:** **HAProxy in `mode tcp` with transparent proxying (TPROXY).**
+> This is an **L4 passthrough** — HAProxy forwards raw TCP and **does not
+> terminate TLS**, so the **WAF sits at the edge**: it terminates TLS (JA3/JA4
+> fingerprinting works), inspects every protocol natively (h1/h2/ws/gRPC/raw
+> TCP), and — thanks to TPROXY — sees the **real client IP** as the connection
+> peer. No `X-Forwarded-For` trust games. The one cost is the TPROXY
+> **return-routing** setup (§2.4). Other LB options + the rationale are in the
+> [appendix](#appendix--load-balancer-options).
+>
+> **Read first:** [`GUIDE.md`](./GUIDE.md) §3, [`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md),
+> [`../docs/operations/ha-clustering.md`](../docs/operations/ha-clustering.md),
+> the shipped [`haproxy/haproxy.cfg`](./haproxy/haproxy.cfg) (a `mode http`
+> reference — this doc uses `mode tcp`). **Verify claims against the running
+> binary** — config schema moves.
 
 ---
 
-## 0. Architecture — and is the plan sound?
-
-Your plan (infra on one host + WAF on many, nginx routing) is **sound and
-matches the WAF's intended cluster model**. Recommended topology:
+## 0. Architecture
 
 ```
-                 ┌──────────────── infra host ────────────────┐
-   clients ──▶ nginx LB ──┐                                    │
-   (L7, TLS    (:443)     │   Redis (:6379)  ← shared state    │
-    terminate)            │   mock upstream  (http/ws/grpc/tcp)│
-                          │   SigNoz/OTel collector (:4317)    │
-                          └────────────────────────────────────┘
-                          │ private network (RFC1918), XFF injected
-              ┌───────────┼───────────┐
-              ▼           ▼           ▼
-          WAF node A   WAF node B   WAF node C      ← data :8080/:8443, admin :9443
-              └───────────┴───────────┘  all → Redis (state + config plane + leases)
-                          │
-                          ▼
-                   mock upstream (infra host)
+                ┌─────────────────── infra host ───────────────────┐
+  clients ─▶ HAProxy :443 ──┐  (mode tcp, transparent / TPROXY)     │
+   (raw TCP,  preserves     │   Redis (:6379)   ← shared state      │
+    TLS intact) client IP   │   mock upstream   (http/ws/grpc/tcp)  │
+                            │   SigNoz / OTel collector (:4317)     │
+                            └───────────────────────────────────────┘
+                            │ private net; HAProxy spoofs client src IP
+              ┌─────────────┼─────────────┐
+              ▼             ▼             ▼
+          WAF node A     WAF node B     WAF node C   ← terminate TLS on :8443
+              │  (real client IP as peer; JA3/JA4 ✓; all protocols native)
+              └──────┬──────┴──────┬──────┘   all → Redis (state + config plane + leases)
+                     │  return path routes back THROUGH HAProxy (§2.4)
+                     ▼
+              mock upstream (infra host)
 ```
 
-### Three decisions to make up front (they change the config)
+### Why this topology (and what changes vs an L7 LB)
 
-1. **Client-IP preservation — THE make-or-break.** The WAF's per-IP
-   security (rate-limit, cumulative risk, DDoS, strike-block) keys on the
-   resolved client IP. Behind a load balancer the WAF sees the **LB's** IP
-   unless it trusts the LB's `X-Forwarded-For`. Two hard facts in the code:
-   - The WAF honors XFF **only from trusted-proxy CIDRs**, and that set is
-     currently **hardcoded to RFC1918 + loopback** (`aegis-proxy/src/
-     data_plane.rs::default_trusted_proxies`; an operator override is a
-     known TODO). → **The nginx→WAF hop MUST be on a private (10/8,
-     172.16/12, 192.168/16) network**, with nginx injecting
-     `X-Forwarded-For`. On a public/non-RFC1918 hop, XFF is ignored and
-     every request looks like it came from the LB → per-IP logic collapses
-     (you'll see all traffic attributed to one IP, mass false blocks).
-   - There is **no PROXY-protocol support**. So L4/TCP passthrough cannot
-     recover the client IP — **use L7 nginx (terminate TLS at nginx, inject
-     XFF)**, not `stream{}` passthrough.
+Aegis-Gate is *itself* a full L7 security reverse proxy. With an **L4
+passthrough** LB it does the L7 work (the LB stays dumb), which means:
 
-2. **TLS termination — a trade-off you must accept.**
-   - **L7 (recommended for this sim):** nginx terminates TLS, forwards
-     HTTP + XFF to the WAF. ✅ correct per-IP security. ❌ the WAF's **JA3/JA4
-     TLS fingerprinting** sees nginx, not the client (fingerprint-based bot
-     scoring is effectively disabled behind the LB).
-   - **Edge-direct (if JA3/JA4 matters):** put the WAF nodes at the TLS edge
-     (DNS round-robin or L3/ECMP that preserves the client IP) and use nginx
-     only for the mock upstream + Redis host. ✅ JA3/JA4 + real client IP.
-     ❌ no single L7 VIP. Pick this only if fingerprinting is scored.
+- **TLS terminates at the WAF** → JA3/JA4 + h2/h3 fingerprinting all work
+  (they're impossible behind an L7 LB that re-terminates).
+- **Every protocol passes through transparently** — `mode tcp` doesn't parse
+  HTTP, so HTTP/1.1, HTTP/2, WebSocket, gRPC, and raw TCP all reach the WAF
+  intact with **zero per-protocol LB config**. (HTTP/3 is UDP/QUIC — see the
+  note below.)
+- **Client IP is the real client** (TPROXY spoofs the source on the backend
+  connection), so per-IP rate-limit / risk / DDoS key on the true client. No
+  `X-Forwarded-For` and no trusted-proxy concern — the WAF's peer *is* the
+  client. (Certs move to the WAF nodes; HAProxy holds none.)
 
-   For the hackathon sim, **L7 nginx** is the right default — per-IP
-   rate-limit/risk/DDoS correctness outweighs JA3/JA4.
+### The three things to get right
 
-3. **Redis is a single point of failure** in this layout. Fine for the sim;
-   for real prod use Redis Sentinel/Cluster and set `state.redis.urls[]`
-   accordingly. The WAF degrades to local-only fallback on a Redis
-   partition (block-list union + local counters), so a Redis blip is
-   survivable but loses cross-node coordination while down.
+1. **TPROXY return routing (the one real cost).** With `source 0.0.0.0
+   usesrc clientip`, HAProxy connects to a WAF node using the **client's**
+   source IP. The WAF's reply is therefore addressed to the client — it
+   **must route back through the HAProxy host**, or the client sees a reply
+   from the WAF's IP (not the VIP) and the connection breaks. Fix with one of
+   (§2.4): (a) WAF nodes use the HAProxy host as their **default gateway**, or
+   (b) **policy routing** on the WAF nodes that sends reply traffic via
+   HAProxy, or (c) a **docker-compose** network where the HAProxy container is
+   the WAF containers' gateway (easiest for the sim).
+
+2. **HTTP/3 / QUIC is UDP** — `mode tcp` is TCP-only, so h3 isn't balanced by
+   this HAProxy. For the sim, test h3 **directly against a WAF node** (the
+   WAF's h3 listener needs `--features http3`), or add a separate UDP LB
+   (LVS/nftables) later. h1/h2/ws/gRPC/raw-TCP are all TCP and covered.
+
+3. **Redis is a single point of failure** here. Fine for the sim; for real
+   prod use Redis Sentinel/Cluster + `state.redis.urls[]`. On a Redis
+   partition the WAF degrades to local-only (block-list union + local
+   counters) — survivable, but cross-node coordination pauses while down.
 
 ---
 
 ## 1. Host inventory
 
-| Host | Role | Listens |
+| Host | Role | Listens (all private except HAProxy :443) |
 |---|---|---|
-| `infra` | Redis + mock upstream + OTel/SigNoz + **nginx LB** | `:443` (public VIP), `:6379` `:9999±` `:4317` (private) |
-| `waf-a/b/c` | Aegis-Gate data plane | data `:8080`/`:8443`, admin `:9443` (all on the **private** net) |
+| `infra` | HAProxy LB + Redis + mock upstream + SigNoz | `:443` public VIP; `:6379` `:999x` `:4317` private |
+| `waf-a/b/c` | Aegis-Gate (terminates TLS) | data `:8080`/`:8443`, admin `:9443` (private) |
 
-All WAF↔infra traffic stays on the private network. Only nginx `:443` is
-public. Admin `:9443` is **never** exposed publicly (the `/__waf_control/*`
-namespace is loopback-gated; the dashboard is for operators on the private
-net / VPN).
+Only HAProxy `:443` is public. Admin `:9443` is never exposed publicly
+(`/__waf_control/*` is loopback-gated; the dashboard is for operators on the
+private net / VPN). Certs live on the **WAF nodes** now (HAProxy passes TLS
+through) — provision them in the profile or via the WAF's ACME.
 
 ---
 
@@ -93,234 +102,173 @@ net / VPN).
 ### 2.1 Redis (shared state, config plane, leases)
 ```sh
 docker run -d --name aegis-redis --restart unless-stopped \
-  -p 0.0.0.0:6379:6379 redis:7-alpine \
+  -p <private-ip>:6379:6379 redis:7-alpine \
   redis-server --save 60 1 --appendonly yes
 # bind 6379 to the PRIVATE interface only; firewall it off the public NIC.
 ```
 
 ### 2.2 Multi-protocol mock upstream
-See [§5](#5-multi-protocol-mock-upstream) for the spec. Build + run:
+See [§5](#5-multi-protocol-mock-upstream). Build + run:
 ```sh
 go build -o /usr/local/bin/aegis-mock deploy/mock/mock-upstream.go
 aegis-mock --http :9991 --ws :9992 --grpc :9993 --tcp :9994 &
 ```
-(Or keep the single HTTP mock `tests/hackathon/upstream/fast-upstream.go` on
-`:9999` if you only test HTTP this round.)
 
 ### 2.3 Observability — SigNoz on the infra host
 ```sh
-make signoz-up           # SigNoz on the infra host; collector on :4317
-# point every WAF node's WAF_OBSERVABILITY__OTEL__ENDPOINT at infra:4317
+make signoz-up           # ClickHouse + collector (:4317) + UI; onboard the admin org first
+# every WAF node points WAF_OBSERVABILITY__OTEL__ENDPOINT at infra:4317
 ```
-Import the WAF dashboard after first-run onboarding:
-[`signoz/dashboards/waf-overview.json`](./signoz/README.md).
+Import [`signoz/dashboards/waf-overview.json`](./signoz/README.md) after
+onboarding. **Sizing caveat:** SigNoz is heavy (ClickHouse). Co-located with
+the public LB it can add latency under ingest spikes — give the infra host
+≥ 4 vCPU / 8 GB SSD, or put SigNoz on its own box. `:4317` stays private.
 
-> **Sizing caveat (co-location).** SigNoz is heavy — it ships ClickHouse +
-> otel-collector + query-service + ZooKeeper. Co-locating it with the public
-> **nginx LB** on one box means a ClickHouse CPU/IO spike (ingest, compaction)
-> can add latency to client traffic. For the sim it's fine; give the infra
-> host real headroom (≥ 4 vCPU / 8 GB, SSD) or, better, put SigNoz on its own
-> host and keep only Redis + mock + nginx on the LB box. The bind to `:4317`
-> stays private — only nginx `:443` is public.
->
-> **First-run gotcha:** SigNoz ingests nothing until you create the admin
-> org in its UI (the collector rejects OTLP with `cannot create agent
-> without orgId` until then). Do the onboarding before expecting spans. See
-> [`signoz/README.md`](./signoz/README.md).
+### 2.4 HAProxy — `mode tcp` + transparent (TPROXY)
 
-### 2.4 nginx load balancer — L7, TLS-terminating, XFF-injecting
-`/etc/nginx/conf.d/aegis.conf`:
-```nginx
-upstream aegis_waf {
-    least_conn;                              # right for keep-alive clients
-    server 10.0.0.11:8080 max_fails=2 fail_timeout=4s;   # waf-a (data, plaintext)
-    server 10.0.0.12:8080 max_fails=2 fail_timeout=4s;   # waf-b
-    server 10.0.0.13:8080 max_fails=2 fail_timeout=4s;   # waf-c
-    keepalive 64;
-}
+`/etc/haproxy/haproxy.cfg`:
+```haproxy
+global
+    log stdout format raw local0 info
+    maxconn 16384
+    # TPROXY (spoofing the client source IP) needs CAP_NET_ADMIN/RAW.
+    # Run as root, OR: setcap cap_net_admin,cap_net_raw+ep /usr/sbin/haproxy
 
-server {
-    listen 443 ssl;
-    http2 on;
-    server_name _;
-    ssl_certificate     /etc/nginx/tls/fullchain.pem;
-    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+defaults
+    mode tcp
+    log global
+    option tcplog
+    timeout connect 5s
+    timeout client  60s
+    timeout server  60s
+    retries 2
 
-    location / {
-        proxy_pass http://aegis_waf;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        # CRITICAL — let the WAF see the real client IP (trusted because the
-        # hop is RFC1918). Without these, per-IP security keys on nginx's IP.
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Host $host;
-        # WebSocket upgrade passthrough (the WAF bridges WS upstream):
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_read_timeout 75s;
-    }
-}
-# map for the Connection upgrade header (put in http{} scope):
-# map $http_upgrade $connection_upgrade { default upgrade; '' ''; }
+# ── TLS VIP (passthrough — the WAF terminates TLS on :8443) ──
+frontend tls_in
+    bind *:443
+    default_backend waf_tls
+
+backend waf_tls
+    balance leastconn                 # right for keep-alive / h2 clients
+    source 0.0.0.0 usesrc clientip    # TPROXY: connect to WAF as the client IP
+    # Health-check the WAF's readiness over HTTP on the ADMIN port, while
+    # traffic flows to the data TLS port:
+    option httpchk GET /healthz/ready
+    server waf-a 10.0.0.11:8443 check port 9443 inter 2s fall 2 rise 2
+    server waf-b 10.0.0.12:8443 check port 9443 inter 2s fall 2 rise 2
+    server waf-c 10.0.0.13:8443 check port 9443 inter 2s fall 2 rise 2
+
+# ── (optional) plaintext VIP → WAF :8080, same transparent pattern ──
+frontend http_in
+    bind *:80
+    default_backend waf_http
+backend waf_http
+    balance leastconn
+    source 0.0.0.0 usesrc clientip
+    option httpchk GET /healthz/ready
+    server waf-a 10.0.0.11:8080 check port 9443 inter 2s fall 2 rise 2
+    server waf-b 10.0.0.12:8080 check port 9443 inter 2s fall 2 rise 2
+    server waf-c 10.0.0.13:8080 check port 9443 inter 2s fall 2 rise 2
+
+# raw-TCP / any other protocol port: add another frontend/backend pair —
+# mode tcp forwards anything (e.g. a :5000 frontend → WAF tcp upstream).
 ```
-> **gRPC note:** gRPC is HTTP/2 end-to-end. If you front gRPC through nginx,
-> use a dedicated `grpc_pass` server block (`listen 443 http2; location / {
-> grpc_pass grpc://aegis_waf_grpc; }`) pointing at the WAF's gRPC data port —
-> mixing `proxy_pass` and `grpc_pass` on one block doesn't work. Simplest for
-> the sim: a second nginx server block / port per protocol family.
 
-Health: nginx open-source has no active health checks; `max_fails`/`fail_timeout`
-gives passive ejection. For active probes against the WAF's `/healthz/ready`
-(admin `:9443`), use nginx Plus, or keep the HAProxy reference
-([`haproxy/haproxy.cfg`](./haproxy/haproxy.cfg)) which already does
-admin-port health checks.
+**Host prep on the HAProxy box:**
+```sh
+sysctl -w net.ipv4.ip_nonlocal_bind=1     # allow binding the spoofed client IP
+# grant the caps (or run haproxy as root):
+setcap cap_net_admin,cap_net_raw+ep "$(command -v haproxy)"
+```
 
-### 2.5 nginx multi-protocol limitations (read before relying on one VIP)
+**Return routing — pick ONE (this is the TPROXY requirement):**
+- **(a) Default gateway** — set each WAF node's default route to the HAProxy
+  host. Replies to the (spoofed) client IP then traverse HAProxy, which
+  restores the VIP connection. Simplest on VMs you control.
+- **(b) Policy routing** on each WAF node — mark the WAF's reply traffic and
+  route it via HAProxy:
+  ```sh
+  ip rule add fwmark 0x1 lookup 100
+  ip route add default via <haproxy-private-ip> dev <iface> table 100
+  iptables -t mangle -A OUTPUT -p tcp --sport 8443 -j MARK --set-mark 0x1
+  iptables -t mangle -A OUTPUT -p tcp --sport 8080 -j MARK --set-mark 0x1
+  ```
+- **(c) docker-compose (easiest for the sim)** — put the WAF containers on a
+  user-defined network whose **gateway is the HAProxy container**; return
+  traffic flows through it automatically. No host routing changes.
 
-nginx **can** load-balance every protocol the WAF speaks, but **not through a
-single block** — and one choice breaks WAF inspection if you get it wrong:
-
-| Protocol | nginx directive | Caveat |
-|---|---|---|
-| HTTP/1.1 | `proxy_pass` (http) | none |
-| WebSocket | `proxy_pass` + `Upgrade`/`Connection` headers | works; it's an HTTP/1.1 upgrade |
-| **HTTP/2 & gRPC** | **`grpc_pass`** (own `http2` block) | **`proxy_pass` downgrades client h2 → h1 to the backend** — so the WAF would receive *HTTP/1.1*, never h2/gRPC, and couldn't inspect it as gRPC. gRPC **must** use `grpc_pass` on a dedicated `listen … http2` block/port |
-| Raw TCP (`scheme:tcp`) | `stream{}` (L4) | L4 = no HTTP headers → **no XFF injection**, and the WAF has **no PROXY-protocol support** → the WAF sees the nginx IP, not the client. Per-IP security is degraded on this path |
-| HTTP/3 (QUIC) | `listen … quic` (nginx ≥ 1.25, experimental) | h3 is terminated at nginx; backend hop is h1/h2. The WAF's own h3 + JA3/JA4 are bypassed (same TLS-edge caveat as §0.2) |
-
-**Consequences for the design:**
-- You can't multiplex HTTP + gRPC + raw-TCP on one nginx `server` block. Use
-  **one listener/port per protocol family** (e.g. `:443` http+ws via
-  `proxy_pass`, `:8443`→a `grpc_pass` block, a `stream{}` port for raw TCP).
-- **gRPC/h2 fidelity:** only `grpc_pass` preserves h2 to the WAF, so the WAF
-  inspects real gRPC. With `proxy_pass`, the WAF sees downgraded h1.
-- **Raw-TCP client IP is lost** behind any LB here (no PROXY-proto in the
-  WAF). Test the raw-TCP path by hitting a WAF node directly, or accept
-  LB-IP attribution for it.
-
-**When to prefer HAProxy / Envoy instead:**
-- **HAProxy** (shipped: [`haproxy/haproxy.cfg`](./haproxy/haproxy.cfg)) —
-  `mode http` covers HTTP/WS/gRPC(h2), `mode tcp` covers raw TCP, **active**
-  health checks, cleaner h2. Best balance for this fleet; still no client-IP
-  on the L4 path (WAF lacks PROXY-proto).
-- **Envoy** — best native multi-protocol (h2/gRPC/h3, L7 routing,
-  content-type routing, health checks) but heavier config.
-
-For the sim: **nginx is fine for HTTP + WS + gRPC** with per-family blocks;
-reach for HAProxy if you want active health checks with minimal config. If
-JA3/JA4 or raw-TCP client-IP is scored, put those WAF nodes at the **edge**
-(§0.2) rather than behind any LB.
-
-### 2.6 If not nginx — LB options (and why L4 often beats L7 for a WAF)
-
-**Key insight:** Aegis-Gate is *itself* a full L7 security reverse proxy that
-wants to terminate TLS (for JA3/JA4) and inspect every protocol. Putting an
-**L7** LB (nginx/Envoy/ALB) in front means it re-terminates — obscuring
-JA3/JA4, downgrading h2, and forcing per-protocol config. An **L4 /
-TCP-passthrough** LB that **preserves the client source IP** is usually the
-better fit: the WAF sits at the edge and transparently gets **real client IPs
-+ JA3/JA4 + every protocol** with *zero* per-protocol LB config.
-
-But beware the client-IP rule (§0.1): the WAF has **no PROXY-protocol** and
-trusts XFF only from RFC1918. So an L4 LB must **preserve the source IP at L3**
-(DSR / direct-routing / `externalTrafficPolicy: Local` / cloud client-IP
-preservation) — an L4 LB that SNATs hides the client and breaks per-IP
-security just like a misconfigured L7 hop.
-
-| Option | Layer | Client IP to WAF | JA3/JA4 | Multi-proto | Notes |
-|---|---|---|---|---|---|
-| **Cloud L4 NLB** (AWS NLB / GCP TCP LB / Azure LB) w/ client-IP preservation | L4 | ✅ real | ✅ (WAF at edge) | ✅ transparent | **Best on cloud** — simple, robust, all protocols pass through |
-| **IPVS/LVS (DR)** or **Cilium eBPF (DSR)** | L4 | ✅ real | ✅ | ✅ | Best bare-metal; high perf; preserves source IP |
-| **HAProxy `mode tcp` + transparent (TPROXY)** | L4 | ✅ (needs TPROXY) | ✅ | ✅ | Shipped config is `mode http`; switch to tcp + transparent for edge-WAF |
-| **DNS round-robin** (no LB in path) | — | ✅ real | ✅ | ✅ | Dead simple for a sim; coarse balance; failover = DNS TTL |
-| **HAProxy `mode http`** (shipped) | L7 | ⚠ XFF (private hop) | ❌ | h1/ws/gRPC | Active health checks, clean h2; raw-TCP needs a `mode tcp` block |
-| **Envoy** | L7 | ⚠ XFF | ❌ | best L7 (h2/gRPC/h3) | Most capable L7; heavier config |
-| **Traefik** | L7 | ⚠ XFF | ❌ | h1/h2/ws/gRPC | k8s-native, easy; no raw TCP without entrypoints |
-| **nginx** | L7 | ⚠ XFF | ❌ | per-family blocks (§2.5) | Fine; the limitations in §2.5 apply |
-| **nginx `stream{}` / L4 SNAT** | L4 | ❌ LB IP | ✅ | ✅ | SNATs → **client IP lost** (no PROXY-proto in WAF). Avoid |
-
-**Recommendation:**
-- **Cloud:** an **L4 NLB with client-IP preservation** → WAF at the edge. Cleanest; everything just works.
-- **Bare metal / VM sim:** **IPVS-DR / Cilium**, or **HAProxy `mode tcp` transparent**; or **DNS round-robin** for the simplest sim.
-- **Only choose an L7 LB** (nginx/HAProxy-http/Envoy/Traefik) if you specifically want L7 routing/WAF-behind-gateway and can live without JA3/JA4 — and keep the hop RFC1918 for XFF.
-- **Avoid** any L4 LB that SNATs (incl. nginx `stream{}` default) — it hides the client IP and the WAF can't recover it.
+> If TPROXY routing is impractical in your environment, fall back to **DNS
+> round-robin** (no LB in the path — WAF nodes are the edge, real client IP,
+> JA3/JA4, all protocols; coarse balancing, DNS-TTL failover). See the
+> appendix.
 
 ---
 
-## 3. Phase 2 — WAF nodes
+## 3. Phase 2 — WAF nodes (now the TLS edge)
 
-Each node runs the **same binary + same base profile**
-(`config/profiles/prod-balanced.yaml`), differing only by `node.id` and
-pointing at the shared Redis. Per-node config via the `WAF_…__…` env overlay
-(no per-node YAML edits needed):
+Same binary + base profile (`config/profiles/prod-balanced.yaml`), differing
+by `node.id` + the shared Redis, via the `WAF_…__…` env overlay:
 
 ```sh
-# waf-a  (repeat on waf-b/c with NODE id b/c)
+# waf-a  (repeat on b/c with a unique NODE id)
 WAF_NODE__ID=waf-a \
 WAF_STATE__BACKEND=redis \
 WAF_STATE__REDIS__URLS='["redis://10.0.0.10:6379"]' \
 WAF_OBSERVABILITY__OTEL__ENDPOINT=http://10.0.0.10:4317 \
-LLM_API_KEY="$(cat /etc/aegis/llm.key)"   # only if copilot is enabled \
+LLM_API_KEY="$(cat /etc/aegis/llm.key)"   # only if copilot enabled \
   ./waf run --config config/profiles/prod-balanced.yaml
 ```
 
-Key per-node requirements:
-- **Unique `node.id`** — drives the leader lease, per-node ACK, and metrics
-  aggregation. Duplicate ids corrupt the cluster view.
-- **Same `state.redis.urls`** on every node — that's what makes them one
-  fleet (shared rate-limit counters, leader lease, **config plane**,
-  block-list union).
-- **Upstream pool** points at the infra mock (`10.0.0.10:9991` etc.) — set
-  in the profile or via the dashboard (config plane propagates it to all
-  nodes).
+Per-node requirements:
+- **Unique `node.id`** — drives leader lease, per-node ACK, metrics
+  aggregation. Duplicates corrupt the cluster view.
+- **Same `state.redis.urls`** on every node — that's what makes one fleet
+  (shared rate-limit, leader lease, **config plane**, block-list union).
+- **TLS certs on the node** (the WAF now terminates TLS): the profile's
+  `tls.certificates`, or the WAF's ACME. HAProxy holds no certs.
+- **Upstream pools** point at the infra mock (`10.0.0.10:9991` etc.) — set in
+  the profile or once via the dashboard (config plane propagates to all).
 - Bind admin to the **private** interface; never expose `:9443` publicly.
-
-Production-ize with systemd (see [`GUIDE.md`](./GUIDE.md) §2) or the
-distroless image + Helm ([`GUIDE.md`](./GUIDE.md) §1).
+- Ensure the **return route** (§2.4) is in place so TPROXY replies work.
 
 ### Config once, converge everywhere
 With shared Redis, edit detectors / rules / tiers / **upstream pools** /
-AI-toggle on **any** node's dashboard (or `PUT /api/config`) and it converges
-on every node within one watcher poll (~3 s), surviving restart + leader
-failover. **Do not hand-edit each node's YAML.** See
-[`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md).
+AI-toggle on **any** node (dashboard or `PUT /api/config`) — it converges on
+every node within ~3 s, surviving restart + leader failover. **Don't
+hand-edit each node's YAML.** See [`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md).
 
 ---
 
 ## 4. Phase 3 — verification (per protocol)
 
-From a client *outside* the private net, through the nginx VIP:
+From a client *outside* the private net, through the HAProxy VIP:
 
 ```sh
 VIP=https://<infra-public-ip>
 
-# HTTP/1.1 + HTTP/2
-curl -k  $VIP/                       # expect 200 from the mock (allowed)
+# HTTP/1.1 + HTTP/2 (WAF terminates TLS → JA3/JA4 captured)
+curl -k  $VIP/                       # 200 from the mock (allowed)
 curl -k --http2 $VIP/api/health
 
-# Client-IP correctness — the make-or-break check:
-#   drive an attack from one source, then a request from ANOTHER source;
-#   only the attacker should accrue risk. If BOTH get blocked, XFF isn't
-#   trusted (check the nginx→WAF hop is RFC1918).
-curl -k "$VIP/?q=1'%20OR%20'1'='1"   # SQLi → 403 block
-curl -k $VIP/                        # legit, different client → still 200
+# Client-IP correctness — the make-or-break check (TPROXY edition):
+#   the WAF's peer IP MUST be your real client IP, not the HAProxy IP.
+curl -k "$VIP/?q=1'%20OR%20'1'='1"   # SQLi from client X → 403 block
+#   then from a DIFFERENT client → still 200 (only X accrued risk).
+#   Confirm on a node: GET /api/top-attackers shows real client IPs, not 10.0.0.10.
 
-# WebSocket  (WAF bridges WS upstream)
-#   wscat -c wss://<vip>/ws   → echo round-trip
-# gRPC       (via the grpc server block)
-#   grpcurl -insecure <vip>:443 mock.Echo/Say
-# Raw TCP    (CONNECT tunnel)
-#   per tests/protocols/
+# WebSocket   wscat -c wss://<vip>/ws        → echo round-trip
+# gRPC        grpcurl -insecure <vip>:443 mock.Echo/Say
+# raw TCP     nc <vip> 5000                  → line echo (if a tcp frontend is wired)
+# HTTP/3      test directly against a WAF node (UDP not via HAProxy tcp)
 
-# Fleet health — both/all nodes serving + one config version:
+# Fleet health — all nodes serving + one config version:
 for n in 10.0.0.11 10.0.0.12 10.0.0.13; do
   curl -s http://$n:9443/healthz/ready -o /dev/null -w "$n ready %{http_code}\n"
-  curl -s http://$n:9443/api/config | jq .version    # should match across nodes
+  curl -s http://$n:9443/api/config | jq .version     # equal across nodes
 done
 ```
-Reuse the protocol smoke scripts in [`../tests/protocols/`](../tests/protocols/)
-(01-http1 … 05-grpc) pointed at the VIP.
+Reuse [`../tests/protocols/`](../tests/protocols/) (01-http1 … 05-grpc)
+against the VIP.
 
 ---
 
@@ -328,24 +276,24 @@ Reuse the protocol smoke scripts in [`../tests/protocols/`](../tests/protocols/)
 
 The WAF proxies **HTTP/1.1, HTTP/2, WebSocket, gRPC, raw TCP** (and HTTP/3).
 The bundled mock (`tests/hackathon/upstream/fast-upstream.go`) is HTTP-only —
-extend it to a single Go binary that serves every family so each forwarding
-path is exercised. Spec for the AI to build (`deploy/mock/mock-upstream.go`):
+extend it to one Go binary serving every family so each forwarding path is
+exercised. Spec for `deploy/mock/mock-upstream.go`:
 
 | Flag | Protocol | Behaviour |
 |---|---|---|
-| `--http :9991` | HTTP/1.1 + h2c | `GET /` 200 echo; `/api/health` 200; `/products`, `/login` (mirror the existing fast-upstream API surface so detector tests still work) |
-| `--ws :9992` | WebSocket | upgrade + echo every frame back; close on `bye` |
-| `--grpc :9993` | gRPC (HTTP/2) | a tiny `Echo` service: `rpc Say(EchoReq) returns (EchoResp)` returning the message |
-| `--tcp :9994` | raw TCP | line echo (for CONNECT-tunnel / `scheme:tcp` upstreams) |
+| `--http :9991` | HTTP/1.1 + h2c | `GET /` 200 echo; `/api/health` 200; mirror the existing fast-upstream API surface (`/login`, `/products`) so detector tests still fire |
+| `--ws :9992` | WebSocket | upgrade + echo every frame; close on `bye` |
+| `--grpc :9993` | gRPC (HTTP/2) | `Echo` service: `rpc Say(EchoReq) returns (EchoResp)` returns the message |
+| `--tcp :9994` | raw TCP | line echo (for `scheme:tcp` / CONNECT-tunnel upstreams) |
 
-- Single static binary (`go build`), no deps beyond `google.golang.org/grpc`
-  + `nhooyr.io/websocket` (or gorilla). Logs each connection's protocol so
-  you can confirm the WAF routed correctly.
-- Keep the existing `:9999` HTTP fast-upstream for the 5k-RPS stress runs;
-  the multi-protocol mock is for *coverage*, not throughput.
-- Wire WAF routes/pools (one per protocol) via the dashboard or profile:
-  `/` → http pool, `/ws` → ws pool (`scheme: auto`), `/grpc` → grpc pool
-  (`scheme: grpc`), a `scheme: tcp` route for the raw-TCP tunnel.
+- Single static binary (`go build`); deps `google.golang.org/grpc` +
+  `nhooyr.io/websocket` (or gorilla). Log each connection's protocol so you
+  can confirm the WAF routed correctly.
+- Keep the `:9999` HTTP fast-upstream for 5k-RPS stress; this mock is for
+  *coverage*.
+- Wire one WAF route/pool per protocol (dashboard or profile): `/` → http,
+  `/ws` → ws (`scheme: auto`), `/grpc` → grpc (`scheme: grpc`), a `scheme:
+  tcp` route for raw TCP.
 
 > I can implement this mock as a follow-up — say the word.
 
@@ -353,14 +301,12 @@ path is exercised. Spec for the AI to build (`deploy/mock/mock-upstream.go`):
 
 ## 6. Operate
 
-- **Scale out:** boot another node with a new `node.id` + the same Redis;
-  add its `:8080` to the nginx `upstream` block; `nginx -s reload`.
-- **Drain a node** (zero-drop): `curl -X POST http://<node>:9443/admin/drain`
-  → readiness flips 503 → nginx ejects it after `fail_timeout` → stop the
-  process. (See [`GUIDE.md`](./GUIDE.md) §3.)
+- **Scale out:** boot a node with a new `node.id` + same Redis + return route;
+  add its `:8443` to the HAProxy backend; `systemctl reload haproxy`.
+- **Drain (zero-drop):** `curl -X POST http://<node>:9443/admin/drain` →
+  readiness 503 → HAProxy ejects after `fall` checks → stop the process.
 - **Rolling upgrade:** drain → replace binary → start → wait `/healthz/ready`
-  200 → next node. Config plane keeps policy consistent across mixed versions
-  during the roll.
+  200 → next node. Config plane keeps policy consistent across mixed versions.
 
 ---
 
@@ -368,30 +314,54 @@ path is exercised. Spec for the AI to build (`deploy/mock/mock-upstream.go`):
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| All traffic attributed to one IP; mass false blocks | nginx→WAF hop not RFC1918, or XFF not injected | put the hop on a private net; set `proxy_set_header X-Forwarded-For` |
-| Bind `Address already in use` | a WAF already on the ports | stop it first (`make restart-copilot` locally; `systemctl restart` on a node) |
-| `port 6379 already allocated` | a Redis already running | reuse it; don't start a second |
+| WAF sees all traffic from the HAProxy IP (mass false blocks) | `source … usesrc clientip` missing, or caps not granted | add the `source` line; `setcap cap_net_admin,cap_net_raw+ep haproxy` or run as root |
+| Connections hang / client gets RST after handshake | **return routing** not set — WAF replies bypass HAProxy | set WAF default gw to HAProxy, or policy-route (§2.4 a/b), or use the docker-gateway pattern (c) |
+| HAProxy can't bind spoofed IP | `ip_nonlocal_bind` off | `sysctl -w net.ipv4.ip_nonlocal_bind=1` |
+| TLS errors at the client | certs on the wrong host | certs live on the **WAF nodes** now (HAProxy passes TLS through) |
+| HTTP/3 not balanced | h3 is UDP; `mode tcp` is TCP-only | test h3 against a node directly, or add a UDP LB |
 | Nodes show different `/api/config` versions | a node can't reach Redis | check `state.redis.urls` + firewall; node falls back to local-only |
-| JA3/JA4 fingerprint always empty | TLS terminated at nginx (L7) | expected in L7 topology — use edge-direct if fingerprinting is scored |
-| gRPC 502 through nginx | `proxy_pass` used for gRPC | use a `grpc_pass` server block on its own port |
+| Bind `Address already in use` | a WAF already on the ports | stop it first (`systemctl restart`, or `make restart-copilot` locally) |
 
 ---
 
 ## 8. AI-assistant execution checklist
 
-1. Provision infra host: Redis (private), multi-protocol mock (§5), SigNoz
-   (`make signoz-up`), nginx (§2.4) with TLS cert + the XFF headers.
-2. For each WAF node: deploy binary + `prod-balanced.yaml`, set
-   `WAF_NODE__ID` (unique), `WAF_STATE__REDIS__URLS`, OTLP endpoint; start;
+1. Infra host: Redis (private), multi-protocol mock (§5), SigNoz
+   (`make signoz-up` + onboard), HAProxy `mode tcp` + TPROXY (§2.4) with
+   `ip_nonlocal_bind=1` + caps.
+2. **Return routing**: pick (a) gateway / (b) policy route / (c) docker
+   gateway so WAF replies traverse HAProxy. **Verify before traffic.**
+3. Each WAF node: deploy binary + `prod-balanced.yaml` + TLS certs; set
+   `WAF_NODE__ID` (unique) + `WAF_STATE__REDIS__URLS` + OTLP endpoint; start;
    confirm `/healthz/ready` 200.
-3. Wire the upstream pools (one per protocol) **once** via the dashboard /
+4. Wire upstream pools (one per protocol) **once** via the dashboard /
    `PUT /api/config`; confirm `/api/config` version matches on all nodes.
-4. Add every node's `:8080` to nginx `upstream`; reload nginx.
-5. Run §4 verification — **especially the two-source client-IP check** and a
-   per-protocol smoke (`tests/protocols/`).
-6. Confirm spans from all `node.id`s land in SigNoz and Prometheus metrics
-   aggregate fleet-wide.
+5. Add every node's `:8443` (+`:8080`) to the HAProxy backends; reload.
+6. Run §4 verification — **especially the client-IP check** (WAF peer = real
+   client, not the HAProxy IP) and a per-protocol smoke.
+7. Confirm spans from all `node.id`s in SigNoz + fleet-wide Prometheus.
 
-**Stop-and-ask gates:** TLS strategy (L7 vs edge-direct), whether to enable
-the copilot (external LLM egress), and the public exposure of any port other
-than nginx `:443`.
+**Stop-and-ask gates:** TPROXY return-routing method, enabling the copilot
+(external LLM egress), and exposing any port other than HAProxy `:443`.
+
+---
+
+## Appendix — load balancer options
+
+For a WAF (itself an L7 security proxy), an **L4 / TCP-passthrough LB that
+preserves the client source IP** lets the WAF be the edge → real client IPs +
+JA3/JA4 + every protocol, no per-protocol config. The WAF has **no
+PROXY-protocol** and trusts XFF only from RFC1918, so an L4 LB must preserve
+the source IP at L3 (DSR / TPROXY / `externalTrafficPolicy: Local` / cloud
+client-IP preservation) — an L4 LB that **SNATs** hides the client.
+
+| Option | Layer | Client IP | JA3/JA4 | Multi-proto | Notes |
+|---|---|---|---|---|---|
+| **HAProxy `mode tcp` + TPROXY** ← *this guide* | L4 | ✅ real | ✅ | ✅ (TCP) | needs return routing; h3/UDP separate |
+| Cloud L4 NLB (AWS NLB / GCP TCP LB / Azure LB) w/ client-IP preservation | L4 | ✅ | ✅ | ✅ | simplest on cloud |
+| IPVS/LVS (DR) or Cilium (DSR) | L4 | ✅ | ✅ | ✅ | best bare-metal perf |
+| DNS round-robin (no LB in path) | — | ✅ | ✅ | ✅ | simplest sim; coarse balance; DNS-TTL failover |
+| HAProxy `mode http` (shipped cfg) | L7 | ⚠ XFF (private hop) | ❌ | h1/ws/gRPC | active health checks; re-terminates |
+| Envoy / Traefik | L7 | ⚠ XFF | ❌ | best L7 | heavier / k8s-native |
+| nginx | L7 | ⚠ XFF | ❌ | per-family blocks | `proxy_pass` downgrades h2→h1; gRPC needs `grpc_pass`; `stream{}` SNAT loses client IP |
+| **Cloudflare / managed edge** | L7 | ⚠ public edge IP (XFF untrusted by WAF; uses `CF-Connecting-IP`) | ❌ | ✅ | it's a *second* WAF + breaks Aegis per-IP today (trusted-proxy + `CF-Connecting-IP` are roadmap gaps). Not for this fleet |
