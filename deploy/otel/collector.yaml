@@ -37,6 +37,24 @@ receivers:
                 service: aegis-gate
                 plane: data
 
+  # P4 (2026-06-05) — per-node SYSTEM metrics (CPU / memory / disk / net).
+  # `hostmetrics` describes whatever HOST the collector runs on. For true
+  # per-node system info in a multi-node cluster, run this collector as an
+  # AGENT on each WAF VM (one collector per node); `resourcedetection/system`
+  # below then stamps each node's `host.name`, which lines up with the WAF's
+  # own OTLP `host.name` resource attribute so SigNoz can join traffic +
+  # system metrics per node. A single central collector reports only its own
+  # host here, so deploy one agent per node for genuine per-node CPU/mem.
+  hostmetrics:
+    collection_interval: 15s
+    scrapers:
+      cpu: {}
+      memory: {}
+      load: {}
+      disk: {}
+      filesystem: {}
+      network: {}
+
   # P3 — LOGS. Tail the WAF's structured JSON log and convert to OTLP
   # log records. The WAF writes tracing logs as JSON to stdout; redirect
   # them to a file the collector can read, e.g.:
@@ -56,6 +74,15 @@ receivers:
           parse_from: attributes.level
 
 processors:
+  # P4 (2026-06-05) — stamp host identity on hostmetrics so per-node CPU/mem
+  # carries `host.name` and matches the WAF's OTLP `host.name`. Run per node
+  # (agent topology). `env` lets you override with OTEL_RESOURCE_ATTRIBUTES
+  # (e.g. host.name=waf-1) when the OS hostname isn't the node id you want.
+  resourcedetection/system:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+
   # PII guardrail: drop request attributes that may carry secrets/PII.
   # The WAF should also redact at source (dlp), but defence-in-depth.
   redaction:
@@ -92,8 +119,10 @@ service:
       processors: [redaction, attributes/scrub, batch]
       exporters: [otlp/signoz]
     metrics:
-      receivers: [otlp, prometheus]
-      processors: [batch]
+      # `hostmetrics` adds per-node CPU/mem/disk/net; `resourcedetection`
+      # stamps host.name on them so SigNoz groups system metrics per node.
+      receivers: [otlp, prometheus, hostmetrics]
+      processors: [resourcedetection/system, batch]
       exporters: [otlp/signoz]
     logs:
       # `redaction`/`attributes` scrub log *attributes*; body-level PII

@@ -71,7 +71,21 @@ pub fn init_or_default(cfg: &WafConfig) -> bool {
     {
         if let Some(otel_cfg) = cfg.observability.otel.as_ref() {
             if !otel_cfg.endpoint.is_empty() {
-                return install_with_otel(otel_cfg);
+                // Per-node identity on the OTLP resource so SigNoz can
+                // group traffic + metrics per node in a multi-node
+                // cluster. Without these every node is indistinguishable
+                // (only service.name/version were stamped). Uses the same
+                // node id the lease/cluster plane derives, so the SigNoz
+                // `service.instance.id` lines up with the dashboard's
+                // cluster view.
+                let node_id = crate::lease_select::derive_node_id(cfg)
+                    .as_str()
+                    .to_string();
+                let host_name = std::env::var("HOSTNAME")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| node_id.clone());
+                return install_with_otel(otel_cfg, &node_id, &host_name);
             }
         }
         // Feature on but no endpoint — fall through to default.
@@ -120,7 +134,11 @@ pub fn shutdown() {
 }
 
 #[cfg(feature = "otel")]
-fn install_with_otel(otel_cfg: &aegis_core::config::OtelConfig) -> bool {
+fn install_with_otel(
+    otel_cfg: &aegis_core::config::OtelConfig,
+    node_id: &str,
+    host_name: &str,
+) -> bool {
     use opentelemetry::trace::TracerProvider;
     use opentelemetry::KeyValue;
     use opentelemetry_otlp::WithExportConfig;
@@ -137,6 +155,11 @@ fn install_with_otel(otel_cfg: &aegis_core::config::OtelConfig) -> bool {
     let resource = Resource::new(vec![
         KeyValue::new("service.name", "aegis-gate"),
         KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+        // OTEL semantic conventions for per-node identity. `host.name`
+        // also lets host-metrics (CPU/mem from a per-node hostmetrics
+        // agent) join WAF traffic by node in SigNoz.
+        KeyValue::new("service.instance.id", node_id.to_string()),
+        KeyValue::new("host.name", host_name.to_string()),
     ]);
 
     let provider_result = opentelemetry_otlp::new_pipeline()
