@@ -130,7 +130,7 @@ docker run -d --name aegis-redis --restart unless-stopped \
 ### 2.2 Multi-protocol mock upstream
 See [§5](#5-multi-protocol-mock-upstream). Build + run:
 ```sh
-go build -o /usr/local/bin/aegis-mock deploy/mock/mock-upstream.go
+(cd deploy/mock && go build -o /usr/local/bin/aegis-mock .)   # or: make mock-build
 aegis-mock --http :9991 --ws :9992 --grpc :9993 --tcp :9994 &
 ```
 
@@ -370,8 +370,8 @@ against the VIP.
 
 The WAF proxies **HTTP/1.1, HTTP/2, WebSocket, gRPC, raw TCP** (and HTTP/3).
 The bundled mock (`tests/hackathon/upstream/fast-upstream.go`) is HTTP-only —
-extend it to one Go binary serving every family so each forwarding path is
-exercised. Spec for `deploy/mock/mock-upstream.go`:
+extend it to one Go binary serving every family. **Built:** [`mock/`](./mock/)
+(`make mock-build`):
 
 | Flag | Protocol | Behaviour |
 |---|---|---|
@@ -389,7 +389,7 @@ exercised. Spec for `deploy/mock/mock-upstream.go`:
   `/ws` → ws (`scheme: auto`), `/grpc` → grpc (`scheme: grpc`), a `scheme:
   tcp` route for raw TCP.
 
-> I can implement this mock as a follow-up — say the word.
+Per-path verification + the gRPC `echo.proto` are in [`mock/README.md`](./mock/README.md).
 
 ---
 

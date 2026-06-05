@@ -83,8 +83,8 @@ docker run -d --name aegis-redis --restart unless-stopped \
   -p 10.0.0.10:6379:6379 redis:7-alpine \
   redis-server --save 60 1 --appendonly yes
 
-# Multi-protocol mock upstream (§5)
-go build -o /usr/local/bin/aegis-mock deploy/mock/mock-upstream.go
+# Multi-protocol mock upstream (§5) — or: make mock-build
+(cd deploy/mock && go build -o /usr/local/bin/aegis-mock .)
 aegis-mock --http :9991 --ws :9992 --grpc :9993 --tcp :9994 &
 
 # SigNoz (onboard the admin org in its UI before expecting spans)
@@ -177,8 +177,8 @@ See [`CONFIG-PLANE-RUNBOOK.md`](./CONFIG-PLANE-RUNBOOK.md).
 ## 5. Multi-protocol mock upstream
 
 The WAF proxies HTTP/1.1, HTTP/2, WebSocket, gRPC, raw TCP (and HTTP/3).
-Build a single Go binary (`deploy/mock/mock-upstream.go`) serving every
-family so each forwarding path is exercised:
+**Built:** [`deploy/mock/`](./mock/) — one Go binary serving every family
+(`make mock-build`, or `cd deploy/mock && go build -o aegis-mock .`):
 
 | Flag | Protocol | Behaviour |
 |---|---|---|
@@ -188,9 +188,9 @@ family so each forwarding path is exercised:
 | `--tcp :9994` | raw TCP | line echo (for `scheme:tcp` upstreams) |
 
 Wire one WAF route/pool per protocol: `/` → http, `/ws` → ws (`scheme: auto`),
-`/grpc` → grpc (`scheme: grpc`), a `scheme: tcp` route for raw TCP.
-
-> I can implement this mock as a follow-up — say the word.
+`/grpc` → grpc (`scheme: grpc`), a `scheme: tcp` route for raw TCP. Per-path
+verification commands + the gRPC `echo.proto` are in
+[`deploy/mock/README.md`](./mock/README.md).
 
 ---
 

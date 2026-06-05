@@ -92,7 +92,7 @@ SMOKE_ADMIN      ?= http://localhost:9443
 .PHONY: help setup cert build build-debug run run-dev run-copilot restart-copilot run-strict run-throughput \
         validate validate-all test test-fast clippy fmt smoke clean reset-cert \
         dashboard redis-up redis-down obs-up obs-down signoz-up signoz-down urls logs login-reset \
-        upstream-build upstream-up upstream-down \
+        upstream-build mock-build upstream-up upstream-down \
         juice-up juice-down juice-logs \
         mock-load mock-load-attacks mock-load-mix \
         stage bench-dev
@@ -357,6 +357,11 @@ upstream-build: ## Build the bundled Go mock upstream (one-time, ~5s)
 	@command -v go >/dev/null || { echo "FAIL: go not installed; brew install go (or skip — run-dev still boots, smoke test will 502 on data-plane)"; exit 1; }
 	@go build -o $(UPSTREAM_BIN_DEV) tests/hackathon/upstream/fast-upstream.go
 	@echo "built $(UPSTREAM_BIN_DEV)"
+
+mock-build: ## Build the multi-protocol mock upstream (http/ws/grpc/tcp → /tmp/aegis-mock)
+	@command -v go >/dev/null || { echo "FAIL: go not installed; brew install go"; exit 1; }
+	@cd deploy/mock && go build -o /tmp/aegis-mock .
+	@echo "built /tmp/aegis-mock — run: /tmp/aegis-mock --http :9991 --ws :9992 --grpc :9993 --tcp :9994"
 
 upstream-up: ## Start the dev mock upstream on :9999 (idempotent — auto-invoked by run-dev)
 	@if lsof -nP -iTCP:9999 -sTCP:LISTEN >/dev/null 2>&1; then \

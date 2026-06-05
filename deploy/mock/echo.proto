@@ -1,0 +1,26 @@
+// Minimal Echo service for the gRPC path of the multi-protocol mock.
+//
+// The mock server (mock-upstream.go) doesn't actually compile this — it
+// echoes raw request bytes via a passthrough codec, so ANY method works.
+// This file exists so a client can call it WITHOUT server reflection:
+//
+//   grpcurl -plaintext -proto echo.proto \
+//           -d '{"message":"hi"}' <host>:9993 mock.Echo/Say
+//
+// EchoReq and EchoResp share field 1, so the echoed request bytes decode
+// cleanly as the response.
+syntax = "proto3";
+
+package mock;
+
+service Echo {
+  rpc Say(EchoReq) returns (EchoResp);
+}
+
+message EchoReq {
+  string message = 1;
+}
+
+message EchoResp {
+  string message = 1;
+}
