@@ -270,6 +270,31 @@ impl Model {
     }
 }
 
+impl Drop for Model {
+    /// Leak the ORT sessions at teardown instead of running their
+    /// destructors.
+    ///
+    /// ONNX Runtime's `Session` destructor reaches into a thread-local
+    /// ORT global (the shared `Environment` / API table). During process
+    /// exit that thread-local is already being destroyed, so the drop
+    /// aborts the process with `cannot access a Thread Local Storage value
+    /// during or after destruction: AccessError` — visible only on the
+    /// `--features ai` build, and only *after* a clean drain (audit + OTLP
+    /// spans already flushed), so it's a cosmetic exit-time abort.
+    ///
+    /// `Model` is constructed exactly once at boot (`run.rs` / `batch.rs`)
+    /// and lives for the whole process — it is never rebuilt on hot-reload
+    /// — so the only moment it drops is teardown. Leaking the sessions here
+    /// lets the OS reclaim the memory on exit while skipping ORT's
+    /// exit-unsafe destructor. There is no per-reload accumulation because
+    /// there is no per-reload drop.
+    fn drop(&mut self) {
+        for session in self.sessions.drain(..) {
+            std::mem::forget(session);
+        }
+    }
+}
+
 /// Build one ORT session from the model file, optionally capping the
 /// intra-op thread pool. `None` = ORT default (one thread per core);
 /// `Some(t)` pins it to `t` (the pool passes `Some(1)` to avoid
