@@ -231,6 +231,49 @@ Per-node requirements:
 - Bind admin to the **private** interface; never expose `:9443` publicly.
 - Ensure the **return route** (§2.4) is in place so TPROXY replies work.
 
+### 3.1 TLS certificates across the fleet (ACME caveat — read this)
+
+In this topology every WAF node terminates TLS, so **every node needs the
+cert**. The WAF's built-in ACME is **not fleet-aware** (verified in code):
+
+- It's **HTTP-01 only**, **leader-only** (renewal runs on the Redis lease
+  holder), the challenge token lives in an **in-process** store, and the
+  issued cert is persisted **locally on the leader**.
+- Behind an **L4 (`mode tcp`) LB this breaks two ways:** (1) the CA's
+  `http://domain/.well-known/acme-challenge/<token>` request is round-robined
+  and may hit a **follower** that doesn't have the token → validation fails
+  (and L4 can't path-route the challenge to the leader); (2) even when the
+  leader renews, the new cert is **not distributed** to the followers, which
+  keep serving the old one.
+
+**So: don't rely on in-WAF ACME in a load-balanced fleet.** Pick one:
+
+- **(Recommended for the sim) Provision one shared cert on all nodes.** Issue
+  a wildcard / multi-SAN cert out-of-band (certbot/cert-manager on the infra
+  host, or self-signed for the sim) and deploy the **same** PEM to every WAF
+  node via `tls.certificates` (or a `${secret:...}` ref). Renew out-of-band
+  and re-push. No leader, no challenge routing, no distribution problem.
+- **Terminate TLS at the LB instead** — only if you switch to HAProxy
+  `mode http` (L7), which gives one cert in one place + LB-side ACME, **but
+  loses JA3/JA4** (you're no longer at the edge). Conflicts with this guide's
+  goal; listed for completeness.
+- **(Roadmap) Redis-backed ACME** — leader renews, writes the challenge token
+  **and** the issued cert to Redis; followers serve the challenge + hot-load
+  the cert. The right fleet design, **not implemented today**.
+
+> **Does the leader "need to renew"?** Yes — ACME renewal is leader-only — but
+> leader renewal **alone is not sufficient** in a fleet (challenge routing +
+> cert distribution gaps above). For the sim, a shared provisioned cert
+> sidesteps all of it.
+
+> **Should HAProxy live on the leader node?** **No.** Leadership is **dynamic**
+> (the Redis lease moves on restart/failover), so pinning the LB to "the
+> leader" breaks the moment leadership shifts. Co-locating the LB with a WAF
+> node also couples lifecycles (draining/upgrading that node takes the whole
+> fleet's ingress down) and contends for resources. **Keep HAProxy on the
+> infra host, independent of every WAF node**, and solve certs with a shared
+> provisioned cert (above) — not by moving the LB.
+
 ### Config once, converge everywhere
 With shared Redis, edit detectors / rules / tiers / **upstream pools** /
 AI-toggle on **any** node (dashboard or `PUT /api/config`) — it converges on
