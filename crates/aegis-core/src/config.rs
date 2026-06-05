@@ -1983,6 +1983,18 @@ pub struct AcmeConfig {
     /// already runs a plain-HTTP listener for force-https).
     #[serde(default)]
     pub challenge: AcmeChallenge,
+    /// Run the leader-gated auto-renewal loop. **Default `true`** (single-
+    /// node / edge deployments auto-renew). **Set `false` when TLS/ACME is
+    /// owned elsewhere** — an L7 load balancer that terminates TLS, or
+    /// out-of-band issuance (certbot/cert-manager) that distributes the
+    /// cert to the fleet. Behind a round-robin L4 LB the in-WAF HTTP-01
+    /// flow can't reliably complete (the CA's challenge request isn't
+    /// guaranteed to reach the leader, and the issued cert isn't shared),
+    /// so a load-balanced fleet should set this `false` and provision certs
+    /// externally. When `false` the WAF never contacts the ACME directory;
+    /// it only serves certs you provision via `tls.certificates`.
+    #[serde(default = "default_true")]
+    pub auto_renew: bool,
 }
 
 fn default_acme_directory() -> String {
@@ -4709,6 +4721,18 @@ tls:
         assert!(acme.directory_url.starts_with("https://"));
         assert_eq!(acme.challenge, AcmeChallenge::Http01);
         assert_eq!(acme.renew_before.as_secs(), 30 * 24 * 3600);
+        // auto_renew defaults on (single-node / edge keeps renewing).
+        assert!(acme.auto_renew);
+    }
+
+    #[test]
+    fn acme_auto_renew_can_be_disabled() {
+        // Fleet-behind-LB posture: keep the acme block but disable the
+        // in-WAF renewal loop (TLS/ACME owned by the LB or out-of-band).
+        let yaml = acme_yaml_block("    auto_renew: false\n");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        assert!(!cfg.tls.unwrap().acme.unwrap().auto_renew);
     }
 
     #[test]

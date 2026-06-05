@@ -261,6 +261,37 @@ cert**. The WAF's built-in ACME is **not fleet-aware** (verified in code):
   **and** the issued cert to Redis; followers serve the challenge + hot-load
   the cert. The right fleet design, **not implemented today**.
 
+**Turn the in-WAF renewal off explicitly:** set `tls.acme.auto_renew: false`
+(2026-06). The WAF then **never contacts the ACME directory** — it only serves
+certs you provision via `tls.certificates` — and logs a boot NOTICE. Use this
+for any of the above (LB-terminated TLS, or out-of-band issuance) so a doomed
+renewal loop doesn't run on the leader. Default is `true` (single-node / edge
+keeps auto-renewing); a **load-balanced fleet should set it `false`** (or omit
+the `tls.acme` block entirely).
+
+```yaml
+tls:
+  acme:
+    auto_renew: false        # LB / out-of-band owns ACME; WAF only loads provisioned certs
+  certificates:
+    - cert: "${secret:file:/etc/aegis/fullchain.pem}"
+      key:  "${secret:file:/etc/aegis/privkey.pem}"
+```
+
+**Two ways to "let the LB handle ACME":**
+- **LB terminates TLS (L7).** If you front the fleet with an **L7** LB
+  (Caddy / Traefik — both auto-ACME; or HAProxy `mode http` / nginx + certbot;
+  or a cloud LB with managed certs), the LB owns the cert + renewal, and the
+  WAF receives plaintext on `:8080` (no `tls.acme`, no `tls.certificates`).
+  **This is the simplest cert story** — one cert at the edge, renewal
+  automatic. ⚠️ **But it's no longer `mode tcp` passthrough**: the WAF is not
+  at the TLS edge, so **JA3/JA4 fingerprinting is off** (the §0 trade-off).
+- **LB host issues out-of-band, WAF still terminates TLS (keeps `mode tcp` +
+  JA3/JA4).** Run certbot/cert-manager on the infra host (it owns `:80` for
+  the challenge, or uses DNS-01), then push the same PEM to every WAF node
+  (`tls.certificates`) and set `auto_renew: false`. Keeps fingerprinting;
+  costs you a cert-distribution step on renewal.
+
 > **Does the leader "need to renew"?** Yes — ACME renewal is leader-only — but
 > leader renewal **alone is not sufficient** in a fleet (challenge routing +
 > cert distribution gaps above). For the sim, a shared provisioned cert

@@ -1448,7 +1448,21 @@ pub async fn run(
     // cert-store hot-swap into a TLS listener is a deeper
     // migration, deferred); but first-issuance, persistence,
     // and the renewal loop run on the lease holder.
-    if let Some(acme_yaml) = cfg.tls.as_ref().and_then(|t| t.acme.as_ref()) {
+    if let Some(acme_yaml) = cfg.tls.as_ref().and_then(|t| t.acme.as_ref()).filter(|a| {
+        // `tls.acme.auto_renew: false` disables the in-WAF renewal loop —
+        // for deployments where TLS/ACME is owned by an L7 load balancer or
+        // an out-of-band issuer that distributes the cert to the fleet (the
+        // recommended posture behind a round-robin LB, where the in-WAF
+        // HTTP-01 flow can't reliably reach the leader). The WAF then only
+        // serves provisioned `tls.certificates` and never calls the ACME CA.
+        if !a.auto_renew {
+            tracing::info!(
+                "acme: auto_renew disabled by config — TLS/ACME owned externally \
+                 (LB-terminated or out-of-band issuance); WAF will not contact the ACME directory",
+            );
+        }
+        a.auto_renew
+    }) {
         let acme_cfg = crate::acme::AcmeConfig::from_core(acme_yaml);
         let provider = std::sync::Arc::new(crate::acme_instant::InstantAcmeProvider::new());
 
