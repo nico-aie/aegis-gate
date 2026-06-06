@@ -26,6 +26,10 @@ use moka::Expiry;
 #[cfg(feature = "redis")]
 pub mod purge;
 
+// SC-1 Phase 3 — shared L2 (Redis) cache tier. Only with `--features redis`.
+#[cfg(feature = "redis")]
+pub mod l2;
+
 use aegis_core::config::{CacheRuleConfig, PoolCacheConfig, PoolConfig};
 
 /// 256-bit normalized cache key. 32 bytes makes accidental collisions (which
@@ -44,6 +48,72 @@ pub struct CacheEntry {
     pub ttl: Duration,
     /// Weigher units = body + header bytes; bounds the byte budget.
     pub weight: u32,
+}
+
+impl CacheEntry {
+    /// Serialize for the L2 (Redis) store. Compact framing:
+    /// `magic(4) | status(u16) | ttl_secs(u32) | nheaders(u16) |
+    ///  [name_len(u16) name val_len(u16) val]* | body`. All big-endian.
+    pub fn encode_for_l2(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.body.len() + 64);
+        out.extend_from_slice(b"AC1\0");
+        out.extend_from_slice(&self.status.to_be_bytes());
+        out.extend_from_slice(&(self.ttl.as_secs().min(u32::MAX as u64) as u32).to_be_bytes());
+        let n = self.headers.len().min(u16::MAX as usize) as u16;
+        out.extend_from_slice(&n.to_be_bytes());
+        for (name, val) in self.headers.iter().take(n as usize) {
+            let nb = name.as_str().as_bytes();
+            let vb = val.as_bytes();
+            out.extend_from_slice(&(nb.len().min(u16::MAX as usize) as u16).to_be_bytes());
+            out.extend_from_slice(&nb[..nb.len().min(u16::MAX as usize)]);
+            out.extend_from_slice(&(vb.len().min(u16::MAX as usize) as u16).to_be_bytes());
+            out.extend_from_slice(&vb[..vb.len().min(u16::MAX as usize)]);
+        }
+        out.extend_from_slice(&self.body);
+        out
+    }
+
+    /// Inverse of [`Self::encode_for_l2`]. Returns `None` on any malformed
+    /// or truncated buffer (treated as an L2 miss — never panics on untrusted
+    /// Redis bytes).
+    pub fn decode_from_l2(buf: &[u8]) -> Option<CacheEntry> {
+        let mut p = 0usize;
+        let take = |p: &mut usize, n: usize| -> Option<&[u8]> {
+            let s = buf.get(*p..p.checked_add(n)?)?;
+            *p += n;
+            Some(s)
+        };
+        let u16be = |p: &mut usize| -> Option<u16> {
+            Some(u16::from_be_bytes(take(p, 2)?.try_into().ok()?))
+        };
+        if take(&mut p, 4)? != b"AC1\0" {
+            return None;
+        }
+        let status = u16be(&mut p)?;
+        let ttl_secs = u32::from_be_bytes(take(&mut p, 4)?.try_into().ok()?);
+        let nheaders = u16be(&mut p)?;
+        let mut headers = Vec::with_capacity(nheaders as usize);
+        for _ in 0..nheaders {
+            let nl = u16be(&mut p)? as usize;
+            let name = HeaderName::from_bytes(take(&mut p, nl)?).ok()?;
+            let vl = u16be(&mut p)? as usize;
+            let val = HeaderValue::from_bytes(take(&mut p, vl)?).ok()?;
+            headers.push((name, val));
+        }
+        let body = Bytes::copy_from_slice(&buf[p..]);
+        let header_bytes: usize = headers
+            .iter()
+            .map(|(n, v)| n.as_str().len() + v.as_bytes().len())
+            .sum();
+        let weight = (body.len() + header_bytes).min(u32::MAX as usize) as u32;
+        Some(CacheEntry {
+            status,
+            headers,
+            body,
+            ttl: Duration::from_secs(ttl_secs as u64),
+            weight,
+        })
+    }
 }
 
 /// Outcome of a request-side cache decision.
@@ -66,6 +136,9 @@ pub struct PoolCache {
     misses: AtomicU64,
     stores: AtomicU64,
     evictions: Arc<AtomicU64>,
+    /// Phase 3 — shared L2 (Redis) tier behind L1. `None` ⇒ L1-only.
+    #[cfg(feature = "redis")]
+    l2: Option<l2::L2Cache>,
 }
 
 /// Per-entry expiry so each rule's TTL is honored (moka's `time_to_live` is
@@ -83,10 +156,18 @@ impl Expiry<CacheKey, Arc<CacheEntry>> for EntryExpiry {
 }
 
 impl PoolCache {
-    fn new(cfg: PoolCacheConfig) -> Self {
+    fn new(name: &str, cfg: PoolCacheConfig) -> Self {
+        let _ = name; // used only by the L2 builder (feature = "redis")
         // Longest-prefix-first so `/static/img/` beats `/static/`.
         let mut rules = cfg.rules.clone();
         rules.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+
+        // Build the L2 (Redis) tier before `cfg` is moved into the struct.
+        #[cfg(feature = "redis")]
+        let l2 = cfg
+            .l2
+            .as_ref()
+            .and_then(|l2cfg| l2::L2Cache::connect(name, l2cfg));
 
         let evictions = Arc::new(AtomicU64::new(0));
         let ev = evictions.clone();
@@ -109,6 +190,8 @@ impl PoolCache {
             misses: AtomicU64::new(0),
             stores: AtomicU64::new(0),
             evictions,
+            #[cfg(feature = "redis")]
+            l2,
         }
     }
 
@@ -158,16 +241,24 @@ impl PoolCache {
         // the cached entry carries is acceptable to every one of them.
         let ae = normalize_accept_encoding(req_headers);
         let key = compute_key(method, host_of(req_headers), path, query, &ae, rule, &self.cfg);
-        match self.cache.get(&key).await {
-            Some(entry) => {
+        // L1 (in-process) first.
+        if let Some(entry) = self.cache.get(&key).await {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            return CacheLookup::Hit(entry);
+        }
+        // L2 (shared Redis) behind L1: on a hit, promote into L1 so subsequent
+        // requests on this node are microsecond-fast.
+        #[cfg(feature = "redis")]
+        if let Some(l2) = &self.l2 {
+            if let Some(entry) = l2.get(&key).await {
+                let entry = Arc::new(entry);
+                self.cache.insert(key, entry.clone()).await;
                 self.hits.fetch_add(1, Ordering::Relaxed);
-                CacheLookup::Hit(entry)
-            }
-            None => {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                CacheLookup::Miss { key, rule_idx }
+                return CacheLookup::Hit(entry);
             }
         }
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        CacheLookup::Miss { key, rule_idx }
     }
 
     /// Decide whether an upstream response is storable, and if so store it.
@@ -229,16 +320,38 @@ impl PoolCache {
             ttl,
             weight,
         });
+        // Write L2 (shared) before L1 so a racing peer that misses L1 can still
+        // find it in L2. Best-effort — an L2 failure never blocks the L1 store.
+        #[cfg(feature = "redis")]
+        if let Some(l2) = &self.l2 {
+            l2.put(&key, &entry).await;
+        }
         self.cache.insert(key, entry).await;
         self.stores.fetch_add(1, Ordering::Relaxed);
         true
     }
 
-    /// Drop all entries in this pool's cache. moka's `invalidate_all` is sync
-    /// (entries are reclaimed lazily); a prefix purge isn't possible without a
-    /// scan, so Phase 1 purges the whole pool — coarse but correct.
+    /// Drop all entries in this pool's L1 cache (sync; moka reclaims lazily).
+    /// L2 is cleared separately via [`Self::invalidate_l2`] so the pub/sub
+    /// subscriber can flush every node's L1 without each node also hammering
+    /// the shared L2.
     pub fn invalidate_all(&self) {
         self.cache.invalidate_all();
+    }
+
+    /// Clear this pool's shared L2 (Redis) entries. Called once by the node
+    /// that handled `flush_cache`; other nodes only clear their L1.
+    #[cfg(feature = "redis")]
+    pub async fn invalidate_l2(&self) {
+        if let Some(l2) = &self.l2 {
+            l2.invalidate_prefix().await;
+        }
+    }
+
+    /// True when a shared L2 (Redis) tier is wired for this pool.
+    #[cfg(feature = "redis")]
+    pub fn has_l2(&self) -> bool {
+        self.l2.is_some()
     }
 
     pub fn stats(&self, pool: &str) -> PoolStats {
@@ -247,12 +360,19 @@ impl PoolCache {
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
         let total = hits + misses;
+        // Tier label: L1-only ("in_memory") vs L1 + shared L2 Redis
+        // ("in_memory+redis"). The dashboard badge keys off this.
+        #[cfg(feature = "redis")]
+        let backend = if self.l2.is_some() {
+            "in_memory+redis"
+        } else {
+            "in_memory"
+        };
+        #[cfg(not(feature = "redis"))]
+        let backend = "in_memory";
         PoolStats {
             pool: pool.to_string(),
-            // Phase 1 is L1 in-process only; when the L2 Redis tier lands this
-            // becomes per-pool ("in_memory" / "redis" / "in_memory+redis") so
-            // the dashboard can show which tier the numbers come from.
-            backend: "in_memory",
+            backend,
             enabled: self.cfg.enabled,
             entries,
             bytes,
@@ -295,7 +415,7 @@ impl ResponseCache {
                 if cfg.methods.is_empty() {
                     cfg.methods = vec!["GET".into()];
                 }
-                pools.insert(name.clone(), Arc::new(PoolCache::new(cfg)));
+                pools.insert(name.clone(), Arc::new(PoolCache::new(name, cfg)));
             }
         }
         Self { pools }
@@ -315,7 +435,8 @@ impl ResponseCache {
         out
     }
 
-    /// Purge scope: a specific pool, or all pools.
+    /// Purge L1 scope: a specific pool, or all pools. (L2 is cleared via
+    /// [`Self::invalidate_l2_all`] by the node that handled the flush.)
     pub fn invalidate(&self, pool: Option<&str>) {
         match pool {
             Some(name) => {
@@ -329,6 +450,22 @@ impl ResponseCache {
                 }
             }
         }
+    }
+
+    /// Clear every pool's shared L2 (Redis) entries. Called once by the node
+    /// that handled `flush_cache`; other nodes clear only their L1 (via the
+    /// pub/sub fan-out). No-op when no pool has an L2.
+    #[cfg(feature = "redis")]
+    pub async fn invalidate_l2_all(&self) {
+        for pc in self.pools.values() {
+            pc.invalidate_l2().await;
+        }
+    }
+
+    /// True when any pool has a shared L2 (Redis) tier wired.
+    #[cfg(feature = "redis")]
+    pub fn any_l2(&self) -> bool {
+        self.pools.values().any(|pc| pc.has_l2())
     }
 }
 
@@ -569,12 +706,39 @@ mod tests {
             deny_query_keys: vec!["token".into(), "session".into()],
             bypass_on_cookie: true,
             bypass_on_authorization: true,
+            l2: None,
         }
+    }
+
+    #[test]
+    fn l2_codec_round_trips() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("text/css"));
+        headers.insert(http::header::ETAG, HeaderValue::from_static("\"abc123\""));
+        let entry = CacheEntry {
+            status: 200,
+            headers: cacheable_headers(&headers),
+            body: Bytes::from_static(b"body-bytes-\x00\xff-binary"),
+            ttl: Duration::from_secs(300),
+            weight: 99,
+        };
+        let buf = entry.encode_for_l2();
+        let back = CacheEntry::decode_from_l2(&buf).expect("decodes");
+        assert_eq!(back.status, 200);
+        assert_eq!(&back.body[..], &entry.body[..]);
+        assert_eq!(back.ttl, Duration::from_secs(300));
+        let names: Vec<String> = back.headers.iter().map(|(n, _)| n.as_str().to_string()).collect();
+        assert!(names.contains(&"content-type".to_string()));
+        assert!(names.contains(&"etag".to_string()));
+        // truncated / garbage ⇒ None, never panics
+        assert!(CacheEntry::decode_from_l2(b"AC1\0\x00").is_none());
+        assert!(CacheEntry::decode_from_l2(b"nope").is_none());
+        assert!(CacheEntry::decode_from_l2(&[]).is_none());
     }
 
     #[tokio::test]
     async fn miss_then_hit_on_identical_get() {
-        let pc = PoolCache::new(cfg(vec![rule("/static/")]));
+        let pc = PoolCache::new("test", cfg(vec![rule("/static/")]));
         let h = HeaderMap::new();
         let key = match pc.lookup(&Method::GET, "/static/app.css", None, &h).await {
             CacheLookup::Miss { key, rule_idx } => {
@@ -600,7 +764,7 @@ mod tests {
 
     #[tokio::test]
     async fn bypass_rules() {
-        let pc = PoolCache::new(cfg(vec![rule("/static/")]));
+        let pc = PoolCache::new("test", cfg(vec![rule("/static/")]));
         // unmatched path
         assert!(matches!(
             pc.lookup(&Method::GET, "/api/x", None, &HeaderMap::new())
@@ -641,7 +805,7 @@ mod tests {
             ignore_query: false,
         }]);
         c.max_entry_bytes = 8;
-        let pc = PoolCache::new(c);
+        let pc = PoolCache::new("test", c);
         let key = [9u8; 32];
         // Set-Cookie ⇒ refuse
         let mut rh = HeaderMap::new();
@@ -760,7 +924,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_refuses_vary_on_unkeyed_header_but_allows_accept_encoding() {
-        let pc = PoolCache::new(cfg(vec![rule("/static/")]));
+        let pc = PoolCache::new("test", cfg(vec![rule("/static/")]));
         // Vary: Cookie ⇒ refuse (we don't key on Cookie → poisonable)
         let mut rh = HeaderMap::new();
         rh.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("text/css"));
@@ -782,7 +946,7 @@ mod tests {
     async fn disabled_pool_bypasses() {
         let mut c = cfg(vec![rule("/static/")]);
         c.enabled = false;
-        let pc = PoolCache::new(c);
+        let pc = PoolCache::new("test", c);
         assert!(matches!(
             pc.lookup(&Method::GET, "/static/x", None, &HeaderMap::new())
                 .await,
@@ -792,7 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalidate_clears_and_stats_count() {
-        let pc = PoolCache::new(cfg(vec![rule("/static/")]));
+        let pc = PoolCache::new("test", cfg(vec![rule("/static/")]));
         let h = HeaderMap::new();
         let key = match pc.lookup(&Method::GET, "/static/a", None, &h).await {
             CacheLookup::Miss { key, .. } => key,

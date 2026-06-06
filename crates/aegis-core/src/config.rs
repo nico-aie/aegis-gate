@@ -1283,6 +1283,10 @@ pub struct PoolCacheConfig {
     /// Default true.
     #[serde(default = "default_true")]
     pub bypass_on_authorization: bool,
+    /// SC-1 Phase 3 — optional shared L2 (Redis) tier behind L1. Absent ⇒
+    /// L1-only (per node). Requires the binary built with `--features redis`.
+    #[serde(default)]
+    pub l2: Option<CacheL2Config>,
 }
 
 /// One path-prefix cache rule inside a [`PoolCacheConfig`].
@@ -1304,6 +1308,31 @@ pub struct CacheRuleConfig {
     /// collapses cache-busting query strings on pure-static assets.
     #[serde(default)]
     pub ignore_query: bool,
+}
+
+/// SC-1 Phase 3 — optional L2 (shared Redis) tier behind a pool's L1
+/// in-process cache. A node misses L1 → checks L2 → misses → origin, then
+/// populates both. Use a **dedicated** cache Redis (separate from the
+/// control/config Redis) — cached bodies + eviction churn must not pressure
+/// the control plane. See `plans/future/smart-caching.md` §3.4.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CacheL2Config {
+    /// Dedicated cache Redis endpoint(s). First URL is used today; the list
+    /// is for the future Cluster client.
+    pub urls: Vec<String>,
+    /// Reserved for Redis Cluster mode. Accepted now; the single-node client
+    /// is used until the cluster client lands (uses the first URL).
+    #[serde(default)]
+    pub cluster: bool,
+    /// Redis key namespace for this cache (keys are
+    /// `<key_prefix>:<pool>:<hash>`), so multiple WAFs / pools sharing one
+    /// Redis don't collide. Default `aegiscache`.
+    #[serde(default = "default_cache_l2_key_prefix")]
+    pub key_prefix: String,
+    /// Per-operation timeout for L2 get/put. Default 1s — an L2 stall must
+    /// never hold the request; on timeout we fall through to origin.
+    #[serde(default = "default_cache_l2_timeout", with = "humantime_serde")]
+    pub timeout: Duration,
 }
 
 /// Per-pool keep-alive / idle-pool tuning. All optional;
@@ -1691,6 +1720,12 @@ fn default_cache_methods() -> Vec<String> {
 }
 fn default_cache_deny_query_keys() -> Vec<String> {
     vec!["token".into(), "session".into(), "auth".into(), "sig".into()]
+}
+fn default_cache_l2_key_prefix() -> String {
+    "aegiscache".into()
+}
+fn default_cache_l2_timeout() -> Duration {
+    Duration::from_secs(1)
 }
 
 fn default_lb() -> LbStrategy {

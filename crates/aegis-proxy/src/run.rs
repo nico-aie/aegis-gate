@@ -1345,14 +1345,22 @@ pub async fn run(
         let purge_urls_for_cb = purge_urls.clone();
         rt.control
             .register_flush_callback(std::sync::Arc::new(move || {
-                // Local eviction first — the flush_cache response is honest
+                // Local L1 eviction first — the flush_cache response is honest
                 // even if the fan-out publish later fails.
                 cache_for_flush.invalidate(None);
                 #[cfg(feature = "redis")]
-                if let Some(urls) = purge_urls_for_cb.clone() {
-                    tokio::spawn(async move {
-                        crate::cache::purge::publish(&urls, "all").await;
-                    });
+                {
+                    // Clear the shared L2 ONCE from this node (other nodes only
+                    // clear their L1 via the pub/sub fan-out below).
+                    if cache_for_flush.any_l2() {
+                        let cache = cache_for_flush.clone();
+                        tokio::spawn(async move { cache.invalidate_l2_all().await });
+                    }
+                    if let Some(urls) = purge_urls_for_cb.clone() {
+                        tokio::spawn(async move {
+                            crate::cache::purge::publish(&urls, "all").await;
+                        });
+                    }
                 }
                 #[cfg(not(feature = "redis"))]
                 let _ = &purge_urls_for_cb;
