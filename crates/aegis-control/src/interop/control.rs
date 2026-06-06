@@ -224,9 +224,11 @@ pub struct ControlContext {
     /// sync chain, so the whole reset stays atomic from the
     /// caller's POV.
     pub async_reset_callbacks: Mutex<Vec<AsyncResetCallback>>,
-    /// `flush_cache` callback. `None` = no cache implemented;
-    /// the endpoint returns `supported: false`.
-    pub flush_callback: Option<ResetCallback>,
+    /// `flush_cache` callback. `None` = no cache implemented; the endpoint
+    /// returns `supported: false`. Behind a `Mutex` so it can be registered
+    /// late at boot (`register_flush_callback`) once the data-plane cache —
+    /// not in scope when the runtime is first built — exists.
+    pub flush_callback: Mutex<Option<ResetCallback>>,
     /// Expected value of the `X-Benchmark-Secret` header. Set
     /// from `interop.control_secret` config; defaults to
     /// [`crate::interop::DEFAULT_CONTROL_SECRET`].
@@ -381,8 +383,13 @@ impl ControlContext {
     /// this still returns 200 with `supported: false` so the
     /// benchmarker can detect the no-op gracefully.
     pub fn flush_cache(&self) -> FlushCacheResponse {
-        let supported = self.flush_callback.is_some();
-        if let Some(cb) = self.flush_callback.as_ref() {
+        let cb = self
+            .flush_callback
+            .lock()
+            .expect("flush_callback poisoned")
+            .clone();
+        let supported = cb.is_some();
+        if let Some(cb) = cb {
             cb();
         }
         FlushCacheResponse {
@@ -391,6 +398,13 @@ impl ControlContext {
             supported,
             ts_ms: now_ms(),
         }
+    }
+
+    /// SC-1 — register the data-plane cache-flush callback. Called late at
+    /// boot (after the `ResponseCache` exists) so `POST /__waf_control/
+    /// flush_cache` actually evicts instead of reporting `supported: false`.
+    pub fn register_flush_callback(&self, cb: ResetCallback) {
+        *self.flush_callback.lock().expect("flush_callback poisoned") = Some(cb);
     }
 
     fn validate_and_apply(
@@ -530,7 +544,7 @@ mod tests {
             features,
             reset_callbacks: Mutex::new(Vec::new()),
             async_reset_callbacks: Mutex::new(Vec::new()),
-            flush_callback: None,
+            flush_callback: std::sync::Mutex::new(None),
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
         }
     }
@@ -604,7 +618,7 @@ mod tests {
             features,
             reset_callbacks: Mutex::new(Vec::new()),
             async_reset_callbacks: Mutex::new(Vec::new()),
-            flush_callback: None,
+            flush_callback: std::sync::Mutex::new(None),
             secret: crate::interop::DEFAULT_CONTROL_SECRET.to_string(),
         }
     }
@@ -801,10 +815,10 @@ mod tests {
 
     #[test]
     fn flush_cache_runs_callback_when_present() {
-        let mut c = ctx();
+        let c = ctx();
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_for_cb = counter.clone();
-        c.flush_callback = Some(Arc::new(move || {
+        c.register_flush_callback(Arc::new(move || {
             counter_for_cb.fetch_add(1, Ordering::Relaxed);
         }));
         let r = c.flush_cache();

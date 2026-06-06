@@ -1223,6 +1223,87 @@ pub struct PoolConfig {
     /// instead of opening a new TCP per request.
     #[serde(default)]
     pub connection: ConnectionPoolConfig,
+    /// SC-1 (2026-06-06) — per-upstream response cache. Absent ⇒
+    /// caching off for this pool. See `plans/future/smart-caching.md`.
+    /// CRITICAL-tier requests are never cached regardless of this
+    /// config (enforced in the data plane, not here).
+    #[serde(default)]
+    pub cache: Option<PoolCacheConfig>,
+}
+
+/// SC-1 — per-upstream smart-cache policy. Opt-in, allow-list by path
+/// prefix; the data plane only caches safe GET/HEAD responses that match
+/// a rule, and never CRITICAL tier. Memory is bounded by a byte budget
+/// (weigher-enforced) + a per-entry cap so a runaway upstream can't OOM
+/// the WAF. See `plans/future/smart-caching.md` §3.
+#[derive(Clone, Debug, Deserialize)]
+pub struct PoolCacheConfig {
+    /// Master switch for this pool's cache. Defaults off.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Total byte budget for THIS pool's cache (weigher-enforced —
+    /// eviction keeps stored bytes ≤ this). Default 64 MiB.
+    #[serde(default = "default_cache_max_total_bytes")]
+    pub max_total_bytes: u64,
+    /// Secondary entry-count cap. Default 4096.
+    #[serde(default = "default_cache_max_entries")]
+    pub max_entries: u64,
+    /// Per-entry size cap — responses larger than this are streamed
+    /// straight through and never stored (caps worst-case allocation).
+    /// Default 1 MiB.
+    #[serde(default = "default_cache_max_entry_bytes")]
+    pub max_entry_bytes: u64,
+    /// TTL applied to a stored entry when its matching rule has no
+    /// explicit `ttl`. Default 60s.
+    #[serde(default = "default_cache_default_ttl", with = "humantime_serde")]
+    pub default_ttl: Duration,
+    /// Time-to-idle — evict an entry not read within this window even
+    /// if its TTL hasn't expired. Default 300s.
+    #[serde(default = "default_cache_time_to_idle", with = "humantime_serde")]
+    pub time_to_idle: Duration,
+    /// Path-prefix allow-list. A request whose path matches no rule is
+    /// BYPASS (never cached). First-match wins (longest-prefix order is
+    /// applied at load).
+    #[serde(default)]
+    pub rules: Vec<CacheRuleConfig>,
+    /// Cacheable methods. Only GET/HEAD are honored; anything else is
+    /// dropped at load. Default `[GET, HEAD]`.
+    #[serde(default = "default_cache_methods")]
+    pub methods: Vec<String>,
+    /// Query-string keys stripped from the cache key (and so collapsed)
+    /// — prevents auth/session tokens from entering the key and bounds
+    /// key cardinality from cache-busters. Default `token,session,auth,sig`.
+    #[serde(default = "default_cache_deny_query_keys")]
+    pub deny_query_keys: Vec<String>,
+    /// Bypass (never store/serve) when the request carries a `Cookie`
+    /// header or the response carries `Set-Cookie`. Default true.
+    #[serde(default = "default_true")]
+    pub bypass_on_cookie: bool,
+    /// Bypass when the request carries an `Authorization` header.
+    /// Default true.
+    #[serde(default = "default_true")]
+    pub bypass_on_authorization: bool,
+}
+
+/// One path-prefix cache rule inside a [`PoolCacheConfig`].
+#[derive(Clone, Debug, Deserialize)]
+pub struct CacheRuleConfig {
+    /// Path prefix this rule matches (e.g. `/static/`).
+    pub prefix: String,
+    /// TTL for entries matched by this rule; falls back to the pool's
+    /// `default_ttl` when unset.
+    #[serde(default, with = "humantime_serde::option")]
+    pub ttl: Option<Duration>,
+    /// Cache-Deception-Armor allow-list: store only when the upstream
+    /// response `Content-Type` matches one of these (supports a trailing
+    /// `/*` wildcard, e.g. `image/*`). Empty ⇒ no content-type gate
+    /// (Phase 2 tightens the default).
+    #[serde(default)]
+    pub content_types: Vec<String>,
+    /// Drop the entire query string from the cache key for this rule —
+    /// collapses cache-busting query strings on pure-static assets.
+    #[serde(default)]
+    pub ignore_query: bool,
 }
 
 /// Per-pool keep-alive / idle-pool tuning. All optional;
@@ -1586,6 +1667,30 @@ fn default_max_response_body_bytes() -> u64 {
 
 fn default_response_body_read_timeout() -> Duration {
     Duration::from_secs(30)
+}
+
+// SC-1 — smart-cache defaults. Conservative: 64 MiB/pool, 4096 entries,
+// 1 MiB/entry cap, 60s TTL, 300s idle. See `plans/future/smart-caching.md` §3.5.
+fn default_cache_max_total_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+fn default_cache_max_entries() -> u64 {
+    4096
+}
+fn default_cache_max_entry_bytes() -> u64 {
+    1024 * 1024
+}
+fn default_cache_default_ttl() -> Duration {
+    Duration::from_secs(60)
+}
+fn default_cache_time_to_idle() -> Duration {
+    Duration::from_secs(300)
+}
+fn default_cache_methods() -> Vec<String> {
+    vec!["GET".into(), "HEAD".into()]
+}
+fn default_cache_deny_query_keys() -> Vec<String> {
+    vec!["token".into(), "session".into(), "auth".into(), "sig".into()]
 }
 
 fn default_lb() -> LbStrategy {

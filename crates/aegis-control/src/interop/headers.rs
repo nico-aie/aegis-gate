@@ -144,32 +144,43 @@ pub struct DecisionTag {
     /// show "this request scored N" alongside "this source's
     /// accumulated risk is M". Not stamped on a response header.
     pub detector_score: Option<u32>,
+    /// SC-1 (2026-06-06) — cache decision for `X-WAF-Cache`. Defaults to
+    /// `Bypass`; the smart-cache lookup sets `Hit` (served from cache) or
+    /// `Miss` (forwarded, possibly stored). The response stamper copies this
+    /// onto the stamped `Decision`.
+    pub cache: CacheState,
 }
 
 impl DecisionTag {
     pub fn allow() -> Self {
-        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None }
+        Self { action: Action::Allow, rule_id: None, tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
     }
     pub fn block(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
+        Self { action: Action::Block, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
     }
     pub fn rate_limit(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
+        Self { action: Action::RateLimit, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
     }
     pub fn challenge(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
+        Self { action: Action::Challenge, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
     }
     pub fn timeout(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
+        Self { action: Action::Timeout, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
     }
     pub fn circuit_breaker(rule_id: impl Into<String>) -> Self {
-        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None }
+        Self { action: Action::CircuitBreaker, rule_id: Some(rule_id.into()), tier: None, risk_score: None, detector_score: None, cache: CacheState::Bypass }
     }
 
     /// Attach the per-request detector score (sum of this request's
     /// signals). See [`Self::detector_score`].
     pub fn with_detector_score(mut self, score: u32) -> Self {
         self.detector_score = Some(score);
+        self
+    }
+
+    /// SC-1 — set the cache decision (Hit/Miss/Bypass) for `X-WAF-Cache`.
+    pub fn with_cache(mut self, cache: CacheState) -> Self {
+        self.cache = cache;
         self
     }
 

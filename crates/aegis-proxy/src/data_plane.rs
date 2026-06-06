@@ -2034,6 +2034,48 @@ pub(crate) async fn forward_allow_to_upstream(
         return (resp, DecisionTag::allow().with_tier(route_ctx.tier));
     }
 
+    // SC-1 — smart cache lookup (L1, in-process). Runs AFTER the auth +
+    // operator-rule gates and the WebSocket-upgrade path, BEFORE dialing
+    // upstream. CRITICAL tier is never cached (hard invariant). On a HIT we
+    // serve the stored response and skip the upstream entirely; on a MISS we
+    // remember the key + rule so the success path below can store the
+    // upstream response.
+    let mut cache_pending: Option<(
+        std::sync::Arc<crate::cache::PoolCache>,
+        crate::cache::CacheKey,
+        usize,
+    )> = None;
+    if route_ctx.tier != aegis_core::tier::Tier::Critical {
+        if let Some(pc) = ctx.cache.pool(&route_ctx.upstream) {
+            let pc = pc.clone();
+            match pc
+                .lookup(&method, &path, parts.uri.query(), &parts.headers)
+                .await
+            {
+                crate::cache::CacheLookup::Hit(entry) => {
+                    tracing::Span::current().record("outcome", "cache-hit");
+                    let mut rb = Response::builder().status(entry.status);
+                    for (n, v) in &entry.headers {
+                        rb = rb.header(n, v);
+                    }
+                    let resp = rb
+                        .body(Full::new(entry.body.clone()))
+                        .unwrap_or_else(|_| Response::new(Full::new(entry.body.clone())));
+                    return (
+                        resp,
+                        DecisionTag::allow().with_tier(route_ctx.tier).with_cache(
+                            aegis_control::interop::headers::CacheState::Hit,
+                        ),
+                    );
+                }
+                crate::cache::CacheLookup::Miss { key, rule_idx } => {
+                    cache_pending = Some((pc, key, rule_idx));
+                }
+                crate::cache::CacheLookup::Bypass(_reason) => {}
+            }
+        }
+    }
+
     if let Some(cb) = ctx.pools.breaker(&route_ctx.upstream) {
         if !cb.allow_request() {
             tracing::Span::current().record("outcome", "circuit-open");
@@ -2198,11 +2240,29 @@ pub(crate) async fn forward_allow_to_upstream(
                     );
                 }
             };
+            // SC-1 — store on the upstream success path, BEFORE moving
+            // `parts_out` / `final_bytes` into the response. `store` enforces
+            // the rest of the admission rules (200-only, no Set-Cookie, no
+            // no-store, content-type/deception armor, per-entry size cap);
+            // a refusal still reports MISS on the wire (forwarded, not stored).
+            let mut allow_tag = DecisionTag::allow().with_tier(route_ctx.tier);
+            if let Some((pc, key, rule_idx)) = cache_pending.take() {
+                pc.store(
+                    key,
+                    rule_idx,
+                    parts_out.status.as_u16(),
+                    &parts_out.headers,
+                    &final_bytes,
+                )
+                .await;
+                allow_tag = allow_tag
+                    .with_cache(aegis_control::interop::headers::CacheState::Miss);
+            }
             let resp = Response::from_parts(parts_out, Full::new(final_bytes));
             // 5xx from upstream is not a WAF block — we proxied
             // faithfully; the contract action stays `allow` (the
             // upstream's failure is what the client sees).
-            (resp, DecisionTag::allow().with_tier(route_ctx.tier))
+            (resp, allow_tag)
         }
         Err(e) => {
             tracing::warn!(error = %e, "upstream forward failed");

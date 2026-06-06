@@ -24,6 +24,10 @@ use crate::upstream::registry::PoolRegistry;
 pub struct ProxyContext {
     pub route_table: RouteTable,
     pub pools: PoolRegistry,
+    /// SC-1 — per-upstream response cache (L1 in-process). Built from the
+    /// boot config; only pools with a `cache:` block get an entry. CRITICAL
+    /// tier is never cached (the data plane enforces that, not this).
+    pub cache: Arc<crate::cache::ResponseCache>,
     pub pipeline: Arc<dyn SecurityPipeline>,
     /// Benchmark mode configuration. When enabled,
     /// `handle_request` captures per-stage timings and
@@ -194,9 +198,11 @@ impl ProxyContext {
         // so admin reads see the boot config before any runtime
         // mutation has landed.
         pool_registry.seed_raw(cfg.upstreams.clone());
+        let cache = Arc::new(crate::cache::ResponseCache::from_upstreams(&cfg.upstreams));
         Ok(Self {
             route_table,
             pools: pool_registry,
+            cache,
             pipeline,
             benchmark: BenchmarkConfig::off(),
             tunnels: crate::tcp_tunnel::ConcurrentTunnels::new(),

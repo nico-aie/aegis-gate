@@ -33,6 +33,7 @@ mod admin_dispatch;
 mod admin_get;
 mod admin_login;
 mod admin_mutate;
+pub mod cache;
 mod data_plane;
 mod responses;
 mod run;

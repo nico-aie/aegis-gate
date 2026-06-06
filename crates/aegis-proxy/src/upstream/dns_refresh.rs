@@ -287,6 +287,8 @@ pub fn spawn_pool_refresh(
                     health: spec.base.health.clone(),
                     circuit_breaker: spec.base.circuit_breaker.clone(),
                     connection: spec.base.connection.clone(),
+                    // Preserve the per-upstream cache policy across DNS refresh.
+                    cache: spec.base.cache.clone(),
                 };
                 full_map.insert(pool_name.clone(), pool_cfg);
                 match registry.apply(&full_map) {
@@ -434,6 +436,7 @@ mod tests {
             health: None,
             circuit_breaker: None,
             connection: aegis_core::config::ConnectionPoolConfig::default(),
+            cache: None,
         }
     }
 

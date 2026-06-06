@@ -1199,7 +1199,8 @@ pub(crate) fn stamp_interop_response(
         risk_score: effective_risk_score,
         action: decision_tag.action,
         rule_id: decision_tag.rule_id.clone(),
-        cache: CacheState::Bypass,
+        // SC-1 — carry the smart-cache decision (Hit/Miss/Bypass) through.
+        cache: decision_tag.cache,
         mode,
     };
     decision.stamp(resp.headers_mut());

@@ -82,6 +82,9 @@ bytes.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 dashmap.workspace = true
+# SC-1 smart cache — async, byte-weighted (weigher) in-process cache with
+# TinyLFU admission (scan-resistant) + TTL/TTI. Already in the lock graph.
+moka = { version = "0.12", features = ["future"] }
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true

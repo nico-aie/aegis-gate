@@ -1315,6 +1315,14 @@ pub async fn run(
             .register_reset_callback(std::sync::Arc::new(move || {
                 device_tracker_for_reset.clear();
             }));
+        // SC-1 — wire `POST /__waf_control/flush_cache` to actually evict the
+        // data-plane response cache (all pools). Without this the endpoint
+        // reports `supported: false`.
+        let cache_for_flush = upstream_ctx.cache.clone();
+        rt.control
+            .register_flush_callback(std::sync::Arc::new(move || {
+                cache_for_flush.invalidate(None);
+            }));
         //   items 2/4/6 (StateBackend half): async ephemeral wipe of
         //   rate-limit windows + nonces + auto-block + backend risk
         //   keys, scoped to the `g:*` prefixes (leader lease survives).
@@ -2177,7 +2185,8 @@ pub(crate) fn build_interop_runtime(
         features,
         reset_callbacks: std::sync::Mutex::new(reset_callbacks),
         async_reset_callbacks: std::sync::Mutex::new(Vec::new()),
-        flush_callback: None,
+        // SC-1 — late-registered in run.rs once the data-plane cache exists.
+        flush_callback: std::sync::Mutex::new(None),
         secret: cfg
             .interop
             .control_secret
