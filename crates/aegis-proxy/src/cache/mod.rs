@@ -148,7 +148,12 @@ impl PoolCache {
             Some((i, r)) => (i, r),
             None => return CacheLookup::Bypass("no_match"),
         };
-        let key = compute_key(method, host_of(req_headers), path, query, rule, &self.cfg);
+        // Key on the negotiated content-encoding bucket so a gzip/br body is
+        // never served to a client that didn't accept that encoding. All
+        // clients sharing a key accept the same encoding set, so any encoding
+        // the cached entry carries is acceptable to every one of them.
+        let ae = normalize_accept_encoding(req_headers);
+        let key = compute_key(method, host_of(req_headers), path, query, &ae, rule, &self.cfg);
         match self.cache.get(&key).await {
             Some(entry) => {
                 self.hits.fetch_add(1, Ordering::Relaxed);
@@ -182,6 +187,13 @@ impl PoolCache {
         }
         // Honor origin intent.
         if header_blocks_caching(resp_headers) {
+            return false;
+        }
+        // Vary safety (anti-poisoning): we key on method/host/path/query +
+        // Accept-Encoding. If the response varies on anything else (or `*`),
+        // storing it under our key would be under-keyed and poisonable — so
+        // refuse. `Vary: Accept-Encoding` is fine (we key on it).
+        if response_varies_on_unkeyed_header(resp_headers) {
             return false;
         }
         let rule = match self.rules.get(rule_idx) {
@@ -354,11 +366,12 @@ fn compute_key(
     host: &str,
     path: &str,
     query: Option<&str>,
+    accept_encoding: &str,
     rule: &CacheRuleConfig,
     cfg: &PoolCacheConfig,
 ) -> CacheKey {
     let mut h = blake3::Hasher::new();
-    h.update(b"aegis-cache-v1\0");
+    h.update(b"aegis-cache-v2\0");
     h.update(method.as_str().to_ascii_uppercase().as_bytes());
     h.update(b"\0");
     h.update(host.to_ascii_lowercase().as_bytes());
@@ -369,7 +382,55 @@ fn compute_key(
         let kept = kept_query(query, &cfg.deny_query_keys);
         h.update(kept.as_bytes());
     }
+    h.update(b"\0ae\0");
+    h.update(accept_encoding.as_bytes());
     *h.finalize().as_bytes()
+}
+
+/// Canonical bucket of the recognized content-codings the client accepts —
+/// sorted + deduped, or `identity` when none. Two requests with the same
+/// acceptable set share a key, and any encoding the cached entry carries was
+/// acceptable to the request that stored it, so it's acceptable to all of
+/// them. Bounds key cardinality to a handful of real-world buckets.
+fn normalize_accept_encoding(headers: &HeaderMap) -> String {
+    let raw = headers
+        .get(http::header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let mut toks: Vec<&str> = raw
+        .split(',')
+        .map(|t| t.split(';').next().unwrap_or("").trim())
+        .filter(|t| matches!(*t, "gzip" | "br" | "deflate" | "zstd"))
+        .collect();
+    toks.sort_unstable();
+    toks.dedup();
+    if toks.is_empty() {
+        "identity".to_string()
+    } else {
+        toks.join(",")
+    }
+}
+
+/// True when the response's `Vary` requires keying on an input we don't key on
+/// (anything other than `accept-encoding`, or `*`) — storing it would be
+/// poisonable, so the caller must refuse.
+fn response_varies_on_unkeyed_header(headers: &HeaderMap) -> bool {
+    // A response can carry multiple `Vary` headers; check them all.
+    for v in headers.get_all(http::header::VARY).iter() {
+        let Ok(s) = v.to_str() else {
+            return true; // unparseable Vary → be safe, don't store
+        };
+        for token in s.split(',') {
+            let token = token.trim().to_ascii_lowercase();
+            if token.is_empty() {
+                continue;
+            }
+            if token == "*" || token != "accept-encoding" {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Collapse duplicate slashes; we do not lowercase the path (case can be
@@ -635,12 +696,14 @@ mod tests {
     fn key_normalization_and_deny_query() {
         let c = cfg(vec![rule("/static/")]);
         let r = rule("/static/");
+        let ae = "identity";
         // collapsed slashes + denied query stripped ⇒ same key
         let k1 = compute_key(
             &Method::GET,
             "h",
             "/static//a.css",
             Some("token=abc&v=1"),
+            ae,
             &r,
             &c,
         );
@@ -649,19 +712,66 @@ mod tests {
             "h",
             "/static/a.css",
             Some("v=1&token=zzz"),
+            ae,
             &r,
             &c,
         );
         assert_eq!(k1, k2, "denied query + slash normalization should collapse");
         // different kept-query ⇒ different key
-        let k3 = compute_key(&Method::GET, "h", "/static/a.css", Some("v=2"), &r, &c);
+        let k3 = compute_key(&Method::GET, "h", "/static/a.css", Some("v=2"), ae, &r, &c);
         assert_ne!(k1, k3);
         // ignore_query ⇒ query irrelevant
         let mut ri = rule("/static/");
         ri.ignore_query = true;
-        let a = compute_key(&Method::GET, "h", "/static/a.css", Some("v=1"), &ri, &c);
-        let b = compute_key(&Method::GET, "h", "/static/a.css", Some("v=2"), &ri, &c);
+        let a = compute_key(&Method::GET, "h", "/static/a.css", Some("v=1"), ae, &ri, &c);
+        let b = compute_key(&Method::GET, "h", "/static/a.css", Some("v=2"), ae, &ri, &c);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn accept_encoding_buckets_the_key() {
+        let c = cfg(vec![rule("/static/")]);
+        let r = rule("/static/");
+        let q = Some("v=1");
+        // gzip vs identity ⇒ different keys (won't serve gzip to a non-gzip client)
+        let gzip = compute_key(&Method::GET, "h", "/static/a.css", q, "gzip", &r, &c);
+        let ident = compute_key(&Method::GET, "h", "/static/a.css", q, "identity", &r, &c);
+        assert_ne!(gzip, ident);
+        // same acceptable SET in a different order ⇒ same key (normalized)
+        let h1 = {
+            let mut h = HeaderMap::new();
+            h.insert(http::header::ACCEPT_ENCODING, HeaderValue::from_static("gzip, br"));
+            normalize_accept_encoding(&h)
+        };
+        let h2 = {
+            let mut h = HeaderMap::new();
+            h.insert(http::header::ACCEPT_ENCODING, HeaderValue::from_static("br;q=1.0, gzip"));
+            normalize_accept_encoding(&h)
+        };
+        assert_eq!(h1, "br,gzip");
+        assert_eq!(h1, h2);
+        // no/empty Accept-Encoding ⇒ identity bucket
+        assert_eq!(normalize_accept_encoding(&HeaderMap::new()), "identity");
+    }
+
+    #[tokio::test]
+    async fn store_refuses_vary_on_unkeyed_header_but_allows_accept_encoding() {
+        let pc = PoolCache::new(cfg(vec![rule("/static/")]));
+        // Vary: Cookie ⇒ refuse (we don't key on Cookie → poisonable)
+        let mut rh = HeaderMap::new();
+        rh.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("text/css"));
+        rh.insert(http::header::VARY, HeaderValue::from_static("Cookie"));
+        assert!(!pc.store([2u8; 32], 0, 200, &rh, &Bytes::from_static(b"x")).await);
+        // Vary: * ⇒ refuse
+        let mut rh = HeaderMap::new();
+        rh.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("text/css"));
+        rh.insert(http::header::VARY, HeaderValue::from_static("*"));
+        assert!(!pc.store([3u8; 32], 0, 200, &rh, &Bytes::from_static(b"x")).await);
+        // Vary: Accept-Encoding ⇒ OK (we key on it)
+        let mut rh = HeaderMap::new();
+        rh.insert(http::header::CONTENT_TYPE, HeaderValue::from_static("text/css"));
+        rh.insert(http::header::VARY, HeaderValue::from_static("Accept-Encoding"));
+        assert!(pc.store([4u8; 32], 0, 200, &rh, &Bytes::from_static(b"x")).await);
     }
 
     #[tokio::test]
