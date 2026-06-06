@@ -14,8 +14,8 @@ mod login_flow {
         csrf, password, rate_limit, session, totp,
     };
 
-    #[test]
-    fn full_flow_password_session_csrf_totp() {
+    #[tokio::test]
+    async fn full_flow_password_session_csrf_totp() {
         // Step 1: Hash and verify password (argon2id).
         let hash = password::hash_password("admin-secret").unwrap();
         assert!(password::verify_password(&hash, "admin-secret"));
@@ -24,8 +24,8 @@ mod login_flow {
         // Step 2: Create session.
         let key = [42u8; 32];
         let store = session::SessionStore::new(key);
-        let (session_id, cookie) = store.create("10.0.0.1", "Mozilla/5.0");
-        let record = store.validate(&cookie).unwrap();
+        let (session_id, cookie) = store.create("10.0.0.1", "Mozilla/5.0").await;
+        let record = store.validate(&cookie).await.unwrap();
         assert_eq!(record.ip, "10.0.0.1");
         assert!(!record.totp_verified);
 
@@ -46,13 +46,13 @@ mod login_flow {
         let config = totp::TotpConfig::default();
         let code = totp::generate(secret, time, &config);
         assert!(totp::verify(secret, &code, time, &config));
-        store.mark_totp_verified(&session_id);
-        let record = store.validate(&cookie).unwrap();
+        store.mark_totp_verified(&session_id).await;
+        let record = store.validate(&cookie).await.unwrap();
         assert!(record.totp_verified);
 
         // Step 5: Session revocation.
-        assert!(store.revoke(&session_id));
-        assert!(store.validate(&cookie).is_none());
+        assert!(store.revoke(&session_id).await);
+        assert!(store.validate(&cookie).await.is_none());
     }
 
     #[test]

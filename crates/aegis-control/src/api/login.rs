@@ -101,14 +101,14 @@ pub struct AdminIdentity {
     pub user: String,
     pub password_hash: String,
     /// 2026-05-17 F-CRITICAL-003 — operator's base32-encoded TOTP
-    /// secret. Empty when TOTP is disabled. `authenticate()`
+    /// secret. Empty when TOTP is disabled. `authenticate().await`
     /// decodes + verifies via `crate::admin_auth::totp::verify`.
     /// Stored decoded form lives only on the stack; we never log
     /// or audit the raw bytes.
     pub totp_secret_b32: String,
     /// 2026-05-17 F-CRITICAL-003 — operator's TOTP-enabled flag,
     /// mirrored from `cfg.admin.dashboard_auth.totp_enabled` so
-    /// `authenticate()` doesn't need to take the full config.
+    /// `authenticate().await` doesn't need to take the full config.
     pub totp_enabled: bool,
     /// 2026-05-17 F-HIGH-admin — replay-protection guard for
     /// TOTP. `Arc` so the admin identity stays Clone (the proxy
@@ -136,7 +136,7 @@ pub struct AdminIdentity {
 /// Timing: missing-user path runs `dummy_verify` so a
 /// stopwatch attacker can't enumerate accounts via response time.
 #[allow(clippy::too_many_arguments)]
-pub fn authenticate(
+pub async fn authenticate(
     body: &str,
     admin: &AdminIdentity,
     rate_limiter: &LoginRateLimiter,
@@ -263,7 +263,7 @@ pub fn authenticate(
 
     // 3. Success — issue session + CSRF cookies.
     rate_limiter.record_success(ip, &req.user);
-    let (session_id, signed_session_value) = sessions.create(ip, user_agent);
+    let (session_id, signed_session_value) = sessions.create(ip, user_agent).await;
     let session_cookie = format_cookie(
         "aegis_session",
         &signed_session_value,
@@ -300,7 +300,7 @@ pub fn authenticate(
 /// revokes the matching record in both stores, and returns
 /// cookie-clearing strings the proxy emits as `Set-Cookie`.
 /// Idempotent: succeeds whether or not the cookie was present.
-pub fn logout(
+pub async fn logout(
     session_cookie: Option<&str>,
     sessions: &AuthSessionStore,
     dashboard_sessions: &DashboardSessionStore,
@@ -314,8 +314,8 @@ pub fn logout(
     };
 
     if let Some(cookie) = session_cookie {
-        if let Some(rec) = sessions.validate(cookie) {
-            sessions.revoke(&rec.id);
+        if let Some(rec) = sessions.validate(cookie).await {
+            sessions.revoke(&rec.id).await;
             dashboard_sessions.force_remove(&rec.id);
             return LogoutOutcome::Ok {
                 clear_session_cookie,
@@ -394,8 +394,8 @@ mod tests {
         serde_json::json!({"user":"admin","password":"aegis-test-1234"}).to_string()
     }
 
-    #[test]
-    fn login_with_correct_creds_issues_session_and_csrf_cookies() {
+    #[tokio::test]
+    async fn login_with_correct_creds_issues_session_and_csrf_cookies() {
         let (admin, rl, ss, ds) = fixtures();
         let outcome = authenticate(
             &ok_body(),
@@ -406,7 +406,7 @@ mod tests {
             "127.0.0.1",
             "k6/0.51.0",
             1800,
-        );
+        ).await;
         let (session, csrf, body) = match outcome {
             LoginOutcome::Ok { session_cookie, csrf_cookie, body } => {
                 (session_cookie, csrf_cookie, body)
@@ -426,11 +426,11 @@ mod tests {
         assert_eq!(ds.list().len(), 1);
     }
 
-    #[test]
-    fn login_with_wrong_password_returns_unauthorized() {
+    #[tokio::test]
+    async fn login_with_wrong_password_returns_unauthorized() {
         let (admin, rl, ss, ds) = fixtures();
         let body = serde_json::json!({"user":"admin","password":"wrong"}).to_string();
-        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         match outcome {
             LoginOutcome::Unauthorized { body } => {
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -438,14 +438,14 @@ mod tests {
             }
             other => panic!("expected Unauthorized, got {other:?}"),
         }
-        assert_eq!(ss.active_count(), 0, "no session created on failure");
+        assert_eq!(ss.active_count().await, 0, "no session created on failure");
     }
 
-    #[test]
-    fn login_with_unknown_user_does_not_leak_existence() {
+    #[tokio::test]
+    async fn login_with_unknown_user_does_not_leak_existence() {
         let (admin, rl, ss, ds) = fixtures();
         let body = serde_json::json!({"user":"ghost","password":"whatever"}).to_string();
-        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         // Same Unauthorized envelope as wrong password — no
         // path that reveals "no such user".
         match outcome {
@@ -457,18 +457,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn login_rejects_missing_field() {
+    #[tokio::test]
+    async fn login_rejects_missing_field() {
         let (admin, rl, ss, ds) = fixtures();
         let body = serde_json::json!({"user":"admin"}).to_string();
-        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         assert!(matches!(outcome, LoginOutcome::BadRequest { .. }));
     }
 
-    #[test]
-    fn login_rejects_invalid_json() {
+    #[tokio::test]
+    async fn login_rejects_invalid_json() {
         let (admin, rl, ss, ds) = fixtures();
-        let outcome = authenticate("not json", &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate("not json", &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         match outcome {
             LoginOutcome::BadRequest { body } => {
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -478,16 +478,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn login_rate_limited_per_ip_after_threshold() {
+    #[tokio::test]
+    async fn login_rate_limited_per_ip_after_threshold() {
         let (admin, rl, ss, ds) = fixtures();
         let bad = serde_json::json!({"user":"admin","password":"wrong"}).to_string();
         // Default config: ip_max_attempts = 5. Drive past it.
         for _ in 0..5 {
-            let _ = authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.1", "ua", 1800);
+            let _ = authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.1", "ua", 1800).await;
         }
         let next =
-            authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.1", "ua", 1800);
+            authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.1", "ua", 1800).await;
         match next {
             LoginOutcome::RateLimited {
                 retry_after_seconds,
@@ -501,17 +501,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn login_lockout_after_user_threshold() {
+    #[tokio::test]
+    async fn login_lockout_after_user_threshold() {
         let (admin, rl, ss, ds) = fixtures();
         let bad = serde_json::json!({"user":"admin","password":"wrong"}).to_string();
         // Default lockout_threshold = 10. 10 wrong attempts trip it.
         // Spread across IPs so the per-IP limiter doesn't fire first.
         for i in 0..10 {
             let ip = format!("10.0.0.{i}");
-            let _ = authenticate(&bad, &admin, &rl, &ss, &ds, &ip, "ua", 1800);
+            let _ = authenticate(&bad, &admin, &rl, &ss, &ds, &ip, "ua", 1800).await;
         }
-        let next = authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.99", "ua", 1800);
+        let next = authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.99", "ua", 1800).await;
         match next {
             LoginOutcome::RateLimited { body, .. } => {
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -521,22 +521,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn login_success_clears_failure_counters() {
+    #[tokio::test]
+    async fn login_success_clears_failure_counters() {
         let (admin, rl, ss, ds) = fixtures();
         let bad = serde_json::json!({"user":"admin","password":"wrong"}).to_string();
         for _ in 0..3 {
-            let _ = authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.5", "ua", 1800);
+            let _ = authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.5", "ua", 1800).await;
         }
         // Successful login MUST clear the prior failure counter so a
         // legitimate user isn't punished after fat-fingering twice.
-        let outcome = authenticate(&ok_body(), &admin, &rl, &ss, &ds, "10.0.0.5", "ua", 1800);
+        let outcome = authenticate(&ok_body(), &admin, &rl, &ss, &ds, "10.0.0.5", "ua", 1800).await;
         assert!(matches!(outcome, LoginOutcome::Ok { .. }));
         // Now drive 5 wrong attempts in a row from the same IP — the
         // limit must not fire on attempt 1 or 2 since the counter
         // was reset.
         for _ in 0..3 {
-            let r = authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.5", "ua", 1800);
+            let r = authenticate(&bad, &admin, &rl, &ss, &ds, "10.0.0.5", "ua", 1800).await;
             assert!(
                 !matches!(r, LoginOutcome::RateLimited { .. }),
                 "limit fired too early after success-reset"
@@ -544,10 +544,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn logout_revokes_session_when_cookie_valid() {
+    #[tokio::test]
+    async fn logout_revokes_session_when_cookie_valid() {
         let (admin, rl, ss, ds) = fixtures();
-        let outcome = authenticate(&ok_body(), &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&ok_body(), &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         let session_value = match outcome {
             LoginOutcome::Ok { session_cookie, .. } => {
                 // Extract the value between "aegis_session=" and ";"
@@ -559,8 +559,8 @@ mod tests {
             }
             other => panic!("expected Ok, got {other:?}"),
         };
-        assert_eq!(ss.active_count(), 1);
-        let logout_outcome = logout(Some(&session_value), &ss, &ds);
+        assert_eq!(ss.active_count().await, 1);
+        let logout_outcome = logout(Some(&session_value), &ss, &ds).await;
         match logout_outcome {
             LogoutOutcome::Ok {
                 clear_session_cookie,
@@ -571,18 +571,18 @@ mod tests {
             }
             other => panic!("expected Ok, got {other:?}"),
         }
-        assert_eq!(ss.active_count(), 0, "session must be revoked");
+        assert_eq!(ss.active_count().await, 0, "session must be revoked");
     }
 
-    #[test]
-    fn logout_is_idempotent_without_cookie() {
+    #[tokio::test]
+    async fn logout_is_idempotent_without_cookie() {
         let (_, _, ss, ds) = fixtures();
-        let outcome = logout(None, &ss, &ds);
+        let outcome = logout(None, &ss, &ds).await;
         assert!(matches!(outcome, LogoutOutcome::NoSession { .. }));
     }
 
-    #[test]
-    fn derive_session_key_is_deterministic() {
+    #[tokio::test]
+    async fn derive_session_key_is_deterministic() {
         let a = derive_session_key("test-secret");
         let b = derive_session_key("test-secret");
         assert_eq!(a, b);
@@ -625,36 +625,36 @@ mod tests {
         )
     }
 
-    #[test]
-    fn login_with_totp_enabled_requires_a_code() {
+    #[tokio::test]
+    async fn login_with_totp_enabled_requires_a_code() {
         let (_, rl, ss, ds) = fixtures();
         let admin = totp_admin();
         let body = serde_json::json!({
             "user":"admin","password":"aegis-test-1234"
         }).to_string();
-        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         assert!(
             matches!(outcome, LoginOutcome::Unauthorized { .. }),
             "missing totp_code with totp_enabled must reject",
         );
     }
 
-    #[test]
-    fn login_with_totp_enabled_rejects_wrong_code() {
+    #[tokio::test]
+    async fn login_with_totp_enabled_rejects_wrong_code() {
         let (_, rl, ss, ds) = fixtures();
         let admin = totp_admin();
         let body = serde_json::json!({
             "user":"admin","password":"aegis-test-1234","totp_code":"000001"
         }).to_string();
-        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         assert!(
             matches!(outcome, LoginOutcome::Unauthorized { .. }),
             "wrong totp_code must reject",
         );
     }
 
-    #[test]
-    fn login_with_totp_enabled_accepts_current_code() {
+    #[tokio::test]
+    async fn login_with_totp_enabled_accepts_current_code() {
         let (_, rl, ss, ds) = fixtures();
         let admin = totp_admin();
         let code = current_totp_code(&admin.totp_secret_b32);
@@ -663,15 +663,15 @@ mod tests {
             "password":"aegis-test-1234",
             "totp_code": code,
         }).to_string();
-        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         match outcome {
             LoginOutcome::Ok { .. } => {}
             other => panic!("expected Ok with valid TOTP code, got {other:?}"),
         }
     }
 
-    #[test]
-    fn login_with_totp_disabled_ignores_totp_code() {
+    #[tokio::test]
+    async fn login_with_totp_disabled_ignores_totp_code() {
         // TOTP disabled — extra `totp_code` field is harmless.
         let (admin, rl, ss, ds) = fixtures();
         assert!(!admin.totp_enabled);
@@ -680,12 +680,12 @@ mod tests {
             "password":"aegis-test-1234",
             "totp_code":"000000",
         }).to_string();
-        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         assert!(matches!(outcome, LoginOutcome::Ok { .. }));
     }
 
-    #[test]
-    fn login_with_totp_enabled_and_malformed_b32_secret_rejects_loudly() {
+    #[tokio::test]
+    async fn login_with_totp_enabled_and_malformed_b32_secret_rejects_loudly() {
         // Config bug: operator put a non-b32 string in the
         // secret. The user-facing response is the same
         // Unauthorized as any other failure (no info leak); server
@@ -703,7 +703,7 @@ mod tests {
             "password":"aegis-test-1234",
             "totp_code":"123456",
         }).to_string();
-        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800);
+        let outcome = authenticate(&body, &admin, &rl, &ss, &ds, "127.0.0.1", "ua", 1800).await;
         assert!(matches!(outcome, LoginOutcome::Unauthorized { .. }));
     }
 }

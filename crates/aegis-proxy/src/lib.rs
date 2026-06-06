@@ -536,7 +536,7 @@ state:
             "127.0.0.1:54321".parse().unwrap(),
             "test-ua/1.0",
             body.as_bytes(),
-        );
+        ).await;
         assert_eq!(resp.status().as_u16(), 200);
         let cookies: Vec<&str> = resp
             .headers()
@@ -569,7 +569,7 @@ state:
             "127.0.0.1:0".parse().unwrap(),
             "ua",
             body.as_bytes(),
-        );
+        ).await;
         assert_eq!(resp.status().as_u16(), 401);
     }
 
@@ -581,7 +581,7 @@ state:
             "127.0.0.1:0".parse().unwrap(),
             "ua",
             b"not json",
-        );
+        ).await;
         assert_eq!(resp.status().as_u16(), 400);
     }
 
@@ -595,7 +595,7 @@ state:
             "127.0.0.1:0".parse().unwrap(),
             "ua",
             body.as_bytes(),
-        );
+        ).await;
         assert_eq!(login_resp.status().as_u16(), 200);
 
         // Pull the signed session cookie value back out so logout
@@ -613,7 +613,7 @@ state:
             .and_then(|s| s.split(';').next())
             .unwrap();
 
-        let resp = process_admin_logout(&services, Some(session_value));
+        let resp = process_admin_logout(&services, Some(session_value)).await;
         assert_eq!(resp.status().as_u16(), 204);
         let clears: Vec<&str> = resp
             .headers()
@@ -627,13 +627,13 @@ state:
             "logout must clear both cookies, got {clears:?}",
         );
         // Auth session is gone — no more accepting that cookie.
-        assert_eq!(services.auth_sessions.active_count(), 0);
+        assert_eq!(services.auth_sessions.active_count().await, 0);
     }
 
     #[tokio::test]
     async fn logout_handler_is_idempotent_without_cookie() {
         let services = services_with_admin("test-pw-1234");
-        let resp = process_admin_logout(&services, None);
+        let resp = process_admin_logout(&services, None).await;
         // Same 204 + cookie-clearing whether or not a session
         // existed — caller never has to know.
         assert_eq!(resp.status().as_u16(), 204);

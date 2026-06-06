@@ -166,7 +166,7 @@ pub async fn admit(
         return Admit::Authenticated(id);
     }
 
-    if let Some(id) = try_session_auth(req, cfg, auth_sessions) {
+    if let Some(id) = try_session_auth(req, cfg, auth_sessions).await {
         // Step 7 — CSRF on state-changing methods.
         if requires_write_scope(method) {
             match csrf::validate(
@@ -356,13 +356,13 @@ fn try_bearer_auth(
     None
 }
 
-fn try_session_auth(
+async fn try_session_auth(
     req: &Request<hyper::body::Incoming>,
     _cfg: &WafConfig,
     sessions: &Arc<AuthSessionStore>,
 ) -> Option<Identity> {
     let cookie = extract_cookie(req, "aegis_session")?;
-    let record = sessions.validate(cookie)?;
+    let record = sessions.validate(cookie).await?;
     let _ = record; // SessionRecord doesn't carry user_id yet
     // Single-admin model: every session belongs to "admin" until
     // RBAC lands. When multi-user auth ships, SessionRecord will

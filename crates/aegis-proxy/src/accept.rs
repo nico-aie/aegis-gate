@@ -188,6 +188,33 @@ pub(crate) async fn admin_accept_loop(
     // rate-limiter flattens the YAML's per-IP / per-user / lockout
     // blocks into the runtime config.
     let auth = &cfg.admin.dashboard_auth;
+    // 2026-06-06 — boot secret hygiene. The session-cookie HMAC key is
+    // blake3(csrf_secret); an empty/short secret weakens cookie integrity and,
+    // in a multi-node deploy, MUST be identical on every node. An empty
+    // password hash means nobody can log in (operators locked out). Surface
+    // both loudly at boot rather than failing silently.
+    {
+        let secret = auth.csrf_secret_ref.trim();
+        if secret.is_empty() {
+            tracing::warn!(
+                "admin auth: cfg.admin.dashboard_auth.csrf_secret is EMPTY — \
+                 session cookies are signed with a fixed key. Set a random \
+                 ≥32-char secret, IDENTICAL on every node.",
+            );
+        } else if secret.len() < 16 {
+            tracing::warn!(
+                len = secret.len(),
+                "admin auth: csrf_secret is short (<16 chars) — use a random ≥32-char value.",
+            );
+        }
+        if auth.password_hash_ref.trim().is_empty() {
+            tracing::warn!(
+                "admin auth: no admin password configured \
+                 (cfg.admin.dashboard_auth.password_hash empty) — dashboard login \
+                 is DISABLED; operators cannot sign in.",
+            );
+        }
+    }
     let session_key = aegis_control::api::login::derive_session_key(&auth.csrf_secret_ref);
     // F-HIGH-admin (2026-05-17): respect the operator-configured
     // session TTLs. Pre-fix the hard-coded values inside
@@ -198,9 +225,14 @@ pub(crate) async fn admin_accept_loop(
         .unwrap_or_else(|_| chrono::Duration::minutes(30));
     let absolute = chrono::Duration::from_std(auth.session_ttl_absolute)
         .unwrap_or_else(|_| chrono::Duration::hours(8));
+    // 2026-06-06 — back admin sessions with the shared state backend so they
+    // are fleet-wide (Redis ⇒ login on any node works, survives restart) and
+    // auto-reaped at the idle TTL (no unbounded session-map growth). On the
+    // in_memory backend this is the auto-reaped local store.
     let auth_sessions = Arc::new(
-        aegis_control::admin_auth::session::SessionStore::with_ttls(
+        aegis_control::admin_auth::session::SessionStore::with_backend(
             session_key,
+            state_backend.clone(),
             idle,
             absolute,
         ),

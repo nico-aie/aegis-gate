@@ -3250,7 +3250,7 @@ pub(crate) async fn handle_admin_drain(
         .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
         .map(|s| s.to_string());
     let session_ok = match session_cookie.as_deref() {
-        Some(sid) => services.auth_sessions.validate(sid).is_some(),
+        Some(sid) => services.auth_sessions.validate(sid).await.is_some(),
         None => false,
     };
     // Allow unauthenticated drain when the admin password

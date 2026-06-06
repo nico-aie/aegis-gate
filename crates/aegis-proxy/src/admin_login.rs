@@ -90,13 +90,13 @@ pub(crate) async fn handle_admin_login(
             );
         }
     };
-    process_admin_login(services, peer, &user_agent, body_bytes.as_ref())
+    process_admin_login(services, peer, &user_agent, body_bytes.as_ref()).await
 }
 
 /// Pure body of the login handler — no `Incoming`, so unit
 /// tests can drive it without faking a TCP body. The async
 /// wrapper above just collects the body and delegates here.
-pub(crate) fn process_admin_login(
+pub(crate) async fn process_admin_login(
     services: &aegis_control::dashboard_services::DashboardServices,
     peer: std::net::SocketAddr,
     user_agent: &str,
@@ -112,7 +112,7 @@ pub(crate) fn process_admin_login(
         &peer.ip().to_string(),
         user_agent,
         services.session_idle_seconds,
-    );
+    ).await;
 
     use aegis_control::api::login::LoginOutcome;
     match outcome {
@@ -147,7 +147,7 @@ pub(crate) fn process_admin_login(
     }
 }
 
-pub(crate) fn handle_admin_logout(
+pub(crate) async fn handle_admin_logout(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,
 ) -> Response<Full<Bytes>> {
@@ -158,12 +158,12 @@ pub(crate) fn handle_admin_logout(
         .filter_map(|h| h.to_str().ok())
         .find_map(|raw| extract_named_cookie(raw, "aegis_session"))
         .map(|s| s.to_string());
-    process_admin_logout(services, cookie_value.as_deref())
+    process_admin_logout(services, cookie_value.as_deref()).await
 }
 
 /// Pure body of logout — same testability story as
 /// [`process_admin_login`].
-pub(crate) fn process_admin_logout(
+pub(crate) async fn process_admin_logout(
     services: &aegis_control::dashboard_services::DashboardServices,
     session_cookie: Option<&str>,
 ) -> Response<Full<Bytes>> {
@@ -171,7 +171,7 @@ pub(crate) fn process_admin_logout(
         session_cookie,
         &services.auth_sessions,
         &services.sessions,
-    );
+    ).await;
     use aegis_control::api::login::LogoutOutcome;
     let (clear_session, clear_csrf) = match outcome {
         LogoutOutcome::Ok {
