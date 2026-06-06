@@ -395,6 +395,16 @@ pub(crate) async fn admin_accept_loop(
     services.blacklist = upstream_ctx.blacklist.clone();
     services.whitelist = upstream_ctx.whitelist.clone();
     services.interop = interop.clone();
+    // SC-1 — expose the data-plane response cache stats to GET /api/cache/stats
+    // via a JSON-returning closure (keeps aegis-control free of aegis-proxy
+    // types). Empty pools map until an upstream opts into `cache:`.
+    {
+        let cache = upstream_ctx.cache.clone();
+        services.cache_stats = Some(std::sync::Arc::new(move || {
+            serde_json::to_string(&serde_json::json!({ "pools": cache.stats() }))
+                .unwrap_or_else(|_| "{\"pools\":[]}".to_string())
+        }));
+    }
     // 2026-05-19 — surface the source-of-truth YAML path so the
     // dashboard's Configuration Backup card can fetch it.
     services.config_yaml_path = config_yaml_path;

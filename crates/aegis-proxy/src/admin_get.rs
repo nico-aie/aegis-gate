@@ -336,6 +336,17 @@ pub(crate) fn admin_router(
         "/api/upstreams/summary" => {
             json_body_response(200, services.upstreams.render(), "private, max-age=2")
         }
+        // SC-1 — per-upstream smart-cache stats. The provider closure is
+        // injected at boot by aegis-proxy (capturing the data-plane
+        // ResponseCache); absent ⇒ no cache wired, report an empty set.
+        "/api/cache/stats" => {
+            let body = services
+                .cache_stats
+                .as_ref()
+                .map(|f| f())
+                .unwrap_or_else(|| "{\"pools\":[]}".to_string());
+            json_body_response(200, body, "private, max-age=2")
+        }
         "/api/attacks/distribution" => {
             let window = parse_query_u32(query, "window", 900);
             json_body_response(

@@ -4529,3 +4529,184 @@ state: {{ backend: in_memory }}
         );
     }
 }
+
+// SC-1 — end-to-end smart-cache tests through `forward_allow_to_upstream`
+// against a real mock HTTP backend. Proves: MISS-then-HIT on identical GETs
+// (and that a HIT does NOT re-dial the backend), and that a CRITICAL-tier
+// route is never cached (BYPASS, backend hit every time).
+#[cfg(test)]
+mod smart_cache_e2e_tests {
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use aegis_core::audit::AuditBus;
+    use aegis_core::pipeline::SecurityPipeline;
+    use aegis_core::ClientIdentity;
+    use bytes::Bytes;
+    use http_body_util::BodyExt;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+
+    use crate::proxy::ProxyContext;
+    use aegis_control::interop::headers::CacheState;
+
+    fn route_latency() -> aegis_control::metrics::route_latency::RouteLatencyHistogram {
+        let reg = aegis_control::metrics::MetricsRegistry::init();
+        aegis_control::metrics::route_latency::RouteLatencyHistogram::register(&reg)
+            .expect("route latency histogram registers")
+    }
+    fn route_activity_w() -> aegis_control::metrics::route_activity::RouteActivityWindow {
+        aegis_control::metrics::route_activity::RouteActivityWindow::new()
+    }
+    fn get_parts(uri: &str) -> http::request::Parts {
+        let req = hyper::Request::builder()
+            .method(hyper::Method::GET)
+            .uri(uri)
+            .header("host", "any")
+            .body(http_body_util::Empty::<Bytes>::new())
+            .unwrap();
+        req.into_parts().0
+    }
+
+    /// Spawn a mock HTTP/1.1 backend that counts requests and returns
+    /// `200 text/css` with a fixed body. Returns `(addr, hit_counter)`.
+    async fn spawn_backend() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_task = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(c) => c,
+                    Err(_) => break,
+                };
+                let hits = hits_for_task.clone();
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let svc = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                        let hits = hits.clone();
+                        async move {
+                            hits.fetch_add(1, Ordering::SeqCst);
+                            Ok::<_, Infallible>(
+                                hyper::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "text/css")
+                                    .body(http_body_util::Full::new(Bytes::from_static(
+                                        b"cached-css-body",
+                                    )))
+                                    .unwrap(),
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
+        });
+        (addr, hits)
+    }
+
+    fn ctx_for(addr: std::net::SocketAddr, tier_override: Option<&str>) -> Arc<ProxyContext> {
+        let route_line = match tier_override {
+            Some(t) => format!(
+                "  - {{ id: assets, path: \"/\", upstream: pool, tier_override: {t} }}"
+            ),
+            None => "  - { id: assets, path: \"/\", upstream: pool }".to_string(),
+        };
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "127.0.0.1:0" }}]
+  admin: {{ bind: "127.0.0.1:0" }}
+routes:
+{route_line}
+upstreams:
+  pool:
+    members: [{{ addr: "{addr}" }}]
+    cache:
+      enabled: true
+      default_ttl: "60s"
+      rules:
+        - prefix: "/static/"
+          content_types: ["text/css"]
+state: {{ backend: in_memory }}
+"#
+        );
+        let cfg: aegis_core::config::WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let pipeline: Arc<dyn SecurityPipeline> = Arc::new(aegis_security::NoopPipeline);
+        Arc::new(ProxyContext::build(&cfg, pipeline).unwrap())
+    }
+
+    async fn forward(
+        ctx: &Arc<ProxyContext>,
+        uri: &str,
+        rh: &aegis_control::metrics::route_latency::RouteLatencyHistogram,
+        bus: &AuditBus,
+    ) -> (hyper::StatusCode, CacheState, Bytes) {
+        let (resp, tag) = super::forward_allow_to_upstream(
+            get_parts(uri),
+            Bytes::new(),
+            ctx,
+            &ClientIdentity::Anonymous,
+            rh,
+            &route_activity_w(),
+            Instant::now(),
+            "198.51.100.7".parse().unwrap(),
+            bus,
+        )
+        .await;
+        let status = resp.status();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, tag.cache, body)
+    }
+
+    #[tokio::test]
+    async fn miss_then_hit_does_not_redial_backend() {
+        let (addr, hits) = spawn_backend().await;
+        let ctx = ctx_for(addr, None);
+        let rh = route_latency();
+        let bus = AuditBus::new(16);
+
+        // 1st GET — MISS, forwarded + stored.
+        let (s1, c1, b1) = forward(&ctx, "/static/app.css", &rh, &bus).await;
+        assert_eq!(s1, 200);
+        assert!(matches!(c1, CacheState::Miss), "1st should be MISS, got {c1:?}");
+        assert_eq!(&b1[..], b"cached-css-body");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "backend hit once on miss");
+
+        // 2nd identical GET — HIT, served from cache, backend NOT re-dialed.
+        let (s2, c2, b2) = forward(&ctx, "/static/app.css", &rh, &bus).await;
+        assert_eq!(s2, 200);
+        assert!(matches!(c2, CacheState::Hit), "2nd should be HIT, got {c2:?}");
+        assert_eq!(&b2[..], b"cached-css-body");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "HIT must not re-dial the backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn critical_tier_is_never_cached() {
+        let (addr, hits) = spawn_backend().await;
+        let ctx = ctx_for(addr, Some("critical"));
+        let rh = route_latency();
+        let bus = AuditBus::new(16);
+
+        // Even with a matching cache rule, a CRITICAL-tier route bypasses.
+        let (_s1, c1, _b1) = forward(&ctx, "/static/app.css", &rh, &bus).await;
+        assert!(matches!(c1, CacheState::Bypass), "critical → BYPASS, got {c1:?}");
+        let (_s2, c2, _b2) = forward(&ctx, "/static/app.css", &rh, &bus).await;
+        assert!(matches!(c2, CacheState::Bypass), "critical → BYPASS, got {c2:?}");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "critical never caches → backend hit every request"
+        );
+    }
+}

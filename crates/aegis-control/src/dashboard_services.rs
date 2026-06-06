@@ -328,6 +328,12 @@ pub struct DashboardServices {
     /// including changes the operator made by editing the file
     /// directly between hot-reloads.
     pub config_yaml_path: Option<std::path::PathBuf>,
+    /// SC-1 (2026-06-06) — JSON provider for `GET /api/cache/stats`. Returns
+    /// the per-pool smart-cache stats as a JSON string. Injected at boot by
+    /// `aegis-proxy` (capturing the data-plane `ResponseCache`) so this crate
+    /// takes no dependency on `aegis-proxy` types — the closure returns a
+    /// `String`. `None` ⇒ no cache wired, endpoint reports an empty set.
+    pub cache_stats: Option<Arc<dyn Fn() -> String + Send + Sync>>,
 }
 
 impl DashboardServices {
@@ -670,6 +676,8 @@ impl DashboardServices {
                 // the Reports page card renders an explanatory
                 // empty-state in that case.
                 config_yaml_path: None,
+                // SC-1 — injected post-construction by aegis-proxy::accept.
+                cache_stats: None,
             },
             drain,
         )
