@@ -197,14 +197,74 @@ sorted(kept_query) ⏐ vary_values )`
 - `vary_values`: only headers in `vary_by`. If the **response** `Vary` lists a
   header not in `vary_by` ⇒ **don't store** (we'd be under-keyed → poisonable).
 
-### 3.4 Backends (phased)
+### 3.4 Backends & multi-node topology
 
-- **Phase 1: in-process** — `moka::future::Cache` (async, sharded, TTL + size
-  eviction) keyed per pool, or a `parking_lot::Mutex<lru::LruCache>` for the
-  first cut. Bounded by the pool's `max_entries` / `max_total_bytes`.
-- **Phase 3: distributed (Redis)** — same trait, Redis impl behind
-  `state.redis`. TTL→`EX`, `allkeys-lru`, per-pool key prefix so multi-node WAFs
-  sharing Redis don't collide. Becomes load-bearing for the multi-node deploy.
+**Tiered, behind one `CacheBackend` trait** (`get` / `put` / `invalidate`) so the
+deployment picks the layer without touching call sites.
+
+**L1 — in-process per node (Phase 1, the default).** `moka::future::Cache`
+(async, sharded, byte-weighted eviction). Microsecond lookups, zero-copy
+`Bytes` serving, **no network on the hot path** — preserves the WAF's
+sub-millisecond decision latency. Each node warms its own cache independently:
+
+- Behind the LB (DNS-RR / HAProxy) a hot path is fetched once *per node* before
+  all are warm (**N× cold-fetch**); steady-state hit ratio on hot paths stays
+  high.
+- Same object is stored on each node (N× fleet memory, each node bounded by its
+  own byte budget — safe).
+- **Staleness is bounded by TTL.** Fine for the primary use case (immutable,
+  versioned static assets); mutable content relies on the purge fan-out below.
+
+**Cross-node invalidation — Redis pub/sub purge fan-out (Phase 1, reuses the
+existing cluster Redis).** The one real multi-node gotcha is that a local
+`flush_cache` evicts only the node that received it. Fix it *without* putting
+Redis on the hot path: publish purges (`{}` / `{upstream}` / `{prefix}`) to a
+cluster channel; every node subscribes and evicts its L1. We already run Redis
+for the cluster lease + config plane, so this is a few lines — and the cache
+itself stays in-memory and fast. → **fleet-wide purge from day one.**
+
+**L2 — shared Redis *behind* L1 (Phase 3, scale-triggered, NOT a replacement).**
+The standard CDN shape (local cache + shield / tiered cache): a node misses L1 →
+checks L2 (shared) → misses → origin, then populates both. Flip it on when:
+
+- objects are **expensive to regenerate and shared across users** (not just
+  static files), so cross-node hit ratio matters;
+- N× origin cold-fetch starts hurting upstreams at many nodes;
+- you want cache to survive rolling restarts.
+
+Design notes: **a dedicated cache Redis, separate from the control/config
+Redis** — cached bodies (100s KB) + eviction churn must not pressure the small
+control-plane instance. TTL→`EX`, `maxmemory` + `allkeys-lru` (Redis enforces
+the L2 ceiling), per-pool key prefix.
+
+**Redis Cluster (cluster mode) — a deliberate scale-only L2 option.** Worth
+deploying once the L2 cache dataset or throughput **outgrows a single Redis**
+(tens of GB of cached bodies, or ops beyond one instance / one core). Implications,
+designed-for now so it's a *client swap*, not a re-architecture:
+
+- Keys (cache-key hashes) spread across the 16384 hash slots → natural memory +
+  throughput **sharding** and per-master failover with replicas. Our `get`/`put`
+  are **single-key**, so they're Cluster-safe by construction.
+- **Prefix purge is harder in Cluster**: a pool's keys scatter across masters, so
+  a `{prefix}` purge must `SCAN`+`DEL` per master (or maintain surrogate-key
+  index sets). Simplest and recommended: rely on the **L1 pub/sub fan-out for
+  instant invalidation** and let L2 fall back to **TTL** — don't make correctness
+  depend on L2 prefix purge.
+- **Pub/sub**: keep the purge fan-out on *regular* (non-sharded) pub/sub so every
+  WAF node receives it. Redis 7 sharded pub/sub (`SSUBSCRIBE`) is slot-scoped —
+  the wrong tool for a fleet broadcast.
+- Needs a **cluster-aware client** (`redis::cluster`) that handles MOVED/ASK + the
+  slot map. Availability/failover is a *bonus* here, not a requirement — a cache
+  miss simply falls through to origin, so the cache is never on the critical
+  availability path.
+- **Hash-tag caution:** co-locating a pool's keys with a `{pool}` hash-tag makes
+  prefix purge easy but defeats sharding (one hot pool → one node). Prefer spread
+  keys + pub/sub purge over hash-tag co-location.
+
+**Recommendation:** ship **L1 in-memory + Redis pub/sub purge** now; add **L2
+single (dedicated) Redis** when a shared tier is justified; adopt **Redis
+Cluster only** when that L2 outgrows one instance. All three are the same
+`CacheBackend` trait — a config choice, not a rewrite.
 
 ### 3.5 Memory budgeting & size control (must never impact the WAF)
 
@@ -294,9 +354,9 @@ Wire the **already-reserved** `POST /__waf_control/flush_cache` (today a
 
 | Phase | Scope | Est. |
 |---|---|---|
-| **1** | Per-upstream in-mem cache, GET/HEAD allow-list by prefix, hard Critical guard, key normalization + deny-query, Set-Cookie/Authorization bypass, `X-WAF-Cache` HIT/MISS, `/api/cache/stats` | ~700 LoC · ~4 d |
+| **1** | Per-upstream **L1 in-mem** cache, GET/HEAD allow-list by prefix, hard Critical guard, key normalization + deny-query, Set-Cookie/Authorization bypass, byte-budgeted eviction, `X-WAF-Cache` HIT/MISS, `/api/cache/stats`, **Redis pub/sub purge fan-out** (fleet-wide invalidation, reuses cluster Redis) | ~750 LoC · ~4.5 d |
 | **2** | Cache Deception Armor (`content_types`), `Vary`/`Accept-Encoding` keying, origin `Cache-Control` honoring, tier TTL ceilings, wire `flush_cache` (by upstream/prefix) | ~350 LoC · ~2 d |
-| **3** | Redis backend (distributed, multi-node), per-pool prefix | ~400 LoC · ~2 d |
+| **3** | **L2 shared Redis behind L1** (tiered; dedicated cache instance, per-pool prefix, `allkeys-lru`). **Redis Cluster** as a scale-only option behind the same `CacheBackend` trait | ~450 LoC · ~2.5 d |
 | **4** | `stale-if-error` / serve-stale (pairs with circuit breaker + graceful degradation), conditional revalidation (ETag) | ~300 LoC · ~2 d |
 | — | Tests (incl. **deception + poisoning** abuse tests) + dashboard wiring | ~450 LoC · ~2.5 d |
 
@@ -346,7 +406,9 @@ Belongs under the roadmap's **Operational / correctness backlog** (perf +
 upstream-relief), interleaved by capacity — not a security-capability tier.
 Pairs with:
 
-- `archive/multi-node-deployment/` — Redis backend is load-bearing > 1 node.
+- `archive/multi-node-deployment/` — multi-node runs fine on L1 + Redis pub/sub
+  purge; the L2 shared Redis (single, then Cluster at scale) is the cross-node
+  hit-ratio upgrade, not a requirement.
 - `docs/data-plane/graceful-degradation.md` — `stale-if-error` complements the
   circuit breaker (serve last-good while upstream is down).
 - `archive/smart-caching.md` — the per-tier predecessor (reuse: phasing,
