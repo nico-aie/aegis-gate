@@ -266,6 +266,47 @@ single (dedicated) Redis** when a shared tier is justified; adopt **Redis
 Cluster only** when that L2 outgrows one instance. All three are the same
 `CacheBackend` trait — a config choice, not a rewrite.
 
+#### Deployment topology — two separate Redis roles (do not merge)
+
+The cache uses **two distinct Redis deployments** with different jobs, load
+profiles, and scaling needs. They must stay separate.
+
+```
+        ┌─────────── WAF node 1 ───────────┐
+        │  L1 in-process cache (moka)       │
+        └───────────────────────────────────┘
+        ┌─────────── WAF node N ───────────┐
+        │  L1 in-process cache (moka)       │
+        └───────────────────────────────────┘
+              │  (purge fan-out)        │  (L2 body lookup, behind L1)
+              ▼                         ▼
+   ┌──────────────────────┐   ┌──────────────────────────────┐
+   │ CONTROL-PLANE REDIS  │   │ L2 CACHE REDIS (dedicated)    │
+   │ (current, single)    │   │ single → Redis Cluster @ scale│
+   │ • config plane       │   │ • cached response bodies only │
+   │ • cluster lease      │   │ • maxmemory + allkeys-lru     │
+   │ • state / RL counters│   │ • per-pool key prefix         │
+   │ • PURGE pub/sub chan │   │                               │
+   └──────────────────────┘   └──────────────────────────────┘
+```
+
+| | Control-plane Redis | L2 cache Redis |
+|---|---|---|
+| **Status** | As today — **single** instance | New, **dedicated**, optional |
+| **Cluster mode?** | No (not needed) | **Yes — Redis Cluster at scale** |
+| **Holds** | config, lease, state, RL counters, **purge pub/sub channel** | cached response bodies only |
+| **Request hot path?** | No | L2 lookup only (behind L1) |
+
+- **Purge fan-out lives on the control-plane Redis**, not the cache cluster:
+  every WAF node already connects there, and regular (non-sharded) pub/sub
+  broadcasts a purge so each node evicts its **L1**. The L2 store is never
+  involved in the fan-out — which also sidesteps Cluster's sharded-pub/sub
+  caveat.
+- **Never put cached bodies in the control-plane Redis.** 100s-KB values +
+  eviction churn would pressure the small, latency-sensitive control plane.
+- The L2 cache Redis can be a **Redis Cluster** independently, while the
+  control-plane Redis stays a single instance.
+
 ### 3.5 Memory budgeting & size control (must never impact the WAF)
 
 The cache must be *unconditionally bounded* — a cache that OOMs the WAF is a
