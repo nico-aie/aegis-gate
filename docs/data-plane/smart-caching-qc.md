@@ -136,8 +136,11 @@ the dashboard/admin API is on `:9443`.
   in memory (badge `L1 · in-memory`); only the *purge* is fleet-wide. With
   `cache.l2` configured, nodes share entries via Redis (badge `L1+L2 · in-mem +
   Redis`) — that's test #19.
-- **Redis Cluster mode is not wired yet** — `cache.l2.cluster: true` is accepted
-  but uses a single-node client to the first URL (logs a warning).
+- **Use single-node Redis for L2** (`cache.l2.cluster: false`, the default)
+  unless one Redis has genuinely outgrown its memory/throughput — on a single
+  machine or a small fleet sharing one Redis that's the right choice. Redis
+  **Cluster mode is not wired yet**: `cache.l2.cluster: true` is accepted but
+  falls back to a single-node client against the first URL (logs a warning).
 - **No conditional revalidation** (ETag / `If-None-Match`) — an expired entry is
   re-fetched in full, not revalidated.
 - **No serve-stale-on-error** yet.

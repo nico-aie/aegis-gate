@@ -243,8 +243,18 @@ the L2 ceiling), per-pool key prefix.
 
 **Redis Cluster (cluster mode) — a deliberate scale-only L2 option.** Worth
 deploying once the L2 cache dataset or throughput **outgrows a single Redis**
-(tens of GB of cached bodies, or ops beyond one instance / one core). Implications,
-designed-for now so it's a *client swap*, not a re-architecture:
+(tens of GB of cached bodies, or ops beyond one instance / one core).
+
+> **Default = single-node.** For one machine — or a small fleet of WAF nodes
+> sharing **one** Redis — use the single-node client (`cache.l2.cluster: false`,
+> what Phase 3 shipped). Cluster is *horizontal sharding*, not availability (a
+> replica / Sentinel gives HA without Cluster). Don't reach for it until a
+> single Redis genuinely can't hold the dataset or keep up. **Concrete code
+> delta to add Cluster:** only the connection type changes and the SCAN-based
+> `invalidate_prefix` (per-master, or defer to pub/sub + TTL) — the hot-path
+> single-key `GET`/`SET` is byte-for-byte identical.
+
+Implications, designed-for now so it's a *client swap*, not a re-architecture:
 
 - Keys (cache-key hashes) spread across the 16384 hash slots → natural memory +
   throughput **sharding** and per-master failover with replicas. Our `get`/`put`
