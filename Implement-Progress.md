@@ -44,7 +44,7 @@
   closed 2026-05-27 (Phase 0+A+B+C+D). Pick the next track from
   "Next Task" / the deferred backlog. Plans:
   [`plans/archive/ai-operator-copilot.md`](./plans/archive/ai-operator-copilot.md),
-  [`plans/future/observability-otel-and-alerts.md`](./plans/future/observability-otel-and-alerts.md).
+  [`plans/archive/observability-otel-and-alerts.md`](./plans/archive/observability-otel-and-alerts.md).
 - **v2.5 interop contract:** **shipped** —
   `challenge_token`/`submit_url`/`submit_method` wire shape,
   public `/challenge/verify` on data plane, loopback-gated
@@ -165,7 +165,7 @@ For full chronological detail see `git log` and the
 (P0–P4 + YAML-config centralization + config-plane hot-reload) and the
 Observability P1 (OTel→SigNoz traces + SLO message quality) are both
 closed. Candidate next tracks, smallest-first:
-- **Observability P2–P4** (`plans/future/observability-otel-and-alerts.md`):
+- **Observability P2–P4** (`plans/archive/observability-otel-and-alerts.md`):
   remaining `AlertEvent` variants beyond SLO, dashboard/trace deep-links,
   likely-cause hints; metrics+logs live smoke through the Collector;
   optional app-side OTLP push; SIGTERM batch flush.

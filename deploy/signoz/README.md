@@ -125,4 +125,4 @@ top paths/clients, upstream health). Import via SigNoz → **Dashboards** →
 - ⏳ SIGTERM flush of the in-flight span batch (`OTEL_PROVIDER` OnceLock
   in `otel.rs` is parked for the shutdown hook).
 
-Plan: [`../../plans/future/observability-otel-and-alerts.md`](../../plans/future/observability-otel-and-alerts.md).
+Plan: [`../../plans/archive/observability-otel-and-alerts.md`](../../plans/archive/observability-otel-and-alerts.md).

@@ -3,8 +3,9 @@
 Simplified 2026-06-01 to focus on the **main plan**. The top level
 holds the operating plan + the status matrix; forward-looking work is
 the roadmap + the open backlog; everything closed or parked lives in
-[`archive/`](./archive/). (Updated 2026-06-04: the AI Operator Copilot
-shipped and moved to `archive/`; no track is mid-build.)
+[`archive/`](./archive/). (Updated 2026-06-06: `future/` trimmed to just
+the world-class roadmap — the observability + routing backlog specs moved
+to `archive/`; no track is mid-build.)
 
 ## Layout
 
@@ -14,9 +15,7 @@ plans/
 ├── plan.md                    ← MAIN PLAN — assistant protocol + repo conventions
 ├── implementation-matrix.md   ← doc-by-doc Implemented / Partial / Designed / Deferred
 ├── future/
-│   ├── world-class-waf-roadmap.md         ← strategic ordering (Tiers 0–6)
-│   ├── observability-otel-and-alerts.md   ← OTel export (P1 done) + richer alerts
-│   └── routing-upstream-improvements.md   ← Routing & Upstreams UX + feature backlog
+│   └── world-class-waf-roadmap.md         ← strategic ordering (Tiers 0–6)
 └── archive/                   ← closed / shipped / parked plans (read-only history,
                                   incl. issue-fix/ QA sprints)
 ```
@@ -33,18 +32,19 @@ plans/
 ## `future/`
 
 - **[`world-class-waf-roadmap.md`](./future/world-class-waf-roadmap.md)** —
-  the ordering document: grades Aegis against the 2025–2026 WAAP leaders,
-  names code-verified gaps, sequences them into Tiers 0–6. Read it before
-  picking up new capability work.
-- **[`observability-otel-and-alerts.md`](./future/observability-otel-and-alerts.md)** —
-  improve observation: (1) OTLP export to an OTel Collector — **traces
-  + SLO-message-quality P1 shipped 2026-06-02**; metrics/logs live smoke,
-  app-side push, and SIGTERM flush remain — and (2) the remaining alert
-  message work (P2–P4).
-- **[`routing-upstream-improvements.md`](./future/routing-upstream-improvements.md)** —
-  Routing & Upstreams dashboard UX + feature backlog (live member health,
-  route shadow detection, per-route canary/retry/transforms, member
-  drain, import/export). Drafted 2026-06-04.
+  the only forward plan kept here: the ordering document that grades Aegis
+  against the 2025–2026 WAAP leaders, names code-verified gaps, and
+  sequences them into Tiers 0–6. Read it before picking up new capability
+  work; slot any new net-new capability into a tier.
+
+> **Trimmed 2026-06-06.** The two detailed backlog specs that used to live
+> here moved to `archive/` so `future/` stays a single north-star doc:
+> [`archive/observability-otel-and-alerts.md`](./archive/observability-otel-and-alerts.md)
+> (OTLP export — traces + SLO-message P1 shipped 2026-06-02; metrics/logs
+> live smoke, app-side push, SIGTERM flush, and alert P2–P4 remain) and
+> [`archive/routing-upstream-improvements.md`](./archive/routing-upstream-improvements.md)
+> (Routing & Upstreams UX + feature backlog). They remain valid designs —
+> the status matrix points at their archive paths.
 
 > **AI Operator Copilot — ✅ SHIPPED (P0–P4 + YAML-config centralization),
 > 2026-06-02/03.** The build plan moved to

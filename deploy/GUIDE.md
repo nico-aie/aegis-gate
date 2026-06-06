@@ -263,7 +263,7 @@ out of log *fields* (the WAF's `dlp` handles body-level redaction).
   now); the dev-compose Jaeger service remains for anyone who still
   wants it, but the Grafana "Jaeger" datasource is legacy. OTLP metrics
   + logs export to SigNoz are the next phases (still Prometheus-scrape
-  today) — see `plans/future/observability-otel-and-alerts.md`.
+  today) — see `plans/archive/observability-otel-and-alerts.md`.
 
 ---
 
