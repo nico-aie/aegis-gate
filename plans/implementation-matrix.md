@@ -52,7 +52,7 @@ table — keep them in sync.
 | [`per-route-quotas.md`](../docs/data-plane/per-route-quotas.md) | **Implemented** | `aegis-proxy/src/quota.rs`. |
 | [`transformations-cors.md`](../docs/data-plane/transformations-cors.md) | **Implemented** | `aegis-proxy/src/transform/{cors,vars,mod}.rs`. |
 | [`service-discovery.md`](../docs/data-plane/service-discovery.md) | **Implemented** | B2 closed (T5..T7): `sd/mod.rs` (file + diff + churn) + feature-gated `consul` / `etcd` / `k8s` watchers. DNS SRV remains designed-only. |
-| [`smart-caching.md`](../docs/data-plane/smart-caching.md) | **Deferred** | TierCache removed 2026-05-11 (PROXY-08/09 — zero callers); `X-WAF-Cache` header still stamped as `BYPASS` per contract. Restoration spec: [`plans/archive/smart-caching.md`](archive/smart-caching.md). |
+| [`smart-caching.md`](../docs/data-plane/smart-caching.md) | **Deferred (redesigned)** | TierCache removed 2026-05-11 (PROXY-08/09 — zero callers); `X-WAF-Cache` header still stamped as `BYPASS` per contract. **Active spec (2026-06-06):** [`plans/future/smart-caching.md`](future/smart-caching.md) — per-upstream path-scoped cache, hard never-cache-CRITICAL, deception/poisoning-safe. Supersedes the archived per-tier draft [`plans/archive/smart-caching.md`](archive/smart-caching.md). |
 | [`adaptive-load-shedding.md`](../docs/data-plane/adaptive-load-shedding.md) | **Implemented** | `aegis-proxy/src/shed.rs` + `aegis-core/src/load_mode.rs` (P7). |
 | [`graceful-degradation.md`](../docs/data-plane/graceful-degradation.md) | **Implemented** | Circuit breaker (`upstream/circuit.rs`) + load shedder (`shed.rs`) + cache fallback. |
 

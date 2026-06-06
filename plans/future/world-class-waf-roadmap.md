@@ -191,7 +191,10 @@ tiers:
   guard + between-run rotation (the 6 GB/min soak finding).
 - [`audit-cold-tier-export.md`](../archive/audit-cold-tier-export.md) — persist
   beyond the 200-event ring (v1 JSONL ~30 LoC).
-- [`smart-caching.md`](../archive/smart-caching.md) — opt-in LRU response cache.
+- [`smart-caching.md`](./smart-caching.md) — **per-upstream**, path-scoped
+  opt-in response cache; serves repeats without an upstream round-trip, never
+  caches CRITICAL tier, with Cache-Deception-Armor + poisoning-safe keys
+  (2026-06-06 redesign; supersedes the archived per-tier draft).
 - Wire-up backlog (`unwired-stubs-catalog.md`): ICAP content scanning,
   per-route quota enforcement, traffic mirroring, `dr.rs` runtime
   snapshot, JWT validator, OPA client, vendor CAPTCHA, threat-intel

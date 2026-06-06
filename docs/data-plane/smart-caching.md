@@ -1,8 +1,16 @@
 # Smart Caching
 
-> **Status:** Implemented — `aegis-proxy/src/cache/mod.rs` — `TierCache`, vary-aware, max-age honored.
+> **Status: NOT implemented — removed + redesigned.** The `TierCache`
+> described below was a **per-tier** in-process cache that was **removed
+> 2026-05-11** (PROXY-08/09 — zero callers). `X-WAF-Cache` is still stamped
+> `BYPASS` on every response per the interop contract, but no cache is wired.
 >
-> See [`../../plans/plan.md`](../../plans/plan.md#1-doc-by-doc-implementation-status) for the full matrix.
+> This page is kept as historical reference for the per-tier shape. The
+> **active design is per-upstream** (cache config attached to each upstream
+> pool, hard never-cache-CRITICAL, deception/poisoning-safe keys, byte-budgeted
+> eviction): **[`../../plans/future/smart-caching.md`](../../plans/future/smart-caching.md)**.
+> See [`../../plans/implementation-matrix.md`](../../plans/implementation-matrix.md)
+> for current status.
 
 ## Purpose
 
