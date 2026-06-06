@@ -7750,6 +7750,105 @@ function PoolDetail({ name, pool, onEdit, onDelete, busy }) {
 //
 // (Function name kept as `PageUpstreams` for router compat; the
 // sidebar label is "Routing & Upstreams".)
+// SC-1 (2026-06-06) — per-upstream smart-cache stats card. Reads
+// `GET /api/cache/stats` (one row per opted-in upstream). The backend badge
+// makes the cache TIER explicit — L1 in-process today; flips to "L1+L2 ·
+// in-mem + Redis" automatically once the stats `backend` field reports redis.
+function cacheBackendBadge(backend) {
+  if (backend === 'redis') return { label: 'L2 · Redis', tone: 'warn' };
+  if (backend && backend.includes('redis')) return { label: 'L1+L2 · in-mem + Redis', tone: 'warn' };
+  return { label: 'L1 · in-memory', tone: 'neutral' };
+}
+
+function fmtCacheBytes(n) {
+  if (n == null) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function CacheMetric({ label, value, tone }) {
+  return (
+    <div>
+      <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--ink-dim)' }}>{label}</div>
+      <div className="num" style={{ fontSize: 16, color: tone || 'var(--ink)' }}>{value}</div>
+    </div>
+  );
+}
+
+function CacheStatsCard() {
+  const api = window.useCacheStatsApi ? window.useCacheStatsApi() : { data: null };
+  const pools = api.data?.pools || [];
+
+  return (
+    <div className="card" data-component="cache-stats-card" style={{ marginTop: 12, padding: 0 }}>
+      <div className="card-head" style={{ padding: 12 }}>
+        <div>
+          <div className="card-title">
+            Smart cache
+            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              per upstream
+            </span>
+          </div>
+          <div className="card-subtitle">
+            L1 in-process response cache (per node) — serves repeat GET/HEAD
+            from memory, never caches CRITICAL tier. Stats are this node's
+            in-memory cache; a Redis L2 tier is planned (badge flips when wired).
+          </div>
+        </div>
+      </div>
+
+      {pools.length === 0 ? (
+        <div style={{ padding: '14px 12px', fontSize: 12, color: 'var(--ink-dim)' }}>
+          No upstream has smart caching enabled. Add a <code>cache:</code> block
+          under <code>upstreams.&lt;pool&gt;</code> with one or more path-prefix
+          rules to turn it on.
+        </div>
+      ) : (
+        pools.map(p => {
+          const be = cacheBackendBadge(p.backend);
+          const util = Math.min(100, Math.max(0, p.budget_utilization_pct || 0));
+          const ratioPct = ((p.hit_ratio || 0) * 100).toFixed(1);
+          return (
+            <div key={p.pool} style={{ borderTop: '1px solid var(--hairline)', padding: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{p.pool}</span>
+                <span className={`pill ${be.tone}`} style={{ fontSize: 10 }} title="Cache tier these numbers describe">{be.label}</span>
+                <span className={`pill ${p.enabled ? 'ok' : 'neutral'}`} style={{ fontSize: 10 }}>
+                  {p.enabled ? 'enabled' : 'configured · off'}
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--ink-dim)' }}>
+                  hit ratio{' '}
+                  <span className="num" style={{ color: Number(ratioPct) >= 50 ? 'var(--up)' : 'var(--ink)', fontWeight: 600 }}>{ratioPct}%</span>
+                </span>
+              </div>
+
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--ink-dim)', marginBottom: 3 }}>
+                  <span>Memory budget</span>
+                  <span className="num">{fmtCacheBytes(p.bytes)} / {fmtCacheBytes(p.budget_bytes)} · {util.toFixed(0)}%</span>
+                </div>
+                <div style={{ height: 6, borderRadius: 3, background: 'var(--surface-3)', overflow: 'hidden' }}>
+                  <div style={{ width: `${util}%`, height: '100%', background: util > 90 ? 'var(--down)' : 'var(--brand-yellow)', transition: 'width 240ms' }} />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                <CacheMetric label="Entries" value={(p.entries ?? 0).toLocaleString()} />
+                <CacheMetric label="Hits" value={(p.hit ?? 0).toLocaleString()} tone="var(--up)" />
+                <CacheMetric label="Misses" value={(p.miss ?? 0).toLocaleString()} />
+                <CacheMetric label="Stores" value={(p.stores ?? 0).toLocaleString()} />
+                <CacheMetric label="Evictions" value={(p.evictions ?? 0).toLocaleString()} tone={p.evictions > 0 ? 'var(--warn)' : undefined} />
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 function PageUpstreams() {
   const cfgApi = window.useUpstreamsConfigApi();
   const summaryApi = window.useUpstreamsApi();
@@ -7932,6 +8031,9 @@ function PageUpstreams() {
         onDeletePool={(n) => setDeleteModal({ name: n, refs: pools[n]?.referenced_by_routes || [] })}
         cfgReload={cfgApi.reload}
       />
+
+      {/* SC-1 — per-upstream smart-cache stats (L1 in-process today). */}
+      <window.CacheStatsCard />
 
       {/* Orphan pools — collapsed by default. Pools that no
           route currently points at, kept around so operators
@@ -13615,7 +13717,7 @@ Object.assign(window, {
   CopilotWidget,
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
-  PageUpstreams,
+  PageUpstreams, CacheStatsCard,
   // SC-T2 — Scaling page (L1 workers + L2 cluster + L3 state).
   PageScaling,
   // Phase 2 — merged Access Lists, plus Phase 3 stubs.

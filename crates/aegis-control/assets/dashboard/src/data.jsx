@@ -997,6 +997,9 @@ function useAlertsApi()   { return useApi('/api/alerts',          { intervalMs: 
 function useGitopsApi()   { return useApi('/api/gitops/status',   { intervalMs: 30000, fallback: null }); }
 // HACK-T1 — empty list rather than seeded fixture.
 function useUpstreamsApi(){ return useApi('/api/upstreams',       { intervalMs: 5000, fallback: { pools: [] } }); }
+// SC-1 — per-upstream smart-cache stats (L1 in-process today; backend field
+// distinguishes in_memory vs redis once the L2 tier ships).
+function useCacheStatsApi(){ return useApi('/api/cache/stats',     { intervalMs: 5000, fallback: { pools: [] } }); }
 // CC-T1.1 — full upstream-pool config view (members, lb, health,
 // circuit-breaker, connection pool, referenced_by_routes).
 // CC-T1.1.b shipped the audit-mutated PUT/DELETE; helpers below.
@@ -1378,6 +1381,7 @@ Object.assign(window, {
   useApi, useRealLiveFeed,
   useRulesApi, useBlacklistApi, useWhitelistApi,
   useStatusApi, useStatsApi, useTimeseriesApi,
+  useCacheStatsApi,
   useAttacksDistributionApi, useAttacksTopApi,
   // HACK-T1 — live hooks retiring `Math.random` on Attack Events
   useAttacksByDetectorApi, useBotMixApi, useThreatIntelApi,

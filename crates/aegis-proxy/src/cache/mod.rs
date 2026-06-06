@@ -233,6 +233,11 @@ impl PoolCache {
         let total = hits + misses;
         PoolStats {
             pool: pool.to_string(),
+            // Phase 1 is L1 in-process only; when the L2 Redis tier lands this
+            // becomes per-pool ("in_memory" / "redis" / "in_memory+redis") so
+            // the dashboard can show which tier the numbers come from.
+            backend: "in_memory",
+            enabled: self.cfg.enabled,
             entries,
             bytes,
             budget_bytes: self.cfg.max_total_bytes,
@@ -315,6 +320,11 @@ impl ResponseCache {
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct PoolStats {
     pub pool: String,
+    /// Which cache tier these numbers describe: `in_memory` (L1, per node)
+    /// today; `redis` / `in_memory+redis` once the L2 tier ships.
+    pub backend: &'static str,
+    /// Whether this pool's cache is currently enabled (vs configured-but-off).
+    pub enabled: bool,
     pub entries: u64,
     pub bytes: u64,
     pub budget_bytes: u64,
