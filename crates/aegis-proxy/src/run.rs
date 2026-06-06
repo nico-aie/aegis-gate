@@ -1316,12 +1316,46 @@ pub async fn run(
                 device_tracker_for_reset.clear();
             }));
         // SC-1 — wire `POST /__waf_control/flush_cache` to actually evict the
-        // data-plane response cache (all pools). Without this the endpoint
-        // reports `supported: false`.
+        // data-plane response cache (all pools), and fan the purge out to the
+        // rest of the fleet over Redis pub/sub (control-plane Redis, not the
+        // request hot path). Each node evicts its own L1 immediately; the
+        // publish lets every other node do the same. Local-only when the redis
+        // state backend isn't configured (or the binary lacks `--features redis`).
         let cache_for_flush = upstream_ctx.cache.clone();
+        // Purge fan-out URLs — only populated for the redis state backend.
+        let purge_urls: Option<Vec<String>> = {
+            #[cfg(feature = "redis")]
+            {
+                if matches!(cfg.state.backend, aegis_core::config::StateBackendKind::Redis) {
+                    cfg.state.redis.as_ref().map(|r| r.urls.clone())
+                } else {
+                    None
+                }
+            }
+            #[cfg(not(feature = "redis"))]
+            {
+                None
+            }
+        };
+        // Subscriber: evict this node's L1 whenever any node publishes a purge.
+        #[cfg(feature = "redis")]
+        if let Some(urls) = purge_urls.clone() {
+            crate::cache::purge::spawn_subscriber(urls, upstream_ctx.cache.clone());
+        }
+        let purge_urls_for_cb = purge_urls.clone();
         rt.control
             .register_flush_callback(std::sync::Arc::new(move || {
+                // Local eviction first — the flush_cache response is honest
+                // even if the fan-out publish later fails.
                 cache_for_flush.invalidate(None);
+                #[cfg(feature = "redis")]
+                if let Some(urls) = purge_urls_for_cb.clone() {
+                    tokio::spawn(async move {
+                        crate::cache::purge::publish(&urls, "all").await;
+                    });
+                }
+                #[cfg(not(feature = "redis"))]
+                let _ = &purge_urls_for_cb;
             }));
         //   items 2/4/6 (StateBackend half): async ephemeral wipe of
         //   rate-limit windows + nonces + auto-block + backend risk

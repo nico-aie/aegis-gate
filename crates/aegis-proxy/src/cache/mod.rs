@@ -22,6 +22,10 @@ use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use moka::future::Cache;
 use moka::Expiry;
 
+// SC-1 — Redis pub/sub purge fan-out (multi-node). Only with `--features redis`.
+#[cfg(feature = "redis")]
+pub mod purge;
+
 use aegis_core::config::{CacheRuleConfig, PoolCacheConfig, PoolConfig};
 
 /// 256-bit normalized cache key. 32 bytes makes accidental collisions (which

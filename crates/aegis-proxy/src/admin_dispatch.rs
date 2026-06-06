@@ -1153,7 +1153,7 @@ pub(crate) fn stamp_interop_response(
     request_start: std::time::Instant,
 ) -> Response<Full<Bytes>> {
     use aegis_control::interop::audit::MinimalAuditEntry;
-    use aegis_control::interop::headers::{CacheState, Decision};
+    use aegis_control::interop::headers::Decision;
 
     let Some(rt) = interop else {
         // No interop runtime → skip the v2.3 mandatory headers,
