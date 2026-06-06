@@ -1,12 +1,16 @@
 # Smart Caching — per-upstream response cache (future plan)
 
-> **Status (2026-06-06): Researched + designed, not started.** Supersedes
-> the per-tier design in
-> [`../archive/smart-caching.md`](../archive/smart-caching.md) (kept for the
-> still-valid pieces: the `X-WAF-Cache` wire slot, eviction sketch, phasing).
-> This revision changes the **configuration axis** from *risk tier* to
-> *per-upstream + path*, and makes "never cache CRITICAL" a hard,
-> non-configurable invariant.
+> **Status (2026-06-06): Phases 1–3 shipped.** Per-upstream L1 in-process
+> cache + the security guards, `X-WAF-Cache` HIT/MISS/BYPASS, never-CRITICAL,
+> Accept-Encoding/Vary keying, `/api/cache/stats` + dashboard card, Redis
+> pub/sub fleet-wide purge fan-out, and the **shared L2 (Redis) tier** are all
+> live (`crates/aegis-proxy/src/cache/`). Remaining: Redis **Cluster** client
+> (flag accepted, single-node used today) and Phase 4 (`stale-if-error`, ETag
+> revalidation). Supersedes the per-tier design in
+> [`../archive/smart-caching.md`](../archive/smart-caching.md).
+> Config axis is *per-upstream + path*; "never cache CRITICAL" is a hard,
+> non-configurable invariant. QC guide:
+> [`../../docs/data-plane/smart-caching-qc.md`](../../docs/data-plane/smart-caching-qc.md).
 
 ## Goal
 

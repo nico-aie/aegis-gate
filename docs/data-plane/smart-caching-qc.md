@@ -103,8 +103,9 @@ the dashboard/admin API is on `:9443`.
 | 14 | **TTL expiry** | `GET` (HIT), wait > rule `ttl`, `GET` again | After TTL → `MISS` again (re-fetched) |
 | 15 | **Flush** | Warm an entry (HIT), `POST /__waf_control/flush_cache` (header `X-Benchmark-Secret: <secret>`), `GET` again | After flush → `MISS` |
 | 16 | **Fleet-wide flush** *(multi-node)* | 2 nodes behind LB, warm the path on **both**, flush on node A, GET on **node B** | Node B → `MISS` (purge propagated via Redis pub/sub) |
-| 17 | **Stats endpoint** | `GET https://<waf>:9443/api/cache/stats` | JSON with one row per cached pool: `entries`, `bytes`, `hit`, `miss`, `hit_ratio`, `evictions`, `backend: "in_memory"` |
-| 18 | **Dashboard card** | Open **Routing & Upstreams** in the console | "Smart cache" card shows the pool, an **`L1 · in-memory`** badge, hit ratio climbing, a memory-budget bar, and entries/hits/misses/evictions |
+| 17 | **Stats endpoint** | `GET https://<waf>:9443/api/cache/stats` | JSON with one row per cached pool: `entries`, `bytes`, `hit`, `miss`, `hit_ratio`, `evictions`, `backend` (`in_memory`, or `in_memory+redis` when L2 is configured) |
+| 18 | **Dashboard card** | Open **Routing & Upstreams** in the console | "Smart cache" card shows the pool, a tier badge (**`L1 · in-memory`**, or **`L1+L2 · in-mem + Redis`** when L2 is wired), hit ratio climbing, a memory-budget bar, and entries/hits/misses/evictions |
+| 19 | **L2 shared tier** *(if `cache.l2` configured)* | On a 2nd node (cold), GET a path already warmed on node 1 | `HIT` on the 2nd node **without** that node ever fetching from origin (entry came from the shared Redis L2) |
 
 ### Pass/fail summary criteria
 
@@ -129,11 +130,14 @@ the dashboard/admin API is on `:9443`.
 
 ---
 
-## 5. Out of scope for this phase (do NOT expect)
+## 5. Out of scope (do NOT expect)
 
-- **No shared/Redis cache store yet** — the cache is per node; two nodes warm
-  independently (the stats are per node, badge says `L1 · in-memory`). Only the
-  *purge* is fleet-wide.
+- **L2 is optional.** Without a `cache.l2` block each node caches independently
+  in memory (badge `L1 · in-memory`); only the *purge* is fleet-wide. With
+  `cache.l2` configured, nodes share entries via Redis (badge `L1+L2 · in-mem +
+  Redis`) — that's test #19.
+- **Redis Cluster mode is not wired yet** — `cache.l2.cluster: true` is accepted
+  but uses a single-node client to the first URL (logs a warning).
 - **No conditional revalidation** (ETag / `If-None-Match`) — an expired entry is
   re-fetched in full, not revalidated.
 - **No serve-stale-on-error** yet.
