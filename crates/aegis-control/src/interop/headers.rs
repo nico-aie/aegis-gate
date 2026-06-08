@@ -340,6 +340,54 @@ mod tests {
         assert_eq!(CacheState::Bypass.as_str(), "BYPASS");
     }
 
+    /// SC-1 — the smart-cache verdict must reach the wire. A `Decision`
+    /// carrying `CacheState::Hit` stamps `X-WAF-Cache: HIT`; `Miss` stamps
+    /// `MISS`. This is the end of the chain the data plane drives:
+    /// `PoolCache::lookup` → `DecisionTag::with_cache` → `Decision.cache` →
+    /// here. Pre-SC-1 every response was `BYPASS`, so a regression that drops
+    /// the field would silently re-bypass and this guards it.
+    #[test]
+    fn cache_state_is_stamped_onto_the_response_header() {
+        for (state, expected) in [
+            (CacheState::Hit, "HIT"),
+            (CacheState::Miss, "MISS"),
+            (CacheState::Bypass, "BYPASS"),
+        ] {
+            let mut h = HeaderMap::new();
+            let decision = Decision {
+                request_id: "rid".into(),
+                risk_score: 0,
+                action: Action::Allow,
+                rule_id: None,
+                cache: state,
+                mode: Mode::Enforce,
+            };
+            decision.stamp(&mut h);
+            assert_eq!(h.get(CACHE).unwrap(), expected, "X-WAF-Cache for {state:?}");
+        }
+    }
+
+    /// The cache verdict rides on the `DecisionTag` the data plane emits, so a
+    /// `Decision` built from a tag (as `stamp_interop_response` does) must
+    /// preserve it. Mirrors the field copy at `admin_dispatch.rs` `cache:
+    /// decision_tag.cache`.
+    #[test]
+    fn decision_tag_cache_round_trips_through_a_decision() {
+        let tag = DecisionTag::allow().with_cache(CacheState::Hit);
+        assert_eq!(tag.cache, CacheState::Hit);
+        let decision = Decision {
+            request_id: "rid".into(),
+            risk_score: tag.risk_score.unwrap_or(0),
+            action: tag.action,
+            rule_id: tag.rule_id.clone(),
+            cache: tag.cache,
+            mode: Mode::Enforce,
+        };
+        let mut h = HeaderMap::new();
+        decision.stamp(&mut h);
+        assert_eq!(h.get(CACHE).unwrap(), "HIT");
+    }
+
     #[test]
     fn allow_decision_stamps_every_required_header() {
         let mut h = HeaderMap::new();

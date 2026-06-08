@@ -1317,8 +1317,9 @@ pub struct CacheRuleConfig {
 /// the control plane. See `plans/future/smart-caching.md` §3.4.
 #[derive(Clone, Debug, Deserialize)]
 pub struct CacheL2Config {
-    /// Dedicated cache Redis endpoint(s). First URL is used today; the list
-    /// is for the future Cluster client.
+    /// Dedicated cache Redis endpoint(s). With `cluster: false` the first URL
+    /// is used (extras ignored); with `cluster: true` all URLs seed the cluster
+    /// client's topology discovery.
     pub urls: Vec<String>,
     /// Use a **single-node** Redis here unless one Redis instance has
     /// genuinely outgrown its memory or throughput — for a single machine (or
@@ -1326,12 +1327,11 @@ pub struct CacheL2Config {
     /// simpler. Redis **Cluster** is a horizontal-sharding tool, not an
     /// availability one (a replica/Sentinel gives HA without Cluster).
     ///
-    /// `cluster: true` is **accepted but not yet wired** — it logs a warning
-    /// and falls back to the single-node client against the first URL. When
-    /// the cluster client lands, only two things change (the hot-path GET/SET
-    /// is identical): the connection type, and the SCAN-based prefix purge
-    /// (which on Cluster must run per-master or defer to the L1 pub/sub
-    /// fan-out + TTL).
+    /// `cluster: true` selects the async Redis Cluster client (keys shard
+    /// across masters by CRC16 slot). The hot-path GET/SET is identical to
+    /// single-node; only the connection type differs and the SCAN-based prefix
+    /// purge fans out across masters (a key caught mid-resharding can be missed,
+    /// so the L1 pub/sub fan-out + TTL remain the purge backstop).
     #[serde(default)]
     pub cluster: bool,
     /// Redis key namespace for this cache (keys are

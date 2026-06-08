@@ -139,8 +139,10 @@ the dashboard/admin API is on `:9443`.
 - **Use single-node Redis for L2** (`cache.l2.cluster: false`, the default)
   unless one Redis has genuinely outgrown its memory/throughput — on a single
   machine or a small fleet sharing one Redis that's the right choice. Redis
-  **Cluster mode is not wired yet**: `cache.l2.cluster: true` is accepted but
-  falls back to a single-node client against the first URL (logs a warning).
+  **Cluster** is wired (`cache.l2.cluster: true` selects the async cluster
+  client; list the seed nodes in `urls`); the hot-path GET/SET is identical and
+  the prefix purge fans out across all masters. Prefer single-node until you
+  actually need horizontal sharding.
 - **No conditional revalidation** (ETag / `If-None-Match`) — an expired entry is
   re-fetched in full, not revalidated.
 - **No serve-stale-on-error** yet.

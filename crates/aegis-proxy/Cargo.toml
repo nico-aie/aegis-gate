@@ -8,7 +8,7 @@ rust-version.workspace = true
 # `redis` enables the deadpool-redis-backed `RedisBackend`. Off by
 # default so single-node builds don't pull the Redis dep tree.
 default = []
-redis = ["dep:redis", "dep:deadpool-redis"]
+redis = ["dep:redis", "dep:deadpool-redis", "deadpool-redis/cluster"]
 # `affinity` enables CPU-pinning of tokio worker threads at boot.
 # Linux-first; macOS/Windows accept the request but kernel
 # enforcement is advisory. Off by default — the runtime config

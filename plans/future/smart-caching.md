@@ -1,12 +1,13 @@
 # Smart Caching — per-upstream response cache (future plan)
 
-> **Status (2026-06-06): Phases 1–3 shipped.** Per-upstream L1 in-process
-> cache + the security guards, `X-WAF-Cache` HIT/MISS/BYPASS, never-CRITICAL,
-> Accept-Encoding/Vary keying, `/api/cache/stats` + dashboard card, Redis
-> pub/sub fleet-wide purge fan-out, and the **shared L2 (Redis) tier** are all
-> live (`crates/aegis-proxy/src/cache/`). Remaining: Redis **Cluster** client
-> (flag accepted, single-node used today) and Phase 4 (`stale-if-error`, ETag
-> revalidation). Supersedes the per-tier design in
+> **Status (2026-06-08): Phases 1–3 shipped, incl. Redis Cluster.**
+> Per-upstream L1 in-process cache + the security guards, `X-WAF-Cache`
+> HIT/MISS/BYPASS, never-CRITICAL, Accept-Encoding/Vary keying,
+> `/api/cache/stats` + dashboard card, Redis pub/sub fleet-wide purge fan-out,
+> and the **shared L2 (Redis) tier** — single-node **and Redis Cluster**
+> (`cache.l2.cluster: true` → async cluster client; per-master SCAN purge
+> fan-out) — are all live (`crates/aegis-proxy/src/cache/`). Remaining: Phase 4
+> (`stale-if-error`, ETag revalidation). Supersedes the per-tier design in
 > [`../archive/smart-caching.md`](../archive/smart-caching.md).
 > Config axis is *per-upstream + path*; "never cache CRITICAL" is a hard,
 > non-configurable invariant. QC guide:
@@ -241,36 +242,41 @@ Redis** — cached bodies (100s KB) + eviction churn must not pressure the small
 control-plane instance. TTL→`EX`, `maxmemory` + `allkeys-lru` (Redis enforces
 the L2 ceiling), per-pool key prefix.
 
-**Redis Cluster (cluster mode) — a deliberate scale-only L2 option.** Worth
-deploying once the L2 cache dataset or throughput **outgrows a single Redis**
-(tens of GB of cached bodies, or ops beyond one instance / one core).
+**Redis Cluster (cluster mode) — a deliberate scale-only L2 option (now
+shipped).** Worth deploying once the L2 cache dataset or throughput **outgrows a
+single Redis** (tens of GB of cached bodies, or ops beyond one instance / one
+core).
 
 > **Default = single-node.** For one machine — or a small fleet of WAF nodes
 > sharing **one** Redis — use the single-node client (`cache.l2.cluster: false`,
-> what Phase 3 shipped). Cluster is *horizontal sharding*, not availability (a
+> the default). Cluster is *horizontal sharding*, not availability (a
 > replica / Sentinel gives HA without Cluster). Don't reach for it until a
-> single Redis genuinely can't hold the dataset or keep up. **Concrete code
-> delta to add Cluster:** only the connection type changes and the SCAN-based
-> `invalidate_prefix` (per-master, or defer to pub/sub + TTL) — the hot-path
-> single-key `GET`/`SET` is byte-for-byte identical.
+> single Redis genuinely can't hold the dataset or keep up. **The code delta was
+> exactly as predicted:** only the connection type (a `Backend` enum arm over
+> `deadpool_redis::cluster::Pool`) and the SCAN purge (now per-master fan-out via
+> `CLUSTER NODES`) changed — the hot-path single-key `GET`/`SET` is byte-for-byte
+> identical, shared through one `with_conn!` macro.
 
-Implications, designed-for now so it's a *client swap*, not a re-architecture:
+Implications, designed-for from the start so it was a *client swap*, not a
+re-architecture:
 
 - Keys (cache-key hashes) spread across the 16384 hash slots → natural memory +
   throughput **sharding** and per-master failover with replicas. Our `get`/`put`
   are **single-key**, so they're Cluster-safe by construction.
 - **Prefix purge is harder in Cluster**: a pool's keys scatter across masters, so
-  a `{prefix}` purge must `SCAN`+`DEL` per master (or maintain surrogate-key
-  index sets). Simplest and recommended: rely on the **L1 pub/sub fan-out for
-  instant invalidation** and let L2 fall back to **TTL** — don't make correctness
-  depend on L2 prefix purge.
+  a `{prefix}` purge must `SCAN`+`UNLINK` per master. **Implemented:**
+  `invalidate_prefix` discovers masters via `CLUSTER NODES`, dials each directly,
+  and SCANs node-locally (single-key `UNLINK` to dodge CROSSSLOT). Still don't
+  make correctness depend on it — the **L1 pub/sub fan-out gives instant
+  invalidation** and L2 falls back to **TTL** for anything a mid-resharding SCAN
+  misses.
 - **Pub/sub**: keep the purge fan-out on *regular* (non-sharded) pub/sub so every
   WAF node receives it. Redis 7 sharded pub/sub (`SSUBSCRIBE`) is slot-scoped —
   the wrong tool for a fleet broadcast.
-- Needs a **cluster-aware client** (`redis::cluster`) that handles MOVED/ASK + the
-  slot map. Availability/failover is a *bonus* here, not a requirement — a cache
-  miss simply falls through to origin, so the cache is never on the critical
-  availability path.
+- Uses a **cluster-aware client** (`deadpool_redis::cluster` over
+  `redis::cluster_async`) that handles MOVED/ASK + the slot map. Availability/
+  failover is a *bonus* here, not a requirement — a cache miss simply falls
+  through to origin, so the cache is never on the critical availability path.
 - **Hash-tag caution:** co-locating a pool's keys with a `{pool}` hash-tag makes
   prefix purge easy but defeats sharding (one hot pool → one node). Prefer spread
   keys + pub/sub purge over hash-tag co-location.
