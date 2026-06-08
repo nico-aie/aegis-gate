@@ -1,0 +1,49 @@
+# Aegis-Gate — VALIDATION WAF node on the infra host (Docker).
+# Builds the WAF image (production otel llm) and runs ONE node wired to the
+# already-running infra: Redis + mock (aegis-infra_default) and the SigNoz
+# collector (signoz-net). Proves the full pipeline before fanning out native
+# nodes to other machines.
+#
+#   cd deploy/compose
+#   docker compose -f waf-local.docker-compose.yml up -d --build   # long FIRST compile
+#
+# Copilot is built in but INERT until you add LLM_API_KEY (uncomment below).
+name: aegis-waf-local
+
+services:
+  waf-local:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+      args:
+        # NOTE: the `production` umbrella includes `ai` (ONNX/`ort`), whose
+        # PREBUILT binary from ort.pyke.io needs glibc >=2.38 and FAILS to link
+        # against this Debian bookworm base (glibc 2.36): `undefined symbol
+        # __isoc23_strtoll`. So we build production's set MINUS `ai` (+ otel llm).
+        # The ONNX ai detector is off by default anyway. To use full `production`
+        # on real nodes, build on a glibc>=2.38 base or switch `ort` to compile/
+        # load-dynamic. See deploy/INFRA-HOST-STATUS.md.
+        CARGO_FEATURES: "redis alerts geoip taxii http3 vault aws gcp azure consul etcd k8s otel llm"
+    image: aegis-gate:local
+    restart: unless-stopped
+    environment:
+      WAF_NODE__ID: "waf-local-1"
+      AEGIS_INSECURE_COOKIES: "1"                 # admin over http for the local test
+      WAF_STATE__REDIS__URLS: '["redis://redis:6379"]'
+      WAF_OBSERVABILITY__OTEL__ENDPOINT: "http://signoz-otel-collector:4317"
+      # LLM_API_KEY: "sk-..."                     # uncomment to activate copilot
+    volumes:
+      - ./waf-local.yaml:/etc/aegis/waf.yaml:ro
+    # CMD in the image is already: run --config /etc/aegis/waf.yaml
+    ports:
+      - "10.20.0.72:8080:8080"   # data (plaintext)
+      - "10.20.0.72:9443:9443"   # admin / dashboard
+    networks: [infra, signoz]
+
+networks:
+  infra:
+    name: aegis-infra_default    # redis + mock
+    external: true
+  signoz:
+    name: signoz-net             # signoz-otel-collector
+    external: true

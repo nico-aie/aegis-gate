@@ -1,0 +1,116 @@
+# Aegis-Gate — VALIDATION node config (runs on the infra host itself).
+# Purpose: prove the full pipeline (shared Redis · multi-proto mock · SigNoz
+# traces · copilot) end-to-end on ONE machine before fanning out real nodes.
+#
+# TLS is DEFERRED (no real cert yet) → plaintext data listener on :8080 only.
+# When you add a cert, re-introduce the :8443 TLS listener (see deploy/compose/waf.yaml).
+# Redis/mock are reached by Docker service name (shared aegis-infra_default net);
+# OTLP goes to the SigNoz collector by name (shared signoz-net).
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"          # plaintext (TLS deferred)
+  admin:
+    bind: "0.0.0.0:9443"
+
+# One route per protocol → the multi-protocol mock.
+routes:
+  - id: ws
+    path: "/ws"
+    match_type: prefix
+    upstream: ws-pool
+    tier_override: high
+  - id: grpc
+    path: "/grpc"
+    match_type: prefix
+    upstream: grpc-pool
+    tier_override: high
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: http-pool
+    tier_override: high
+
+upstreams:
+  http-pool:
+    members: [{ addr: "mock:9991" }]
+    lb: round_robin
+    connection: { scheme: auto, keep_alive: true }
+  ws-pool:
+    members: [{ addr: "mock:9992" }]
+    lb: round_robin
+    connection: { scheme: auto, keep_alive: true }
+  grpc-pool:
+    members: [{ addr: "mock:9993" }]
+    lb: round_robin
+    connection: { scheme: grpc, keep_alive: true }
+  tcp-pool:
+    members: [{ addr: "mock:9994" }]
+    lb: round_robin
+    connection: { scheme: tcp }
+
+# Shared cluster state — the infra Redis. URL also overridable via
+# WAF_STATE__REDIS__URLS. This is what makes nodes ONE fleet.
+state:
+  backend: redis
+  redis:
+    urls: ["redis://redis:6379"]
+    pool_size: 16
+    timeout: "100ms"
+
+detectors:
+  sqli: { enabled: true }
+  xss: { enabled: true }
+  path_traversal: { enabled: true }
+  command_injection: { enabled: true }
+
+risk:
+  thresholds: { enabled: true, challenge_at: 40, block_at: 80, max: 100 }
+
+ddos:
+  enabled: true
+  observe_only: false
+
+logging:
+  verbosity: info
+
+audit:
+  sinks:
+    - jsonl: { path: "/tmp/aegis-audit.jsonl" }
+  chain: { enabled: true }
+
+# Traces → SigNoz collector (overridden by WAF_OBSERVABILITY__OTEL__ENDPOINT).
+# Copilot → your LLM endpoint; INERT until LLM_API_KEY is set in the env
+# (image is built with `llm`). Activate later by adding LLM_API_KEY — no rebuild.
+observability:
+  otel:
+    endpoint: "http://signoz-otel-collector:4317"
+    sample_ratio: 1.0
+  copilot:
+    enabled: true
+    provider: openai_compatible
+    base_url: "https://console.bizbrain.app/v1"
+    model: "Qwen3.6-35B-A3B"
+    timeout_ms: 20000
+    briefing_interval_secs: 0
+    api_key_ref: "${secret:env:LLM_API_KEY}"
+
+admin:
+  bind: "0.0.0.0:9443"
+  dashboard_auth:
+    # password = aegis-test-1234 (dev only — change before any real exposure)
+    password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
+    csrf_secret_ref:   "compose-csrf-secret-do-not-use-in-prod-32b"
+    session_ttl_idle: "30m"
+    session_ttl_absolute: "8h"
+    # Admin published via the docker gateway (RFC1918 source) — allow private
+    # ranges + loopback so the dashboard is reachable. NEVER widen in prod.
+    ip_allowlist:
+      - "127.0.0.1/32"
+      - "::1/128"
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+    totp_enabled: false
+    login_rate_limit:
+      per_ip: { limit: 100, window: "1m" }

@@ -71,7 +71,12 @@ release/
 # v2.3 binary contract — `make stage` artefacts (operator-local symlinks)
 /waf
 /waf.yaml
+/waf.toml
 /waf_audit.log
+
+# onnxruntime shared lib for ai/ort load-dynamic — downloaded per host
+# (glibc-compatible .so; see deploy/PRE-PROD-DEPLOY.md). Not source.
+/runtime/
 
 # =========================
 # Self-signed dev certs

@@ -1,0 +1,127 @@
+# Aegis-Gate — committee contract config (./waf.yaml, read from CWD by `./waf run`).
+# WAF Interop Contract v2.3/2.5 §8: binary ./waf, config ./waf.yaml, log ./waf_audit.log.
+#
+# Built with the `make run-copilot` feature set: redis geoip alerts ai affinity otel llm
+# (ai = ONNX; compiled via load-dynamic — set ORT_DYLIB_PATH + ai.enabled:true to use it).
+# Points at the local infra on this host (10.20.0.72): Redis, multi-protocol mock, SigNoz.
+# TLS deferred → plaintext data listener on :8080.
+
+# Stable cluster identity — MUST be unique per node when running a fleet.
+node:
+  id: "waf-infra-1"
+
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"          # plaintext (TLS deferred)
+  admin:
+    bind: "127.0.0.1:9443"
+
+# One route per protocol → the multi-protocol mock on the infra host.
+routes:
+  - id: ws
+    path: "/ws"
+    match_type: prefix
+    upstream: ws-pool
+    tier_override: high
+  - id: grpc
+    path: "/grpc"
+    match_type: prefix
+    upstream: grpc-pool
+    tier_override: high
+  - id: catch-all
+    path: "/"
+    match_type: prefix
+    upstream: http-pool
+    tier_override: high
+
+upstreams:
+  http-pool:
+    members: [{ addr: "10.20.0.72:9991" }]
+    lb: round_robin
+    connection: { scheme: auto, keep_alive: true }
+  ws-pool:
+    members: [{ addr: "10.20.0.72:9992" }]
+    lb: round_robin
+    connection: { scheme: auto, keep_alive: true }
+  grpc-pool:
+    members: [{ addr: "10.20.0.72:9993" }]
+    lb: round_robin
+    connection: { scheme: grpc, keep_alive: true }
+  tcp-pool:
+    members: [{ addr: "10.20.0.72:9994" }]
+    lb: round_robin
+    connection: { scheme: tcp }
+
+# Shared fleet state — the infra Redis.
+state:
+  backend: redis
+  redis:
+    urls: ["redis://10.20.0.72:6379"]
+    pool_size: 16
+    timeout: "100ms"
+
+detectors:
+  sqli: { enabled: true }
+  xss: { enabled: true }
+  path_traversal: { enabled: true }
+  command_injection: { enabled: true }
+
+# ONNX ML detector — OFF by default (over-fires; and avoids needing the dylib).
+# To enable: set ORT_DYLIB_PATH=<repo>/runtime/onnxruntime/libonnxruntime.so,
+# provide a model, and flip enabled:true.
+ai:
+  enabled: false
+
+risk:
+  thresholds: { enabled: true, challenge_at: 40, block_at: 80, max: 100 }
+
+ddos:
+  enabled: true
+  observe_only: false
+
+logging:
+  verbosity: info
+
+# WAF's own audit chain (separate from the contract log below).
+audit:
+  sinks:
+    - jsonl: { path: "/tmp/aegis-audit.jsonl" }
+  chain: { enabled: true }
+
+# Interop contract surface (§2 control plane + §6 audit log).
+interop:
+  enabled: true
+  audit_path: "./waf_audit.log"          # §8 — benchmarker reads this from CWD
+  control_secret: "waf-hackathon-2026-ctrl"   # §2.2 X-Benchmark-Secret
+
+# Traces → SigNoz collector. Copilot → bizbrain LLM; INERT until LLM_API_KEY set.
+observability:
+  otel:
+    endpoint: "http://10.20.0.72:4317"
+    sample_ratio: 1.0
+  copilot:
+    enabled: true
+    provider: openai_compatible
+    base_url: "https://console.bizbrain.app/v1"
+    model: "Qwen3.6-35B-A3B"
+    timeout_ms: 20000
+    briefing_interval_secs: 0
+    api_key_ref: "${secret:env:LLM_API_KEY}"
+
+admin:
+  bind: "127.0.0.1:9443"
+  dashboard_auth:
+    # password = aegis-test-1234 (dev only — change before any real exposure)
+    password_hash_ref: '$argon2id$v=19$m=19456,t=2,p=1$DfRgVNq6Cb+eN3BEMmExAQ$69SVZBNpMFjN4evfN8g+U5jnmP56Gwx3AGaZFr32ZzY'
+    csrf_secret_ref:   "contract-csrf-secret-do-not-use-in-prod-32b"
+    session_ttl_idle: "30m"
+    session_ttl_absolute: "8h"
+    ip_allowlist:
+      - "127.0.0.1/32"
+      - "::1/128"
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+    totp_enabled: false
+    login_rate_limit:
+      per_ip: { limit: 100, window: "1m" }

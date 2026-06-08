@@ -160,7 +160,12 @@ maxminddb = "0.24"
 # build (~50 MB).  Faster + broader op-set support than the
 # pure-Rust alternatives, matches the runtime the operator
 # validated their model against.
-ort = { version = "=2.0.0-rc.12", features = ["download-binaries", "ndarray"] }
+# load-dynamic: dlopen libonnxruntime.so at runtime (via ORT_DYLIB_PATH)
+# instead of linking ort's PREBUILT static lib, which requires glibc >=2.38
+# and fails to link on glibc 2.35/2.36 hosts (undefined __isoc23_strtoll).
+# Provide a glibc-compatible onnxruntime 1.22 .so + ORT_DYLIB_PATH at runtime;
+# the `ai` ONNX detector is off by default, so the WAF runs fine without it.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "api-24", "load-dynamic"] }
 ndarray = "0.17"
 
 # HTTP/3 stack (B5-T1 — Phase B). Pulled only via the

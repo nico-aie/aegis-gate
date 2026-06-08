@@ -1,0 +1,53 @@
+# Aegis-Gate INFRA HOST stack (DNS round-robin topology — no LB here).
+#
+# This host (10.20.0.72) runs the shared, stateful pieces of the fleet:
+#   redis  — shared state (rate-limit · risk · config plane · leases · metrics)
+#   mock   — multi-protocol upstream (http :9991 · ws :9992 · grpc :9993 · tcp :9994)
+#
+# SigNoz (traces/metrics/logs) is NOT here — it's a heavy separate stack run
+# from its own compose (see deploy/signoz/README.md). It listens on :4317.
+#
+# WAF nodes live on OTHER machines and are the TLS edge (DNS round-robin to
+# them; no HAProxy/TPROXY on this host — rootless Docker can't do TPROXY).
+# Each WAF node points at:
+#   WAF_STATE__REDIS__URLS = ["redis://10.20.0.72:6379"]
+#   WAF_OBSERVABILITY__OTEL__ENDPOINT = http://10.20.0.72:4317   (SigNoz collector)
+#   upstream pool → 10.20.0.72:9991 (http) / :9992 (ws) / :9993 (grpc) / :9994 (tcp)
+#
+#   cd deploy/compose
+#   docker compose -f infra.docker-compose.yml up -d --build
+#
+# Ports are published on the host's private interface (10.20.0.72) so the
+# remote WAF nodes can reach them. NOTE: this account has no firewall control
+# (rootless, no sudo) — there is only the one lab NIC, so these ports are
+# reachable by anything on 10.20.0.0/22. Lock them down at the network layer.
+name: aegis-infra
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    ports:
+      - "10.20.0.72:6379:6379"
+    volumes:
+      - redis-data:/data
+
+  mock:
+    build:
+      context: ../mock
+    # default CMD serves --http :9991 --ws :9992 --grpc :9993 --tcp :9994
+    restart: unless-stopped
+    ports:
+      - "10.20.0.72:9991:9991"   # HTTP/1.1 + h2c
+      - "10.20.0.72:9992:9992"   # WebSocket
+      - "10.20.0.72:9993:9993"   # gRPC (HTTP/2)
+      - "10.20.0.72:9994:9994"   # raw TCP
+
+volumes:
+  redis-data: {}
