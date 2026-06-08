@@ -30,7 +30,7 @@ use serde::Serialize;
 
 use aegis_core::config::{
     CircuitBreakerConfig, ConnectionPoolConfig, HealthCheckConfig, LbStrategy, MemberConfig,
-    PoolConfig, WafConfig,
+    PoolCacheConfig, PoolConfig, WafConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -56,6 +56,12 @@ pub struct PoolView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub circuit_breaker: Option<CircuitBreakerView>,
     pub connection: ConnectionView,
+    /// SC-1 — per-upstream smart-cache config, surfaced verbatim so the
+    /// dashboard pool editor can show + round-trip it (the PUT replaces the
+    /// whole pool node, so the form must echo the cache block back unchanged
+    /// to preserve advanced fields like `l2`). Absent ⇒ no cache configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache: Option<PoolCacheConfig>,
     /// Routes whose `upstream` field references this pool. Empty
     /// when nothing routes to the pool — that's the only case
     /// where DELETE will succeed once writes ship.
@@ -116,6 +122,7 @@ impl UpstreamsConfigView {
                     health: pool.health.as_ref().map(health_view),
                     circuit_breaker: pool.circuit_breaker.as_ref().map(circuit_view),
                     connection: connection_view(&pool.connection),
+                    cache: pool.cache.clone(),
                     referenced_by_routes: routes_referencing(cfg, name),
                 };
                 (name.clone(), view)
@@ -466,6 +473,89 @@ state:
         let cfg = three_pool_cfg();
         let view = UpstreamsConfigView::from_config(&cfg);
         assert!(view.pools["auth-pool"].health.is_none());
+    }
+
+    // ----- SC-1 cache surface ------------------------------------------------
+
+    fn cache_pool_cfg() -> WafConfig {
+        cfg_yaml(
+            r#"
+listeners:
+  data:
+    - bind: "0.0.0.0:8080"
+      tls: false
+  admin:
+    bind: "127.0.0.1:9443"
+routes:
+  - id: app
+    path: "/"
+    match_type: prefix
+    upstream: app-pool
+upstreams:
+  app-pool:
+    members:
+      - addr: "127.0.0.1:3001"
+    cache:
+      enabled: true
+      default_ttl: "45s"
+      max_total_bytes: 33554432
+      rules:
+        - prefix: "/static/"
+          ttl: "1h"
+          content_types: ["text/css", "image/*"]
+      l2:
+        urls: ["redis://cache:6379"]
+        key_prefix: "appcache"
+  plain-pool:
+    members:
+      - addr: "127.0.0.1:3002"
+state:
+  backend: in_memory
+"#,
+        )
+    }
+
+    #[test]
+    fn view_omits_cache_when_absent() {
+        let view = UpstreamsConfigView::from_config(&cache_pool_cfg());
+        assert!(view.pools["plain-pool"].cache.is_none());
+    }
+
+    #[test]
+    fn view_surfaces_cache_when_configured() {
+        let view = UpstreamsConfigView::from_config(&cache_pool_cfg());
+        let cache = view.pools["app-pool"]
+            .cache
+            .as_ref()
+            .expect("cache configured");
+        assert!(cache.enabled);
+        assert_eq!(cache.rules.len(), 1);
+        assert_eq!(cache.rules[0].prefix, "/static/");
+        assert_eq!(cache.rules[0].content_types, vec!["text/css", "image/*"]);
+    }
+
+    /// The dashboard pool editor loads the cache block from this view and PUTs
+    /// it back; the PUT replaces the whole pool node, so the view must serialise
+    /// into JSON that deserialises back into an identical `PoolCacheConfig` —
+    /// including advanced fields the form never touches (here, the `l2` block).
+    #[test]
+    fn cache_round_trips_through_view_json_back_into_pool_config() {
+        let view = UpstreamsConfigView::from_config(&cache_pool_cfg());
+        let json = serde_json::to_string(view.pools["app-pool"].cache.as_ref().unwrap())
+            .expect("cache view serialises");
+        let back: PoolCacheConfig =
+            serde_json::from_str(&json).expect("cache JSON deserialises into PoolCacheConfig");
+        assert!(back.enabled);
+        assert_eq!(back.default_ttl, Duration::from_secs(45));
+        assert_eq!(back.max_total_bytes, 33_554_432);
+        assert_eq!(back.rules.len(), 1);
+        assert_eq!(back.rules[0].prefix, "/static/");
+        assert_eq!(back.rules[0].ttl, Some(Duration::from_secs(3600)));
+        // The advanced L2 block survived a round-trip it never appears in the
+        // form for — this is what keeps a UI save from silently dropping it.
+        let l2 = back.l2.expect("l2 preserved through round-trip");
+        assert_eq!(l2.urls, vec!["redis://cache:6379"]);
+        assert_eq!(l2.key_prefix, "appcache");
     }
 
     #[test]

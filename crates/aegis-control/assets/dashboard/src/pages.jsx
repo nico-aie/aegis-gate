@@ -8184,6 +8184,29 @@ function poolConfigFromForm(d) {
       open_duration: humanTimeFromMs(Number(d.circuit_breaker?.open_duration_ms) || 30000),
     };
   }
+  // SC-1 — response cache. Only emit the block when enabled; an unchecked
+  // toggle drops `cache:` entirely (caching off). We start from the raw cache
+  // object the GET returned (`_raw`) so advanced fields the form doesn't edit
+  // (l2, methods, deny_query_keys, max_entries, …) survive a UI save — the PUT
+  // replaces the whole pool node, so anything not echoed back is lost.
+  if (d.cache_enabled) {
+    const raw = d.cache?._raw || {};
+    cfg.cache = {
+      ...raw,
+      enabled: true,
+      default_ttl: (d.cache?.default_ttl || '60s').trim() || '60s',
+      max_total_bytes: Math.max(1, Math.round((Number(d.cache?.max_total_bytes_mb) || 64))) * 1024 * 1024,
+      rules: (d.cache?.rules || [])
+        .filter(r => (r.prefix || '').trim() !== '')
+        .map(r => ({
+          prefix: r.prefix.trim(),
+          ...(r.ttl && r.ttl.trim() ? { ttl: r.ttl.trim() } : {}),
+          ...(r.content_types && r.content_types.trim()
+            ? { content_types: r.content_types.split(',').map(s => s.trim()).filter(Boolean) }
+            : {}),
+        })),
+    };
+  }
   return cfg;
 }
 
@@ -8208,6 +8231,8 @@ function poolFormFromView(view) {
       cb_enabled: false,
       circuit_breaker: { error_rate_threshold: 0.5, open_duration_ms: 30000 },
       connection: { max_idle_per_host: 32, idle_timeout_ms: 30000, keep_alive: true, tls: false },
+      cache_enabled: false,
+      cache: cacheFormFromView(null),
     };
   }
   return {
@@ -8241,6 +8266,27 @@ function poolFormFromView(view) {
       // explicit pick silently downgraded the saved scheme.
       scheme:            view.connection?.scheme || 'auto',
     },
+    cache_enabled: !!(view.cache && view.cache.enabled),
+    cache: cacheFormFromView(view.cache),
+  };
+}
+
+// SC-1 — seed the cache section of the pool form from the GET view's `cache`
+// object (or null for a pool with no cache). The form edits a friendly subset
+// (default TTL, memory budget in MB, path rules); `_raw` keeps the original
+// block verbatim so advanced fields (l2, methods, …) survive a round-trip.
+function cacheFormFromView(c) {
+  return {
+    default_ttl: (c && c.default_ttl) || '60s',
+    max_total_bytes_mb: c && c.max_total_bytes
+      ? Math.max(1, Math.round(c.max_total_bytes / (1024 * 1024)))
+      : 64,
+    rules: ((c && c.rules) || []).map(r => ({
+      prefix: r.prefix || '',
+      ttl: r.ttl || '',
+      content_types: (r.content_types || []).join(', '),
+    })),
+    _raw: c || {},
   };
 }
 
@@ -8345,7 +8391,11 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
     Number(d.circuit_breaker?.error_rate_threshold) >= 0 &&
     Number(d.circuit_breaker?.error_rate_threshold) <= 1
   );
-  const canSave = trimmedName !== '' && !nameTaken && memberOk && healthOk && cbOk;
+  // SC-1 — enabled caching needs at least one path-prefix rule, else it would
+  // match nothing and silently cache zero responses.
+  const cacheOk = !d.cache_enabled ||
+    (d.cache?.rules || []).some(r => (r.prefix || '').trim() !== '');
+  const canSave = trimmedName !== '' && !nameTaken && memberOk && healthOk && cbOk && cacheOk;
 
   // HIGH-RU-01 follow-up (2026-05-12) — auto-infer scheme from
   // the member port so an operator who types `znews.vn:443` and
@@ -8408,6 +8458,33 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
   }
   function removeMember(i) {
     setD(prev => ({ ...prev, members: prev.members.filter((_, idx) => idx !== i) }));
+  }
+
+  // SC-1 — cache rule editors. Rules are the path-prefix allow-list: a request
+  // whose path matches no rule is never cached.
+  function setCacheRule(i, key, val) {
+    setD(prev => ({
+      ...prev,
+      cache: {
+        ...prev.cache,
+        rules: prev.cache.rules.map((r, idx) => (idx === i ? { ...r, [key]: val } : r)),
+      },
+    }));
+  }
+  function addCacheRule() {
+    setD(prev => ({
+      ...prev,
+      cache: { ...prev.cache, rules: [...prev.cache.rules, { prefix: '', ttl: '', content_types: '' }] },
+    }));
+  }
+  function removeCacheRule(i) {
+    setD(prev => ({
+      ...prev,
+      cache: { ...prev.cache, rules: prev.cache.rules.filter((_, idx) => idx !== i) },
+    }));
+  }
+  function setCacheField(key, val) {
+    setD(prev => ({ ...prev, cache: { ...prev.cache, [key]: val } }));
   }
 
   async function handleSave() {
@@ -8650,6 +8727,109 @@ function PoolEditModal({ mode, existingNames, initialName, initialPool, onCancel
                     Threshold must be in [0.0, 1.0].
                   </span>
                 )}
+              </div>
+            )}
+          </fieldset>
+
+          <fieldset style={{ border: '1px solid var(--hairline)', borderRadius: 6, padding: 10 }}>
+            <legend style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 6px' }}>
+              <input
+                type="checkbox"
+                checked={d.cache_enabled}
+                onChange={e => setD(prev => ({ ...prev, cache_enabled: e.target.checked }))}
+              />
+              <span className="field-label" style={{ marginBottom: 0 }}>Response cache</span>
+            </legend>
+            {d.cache_enabled && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 11, color: 'var(--ink-dim)' }}>
+                  Serves repeat <strong>GET/HEAD</strong> from memory. Only paths matching a
+                  rule below are cached — everything else is bypassed. CRITICAL-tier routes
+                  (login / OTP / payment) and responses with <code>Set-Cookie</code> /{' '}
+                  <code>Authorization</code> are never cached.
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span className="field-label">Default TTL</span>
+                    <input
+                      className="input mono"
+                      value={d.cache.default_ttl}
+                      onChange={e => setCacheField('default_ttl', e.target.value)}
+                      placeholder="60s"
+                      title="Freshness for entries whose rule has no explicit TTL. e.g. 30s, 5m, 1h"
+                    />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span className="field-label">Memory budget (MB)</span>
+                    <input
+                      className="input num"
+                      type="number"
+                      min="1"
+                      value={d.cache.max_total_bytes_mb}
+                      onChange={e => setCacheField('max_total_bytes_mb', e.target.value)}
+                      title="Per-node byte budget for this pool's cache; eviction keeps it under this."
+                    />
+                  </label>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span className="field-label" style={{ marginBottom: 0 }}>Path rules</span>
+                    <button className="btn" onClick={addCacheRule} disabled={busy}>+ Add rule</button>
+                  </div>
+                  {d.cache.rules.length === 0 ? (
+                    <div style={{ fontSize: 11, color: 'var(--down)' }}>
+                      Add at least one path-prefix rule, or caching matches nothing.
+                    </div>
+                  ) : (
+                    <table className="tbl tbl-compact">
+                      <thead>
+                        <tr>
+                          <th>Path prefix</th>
+                          <th style={{ width: 90 }} title="Optional — falls back to the default TTL above.">TTL</th>
+                          <th
+                            title="Optional content-type allow-list (comma-separated; supports image/*). Stores only when the upstream Content-Type matches — guards against cache deception."
+                          >Content-types</th>
+                          <th style={{ width: 36 }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {d.cache.rules.map((r, i) => (
+                          <tr key={i}>
+                            <td>
+                              <input
+                                className="input mono"
+                                value={r.prefix}
+                                onChange={e => setCacheRule(i, 'prefix', e.target.value)}
+                                placeholder="/static/"
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="input mono"
+                                value={r.ttl}
+                                onChange={e => setCacheRule(i, 'ttl', e.target.value)}
+                                placeholder="1h"
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="input mono"
+                                value={r.content_types}
+                                onChange={e => setCacheRule(i, 'content_types', e.target.value)}
+                                placeholder="text/css, image/*"
+                              />
+                            </td>
+                            <td>
+                              <button className="btn" onClick={() => removeCacheRule(i)} disabled={busy} title="Remove rule">×</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
             )}
           </fieldset>

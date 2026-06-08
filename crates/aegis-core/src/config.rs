@@ -1236,7 +1236,7 @@ pub struct PoolConfig {
 /// a rule, and never CRITICAL tier. Memory is bounded by a byte budget
 /// (weigher-enforced) + a per-entry cap so a runaway upstream can't OOM
 /// the WAF. See `plans/future/smart-caching.md` §3.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PoolCacheConfig {
     /// Master switch for this pool's cache. Defaults off.
     #[serde(default)]
@@ -1290,7 +1290,7 @@ pub struct PoolCacheConfig {
 }
 
 /// One path-prefix cache rule inside a [`PoolCacheConfig`].
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CacheRuleConfig {
     /// Path prefix this rule matches (e.g. `/static/`).
     pub prefix: String,
@@ -1315,7 +1315,7 @@ pub struct CacheRuleConfig {
 /// populates both. Use a **dedicated** cache Redis (separate from the
 /// control/config Redis) — cached bodies + eviction churn must not pressure
 /// the control plane. See `plans/future/smart-caching.md` §3.4.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CacheL2Config {
     /// Dedicated cache Redis endpoint(s). With `cluster: false` the first URL
     /// is used (extras ignored); with `cluster: true` all URLs seed the cluster
