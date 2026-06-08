@@ -95,17 +95,32 @@ for the full three-layer reading.
 
 ## State backends
 
-Pluggable via a `StateBackend` trait:
+Pluggable via a `StateBackend` trait. Abbreviated to the security-relevant
+ops — see `aegis-core/src/state.rs` for the full surface (`incrby`, `expire`,
+`scan_prefix`, `cas_set`, `reset_ephemeral`, `health`, …):
 
 ```rust
-#[async_trait]
-pub trait StateBackend: Send + Sync {
-    async fn incr(&self, key: &str, ttl_ms: u64) -> Result<u64>;
+pub trait StateBackend: Send + Sync + 'static {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
-    async fn set_nx(&self, key: &str, val: &[u8], ttl_ms: u64) -> Result<bool>;
+    async fn set(&self, key: &str, val: &[u8], ttl: Duration) -> Result<()>;
     async fn del(&self, key: &str) -> Result<()>;
-    async fn watch(&self, prefix: &str) -> WatchStream;
-    async fn script_eval(&self, script_id: ScriptId, keys: &[&str], argv: &[&[u8]]) -> Result<ScriptResult>;
+
+    // Cluster-shared rate limiting.
+    async fn incr_window(&self, key: &str, window: Duration, limit: u64) -> Result<SlidingWindowResult>;
+    async fn token_bucket(&self, key: &str, rate_per_s: u32, burst: u32) -> Result<bool>;
+
+    // Shared risk + auto-block.
+    async fn get_risk(&self, key: &RiskKey) -> Result<u32>;
+    async fn add_risk(&self, key: &RiskKey, delta: i32, max: u32) -> Result<u32>;
+    async fn auto_block(&self, ip: IpAddr, ttl: Duration) -> Result<()>;
+    async fn is_auto_blocked(&self, ip: IpAddr) -> Result<bool>;
+
+    // Challenge nonces.
+    async fn put_nonce(&self, nonce: &str, ttl: Duration) -> Result<bool>;
+    async fn consume_nonce(&self, nonce: &str) -> Result<bool>;
+
+    // Reachability + telemetry for /api/state.
+    async fn health(&self) -> BackendHealth;
 }
 ```
 
@@ -173,10 +188,14 @@ regardless — we never return permanent 503.
 `ReconcilingBackend` wraps the primary with an in-memory
 fallback. On `WafError::State` from the primary:
 
-- **Counters** fall through to local. On heal, `max(local,
-  remote)` reconciliation: a partition that forced
-  local-only mode never *lowers* a counter when the
-  partition heals.
+- **Counters** (rate-limit windows, risk scores) fall
+  through to local during the partition so the data plane
+  keeps enforcing. They are **not** merged back on heal:
+  the primary resumes from its pre-partition value and the
+  wrapper logs the divergence so operators can see it. A
+  `max(local, primary)` back-merge is a Phase B follow-up,
+  not today's behaviour. Net effect during a partition:
+  shared limits enforce *per-node* until Redis returns.
 - **Block lists** are strictly additive: a block written
   during the partition is replayed to the primary on heal.
   Delist requires an explicit admin action.
@@ -378,7 +397,7 @@ crates/aegis-proxy/src/
   state/
     redis.rs              ← deadpool-redis + Lua, with timeout
     rehydrate.rs          ← warm-up gating /healthz/ready
-    reconcile.rs          ← max-on-heal counters + additive blocks
+    reconcile.rs          ← local-fallback counters (no back-merge yet) + additive blocks
   cluster_lease/
     in_process.rs         ← single-node InProcessLease (default)
     redis.rs              ← RedisLease (CAS Lua scripts + heartbeat)
