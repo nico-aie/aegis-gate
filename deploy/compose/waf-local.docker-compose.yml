@@ -16,16 +16,22 @@ services:
       context: ../..
       dockerfile: deploy/Dockerfile
       args:
-        # NOTE: the `production` umbrella includes `ai` (ONNX/`ort`), whose
-        # PREBUILT binary from ort.pyke.io needs glibc >=2.38 and FAILS to link
-        # against this Debian bookworm base (glibc 2.36): `undefined symbol
-        # __isoc23_strtoll`. So we build production's set MINUS `ai` (+ otel llm).
-        # The ONNX ai detector is off by default anyway. To use full `production`
-        # on real nodes, build on a glibc>=2.38 base or switch `ort` to compile/
-        # load-dynamic. See deploy/INFRA-HOST-STATUS.md.
-        CARGO_FEATURES: "redis alerts geoip taxii http3 vault aws gcp azure consul etcd k8s otel llm"
+        # Full `make run-copilot` feature set. `ai` now builds because the
+        # workspace `ort` dep uses load-dynamic (Cargo.toml) — no glibc-2.38
+        # prebuilt link. To actually RUN the ai detector: mount a glibc-compatible
+        # libonnxruntime.so + set ORT_DYLIB_PATH + ai.model_path/enabled (and keep
+        # cpuset small — ORT's session deadlocks spawning a 128-thread pool; 8
+        # cores avoids it). See deploy/INFRA-HOST-STATUS.md / PRE-PROD-DEPLOY.md §5.
+        CARGO_FEATURES: "redis geoip alerts ai affinity otel llm"
     image: aegis-gate:local
     restart: unless-stopped
+    # Match the real node spec (8 vCPU / 16 GB). `cpuset` pins to 8 specific cores
+    # so the WAF SEES 8 CPUs (sched_getaffinity) — this also caps tokio worker auto
+    # and ORT's intra-op thread pool (the 128-core box is what deadlocks ai). `cpus`
+    # alone (CFS quota) throttles but the process still sees all cores → keep cpuset.
+    cpuset: "0-7"
+    cpus: "8"
+    mem_limit: "16g"
     environment:
       WAF_NODE__ID: "waf-local-1"
       AEGIS_INSECURE_COOKIES: "1"                 # admin over http for the local test

@@ -1,0 +1,31 @@
+# OTel Collector — ships the WAF's LOGS (and optionally metrics) to SigNoz.
+#
+# Why: the WAF exports TRACES over OTLP directly to SigNoz, but it does NOT push
+# logs — logs only go to stdout. This collector tails the WAF's JSON log file
+# (filelog receiver) and forwards OTLP logs to SigNoz, so they show in SigNoz →
+# Logs. See deploy/otel/collector.yaml (the pipeline) + deploy/signoz/README.md.
+#
+# Prereq: the WAF must write JSON logs to a file this collector can read:
+#   ./waf run --config ./waf.yaml >> logs/waf.json 2>&1
+# (logs/ is mounted to /var/log/aegis, matching collector.yaml's filelog.include)
+#
+#   cd deploy/compose
+#   docker compose -f otel-collector.docker-compose.yml up -d
+name: aegis-otel-collector
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ../otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ../../logs:/var/log/aegis:ro            # WAF JSON logs (logs/waf.json)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"     # for the /metrics scrape (admin must be reachable)
+    networks: [signoz]                          # reach signoz-otel-collector:4317
+
+networks:
+  signoz:
+    name: signoz-net
+    external: true

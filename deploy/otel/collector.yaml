@@ -130,6 +130,11 @@ service:
       # source via the WAF's `dlp` — keep sensitive values out of log
       # fields. The OTLP receiver also accepts logs if the app ever
       # switches to an app-side OTLP log exporter (P3 option 2).
+      # NOTE: `redaction` is NOT in the logs pipeline — otelcol-contrib 0.103.0's
+      # redaction processor supports traces/metrics only ("telemetry type is not
+      # supported" for logs). `attributes/scrub` (header deletes) DOES support
+      # logs; body-level PII should be scrubbed at source via the WAF's `dlp`.
+      # (Bump the collector image past ~0.110 to re-add redaction here.)
       receivers: [otlp, filelog]
-      processors: [redaction, attributes/scrub, batch]
+      processors: [attributes/scrub, batch]
       exporters: [otlp/signoz]

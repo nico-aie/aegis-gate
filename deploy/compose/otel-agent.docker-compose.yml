@@ -1,0 +1,28 @@
+# OTel Collector AGENT — run ONE per WAF VM (multi-node log/metric/trace shipping).
+#
+# Uses HOST networking so the agent can: tail the local WAF log, scrape the WAF
+# admin /metrics on 127.0.0.1:9443, and reach the central SigNoz at 10.20.0.72:4317.
+# (Host networking needs a ROOTFUL Docker daemon on the WAF VM. On rootless Docker,
+# drop network_mode:host, add `networks`/`ports`, bind admin to a reachable iface,
+# and use host.docker.internal — but rootful is simpler for an edge node.)
+#
+# Per node, set the node id so SigNoz groups telemetry per node:
+#   NODE_ID=waf-1 docker compose -f otel-agent.docker-compose.yml up -d
+#
+# Then point THIS node's WAF at the local agent for traces:
+#   WAF_OBSERVABILITY__OTEL__ENDPOINT=http://127.0.0.1:4317
+# and write its logs to ./logs/waf.json (mounted below).
+name: aegis-otel-agent
+
+services:
+  otel-agent:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    restart: unless-stopped
+    network_mode: host                      # read local log + scrape 127.0.0.1:9443 + reach 10.20.0.72:4317
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      # node identity → SigNoz groups traces/logs/metrics per node (match WAF node.id)
+      OTEL_RESOURCE_ATTRIBUTES: "host.name=${NODE_ID:-waf-node}"
+    volumes:
+      - ../otel/collector-agent.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ../../logs:/var/log/aegis:ro         # this node's WAF JSON logs

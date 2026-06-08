@@ -142,36 +142,62 @@ Validate before running:
 
 ---
 
-## 5. (Optional) Enable the ONNX `ai` detector
+## 5. ONNX `ai` detector — ⚠️ disabled on the current host (ORT deadlock)
 
-Off by default. To turn it on, the node needs a glibc-compatible
-`libonnxruntime.so` (the `ai` feature is compiled in via `load-dynamic`):
+**Status:** the `ai` feature is **compiled in**, the model exists
+(`data/ai_model/waf_model.onnx`), but it is **left OFF** on the infra host
+because **ORT deadlocks at boot here**.
+
+**Two non-obvious facts learned the hard way:**
+1. The ONNX session is built at boot **whenever `ai.model_path` is set + the file
+   exists — independent of `ai.enabled`** (`run.rs:531`; `enabled` only flips the
+   per-request toggle). So to *not* load ORT, you must **omit `model_path`**, not
+   just set `enabled: false`. The committed `waf.contract.yaml` omits it.
+2. On this host (128 cores, glibc 2.35) `ort` 2.0.0-rc.12 via **`load-dynamic`
+   deadlocks** in `commit_from_file`: boot spawns the 128-thread intra-op pool
+   then hangs before binding listeners (readiness never flips). `OMP_NUM_THREADS`
+   / `ORT_INTRA_OP_NUM_THREADS` are ignored (ORT sets intra-op in code).
+
+**To actually run the `ai` detector**, use one of:
+- a **glibc ≥ 2.38 host** with the **stock `download-binaries`** `ort` (revert the
+  `Cargo.toml` `load-dynamic` change) — avoids the load-dynamic path entirely; **or**
+- resolve the `load-dynamic` deadlock (e.g. pin a matching onnxruntime build, set
+  intra-op threads in code, or `ort`'s `preload-dylibs`).
+
+Then provide the `.so`, set `model_path` + `enabled: true`, and export
+`ORT_DYLIB_PATH`:
 
 ```sh
 mkdir -p runtime/onnxruntime
 curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-1.22.0.tgz \
   | tar -xz -C /tmp
 cp /tmp/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so* runtime/onnxruntime/
-# then set ai.enabled:true in ./waf.yaml, provide your model, and:
 export ORT_DYLIB_PATH="$PWD/runtime/onnxruntime/libonnxruntime.so"
+# in ./waf.yaml:  ai: { enabled: true, model_path: "data/ai_model/waf_model.onnx", confidence_threshold: 0.95 }
 ```
 
-(onnxruntime 1.22 matches `ort` 2.0.0-rc.12; that `.so` needs only GLIBC_2.27.)
-If `ai.enabled:false` (default), `ORT_DYLIB_PATH` is **not** required.
+Signature detectors (sqli/xss/path-traversal/command-injection) + risk + DDoS are
+**on** and do the WAF work regardless — `ai` is an additive ML layer.
 
 ---
 
-## 6. Copilot (AI Operator Copilot — `llm`)
+## 6. Copilot (AI Operator Copilot — `llm`) — ✅ ON
 
-Compiled in. Inert until a key resolves. To activate:
+Compiled in and **active** on the infra host. It activates when
+`api_key_ref` resolves — the key lives in the gitignored **`.env`**
+(`LLM_API_KEY=…`), which you must **load into the environment before `./waf run`**
+(the raw `./waf run` does *not* auto-read `.env`; `make run-copilot` does):
 
 ```sh
-export LLM_API_KEY="sk-..."                   # resolves ${secret:env:LLM_API_KEY}
+set -a; . ./.env; set +a            # exports LLM_API_KEY for ${secret:env:LLM_API_KEY}
+./waf run --config ./waf.yaml
 ```
 
-It calls the endpoint in `observability.copilot` (`https://console.bizbrain.app/v1`,
-model `Qwen3.6-35B-A3B`). Without the key the WAF logs `copilot disabled` and runs
-normally. ⚠️ This makes external LLM egress — only enable where that's intended.
+It calls `observability.copilot` (`https://console.bizbrain.app/v1`, model
+`Qwen3.6-35B-A3B`). Without the key the WAF logs `copilot api_key_ref failed to
+resolve — copilot disabled` and runs normally. ⚠️ Active copilot = external LLM
+egress — intended here. (If you `./waf run` without sourcing `.env`, that's the
+**#1 reason copilot shows as disabled.**)
 
 ---
 
@@ -201,13 +227,22 @@ host or DNS-01), push the same PEM to every node, re-push on renewal.
 
 ```sh
 cd ~/aegis-gate
-# ORT_DYLIB_PATH only if ai enabled; LLM_API_KEY only if copilot wanted.
+set -a; . ./.env; set +a                      # load LLM_API_KEY → activates copilot (§6)
 AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf.yaml
 #   AEGIS_INSECURE_COOKIES=1 allows the http admin/dashboard over loopback; drop it
 #   once admin is TLS. The data plane is unaffected.
+#   ORT_DYLIB_PATH is only needed if you enable the ai detector (§5) — leave the
+#   config's ai.model_path UNSET otherwise, or boot will try (and here hang) to
+#   load ORT.
 ```
 
+The committed `deploy/waf.contract.yaml` is contract-correct as-is for a
+copilot-on / ai-off node: copy it to `./waf.yaml`, set `node.id`, run.
+
 For a long-lived service, wrap it in systemd / tmux / `nohup` per your ops norm.
+⚠️ Do **not** stop it with `pkill -f "waf run --config ./waf.yaml"` from a shell
+whose own command line contains that string — `pkill` will kill itself first.
+Use the PID (`pgrep -f 'waf run' | head -1`).
 
 ---
 
@@ -277,4 +312,92 @@ tail -1 ./waf_audit.log                                                         
 | Nodes show different `/api/config` versions | a node can't reach Redis | check `state.redis.urls` + reachability to `10.20.0.72:6379` |
 | `/__waf_control/*` returns 403 from another host | endpoints are loopback-gated | call from the node itself (127.0.0.1), not over the network |
 | Traces missing in SigNoz | SigNoz onboarding not done / wrong endpoint | onboard once (admin org), confirm `otel.endpoint=http://10.20.0.72:4317` |
-| `copilot disabled` in logs | `LLM_API_KEY` not set | export the key (§6) — harmless if you don't want copilot |
+| Traces show but **no logs** in SigNoz | WAF doesn't push logs over OTLP — only stdout | run a per-node otel-collector with the `filelog` receiver (§13) |
+| `copilot disabled` in logs | `LLM_API_KEY` not set / `.env` not sourced | `set -a; . ./.env; set +a` before `./waf run` (§6) |
+| WAF hangs at boot after "fresh-bind" with `ai` | ORT session deadlock (128-core thread pool) | omit `ai.model_path` (§5), or pin to ≤8 cores (§14), or use glibc≥2.38 + prebuilt |
+| collector crashes: `redaction … telemetry type is not supported` | otelcol-contrib 0.103 redaction has no logs support | keep `redaction` out of the logs pipeline (done in `collector.yaml`) |
+| SigNoz logs flooded with TRACE/DEBUG | dependency crates log verbosely | set `RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn"` (§13) |
+| `pkill -f "waf run …"` kills nothing / kills itself | the pkill shell's own argv matches the pattern | kill by PID: `kill $(pgrep -f '\./waf run' | head -1)` |
+
+---
+
+## 13. Observability shipping — traces, logs, metrics (multi-node)
+
+**Traces** go straight from each WAF to SigNoz (`observability.otel.endpoint`).
+**Logs and metrics do NOT auto-export** — the WAF writes logs to stdout and
+serves metrics on its admin `/metrics`. To get them into SigNoz you run an
+**OTel Collector**, and because its `filelog`/`prometheus` receivers read
+**local** files/ports, you need **one collector AGENT per WAF VM** (a single
+central collector cannot tail a remote node's log or scrape its loopback admin).
+
+```
+per WAF VM:   WAF ──traces OTLP──▶ local agent ─┐
+              logs/waf.json ──filelog──▶ agent  ├─OTLP─▶ 10.20.0.72:4317 (central SigNoz)
+              /metrics :9443 ──prom────▶ agent ─┘   tagged host.name=<node-id>
+```
+
+**Set up per node:**
+1. Write the WAF's JSON logs to a file: `./waf run … >> logs/waf.json 2>&1`.
+2. Point the WAF's traces at the **local** agent (so the agent stamps host.name +
+   can redact): `WAF_OBSERVABILITY__OTEL__ENDPOINT=http://127.0.0.1:4317`.
+3. Run the agent (config: [`../otel/collector-agent.yaml`](../otel/collector-agent.yaml)):
+   ```sh
+   cd deploy/compose
+   NODE_ID=waf-2 docker compose -f otel-agent.docker-compose.yml up -d
+   ```
+   It exports to `10.20.0.72:4317` and stamps `host.name=$NODE_ID` so SigNoz
+   groups traces/logs/metrics per node. (Uses host networking — needs rootful
+   Docker on the WAF VM; for rootless, see the comments in that compose.)
+
+> **The node co-located with SigNoz** (the infra host) is the exception — it can
+> reach SigNoz over the docker network, so it uses
+> [`../otel/collector.yaml`](../otel/collector.yaml) +
+> [`otel-collector.docker-compose.yml`](compose/otel-collector.docker-compose.yml)
+> (exports to `signoz-otel-collector:4317`). Same `filelog` logs pipeline.
+
+**Tame log volume** (the WAF logs dependency crates at TRACE/DEBUG, which floods
+SigNoz). Run with:
+```sh
+export RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn,tonic=warn"
+```
+For even quieter logs, lower `logging.verbosity` or extend `RUST_LOG` with the
+`aegis_proxy=info` target.
+
+**Metrics caveat:** the `prometheus` receiver scrapes the WAF admin `/metrics`,
+which is bound to `127.0.0.1:9443`. The agent reaches it only via **host
+networking** (above). A central collector cannot scrape a remote node's loopback
+admin — another reason for the per-node agent.
+
+---
+
+## 14. Resource limits — match the real node spec (8 vCPU / 16 GB)
+
+This infra host has 128 cores; to benchmark against the real **8 vCPU / 16 GB**
+node spec, constrain the WAF. **Pin CPUs with `cpuset`, not just `cpus`:** a CFS
+quota (`cpus`) throttles but the process still *sees* all 128 cores, so tokio
+workers and ORT's intra-op pool still size to 128 (the ORT 128-thread pool is
+what deadlocks `ai`). `cpuset` changes `sched_getaffinity` → the WAF sees 8 CPUs.
+
+**Docker node** ([`waf-local.docker-compose.yml`](compose/waf-local.docker-compose.yml)):
+```yaml
+services:
+  waf-local:
+    cpuset: "0-7"        # pin to 8 cores (sizes tokio workers + ORT threads to 8)
+    cpus: "8"            # CFS quota (defence in depth)
+    mem_limit: "16g"
+```
+
+**Native binary** — pin + cap via systemd (or `taskset`/`nice`):
+```ini
+# /etc/systemd/system/aegis-waf.service  (excerpt)
+[Service]
+AllowedCPUs=0-7        # = cpuset; the WAF then sees 8 CPUs
+MemoryMax=16G
+ExecStart=/home/USER/aegis-gate/waf run --config /home/USER/aegis-gate/waf.yaml
+```
+or ad-hoc: `taskset -c 0-7 ./waf run --config ./waf.yaml`. Also set
+`runtime.workers: 8` in `waf.yaml` to fix the tokio pool explicitly.
+
+> **Bonus:** pinning to 8 cores likely **un-sticks the `ai` detector** — the ORT
+> deadlock (§5) is the 128-thread intra-op pool; at 8 cores ORT builds an
+> 8-thread pool that should commit cleanly. Worth retrying `ai` under `cpuset`.

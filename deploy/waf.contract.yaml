@@ -66,11 +66,22 @@ detectors:
   path_traversal: { enabled: true }
   command_injection: { enabled: true }
 
-# ONNX ML detector — OFF by default (over-fires; and avoids needing the dylib).
-# To enable: set ORT_DYLIB_PATH=<repo>/runtime/onnxruntime/libonnxruntime.so,
-# provide a model, and flip enabled:true.
+# ONNX ML detector — DISABLED on this host. `ort` 2.0.0-rc.12 via load-dynamic
+# DEADLOCKS during ORT session creation on this box (128 cores / glibc 2.35):
+# boot spawns the 128-thread intra-op pool then hangs in commit_from_file before
+# binding listeners (thread-cap env vars are ignored — ORT sets intra-op in code).
+# Model + threshold stay wired for when it's fixed. To run the ai detector, use a
+# glibc>=2.38 host with the stock `download-binaries` ort build (revert Cargo.toml),
+# or resolve the load-dynamic deadlock. Then flip enabled:true (hot via PUT /api/ai/enabled).
+# Threshold kept HIGH (0.95): QA Run-2 saw ~75% FP at 0.85 on benign traffic.
 ai:
   enabled: false
+  # model_path INTENTIONALLY OMITTED: the ORT session is built at boot whenever
+  # model_path is set+exists (run.rs:531 — independent of `enabled`), and that
+  # commit_from_file DEADLOCKS here. Leaving model_path unset = no ORT session,
+  # clean boot. Re-add it (+ enabled:true) only on a host where ort loads OK.
+  # model_path: "data/ai_model/waf_model.onnx"
+  confidence_threshold: 0.95
 
 risk:
   thresholds: { enabled: true, challenge_at: 40, block_at: 80, max: 100 }

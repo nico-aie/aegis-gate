@@ -107,3 +107,6 @@ __pycache__
 # (3 MB) DO go in — they're small enough.
 # /tests/security/dataset/attacks_v4.ndjson
 # /tests/security/dataset/attacks_v4.ndjson.gz
+
+# Runtime WAF JSON logs (tailed by the otel-collector)
+/logs/

@@ -1,0 +1,71 @@
+# OTel Collector — PER-NODE AGENT (run ONE on every WAF VM).
+#
+# Why an agent per node (not one central collector): the `filelog` receiver tails
+# a LOCAL file and the `prometheus`/`hostmetrics` receivers scrape LOCAL targets.
+# A central collector cannot read a remote node's log file or loopback /metrics.
+# So: each WAF VM runs its own agent, which forwards everything to the CENTRAL
+# SigNoz over the network (10.20.0.72:4317, the published OTLP port).
+#
+#   WAF (this node) ──traces OTLP──▶ local agent ─┐
+#   logs/waf.json   ──filelog──────▶ local agent  ├─OTLP─▶ 10.20.0.72:4317 (SigNoz)
+#   /metrics :9443  ──prometheus───▶ local agent ─┘   (host.name = this node's id)
+#
+# Run with host networking so it can read 127.0.0.1:9443 /metrics + the local log
+# (see deploy/compose/otel-agent.docker-compose.yml). Set the node id via
+#   OTEL_RESOURCE_ATTRIBUTES=host.name=<node-id>
+# so SigNoz groups traces/logs/metrics per node (matches the WAF's node.id).
+
+receivers:
+  otlp:                         # WAF on THIS node sends traces here (point WAF_OBSERVABILITY__OTEL__ENDPOINT at this agent)
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+  prometheus:                   # THIS node's WAF /metrics (admin loopback — host networking required)
+    config:
+      scrape_configs:
+        - job_name: aegis-waf
+          metrics_path: /metrics
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["127.0.0.1:9443"]
+  hostmetrics:                  # THIS node's CPU/mem/disk/net
+    collection_interval: 15s
+    scrapers: { cpu: {}, memory: {}, load: {}, disk: {}, filesystem: {}, network: {} }
+  filelog:                      # THIS node's WAF JSON log
+    include: ["/var/log/aegis/waf.json"]
+    start_at: end
+    operators:
+      - type: json_parser
+        timestamp: { parse_from: attributes.timestamp, layout_type: gotime, layout: "2006-01-02T15:04:05.999999Z07:00" }
+        severity: { parse_from: attributes.level }
+
+processors:
+  resourcedetection/system:     # stamps host.name (override via OTEL_RESOURCE_ATTRIBUTES=host.name=<node-id>)
+    detectors: [env, system]
+    system: { hostname_sources: [os] }
+  attributes/scrub:
+    actions:
+      - { key: http.request.header.authorization, action: delete }
+      - { key: http.request.header.cookie, action: delete }
+      - { key: url.query, action: delete }
+  batch: { timeout: 5s }
+
+exporters:
+  otlp/signoz:
+    endpoint: "10.20.0.72:4317"   # CENTRAL SigNoz collector (published OTLP). Change if SigNoz moves.
+    tls: { insecure: true }
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection/system, attributes/scrub, batch]
+      exporters: [otlp/signoz]
+    metrics:
+      receivers: [otlp, prometheus, hostmetrics]
+      processors: [resourcedetection/system, batch]
+      exporters: [otlp/signoz]
+    logs:
+      receivers: [otlp, filelog]
+      processors: [resourcedetection/system, attributes/scrub, batch]
+      exporters: [otlp/signoz]
