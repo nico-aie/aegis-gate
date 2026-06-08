@@ -3901,7 +3901,13 @@ function AiDetectorRow() {
   const aiConfidenceApi = window.useAiConfidenceApi
     ? window.useAiConfidenceApi()
     : { data: null, reload: () => {} };
+  // Model hot-reload — GET tells us whether a reloadable model exists + its
+  // path; POST re-reads it and atomically swaps it into the live detector.
+  const aiReloadApi = window.useAiReloadApi
+    ? window.useAiReloadApi()
+    : { data: null, reload: () => {} };
   const [busy, setBusy] = useStateP(false);
+  const [reloading, setReloading] = useStateP(false);
   const [expanded, setExpanded] = useStateP(false);
   const [metrics, setMetrics] = useStateP(null);
   // Draft value for the threshold input. Stays null until the GET
@@ -4022,6 +4028,40 @@ function AiDetectorRow() {
     }
   }
 
+  // Hot-reload the model from its on-disk path. Per-node, local action — the
+  // running model keeps serving until the new one loads; a bad file is
+  // rejected and the old model stays. Confirm first so an accidental click
+  // doesn't reload a half-copied file.
+  const canReload = !!aiReloadApi.data?.feature_present;
+  const reloadPath = aiReloadApi.data?.model_path;
+  async function reloadModel() {
+    if (reloading || !canReload) return;
+    const ok = window.confirm(
+      'Reload the AI model from disk?\n\n' +
+      (reloadPath ? `Path: ${reloadPath}\n\n` : '') +
+      'This re-reads the file on THIS node and atomically swaps it into the ' +
+      'live detector. In-flight requests finish on the current model; a ' +
+      'corrupt/half-written file is rejected and the running model is kept. ' +
+      'On a multi-node fleet, repeat on each node.'
+    );
+    if (!ok) return;
+    setReloading(true);
+    try {
+      const r = await window.aiReloadPost();
+      if (r.status === 200 && r.ok) {
+        const ms = typeof r.load_ms === 'number' ? ` in ${r.load_ms}ms` : '';
+        const sess = typeof r.sessions === 'number' ? ` · ${r.sessions} session(s)` : '';
+        window.aegisToast(`AI model reloaded${ms}${sess}`, 'ok');
+        aiReloadApi.reload && aiReloadApi.reload();
+      } else {
+        const msg = r.message || r.error || r.reason || `HTTP ${r.status}`;
+        window.aegisToast(`Reload failed: ${msg} (running model kept)`, 'err');
+      }
+    } finally {
+      setReloading(false);
+    }
+  }
+
   const liveThreshold = aiConfidenceApi.data?.confidence_threshold;
   const defaultThreshold = aiConfidenceApi.data?.default;
   const thresholdDirty =
@@ -4076,6 +4116,21 @@ function AiDetectorRow() {
               the rebuild hint on hover, and renders cursor:not-allowed.
               The transient `busy` state is only reachable feature-on,
               so it keeps the real native `disabled`. */}
+          {/* Hot-reload the model from disk. Only meaningful when a model is
+              loaded (canReload), so it's hidden in the feature-off case rather
+              than rendered inert — the Enable/Disable button already carries
+              the rebuild hint there. Audit-logged + CSRF-gated server-side. */}
+          {canReload && (
+            <button
+              className="btn"
+              onClick={reloadModel}
+              disabled={reloading}
+              title={reloadPath ? `Reload model from ${reloadPath}` : 'Reload the AI model from its configured path'}
+              style={{ fontSize: 11, padding: '4px 10px', cursor: reloading ? 'not-allowed' : 'pointer' }}
+            >
+              {reloading ? 'Reloading…' : '↻ Reload model'}
+            </button>
+          )}
           <button
             className="btn"
             onClick={flip}

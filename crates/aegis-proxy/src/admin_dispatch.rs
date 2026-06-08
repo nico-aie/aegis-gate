@@ -361,6 +361,19 @@ pub(crate) async fn handle_admin_request(
         }
     }
 
+    // Hot-reload the AI model from its on-disk path. POST is audit-mutated +
+    // CSRF-gated; it re-reads `cfg.ai.model_path` and atomically swaps the new
+    // model into the live detector (per-node, local — not a config-plane
+    // change). GET reports whether a reloadable model exists and from where.
+    if path == "/api/ai/reload" {
+        if method == hyper::Method::GET {
+            return crate::admin_mutate::handle_ai_reload_get(services).await;
+        }
+        if method == hyper::Method::POST {
+            return crate::admin_mutate::handle_ai_reload_post(req, services).await;
+        }
+    }
+
     // 2026-05-11 PR #7 — response-filter rung toggles. Audit-mutated
     // PUT; CSRF-gated. GET is open-on-session so the dashboard's
     // Security Engine tile can render the toggle state. Defaults are
