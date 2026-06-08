@@ -180,6 +180,11 @@ pub struct DashboardServices {
     /// feature-rebuild picks the operator's choice up.
     pub ai_threshold:
         Option<std::sync::Arc<dyn crate::api::ai_threshold::AiThresholdWriter>>,
+    /// AI model hot-reload bridge — drives `POST /api/ai/reload`. `None` when
+    /// the binary lacks `--features ai` OR no model loaded at boot (nothing to
+    /// reload); the handler returns 409 `feature_off` in that case. Set by the
+    /// proxy boot path to a reloader owning the live `ArcSwap<Model>`.
+    pub ai_reload: Option<std::sync::Arc<dyn crate::api::ai_reload::AiReloadWriter>>,
     /// The `cfg.ai.confidence_threshold` value read at boot — surfaced
     /// in the GET as `default` so the dashboard can show "current vs.
     /// config" without re-parsing YAML. Always populated even when the
@@ -604,6 +609,9 @@ impl DashboardServices {
                 // `ai` feature is on AND `cfg.ai.enabled` is
                 // true).
                 ai_toggle: None,
+                // Wired by the proxy boot path (run.rs → admin_accept_loop)
+                // when an AI model loads. `None` here = nothing to reload.
+                ai_reload: None,
                 // 2026-05-29 — wired by the proxy boot path alongside
                 // `ai_toggle`. Default 0.85 here matches
                 // `default_ai_confidence_threshold()`; the real boot

@@ -31,6 +31,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
+
 use aegis_core::pipeline::RequestView;
 
 use super::{Detector, Signal};
@@ -136,10 +138,20 @@ pub(crate) fn signals_from_prediction(
 /// `ort::Session`.
 pub type SharedModel = Arc<Model>;
 
+/// Hot-swappable model handle. The data plane reads the *current* model with
+/// one lock-free `.load()` per inference; a reloader atomically `.store()`s a
+/// freshly-loaded model. In-flight requests holding the old `Arc` finish on it
+/// (RCU), so a swap never stalls or drops a request. See
+/// [`AiDetector::model_handle`].
+pub type ModelHandle = Arc<ArcSwap<Model>>;
+
 /// AI-backed attack detector.  Stateless aside from the model
 /// handle.  Cheap to clone.
 pub struct AiDetector {
-    model: SharedModel,
+    /// Swappable so the model can be hot-reloaded without a restart. The read
+    /// side (`.load()`) is wait-free; the cost is nanoseconds against a
+    /// ~0.5 ms inference, so the indirection is free in practice.
+    model: ModelHandle,
     /// 2026-05-29 — runtime-mutable `P(Attack)` threshold. Stored as
     /// `f32::to_bits` in an `AtomicU32` so the dashboard can adjust it
     /// hot via `PUT /api/ai/confidence` without rebuilding the detector
@@ -194,7 +206,7 @@ impl AiDetector {
     ) -> Result<Self, ModelError> {
         let model = Model::load(model_path, normal_class_idx)?;
         Ok(Self {
-            model: Arc::new(model),
+            model: Arc::new(ArcSwap::from_pointee(model)),
             runtime_threshold: Arc::new(AtomicU32::new(threshold.to_bits())),
             score: super::scores::ai::AI,
             scale_score_by_prob: false,
@@ -208,7 +220,7 @@ impl AiDetector {
     /// detector instances.
     pub fn from_model(model: SharedModel, threshold: f32) -> Self {
         Self {
-            model,
+            model: Arc::new(ArcSwap::new(model)),
             runtime_threshold: Arc::new(AtomicU32::new(threshold.to_bits())),
             score: super::scores::ai::AI,
             scale_score_by_prob: false,
@@ -258,6 +270,22 @@ impl AiDetector {
     /// inference — no lock, single relaxed load.
     pub fn runtime_toggle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.runtime_enabled)
+    }
+
+    /// Clone of the hot-swappable model handle. The proxy boot path stashes
+    /// this so the audit-mutated `POST /api/ai/reload` handler can load a new
+    /// model and `.store()` it atomically — the data plane reads the same
+    /// [`ArcSwap`] per inference. Mirrors [`Self::runtime_toggle`].
+    pub fn model_handle(&self) -> ModelHandle {
+        Arc::clone(&self.model)
+    }
+
+    /// Atomically replace the live model with `next` (already loaded +
+    /// validated by the caller). In-flight inferences finish on the old model;
+    /// new ones pick up `next`. Returns the previous model so the caller can
+    /// observe/drop it. Used by the reload handler after a successful load.
+    pub fn swap_model(&self, next: SharedModel) -> SharedModel {
+        self.model.swap(next)
     }
 
     /// Override the initial runtime-toggle value (defaults to
@@ -393,7 +421,11 @@ impl Detector for AiDetector {
         }
         let request_str = Self::build_request_string(req);
         let feats = features::extract_features(&request_str);
-        match self.model.predict(&feats) {
+        // Lock-free read of the current model — wait-free, nanoseconds. A
+        // concurrent hot-reload swaps the pointer; this request keeps the
+        // model it loaded here for the duration of the call (RCU).
+        let model = self.model.load();
+        match model.predict(&feats) {
             Ok(p) => {
                 let lat_seconds = (p.latency_us as f64) / 1_000_000.0;
                 self.metrics.record_prediction(p.is_attack, lat_seconds);

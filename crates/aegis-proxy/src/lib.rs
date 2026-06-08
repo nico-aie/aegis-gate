@@ -33,6 +33,10 @@ mod admin_dispatch;
 mod admin_get;
 mod admin_login;
 mod admin_mutate;
+/// Concrete AI model hot-reloader (`POST /api/ai/reload`). Only compiled with
+/// `--features ai`; the trait it implements lives in `aegis-control`.
+#[cfg(feature = "ai")]
+mod ai_reload;
 pub mod cache;
 mod data_plane;
 mod responses;

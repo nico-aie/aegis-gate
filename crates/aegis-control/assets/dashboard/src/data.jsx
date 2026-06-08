@@ -1098,6 +1098,27 @@ async function aiConfidencePut(confidenceThreshold) {
   return { status: r.status, ...json };
 }
 
+// AI model hot-reload. GET surfaces whether a reloadable model exists and from
+// what path; POST re-reads `cfg.ai.model_path` and atomically swaps the new
+// model into the live detector (per-node, local — NOT a config-plane change,
+// so on a multi-node fleet trigger it on each node). CSRF-gated + audit-logged.
+function useAiReloadApi() {
+  return useApi('/api/ai/reload', {
+    intervalMs: 30000,
+    fallback: { feature_present: false },
+  });
+}
+async function aiReloadPost() {
+  const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+  const r = await fetch('/api/ai/reload', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
+    credentials: 'same-origin',
+  });
+  const json = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { status: r.status, ...json };
+}
+
 // 2026-05-11 PR #7 — runtime toggle for the three-rung
 // response-filter (`Pipeline::on_body_frame`). GET is open-on-
 // session; PUT is audit-mutated + CSRF-gated.
@@ -1404,6 +1425,8 @@ Object.assign(window, {
   useAiEnabledApi, aiEnabledPut,
   // 2026-05-29 — AI runtime confidence_threshold
   useAiConfidenceApi, aiConfidencePut,
+  // AI model hot-reload (POST /api/ai/reload)
+  useAiReloadApi, aiReloadPost,
   // 2026-05-11 PR #7 — response-filter rung toggles
   useResponseFilterApi, responseFilterPut,
   // TI-T — audit-mutated tier edits

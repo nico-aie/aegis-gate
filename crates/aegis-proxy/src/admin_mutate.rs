@@ -4109,6 +4109,114 @@ fn patch_ai_enabled(base: &str, enabled: bool) -> Result<String, String> {
 // without waiting for the watcher round-trip. Validation rejects values
 // outside [0.0, 1.0] (the model's `prob_attack` is a probability).
 
+/// `GET /api/ai/reload` — is there a reloadable model, and from what path.
+pub(crate) async fn handle_ai_reload_get(
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    use aegis_control::api::ai_reload::AiReloadView;
+    let view = match services.ai_reload.as_ref() {
+        Some(w) => AiReloadView {
+            feature_present: true,
+            model_path: Some(w.model_path()),
+        },
+        None => AiReloadView {
+            feature_present: false,
+            model_path: None,
+        },
+    };
+    json_body_response(
+        200,
+        serde_json::to_string(&view).unwrap_or_else(|_| "{}".into()),
+        "private, no-store",
+    )
+}
+
+/// `POST /api/ai/reload` — hot-reload the AI model from its configured on-disk
+/// path. A **per-node, local** action: each node re-reads its own
+/// `cfg.ai.model_path` and atomically swaps the new model into the live
+/// detector. The data plane keeps serving on the old model until the new one is
+/// fully loaded; a corrupt / half-written file is rejected and the running
+/// model is kept. The ORT load is blocking, so it runs on a blocking thread.
+pub(crate) async fn handle_ai_reload_post(
+    req: hyper::Request<hyper::body::Incoming>,
+    services: &aegis_control::dashboard_services::DashboardServices,
+) -> Response<Full<Bytes>> {
+    let pre = mutation_preamble(&req, "ai-reload");
+
+    // Distinct from a wiring error: when no reloadable model exists (no `ai`
+    // feature, batch mode, or `model_path` unset / failed to load at boot) the
+    // dashboard renders a clear "unavailable" state, not a 500.
+    let Some(writer) = services.ai_reload.clone() else {
+        let body = serde_json::json!({
+            "ok": false,
+            "reason": "unavailable",
+            "message": "No reloadable AI model. Needs a binary built with \
+                        `--features ai`, `cfg.ai.model_path` set to a valid ONNX \
+                        file, and the synchronous (non-batch) detector.",
+            "ai_feature_built": cfg!(feature = "ai"),
+        });
+        return json_body_response(409, body.to_string(), "private, no-store");
+    };
+
+    let model_path = writer.model_path();
+    let req_ctx = aegis_control::api::mutation::MutationRequest {
+        method: "POST",
+        csrf_cookie: pre.csrf_cookie.as_deref(),
+        csrf_header: pre.csrf_header.as_deref(),
+        actor: &pre.actor,
+        request_id: &pre.request_id,
+        resource: "/api/ai/reload",
+        action: "ai_model_reload",
+        reason: "operator hot-reloaded the AI model",
+    };
+    let before = serde_json::json!({ "model_path": model_path });
+    let after = serde_json::json!({ "model_path": model_path });
+
+    let writer_for_task = writer.clone();
+    let outcome = services
+        .mutate
+        .apply_async::<_, _, aegis_control::api::ai_reload::AiReloadReport, String>(
+            &req_ctx,
+            before,
+            after,
+            || async move {
+                // ORT load is blocking — keep it off the async worker thread.
+                let report = tokio::task::spawn_blocking(move || writer_for_task.reload())
+                    .await
+                    .map_err(|e| format!("reload task join error: {e}"))?;
+                if report.ok {
+                    Ok(report)
+                } else {
+                    // Surface the load failure; the running model is unchanged,
+                    // and a failed mutation writes no audit-chain entry.
+                    Err(report
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "model load failed".into()))
+                }
+            },
+        )
+        .await;
+
+    match outcome {
+        Ok(mo) => {
+            let report = mo.value;
+            tracing::info!(
+                model_path = %report.model_path,
+                sessions = report.sessions.unwrap_or(0),
+                load_ms = report.load_ms.unwrap_or(0),
+                "AI model hot-reloaded via POST /api/ai/reload",
+            );
+            json_body_response(
+                200,
+                serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()),
+                "private, no-store",
+            )
+        }
+        Err(e) => mutation_error_response(e),
+    }
+}
+
 pub(crate) async fn handle_ai_confidence_put(
     req: hyper::Request<hyper::body::Incoming>,
     services: &aegis_control::dashboard_services::DashboardServices,

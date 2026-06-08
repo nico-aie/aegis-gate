@@ -1,5 +1,6 @@
 pub mod about;
 pub mod admin;
+pub mod ai_reload;
 pub mod ai_threshold;
 pub mod ai_toggle;
 pub mod alert_receivers;

@@ -74,6 +74,10 @@ pub(crate) async fn admin_accept_loop(
     // surfaced as `default` in the GET so the dashboard can
     // show "current vs. config" without re-parsing YAML.
     ai_threshold_default: f32,
+    // AI model hot-reload bridge — stashed on `services.ai_reload` so the
+    // audit-mutated `POST /api/ai/reload` handler can re-read the model file
+    // and atomically swap it in. `None` in non-ai builds / batch mode.
+    ai_model_reloader: Option<Arc<dyn aegis_control::api::ai_reload::AiReloadWriter>>,
     // 2026-05-11 PR #7 — live `Pipeline` whose `ResponseFilterConfig`
     // the audit-mutated `PUT /api/response-filter` handler flips.
     // Same `Arc<Pipeline>` instance the data plane reads
@@ -645,6 +649,9 @@ pub(crate) async fn admin_accept_loop(
             holder as Arc<dyn aegis_control::api::ai_threshold::AiThresholdWriter>,
         );
     }
+    // Already an `Arc<dyn AiReloadWriter>` (the concrete reloader is built in
+    // run.rs where the aegis-security model handle is in scope), so just stash.
+    services.ai_reload = ai_model_reloader;
     // 2026-05-11 PR #7 — surface the live `Pipeline` as the
     // response-filter writer so `PUT /api/response-filter` can
     // 2026-05-17 F-CRITICAL-001 (control audit): share the Pipeline's

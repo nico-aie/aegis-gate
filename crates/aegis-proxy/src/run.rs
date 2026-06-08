@@ -520,6 +520,13 @@ pub async fn run(
     // shared atomic from `services.ai_threshold` and updates the same
     // backing store the data plane reads per inference.
     let mut ai_runtime_threshold_inner: Option<std::sync::Arc<std::sync::atomic::AtomicU32>> = None;
+    // Model hot-reload bridge — captured in the sync AI-detector branch below
+    // (the batch path doesn't expose a swappable handle yet). Drives
+    // `POST /api/ai/reload`; `None` leaves the endpoint reporting "unavailable".
+    #[cfg_attr(not(feature = "ai"), allow(unused_mut))]
+    let mut ai_model_reloader_inner: Option<
+        std::sync::Arc<dyn aegis_control::api::ai_reload::AiReloadWriter>,
+    > = None;
     #[cfg(feature = "ai")]
     {
         if cfg.ai.batch_enabled {
@@ -655,6 +662,19 @@ pub async fn run(
                             // `PUT /api/ai/confidence` will flip and the data
                             // plane reads via `AiDetector::threshold()`.
                             ai_runtime_threshold_inner = Some(detector.runtime_threshold());
+                            // Model hot-reload — capture the swappable handle so
+                            // `POST /api/ai/reload` can load a new model from this
+                            // same path and atomically swap it into the live
+                            // detector (the data plane reads the same ArcSwap).
+                            let reloader: std::sync::Arc<
+                                dyn aegis_control::api::ai_reload::AiReloadWriter,
+                            > = std::sync::Arc::new(crate::ai_reload::AiModelReloader::new(
+                                detector.model_handle(),
+                                model_path.clone(),
+                                normal_idx,
+                                sessions,
+                            ));
+                            ai_model_reloader_inner = Some(reloader);
                             // Seed the toggle from `cfg.ai.enabled`. The
                             // detector's default is `true`; we override here
                             // so `enabled: false` in YAML still boots with
@@ -726,6 +746,9 @@ pub async fn run(
     // the detector wasn't installed). From here it travels alongside
     // `ai_runtime_toggle` into the ProxyContext / DashboardServices.
     let ai_runtime_threshold = ai_runtime_threshold_inner;
+    // Travels alongside `ai_runtime_toggle` into `admin_accept_loop`, which
+    // stashes it on `services.ai_reload` for the `POST /api/ai/reload` handler.
+    let ai_model_reloader = ai_model_reloader_inner;
     let detectors: std::sync::Arc<Vec<Box<dyn aegis_security::detectors::Detector>>> =
         std::sync::Arc::new(detector_vec);
     // Phase-3 per-route latency. Cardinality bounded by the
@@ -1778,6 +1801,9 @@ pub async fn run(
         // + `ai_threshold_default` parameters added below).
         ai_runtime_threshold.clone(),
         cfg.ai.confidence_threshold,
+        // Model hot-reload bridge for `POST /api/ai/reload` (None in
+        // non-ai builds / batch mode).
+        ai_model_reloader.clone(),
         pipeline.clone(),
         admin_state_backend,
         admin_identity_tracker,

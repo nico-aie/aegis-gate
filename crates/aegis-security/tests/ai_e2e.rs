@@ -233,3 +233,49 @@ fn ai_detector_fires_on_known_attacks_and_stays_silent_on_clean_traffic() {
         misses,
     );
 }
+
+/// Hot-reload swaps the live model under active readers without disrupting
+/// inference. Loads a detector, records its verdicts, then atomically swaps in
+/// a freshly-loaded model (same file) via `swap_model` — the exact call the
+/// `POST /api/ai/reload` handler makes — and confirms inference still works and
+/// the verdicts are identical through the new `ArcSwap` handle. Verdict
+/// *consistency* is the invariant (same weights), so the test is robust
+/// regardless of how the model classifies any specific payload.
+#[test]
+fn hot_reload_swaps_model_and_keeps_inference_consistent() {
+    let Some(path) = model_path() else {
+        eprintln!("AI reload: AEGIS_AI_MODEL unset — skipping.");
+        return;
+    };
+    if !path.exists() {
+        eprintln!("AI reload: model at {} not found — skipping.", path.display());
+        return;
+    }
+
+    let detector = AiDetector::load(&path, DEFAULT_NORMAL_CLASS_IDX, 0.85).expect("model loads");
+
+    // Two representative inputs; capture the live verdict for each before swap.
+    let attack = ("GET", "/?id=1%27%20OR%20%271%27%3D%271", "");
+    let clean = ("GET", "/", "");
+    let attack_before = fires_ai(&detector, attack.0, attack.1, attack.2);
+    let clean_before = fires_ai(&detector, clean.0, clean.1, clean.2);
+
+    // Load a fresh model and atomically swap it in — exactly what the reload
+    // handler does. The previous model is returned (and dropped here).
+    let fresh = aegis_security::detectors::ai::Model::load(&path, DEFAULT_NORMAL_CLASS_IDX)
+        .expect("fresh model loads");
+    let _old = detector.swap_model(std::sync::Arc::new(fresh));
+
+    // Inference still works through the swapped-in handle, and the verdict is
+    // unchanged for the same input (same weights, hot-swapped under readers).
+    assert_eq!(
+        fires_ai(&detector, attack.0, attack.1, attack.2),
+        attack_before,
+        "verdict must be identical after hot-swapping the same model (attack input)",
+    );
+    assert_eq!(
+        fires_ai(&detector, clean.0, clean.1, clean.2),
+        clean_before,
+        "verdict must be identical after hot-swapping the same model (clean input)",
+    );
+}
