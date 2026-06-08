@@ -39,8 +39,11 @@ show me the contract checks before declaring done.
 | Observability | **Full SigNoz** (UI `:8090`, OTLP `:4317`) | OTel-native single pane |
 | WAF runtime | **Native binary** (`cargo build --release`) | contract wants `./waf`; best perf |
 | Build features | **`redis geoip alerts ai affinity otel llm`** | = `make run-copilot` set |
-| `ai` / ONNX (`ort`) | **load-dynamic** (already in `Cargo.toml`) | host glibc 2.35 < 2.38 can't link the prebuilt; dlopen a compatible `libonnxruntime.so` (off by default) |
-| Copilot (`llm`) | **ON** | set `LLM_API_KEY`; endpoint `console.bizbrain.app`, model `Qwen3.6-35B-A3B` |
+| `ai` / ONNX (`ort`) | **built (load-dynamic) but OFF** | glibc 2.35 can't link the prebuilt → load-dynamic. ON this 128-core host ORT **deadlocks** at session create; `waf.yaml` **omits `ai.model_path`** (model loads at boot whenever model_path is set, regardless of `enabled`). Re-enable on ≤8 cores (cpuset) or glibc≥2.38+prebuilt — guide §5/§14 |
+| Copilot (`llm`) | **ON** | key in gitignored `.env`; **`set -a; . ./.env; set +a` before `./waf run`** (bare run doesn't read `.env`). Endpoint `console.bizbrain.app`, model `Qwen3.6-35B-A3B` |
+| Logs → SigNoz | **per-node otel-collector** (`filelog`) | WAF only exports traces; logs need `./waf run … >> logs/waf.json` + a collector tailing it. ONE agent per VM. Guide §13 |
+| Resource limits | **cpuset+mem** to match 8 vCPU/16 GB | use `cpuset` (not just `cpus`) so the WAF sees 8 CPUs — caps tokio + ORT threads. Guide §14 |
+| Log verbosity | **cap via `RUST_LOG`** | deps log at TRACE → floods SigNoz. `RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn"` |
 | TLS | **Deferred** (plaintext `:8080`) | add a shared cert per node when ready (guide §7) |
 | Control-plane secret | `waf-hackathon-2026-ctrl` | contract §2.2 `X-Benchmark-Secret` |
 

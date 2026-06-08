@@ -56,8 +56,12 @@ source ~/.cargo/env
 cargo build -p aegis-bin --release --features "redis geoip alerts ai affinity otel llm"
 cp target/release/waf ./waf
 cp deploy/waf.contract.yaml ./waf.yaml        # then set node.id / IPs as needed
-# ORT_DYLIB_PATH only needed if you enable the ONNX `ai` detector (off by default):
-ORT_DYLIB_PATH=$PWD/runtime/onnxruntime/libonnxruntime.so AEGIS_INSECURE_COOKIES=1 ./waf run
+set -a; . ./.env; set +a                       # LLM_API_KEY → activates copilot
+export RUST_LOG="info,hyper=warn,hyper_util=warn,h2=warn,tower=warn,rustls=warn,tonic=warn"
+AEGIS_INSECURE_COOKIES=1 ./waf run --config ./waf.yaml >> logs/waf.json 2>&1 &
+# (ai is OFF: waf.yaml omits ai.model_path. The model loads at boot whenever
+#  model_path is set+exists — and ORT load-dynamic DEADLOCKS on this 128-core host.
+#  Pin to ≤8 cores (cpuset/taskset) to retry ai; see PRE-PROD-DEPLOY.md §5/§14.)
 ```
 
 **Verified against the contract:**
@@ -66,11 +70,18 @@ ORT_DYLIB_PATH=$PWD/runtime/onnxruntime/libonnxruntime.so AEGIS_INSECURE_COOKIES
 - §3/§4 — legit → `allow` 200; SQLi → `block` 403 (`X-WAF-Rule-Id: sqli`).
 - §2 — `GET /__waf_control/capabilities` (with `X-Benchmark-Secret: waf-hackathon-2026-ctrl`) → 200; without → 403; `reset_state` (audit preserved) and `set_profile` (`all`→`log_only` flips enforcement while still reporting the intended action) work.
 - §6 — `waf_audit.log` is JSONL with `request_id, ts_ms, ip(peer), method, path, action, risk_score, mode`; `request_id` matches the response header.
-- Traces (`serviceName=aegis-gate`) land in SigNoz.
+- Traces (`serviceName=aegis-gate`) land in SigNoz; **logs** ship via the
+  otel-collector `filelog` pipeline (below); AI **hot-reload** API merged from
+  develop (`PUT`-style reload, no restart — `crates/*/src/ai_reload.rs`).
 
-**Copilot** is compiled in (`llm`) but **inert** until `LLM_API_KEY` is set
-(wired to `https://console.bizbrain.app/v1`, model `Qwen3.6-35B-A3B`). Export
-`LLM_API_KEY=…` before `./waf run` to activate.
+**Copilot** is **ON** — `llm` compiled in + `LLM_API_KEY` loaded from `.env`
+(`set -a; . ./.env; set +a` before `./waf run`; the bare command does NOT read
+`.env`). Endpoint `https://console.bizbrain.app/v1`, model `Qwen3.6-35B-A3B`.
+
+**Logs → SigNoz:** WAF JSON logs go to `logs/waf.json`; an otel-collector tails
+them (`filelog`) → SigNoz Logs. Started via
+`deploy/compose/otel-collector.docker-compose.yml` (this host) /
+`otel-agent.docker-compose.yml` (other VMs). See PRE-PROD-DEPLOY.md §13.
 
 ## ✅ Resolved: `ai`/`ort` vs glibc (committed fix)
 
