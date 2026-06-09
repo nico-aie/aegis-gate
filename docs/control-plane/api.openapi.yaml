@@ -1722,6 +1722,12 @@ paths:
       summary: Upstream mTLS handshake-failure histogram (by pool + reason)
       responses:
         '200': { description: "`{total, failures:[{pool, reason, count, last_seen_ms}]}`.", content: { application/json: { schema: { type: object } } } }
+  /api/zero-trust/upstream/rotation:
+    get:
+      tags: [Zero Trust]
+      summary: Hot-rotation status (P5 — applied generation + timestamp, no restart)
+      responses:
+        '200': { description: "`{generation, applied_ms, live}` — `generation` bumps on each live re-apply.", content: { application/json: { schema: { type: object } } } }
 
   /api/cluster:
     get:

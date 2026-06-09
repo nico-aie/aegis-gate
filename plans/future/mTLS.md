@@ -478,8 +478,17 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       Remaining: **frontend only** — per-pool drawer editing, backend-CA upload UI, expiry badges,
       upstream handshake-failure surface (the backend round-trips through existing
       `PUT /api/upstreams/pool/{id}` + the new `/api/zero-trust/upstream/trust/*` endpoints).
-- [ ] **P5** Hot rotation on cas_set (4a-* are boot/restart-only; identity/trust PUTs land at next boot);
-      session resumption; optional SPIFFE-SAN matcher.
+- [x] **P5 hot rotation DONE (commit ac119b6)** — `upstream::rotation` reconcile task (5s tick, no-op when
+      no pool has upstream mTLS). On a config-plane ZT change it re-seeds the shared identity + re-applies the
+      pool table (folding fresh trust PEM); the re-applied `PoolKey` mTLS fingerprint changes so the next dial
+      builds a fresh client — in-flight requests finish on the old one, **no dropped connections**. Fail-safe
+      (deleted/corrupt record keeps last-good; never downgrades to no-client-auth). Also folds `trust_pem` for
+      pools enabled at runtime via the drawer. Observability: live status global + `GET /api/zero-trust/
+      upstream/rotation`; identity GET overlays the live rotated cert; "live · rotated ×N" badge on the card.
+      Tests: 4 unit; proxy lib 777. **Live-verified on redis (cluster mode):** booted `source: state`, PUT a
+      new identity → 7s later, no restart, the WAF presents `CN=…-ROTATED-v2` (fp changed, generation 2). Also
+      verified trust-bundle rotation on in_memory.
+- [ ] **P5 remaining** session resumption tuning; optional SPIFFE-SAN matcher.
 - [ ] **Tests/gates** §6 checklist all green before default-on.
 
 ---

@@ -372,9 +372,12 @@ curl -fsS -X POST "$ADMIN/api/zero-trust/upstream/trust/payments-ca" -b "$JAR" -
 - **Fail-closed:** `source: state` with no stored identity (or a corrupt record)
   **aborts boot** — nodes refuse to dial backends without client auth. Store the
   identity *before* rolling `source: state`.
-- **Activation is fleet-wide via `cas_set`**, but nodes **materialize the PUBLIC
-  cert at boot** — identity/trust changes land on the **next restart** (hot
-  rotation is P5). Roll a restart after storing.
+- **Hot rotation (no restart).** Activation is fleet-wide via `cas_set`, and every
+  node's reconcile task (≈5 s) re-seeds + re-applies on a change — the new cert is
+  presented within a tick, in-flight requests finish on the old client, **no
+  dropped connections**. Watch `GET /api/zero-trust/upstream/rotation` (generation
+  bumps) or the console's "live · rotated ×N" badge. (File-source identities still
+  rotate by swapping the file + reload.)
 - **Delete is ref-checked:** a trust bundle a pool still references returns `409`
   (`{error:"bundle_in_use", pools:[…]}`). Disable the pool's `upstream_mtls`
   first.
@@ -392,6 +395,7 @@ curl -fsS -X POST "$ADMIN/api/zero-trust/upstream/trust/payments-ca" -b "$JAR" -
 | Boot aborts: `upstream_identity.source: state but no identity is stored` | Store the shared identity (step 10) **before** rolling `source: state`. Fail-closed by design. |
 | Pool PUT `400 "… is not an uploaded backend-CA bundle"` | The pool's `upstream_mtls.trust` names a bundle that isn't uploaded. Upload it first, or set `trust` to a CA file path. |
 | Upstream handshake failures after enabling mTLS | Check the failure histogram reason: untrusted_backend_cert (trust bundle) / cert_expired (rotate) / san_mismatch / client_identity_error (WAF cert/key). |
+| Rotated a cert but nodes still present the old one | Give it one reconcile tick (≈5 s) and check `GET /api/zero-trust/upstream/rotation` `generation` bumped. File-source identities don't hot-rotate — swap the file + reload. A node on `in_memory` can't bootstrap `source: state` (use `redis`). |
 | Fold returns `500 "config plane unavailable: no state backend wired"` | No `StateBackend` at all (shouldn't happen on a normal boot). Check `state:` block parsed. |
 | `409 {error: "version_conflict", current: X}` | Optimistic-concurrency conflict — another writer activated between this request's read and its CAS. **Folded toggles** (detectors/rules/tiers/upstreams/AI/response-filter) re-read the version server-side, so just **re-issue the same request** (the dashboard auto-retries these). A **full-doc `PUT /api/config`** carries your stale `expected_version` — re-read `GET /api/config`, rebuild on the new version, resend. |
 | Edit doesn't reach other nodes | Confirm `state.backend: redis` (not `in_memory`) on **all** nodes + same `state.redis.urls`. Check `GET /api/config` `.applied[]` for a node stuck on an old version → read its logs for `config_reload_failed` (bad blob → node keeps last-good, fail-static). |

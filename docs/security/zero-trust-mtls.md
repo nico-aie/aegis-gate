@@ -109,9 +109,17 @@ PUBLIC cert/CA PEM from the plane into its config snapshot. **Fail-closed:** a
 `source: state` identity with no stored record / unreadable / corrupt aborts boot
 rather than dialing without client auth.
 
-> **Hot rotation is P5.** Today the identity/trust PUTs land at the **next boot**
-> (or config-doc reload). Storing via the console or API persists immediately;
-> presenting the new material fleet-wide is a restart away.
+> **Hot rotation (P5) — no restart.** A background reconcile task (5 s tick) on
+> every node watches the config plane; when the identity or a referenced trust
+> bundle changes, it re-seeds the shared identity and re-applies the pool table.
+> Each affected pool's `PoolKey` mTLS fingerprint changes, so the **next dial**
+> builds a fresh client while in-flight requests finish on the old one — eventual
+> per-node convergence with **zero dropped connections**. Store a new cert via the
+> console/API and the fleet presents it within a tick; no rolling restart.
+> Fail-safe: a deleted/corrupt record keeps the last-good identity (never
+> downgrades to no-client-auth). File-source identities rotate by swapping the
+> file + reload, not here. `GET /api/zero-trust/upstream/rotation` reports the
+> applied generation; the console shows a "live · rotated ×N" badge.
 
 ---
 
@@ -154,6 +162,7 @@ GET    /api/zero-trust/upstream/trust             list backend-CA bundles
 POST   /api/zero-trust/upstream/trust/{bundle}    upload PUBLIC backend CA (PEM)   (audited, gated)
 DELETE /api/zero-trust/upstream/trust/{bundle}    remove bundle (ref-checked)      (audited, gated)
 GET    /api/zero-trust/upstream/failures          handshake-failure histogram
+GET    /api/zero-trust/upstream/rotation          hot-rotation status (generation + applied_ms)
 ```
 
 Per-pool `upstream_mtls` editing round-trips through the existing
@@ -199,10 +208,11 @@ the console. Expiry is surfaced as a badge on the identity + each trust bundle.
 - `aegis-core/src/config.rs` — `ZeroTrustConfig`, `UpstreamIdentityConfig`,
   `UpstreamMtlsConfig`, `CertSource`, `resolve_upstream_mtls`,
   `UpstreamIdentityRecord` / `UpstreamTrustRecord` + state keys, `validate_*`.
-- `aegis-proxy/src/upstream/{identity,tls,forward,mtls_failures}.rs` —
+- `aegis-proxy/src/upstream/{identity,tls,forward,mtls_failures,rotation}.rs` —
   state materialization (`materialize_zero_trust_state`, fail-closed),
   `client_config_from_resolved`, fallible fail-closed `build_client`,
-  the handshake-failure tracker.
+  the handshake-failure tracker, and the P5 hot-rotation reconcile task
+  (`rotation::spawn`).
 - `aegis-proxy/src/admin_mutate.rs` — audited identity/trust PUT+DELETE,
   `validate_pool_trust_bundles` cross-ref.
 - `aegis-control/src/api/{zero_trust,upstreams_config,mtls}.rs` — read views +
