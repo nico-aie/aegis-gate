@@ -2281,6 +2281,23 @@ pub(crate) async fn forward_allow_to_upstream(
                 }
                 crate::upstream::forward::ForwardError::Connect(_)
                 | crate::upstream::forward::ForwardError::Handshake(_) => {
+                    // P4 — surface upstream mTLS handshake failures on
+                    // the Zero Trust page (classified by reason). Only
+                    // record handshake errors for pools that actually
+                    // opted into upstream mTLS, so a plain TLS/connect
+                    // failure on a non-mTLS pool doesn't masquerade as
+                    // a client-auth problem.
+                    if let crate::upstream::forward::ForwardError::Handshake(m) = &e {
+                        let is_mtls = ctx
+                            .pools
+                            .get(&route_ctx.upstream)
+                            .map(|p| p.connection.upstream_mtls.is_some())
+                            .unwrap_or(false);
+                        if is_mtls {
+                            crate::upstream::mtls_failures::global()
+                                .record(&route_ctx.upstream, m);
+                        }
+                    }
                     DecisionTag::circuit_breaker("upstream-unreachable").with_tier(route_ctx.tier)
                 }
                 _ => DecisionTag::circuit_breaker("upstream-error").with_tier(route_ctx.tier),

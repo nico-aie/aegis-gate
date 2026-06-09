@@ -239,6 +239,7 @@ mod tests {
             circuit_breaker: None,
             connection: aegis_core::config::ConnectionPoolConfig::default(),
             cache: None,
+            upstream_mtls: None,
         }
     }
 

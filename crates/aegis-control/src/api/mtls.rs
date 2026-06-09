@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use aegis_core::config::{ClientAuthConfig, ClientAuthMode, ClientAuthScope, WafConfig};
+use aegis_core::config::{DownstreamMtlsConfig, DownstreamMtlsMode, DownstreamMtlsScope, WafConfig};
 
 use crate::identity_tracker::{
     CaCertSummary, FailureSnapshot, IdentitySnapshot, IdentityTracker,
@@ -32,7 +32,7 @@ use crate::identity_tracker::{
 // ---------------------------------------------------------------------------
 
 /// Wire shape for `GET /api/mtls`. Mirrors the
-/// [`ClientAuthConfig`] field layout but with an `active`
+/// [`DownstreamMtlsConfig`] field layout but with an `active`
 /// boolean that clarifies whether the rustls handshake layer
 /// is actually enforcing the policy yet (MTLS-T2). Always
 /// returned as 200 — when `cfg.tls.client_auth` is `None` the
@@ -59,13 +59,17 @@ impl MtlsConfigView {
     /// will replace this constructor with a variant that
     /// takes the live verifier-state handle.
     pub fn from_config(cfg: &WafConfig) -> Self {
-        match cfg.tls.as_ref().and_then(|t| t.client_auth.as_ref()) {
+        match cfg
+            .zero_trust
+            .as_ref()
+            .and_then(|z| z.downstream.as_ref())
+        {
             Some(ca) => Self::from_client_auth(ca),
             None => Self::default_disabled(),
         }
     }
 
-    fn from_client_auth(ca: &ClientAuthConfig) -> Self {
+    fn from_client_auth(ca: &DownstreamMtlsConfig) -> Self {
         Self {
             mode: mode_label(ca.mode),
             ca_bundle: ca
@@ -93,18 +97,18 @@ impl MtlsConfigView {
     }
 }
 
-fn mode_label(mode: ClientAuthMode) -> &'static str {
+fn mode_label(mode: DownstreamMtlsMode) -> &'static str {
     match mode {
-        ClientAuthMode::Disabled => "disabled",
-        ClientAuthMode::Optional => "optional",
-        ClientAuthMode::Required => "required",
+        DownstreamMtlsMode::Disabled => "disabled",
+        DownstreamMtlsMode::Optional => "optional",
+        DownstreamMtlsMode::Required => "required",
     }
 }
 
-fn scope_label(scope: ClientAuthScope) -> &'static str {
+fn scope_label(scope: DownstreamMtlsScope) -> &'static str {
     match scope {
-        ClientAuthScope::Admin => "admin",
-        ClientAuthScope::Data => "data",
+        DownstreamMtlsScope::Admin => "admin",
+        DownstreamMtlsScope::Data => "data",
     }
 }
 
@@ -299,9 +303,9 @@ pub fn render_ca_summary(tracker: Option<&Arc<IdentityTracker>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aegis_core::config::{ClientAuthMode, TlsConfig};
+    use aegis_core::config::{DownstreamMtlsMode, ZeroTrustConfig};
 
-    fn cfg_with_client_auth(ca: ClientAuthConfig) -> WafConfig {
+    fn cfg_with_client_auth(ca: DownstreamMtlsConfig) -> WafConfig {
         let yaml = r#"
 listeners:
   data: [{ bind: "127.0.0.1:8080" }]
@@ -313,14 +317,9 @@ upstreams:
 state: { backend: in_memory }
 "#;
         let mut cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
-        cfg.tls = Some(TlsConfig {
-            certificates: Vec::new(),
-            min_version: None,
-            force_https: false,
-            hsts: None,
-            acme: None,
-            client_auth: Some(ca),
-            advertise_h3: None,
+        cfg.zero_trust = Some(ZeroTrustConfig {
+            downstream: Some(ca),
+            upstream_identity: None,
         });
         cfg
     }
@@ -348,11 +347,11 @@ state: { backend: in_memory }
 
     #[test]
     fn cfg_view_required_renders_full_state() {
-        let cfg = cfg_with_client_auth(ClientAuthConfig {
-            mode: ClientAuthMode::Required,
+        let cfg = cfg_with_client_auth(DownstreamMtlsConfig {
+            mode: DownstreamMtlsMode::Required,
             ca_bundle: Some("/etc/aegis/admin-ca.pem".into()),
             allowed_sans: vec!["admin@aegis.local".into()],
-            apply_to: vec![ClientAuthScope::Admin, ClientAuthScope::Data],
+            apply_to: vec![DownstreamMtlsScope::Admin, DownstreamMtlsScope::Data],
         });
         let view = MtlsConfigView::from_config(&cfg);
         assert_eq!(view.mode, "required");
@@ -366,11 +365,11 @@ state: { backend: in_memory }
 
     #[test]
     fn cfg_view_renders_to_json() {
-        let cfg = cfg_with_client_auth(ClientAuthConfig {
-            mode: ClientAuthMode::Optional,
+        let cfg = cfg_with_client_auth(DownstreamMtlsConfig {
+            mode: DownstreamMtlsMode::Optional,
             ca_bundle: Some("/etc/aegis/ca.pem".into()),
             allowed_sans: Vec::new(),
-            apply_to: vec![ClientAuthScope::Admin],
+            apply_to: vec![DownstreamMtlsScope::Admin],
         });
         let view = MtlsConfigView::from_config(&cfg);
         let json = view.render();

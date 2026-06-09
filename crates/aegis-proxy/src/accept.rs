@@ -683,9 +683,9 @@ pub(crate) async fn admin_accept_loop(
     // loop; here we only load the CA bundle summary so
     // `/api/mtls/ca-summary` lights up immediately at boot.
     if let Some(ca_path) = cfg
-        .tls
+        .zero_trust
         .as_ref()
-        .and_then(|t| t.client_auth.as_ref())
+        .and_then(|z| z.downstream.as_ref())
         .and_then(|ca| ca.ca_bundle.as_ref())
     {
         match aegis_control::identity_tracker::parse_ca_bundle(ca_path) {
@@ -712,13 +712,13 @@ pub(crate) async fn admin_accept_loop(
     // the configured / override / effective triple correctly.
     {
         let configured_mode = cfg
-            .tls
+            .zero_trust
             .as_ref()
-            .and_then(|t| t.client_auth.as_ref())
+            .and_then(|z| z.downstream.as_ref())
             .map(|ca| ca.mode)
-            .unwrap_or(aegis_core::config::ClientAuthMode::Disabled);
+            .unwrap_or(aegis_core::config::DownstreamMtlsMode::Disabled);
         services.mtls_mode_store = Arc::new(
-            aegis_control::api::mtls_mode::ClientAuthModeStore::with_configured(configured_mode),
+            aegis_control::api::mtls_mode::DownstreamMtlsModeStore::with_configured(configured_mode),
         );
     }
     // MTLS-T10 — surface the operator's opt-in for the CA bundle
@@ -818,9 +818,9 @@ pub(crate) async fn admin_accept_loop(
     // through `extract_identity_with_allowlist`.
     {
         let initial: Vec<String> = cfg
-            .tls
+            .zero_trust
             .as_ref()
-            .and_then(|t| t.client_auth.as_ref())
+            .and_then(|z| z.downstream.as_ref())
             .map(|ca| ca.allowed_sans.clone())
             .unwrap_or_default();
         services.allowed_sans = Some(

@@ -21,6 +21,7 @@ pub mod login;
 pub mod mtls;
 pub mod mtls_ca_bundle;
 pub mod mtls_mode;
+pub mod zero_trust;
 pub mod mutation;
 pub mod response_filter;
 pub mod risk;

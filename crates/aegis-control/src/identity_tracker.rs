@@ -399,11 +399,25 @@ impl std::error::Error for CaParseError {}
 /// Parse the CA bundle PEM file at `path` into a [`CaSummary`].
 /// Pure function — usable from tests with a temp PEM file.
 pub fn parse_ca_bundle(path: &Path) -> Result<CaSummary, CaParseError> {
+    let pem = std::fs::read(path).map_err(CaParseError::Io)?;
+    let certificates = parse_ca_bundle_bytes(&pem)?;
+    Ok(CaSummary {
+        bundle_path: path.display().to_string(),
+        last_loaded_ms: Utc::now().timestamp_millis(),
+        certificates,
+    })
+}
+
+/// Parse PEM cert bytes (a file's contents, or in-memory PEM
+/// materialized from the config plane) into per-cert metadata
+/// summaries. Public material only — never touches private keys.
+/// Shared by [`parse_ca_bundle`] (file path) and the Zero Trust
+/// upstream-identity view (state-source in-memory PEM, P4).
+pub fn parse_ca_bundle_bytes(pem: &[u8]) -> Result<Vec<CaCertSummary>, CaParseError> {
     use std::io::BufReader;
     use x509_parser::prelude::FromDer;
 
-    let file = std::fs::File::open(path).map_err(CaParseError::Io)?;
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::new(pem);
     let der_certs: Vec<rustls_pki_types::CertificateDer<'static>> =
         rustls_pemfile::certs(&mut reader)
             .collect::<Result<Vec<_>, _>>()
@@ -445,12 +459,7 @@ pub fn parse_ca_bundle(path: &Path) -> Result<CaSummary, CaParseError> {
             days_until_expiry,
         });
     }
-
-    Ok(CaSummary {
-        bundle_path: path.display().to_string(),
-        last_loaded_ms: now.timestamp_millis(),
-        certificates: out,
-    })
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

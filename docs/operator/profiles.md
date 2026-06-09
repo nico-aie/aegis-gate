@@ -127,7 +127,7 @@ and tune these knobs. Each row says **what you're trading**:
 | `detectors.recon.enabled` | Noisy CDN traffic (`false`) | Strict ops baseline (`true`) |
 | `detectors.brute_force.enabled` | Shared-IP testing / upstream auth shaping (`false`) | Dedicated-IP prod (`true`) |
 | `tls.min_version` | Legacy clients (`1.2`) | Modern clients only (`1.3`) |
-| `tls.client_auth.mode` | Open admin (`disabled`) | Zero-trust admin (`required`) |
+| `zero_trust.downstream.mode` | Open admin (`disabled`) | Zero-trust admin (`required`) — verify client certs presented to the WAF |
 | `compliance.modes` | (no behavior change today) | Documentation tag for the Compliance dashboard. Auto-pinning detector classes is **deferred** — see `plans/future/compliance-profiles.md`. |
 
 ---

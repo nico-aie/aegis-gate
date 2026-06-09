@@ -1664,6 +1664,71 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PoolReferencedError' }
 
+  # ----- P4 — Zero Trust upstream mTLS (WAF-as-client). Read paths are
+  #         unauthenticated-safe (PUBLIC metadata only, never the key);
+  #         mutations are audited + CSRF + behind allow_ca_upload. -----
+  /api/zero-trust/upstream/identity:
+    get:
+      tags: [Zero Trust]
+      summary: Shared fleet WAF client-identity metadata (PUBLIC — never the key)
+      responses:
+        '200':
+          description: "configured / source / cert metadata / cert_pem (public). Materialized from the config plane for `source: state`."
+          content: { application/json: { schema: { type: object } } }
+    put:
+      tags: [Zero Trust]
+      summary: Store the shared identity (audited, CSRF, allow_ca_upload)
+      description: "Body `{cert_pem (PUBLIC), key_ref}`. Reference-only — the private key is never accepted/stored; a PRIVATE KEY block in `cert_pem` is rejected. Persisted via `cas_set`."
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [cert_pem, key_ref], properties: { cert_pem: { type: string }, key_ref: { type: string } } } } }
+      responses:
+        '200': { description: Stored. Nodes materialize the cert at boot. }
+        '400': { description: Invalid PEM / missing key_ref / private key in cert field. }
+        '403': { description: allow_ca_upload disabled or CSRF failure. }
+  /api/zero-trust/upstream/config:
+    get:
+      tags: [Zero Trust]
+      summary: Per-pool upstream-mTLS state (live registry — off | mutual+verify)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object } } } }
+  /api/zero-trust/upstream/trust:
+    get:
+      tags: [Zero Trust]
+      summary: List uploaded backend-CA trust bundles (PUBLIC cert metadata)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object } } } }
+  /api/zero-trust/upstream/trust/{bundle}:
+    post:
+      tags: [Zero Trust]
+      summary: Upload a PUBLIC backend-CA trust bundle (audited, CSRF, allow_ca_upload)
+      description: "Raw PEM body. Bundle name `[A-Za-z0-9._-]`, ≤64 chars. Rejects a PRIVATE KEY block."
+      parameters: [{ name: bundle, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/x-pem-file: { schema: { type: string } } } }
+      responses:
+        '200': { description: Stored. }
+        '400': { description: Invalid PEM / bad bundle name / private key present. }
+        '403': { description: allow_ca_upload disabled or CSRF failure. }
+    delete:
+      tags: [Zero Trust]
+      summary: Remove a trust bundle (ref-checked — refuses a referenced bundle)
+      parameters: [{ name: bundle, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Removed. }
+        '409': { description: "Bundle in use — `{error:'bundle_in_use', pools:[…]}`." }
+  /api/zero-trust/upstream/failures:
+    get:
+      tags: [Zero Trust]
+      summary: Upstream mTLS handshake-failure histogram (by pool + reason)
+      responses:
+        '200': { description: "`{total, failures:[{pool, reason, count, last_seen_ms}]}`.", content: { application/json: { schema: { type: object } } } }
+  /api/zero-trust/upstream/rotation:
+    get:
+      tags: [Zero Trust]
+      summary: Hot-rotation status (P5 — applied generation + timestamp, no restart)
+      responses:
+        '200': { description: "`{generation, applied_ms, live}` — `generation` bumps on each live re-apply.", content: { application/json: { schema: { type: object } } } }
+
   /api/cluster:
     get:
       tags: [Tracking]

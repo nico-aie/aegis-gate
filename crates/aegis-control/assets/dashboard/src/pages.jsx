@@ -5594,7 +5594,7 @@ function ConfigVersionsCard() {
 // rebuilds on cfg.tls swaps today.
 function MtlsModeCard() {
   const api = window.useApi
-    ? window.useApi('/api/mtls/mode', { intervalMs: 10000, fallback: null })
+    ? window.useApi('/api/zero-trust/downstream/mode', { intervalMs: 10000, fallback: null })
     : { data: null };
   const [busy, setBusy] = useStateP(false);
 
@@ -5617,7 +5617,7 @@ function MtlsModeCard() {
     setBusy(true);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-      const r = await fetch('/api/mtls/mode', {
+      const r = await fetch('/api/zero-trust/downstream/mode', {
         method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
         body: JSON.stringify({ mode: target }),
@@ -5635,7 +5635,7 @@ function MtlsModeCard() {
     setBusy(true);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-      const r = await fetch('/api/mtls/mode', {
+      const r = await fetch('/api/zero-trust/downstream/mode', {
         method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrf },
         body: JSON.stringify({ clear: true }),
@@ -5695,7 +5695,7 @@ function MtlsModeCard() {
 // store ships with the listener-rebuild track (Phase 2).
 function MtlsCaBundleCard() {
   const cap = window.useApi
-    ? window.useApi('/api/mtls/ca-bundle/capability', { intervalMs: 60000, fallback: { allow_ca_upload: false } })
+    ? window.useApi('/api/zero-trust/downstream/ca-bundle/capability', { intervalMs: 60000, fallback: { allow_ca_upload: false } })
     : { data: { allow_ca_upload: false } };
   const [pem, setPem] = useStateP('');
   const [preview, setPreview] = useStateP(null);
@@ -5725,7 +5725,7 @@ function MtlsCaBundleCard() {
     setBusy(true); setErrMsg(null); setPreview(null);
     try {
       const csrf = document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
-      const r = await fetch('/api/mtls/ca-bundle', {
+      const r = await fetch('/api/zero-trust/downstream/ca-bundle', {
         method: 'PUT',
         headers: { 'content-type': 'application/x-pem-file', 'x-csrf-token': csrf },
         body: pem,
@@ -6142,6 +6142,580 @@ function MtlsSansCard() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Zero Trust page (P3) — unified mutual-TLS surface, both directions.
+// Upstream (WAF→backend, client auth) cards are new; downstream
+// (client→WAF) reuses the relocated MtlsModeCard / MtlsCaBundleCard /
+// MtlsSansCard (moved off the Settings page).
+// ---------------------------------------------------------------------------
+
+// Shared helper: read the aegis_csrf cookie for the Zero Trust
+// mutation cards (raw-PEM bodies can't use the JSON `csrfMutate`).
+function ztCsrf() {
+  return document.cookie.split('; ').find(c => c.startsWith('aegis_csrf='))?.slice(11) || '';
+}
+
+// Expiry pill — green ≥30d, amber <30d, red if already expired.
+function ZtExpiryPill({ days }) {
+  if (days == null) return null;
+  const tone = days < 0 ? 'down' : days < 30 ? 'warn' : 'ok';
+  const txt = days < 0 ? 'expired' : `${days}d`;
+  return <span className={`pill ${tone}`}>{txt}</span>;
+}
+
+// Upstream WAF client identity — the shared fleet cert the WAF presents
+// to backends. Read-only metadata + a public-cert download, plus a
+// reference-only upload (PUBLIC cert + a key_ref) gated behind
+// allow_ca_upload. The private key never reaches the browser.
+function ZtIdentityCard() {
+  const api = window.useApi('/api/zero-trust/upstream/identity', {
+    intervalMs: 15000,
+    fallback: { configured: false },
+  });
+  const cap = window.useApi('/api/zero-trust/downstream/ca-bundle/capability', {
+    intervalMs: 60000, fallback: { allow_ca_upload: false },
+  });
+  const canUpload = !!cap.data?.allow_ca_upload;
+  const rot = window.useApi('/api/zero-trust/upstream/rotation', {
+    intervalMs: 5000, fallback: { generation: 0, live: false },
+  });
+  const d = api.data || { configured: false };
+  const [certPem, setCertPem] = useStateP('');
+  const [keyRef, setKeyRef] = useStateP('');
+  const [busy, setBusy] = useStateP(false);
+
+  function onFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => setCertPem(String(reader.result || ''));
+    reader.readAsText(f);
+  }
+
+  async function save() {
+    if (!certPem.trim() || !keyRef.trim()) {
+      window.aegisToast('Paste the PUBLIC cert PEM and a key reference', 'warn');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await fetch('/api/zero-trust/upstream/identity', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': ztCsrf() },
+        body: JSON.stringify({ cert_pem: certPem, key_ref: keyRef }),
+        credentials: 'same-origin',
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok && body.ok) {
+        window.aegisToast('Identity stored in the config plane · restart nodes to present it', 'ok');
+        setCertPem(''); setKeyRef('');
+        api.reload && api.reload();
+      } else {
+        window.aegisToast(`Identity: ${body.message || body.error || ('HTTP ' + r.status)}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Identity error: ${e.message || e}`, 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function downloadCert() {
+    if (!d.cert_pem) return;
+    const blob = new Blob([d.cert_pem], { type: 'application/x-pem-file' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'waf-client.pem';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">WAF Client Identity</div>
+          <div className="card-sub">
+            The shared fleet cert every node presents when dialing a backend ·
+            WAF-as-client
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {rot.data?.generation > 0 && (
+            <span
+              className="pill ok"
+              title={`Last hot-rotated ${rot.data.applied_ms ? new Date(rot.data.applied_ms).toLocaleTimeString() : ''} — applied live, no restart`}
+            >
+              live · rotated ×{rot.data.generation}
+            </span>
+          )}
+          <span className={`pill ${d.configured ? 'ok' : 'neutral'}`}>
+            {d.configured ? 'configured' : 'not set'}
+          </span>
+        </div>
+      </div>
+      {!d.configured ? (
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
+          No client identity configured. Set{' '}
+          <code>zero_trust.upstream_identity</code> (cert_path + key_ref) so the
+          WAF can present a client cert to backends that require mTLS.
+        </div>
+      ) : (
+        <div style={{ padding: 4 }}>
+          {d.error && (
+            <div className="banner warn" style={{ marginBottom: 8, fontSize: 12 }}>
+              Cert unreadable: {d.error}
+            </div>
+          )}
+          {(d.certificates || []).map((c, i) => (
+            <div key={i} style={{ fontSize: 12, marginBottom: 6 }}>
+              <div>
+                <span style={{ color: 'var(--ink-dim)' }}>Subject </span>
+                {c.subject}
+              </div>
+              <div>
+                <span style={{ color: 'var(--ink-dim)' }}>SHA-256 </span>
+                <code style={{ fontSize: 11 }}>{c.fingerprint_sha256}</code>
+              </div>
+              <div>
+                <span style={{ color: 'var(--ink-dim)' }}>Expires in </span>
+                <ZtExpiryPill days={c.days_until_expiry} />
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: 'var(--ink-mute)', margin: '6px 0 8px' }}>
+            source: {d.source}{d.cert_path ? ` · ${d.cert_path}` : ''}
+          </div>
+          <button className="btn" disabled={!d.cert_pem} onClick={downloadCert}>
+            Download WAF cert (public)
+          </button>
+          <span style={{ fontSize: 11, color: 'var(--ink-mute)', marginLeft: 8 }}>
+            Hand this to backend operators for their client-trust store. The
+            private key never leaves the WAF.
+          </span>
+        </div>
+      )}
+      {canUpload && (
+        <div style={{ padding: 4, marginTop: 8, borderTop: '1px solid var(--hairline)' }}>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '8px 0 6px' }}>
+            Store / rotate identity (config plane · reference-only)
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <textarea
+              value={certPem}
+              onChange={e => setCertPem(e.target.value)}
+              placeholder="-----BEGIN CERTIFICATE-----&#10;PUBLIC client cert chain only&#10;-----END CERTIFICATE-----"
+              rows={5}
+              style={{ fontFamily: 'monospace', fontSize: 11, padding: 8, border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
+            />
+            <input
+              type="text"
+              value={keyRef}
+              onChange={e => setKeyRef(e.target.value)}
+              placeholder="key_ref — path or ${secret:...} (the private key stays a reference)"
+              style={{ fontSize: 12, padding: '6px 8px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
+            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
+              <button className="btn primary" disabled={busy || !certPem.trim() || !keyRef.trim()} onClick={save}>
+                {busy ? 'Storing…' : 'Store identity'}
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--ink-mute)' }}>
+              Public cert is stored in the config plane; the private key is never
+              uploaded. Use <code>source: state</code> in config; nodes materialize
+              the cert at boot.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Backend-CA trust bundles — PUBLIC CA bundles a pool's
+// `upstream_mtls.trust` references to verify its backend's server cert.
+// Upload / list / delete (delete is ref-checked server-side). Gated
+// behind allow_ca_upload.
+function ZtTrustBundlesCard() {
+  const api = window.useApi('/api/zero-trust/upstream/trust', {
+    intervalMs: 20000, fallback: { bundles: [], wired: true },
+  });
+  const cap = window.useApi('/api/zero-trust/downstream/ca-bundle/capability', {
+    intervalMs: 60000, fallback: { allow_ca_upload: false },
+  });
+  const canUpload = !!cap.data?.allow_ca_upload;
+  const bundles = api.data?.bundles || [];
+  const [name, setName] = useStateP('');
+  const [pem, setPem] = useStateP('');
+  const [busy, setBusy] = useStateP(false);
+
+  function onFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => setPem(String(reader.result || ''));
+    reader.readAsText(f);
+  }
+
+  async function upload() {
+    const n = (name || '').trim();
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(n)) {
+      window.aegisToast('Bundle name must be [A-Za-z0-9._-], ≤64 chars', 'warn');
+      return;
+    }
+    if (!pem.trim()) { window.aegisToast('Paste a CA bundle PEM first', 'warn'); return; }
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/zero-trust/upstream/trust/${encodeURIComponent(n)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-pem-file', 'x-csrf-token': ztCsrf() },
+        body: pem, credentials: 'same-origin',
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok && body.ok) {
+        window.aegisToast(`Trust bundle '${n}' stored`, 'ok');
+        setName(''); setPem(''); api.reload && api.reload();
+      } else {
+        window.aegisToast(`Trust upload: ${body.message || body.error || ('HTTP ' + r.status)}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Trust upload error: ${e.message || e}`, 'err');
+    } finally { setBusy(false); }
+  }
+
+  async function remove(bn) {
+    if (!window.confirm(`Delete trust bundle '${bn}'? Pools referencing it will be rejected.`)) return;
+    try {
+      const r = await fetch(`/api/zero-trust/upstream/trust/${encodeURIComponent(bn)}`, {
+        method: 'DELETE', headers: { 'x-csrf-token': ztCsrf() }, credentials: 'same-origin',
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok && body.ok) {
+        window.aegisToast(`Trust bundle '${bn}' removed`, 'ok');
+        api.reload && api.reload();
+      } else if (r.status === 409) {
+        window.aegisToast(`In use by: ${(body.pools || []).join(', ')}`, 'warn');
+      } else {
+        window.aegisToast(`Delete: ${body.message || body.error || ('HTTP ' + r.status)}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Delete error: ${e.message || e}`, 'err');
+    }
+  }
+
+  const cell = { padding: '4px 8px', borderBottom: '1px solid var(--hairline)', textAlign: 'left' };
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Backend-CA Trust Bundles</div>
+          <div className="card-sub">
+            PUBLIC CAs the WAF pins to verify each backend's server cert
+          </div>
+        </div>
+      </div>
+      {bundles.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
+          No trust bundles uploaded. Pools without a bundle verify against
+          public webpki roots.
+        </div>
+      ) : (
+        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--ink-dim)' }}>
+              <th style={cell}>Bundle</th>
+              <th style={cell}>Subject(s)</th>
+              <th style={cell}>Expires</th>
+              {canUpload && <th style={cell}></th>}
+            </tr>
+          </thead>
+          <tbody>
+            {bundles.map((b) => (
+              <tr key={b.name}>
+                <td style={cell}><code>{b.name}</code></td>
+                <td style={cell}>
+                  {b.error
+                    ? <span className="pill warn">{b.error}</span>
+                    : (b.certificates || []).map((c, i) => <div key={i}>{c.subject}</div>)}
+                </td>
+                <td style={cell}>
+                  {(b.certificates || []).map((c, i) => (
+                    <ZtExpiryPill key={i} days={c.days_until_expiry} />
+                  ))}
+                </td>
+                {canUpload && (
+                  <td style={cell}>
+                    <button className="btn" onClick={() => remove(b.name)}>Delete</button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {canUpload && (
+        <div style={{ padding: 4, marginTop: 8, borderTop: '1px solid var(--hairline)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ fontSize: 11, color: 'var(--ink-dim)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '8px 0 2px' }}>
+            Upload backend CA
+          </div>
+          <input
+            type="text" value={name} onChange={e => setName(e.target.value)}
+            placeholder="bundle name (e.g. payments-ca)"
+            style={{ fontSize: 12, padding: '6px 8px', border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
+          />
+          <textarea
+            value={pem} onChange={e => setPem(e.target.value)}
+            placeholder="-----BEGIN CERTIFICATE-----&#10;backend CA (public)&#10;-----END CERTIFICATE-----"
+            rows={5}
+            style={{ fontFamily: 'monospace', fontSize: 11, padding: 8, border: '1px solid var(--hairline)', borderRadius: 6, background: 'var(--surface-2)' }}
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={onFile} />
+            <button className="btn primary" disabled={busy || !pem.trim() || !name.trim()} onClick={upload}>
+              {busy ? 'Uploading…' : 'Upload bundle'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Per-pool upstream-mTLS, with an inline drawer to enable/disable +
+// pick a backend-trust bundle. Round-trips the whole pool through
+// `poolConfigFromForm` (preserving members/health/cache/…) and PUTs it.
+function ZtUpstreamPoolsCard() {
+  const api = window.useApi('/api/zero-trust/upstream/config', {
+    intervalMs: 10000, fallback: { pools: [] },
+  });
+  const trustApi = window.useApi('/api/zero-trust/upstream/trust', {
+    intervalMs: 30000, fallback: { bundles: [] },
+  });
+  const pools = api.data?.pools || [];
+  const bundleNames = (trustApi.data?.bundles || []).map(b => b.name);
+  const [openPool, setOpenPool] = useStateP(null);
+  const [draft, setDraft] = useStateP({ enabled: false, trust: '' });
+  const [busy, setBusy] = useStateP(false);
+  const cell = { padding: '4px 8px', borderBottom: '1px solid var(--hairline)', textAlign: 'left' };
+
+  function openDrawer(p) {
+    if (openPool === p.pool) { setOpenPool(null); return; }
+    setOpenPool(p.pool);
+    setDraft({ enabled: !!p.enabled, trust: p.trust || '' });
+  }
+
+  async function save(poolName) {
+    setBusy(true);
+    try {
+      // Pull the full current pool view so the PUT (whole-pool replace)
+      // preserves members / connection / health / cache.
+      const r = await fetch('/api/upstreams/config', { credentials: 'same-origin', cache: 'no-store' });
+      const j = await r.json().catch(() => ({}));
+      const view = j.pools?.[poolName];
+      if (!view) { window.aegisToast('Pool not found', 'err'); return; }
+      const d = poolFormFromView(view);
+      if (draft.enabled) {
+        d.upstream_mtls = {
+          ...(view.upstream_mtls || {}),
+          enabled: true,
+          verify: true,
+          trust: draft.trust ? draft.trust : null,
+        };
+      } else {
+        d.upstream_mtls = null;
+      }
+      const body = poolConfigFromForm(d);
+      const res = await window.poolUpsert(poolName, body);
+      if (res && res.ok) {
+        window.aegisToast(`Pool '${poolName}' upstream mTLS ${draft.enabled ? 'enabled' : 'disabled'}`, 'ok');
+        setOpenPool(null);
+        api.reload && api.reload();
+      } else {
+        window.aegisToast(`Pool save: ${(res && (res.message || res.error)) || ('HTTP ' + (res && res.status))}`, 'err');
+      }
+    } catch (e) {
+      window.aegisToast(`Pool save error: ${e.message || e}`, 'err');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Upstream mTLS by Pool</div>
+          <div className="card-sub">
+            Whether the WAF presents its client cert + verifies each backend
+          </div>
+        </div>
+      </div>
+      {pools.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
+          No upstream pools.
+        </div>
+      ) : (
+        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--ink-dim)' }}>
+              <th style={cell}>Pool</th>
+              <th style={cell}>Status</th>
+              <th style={cell}>Backend trust</th>
+              <th style={cell}>SAN allowlist</th>
+              <th style={cell}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {pools.map((p) => (
+              <React.Fragment key={p.pool}>
+                <tr>
+                  <td style={cell}>{p.pool}</td>
+                  <td style={cell}>
+                    <span className={`pill ${p.enabled ? 'ok' : 'neutral'}`}>{p.status}</span>
+                  </td>
+                  <td style={cell}>
+                    {p.trust || <span style={{ color: 'var(--ink-mute)' }}>webpki roots</span>}
+                  </td>
+                  <td style={cell}>{(p.allowed_sans || []).join(', ') || '—'}</td>
+                  <td style={cell}>
+                    <button className="btn" onClick={() => openDrawer(p)}>
+                      {openPool === p.pool ? 'Close' : 'Edit'}
+                    </button>
+                  </td>
+                </tr>
+                {openPool === p.pool && (
+                  <tr>
+                    <td colSpan={5} style={{ padding: 10, background: 'var(--surface-2)' }}>
+                      <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                          <input
+                            type="checkbox" checked={draft.enabled}
+                            onChange={e => setDraft({ ...draft, enabled: e.target.checked })}
+                          />
+                          Present WAF client cert + verify backend
+                        </label>
+                        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, opacity: draft.enabled ? 1 : 0.5 }}>
+                          Backend trust:
+                          <select
+                            value={draft.trust} disabled={!draft.enabled}
+                            onChange={e => setDraft({ ...draft, trust: e.target.value })}
+                            style={{ fontSize: 12, padding: '4px 6px', background: 'var(--surface-1)', border: '1px solid var(--hairline)', borderRadius: 6 }}
+                          >
+                            <option value="">webpki roots (public)</option>
+                            {bundleNames.map(b => <option key={b} value={b}>{b}</option>)}
+                          </select>
+                        </label>
+                        <button className="btn primary" disabled={busy} onClick={() => save(p.pool)}>
+                          {busy ? 'Saving…' : 'Save'}
+                        </button>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--ink-mute)', marginTop: 6 }}>
+                        Enabling requires a configured WAF client identity. A bundle
+                        must be uploaded above before it can be selected. Changes
+                        activate fleet-wide via the config plane.
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// Upstream mTLS handshake-failure histogram (WAF → backend), grouped
+// by pool + reason. Recorded by the data plane on a failed dial.
+function ZtUpstreamFailuresCard() {
+  const api = window.useApi('/api/zero-trust/upstream/failures', {
+    intervalMs: 8000, fallback: { total: 0, failures: [] },
+  });
+  const rows = api.data?.failures || [];
+  const total = api.data?.total || 0;
+  const cell = { padding: '4px 8px', borderBottom: '1px solid var(--hairline)', textAlign: 'left' };
+  const reasonTone = {
+    untrusted_backend_cert: 'warn', san_mismatch: 'warn',
+    cert_expired: 'down', client_identity_error: 'down', handshake_failed: 'neutral',
+  };
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Upstream Handshake Failures</div>
+          <div className="card-sub">Failed WAF→backend mTLS dials, by reason</div>
+        </div>
+        <span className={`pill ${total > 0 ? 'warn' : 'ok'}`}>{total} total</span>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--ink-mute)', padding: 4 }}>
+          No upstream handshake failures recorded.
+        </div>
+      ) : (
+        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--ink-dim)' }}>
+              <th style={cell}>Pool</th>
+              <th style={cell}>Reason</th>
+              <th style={cell}>Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((f, i) => (
+              <tr key={i}>
+                <td style={cell}>{f.pool}</td>
+                <td style={cell}>
+                  <span className={`pill ${reasonTone[f.reason] || 'neutral'}`}>{f.reason}</span>
+                </td>
+                <td style={cell}>{f.count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function PageZeroTrust() {
+  const sectionLabel = {
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    color: 'var(--ink-dim)',
+    margin: '4px 0 8px',
+  };
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Zero Trust</h1>
+          <p className="page-subtitle">
+            Mutual TLS both directions — clients authenticating to the WAF
+            (downstream) and the WAF authenticating to backends (upstream)
+          </p>
+        </div>
+      </div>
+
+      <div style={sectionLabel}>Upstream — WAF → backend (client auth)</div>
+      <ZtIdentityCard />
+      <ZtTrustBundlesCard />
+      <ZtUpstreamPoolsCard />
+      <ZtUpstreamFailuresCard />
+
+      <div style={{ ...sectionLabel, marginTop: 18 }}>
+        Downstream — client → WAF (verify client certs)
+      </div>
+      <MtlsModeCard />
+      <MtlsCaBundleCard />
+      <MtlsSansCard />
+    </>
+  );
+}
+
 function PageSettings() {
   const modeApi = window.useModeApi();
   const mode = modeApi.data?.mode || 'enforce';
@@ -6249,9 +6823,15 @@ function PageSettings() {
 
       <ConfigVersionsCard />
 
-      <MtlsModeCard />
-      <MtlsCaBundleCard />
-      <MtlsSansCard />
+      {/* 2026-06-09 — mTLS cards (mode / CA bundle / SANs) moved to the
+          dedicated Zero Trust page (both mutual-TLS directions live
+          there now). Breadcrumb keeps operator memory happy. */}
+      <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--hairline)', fontSize: 11, color: 'var(--ink-dim)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <window.I.Shield />
+        <span>Looking for mTLS (client-cert mode, CA bundle, allowed SANs)?</span>
+        <span style={{ color: 'var(--ink-mute)' }}>·</span>
+        <a href="#/zero-trust" style={{ color: 'var(--accent)', fontWeight: 600 }}>Zero Trust</a>
+      </div>
 
       {/* 2026-05-19 — two dashboard features removed from this page
           during cleanup:
@@ -8262,6 +8842,13 @@ function poolConfigFromForm(d) {
         })),
     };
   }
+  // P4 — preserve the per-pool upstream-mTLS block. The PUT replaces
+  // the whole pool node, so echo it back unchanged (the Zero Trust
+  // drawer is the only editor that mutates it; everywhere else just
+  // round-trips). Absent / disabled ⇒ omit the block entirely.
+  if (d.upstream_mtls && d.upstream_mtls.enabled) {
+    cfg.upstream_mtls = d.upstream_mtls;
+  }
   return cfg;
 }
 
@@ -8323,6 +8910,10 @@ function poolFormFromView(view) {
     },
     cache_enabled: !!(view.cache && view.cache.enabled),
     cache: cacheFormFromView(view.cache),
+    // P4 — carry the per-pool upstream-mTLS block verbatim so a Save
+    // (which replaces the whole pool node) preserves it. The Zero Trust
+    // drawer edits this; the Routing pool editor just round-trips it.
+    upstream_mtls: view.upstream_mtls || null,
   };
 }
 
@@ -13953,6 +14544,8 @@ Object.assign(window, {
   PageOverview, PageLiveFeed, PageAttackEvents, PageAnalytics, PageAuditLog,
   PageRuleManager, PageTierConfig, ListPage, PageSettings, PageTracking,
   PageUpstreams, CacheStatsCard,
+  // Zero Trust (P3) — unified mutual-TLS page (both directions).
+  PageZeroTrust,
   // SC-T2 — Scaling page (L1 workers + L2 cluster + L3 state).
   PageScaling,
   // Phase 2 — merged Access Lists, plus Phase 3 stubs.
