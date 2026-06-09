@@ -419,6 +419,47 @@ which is bound to `127.0.0.1:9443`. The agent reaches it only via **host
 networking** (above). A central collector cannot scrape a remote node's loopback
 admin — another reason for the per-node agent.
 
+### 13a. Ship logs + traces from a REMOTE node (do-this checklist)
+
+A remote node ships **nothing** to SigNoz until you do this ON that node — setting
+the traces endpoint is **not enough for logs** (logs are local files; they need an
+agent). Symptom if skipped: requests that round-robin to this node have **no logs
+and no traces** in SigNoz (you only see the infra node's share).
+
+**Robust path (works rootless or rootful) — traces direct + a logs-only agent:**
+```sh
+# On the remote node, in the repo:
+# 1) TRACES — WAF exports straight to central SigNoz. In waf.yaml:
+#      observability: { otel: { endpoint: "http://10.20.0.72:4317", sample_ratio: 1.0 } }
+nc -z 10.20.0.72 4317 && echo otlp-reachable          # must succeed
+# 2) write logs to a file (so the agent can tail them):
+#      ./waf run --config ./waf.yaml >> logs/waf.json 2>&1   (waf_audit.log is ./waf_audit.log)
+# 3) LOGS — run the agent (filelog → central SigNoz). NODE_ID must match the WAF node.id:
+cd deploy/compose
+NODE_ID=<this-node-id> docker compose -f otel-agent.docker-compose.yml up -d
+```
+> The agent compose uses `network_mode: host` so it can also scrape `:9443/metrics`.
+> That needs **rootful Docker** on the node. **On rootless Docker**, host-net can't
+> reach the host loopback — drop `network_mode: host` from `otel-agent.docker-compose.yml`,
+> add `extra_hosts: ["host.docker.internal:host-gateway"]`, and the **filelog (logs)
+> still ships fine**; only the loopback `/metrics` scrape is lost (traces still go
+> direct from the WAF; logs via the agent).
+
+**Unified `host.name` on traces too (optional):** instead of step 1, point the WAF
+at the **local** agent — `WAF_OBSERVABILITY__OTEL__ENDPOINT=http://127.0.0.1:4317` —
+so the agent stamps `host.name` on traces+logs+metrics. Requires the agent up first
++ host networking (rootful).
+
+**Verify (from the infra host):**
+```sh
+# traces from this node arrive (drive traffic through the LB first):
+docker exec signoz-clickhouse clickhouse-client -q "SELECT count() FROM signoz_traces.distributed_signoz_index_v3 WHERE timestamp > now()-INTERVAL 2 MINUTE AND serviceName='aegis-gate'"
+# logs by node — expect this node's host.name with log_type=waf_audit:
+docker exec signoz-clickhouse clickhouse-client -q "SELECT resources_string['host.name'], attributes_string['log_type'], count() FROM signoz_logs.distributed_logs_v2 WHERE timestamp > toUnixTimestamp64Nano(now64()-INTERVAL 2 MINUTE) GROUP BY 1,2"
+```
+In the SigNoz UI → **Logs**, filter `log_type = waf_audit` to see request decisions,
+grouped by `host.name`.
+
 ---
 
 ## 14. Resource limits — match the real node spec (8 vCPU / 16 GB)

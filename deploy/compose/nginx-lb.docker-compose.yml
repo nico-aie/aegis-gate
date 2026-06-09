@@ -23,4 +23,4 @@ services:
       # Bind all interfaces (incl. 127.0.0.1) so SSH/VS Code port-forwards that
       # target the server's localhost:8088 reach it. (Was 10.20.0.72:8088 only,
       # which left loopback empty → forwarded requests hung.)
-      - "8088:8088"                   # the LB VIP (0.0.0.0:8088)
+      - "56208:8088"                  # the LB VIP — host :56208 → nginx :8088 (reachable from local machine)

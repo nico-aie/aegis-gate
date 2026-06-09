@@ -21,6 +21,7 @@
 | **Admin console / dashboard metrics** (top-attackers, action mix, RPS, latency) | **local** Prometheus registry + local trackers | ❌ **no — shows local node only** | **C-3** |
 | **`/api/cluster`** (roster, leader) | Redis lease store → `set_members` | ✅ yes — fleet roster | — |
 | **Logs** (`logs/waf.json`, `./waf_audit.log`) | **per-node local files** | ❌ no — aggregated only in SigNoz | **C-4** |
+| **Client IP via `X-Forwarded-For`** | n/a — XFF is **ignored** (trusted-proxies empty + unplumbed) | n/a | **C-5** |
 
 ---
 
@@ -157,18 +158,75 @@ for fleet situational awareness and for the dashboard scoring criterion.
 
 ---
 
+## C-5. `X-Forwarded-For` is ignored — no trusted-proxy plumbing (real client IP lost behind any LB)
+
+### Current behaviour
+The data plane *does* read `X-Forwarded-For` and walk it through a trusted-proxy
+list (`ip_rep/xff.rs::resolve_client_ip`, called at `data_plane.rs:~283`), **but the
+list is hardcoded EMPTY**:
+```rust
+// data_plane.rs:3197
+fn default_trusted_proxies() -> Vec<ipnet::IpNet> {
+    // F-HIGH-002 — default is now empty ... peer.ip() wins (safe + contract-compliant)
+    Vec::new()
+}
+```
+With no trusted proxy, `resolve_client_ip(peer, xff, [])` **always returns the TCP
+peer** and ignores XFF. The config knob the comment promises
+(`cfg.ip_lists.trusted_proxies`) is **not yet plumbed into the handler** — so today
+there is **no way to make the WAF honor XFF**, even intentionally.
+
+### The concern (acute in multi-node + LB)
+The WAF keys per-client risk on `{ip, device_fp, session}`, where `ip` = TCP peer.
+Behind anything that isn't a transparent edge:
+- **L7 LB (nginx `http`)** or any SNAT hop → the WAF's peer is the **LB's IP** for
+  *every* client. XFF carries the real client, but the WAF ignores it → **all traffic
+  collapses onto one risk/rate-limit/DDoS key** (legit gets blocked alongside an
+  attacker; per-IP limits trip globally). Verified earlier: a request with
+  `X-Forwarded-For: 5.195.235.51` from `127.0.0.1` still logged `client_ip 127.0.0.1`.
+- **L4 `stream` LB** → SNAT too (peer = nginx IP); `stream` can't even add XFF, so
+  there's nothing to resolve.
+- **DNS round-robin / TPROXY** → peer **is** the real client → correct. (This is why
+  the prod topology is DNS-RR / WAF-at-edge.)
+
+So the practical rule today: **per-IP features are only correct when the WAF sees the
+real peer** (DNS-RR or TPROXY). Any LB that terminates/SNATs breaks them, and XFF
+cannot rescue it yet.
+
+### Suggested improvements
+1. **Plumb `cfg.ip_lists.trusted_proxies` into the data-plane handler** — replace the
+   hardcoded `default_trusted_proxies()` with the configured list (default still
+   empty/safe). Then an operator fronting the fleet with a *trusted* L7 LB sets
+   `trusted_proxies: [<LB CIDRs>]`, and `resolve_client_ip` walks XFF right-to-left
+   to the real client. This is the single change that unblocks the L7-LB topology +
+   the device_fp/risk correctness behind it.
+2. **Hot-reloadable + per-listener** — make the trusted set part of the config plane
+   (converges fleet-wide, C-1-style) so all nodes agree on which proxies to trust.
+3. **Guardrails** — keep default empty; require explicit opt-in; document that
+   trusting a proxy that doesn't *overwrite/append* XFF safely re-opens the spoofing
+   hole F-HIGH-002 closed. Pair with the contract's §10 source-IP trust model.
+4. **Until then**, the supported way to preserve client IP in a fleet is **DNS-RR**
+   (or TPROXY); document that L7-LB + XFF is **not** functional yet. (See
+   `deploy/PRE-PROD-DEPLOY.md` §13 and the nginx `http` notes.)
+
+---
+
 ## Priority
 
 | Concern | Severity (fleet) | Effort | Recommended action |
 |---|---|---|---|
 | **C-1** control-plane sync | **High** (breaks determinism) | Low (fan-out) → Med (config-plane) | fan-out now; cluster-native next |
+| **C-5** XFF ignored / no trusted-proxy | **High** *if fronting with an L7/SNAT LB* | Med (plumb `trusted_proxies`) | DNS-RR/TPROXY now; plumb trusted_proxies to enable L7-LB |
 | **C-3** console aggregation | Med (observability) | Low (SigNoz dashboards) | aggregate in SigNoz; label console per-node |
 | **C-4** log aggregation | Med | Low (SigNoz) → Med (shared sink) | SigNoz + `request_id` correlation; document |
 | **C-2** readiness upstream-blind | Low–Med | Med | opt-in upstream gate; `/healthz/upstream` |
 
 **Common thread:** the **data/state plane is already cluster-consistent** (config +
 risk + block-list + challenge via Redis); the gaps are in the **control plane**
-(`set_profile`/`reset_state` per-node) and the **observability plane** (console +
-logs per-node). The fastest wins: a control fan-out helper (C-1) and SigNoz fleet
-dashboards (C-3/C-4); the cluster-native `set_profile` propagation (C-1) is the one
-real code change worth scheduling.
+(`set_profile`/`reset_state` per-node — C-1), **client-IP identity behind an LB**
+(XFF ignored — C-5), and the **observability plane** (console + logs per-node —
+C-3/C-4). Fastest wins: a control fan-out helper (C-1) + SigNoz fleet dashboards
+(C-3/C-4). The two code changes worth scheduling: **cluster-native `set_profile`
+propagation** (C-1) and **plumbing `trusted_proxies` so XFF works behind a trusted
+LB** (C-5) — together they unlock a proper L7-LB topology with correct per-client
+risk.
