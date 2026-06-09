@@ -456,10 +456,18 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       `[A-Za-z0-9._-]{1,64}`. Tests: proxy upstream::identity 8 (incl. trust fail-closed matrix) +
       pools_referencing_trust 2; control zero_trust 15; core 284. **Live (in_memory):** POST 200 public-only
       (CN=backend-ca.internal), GET list, PRIVATE-KEY→400, no-CSRF→403, DELETE 200.
-      Remaining backend: per-pool `upstream_mtls` editing ALREADY round-trips via existing
-      `PUT /api/upstreams/pool/{id}` (it's a PoolConfig field) — needs the global cross-ref validation
-      added to that path (enabled⇒identity, trust-bundle-exists) + a frontend drawer.
-      Frontend: drawer editing, backend-CA upload UI, expiry badges, upstream handshake-failure surface.
+      **4a-iv DONE (commit 244b880):** per-pool trust-bundle cross-ref validation. `enabled⇒identity` +
+      TLS-required already ran inside `load_config_str`→`validate_upstream_mtls` on the upsert path; this
+      adds the state-dependent piece pure validation can't see — `validate_pool_trust_bundles` rejects an
+      enabled pool whose bundle-style `upstream_mtls.trust` (bare name, no `/`) isn't uploaded to
+      `aegis:zt:upstream:trust:<name>` (path-style values with `/` are file sources, skipped — matches
+      lookup-first resolution). Wired into BOTH `PUT /api/upstreams/pool/{id}` and `PUT /api/upstreams/
+      config` (capture the validated WafConfig, run the async cross-ref before activate). No-op without a
+      state backend. Tests: 4 unit; proxy lib 769. Live (in_memory): pool trust:backend-ca before upload→400,
+      after upload→200, file-path trust→200, DELETE of a referenced bundle→409 in-use.
+      Remaining: **frontend only** — per-pool drawer editing, backend-CA upload UI, expiry badges,
+      upstream handshake-failure surface (the backend round-trips through existing
+      `PUT /api/upstreams/pool/{id}` + the new `/api/zero-trust/upstream/trust/*` endpoints).
 - [ ] **P5** Hot rotation on cas_set (4a-* are boot/restart-only; identity/trust PUTs land at next boot);
       session resumption; optional SPIFFE-SAN matcher.
 - [ ] **Tests/gates** §6 checklist all green before default-on.
