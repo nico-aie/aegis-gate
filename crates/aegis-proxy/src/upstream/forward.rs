@@ -225,7 +225,7 @@ type PooledClient = Client<
 /// `keep_alive = false` path *also* injects a request-side
 /// `Connection: close` header so the upstream sees the intent;
 /// the actual reuse decision lives in the pool ceiling.
-fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
+fn build_client(cfg: &ConnectionPoolConfig) -> Result<PooledClient, String> {
     use aegis_core::config::UpstreamScheme;
     // rustls 0.23 requires an explicit CryptoProvider when more
     // than one cipher backend feature is reachable. Install
@@ -269,19 +269,43 @@ fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
         cfg.scheme,
         UpstreamScheme::Grpc | UpstreamScheme::H2c,
     );
-    let connector = if advertise_h2 {
-        hyper_rustls::HttpsConnectorBuilder::new()
+    // P2 — when this pool has resolved upstream-mTLS material, build
+    // an explicit rustls `ClientConfig` that presents the WAF client
+    // cert and pins the configured trust anchors, and force
+    // `https_only()` so a cert/load failure or a plaintext backend
+    // fails the dial closed (never a silent downgrade). Pools without
+    // mTLS keep the exact pre-P2 path (`with_webpki_roots`,
+    // server-auth only, `https_or_http`).
+    let connector = match cfg.upstream_mtls.as_ref() {
+        Some(m) => {
+            let tls = crate::upstream::tls::client_config_from_resolved(m)
+                .map_err(|e| format!("upstream mTLS client config build failed: {e}"))?;
+            if advertise_h2 {
+                hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_tls_config(tls)
+                    .https_only()
+                    .enable_http1()
+                    .enable_http2()
+                    .wrap_connector(http)
+            } else {
+                hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_tls_config(tls)
+                    .https_only()
+                    .enable_http1()
+                    .wrap_connector(http)
+            }
+        }
+        None if advertise_h2 => hyper_rustls::HttpsConnectorBuilder::new()
             .with_webpki_roots()
             .https_or_http()
             .enable_http1()
             .enable_http2()
-            .wrap_connector(http)
-    } else {
-        hyper_rustls::HttpsConnectorBuilder::new()
+            .wrap_connector(http),
+        None => hyper_rustls::HttpsConnectorBuilder::new()
             .with_webpki_roots()
             .https_or_http()
             .enable_http1()
-            .wrap_connector(http)
+            .wrap_connector(http),
     };
 
     let effective_pool_size = if cfg.keep_alive {
@@ -301,7 +325,7 @@ fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
     if cfg.scheme.forces_http2() {
         client_builder.http2_only(true);
     }
-    client_builder.build(connector)
+    Ok(client_builder.build(connector))
 }
 
 /// Stable signature of a [`ConnectionPoolConfig`] used to dedupe
@@ -316,6 +340,13 @@ fn build_client(cfg: &ConnectionPoolConfig) -> PooledClient {
 /// the current config — operators had to restart the WAF to pick
 /// up the change.  Including the scheme makes
 /// `PoolRegistry::apply` close the round-trip end-to-end.
+///
+/// P2 — `mtls_fingerprint` follows the same HIGH-RU-02 rule for the
+/// resolved upstream-mTLS material: `build_client` consumes the cert
+/// / trust anchors, so the key must include their fingerprint or a
+/// rotation (enable mTLS, swap the trust CA) would hit a stale cached
+/// client built for the prior material. Fingerprint is over PUBLIC
+/// inputs only (cert/key paths, trust path, flags) — never key bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct PoolKey {
     max_idle_per_host: usize,
@@ -323,6 +354,7 @@ struct PoolKey {
     keep_alive: bool,
     tls: bool,
     scheme: aegis_core::config::UpstreamScheme,
+    mtls_fingerprint: Option<String>,
 }
 
 impl From<&ConnectionPoolConfig> for PoolKey {
@@ -333,6 +365,7 @@ impl From<&ConnectionPoolConfig> for PoolKey {
             keep_alive: c.keep_alive,
             tls: c.tls,
             scheme: c.scheme,
+            mtls_fingerprint: c.upstream_mtls.as_ref().map(|m| m.fingerprint.clone()),
         }
     }
 }
@@ -347,18 +380,20 @@ fn client_cache() -> &'static RwLock<HashMap<PoolKey, Arc<PooledClient>>> {
 /// Cheap on cache-hit (read lock + `Arc::clone`); on the first
 /// request for a given config signature we pay one client build
 /// under the write lock, then reuse forever.
-fn pooled_client(cfg: &ConnectionPoolConfig) -> Arc<PooledClient> {
+fn pooled_client(cfg: &ConnectionPoolConfig) -> Result<Arc<PooledClient>, String> {
     let key = PoolKey::from(cfg);
     {
         let r = client_cache().read().unwrap_or_else(|p| p.into_inner());
         if let Some(c) = r.get(&key) {
-            return c.clone();
+            return Ok(c.clone());
         }
     }
+    // Build OUTSIDE the entry closure so a fallible mTLS client build
+    // can propagate (fail closed) without being cached — a fixed cert
+    // on the next reload then builds cleanly.
+    let client = Arc::new(build_client(cfg)?);
     let mut w = client_cache().write().unwrap_or_else(|p| p.into_inner());
-    w.entry(key)
-        .or_insert_with(|| Arc::new(build_client(cfg)))
-        .clone()
+    Ok(w.entry(key).or_insert(client).clone())
 }
 
 /// Test-only helper: drop every pooled client. Lets tests that
@@ -388,7 +423,10 @@ pub async fn forward(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response<Full<Bytes>>, ForwardError> {
-    let client = pooled_client(cfg);
+    // P2 — a failure here is an upstream-mTLS client-config/cert load
+    // error; fail the dial closed rather than connecting without the
+    // client cert.
+    let client = pooled_client(cfg).map_err(ForwardError::Handshake)?;
 
     // FIX 2026-05-03 — when the operator pinned a Host header on
     // this member (multi-vhost backend support), use it instead
@@ -894,6 +932,7 @@ mod tests {
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
             response_body_read_timeout: Duration::from_secs(30),
+            upstream_mtls: None,
         };
 
         for _ in 0..5 {
@@ -932,6 +971,7 @@ mod tests {
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
             response_body_read_timeout: Duration::from_secs(30),
+            upstream_mtls: None,
         };
         let https = ConnectionPoolConfig { tls: true, ..http.clone() };
         assert_ne!(super::PoolKey::from(&http), super::PoolKey::from(&https));
@@ -955,6 +995,7 @@ mod tests {
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
             response_body_read_timeout: Duration::from_secs(30),
+            upstream_mtls: None,
         };
         let https = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::Https,
@@ -1000,6 +1041,7 @@ mod tests {
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
             response_body_read_timeout: Duration::from_secs(30),
+            upstream_mtls: None,
         };
         let https = ConnectionPoolConfig {
             scheme: aegis_core::config::UpstreamScheme::Https,
@@ -1007,17 +1049,96 @@ mod tests {
             response_body_read_timeout: Duration::from_secs(30),
             ..auto.clone()
         };
-        let c_auto  = super::pooled_client(&auto);
-        let c_https = super::pooled_client(&https);
+        let c_auto  = super::pooled_client(&auto).unwrap();
+        let c_https = super::pooled_client(&https).unwrap();
         assert!(
             !Arc::ptr_eq(&c_auto, &c_https),
             "scheme change must produce a different cached client",
         );
         // Same config back-to-back still hits the cache.
-        let c_auto_again = super::pooled_client(&auto);
+        let c_auto_again = super::pooled_client(&auto).unwrap();
         assert!(
             Arc::ptr_eq(&c_auto, &c_auto_again),
             "identical config must reuse the cached client",
+        );
+    }
+
+    /// P2 scope isolation — the resolved upstream-mTLS material is
+    /// part of `PoolKey`, so enabling mTLS on one pool (or pointing
+    /// it at a different trust CA) yields a DIFFERENT cache key than a
+    /// pool without mTLS. Without this the client cache would alias an
+    /// mTLS pool onto a plaintext pool's connector (the HIGH-RU-02
+    /// class of bug). Asserted at the key level so it needs no on-disk
+    /// certs.
+    #[test]
+    fn poolkey_isolates_upstream_mtls_pools() {
+        use aegis_core::config::UpstreamMtlsResolved;
+        let base = ConnectionPoolConfig {
+            max_idle_per_host: 32,
+            idle_timeout: Duration::from_secs(30),
+            keep_alive: true,
+            tls: true,
+            scheme: aegis_core::config::UpstreamScheme::Https,
+            max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
+            upstream_mtls: None,
+        };
+        let resolved = |fp: &str, trust: Option<&str>| UpstreamMtlsResolved {
+            client_cert_path: "/x/client.pem".into(),
+            client_key_ref: "/x/client.key".into(),
+            trust_ca_path: trust.map(Into::into),
+            verify: true,
+            allowed_sans: Vec::new(),
+            fingerprint: fp.into(),
+        };
+        let plain = super::PoolKey::from(&base);
+        let mtls_a = super::PoolKey::from(&ConnectionPoolConfig {
+            upstream_mtls: Some(resolved("v1|a", None)),
+            ..base.clone()
+        });
+        let mtls_b = super::PoolKey::from(&ConnectionPoolConfig {
+            upstream_mtls: Some(resolved("v1|b", Some("/x/backend-ca.pem"))),
+            ..base.clone()
+        });
+        assert_ne!(plain, mtls_a, "mTLS pool must not alias a plaintext pool");
+        assert_ne!(mtls_a, mtls_b, "different trust material ⇒ different key");
+        // Identical material ⇒ same key (clients are shared/reused).
+        let mtls_a2 = super::PoolKey::from(&ConnectionPoolConfig {
+            upstream_mtls: Some(resolved("v1|a", None)),
+            ..base.clone()
+        });
+        assert_eq!(mtls_a, mtls_a2, "identical material must reuse the key");
+    }
+
+    /// P2 fail-closed (build path) — a pool with mTLS enabled whose
+    /// client cert file is missing makes `build_client` return `Err`,
+    /// so `forward` fails the dial closed (mapped to
+    /// `ForwardError::Handshake`) instead of connecting without the
+    /// client cert.
+    #[test]
+    fn build_client_fails_closed_on_missing_cert() {
+        use aegis_core::config::UpstreamMtlsResolved;
+        let cfg = ConnectionPoolConfig {
+            max_idle_per_host: 32,
+            idle_timeout: Duration::from_secs(30),
+            keep_alive: true,
+            tls: true,
+            scheme: aegis_core::config::UpstreamScheme::Https,
+            max_response_body_bytes: 10 * 1024 * 1024,
+            response_body_read_timeout: Duration::from_secs(30),
+            upstream_mtls: Some(UpstreamMtlsResolved {
+                client_cert_path: "/nonexistent/waf-client.pem".into(),
+                client_key_ref: "/nonexistent/waf-client.key".into(),
+                trust_ca_path: None,
+                verify: true,
+                allowed_sans: Vec::new(),
+                fingerprint: "v1|missing".into(),
+            }),
+        };
+        let err = super::build_client(&cfg).unwrap_err();
+        assert!(
+            err.contains("client config build failed") || err.contains("No such file"),
+            "expected a fail-closed build error, got: {err}",
         );
     }
 
@@ -1034,6 +1155,7 @@ mod tests {
             scheme: aegis_core::config::UpstreamScheme::Auto,
             max_response_body_bytes: 10 * 1024 * 1024,
             response_body_read_timeout: Duration::from_secs(30),
+            upstream_mtls: None,
         };
 
         for _ in 0..3 {

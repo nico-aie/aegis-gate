@@ -319,6 +319,7 @@ state: { backend: in_memory }
         let mut cfg: WafConfig = serde_yaml::from_str(yaml).unwrap();
         cfg.zero_trust = Some(ZeroTrustConfig {
             downstream: Some(ca),
+            upstream_identity: None,
         });
         cfg
     }

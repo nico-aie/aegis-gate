@@ -289,6 +289,9 @@ pub fn spawn_pool_refresh(
                     connection: spec.base.connection.clone(),
                     // Preserve the per-upstream cache policy across DNS refresh.
                     cache: spec.base.cache.clone(),
+                    // Preserve upstream-mTLS policy; `registry.apply`
+                    // re-resolves it against the shared fleet identity.
+                    upstream_mtls: spec.base.upstream_mtls.clone(),
                 };
                 full_map.insert(pool_name.clone(), pool_cfg);
                 match registry.apply(&full_map) {
@@ -437,6 +440,7 @@ mod tests {
             circuit_breaker: None,
             connection: aegis_core::config::ConnectionPoolConfig::default(),
             cache: None,
+            upstream_mtls: None,
         }
     }
 

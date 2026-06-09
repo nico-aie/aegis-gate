@@ -54,6 +54,59 @@ pub fn build_upstream_client_config(
     Ok(client_config)
 }
 
+/// P2 — build the upstream `rustls::ClientConfig` from a pool's
+/// resolved mTLS material ([`aegis_core::config::UpstreamMtlsResolved`]).
+///
+/// - Trust anchors: the custom `trust_ca_path` CA bundle when set,
+///   otherwise the public webpki roots (so a public-internet backend
+///   still verifies).
+/// - Client identity: always presented (P2 only resolves material for
+///   enabled pools), loaded from the shared fleet identity's cert/key
+///   **paths** — the private key is read here and never stored in
+///   config or returned by any API.
+///
+/// `verify: false` and `allowed_sans` are rejected at config
+/// validation in P2, so this always builds the verified path.
+/// Fallible — a load/parse failure propagates so the caller fails the
+/// pool's dials closed rather than silently downgrading.
+pub fn client_config_from_resolved(
+    m: &aegis_core::config::UpstreamMtlsResolved,
+) -> Result<rustls::ClientConfig, Box<dyn std::error::Error + Send + Sync>> {
+    let mut root_store = rustls::RootCertStore::empty();
+    match &m.trust_ca_path {
+        Some(ca_path) => {
+            let ca_file = fs::File::open(ca_path).map_err(|e| {
+                format!("upstream_mtls.trust: failed to read {}: {e}", ca_path.display())
+            })?;
+            let mut reader = BufReader::new(ca_file);
+            let certs: Vec<CertificateDer<'static>> =
+                rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+            if certs.is_empty() {
+                return Err(format!(
+                    "upstream_mtls.trust: no certificates found in {}",
+                    ca_path.display()
+                )
+                .into());
+            }
+            for cert in certs {
+                root_store.add(cert)?;
+            }
+        }
+        None => {
+            // Public webpki roots — same anchors hyper-rustls'
+            // `.with_webpki_roots()` installs for the non-mTLS path.
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        }
+    }
+
+    let certs = load_certs(&m.client_cert_path)?;
+    let key = load_key(Path::new(&m.client_key_ref))?;
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_client_auth_cert(certs, key)?;
+    Ok(client_config)
+}
+
 fn load_certs(
     path: &Path,
 ) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error + Send + Sync>> {
@@ -333,5 +386,87 @@ mod tests {
         }
 
         srv.await.ok();
+    }
+
+    /// P2 fail-closed (handshake) — the gold §6 gate. A pool with
+    /// upstream mTLS whose `trust` CA does NOT sign the backend's
+    /// server cert must FAIL the dial (untrusted backend), never
+    /// silently connect. Exercises `client_config_from_resolved`
+    /// end-to-end against a live rustls server.
+    #[tokio::test]
+    async fn upstream_mtls_fails_closed_on_untrusted_backend_cert() {
+        use aegis_core::config::UpstreamMtlsResolved;
+        // rustls needs a process-level CryptoProvider (build_client
+        // installs it in production). Idempotent.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = TempDir::new().unwrap();
+
+        // CA_A signs the backend's server cert.
+        let mut ca_a_params =
+            rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_a_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_a_key = rcgen::KeyPair::generate().unwrap();
+        let ca_a = ca_a_params.self_signed(&ca_a_key).unwrap();
+        let srv_params =
+            rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        let srv_key = rcgen::KeyPair::generate().unwrap();
+        let srv_cert = srv_params.signed_by(&srv_key, &ca_a, &ca_a_key).unwrap();
+
+        // CA_B is what the WAF trusts — it does NOT sign the server.
+        let mut ca_b_params =
+            rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_b_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_b_key = rcgen::KeyPair::generate().unwrap();
+        let ca_b = ca_b_params.self_signed(&ca_b_key).unwrap();
+        let ca_b_path = write_pem(&dir, "ca_b.crt", &ca_b.pem());
+
+        // The WAF's client identity (any leaf; the server below does
+        // not request client auth, so its trust is irrelevant here).
+        let cli_params = rcgen::CertificateParams::new(vec!["waf".into()]).unwrap();
+        let cli_key = rcgen::KeyPair::generate().unwrap();
+        let cli_cert = cli_params.self_signed(&cli_key).unwrap();
+        let cli_cert_path = write_pem(&dir, "waf.crt", &cli_cert.pem());
+        let cli_key_path = write_pem(&dir, "waf.key", &cli_key.serialize_pem());
+
+        // Server presents the CA_A-signed cert; no client-cert check.
+        let srv_cert_path = write_pem(&dir, "srv.crt", &srv_cert.pem());
+        let srv_key_path = write_pem(&dir, "srv.key", &srv_key.serialize_pem());
+        let srv_certs = load_certs(Path::new(&srv_cert_path)).unwrap();
+        let srv_priv = load_key(Path::new(&srv_key_path)).unwrap();
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(srv_certs, srv_priv)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            if let Ok((stream, _)) = tcp.accept().await {
+                // Handshake is expected to fail on the client side;
+                // the server just attempts accept and ignores the err.
+                let _ = acceptor.accept(stream).await;
+            }
+        });
+
+        // WAF client config: present our cert, but TRUST only CA_B.
+        let resolved = UpstreamMtlsResolved {
+            client_cert_path: cli_cert_path.into(),
+            client_key_ref: cli_key_path,
+            trust_ca_path: Some(ca_b_path.into()),
+            verify: true,
+            allowed_sans: Vec::new(),
+            fingerprint: "v1|wrong-ca".into(),
+        };
+        let client_config = client_config_from_resolved(&resolved).unwrap();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+        let tcp_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let server_name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+        let result = connector.connect(server_name, tcp_stream).await;
+        assert!(
+            result.is_err(),
+            "WAF must reject a backend cert not signed by the pinned trust CA (fail closed)"
+        );
+
+        srv.abort();
     }
 }

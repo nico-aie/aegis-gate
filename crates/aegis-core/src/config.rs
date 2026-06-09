@@ -802,6 +802,9 @@ impl WafConfig {
         if let Some(zt) = self.zero_trust.as_ref() {
             validate_zero_trust(zt)?;
         }
+        // Zero Trust: validate per-pool upstream (WAF-as-client) mTLS
+        // against the shared identity (cross-references upstreams + zero_trust).
+        validate_upstream_mtls(&self.upstreams, self.zero_trust.as_ref())?;
         // 2026-05-19 committee bind contract: `/__waf_control/*`
         // MUST be local-only on the team's server. The control
         // surface is now peer-IP-gated to loopback at both mounts
@@ -1004,6 +1007,85 @@ fn validate_zero_trust(zt: &ZeroTrustConfig) -> crate::Result<()> {
                         .into(),
                 ));
             }
+        }
+    }
+    // Upstream (WAF-as-client) shared identity. P2 supports the
+    // `file` source only; both cert_path and key_ref are required.
+    if let Some(id) = zt.upstream_identity.as_ref() {
+        if id.source == UpstreamIdentitySource::State {
+            return Err(crate::error::WafError::Config(
+                "zero_trust.upstream_identity.source: state is not supported yet \
+                 (config-plane identity lands in P4) — use source: file"
+                    .into(),
+            ));
+        }
+        if id.cert_path.is_none() || id.key_ref.is_none() {
+            return Err(crate::error::WafError::Config(
+                "zero_trust.upstream_identity (source: file) requires both \
+                 cert_path and key_ref"
+                    .into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Cross-check per-pool `upstream_mtls` against the global shared
+/// identity. Enabling upstream mTLS on a pool requires a configured
+/// `zero_trust.upstream_identity` to present, requires the pool to
+/// actually dial over TLS, and (P2) forbids a per-pool client-cert
+/// override. Fail closed, loudly, at config load.
+fn validate_upstream_mtls(
+    upstreams: &HashMap<String, PoolConfig>,
+    zt: Option<&ZeroTrustConfig>,
+) -> crate::Result<()> {
+    for (name, pool) in upstreams {
+        let Some(m) = pool.upstream_mtls.as_ref() else {
+            continue;
+        };
+        if !m.enabled {
+            continue;
+        }
+        if m.client_cert_ref.is_some() {
+            return Err(crate::error::WafError::Config(format!(
+                "upstream '{name}': upstream_mtls.client_cert_ref (per-pool client \
+                 identity override) is reserved for P4 — leave it null and use the \
+                 shared zero_trust.upstream_identity"
+            )));
+        }
+        let has_identity = zt
+            .and_then(|z| z.upstream_identity.as_ref())
+            .is_some();
+        if !has_identity {
+            return Err(crate::error::WafError::Config(format!(
+                "upstream '{name}': upstream_mtls.enabled requires a configured \
+                 zero_trust.upstream_identity (the shared WAF client cert) — none is set"
+            )));
+        }
+        // mTLS only makes sense over a TLS connection to the backend.
+        let dials_tls = pool.connection.scheme.uses_tls(pool.connection.tls);
+        if !dials_tls {
+            return Err(crate::error::WafError::Config(format!(
+                "upstream '{name}': upstream_mtls.enabled requires a TLS connection \
+                 to the backend (set connection.tls: true or scheme: https/grpc)"
+            )));
+        }
+        // P2 supports the verified path only. `verify: false`
+        // (skip backend verification) and the SAN allowlist gate
+        // both land in P5 — reject now rather than silently
+        // accepting config that wouldn't be enforced.
+        if !m.verify {
+            return Err(crate::error::WafError::Config(format!(
+                "upstream '{name}': upstream_mtls.verify: false is not supported in P2 \
+                 (the WAF always verifies the backend) — provide a `trust` CA instead. \
+                 Opt-out lands in P5"
+            )));
+        }
+        if !m.allowed_sans.is_empty() {
+            return Err(crate::error::WafError::Config(format!(
+                "upstream '{name}': upstream_mtls.allowed_sans enforcement lands in P5 — \
+                 leave it empty for now"
+            )));
         }
     }
     Ok(())
@@ -1250,6 +1332,100 @@ pub struct PoolConfig {
     /// config (enforced in the data plane, not here).
     #[serde(default)]
     pub cache: Option<PoolCacheConfig>,
+    /// Upstream mutual-TLS (WAF-as-client) for this pool (P2 of
+    /// `plans/future/mTLS.md`). Absent / `enabled: false` ⇒ the
+    /// data plane dials exactly as today (`with_no_client_auth`).
+    /// When enabled the WAF presents the shared fleet client cert
+    /// (`zero_trust.upstream_identity`) and verifies the backend per
+    /// `verify` / `trust`. See [`UpstreamMtlsConfig`].
+    #[serde(default)]
+    pub upstream_mtls: Option<UpstreamMtlsConfig>,
+}
+
+/// Per-pool upstream mTLS (WAF-as-client) policy. Opt-in; defaults
+/// off. The WAF presents the shared fleet client identity
+/// (`zero_trust.upstream_identity`) — per-pool client-cert overrides
+/// (`client_cert_ref`) and console/config-plane storage land in P4.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamMtlsConfig {
+    /// Master switch. `false` (default) ⇒ no client cert presented.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Optional per-upstream client-cert override (a named identity
+    /// stored in the config plane). `None` ⇒ use the shared
+    /// `zero_trust.upstream_identity`. **Reserved for P4** — set but
+    /// unresolved today; validation rejects a non-null value until
+    /// P4 wires the config-plane lookup.
+    #[serde(default)]
+    pub client_cert_ref: Option<String>,
+    /// Verify the backend's server cert. Default `true` — an enabled
+    /// pool that can't verify its backend fails its dials (fail
+    /// closed) rather than trusting anything.
+    #[serde(default = "default_upstream_verify")]
+    pub verify: bool,
+    /// Custom CA bundle (PEM path) used to verify the backend's
+    /// server cert. `None` ⇒ public webpki roots. Required for
+    /// internal / self-signed backends.
+    #[serde(default)]
+    pub trust: Option<PathBuf>,
+    /// Optional SAN allowlist on the backend's server cert. Empty ⇒
+    /// any SAN that chains to the trust anchor is accepted.
+    #[serde(default)]
+    pub allowed_sans: Vec<String>,
+}
+
+fn default_upstream_verify() -> bool {
+    true
+}
+
+/// Resolve a pool's effective upstream-mTLS material from its
+/// per-pool [`UpstreamMtlsConfig`] and the shared fleet
+/// [`UpstreamIdentityConfig`]. Returns `None` when mTLS is absent or
+/// disabled for the pool (caller leaves `connection.upstream_mtls`
+/// unset ⇒ today's no-client-auth dial).
+///
+/// Pure: assembles paths + a stable fingerprint, performs no file
+/// IO. `None` identity with an enabled pool returns `None` here —
+/// config validation (`validate_upstream_mtls`) has already rejected
+/// that combination, so this stays infallible.
+pub fn resolve_upstream_mtls(
+    pool: &PoolConfig,
+    identity: Option<&UpstreamIdentityConfig>,
+) -> Option<UpstreamMtlsResolved> {
+    let m = pool.upstream_mtls.as_ref()?;
+    if !m.enabled {
+        return None;
+    }
+    // P2: shared identity only (per-pool override is P4). Both
+    // fields are guaranteed present by validation.
+    let id = identity?;
+    let cert_path = id.cert_path.clone()?;
+    let client_key_ref = id.key_ref.clone()?;
+    let trust_ca_path = m.trust.clone();
+    // Stable, transparent fingerprint over the public inputs (the
+    // key_ref is a path, not key bytes). Part of `PoolKey` so a
+    // config change rebuilds the cached client. Content-based
+    // hashing (same-path rotation) is P5.
+    let fingerprint = format!(
+        "v1|cert={}|key={}|trust={}|verify={}|sans={}",
+        cert_path.display(),
+        client_key_ref,
+        trust_ca_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "webpki".into()),
+        m.verify,
+        m.allowed_sans.join(","),
+    );
+    Some(UpstreamMtlsResolved {
+        client_cert_path: cert_path,
+        client_key_ref,
+        trust_ca_path,
+        verify: m.verify,
+        allowed_sans: m.allowed_sans.clone(),
+        fingerprint,
+    })
 }
 
 /// SC-1 — per-upstream smart-cache policy. Opt-in, allow-list by path
@@ -1424,6 +1600,42 @@ pub struct ConnectionPoolConfig {
     /// which the data plane maps onto v2.3 §3 `timeout` action.
     #[serde(default = "default_response_body_read_timeout", with = "humantime_serde")]
     pub response_body_read_timeout: Duration,
+    /// Resolved upstream-mTLS material for this pool (P2). **Never
+    /// deserialized** (`#[serde(skip)]`) — it is populated at
+    /// registry/dns build time from `PoolConfig.upstream_mtls` +
+    /// `zero_trust.upstream_identity` and travels with the cloned
+    /// connection config so `forward::build_client` can present the
+    /// WAF client cert / pin a custom backend CA, and so `PoolKey`
+    /// can include the cert fingerprint. Carries cert/key **paths**
+    /// only — never private-key bytes — so it stays Debug-safe.
+    #[serde(skip)]
+    pub upstream_mtls: Option<UpstreamMtlsResolved>,
+}
+
+/// Resolved, ready-to-use upstream-mTLS material for one pool (P2).
+///
+/// Plain data only: the cert/key are referenced by **path**, never
+/// loaded into bytes here, so this struct is safe to `Debug` and to
+/// store on the (Debug-deriving) [`ConnectionPoolConfig`]. The
+/// rustls parsing happens lazily in `forward::build_client`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpstreamMtlsResolved {
+    /// PUBLIC client cert chain (PEM file) the WAF presents to the
+    /// backend. The shared fleet identity (`zero_trust.upstream_identity`).
+    pub client_cert_path: PathBuf,
+    /// Path / ref to the client private key. Loaded only inside
+    /// `build_client`; never read into this struct.
+    pub client_key_ref: String,
+    /// Custom CA bundle (PEM file) to verify the BACKEND's server
+    /// cert against. `None` ⇒ fall back to webpki roots.
+    pub trust_ca_path: Option<PathBuf>,
+    /// Verify the backend server cert (fail closed on failure).
+    pub verify: bool,
+    /// Optional SAN allowlist gate on the backend's server cert.
+    pub allowed_sans: Vec<String>,
+    /// Stable fingerprint of the effective material — part of
+    /// `PoolKey` so a config change rebuilds the cached client.
+    pub fingerprint: String,
 }
 
 /// Upstream protocol selector for `ConnectionPoolConfig.scheme`.
@@ -1507,6 +1719,7 @@ impl Default for ConnectionPoolConfig {
             scheme: UpstreamScheme::Auto,
             max_response_body_bytes: default_max_response_body_bytes(),
             response_body_read_timeout: default_response_body_read_timeout(),
+            upstream_mtls: None,
         }
     }
 }
@@ -2050,12 +2263,54 @@ pub struct TlsConfig {
 /// P2 adds `upstream_identity` (the shared fleet WAF client cert
 /// for dialing backends) as a sibling field here.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZeroTrustConfig {
     /// Downstream (WAF-as-server) client-cert verification.
     /// `None` ⇒ listeners never request a client cert (today's
     /// `with_no_client_auth()` default).
     #[serde(default)]
     pub downstream: Option<DownstreamMtlsConfig>,
+    /// Upstream (WAF-as-client) shared fleet identity — the one
+    /// client cert every node presents when dialing a backend pool
+    /// that has `upstream_mtls.enabled`. `None` ⇒ no pool may enable
+    /// upstream mTLS (validation enforces this). See
+    /// [`UpstreamIdentityConfig`].
+    #[serde(default)]
+    pub upstream_identity: Option<UpstreamIdentityConfig>,
+}
+
+/// Shared fleet WAF client identity for upstream mTLS (P2).
+///
+/// One identity for the whole fleet — every node presents the same
+/// cert, signed by an internal CA the backends trust. P2 supports
+/// the `file` source only; `state` (config plane, encrypted key) is
+/// P4.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamIdentityConfig {
+    /// Where the identity comes from. P2: `file` only.
+    #[serde(default)]
+    pub source: UpstreamIdentitySource,
+    /// PUBLIC client cert chain (PEM file). Required for `file`.
+    #[serde(default)]
+    pub cert_path: Option<PathBuf>,
+    /// Path / secret-ref to the client private key. Required for
+    /// `file`. The key is loaded only at client-build time and never
+    /// returned by any API.
+    #[serde(default)]
+    pub key_ref: Option<String>,
+}
+
+/// Source of the shared upstream client identity.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamIdentitySource {
+    /// Cert + key read from disk (`cert_path` / `key_ref`).
+    #[default]
+    File,
+    /// Resolved from the Redis config plane (key encrypted at rest).
+    /// **Reserved for P4** — validation rejects it until then.
+    State,
 }
 
 /// Downstream (WAF-as-server) mTLS client-cert verification
@@ -4852,6 +5107,160 @@ zero_trust:
                 || err.to_string().contains("variant"),
             "expected serde unknown-variant error, got: {err}",
         );
+    }
+
+    // ---------- zero_trust upstream (WAF-as-client) mTLS — P2 ------------
+
+    /// Build a cfg with one pool + optional `upstream_mtls` body and
+    /// optional `zero_trust` body. Bodies are full YAML fragments.
+    fn cfg_with_upstream(pool_extra: &str, zero_trust: &str) -> String {
+        format!(
+            r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:443" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: api }}
+upstreams:
+  api:
+    members: [{{ addr: "127.0.0.1:8443" }}]
+    connection: {{ tls: true }}
+{pool_extra}
+state: {{ backend: in_memory }}
+{zero_trust}
+"#
+        )
+    }
+
+    const ID_FILE: &str = "zero_trust:\n  upstream_identity:\n    source: file\n    cert_path: /etc/waf/client.pem\n    key_ref: /etc/waf/client.key\n";
+
+    #[test]
+    fn upstream_mtls_enabled_with_identity_and_tls_ok_and_resolves() {
+        let yaml = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", ID_FILE);
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let id = cfg
+            .zero_trust
+            .as_ref()
+            .and_then(|z| z.upstream_identity.as_ref());
+        let pool = &cfg.upstreams["api"];
+        let resolved = resolve_upstream_mtls(pool, id).expect("enabled ⇒ Some");
+        assert_eq!(
+            resolved.client_cert_path.to_string_lossy(),
+            "/etc/waf/client.pem"
+        );
+        assert_eq!(resolved.client_key_ref, "/etc/waf/client.key");
+        assert!(resolved.verify);
+        assert!(resolved.trust_ca_path.is_none()); // webpki fallback
+        assert!(!resolved.fingerprint.is_empty());
+    }
+
+    #[test]
+    fn upstream_mtls_disabled_or_absent_resolves_none() {
+        let yaml = cfg_with_upstream("    upstream_mtls: { enabled: false }\n", ID_FILE);
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+        let id = cfg.zero_trust.as_ref().and_then(|z| z.upstream_identity.as_ref());
+        assert!(resolve_upstream_mtls(&cfg.upstreams["api"], id).is_none());
+    }
+
+    #[test]
+    fn upstream_mtls_fingerprint_changes_with_trust() {
+        let base = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", ID_FILE);
+        let with_trust = cfg_with_upstream(
+            "    upstream_mtls: { enabled: true, trust: /etc/waf/backend-ca.pem }\n",
+            ID_FILE,
+        );
+        let cfg_a: WafConfig = serde_yaml::from_str(&base).unwrap();
+        let cfg_b: WafConfig = serde_yaml::from_str(&with_trust).unwrap();
+        let id_a = cfg_a.zero_trust.as_ref().and_then(|z| z.upstream_identity.as_ref());
+        let id_b = cfg_b.zero_trust.as_ref().and_then(|z| z.upstream_identity.as_ref());
+        let fa = resolve_upstream_mtls(&cfg_a.upstreams["api"], id_a).unwrap().fingerprint;
+        let fb = resolve_upstream_mtls(&cfg_b.upstreams["api"], id_b).unwrap().fingerprint;
+        assert_ne!(fa, fb, "trust change must change the fingerprint (PoolKey)");
+    }
+
+    #[test]
+    fn upstream_mtls_enabled_without_identity_rejected() {
+        let yaml = cfg_with_upstream("    upstream_mtls: { enabled: true }\n", "");
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("zero_trust.upstream_identity"), "got: {err}");
+    }
+
+    #[test]
+    fn upstream_mtls_enabled_without_tls_rejected() {
+        // Override connection to plaintext.
+        let yaml = format!(
+            r#"
+listeners:
+  data: [{{ bind: "0.0.0.0:443" }}]
+  admin: {{ bind: "127.0.0.1:9443" }}
+routes:
+  - {{ id: catch-all, path: "/", upstream: api }}
+upstreams:
+  api:
+    members: [{{ addr: "127.0.0.1:8080" }}]
+    connection: {{ tls: false }}
+    upstream_mtls: {{ enabled: true }}
+state: {{ backend: in_memory }}
+{ID_FILE}
+"#
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("requires a TLS connection"), "got: {err}");
+    }
+
+    #[test]
+    fn upstream_mtls_client_cert_ref_rejected_p4() {
+        let yaml = cfg_with_upstream(
+            "    upstream_mtls: { enabled: true, client_cert_ref: payments-id }\n",
+            ID_FILE,
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("client_cert_ref"), "got: {err}");
+    }
+
+    #[test]
+    fn upstream_mtls_verify_false_rejected_p2() {
+        let yaml = cfg_with_upstream(
+            "    upstream_mtls: { enabled: true, verify: false }\n",
+            ID_FILE,
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("verify: false"), "got: {err}");
+    }
+
+    #[test]
+    fn upstream_mtls_allowed_sans_rejected_p2() {
+        let yaml = cfg_with_upstream(
+            "    upstream_mtls: { enabled: true, allowed_sans: [api.internal] }\n",
+            ID_FILE,
+        );
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("allowed_sans"), "got: {err}");
+    }
+
+    #[test]
+    fn upstream_identity_source_state_rejected_p2() {
+        let zt = "zero_trust:\n  upstream_identity:\n    source: state\n";
+        let yaml = cfg_with_upstream("", zt);
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("source: state"), "got: {err}");
+    }
+
+    #[test]
+    fn upstream_identity_file_missing_paths_rejected() {
+        let zt = "zero_trust:\n  upstream_identity:\n    source: file\n    cert_path: /etc/waf/client.pem\n";
+        let yaml = cfg_with_upstream("", zt);
+        let cfg: WafConfig = serde_yaml::from_str(&yaml).unwrap();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("cert_path and key_ref"), "got: {err}");
     }
 
     #[test]

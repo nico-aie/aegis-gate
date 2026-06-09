@@ -191,13 +191,20 @@ impl ProxyContext {
     /// shape fails boot rather than going live.
     pub fn build(cfg: &WafConfig, pipeline: Arc<dyn SecurityPipeline>) -> aegis_core::Result<Self> {
         let route_table = RouteTable::build(cfg)?;
-        let (pools, breakers) = PoolRegistry::build_pools(&cfg.upstreams)
+        let upstream_identity = cfg
+            .zero_trust
+            .as_ref()
+            .and_then(|z| z.upstream_identity.as_ref());
+        let (pools, breakers) = PoolRegistry::build_pools(&cfg.upstreams, upstream_identity)
             .map_err(|e| aegis_core::WafError::Config(e.to_string()))?;
         let pool_registry = PoolRegistry::from_pools(pools, breakers);
         // FIX 2026-05-04 — seed the raw shadow with the boot map
         // so admin reads see the boot config before any runtime
         // mutation has landed.
         pool_registry.seed_raw(cfg.upstreams.clone());
+        // P2 — seed the shared upstream-mTLS identity so runtime
+        // pool re-applies re-resolve client certs against it.
+        pool_registry.seed_upstream_identity(upstream_identity.cloned());
         let cache = Arc::new(crate::cache::ResponseCache::from_upstreams(&cfg.upstreams));
         Ok(Self {
             route_table,

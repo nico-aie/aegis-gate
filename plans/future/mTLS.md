@@ -382,9 +382,18 @@ traffic yet, so the temporary downstream-enforcement gap during the hard cut is 
       (`admin_get`/`admin_dispatch`/`admin_mutate`/`api/mod`) to `/api/zero-trust/*`,
       remove the 3 `PageSettings` cards (pages.jsx 6252–6254) + defs + `data.jsx` hooks,
       reconcile `AEGIS_MTLS_BREAK_GLASS` env/`mtls_break_glass_active` field. **(moved to P3)**
-- [ ] **P2** `upstream_identity` + `PoolConfig.upstream_mtls` config + validation.
-- [ ] **P2** `build_client` explicit `ClientConfig`; thread material via `ConnectionPoolConfig`
-      (registry.rs/dns_refresh.rs); `PoolKey` cert fingerprint; fail-closed test.
+- [x] **P2** `zero_trust.upstream_identity` (`UpstreamIdentityConfig`, source file|state) +
+      `PoolConfig.upstream_mtls` (`UpstreamMtlsConfig`) + `validate_upstream_mtls`
+      (enabled⇒identity+TLS; client_cert_ref/verify:false/allowed_sans/source:state rejected as P4/P5).
+- [x] **P2** `build_client` builds explicit rustls `ClientConfig`
+      (`client_config_from_resolved`: client-auth cert + custom-CA or webpki roots, `https_only`);
+      threaded via `ConnectionPoolConfig.upstream_mtls` (`#[serde(skip)]`, resolved in
+      `registry.build_pools` from `resolve_upstream_mtls`; identity stored on registry for `apply`;
+      preserved across `dns_refresh`); `PoolKey` gains `mtls_fingerprint`; `build_client`/`pooled_client`
+      now fallible ⇒ `forward` maps to `ForwardError::Handshake` (fail closed). Key bytes never in config.
+- [x] **P2** Gates green: resolution (3) + validation (7) in aegis-core; PoolKey scope-isolation +
+      build-fail-closed-on-missing-cert in forward; **wrong-CA live-handshake fail-closed** in upstream/tls.
+      Scope cut: `verify:false` + `allowed_sans` enforcement + `source:state` deferred to P4/P5 (rejected now, not silently ignored).
 - [ ] **P3** `ZeroTrustPage`: WAF identity card (download public) + downstream section
       (relocated) + per-upstream list/drawer (backend-CA upload); NAV entry; audited PUT + cas_set.
 - [ ] **P4** Shared identity in config plane (key envelope-encrypted); rotate; per-upstream
